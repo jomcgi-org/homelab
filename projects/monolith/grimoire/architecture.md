@@ -619,6 +619,15 @@ app on the [Astryx](https://github.com/facebook/astryx) component library
 their server helpers, which relayed the ID token to the API, are deleted.
 Public Grimoire pages and the private operator sheets page stay in Svelte.
 
+**Why (appearance, #7734).** The shared React page header offers System,
+Light and Dark. System is the default for missing, invalid or inaccessible
+storage and follows OS changes. Explicit choices override the OS and persist
+only on this browser under `grimoire.appearance`; a failed write still applies
+for the current mount. Returning to System resumes OS updates. The shared
+Providers entry resolves the initial scheme and passes it to Astryx's root
+Theme before paint, including the body, dialogs and toasts. Preference changes
+preserve routes and unsaved input. No account setting or backend write is added.
+
 - **Static files.** `grimoire/web.py` serves the built bundle from the API
   port at `/grimoire`. Any path under the base that is not a built asset
   answers with `index.html`; a missing asset is a 404, never the shell. The

@@ -14,6 +14,7 @@ import { Link } from "@astryxdesign/core/Link";
 import { Text } from "@astryxdesign/core/Text";
 import { useEffect } from "react";
 import { SendFeedback } from "./SendFeedback";
+import { AppearanceControl } from "./Appearance";
 import { useSignIn } from "./useSignIn";
 
 interface PageProps {
@@ -70,6 +71,7 @@ export function Page({
             </StackItem>
             <HStack gap={2} wrap="wrap" hAlign="end">
               {actions}
+              <AppearanceControl />
               <SendFeedback />
             </HStack>
           </HStack>

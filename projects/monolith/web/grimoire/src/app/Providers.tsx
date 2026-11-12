@@ -1,10 +1,9 @@
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { LinkProvider } from "@astryxdesign/core/Link";
-import { Theme } from "@astryxdesign/core/theme";
 import { ToastViewport } from "@astryxdesign/core/Toast";
 import { ApiError } from "../api/client";
-import { sheetTheme } from "../theme";
+import { AppearanceProvider } from "./Appearance";
 import { RouterLink } from "./RouterLink";
 
 export function createQueryClient() {
@@ -31,12 +30,12 @@ export function Providers({
   client?: QueryClient;
 }) {
   return (
-    <Theme theme={sheetTheme}>
+    <AppearanceProvider>
       <LinkProvider component={RouterLink}>
         <QueryClientProvider client={client}>
           <ToastViewport position="bottomEnd">{children}</ToastViewport>
         </QueryClientProvider>
       </LinkProvider>
-    </Theme>
+    </AppearanceProvider>
   );
 }

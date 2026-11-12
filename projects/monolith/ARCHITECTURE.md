@@ -2059,6 +2059,12 @@ tracks live acceptance; the legacy stylesheets leave the tree under #7160,
 the brutalist one once the Grimoire rehearsal clears its removal from the
 root error page.
 
+**Why (Grimoire appearance, #7734).** The React friends app defaults to the
+system scheme and offers a browser-local Light/Dark/System selector in its
+shared chrome. Astryx's root Theme owns the page and overlay scheme. The
+[Grimoire decision](grimoire/architecture.md#friends-web-app) records storage
+fallbacks and preference behavior; the Svelte surfaces keep their own controls.
+
 ## 9. Observability and health
 
 `/healthz` is process liveness. `/api/health` executes a database query and all

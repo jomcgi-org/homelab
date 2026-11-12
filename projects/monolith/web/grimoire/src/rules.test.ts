@@ -88,9 +88,9 @@ const rules: Rule[] = [
     name: "no browser storage outside the modules that own it",
     pattern: /\b(localStorage|sessionStorage)\b/,
     instead:
-      "src/lib/session-expiry.js for the kept draft; read-aloud settings go through src/lib/read-aloud.js",
+      "src/app/Appearance.tsx for appearance; src/lib/session-expiry.js for the kept draft; read-aloud settings go through src/lib/read-aloud.js",
     // Passes window.localStorage to lib/read-aloud.js, which does the reading.
-    allow: ["src/voices/ReadAloud.tsx"],
+    allow: ["src/voices/ReadAloud.tsx", "src/app/Appearance.tsx"],
   },
 ];
 
