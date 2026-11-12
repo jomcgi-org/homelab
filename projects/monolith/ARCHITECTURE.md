@@ -2978,6 +2978,16 @@ measure is zero admitted receipts with `landing_recovery_expired` and no
 unresolved starts older than one tick. Revert if a settled task loses a
 delivery that a recovery round would still have landed.
 
+**Why a settled recovery no longer holds its receipt:** on 2026-11-12 #7547's
+recovery round settled the delivery with a fresh exact-head approval, then its
+fixed deadline passed. `_recovery_held` treated any expired deadline as a
+hold, so delivery and operator landing refused the receipt as held. An expired
+deadline now holds only while the round is unsettled: a `finish_task` or
+`delivery_ready` newer than the latest request ends it. Fresh review, CI, grants
+and the merge queue still gate landing. Measure: settled receipts refused
+`receipt_held` only for an expired recovery, baseline 1, expected 0. Revert if
+a delivery lands without a review of its recovered head.
+
 The proposed internal recovery worker is staged off behind
 `swarm.factoryRecoveryDelegationEnabled`; its exact grant contract is in
 [FACTORY.md](factory/orchestration/FACTORY.md#proposed-internal-recovery-authorization).

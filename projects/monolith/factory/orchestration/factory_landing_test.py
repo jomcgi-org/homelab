@@ -1097,6 +1097,40 @@ def test_recovery_respects_delivery_capacity(
         assert controls._landing_recovery_expired(session, "t-1")
 
 
+@pytest.mark.parametrize("settled", [False, True])
+def test_expired_recovery_holds_only_until_the_round_settles(db, monkeypatch, settled):
+    from factory.orchestration import factory_funding_limits as limits
+
+    delivered(db, "t-1", 11, 3)
+    deadline = NOW + timedelta(seconds=controls.LANDING_RECOVERY_TIMEOUT_SECONDS)
+    with Session(db) as session, session.begin():
+        controls._audit(
+            session,
+            "test",
+            "landing_recovery_requested",
+            task_id="t-1",
+            pr_number=3,
+            head_sha=HEAD,
+            source="delivered_pr",
+            reason="review_stale",
+            deadline_at=deadline.isoformat(),
+        )
+        if settled:
+            controls._audit(
+                session,
+                "test",
+                "delivery_ready",
+                task_id="t-1",
+                evidence={"head_sha": HEAD},
+            )
+    monkeypatch.setattr(controls, "_now", lambda: deadline)
+    with Session(db) as session:
+        assert controls._landing_recovery_expired(session, "t-1")
+        assert controls.landing_recovery_settled(session, "t-1") is settled
+        # A settled round leaves landing to its fresh review; an open one holds.
+        assert limits._recovery_held(session, "t-1") is not settled
+
+
 @pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
 @pytest.mark.parametrize(
     "wait_seconds", [0, controls.LANDING_RECOVERY_TIMEOUT_SECONDS + 60]

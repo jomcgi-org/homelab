@@ -2539,6 +2539,37 @@ def _landing_recovery_expired(db: Session, task_id: str) -> bool:
     return deadline is not None and _now() >= deadline
 
 
+def landing_recovery_settled(db: Session, task_id: str) -> bool:
+    """Whether the delivery settled again after its latest recovery request.
+
+    A settlement newer than the request means the bounded round finished, so
+    its fixed deadline no longer describes open work.
+    """
+    request = db.exec(
+        select(FactoryAudit.id)
+        .where(
+            FactoryAudit.task_id == task_id,
+            FactoryAudit.action == "landing_recovery_requested",
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    if request is None:
+        return False
+    return (
+        db.exec(
+            select(FactoryAudit.id)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action.in_(("finish_task", "delivery_ready")),
+                FactoryAudit.id > request,
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
 def task_recovery_grant(task_id: str, *, session=None) -> dict | None:
     with _read_session(session) as db:
         event = db.exec(
