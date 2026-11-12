@@ -28683,7 +28683,9 @@ def _saved_finish_case(monkeypatch, *, saved_finish=True, landing_hold=True):
     return task, policy, pr, before
 
 
-def _approved_deadline_recovery(monkeypatch, *, fresh=True, start_status=None):
+def _approved_deadline_recovery(
+    monkeypatch, *, fresh=True, start_status=None, moved_head=False
+):
     from factory.orchestration import factory_controls as controls
 
     task, policy, pr, before = _saved_finish_case(
@@ -28699,6 +28701,16 @@ def _approved_deadline_recovery(monkeypatch, *, fresh=True, start_status=None):
     assert controls.request_landing_recovery(
         task["id"], 3, pr["head"]["sha"], "merge_queue", "test"
     )["ok"]
+    if moved_head:
+        pr["head"]["sha"] = "b" * 40
+        read = conductor.github_get
+
+        def read_corrected_head(repo, path):
+            if path == f"commits/{pr['head']['sha']}/status":
+                return {"statuses": [{"context": "pr-checks", "state": "success"}]}
+            return read(repo, path)
+
+        monkeypatch.setattr(conductor, "github_get", read_corrected_head)
     deadline = datetime.fromisoformat(controls.task_snapshot(task["id"])["deadline_at"])
     monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
     request = conductor._landing_recovery_requests(task["id"])[0]
@@ -28744,13 +28756,16 @@ def _approved_deadline_recovery(monkeypatch, *, fresh=True, start_status=None):
 
 
 @pytest.mark.parametrize("auto_merge", [False, True])
+@pytest.mark.parametrize("moved_head", [False, True])
 def test_recovery_approval_before_deadline_settles_without_planner_finish(
-    feedback_db, monkeypatch, auto_merge
+    feedback_db, monkeypatch, auto_merge, moved_head
 ):
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_models import FactoryAudit
 
-    task, policy, pr, before = _approved_deadline_recovery(monkeypatch)
+    task, policy, pr, before = _approved_deadline_recovery(
+        monkeypatch, moved_head=moved_head
+    )
     if auto_merge:
         assert controls.request_control(
             "enable_auto_merge",
