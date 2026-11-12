@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -240,14 +241,16 @@ func invokeCodexProbe(ctx context.Context, cfg config, client *controlPlaneClien
 		// consume the attempt. The resumed turn belongs to the same attempt.
 		beforeInvoke()
 	}
+	invokeStarted := time.Now()
 	response, err := invokeClient.request(ctx, http.MethodPost, path, body, session.Token, map[string]string{"X-Ember-Guest-Path": "/shim/turn"})
 	if err != nil {
 		return codexProbeTurn{}, fmt.Errorf("invoke: %w", err)
 	}
 	if response.status != http.StatusOK {
 		// Provider or egress failures must fail S9, unlike lifecycle-only S2.
-		// Do not copy arbitrary provider response bodies to verdicts or logs.
-		return codexProbeTurn{}, fmt.Errorf("invoke returned status=%d", response.status)
+		// Do not copy arbitrary provider response bodies to verdicts or logs:
+		// only the elapsed time and a control-plane-authored failure reason.
+		return codexProbeTurn{}, fmt.Errorf("invoke returned status=%d after %dms%s", response.status, time.Since(invokeStarted).Milliseconds(), controlPlaneInvokeReason(response.body))
 	}
 	var turn codexProbeTurn
 	if err := json.Unmarshal(response.body, &turn); err != nil {
@@ -296,4 +299,23 @@ func validateCodexProbeTurn(turn codexProbeTurn, cfg config, cliSessionID, artif
 		return fmt.Errorf("captured Codex CLI version does not match the candidate package")
 	}
 	return nil
+}
+
+// controlPlaneInvokeReason returns the router's own failure reason for a
+// session invoke (#7731). Guest and provider bodies are never echoed: only the
+// control plane's "session invoke failed" envelope qualifies, and the reason
+// is truncated.
+func controlPlaneInvokeReason(body []byte) string {
+	var envelope struct {
+		Error  string `json:"error"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Error != "session invoke failed" || envelope.Reason == "" {
+		return ""
+	}
+	reason := envelope.Reason
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	return " reason=" + strconv.Quote(reason)
 }
