@@ -102,8 +102,8 @@ spec:
             - { name: S8_EGRESS_PROBE, value: {{ .Values.conformance.egressProbe | quote }} }
             - { name: S8_BUDGET, value: {{ .Values.conformance.budgets.s8 | quote }} }
             {{- if $codex.enabled }}
-            # S9 retains success or two failures per runner process/chart. A
-            # restart resets that in-memory attempt limit. No provider token
+            # S9 retains success per runner process/chart, and two failures
+            # for one hour. A restart resets that in-memory attempt limit. No provider token
             # reaches the runner: create uses its SA, invoke uses its session.
             - { name: S9_CODEX_PROBE, value: "true" }
             - { name: S9_CODEX_WORKLOAD, value: {{ $codex.workload | quote }} }
