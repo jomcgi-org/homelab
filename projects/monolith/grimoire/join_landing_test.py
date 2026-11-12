@@ -26,7 +26,7 @@ from grimoire.models import AppUser, CampaignJoinLink, CampaignMember
 ISSUER = "https://auth.example.test/application/o/grimoire/"
 ORIGIN = "https://friends.example.test"
 JOIN = "/grimoire/join"
-ACCEPT = "/grimoire/join/accept"
+ACCEPT = "/grimoire/join/accept/confirm"
 STATE = "/grimoire/join/accept/state"
 OTHER_ID = "33333333-3333-4333-8333-333333333333"
 FLOW = "https://auth.jomcgi.dev/if/flow/grimoire-link-enrollment/"
@@ -1236,7 +1236,7 @@ def test_this_router_answers_no_get_for_the_accept_page():
 
 
 def test_the_accept_page_falls_through_to_the_app_shell(table):
-    shell = send(table, "GET", ACCEPT, origin=None)
+    shell = send(table, "GET", "/grimoire/join/accept", origin=None)
     assert shell.status_code == 200
     assert shell.text == INDEX
     # The landing and the state endpoint are not shadowed by the shell.

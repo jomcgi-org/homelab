@@ -43,7 +43,7 @@ export const useJoinState = () =>
 
 /** Naming the invitation stops an older tab accepting a newer link. */
 export const acceptJoin = (invitationId: string) =>
-  requestJson<{ ok: true }>("/grimoire/join/accept", {
+  requestJson<{ ok: true }>("/grimoire/join/accept/confirm", {
     method: "POST",
     body: { invitation_id: invitationId },
   });

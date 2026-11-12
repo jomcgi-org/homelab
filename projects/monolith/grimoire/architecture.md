@@ -650,7 +650,7 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   cross-origin page cannot read the answer.
 - **Invitation links.** `grimoire/join_landing.py` serves the anonymous
   landing at `/grimoire/join` and the signed-in endpoints
-  `POST /grimoire/join/accept` and `GET /grimoire/join/accept/state`. The
+  `POST /grimoire/join/accept/confirm` and `GET /grimoire/join/accept/state`. The
   landing embeds `web/grimoire/src/lib/join-landing.js` as its script. The
   signed-in accept page is the React screen at `/grimoire/join/accept`. See
   [Single-use campaign links](#single-use-campaign-links).
@@ -873,7 +873,7 @@ cannot be redeemed. The exact anonymous `/grimoire/join` route serves a
 self-contained, no-store landing page with no telemetry or authenticated assets
 (`grimoire/join_landing.py`, with its script in
 `web/grimoire/src/lib/join-landing.js`). The React accept screen at
-`/grimoire/join/accept`, its endpoints `POST /grimoire/join/accept` and
+`/grimoire/join/accept`, its endpoints `POST /grimoire/join/accept/confirm` and
 `GET /grimoire/join/accept/state`, and every other Grimoire route keep the OIDC
 policy. The friends host routes only the API prefixes listed under
 [Friends web app](#friends-web-app).

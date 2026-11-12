@@ -26,6 +26,6 @@ export const joinState = (
 /** Keyed `METHOD /full/path`: these endpoints sit outside the Grimoire API. */
 export const joinOther: OtherRoutes = {
   "GET /grimoire/join/accept/state": joinState(),
-  "POST /grimoire/join/accept": { ok: true },
+  "POST /grimoire/join/accept/confirm": { ok: true },
   "POST /grimoire/join": { ok: true },
 };

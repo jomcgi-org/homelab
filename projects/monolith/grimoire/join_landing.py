@@ -448,7 +448,9 @@ def post_landing(
         return response
 
 
-@router.post(f"{JOIN_PATH}/accept")
+# Not at {JOIN_PATH}/accept itself: that path is the React page, and a GET
+# that only partly matches a POST route breaks request tracing (web_test.py).
+@router.post(f"{JOIN_PATH}/accept/confirm")
 def accept(
     request: Request,
     body: PostedBody,

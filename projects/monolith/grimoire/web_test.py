@@ -96,3 +96,49 @@ def test_policy_allows_only_well_formed_style_hashes():
     for bad in ["'unsafe-inline'", "sha256-short", "sha256-" + "A" * 43 + "=' *"]:
         with pytest.raises(ValueError):
             web.content_security_policy([bad])
+
+
+# Every page the React router serves (web/grimoire/src/App.tsx), as a browser
+# requests it on a reload or from a link.
+PAGES = [
+    "/grimoire",
+    "/grimoire/sheets",
+    "/grimoire/join/accept",
+    "/grimoire/platform",
+    "/grimoire/platform/profile",
+    "/grimoire/feedback",
+    "/grimoire/campaigns/1b2c/session",
+    "/grimoire/campaigns/1b2c/notes",
+    "/grimoire/campaigns/1b2c/journal",
+    "/grimoire/campaigns/1b2c/grants",
+    "/grimoire/campaigns/1b2c/entities/9f",
+]
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_a_page_never_shares_its_path_with_a_route_of_another_method(
+    path, tmp_path, monkeypatch
+):
+    """A GET that only partly matches an earlier route breaks request tracing.
+
+    The OpenTelemetry FastAPI instrumentation walks ``app.routes`` and reads
+    ``.path`` from a partial match (right path, wrong method). An included
+    router has no ``.path``, so a page whose path is also a POST-only endpoint
+    answered 500 in production while every test without tracing passed.
+    """
+    from starlette.routing import Match
+
+    import grimoire
+
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text(INDEX)
+    monkeypatch.setenv("GRIMOIRE_WEB_DIR", str(tmp_path))
+    app = FastAPI()
+    grimoire.register(app)
+    scope = {"type": "http", "method": "GET", "path": path, "root_path": ""}
+    for route in app.routes:
+        match, _ = route.matches(scope)
+        assert match != Match.PARTIAL, f"{path} partly matches an earlier route"
+        if match == Match.FULL:
+            return
+    pytest.fail(f"no route serves {path}")
