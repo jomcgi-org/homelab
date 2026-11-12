@@ -31,8 +31,10 @@ cannot move a runtime pin.
 3. Reference the package as `@pip//package_name`: underscores in Bazel,
    hyphens on PyPI. `requirement()` is not used in this repo.
 
-The `Update Python requirements` pre-commit hook runs the same script, but
-only when `pyproject.toml` changes. An edit to `test.in` or `overrides.txt`
+Both scripts need a local Bazel. The `Update Python requirements` pre-commit
+hook runs the sibling `update-python-requirements-if-needed.sh`, which
+regenerates and stages the locks when `:runtime_test` fails, but only when
+`pyproject.toml` changes. An edit to `test.in` or `overrides.txt`
 alone stays inert until the script is run by hand.
 
 Drop an `overrides.txt` floor once the upstream constraint floats past it.

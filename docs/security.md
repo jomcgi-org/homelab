@@ -52,7 +52,7 @@ are the live `HTTPRoute` set on the shared Gateway (`kubectl get httproutes -A`)
 | Lane | Host | Who | Gate |
 |------|------|-----|------|
 | Public | `jomcgi.dev` | anyone | none at the edge; served by a separate binary and Postgres roles (below), rate-limited per route |
-| Friends | `friends.jomcgi.dev` | authentik `family` on `/moving`, `homelab-admin` on `/preview/`, any active human account with an email on `/grimoire` | Envoy `SecurityPolicy` doing authentik OIDC plus a `groups` claim check, `defaultAction: Deny`; no Cloudflare Access application |
+| Friends | `friends.jomcgi.dev` | authentik `family` on `/moving`, `homelab-admin` on `/preview/`, any active human account with an email on `/grimoire` | Envoy `SecurityPolicy` doing authentik OIDC. `/moving` and `/preview/` add a `groups` claim check with `defaultAction: Deny`. `/grimoire` validates only the ID token's issuer and audience; authentik's `grimoire-human-access` policy decides admission, and `/grimoire/join` is anonymous and rate-limited. No Cloudflare Access application |
 | Private | `private.jomcgi.dev` | Joe, plus service tokens | Cloudflare Access at the edge, then a `SecurityPolicy` validating the Access JWT on the monolith and Kargo routes |
 | Machine | `mcp.jomcgi.dev` | MCP clients | no `SecurityPolicy`; Context Forge validates the authentik bearer itself |
 | Identity provider | `auth.jomcgi.dev` | anyone, for the login flow | authentik's own session and MFA; the admin console is behind Cloudflare Access, configured in the dashboard |
@@ -82,7 +82,7 @@ what the same person already holds.
 **authentik is the standing identity provider.** Blueprints in
 `projects/platform/authentik/blueprints/` define one OAuth2 provider and
 one application per lane (`dev`, `kargo`, `preview`, `moving`, `grimoire`, `mcp-friends`,
-`mcp-agents`), each bound to a group (`homelab-admin` or `family`) or, for
+`mcp-agents`), each bound to a group (`homelab-admin`, `family` or `kg-agents`) or, for
 Grimoire, to the `grimoire-human-access` policy. Renaming a group in authentik
 silently breaks every lane bound to it: the `groups` claim is matched by
 name. authentik runs on the hub with its own CNPG cluster and publishes
@@ -162,12 +162,13 @@ trust domain `embervm.jomcgi.dev`, server on the core pool with its
 datastore as a database on `monolith-pg`, an agent on every node attesting
 with `k8s_psat`, and the CSI driver. Four `ClusterSPIFFEID` objects issue
 an X.509-SVID of the form `spiffe://embervm.jomcgi.dev/ns/<ns>/sa/<sa>` to
-every pod in the `embervm`, `embervm-dev`, `monolith` and `monolith-agents`
-namespaces (`kubectl get clusterspiffeids`). The hub overlays enable the
+every pod in the `embervm`, `monolith` and `monolith-agents` namespaces, and
+in `embervm-dev` only to the `noded-brick` and `tokenbroker` pods
+(`kubectl get clusterspiffeids`). The hub overlays enable the
 token broker's SPIFFE mTLS listener on 8443 (`tokenBroker.spiffe.enabled`
 in `projects/embervm/deploy/values-gke.yaml`), with the EmberVM egress
 sidecar and the private monolith as its clients; the plaintext port is still
-served as the rollback. noded also serves a SPIFFE mTLS NodeService listener
+served as the rollback, except `/grants/<g>/token`, which is mTLS-only. noded also serves a SPIFFE mTLS NodeService listener
 on 9443 (`noded.spiffe.enabled`), but the control plane does not dial it
 yet (`spiffe.dialNoded` is false), so that hop still carries a static bearer
 token. Guests hold no identity. Phase 2 is #5755 to #5759; the phase plan

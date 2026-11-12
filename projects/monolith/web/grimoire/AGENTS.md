@@ -52,7 +52,7 @@ recalling an API.
   parses handout markup into React elements.
 - Colours, spacing and radius come from theme tokens. No inline styles.
 - No `localStorage` or `sessionStorage` outside `src/lib/session-expiry.js`
-  and `src/lib/read-aloud.js`.
+  and `src/voices/ReadAloud.tsx`, which hands storage to `src/lib/read-aloud.js`.
 
 ## Layout
 
