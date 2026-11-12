@@ -304,7 +304,14 @@ def main():
                                 ".qwen-page .chat"
                             ).evaluate("(el) => el.getBoundingClientRect().height")
                             if phone:
-                                assert child_result["chatHeight"] >= 630, child_result
+                                child_result["viewportHeight"] = page.viewport_size[
+                                    "height"
+                                ]
+                                # Keep the 70dvh minimum at either fixture height;
+                                # Chromium rounds layout down to 1/64 CSS pixel.
+                                assert child_result["chatHeight"] + 1 / 64 >= (
+                                    child_result["viewportHeight"] * 0.7
+                                ), child_result
                                 expect(
                                     page.locator(".qwen-page .sessions")
                                 ).to_be_visible()
