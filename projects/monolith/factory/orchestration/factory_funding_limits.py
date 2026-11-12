@@ -198,9 +198,13 @@ def _recovery_held(db, task_id):
 
     if recovery_grant(db, task_id) is not None:
         return True
-    return controls.review_recovery_held(
-        task_id, session=db
-    ) or controls._landing_recovery_expired(db, task_id)
+    if controls.review_recovery_held(task_id, session=db):
+        return True
+    # An expired recovery holds only while it is unsettled. Once the round
+    # settles the delivery again, landing owners decide on the fresh review.
+    return controls._landing_recovery_expired(
+        db, task_id
+    ) and not controls.landing_recovery_settled(db, task_id)
 
 
 def routine_hold(db, row, task_id, *, machine_pause=False):
