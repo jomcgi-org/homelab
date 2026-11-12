@@ -60,12 +60,12 @@ and polling behavior, absence of a UI route, CRD apply mode and lease RBAC.
 
 ## Release and recovery boundaries
 
-The prepared change is held for shared-controller release approval. Merging
-would cause the Git-tracked Argo Application to reconcile and roll its control
+The upgrade is in the tree: chart 9.5.11 with image v3.3.18. A change to this
+chart makes the Git-tracked Argo Application reconcile and roll its control
 plane, independently of first-party chart publication. It does not change
 workload chart pins or repair existing child status.
 
-Revert the PR through the protected queue to restore chart 8.6.4 and image
+Revert the upgrade through the protected queue to restore chart 8.6.4 and image
 3.1.8. This reintroduces the status-replay defect. Before any downgrade, verify
 that no newly introduced CRD fields/features have been adopted; reverting Git
 is not a promise of safe schema downgrade. If the controller cannot reconcile

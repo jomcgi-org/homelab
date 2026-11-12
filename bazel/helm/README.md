@@ -3,7 +3,7 @@
 Bazel rules and macros for building, testing, publishing, and validating Helm
 charts and ArgoCD applications.
 
-These rules back the repo's GitOps pipeline (see the root `CLAUDE.md`): charts
+These rules back the repo's GitOps pipeline (see the root `AGENTS.md`): charts
 are packaged as OCI artifacts in CI, image tags are pinned at build time, and
 chart versions are auto-bumped from conventional commits. Nothing here installs
 to a cluster; ArgoCD pulls the published chart and syncs.
@@ -91,8 +91,8 @@ auto-bumps the chart version via `chart-version.sh` at push time.
 
 ## `argocd_app`
 
-Declares an ArgoCD overlay. Always emits a `template_test`; opt into
-pre-rendered `render_manifests` and a live `diff`.
+Declares an ArgoCD overlay. Always emits a `template_test`, plus a pre-rendered
+`render_manifests` target unless `generate_manifests = False`.
 
 When a package already declares its own `helm_admissibility_render` targets,
 set `# gazelle:argocd_generate_manifests false` in its BUILD file. Gazelle
@@ -185,7 +185,7 @@ lint tests run Helm's strict validation.
 | `helm-template-test.sh`                           | `helm template` under the full values hierarchy; fails on render errors       |
 | `render.sh`                                       | Standalone single-service render using the extracted Helm tool                |
 | `lint.sh`                                         | Standalone strict lint for charts changed from a Git base                      |
-| `ci-diff-manifests.sh`                            | CI gate: diff rendered manifests against the live cluster                     |
+| `ci-diff-manifests.sh`                            | PR comment: dyff of manifests rendered from main and the PR                     |
 | `render-manifests.sh`                             | Pre-render manifests for inspection                                           |
 
 ## Conventions
