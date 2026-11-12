@@ -189,7 +189,7 @@
   .card-header {
     display: grid;
     flex-shrink: 0;
-    grid-template-columns: max-content 1fr max-content;
+    grid-template-columns: max-content minmax(0, 1fr) auto;
     align-items: center;
     gap: 1rem;
     padding: 0.9rem 1rem;
@@ -353,6 +353,7 @@
   }
 
   .action {
+    min-height: 44px;
     padding: 0.7em 1rem;
     border: 0;
     border-right: 1px solid var(--stroke);
@@ -381,5 +382,25 @@
   .action--reject,
   .action--danger {
     border-left-color: var(--tone-disk);
+  }
+  @media (max-width: 760px) {
+    .card-header {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .card-badges {
+      grid-column: 1 / -1;
+      justify-content: flex-start;
+    }
+    .badge,
+    .tag {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .card-meta {
+      grid-template-columns: minmax(0, 7em) minmax(0, 1fr);
+    }
+    .body-scroll {
+      max-height: 55dvh;
+    }
   }
 </style>

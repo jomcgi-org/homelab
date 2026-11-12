@@ -31,6 +31,7 @@
   }
 
   .toggle button {
+    min-height: 44px;
     padding: 0.55em 0.8em;
     border: 0;
     border-bottom: 2px solid transparent;

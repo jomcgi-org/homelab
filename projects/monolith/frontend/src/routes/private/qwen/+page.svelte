@@ -1,5 +1,5 @@
 <script>
-  import "$lib/private/dashboard-theme.css";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
   import { renderMarkdown as render } from "./markdown.js";
   import {
     applyChunk,
@@ -15,18 +15,6 @@
 
   const STORAGE_KEY = "qwen-chat-sessions-v1";
   const STATS_INTERVAL_MS = 5000;
-
-  let dark = $state(
-    typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches,
-  );
-  $effect(() => {
-    const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => (dark = scheme.matches);
-    apply();
-    scheme.addEventListener("change", apply);
-    return () => scheme.removeEventListener("change", apply);
-  });
 
   function loadSessions() {
     try {
@@ -210,7 +198,7 @@
   <title>Qwen | jomcgi</title>
 </svelte:head>
 
-<main class="qwen-page shell {dark ? 'night' : 'day'}">
+<main class="td sheet qwen-page">
   <aside class="sessions" aria-label="Chat sessions">
     <button class="new" onclick={newChat} disabled={streaming}
       >+ New chat</button
@@ -261,6 +249,7 @@
           </select>
         </label>
       </div>
+      <SchemeToggle />
     </header>
 
     <div class="log" bind:this={scroller}>
@@ -473,10 +462,11 @@
   }
 
   .qwen-page {
+    padding: 0;
     display: grid;
     grid-template-columns: 13rem minmax(0, 1fr) 17rem;
     height: 100dvh;
-    background: var(--paper);
+    background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
     font-size: 15px;
@@ -505,13 +495,14 @@
   }
   .sessions li {
     display: flex;
-    border-radius: 8px;
+    min-width: 0;
   }
   .sessions li.current {
-    background: var(--surface);
+    background: var(--band);
   }
   .pick {
     flex: 1;
+    min-width: 0;
     text-align: left;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -527,7 +518,7 @@
     cursor: pointer;
   }
   .drop {
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
 
   button {
@@ -537,19 +528,19 @@
   .new,
   .composer button {
     border: 1px solid var(--line);
-    background: var(--card-bg);
+    background: var(--sheet);
     color: var(--ink);
-    border-radius: 8px;
+    border-radius: 0;
     padding: 0.45rem 0.9rem;
   }
   .composer button[type="submit"] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--card-bg);
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--sheet);
   }
   .stop {
-    border-color: var(--bad);
-    color: var(--bad);
+    border-color: var(--tone-disk);
+    color: var(--tone-disk);
   }
   button:disabled {
     opacity: 0.5;
@@ -570,19 +561,19 @@
     border-bottom: 1px solid var(--line);
   }
   h1 {
-    font-family: var(--font-display);
+    font-family: var(--font-ui);
     font-size: 1.3rem;
     margin: 0;
   }
   .home {
-    color: var(--ink-3);
+    color: var(--ink-2);
     text-decoration: none;
     margin-right: 0.25rem;
   }
   .model {
     font-family: var(--font-code);
     font-size: 0.75rem;
-    color: var(--ink-3);
+    color: var(--ink-2);
     margin-left: 0.5rem;
   }
   .controls {
@@ -593,10 +584,10 @@
   }
   select {
     font: inherit;
-    background: var(--card-bg);
+    background: var(--sheet);
     color: var(--ink);
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 0;
   }
 
   .log {
@@ -609,7 +600,7 @@
   .empty,
   .muted,
   .pending {
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
   .msg {
     max-width: 52rem;
@@ -617,8 +608,8 @@
   }
   .msg.user {
     align-self: flex-end;
-    background: var(--surface);
-    border-radius: 12px;
+    background: var(--band);
+    border-left: 2px solid var(--accent-ink);
     padding: 0.6rem 0.9rem;
     white-space: pre-wrap;
   }
@@ -627,9 +618,8 @@
     width: 100%;
   }
   .md :global(pre) {
-    background: var(--surface);
+    background: var(--band);
     padding: 0.75rem;
-    border-radius: 8px;
     overflow-x: auto;
     font-family: var(--font-code);
     font-size: 0.85rem;
@@ -646,7 +636,7 @@
   .reasoning summary {
     cursor: pointer;
     font-size: 0.8rem;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
   .reasoning pre {
     white-space: pre-wrap;
@@ -657,11 +647,11 @@
   .meta {
     font-family: var(--font-code);
     font-size: 0.72rem;
-    color: var(--ink-3);
+    color: var(--ink-2);
     margin: 0.35rem 0 0;
   }
   .err {
-    color: var(--bad);
+    color: var(--tone-disk);
     font-size: 0.85rem;
   }
 
@@ -677,16 +667,17 @@
     resize: vertical;
     font: inherit;
     padding: 0.6rem 0.75rem;
-    border-radius: 10px;
+    min-width: 0;
+    border-radius: 0;
     border: 1px solid var(--line);
-    background: var(--card-bg);
+    background: var(--sheet);
     color: var(--ink);
   }
 
   .sec-label {
     font-family: var(--font-code);
     font-size: 0.72rem;
-    color: var(--ink-3);
+    color: var(--ink-2);
     margin: 0 0 0.5rem;
   }
   .stats section + section {
@@ -710,19 +701,18 @@
   }
   .gauge-label {
     margin: 0.75rem 0 0.25rem;
-    color: var(--ink-3);
+    color: var(--ink-2);
     font-size: 0.75rem;
   }
   .gauge {
     height: 6px;
-    border-radius: 3px;
-    background: var(--surface);
+    background: var(--band);
     overflow: hidden;
   }
   .gauge span {
     display: block;
     height: 100%;
-    background: var(--accent);
+    background: var(--accent-ink);
   }
   .spark {
     width: 100%;
@@ -730,7 +720,7 @@
   }
   .spark polyline {
     fill: none;
-    stroke: var(--accent);
+    stroke: var(--accent-ink);
     stroke-width: 1.5;
   }
   .recent {
@@ -741,7 +731,7 @@
     font-size: 0.7rem;
   }
   .recent th {
-    color: var(--ink-3);
+    color: var(--ink-2);
     font-weight: normal;
     text-align: right;
   }
@@ -756,16 +746,7 @@
 
   @media (max-width: 1100px) {
     .qwen-page {
-      grid-template-columns: minmax(0, 1fr) 16rem;
-    }
-    .sessions {
-      display: none;
-    }
-  }
-  @media (max-width: 760px) {
-    .qwen-page {
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: minmax(0, 1fr) auto;
+      grid-template-columns: 11rem minmax(0, 1fr);
       height: auto;
       min-height: 100dvh;
     }
@@ -773,8 +754,84 @@
       height: 100dvh;
     }
     .stats {
+      grid-column: 1 / -1;
+      border-top-width: 1px;
+      border-left-width: 0;
+    }
+  }
+  @media (max-width: 760px) {
+    .qwen-page {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto auto auto;
+      height: auto;
+      min-height: 100dvh;
+    }
+    .chat {
+      height: auto;
+      min-height: 70dvh;
+    }
+    .sessions {
+      max-height: 16rem;
+      border-right-width: 0;
+      border-bottom-width: 1px;
+    }
+    .bar {
+      flex-wrap: wrap;
+      padding: 0.75rem;
+    }
+    .bar h1 {
+      flex: 1;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .controls {
+      order: 1;
+      flex-basis: 100%;
+      flex-wrap: wrap;
+    }
+    .log {
+      max-height: 65dvh;
+      min-height: 12rem;
+    }
+    .composer {
+      padding: 0.75rem;
+    }
+    .stats {
       border-left-width: 0;
       border-top-width: 1px;
     }
+  }
+  .msg {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .model {
+    display: inline-block;
+  }
+  button,
+  select,
+  .home,
+  .controls label {
+    min-height: 44px;
+  }
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  .home {
+    display: inline-flex;
+    align-items: center;
+  }
+  .controls label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  button:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--accent-ink);
+    outline-offset: -2px;
   }
 </style>

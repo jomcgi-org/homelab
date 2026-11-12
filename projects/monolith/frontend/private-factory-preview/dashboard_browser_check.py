@@ -289,24 +289,34 @@ def main():
                             )
                             assert child_result["trailHome"] == "/", child_result
                         else:
-                            assert child_result["schemeControls"] == 0
+                            assert child_result["schemeControls"] == 1
                             assert child_result["backLinks"] == 0
-                            # Qwen still follows the OS, opposite to the stored scheme.
+                            # Qwen now shares the dashboard's persisted sheet
+                            # scheme, even when the OS preference is opposite.
                             assert child_result["sheet"] == (
-                                "#181a20" if scheme == "light" else "#ffffff"
+                                "#ffffff" if scheme == "light" else "#181a20"
                             ), child_result
                         if child == "qwen":
-                            assert child_result["bodyOverflow"] == "hidden", (
-                                child_result
-                            )
-                            # Qwen's mobile chat stays viewport-high, while its
-                            # existing stats panel flows below it.
+                            assert child_result["bodyOverflow"] == "auto", child_result
+                            # Phone sessions stay reachable above the chat;
+                            # the document can scroll to the stats below it.
                             child_result["chatHeight"] = page.locator(
                                 ".qwen-page .chat"
                             ).evaluate("(el) => el.getBoundingClientRect().height")
-                            assert child_result["chatHeight"] == (
-                                844 if width == 390 else 900
-                            ), child_result
+                            if phone:
+                                child_result["viewportHeight"] = page.viewport_size[
+                                    "height"
+                                ]
+                                # Keep the 70dvh minimum at either fixture height;
+                                # Chromium rounds layout down to 1/64 CSS pixel.
+                                assert child_result["chatHeight"] + 1 / 64 >= (
+                                    child_result["viewportHeight"] * 0.7
+                                ), child_result
+                                expect(
+                                    page.locator(".qwen-page .sessions")
+                                ).to_be_visible()
+                            else:
+                                assert child_result["chatHeight"] == 900, child_result
                             child_result["transcriptOverflow"] = page.locator(
                                 ".qwen-page .log"
                             ).evaluate("(el) => getComputedStyle(el).overflowY")

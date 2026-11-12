@@ -20,7 +20,7 @@
   });
 </script>
 
-<div class="toast" role="status" aria-live="polite">
+<div class="td toast" role="status" aria-live="polite">
   <span class="toast-label">{label}</span>
   <button type="button" class="toast-undo" onclick={() => onUndo?.()}>
     Undo (u)
@@ -60,6 +60,8 @@
   }
 
   .toast-undo {
+    min-height: 44px;
+    flex-shrink: 0;
     padding: 0.3rem 0.6rem;
     border: 1px solid var(--stroke);
     background: var(--band);
@@ -73,6 +75,8 @@
   }
 
   .toast-dismiss {
+    min-height: 44px;
+    min-width: 44px;
     padding: 0 0.25rem;
     border: 0;
     background: none;
