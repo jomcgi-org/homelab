@@ -680,6 +680,12 @@ def test_real_chart_cli_handler_path(engine, monkeypatch, enabled):
     for entry in container["env"]:
         monkeypatch.setenv(entry["name"], entry.get("value", "fake-secret"))
     storage = Storage()
+    client_endpoints = []
+
+    def shared_client(endpoint):
+        client_endpoints.append(endpoint)
+        return storage
+
     if enabled:
         # Real client metadata proves the pinned SDK accepts the conditional
         # input. The object operations themselves always use the local fake.
@@ -691,9 +697,11 @@ def test_real_chart_cli_handler_path(engine, monkeypatch, enabled):
             aws_access_key_id="fake",
             aws_secret_access_key="fake",
         ).meta
-        monkeypatch.setattr(grid, "_s3_client", lambda: storage)
+        # Exercise grid._s3_client's delegation introduced on main, while
+        # keeping every object operation on the in-memory storage fake.
+        monkeypatch.setattr(grid, "shared_client", shared_client)
     else:
-        monkeypatch.setattr(grid, "_s3_client", fail)
+        monkeypatch.setattr(grid, "shared_client", fail)
     monkeypatch.setattr(db, "get_engine", lambda: engine)
     monkeypatch.setattr(jobs, "top_of_hour", lambda: NOW.replace(minute=0))
 
@@ -706,6 +714,9 @@ def test_real_chart_cli_handler_path(engine, monkeypatch, enabled):
     jobs_main.stars_prune_hours()
     assert count(engine) == 0
     assert bool(storage.objects) == enabled
+    assert client_endpoints == (
+        [os.environ["SEAWEEDFS_S3_ENDPOINT"]] if enabled else []
+    )
     with Session(engine) as session:
         assert (session.get(HourArchiveCheckpoint, 1) is not None) == enabled
 
@@ -828,6 +839,14 @@ def test_default_off_shared_storage_gate_and_invalid_boolean(shared_storage):
             "S3_SECRET_ACCESS_KEY",
             "SEAWEEDFS_S3_ENDPOINT",
             "AWS_REGION",
+            "STARS_GRID_S3_BUCKET",
+            "STARS_GRID_S3_KEY",
+            "STARS_CLIMATOLOGY_S3_KEY",
+            "STARS_SITES_S3_KEY",
+            "STARS_CONNECTOR_SITES_S3_KEY",
+            "STARS_MAP_S3_KEY",
+            "STARS_HISTORY_MAP_S3_KEY",
+            "HIKES_WALKS_S3_KEY",
         }
     )
     bad = render("--set-string", "stars.archiveBeforePrune.enabled=false")

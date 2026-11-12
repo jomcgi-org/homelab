@@ -2144,7 +2144,6 @@ deletion and safe failure only after separate authorization; verify readable
 archives and timestamp meanings before issue closure. The delivery PR remains
 draft, unmerged and outside the merge queue with auto-merge disabled.
 
----
 ## 9. Observability and health
 
 `/healthz` is process liveness. `/api/health` executes a database query and all
