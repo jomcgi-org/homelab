@@ -2773,6 +2773,172 @@ def test_released_hold_refusal_no_longer_keeps_the_delivery_out_of_arming(
     assert len(audits(db, "merge_arm_refused", "t-held")) == 1
 
 
+@pytest.mark.parametrize("terminal_before_hold", [False, True])
+def test_real_hold_release_preserves_terminal_refusal_and_mcp_provenance(
+    db, monkeypatch, terminal_before_hold
+):
+    from factory.orchestration import mcp
+
+    delivered(db, "t-held", 11, 3)
+    pulls = {3: pull(3)}
+    calls = github(monkeypatch, pulls=pulls)
+    arm, arm_calls = landing._arm, []
+
+    def counted_arm(repo, item):
+        arm_calls.append(item["task_id"])
+        return arm(repo, item)
+
+    monkeypatch.setattr(landing, "_arm", counted_arm)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: False)
+    if terminal_before_hold:
+        [item] = landing._deliveries(POLICY)
+        landing._refuse(item, "landing_recovery_exhausted")
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, "t-held"
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    # Exercise the real hold enforcement and once-per-epoch audit writer.
+    landing.landing_tick(POLICY)
+    landing.landing_tick(POLICY)
+    assert arm_calls == []
+    [held_refusal] = audits(db, "merge_arm_refused", "t-held")
+    assert held_refusal["reason"] == (
+        "landing_recovery_exhausted" if terminal_before_hold else "receipt_landing_held"
+    )
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-held")
+        assert controls.landing_held(row)
+        row.direction_json = "{}"
+    if not terminal_before_hold:
+        # A hold-only audit must leave room for the first terminal refusal.
+        pulls[3]["draft"] = True
+    for _ in range(3):
+        landing.landing_tick(POLICY)
+    assert arm_calls == ([] if terminal_before_hold else ["t-held"])
+    assert not audits(db, "merge_armed")
+    assert calls["graphql"] == calls["write"] == []
+    expected = (
+        "landing_recovery_exhausted"
+        if terminal_before_hold
+        else "pull request is not open and ready"
+    )
+    with Session(db) as session:
+        rows = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "merge_arm_refused")
+            .order_by(FactoryAudit.id)
+        ).all()
+        assert len(rows) == (1 if terminal_before_hold else 2)
+        assert json.loads(rows[0].detail_json) == held_refusal
+        [item] = landing._deliveries(POLICY, include_refused=True, session=session)
+        assert item["refusal"]["reason"] == expected
+        assert mcp._landing_refusal(session, "t-held") == {
+            "source": "recorded_landing_audit",
+            "audit_id": rows[-1].id,
+            "observed_at": mcp.iso_or_str(rows[-1].created_at),
+            "pr_number": 3,
+            "reason": expected,
+        }
+
+
+@pytest.mark.parametrize(
+    "site,seam,nth,setup",
+    [
+        ("_enforce_landing_hold", "github_get", 1, "held"),
+        ("_fence_ungranted_queue_entry", "github_get", 1, "ready"),
+        ("_fence_ungranted_queue_entry", "github_get", 2, "ready"),
+        ("_enforce_owner_pr_hold", "github_get", 1, "ready"),
+        ("_enforce_owner_pr_hold", "github_list", 1, "ready"),
+        ("_handoff_human_delivery", "github_get", 1, "ready"),
+        ("_handoff_human_delivery", "github_get", 2, "human"),
+        ("_recover_refused", "github_get", 1, "recovery"),
+        ("_recover_refused", "github_get", 1, "outside-page"),
+    ],
+)
+@pytest.mark.parametrize("entry", ["auto-merge", "queue"])
+def test_deferred_adopted_holder_fences_arming_after_early_filters(
+    db, monkeypatch, site, seam, nth, setup, entry
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    owner_delivery(db)
+    delivered(db, "t-later", 12, 4)
+    delivered(db, "t-merged", 13, 5)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        direction = json.loads(row.direction_json)
+        direction["delivery_branch"] = "feature/adopted"
+        if setup == "held":
+            direction["landing_hold"] = {"actor": "operator"}
+        row.direction_json = json.dumps(direction)
+        if setup == "outside-page":
+            # Recovery scans a broader batch than the rotating observation page.
+            landing._delivery_cursors[POLICY["repo"]] = row.id
+    landing._append("t-1", "merge_armed", pr_number=3, head_sha=HEAD)
+    if setup in {"recovery", "outside-page"}:
+        [item] = [i for i in landing._deliveries(POLICY) if i["task_id"] == "t-1"]
+        landing._refuse(item, "merge_conflict")
+    holder = pull(3, armed=entry == "auto-merge")
+    holder["head"]["ref"] = "feature/adopted"
+    holder["user"] = {"id": 42}
+    if entry == "queue":
+        holder["queue_entry"] = {"id": "MQ_3"}
+    pulls = {
+        3: holder,
+        4: {**pull(4, task_id="t-later"), "body": "Closes #12"},
+        5: {**pull(5, task_id="t-merged", merged=True), "body": "Closes #13"},
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: [] if "/comments?" in path else listing(repo, path),
+    )
+    monkeypatch.setattr(review_publisher, "enabled", lambda: False)
+    # The ordinary GitHub fallback intentionally does not discover adopted refs.
+    assert landing._armed_on_github(POLICY["repo"]) is None
+    original_phase, original_read = getattr(landing, site), getattr(landing, seam)
+    active, reads, failures = [], [], []
+
+    def phase(*args, **kwargs):
+        active.append(None if site == "_recover_refused" else args[1]["task_id"])
+        try:
+            return original_phase(*args, **kwargs)
+        finally:
+            active.pop()
+
+    def read(repo, path):
+        target = path.split("?", 1)[0] in {
+            "pulls/3",
+            "issues/11",
+            "issues/3/comments",
+        }
+        if site == "_recover_refused":
+            target = path == "pulls/3"
+        if active and (active[-1] == "t-1" or site == "_recover_refused") and target:
+            reads.append(path)
+            if len(reads) == nth:
+                failures.append(path)
+                raise GitHubReadDeferred("holder cooldown expires before later reads")
+            if setup == "human" and path == "issues/11":
+                return {"state": "open", "labels": [{"name": "human"}]}
+        return original_read(repo, path)
+
+    monkeypatch.setattr(landing, site, phase)
+    monkeypatch.setattr(landing, seam, read)
+    landing.landing_tick(POLICY)
+    assert len(failures) == 1
+    assert len(reads) == nth
+    assert audits(db, "issue_closed", "t-merged"), "later reads must succeed"
+    assert not audits(db, "merge_armed", "t-later")
+    assert calls["graphql"] == []
+    assert bool(pulls[3]["auto_merge"]) is (entry == "auto-merge")
+    assert bool(pulls[3].get("queue_entry")) is (entry == "queue")
+    assert audits(db, "merge_deferred", "t-later")
+    assert landing._deferred_items.get() is None
+
+
 def test_deferred_github_read_skips_one_item_without_aborting_the_tick(db, monkeypatch):
     from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
@@ -3186,7 +3352,7 @@ def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
         "_recover_delivery",
         lambda item, *_a, **_kw: recoveries.append(item["task_id"]),
     )
-    token = landing._deferred_items.set(set())
+    token = landing._deferred_items.set({})
     try:
         landing._recover_refused(POLICY)
     finally:
@@ -3201,7 +3367,7 @@ def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
 )
 @pytest.mark.parametrize("held", [False, True])
 @pytest.mark.parametrize("barrier", [None, "landing_recovery_requested", "merged"])
-def test_effective_refusal_keeps_terminal_history_and_reset_barriers(
+def test_legacy_refusal_history_preserves_terminal_and_reset_barriers(
     db, monkeypatch, terminal, held, barrier
 ):
     delivered(db, "t-1", 11, 3)
@@ -3209,7 +3375,7 @@ def test_effective_refusal_keeps_terminal_history_and_reset_barriers(
         landing._record("t-1", "merge_arm_refused", reason=terminal, pr_number=3)
     if barrier:
         landing._record("t-1", barrier, pr_number=3)
-    # Preserve multiple append-only hold observations, not just the newest one.
+    # Defensive coverage for imported histories the current writer cannot emit.
     with Session(db) as session, session.begin():
         session.add_all(
             [
