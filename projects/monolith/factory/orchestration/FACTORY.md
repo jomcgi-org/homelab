@@ -552,6 +552,73 @@ Automatic safety pauses keep their active receipt and reservations. The pause an
 
 ## Controls and uncertainty
 
+### Inspect and settle one decision request
+
+Repository delivery for #7729 is staged behind explicit standing-operator
+invocation. It adds no automatic recovery or retries. `factory_escalations`
+includes `unresolved_requests` on cards with pending predecessors: at most ten original actor/key
+identities with receipt, decision, action, option, first/latest timestamps,
+latest state, audit ID, result digest and native inspection/settlement paths.
+`total` and `truncated` identify overflow. Unknown outcomes remain unknown.
+
+Both native routes require a standing human in `operators`, independently of
+the browser's `X-Auth-Email` decision permission:
+
+- `GET /api/swarm/factory/decision-requests/{receipt_id}/{audit_id}` returns
+  the original request (including its actual note), latest result, event count
+  and observation time. The audit ID must belong to that receipt. Use the latest
+  event's `audit_id` and `sha256` for settlement.
+- `POST /api/swarm/factory/decision-requests/{receipt_id}/settle` takes `actor`
+  and `request_key` from the original request, `decision_id`, `expected_audit_id`,
+  `expected_sha256`, a new actor-scoped `settlement_key`, and `evidence`.
+  Evidence contains `observed_at`, `cessation_confirmed`, `cessation`, `effects`
+  and `conclusion` (`completed`, `no_effects` or `unknown`). Unknown fields refuse.
+
+Evidence is the standing operator's attributable attestation, retained verbatim
+in the settlement audit. The server verifies durable identities and local
+completion records; it does not independently fetch the cited external sources.
+The operator must name exact process/shutdown records in `cessation` and exact,
+complete issue/comment/label/child audit reads in `effects`, observed within five
+minutes of apply. Age, a missing response or an absent comment alone proves
+nothing. Unavailable, incomplete or contradictory evidence requires `unknown`.
+Before reconciling a pre-upgrade request, prove that every old replica capable
+of finishing it has ceased. A rolling deployment alone is insufficient.
+
+The execution owner takes a receipt-scoped PostgreSQL advisory transaction lock
+across effects and durable completion. Settlement takes that same lock before
+the control-row lock and revalidates the original actor/key, latest event ID,
+digest, decision and generation. A live executor refuses settlement immediately;
+another receipt retains its own lock. SQLite tests use file-backed `flock`.
+
+`completed` only adopts the original durable resolution with matching actor,
+option, decision and note. No GitHub writes are repeated. External effects without
+a matching local resolution remain unknown and need further reconciliation.
+`no_effects` requires positive cessation and complete no-effect evidence. It
+records `abandoned`, clears only that request's decision claim, and leaves the
+brief untouched. Active tasks, pause/cancellation, landing/recovery/handoff holds
+and recorded child effects refuse abandonment. A later answer needs a new,
+explicitly authorized request key and all ordinary decision/admission checks.
+`unknown` appends an observation while preserving the request and claim fences.
+It never authorizes another effectful attempt.
+
+Exact settlement-key replay returns its durable acknowledgement; changed
+arguments refuse. Original request keys replay the settled result. Fresh keys
+cannot reinterpret an unknown outcome, and stale settlement evidence refuses.
+Late durable resolution cannot overwrite abandonment. No audit history is
+deleted, and settlement never resumes tasks, changes holds or applies a decision.
+
+Operational acceptance remains on #7729 with the authorized owner:
+
+- [ ] Verify the delivered monolith revision or a later revision containing it.
+- [ ] Read receipt 943's exact predecessor identity, state, timestamps and
+  supported inspection/settlement path through escalations or request detail.
+- [ ] Record evidence-backed settlement of that predecessor, retaining its
+  original history. An unresolved or unproven result fails this check.
+- [ ] Read receipt 943's decision/audit and confirm `authorize-ships-bucket`
+  completed with the actual operator note recorded on November 12, 2026, and
+  the escalation resolved. This worker neither retrieves nor invents that note
+  and performs none of the live recovery or external-account work.
+
 `pause_admissions` lets admitted work finish, `pause_task` stops new nodes for that task, and `stop` durably fences factory admission and descendants. MCP and `POST /api/swarm/factory/control` use `request_control` with a stable `request_key` and the exact control version. `cancel_receipt` settles one queued receipt; `cancel_task` takes a `task_id` and `cancellation_reason` and refuses landing or settled receipts. Both are MCP-only. An operator pause never expires; a reconciler-written pause is cancellable after two hours only with all starts terminal. Only exact positive stop evidence for every owned workflow produces `cessation_confirmed`.
 
 The deadline-release implementation stays hard-staged off, and agent workloads have a twelve-hour runtime backstop. An uncertain attempt keeps its capacity until exact control-plane evidence proves its guest ceased. Settled cessation proof extends to the at-most-once 502 and the never-invoked guest. Attempt stops lock factory control, capacity pool, then session; Ember owns physical cessation.

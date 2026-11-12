@@ -712,7 +712,14 @@ def _decision_page(db, include_resolved: bool, offset: int, limit: int) -> dict:
                 else None
             ),
         )
-        items.append(controls.escalation_view(receipt))
+        card = controls.escalation_view(receipt)
+        if card is not None:
+            from factory.orchestration.decision_recovery import unresolved
+
+            requests = unresolved(db, row.id)
+            if requests["total"]:
+                card["unresolved_requests"] = requests
+        items.append(card)
     return {
         "ok": True,
         "items": items,

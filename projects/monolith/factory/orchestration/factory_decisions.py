@@ -724,6 +724,10 @@ def _resolve(
     with context as (db, _control):
         row = _receipt(db, receipt_id)
         escalation = escalation_of(row) or {}
+        if request is not None:
+            prior = _request_records(db).get((actor, request["request_key"]))
+            if prior and prior["result"]["state"] == "abandoned":
+                raise DecisionError(409, "request was settled; late completion refused")
         if _fields(row)["decision_id"] != expected_decision_id:
             raise DecisionError(
                 409,
@@ -861,6 +865,31 @@ def resume_escalated(task_id: str, actor: str) -> dict:
 
 
 def apply_decision(
+    receipt_id: int,
+    option_key: str,
+    actor: str,
+    note: str | None = None,
+    *,
+    expected_decision_id: str | None = None,
+) -> dict:
+    from factory.orchestration.decision_recovery import execution_lock
+
+    with execution_lock(receipt_id) as acquired:
+        if not acquired:
+            raise DecisionError(
+                409,
+                "a durable decision request has an unresolved outcome; execution is live",
+            )
+        return _apply_decision(
+            receipt_id,
+            option_key,
+            actor,
+            note,
+            expected_decision_id=expected_decision_id,
+        )
+
+
+def _apply_decision(
     receipt_id: int,
     option_key: str,
     actor: str,
@@ -1288,7 +1317,11 @@ def _unsettled_legacy_claim(db, receipt_id: int, identity: str) -> bool:
     held = set()
     rows = db.exec(
         select(FactoryAudit)
-        .where(FactoryAudit.action.in_(("decision_claimed", "decision_applied")))
+        .where(
+            FactoryAudit.action.in_(
+                ("decision_claimed", "decision_applied", "decision_request_settled")
+            )
+        )
         .order_by(FactoryAudit.id)
     ).all()
     for row in rows:
@@ -1300,6 +1333,9 @@ def _unsettled_legacy_claim(db, receipt_id: int, identity: str) -> bool:
         key = detail.get("option_key")
         if row.action == "decision_claimed":
             held.add(key)
+        elif row.action == "decision_request_settled":
+            if detail.get("released_claim"):
+                held.discard(detail["option_key"])
         else:
             held.discard(key)
     return bool(held)
@@ -1315,12 +1351,9 @@ def request_decision(
     note: str | None = None,
     action: str = "decide",
 ) -> dict:
-    """Apply an exact decision once, with an append-only durable request receipt.
+    """Fence execution and explicit settlement with the same receipt lock."""
+    from factory.orchestration.decision_recovery import execution_lock
 
-    An accepted request whose process disappears is never automatically
-    re-executed. GitHub issue creation has no transactional idempotency key;
-    uncertainty must remain visible instead of duplicating external effects.
-    """
     if not actor or not request_key.strip() or len(request_key) > 256:
         raise ValueError("actor and a bounded request key are required")
     if not decision_id or not option_key or len(note or "") > MAX_NOTE:
@@ -1329,6 +1362,65 @@ def request_decision(
         action == "chat" and not (note or "").strip()
     ):
         raise ValueError("chat requires a non-empty note")
+    with execution_lock(receipt_id) as acquired:
+        if not acquired:
+            request = dict(
+                receipt_id=receipt_id,
+                decision_id=decision_id,
+                option_key=option_key,
+                request_key=request_key,
+                note=note,
+                action=action,
+            )
+            with _locked_session() as (db, _control):
+                prior = _request_records(db).get((actor, request_key))
+                if prior:
+                    if prior["request"] == request:
+                        return prior["result"]
+                    return {
+                        "ok": False,
+                        "state": "refused",
+                        "reason": "conflicting_decision_request",
+                    }
+                result = dict(
+                    ok=False,
+                    state="refused",
+                    reason="decision execution is live",
+                    status=409,
+                    receipt_id=receipt_id,
+                    decision_id=decision_id,
+                    request_key=request_key,
+                    acknowledged_at=iso(_now()),
+                )
+                _request_event(db, actor, request, result)
+                return result
+        return _request_decision(
+            receipt_id,
+            decision_id,
+            option_key,
+            actor,
+            request_key=request_key,
+            note=note,
+            action=action,
+        )
+
+
+def _request_decision(
+    receipt_id: int,
+    decision_id: str,
+    option_key: str,
+    actor: str,
+    *,
+    request_key: str,
+    note: str | None = None,
+    action: str = "decide",
+) -> dict:
+    """Apply an exact decision once, with an append-only durable request receipt.
+
+    An accepted request whose process disappears is never automatically
+    re-executed. GitHub issue creation has no transactional idempotency key;
+    uncertainty must remain visible instead of duplicating external effects.
+    """
     request = dict(
         receipt_id=receipt_id,
         decision_id=decision_id,
@@ -1449,7 +1541,7 @@ def request_decision(
         }
         with _locked_session() as (db, _control):
             prior = _request_records(db).get((actor, request_key))
-            if prior and prior["result"]["state"] == "completed":
+            if prior and prior["result"]["state"] in ("completed", "abandoned"):
                 return prior["result"]
             _request_event(db, actor, request, result)
         return result
@@ -1496,6 +1588,9 @@ def _apply_chat_request(fields: dict, request: dict, actor: str) -> dict:
         )
     with _locked_session() as (db, _control):
         row = _receipt(db, request["receipt_id"])
+        prior = _request_records(db).get((actor, request["request_key"]))
+        if prior and prior["result"]["state"] == "abandoned":
+            raise DecisionError(409, "request was settled; late completion refused")
         if _fields(row)["decision_id"] != request["decision_id"]:
             raise DecisionError(409, "the brief changed after the question was posted")
         blocker = _requeue_refine(db, row, note, actor, (actor, request["request_key"]))

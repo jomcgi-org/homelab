@@ -90,6 +90,13 @@ def test_factory_controls_require_verified_standing_operator(authority, kind, gr
     assert client.get("/api/swarm/factory/improvements/context").status_code == 403
     assert client.post("/api/swarm/factory/improvements", json={}).status_code == 403
     assert client.post("/api/swarm/factory/synthetics", json={}).status_code == 403
+    assert client.get("/api/swarm/factory/decision-requests/1/1").status_code == 403
+    assert (
+        client.post(
+            "/api/swarm/factory/decision-requests/1/settle", json={}
+        ).status_code
+        == 403
+    )
     response = client.post(
         "/api/swarm/factory/control",
         json={"action": "enable"},

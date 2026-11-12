@@ -11,8 +11,33 @@ from goosecracker.api import REPO_CATALOG
 from factory.orchestration.recovery_delegation import (
     Request as RecoveryAuthorizationRequest,
 )
+from factory.orchestration.decision_recovery import Settlement
 
 router = APIRouter(prefix="/api/swarm/factory", tags=["factory"])
+
+
+@router.get("/decision-requests/{receipt_id}/{audit_id}")
+def factory_decision_request_detail(
+    receipt_id: int, audit_id: int, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.decision_recovery import inspect_request
+
+    try:
+        return inspect_request(receipt_id, audit_id, principal)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/decision-requests/{receipt_id}/settle")
+def factory_settle_decision_request(
+    receipt_id: int, body: Settlement, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.decision_recovery import settle
+
+    try:
+        return settle(receipt_id, body, principal)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/recovery-authorizations")

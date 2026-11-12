@@ -2709,7 +2709,12 @@ def _live_claim(
         select(FactoryAudit)
         .where(
             FactoryAudit.action.in_(
-                ("decision_claimed", "decision_failed", "decision_applied")
+                (
+                    "decision_claimed",
+                    "decision_failed",
+                    "decision_applied",
+                    "decision_request_settled",
+                )
             )
         )
         .order_by(FactoryAudit.id)
@@ -2723,6 +2728,9 @@ def _live_claim(
         key = detail.get("option_key")
         if row.action == "decision_claimed":
             held.add(key)
+        elif row.action == "decision_request_settled":
+            if detail.get("released_claim"):
+                held.discard(detail["option_key"])
         else:
             held.discard(key)
     return next((key for key in sorted(held) if key != option_key), None)

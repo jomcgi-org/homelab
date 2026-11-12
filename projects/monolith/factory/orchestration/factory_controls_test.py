@@ -5976,7 +5976,11 @@ def test_operator_capacity_and_control_are_fresh_off_page(operator_population):
 def test_operator_old_cancelled_decision_survives_pending_request(
     operator_population, request_state
 ):
-    from factory.orchestration import factory_decisions as decisions, mcp
+    from factory.orchestration import (
+        decision_recovery,
+        factory_decisions as decisions,
+        mcp,
+    )
 
     db = operator_population
     with Session(db) as session, session.begin():
@@ -5990,8 +5994,14 @@ def test_operator_old_cancelled_decision_survives_pending_request(
             {"state": request_state},
         )
     with Session(db) as session:
+        expected["unresolved_requests"] = decision_recovery.unresolved(session, 17)
         result = mcp._escalations_payload(False, session=session)
         status = mcp._status_payload(True, session=session)
+    predecessor = expected["unresolved_requests"]["items"][0]
+    assert predecessor["actor"] == "operator"
+    assert predecessor["request_key"] == "old-pending"
+    assert predecessor["state"] == request_state
+    assert predecessor["decision_id"] is None  # Missing legacy identity stays unknown.
     assert expected in result["escalations"]
     assert expected["receipt_id"] not in {row["receipt_id"] for row in status["recent"]}
 
@@ -6012,7 +6022,12 @@ def test_operator_old_cancelled_decision_survives_pending_request(
     ],
 )
 def test_operator_decisions_reuse_pause_ownership(db, policy, monkeypatch, variant):
-    from factory.orchestration import factory_decisions as decisions, factory_pause, mcp
+    from factory.orchestration import (
+        decision_recovery,
+        factory_decisions as decisions,
+        factory_pause,
+        mcp,
+    )
 
     task_id = admitted(policy)
     assert factory_pause.pause(
@@ -6061,6 +6076,11 @@ def test_operator_decisions_reuse_pause_ownership(db, policy, monkeypatch, varia
         row.escalation_json = json.dumps(document)
     # Compare the complete decision contract before forbidding expensive paths.
     expected = controls.escalations(controls.status()["receipts"])
+    with Session(db) as session:
+        for card in expected:
+            pending = decision_recovery.unresolved(session, card["receipt_id"])
+            if pending["total"]:
+                card["unresolved_requests"] = pending
 
     def forbidden(*args, **kwargs):
         pytest.fail("escalation reader expanded a snapshot, graph or full status")

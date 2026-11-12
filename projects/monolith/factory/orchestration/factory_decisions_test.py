@@ -819,6 +819,395 @@ def durable_answer(
     )
 
 
+def recovery_operator(**changes):
+    from auth.api import Authority, Principal, PrincipalKind
+
+    fields = dict(
+        subject="reconciler",
+        actor=(),
+        scope=(),
+        groups=("operators",),
+        email=None,
+        authority=Authority.STANDING,
+        kind=PrincipalKind.HUMAN,
+    )
+    return Principal(**{**fields, **changes})
+
+
+def abandoned_request(db, github, monkeypatch):
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+
+    class Lost(BaseException):
+        pass
+
+    with monkeypatch.context() as patch:
+
+        def lose(*_args):
+            raise Lost()
+
+        patch.setattr(decisions, "_apply", lose)
+        with pytest.raises(Lost):
+            durable_answer(receipt_id, identity)
+    # Base failure: a new explicitly authorized answer stays refused forever.
+    assert (
+        durable_answer(receipt_id, identity, key="before-settlement")["state"]
+        == "refused"
+    )
+    assert not github.writes
+    return receipt_id, identity
+
+
+def recovery_body(db, receipt_id, *, conclusion="no_effects", key="settle-1"):
+    from factory.orchestration.decision_recovery import Settlement, unresolved
+
+    with Session(db) as session:
+        view = unresolved(session, receipt_id)["items"][0]
+    return Settlement(
+        actor=view["actor"],
+        request_key=view["request_key"],
+        decision_id=view["decision_id"],
+        expected_audit_id=view["audit_id"],
+        expected_sha256=view["sha256"],
+        settlement_key=key,
+        evidence=dict(
+            observed_at=controls._now(),
+            cessation_confirmed=True,
+            cessation="Exact process shutdown audit; all old replicas stopped.",
+            effects="Fresh complete issue, comment, label and child audit reads.",
+            conclusion=conclusion,
+        ),
+    )
+
+
+def test_recovery_no_effects_allows_only_a_new_explicit_answer(db, github, monkeypatch):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id)
+    inspection = recovery.inspect_request(
+        receipt_id, body.expected_audit_id, recovery_operator()
+    )
+    assert inspection["original"]["request"]["receipt_id"] == receipt_id
+    assert inspection["latest"]["result"]["state"] == "accepted"
+    result = recovery.settle(receipt_id, body, recovery_operator())
+    assert result["state"] == "abandoned"
+    assert not github.writes
+    assert recovery.settle(receipt_id, body, recovery_operator()) == result
+    assert durable_answer(receipt_id, identity) == result
+    assert (
+        durable_answer(receipt_id, identity, option="hold")["reason"]
+        == "conflicting_decision_request"
+    )
+    assert (
+        durable_answer(receipt_id, identity, key="explicit-later")["state"]
+        == "completed"
+    )
+    assert len(github.comments) == 1
+    # Same settlement replay is the acknowledgement, even after later state changes.
+    assert recovery.settle(receipt_id, body, recovery_operator()) == result
+
+
+def test_recovery_unknown_never_unlocks_or_replays(db, github, monkeypatch):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id, conclusion="unknown")
+    body.evidence.cessation_confirmed = False
+    result = recovery.settle(receipt_id, body, recovery_operator())
+    assert result["state"] == "outcome_unknown"
+    assert durable_answer(receipt_id, identity) == result
+    assert (
+        durable_answer(receipt_id, identity, key="still-fenced")["state"] == "refused"
+    )
+    with Session(db) as session:
+        assert decisions._unsettled_legacy_claim(session, receipt_id, identity)
+    assert not github.writes
+
+
+def test_recovery_projects_exact_predecessor_and_preserves_other_receipts(
+    db, github, monkeypatch
+):
+    from factory.orchestration import decision_recovery as recovery, mcp
+
+    receipt_id, _identity = abandoned_request(db, github, monkeypatch)
+    other = receive_issue(
+        REPO,
+        ISSUE + 1,
+        "Unrelated",
+        "body",
+        f"https://github.com/{REPO}/issues/{ISSUE + 1}",
+        "intake",
+    )
+    with Session(db) as session:
+        before = session.get(FactoryReceipt, other["receipt"]["id"]).model_dump()
+    cards = mcp._escalations_payload(True)["escalations"]
+    card = next(card for card in cards if card["receipt_id"] == receipt_id)
+    view = card["unresolved_requests"]
+    assert view["total"] == 1 and not view["truncated"]
+    item = view["items"][0]
+    assert item["actor"] == "operator" and item["request_key"] == "request-1"
+    assert item["state"] == "accepted" and item["created_at"] and item["updated_at"]
+    assert str(item["audit_id"]) in item["inspection_path"]
+    recovery.settle(receipt_id, recovery_body(db, receipt_id), recovery_operator())
+    with Session(db) as session:
+        assert (
+            session.get(FactoryReceipt, other["receipt"]["id"]).model_dump() == before
+        )
+        assert not recovery.unresolved(session, other["receipt"]["id"])["items"]
+
+
+def test_recovery_partial_post_write_failure_remains_unknown(db, github, monkeypatch):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    write = github.write
+
+    def timeout(repo, suffix, payload, **kwargs):
+        if kwargs.get("method") == "PATCH":
+            raise httpx.ReadTimeout("response lost after comment write")
+        return write(repo, suffix, payload, **kwargs)
+
+    monkeypatch.setattr(landing, "github_write", timeout)
+    assert durable_answer(receipt_id, identity)["state"] == "outcome_unknown"
+    assert len(github.comments) == 1
+    recovery.settle(
+        receipt_id,
+        recovery_body(db, receipt_id, conclusion="unknown"),
+        recovery_operator(),
+    )
+    assert durable_answer(receipt_id, identity, key="new-answer")["state"] == "refused"
+    assert len(github.comments) == 1
+
+
+def test_recovery_adopts_exact_durable_completion_without_writes(db, github):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    completed = durable_answer(receipt_id, identity)
+    writes = list(github.writes)
+    # Historical result-loss shape: local resolution is durable, request receipt uncertain.
+    with controls._locked_session() as (session, _control):
+        request = controls._request_records(session)[("operator", "request-1")][
+            "request"
+        ]
+        decisions._request_event(
+            session, "operator", request, {"state": "outcome_unknown"}
+        )
+    result = recovery.settle(
+        receipt_id,
+        recovery_body(db, receipt_id, conclusion="completed"),
+        recovery_operator(),
+    )
+    assert result["state"] == "completed"
+    assert result["resolution"] == completed["resolution"]
+    assert not result["applied"]
+    assert github.writes == writes
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "actor",
+        "receipt",
+        "audit",
+        "hash",
+        "decision",
+        "generation",
+        "hold",
+        "landing_hold",
+        "cancellation",
+        "nonrenewable",
+        "stale",
+        "future",
+        "unavailable",
+        "cessation",
+        "completion",
+        "partial",
+    ],
+)
+def test_recovery_refuses_mismatched_or_unproven_evidence(
+    db, github, monkeypatch, change
+):
+    from datetime import timedelta
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id)
+    target = receipt_id
+    if change == "actor":
+        body.actor = "some-other-operator"
+    elif change == "receipt":
+        target += 1
+    elif change == "audit":
+        body.expected_audit_id += 1
+    elif change == "hash":
+        body.expected_sha256 = "0" * 64
+    elif change == "decision":
+        body.decision_id = "decision:" + "0" * 64
+    elif change == "stale":
+        body.evidence.observed_at = controls._now() - timedelta(minutes=6)
+    elif change == "future":
+        body.evidence.observed_at = controls._now() + timedelta(minutes=1)
+    elif change == "unavailable":
+        body.evidence.effects = " "
+    elif change == "cessation":
+        body.evidence.cessation_confirmed = False
+    elif change == "completion":
+        body.evidence.conclusion = "completed"
+    else:
+        with controls._locked_session() as (session, control):
+            row = session.get(FactoryReceipt, receipt_id)
+            if change == "generation":
+                control.policy_json = json.dumps({"generation": 2})
+            elif change == "hold":
+                row.task_paused = True
+            elif change == "landing_hold":
+                row.direction_json = json.dumps({"landing_hold": {"actor": "operator"}})
+            elif change == "nonrenewable":
+                row.direction_json = json.dumps({"nonrenewable_recovery": {}})
+            elif change == "cancellation":
+                row.cancellation_requested = True
+            elif change == "partial":
+                controls._audit(
+                    session,
+                    "operator",
+                    "decision_child_created",
+                    receipt_id=receipt_id,
+                    decision_id=identity,
+                    child_number=99,
+                )
+    with pytest.raises(ValueError):
+        recovery.settle(target, body, recovery_operator())
+    assert (
+        durable_answer(receipt_id, identity, key="after-refusal")["state"] == "refused"
+    )
+    assert not github.writes
+
+
+def test_recovery_conflicting_settlement_keys_and_stale_result(db, github, monkeypatch):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, _identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id, conclusion="unknown")
+    recovery.settle(receipt_id, body, recovery_operator())
+    with pytest.raises(ValueError, match="stale request"):
+        recovery.settle(
+            receipt_id,
+            body.model_copy(update={"settlement_key": "different"}),
+            recovery_operator(),
+        )
+    body.evidence.conclusion = "no_effects"
+    with pytest.raises(ValueError, match="conflicting settlement key"):
+        recovery.settle(receipt_id, body, recovery_operator())
+
+
+def test_recovery_live_execution_race_is_targeted(db, github, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id = escalate(db, "close")
+    identity = current_decision_id()
+    started, release = Event(), Event()
+    apply = decisions._apply
+
+    def blocked(*args):
+        started.set()
+        assert release.wait(5)
+        return apply(*args)
+
+    monkeypatch.setattr(decisions, "_apply", blocked)
+    with ThreadPoolExecutor() as pool:
+        running = pool.submit(durable_answer, receipt_id, identity)
+        assert started.wait(5)
+        try:
+            body = recovery_body(db, receipt_id)
+            assert durable_answer(receipt_id, identity)["state"] == "accepted"
+            with pytest.raises(ValueError, match="execution is live"):
+                recovery.settle(receipt_id, body, recovery_operator())
+            with recovery.execution_lock(receipt_id + 1) as acquired:
+                assert acquired
+        finally:
+            release.set()
+        assert running.result()["state"] == "completed"
+    with pytest.raises(ValueError, match="stale request"):
+        recovery.settle(receipt_id, body, recovery_operator())
+
+
+def test_recovery_late_resolution_cannot_overwrite_abandonment(db, github, monkeypatch):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id)
+    result = recovery.settle(receipt_id, body, recovery_operator())
+    with Session(db) as session:
+        request = controls._request_records(session)[("operator", "request-1")][
+            "request"
+        ]
+    with pytest.raises(decisions.DecisionError, match="late completion"):
+        decisions._resolve(
+            receipt_id,
+            options("close")[0],
+            "operator",
+            None,
+            {},
+            expected_decision_id=identity,
+            request=request,
+        )
+    assert durable_answer(receipt_id, identity) == result
+    assert not github.writes
+
+
+@pytest.mark.parametrize("settled", [False, True])
+def test_recovery_checks_retained_task_quiescence(db, github, monkeypatch, settled):
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, _identity = abandoned_request(db, github, monkeypatch)
+    with controls._locked_session() as (session, _control):
+        session.add(
+            SwarmTask(
+                id="retained",
+                task_text="old refine",
+                conductor_model="opus",
+                settled_at=controls._now() if settled else None,
+            )
+        )
+        session.flush()
+        session.get(FactoryReceipt, receipt_id).task_id = "retained"
+    body = recovery_body(db, receipt_id)
+    if settled:
+        assert (
+            recovery.settle(receipt_id, body, recovery_operator())["state"]
+            == "abandoned"
+        )
+    else:
+        with pytest.raises(ValueError, match="active task"):
+            recovery.settle(receipt_id, body, recovery_operator())
+    assert not github.writes
+
+
+@pytest.mark.parametrize("kind", ["delegated", "workload", "no_group"])
+def test_recovery_requires_standing_operator_in_core(db, github, monkeypatch, kind):
+    from auth.api import Authority, PrincipalKind
+    from factory.orchestration import decision_recovery as recovery
+
+    receipt_id, _identity = abandoned_request(db, github, monkeypatch)
+    body = recovery_body(db, receipt_id)
+    changes = {
+        "delegated": {"authority": Authority.DELEGATED},
+        "workload": {"kind": PrincipalKind.WORKLOAD},
+        "no_group": {"groups": ()},
+    }[kind]
+    principal = recovery_operator(**changes)
+    with pytest.raises(ValueError, match="standing operator"):
+        recovery.inspect_request(receipt_id, body.expected_audit_id, principal)
+    with pytest.raises(ValueError, match="standing operator"):
+        recovery.settle(receipt_id, body, principal)
+
+
 def durable_chat(db, receipt_id, note, actor="joe@example.test", *, key="chat-1"):
     with Session(db) as session:
         identity = decisions._fields(session.get(FactoryReceipt, receipt_id))[

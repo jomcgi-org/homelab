@@ -708,6 +708,28 @@ implementation starts (#5956).
 
 ### Execution and recovery rationale
 
+Decision-request recovery for #7729 is repository-only and operator-invoked.
+Escalation cards expose bounded original actor/key and latest audit identities;
+standing-operator native routes inspect and settle one exact request. A
+receipt-scoped execution lock precedes the existing control lock. Settlement
+revalidates the observed result digest, current decision and generation and
+retains an append-only evidence audit. Completed durable resolutions can be
+acknowledged without repeating effects. An operator's fresh cessation and
+complete no-effect attestation can abandon a request; a later answer remains a
+separate authorized invocation. Unknown or partial effects keep their fences.
+Active tasks and holds refuse abandonment. No timeout expires a request.
+
+**Why.** An interrupted accepted request deliberately never reexecutes. Without
+an inspection and exact evidence-backed settlement path it can also fence every
+subsequent authorized answer indefinitely. Operator attestation owns external
+cessation/effect evidence; the server owns immutable request matching, durable
+completion adoption and concurrency. During mixed-version rollout the operator
+must establish cessation of all old executors before settlement. The
+[recovery contract](factory/orchestration/FACTORY.md#inspect-and-settle-one-decision-request)
+records arguments, limits and outstanding checks. Receipt 943's predecessor
+settlement and its original November 12, 2026 `authorize-ships-bucket` answer
+remain operational acceptance on #7729. Deployment alone does not meet it.
+
 **Why.** An interactive follow-up can POST to an already evicted guest and then
 fail while restoring it (#7583). The old terminal timestamp precedes the local
 error, so the general cessation ordering guard leaves its permit uncertain.
