@@ -10,8 +10,24 @@ grimoireDiscordSource:
 authentik:
   server:
     replicas: 1
+    # The Discord blueprint reads these with !Env. The references are
+    # required, so a pod waits for the grimoire-discord-oauth Secret rather
+    # than starting without credentials and failing the blueprint. Adding
+    # them also rolls the pods, which a new Secret alone does not.
+    env: &grimoireDiscordEnv
+      - name: GRIMOIRE_DISCORD_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: grimoire-discord-oauth
+            key: client-id
+      - name: GRIMOIRE_DISCORD_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: grimoire-discord-oauth
+            key: client-secret
   worker:
     replicas: 1
+    env: *grimoireDiscordEnv
 
 cnpg:
   storage:
