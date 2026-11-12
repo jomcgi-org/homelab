@@ -499,7 +499,7 @@ and the documented 72-hour measure and stop-condition verdict.
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
-| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (open child #5788) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity enablement is #6561 |
+| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (open child #5788) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity enabled by PR #6587 and now unconditional; #6561 retains operational acceptance |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
 | Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
 | Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository-only; 7-item live checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566); #7186 owns the Renovate switches and schedule activation |
@@ -2453,7 +2453,7 @@ PR lifecycle sweeps, and intake keeps its normal cooldown.
 | Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786, closed 2026-09-14; its status and evidence requirements were consolidated into #5788 without an outcome/milestone/task hierarchy, and the materialised index was dropped |
 | Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786, closed 2026-09-14; its status and evidence requirements were consolidated into #5788, and the materialised index was dropped |
 | Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804, closed not planned until a capacity or starvation problem is demonstrated |
-| Continuity | The existing receipt escalation document retains producer-authored Conductor briefs and authenticated operator replies with actor, source, time, conversation, task, decision and request identity. Generic coding-agent turns have no Conductor identity and are excluded. Fresh Conductor context combines public exact-receipt knowledge with only the authenticated operator's receipt-specific personal scope and current factory control, queue, task, budget and decision records. Shared receipt raws exclude operator replies and actor-addressed briefs. When the dedicated default-off gate is enabled, the Astra Planner receives only the public exact-receipt scope plus current task and acceptance records. Retrieved text is evidence only and never replays a command, changes queue order, reopens a resolved approval, or revives stopped authority | #5787, repository slice PR #6388; closed not planned and split to #6561, which owns enablement and live validation |
+| Continuity | The existing receipt escalation document retains producer-authored Conductor briefs and authenticated operator replies with actor, source, time, conversation, task, decision and request identity. Generic coding-agent turns have no Conductor identity and are excluded. Fresh Conductor context combines public exact-receipt knowledge with only the authenticated operator's receipt-specific personal scope and current factory control, queue, task, budget and decision records. Shared receipt raws exclude operator replies and actor-addressed briefs. The Astra Planner unconditionally receives only the public exact-receipt scope plus current task and acceptance records. Retrieved text is evidence only and never replays a command, changes queue order, reopens a resolved approval, or revives stopped authority | #5787, repository slice PR #6388; enablement PR #6587 merged; #6561 owns outstanding operational acceptance |
 | Authority | Read, coordinate, act, and escalate are separately gated tiers; every mutation validates principal, target, tier, charter version, executor ownership, and control generation on the server; every tool call has a ledger row with intent persisted before the side effect; timestamped health inputs drive normal, reduced-concurrency, admissions-paused, and recovering behaviour. Delivered staged by PR #6387 as enforcement of existing controls: the standing-human operator dependency, exact targets, `request_key` and `expected_version` on every supported mutation, and the existing audit records; no new tier or ledger. #5789 closed 2026-09-30; its closing comment reports anonymous and invalid-bearer 401s from the gateway but no legitimate-bearer, replay or stale-version drill. Legitimate-bearer discovery and replay remain live checks on open #5788; no issue owns the stale-version drill | #5789, closed |
 | Stop | Pause admissions, pause task, and stop factory have distinct semantics; stop fences the conductor and its descendants, cancels queued starts, and survives any wakeup or restart; an unreachable worker stays explicitly unconfirmed. Delivered staged by PR #6387: stop state is reported from durable factory-owned evidence as cancellation requested, still running, unknown or unreachable, or cessation confirmed only on exact external proof; exact-attempt MCP stop stays unavailable. The unreachable-worker stop trial did not run before #5789 closed; its closing comment leaves the trial unplanned and asks for a specific bug if an incident shows a gap | #5789, closed |
 
@@ -2466,7 +2466,51 @@ Continuity updates have durable triggers rather than a session-end prompt:
 | Unresolved planning questions and approved decisions | Conductor brief and operator reply records carry receipt, task and decision identity | Brief settlement triggers `report_receipt_with_deadline`; request completion triggers `report_with_deadline`; both use deterministic existing raw ingestion and extraction owners |
 | Useful summaries | Each receipt message carries a summary plus its source message ID; KG raws list all evidence message IDs | The brief and decision producers write summaries in the same transaction as the source record, before KG extraction |
 | Corrections and supersession | Both old and new raw provenance remain visible; retrieved notes expose invalidation, dispute and in-scope `supersedes` edges | The existing knowledge extraction and gardening owners classify the correction; retold decision evidence hashes to the same raw input |
-| Current task, queue, control, budget and decision state | Factory control and receipt records, never KG | Opening `factory_context` triggers a fresh read; `knowledge.conductorContinuity.enabled` separately stages Planner injection and brief maintenance |
+| Current task, queue, control, budget and decision state | Factory control and receipt records, never KG | Opening `factory_context` triggers a fresh read; Planner injection and brief maintenance are unconditional in `conductor_context.py` |
+
+**Why.** Receipt-scoped continuity retains decision rationale across replaceable
+Conductor sessions while keeping operator-private evidence outside Planner
+context. [PR #6587](https://github.com/jomcgi-org/homelab/pull/6587) originally
+enabled the staged implementation. [Commit 3de5535b](https://github.com/jomcgi-org/homelab/commit/3de5535b22f7ea06894cacdcd416832eea47b83a)
+removed the continuity off paths; [commit e72a7973](https://github.com/jomcgi-org/homelab/commit/e72a7973e24929c21393633f00457828490a76c5)
+removed the obsolete chart switches. Current
+[`conductor_context.py`](factory/orchestration/conductor_context.py) maintains
+briefs and completed requests and supplies Planner context unconditionally.
+The former `knowledge.conductorContinuity.enabled` Helm value is no longer an
+enablement or rollback control.
+
+Repository delivery and operational acceptance remain staged separately on
+[#6561](https://github.com/jomcgi-org/homelab/issues/6561). This documentation
+correction adds no runtime change or duplicate enablement. Any later repository
+repair must remain default-off or staged and pass required Linux CI and
+independent review of its exact head. The safeguards above describe the
+implementation; their live acceptance remains outstanding. Keep all six receipt
+criteria and the separate rollout check open until their evidence is accepted:
+
+- [ ] Read a monolith `verify_deployment` result identifying the live revision,
+      containing PR #6587 and the unconditional implementation, with
+      Synced/Healthy and revision evidence.
+- [ ] Read the raw/note provenance audit for one real maintained Conductor brief
+      and authenticated operator reply: distinct public-receipt and actor-private
+      provenance, extracted summaries and links to original evidence.
+- [ ] Read a fresh authenticated `factory_context` result for an authorized
+      receipt: decision rationale, current task status and a pending question,
+      with an already resolved approval remaining resolved.
+- [ ] Read one Astra planning dispatch and its `planner_context_manifest` audit:
+      immutable model evidence, exact-receipt knowledge, current acceptance
+      constraints and no unrelated private operator history.
+- [ ] Read a live correction's KG provenance and supersession audit: linked old
+      and new provenances, retrieval preferring the correction and no confidence
+      increase merely through retelling.
+- [ ] Query logs and the factory journal for a recorded KG retrieval outage and
+      recovery pair: acknowledgement, journal recovery, ownership fencing and
+      stop behavior remain intact. Missing historical evidence keeps this open;
+      this scope authorizes no outage injection.
+- [ ] Read the retrospective KG write audit for 2026-10-01 05:17Z through
+      2026-10-02 05:17Z: reconcile all continuity messages, raws, extracted notes
+      and planner manifests for scope, provenance and absence of personal or
+      cross-receipt leakage. Cite audit records; comment claims alone do not
+      establish acceptance.
 
 The shared retrieval contract reports KG failure explicitly. Knowledge
 maintenance and summarisation cannot roll back an acknowledgement or block task
