@@ -1172,8 +1172,20 @@ def main():
             a.bring_to_front()
             story_tab = a.get_by_role("tab", name="Story", exact=True)
             story_tab.focus()
-            a.evaluate("window.scrollTo(0, 0)")
+            # An entry that arrived just before this may still have a scroll to
+            # the latest queued. Let it run, then scroll up and let the feed
+            # register the move before the position is recorded.
+            a.evaluate(
+                """async () => {
+                    for (let pass = 0; pass < 2; pass += 1) {
+                        window.scrollTo(0, 0);
+                        await new Promise((done) =>
+                            requestAnimationFrame(() => requestAnimationFrame(done)));
+                    }
+                }"""
+            )
             reading_position = a.evaluate("window.scrollY")
+            assert reading_position == 0
             # The same cookie and Origin the app's own fetch would send.
             batch = dm.request.post(
                 f"{API}/campaigns/{campaign_id}/grants/bulk",
