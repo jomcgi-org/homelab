@@ -871,3 +871,23 @@ func TestS9ResumeReportOnlyStillBlocksFirstTurn(t *testing.T) {
 		t.Fatalf("first-turn failure = %#v", got)
 	}
 }
+
+func TestControlPlaneInvokeReasonOnlyEchoesRouterEnvelope(t *testing.T) {
+	router := []byte(`{"error":"session invoke failed","reason":"{:suspect, :transport}","session_id":"s-1"}`)
+	if got := controlPlaneInvokeReason(router); got != ` reason="{:suspect, :transport}"` {
+		t.Fatalf("router reason = %q", got)
+	}
+	for _, body := range [][]byte{
+		[]byte(`{"error":"provider-secret-sentinel","reason":"leak"}`),
+		[]byte(`provider-secret-sentinel`),
+		[]byte(`{"error":"session invoke failed"}`),
+	} {
+		if got := controlPlaneInvokeReason(body); got != "" {
+			t.Fatalf("non-router body echoed: %q", got)
+		}
+	}
+	long := []byte(`{"error":"session invoke failed","reason":"` + strings.Repeat("x", 500) + `"}`)
+	if got := controlPlaneInvokeReason(long); len(got) > 220 {
+		t.Fatalf("reason not truncated: %d", len(got))
+	}
+}
