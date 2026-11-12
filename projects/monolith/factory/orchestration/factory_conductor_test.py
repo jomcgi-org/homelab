@@ -27189,6 +27189,55 @@ def test_fixed_recovery_cap_survives_newer_funding_grant_and_replay(
         assert funding.pending(db, task["id"]) is None
 
 
+@pytest.mark.parametrize("blocker", [None, "landing_hold", "decision"])
+def test_idle_task_past_landing_recovery_cap_releases_its_slot(
+    feedback_db, monkeypatch, blocker
+):
+    # 2026-11-11: ten admitted, unpaused tasks held the delivery lane for days
+    # past an expired landing-recovery cap with a settled, lapsed grant and
+    # nothing running. Only task_deadline settled; this reason only returned.
+    from datetime import timedelta
+    from sqlmodel import Session
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy, deadline = _funding_landing_recovery(monkeypatch)
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=60))
+    assert funding.request(task, "Fund remaining review")
+    settle_funding(task, funding_decision())
+    if blocker == "landing_hold":
+        with Session(conductor.get_engine()) as db:
+            row = controls._receipt(db, task["id"])
+            direction = json.loads(row.direction_json or "{}")
+            direction["landing_hold"] = {"actor": "operator", "reason": "test"}
+            row.direction_json = json.dumps(direction)
+            db.add(row)
+            db.commit()
+    if blocker == "decision":
+        monkeypatch.setattr(controls, "decision_in_flight", lambda *_: True)
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(days=2))
+    monkeypatch.setattr(
+        conductor,
+        "_dispatch_ready",
+        lambda *a, **kw: pytest.fail("an expired recovery must not dispatch"),
+    )
+    before = controls.task_snapshot(task["id"])
+    assert before["limits"]["deadline_expired"]
+    assert before["unresolved_starts"] == 0
+    assert controls.can_start(task["id"])["reason"] == "landing_recovery_deadline"
+    for _ in range(2):
+        conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["committed_cost_usd"] == before["committed_cost_usd"]
+    if blocker:
+        assert after["state"] == "admitted"
+        return
+    assert after["state"] == "failed"
+    assert after["evidence"]["state"] == "task_deadline"
+
+
 @pytest.mark.parametrize("reserved", [False, True])
 def test_fixed_recovery_cap_blocks_pending_paid_review(
     feedback_db, monkeypatch, reserved
