@@ -28802,6 +28802,143 @@ def test_recovery_approval_before_deadline_settles_without_planner_finish(
         assert json.loads(events[0].detail_json)["head_sha"] == pr["head"]["sha"]
 
 
+@pytest.mark.parametrize("auto_merge", [False, True])
+@pytest.mark.parametrize("moved_head", [False, True])
+@pytest.mark.parametrize(
+    "decision_kind",
+    ["escalate", "add_node", "plan", "gate", "wrong_pr", "wrong_head", "finish"],
+)
+def test_recovery_deadline_preserves_unprocessed_planner_decision(
+    feedback_db, monkeypatch, auto_merge, moved_head, decision_kind
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, pr, before = _approved_deadline_recovery(
+        monkeypatch, moved_head=moved_head
+    )
+    if auto_merge:
+        assert controls.request_control(
+            "enable_auto_merge",
+            "operator",
+            request_key="enable-landing",
+            expected_version=conductor._task(task["id"])["factory_control_version"],
+        )["ok"]
+    decision = {
+        "action": "finish",
+        "pr_number": 3,
+        "head_sha": pr["head"]["sha"],
+        "reason": "Completed recovery planning",
+    }
+    if decision_kind in ("escalate", "add_node", "plan"):
+        decision["action"] = decision_kind
+    elif decision_kind == "gate":
+        decision["gate"] = {
+            "kind": "live_validation",
+            "classification": "reversible",
+            "reason": "Repository delivery only",
+            "scope": "Staged recovery correction",
+            "leave_unmerged": True,
+            "live_checks": ["Verify the delivered revision after authorized rollout"],
+            "effects": {
+                "spends_money": False,
+                "deletes_data": False,
+                "touches_external_account": False,
+                "uses_credentials": False,
+            },
+        }
+    elif decision_kind == "wrong_pr":
+        decision["pr_number"] = 4
+    elif decision_kind == "wrong_head":
+        decision["head_sha"] = "c" * 40
+    deadline = datetime.fromisoformat(before["deadline_at"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    record_outcome = conductor.graph.record_outcome
+
+    def complete_after_deadline(*args, **kwargs):
+        monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=1))
+        return record_outcome(*args, **kwargs)
+
+    monkeypatch.setattr(conductor.graph, "record_outcome", complete_after_deadline)
+    planner = complete_feedback_node(
+        task, policy, "conductor_recovery_finish", decision
+    )
+    assert not conductor._decision_processed(
+        task["id"], f"factory-decision:{planner['node_key']}:{planner['attempt']}"
+    )
+    before = controls.task_snapshot(task["id"])
+    for _ in range(3):
+        conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    adopts = decision_kind == "finish"
+    assert after["state"] == (
+        ("landing" if auto_merge else "succeeded") if adopts else "failed"
+    )
+    if not adopts:
+        assert after["evidence"]["state"] == "task_deadline"
+    for key in (
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+        "starts",
+    ):
+        assert after[key] == before[key]
+    with controls._read_session() as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "recovery_review_adopted",
+            )
+        ).all()
+        assert len(events) == int(adopts)
+
+
+@pytest.mark.parametrize("human_owned", [False, True])
+def test_recovery_deadline_closed_objective_releases_slot_unless_human_owned(
+    feedback_db, monkeypatch, human_owned
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, _, before = _approved_deadline_recovery(monkeypatch)
+    read = conductor.github_get
+
+    def closed_issue(repo, path):
+        if path == "issues/7":
+            return {"state": "closed", "labels": ["human"] if human_owned else []}
+        return read(repo, path)
+
+    monkeypatch.setattr(conductor, "github_get", closed_issue)
+    for _ in range(3):
+        conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == ("admitted" if human_owned else "failed")
+    if not human_owned:
+        assert after["evidence"]["state"] == "task_deadline"
+        with controls._read_session() as db:
+            assert controls._receipt(db, task["id"]).state == "failed"
+        assert not any(
+            row["task_id"] == task["id"]
+            for row in controls.conductor_status()["active_tasks"]
+        )
+    for key in (
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+        "starts",
+    ):
+        assert after[key] == before[key]
+    with controls._read_session() as db:
+        assert not db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "recovery_review_adopted",
+            )
+        ).all()
+
+
 def test_capacity_waiting_recovery_has_no_deadline_or_adoption(
     feedback_db, monkeypatch
 ):

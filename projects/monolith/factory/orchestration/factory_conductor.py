@@ -6787,6 +6787,27 @@ def _adopt_saved_finish(
             return False
         latest = max(reviews, key=lambda r: r["id"])
         decision = _artifact(latest)
+        if planners:
+            pending = max(planners, key=lambda r: r["id"])
+            pending_decision = _artifact(pending)
+            pending_cause = (
+                f"factory-decision:{pending['node_key']}:{pending['attempt']}"
+            )
+            if (
+                pending["id"] > barrier["run_id_floor"]
+                and pending["status"] == "succeeded"
+                and not _decision_processed(task["id"], pending_cause)
+                and (
+                    pending_decision.get("action") != "finish"
+                    or pending_decision.get("gate") is not None
+                    or pending_decision.get("pr_number") != barrier["pr_number"]
+                    or pending_decision.get("head_sha", decision.get("head_sha"))
+                    != decision.get("head_sha")
+                )
+            ):
+                # A paid planner may finish after its deadline. Its unprocessed
+                # gate or alternate decision cannot become review-only success.
+                return False
         cause = f"factory-recovery-review:{barrier['request_id']}:{latest['id']}"
     else:
         if not planners:
@@ -6900,8 +6921,10 @@ def _adopt_saved_finish(
             from factory.orchestration.factory_intake_loop import _label_names
 
             issue = github_get(task["repo"], f"issues/{task['issue_number']}")
-            if issue.get("state") != "open" or "human" in _label_names(issue):
+            if "human" in _label_names(issue):
                 return True
+            if issue.get("state") != "open":
+                return not recovery_review
             result = controls.finish_task(
                 task["id"],
                 "succeeded",
