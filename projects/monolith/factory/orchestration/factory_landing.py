@@ -17,6 +17,8 @@ and defers the rest to a later tick.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from contextvars import ContextVar
+from functools import wraps
 import json
 import logging
 import re
@@ -45,6 +47,48 @@ from factory.orchestration.factory_controls import (
 from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
+
+# Receipt dictionaries are reloaded by recovery. Share only unavailable-read
+# identities within this invocation, never across ticks or concurrent contexts.
+_deferred_items: ContextVar[set[str] | None] = ContextVar(
+    "landing_deferred", default=None
+)
+
+
+def _read_deferred(item: dict) -> bool:
+    return item["task_id"] in (_deferred_items.get() or ())
+
+
+def _deferred(item: dict, stage: str, exc: GitHubReadDeferred) -> None:
+    skipped = _deferred_items.get()
+    if skipped is not None:
+        skipped.add(item["task_id"])
+    _error(item["task_id"], stage, exc)
+
+
+def _contain_read(*, blocked=None, item_index=1):
+    """No fresh evidence means no subsequent phase for this receipt this tick."""
+
+    def decorate(function):
+        @wraps(function)
+        def contained(*args, **kwargs):
+            item = args[item_index] if len(args) > item_index else kwargs["item"]
+            if _read_deferred(item):
+                return blocked
+            try:
+                return function(*args, **kwargs)
+            except GitHubReadDeferred as exc:
+                if kwargs.get("session") is not None:
+                    # The caller owns a write transaction. Unwind it before
+                    # recording the error with a fresh locked session.
+                    raise
+                _deferred(item, function.__name__, exc)
+                return blocked
+
+        return contained
+
+    return decorate
+
 
 ACTOR = "factory:landing"
 # A sanity cap, not a scheduling policy. Selection already drops everything
@@ -378,6 +422,8 @@ def _landing_state(db, task_ids: list[str]) -> dict[str, dict]:
             # A newly reviewed settlement starts a fresh arming epoch. Recovery
             # requests retain their own durable cap and all historical audits.
             state[row.task_id] = {action: [] for action in LANDING_ACTIONS}
+        if row.action == "merged":
+            state[row.task_id]["merge_arm_refused"] = []
         state[row.task_id][row.action].append(json.loads(row.detail_json))
     return state
 
@@ -495,18 +541,14 @@ def _deliveries(
         from factory.orchestration.factory_controls import landing_held
 
         held = landing_held(row)
-        refusal = (
-            audits["merge_arm_refused"][-1] if audits["merge_arm_refused"] else None
+        refusal = next(
+            (
+                detail
+                for detail in reversed(audits["merge_arm_refused"])
+                if held or detail.get("reason") != "receipt_landing_held"
+            ),
+            None,
         )
-        if (
-            refusal is not None
-            and refusal.get("reason") == "receipt_landing_held"
-            and not held
-        ):
-            # A hold refusal answers the hold, not the delivery. Once the hold is
-            # released, the next tick re-enforces any remaining hold and
-            # otherwise arms or recovers as usual.
-            refusal = None
         if refusal is not None and not include_refused and not held:
             continue
         armed, ejected = audits["merge_armed"], audits["merge_ejected"]
@@ -703,6 +745,7 @@ def _refuse(item: dict, reason: str, **detail: object) -> None:
     item["refused"] = True
 
 
+@_contain_read()
 def _arm(repo: str, item: dict) -> None:
     if operator_target(item["task_id"]):
         return
@@ -714,6 +757,8 @@ def _arm(repo: str, item: dict) -> None:
         _refuse(item, "review_only_recovery")
         return
     number = item["pr_number"]
+    reservation = None
+    mutation_started = False
     try:
         pr = github_get(repo, f"pulls/{number}")
         if pr.get("merged"):
@@ -849,18 +894,30 @@ def _arm(repo: str, item: dict) -> None:
             if not refusal and _enforce_owner_pr_hold(
                 repo, item, pr=current, session=db
             ):
+                if _read_deferred(item):
+                    raise GitHubReadDeferred("final owner hold evidence unavailable")
                 refusal = item.pop("owner_pr_hold_reason", "owner_pr_hold")
             if not refusal:
                 refusal = operator_landing_authorization.arm_refusal(
                     db, row, number, head, node_id, reservation
                 )
             if not refusal:
+                mutation_started = True
                 github_graphql(
                     _ARM_AUTO_MERGE, {"pullRequestId": node_id, "expectedHeadOid": head}
                 )
         if refusal:
             _scope_wait(item, refusal)
             return
+    except GitHubReadDeferred:
+        if reservation is not None and not mutation_started:
+            # The durable intent precedes final read-through verification, but
+            # no arming write was attempted. Preserve its audit without spending
+            # the operator's one mutation attempt on a cooldown-only read.
+            operator_landing_authorization.defer_unattempted_arm(
+                item["task_id"], reservation
+            )
+        raise
     except GraphQLRefused as exc:
         # A refused arming is final for this task. Retrying a mutation GitHub
         # has already declined would spend the request budget to be declined
@@ -932,6 +989,7 @@ def _scope_wait(item: dict, reason: str) -> None:
         )
 
 
+@_contain_read(blocked=True)
 def _fence_operator_queue_entry(repo, item):
     from factory.orchestration import factory_landing_release as releases
     from factory.orchestration.factory_controls import _receipt
@@ -971,6 +1029,7 @@ def _fence_operator_queue_entry(repo, item):
     return True
 
 
+@_contain_read(blocked=True)
 def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) -> bool:
     """Observe bounded known deliveries before policy/paused/refusal filters."""
     from factory import review_publisher
@@ -1030,7 +1089,7 @@ def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) 
             _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
         else:
             _scope_wait(item, refusal)
-    except (httpx.HTTPError, ValueError, GitHubReadDeferred) as exc:
+    except (httpx.HTTPError, ValueError) as exc:
         _error(item["task_id"], "scoped_landing", exc)
         item["refused"] = True
     return True
@@ -1117,6 +1176,8 @@ def _record_declined(item: dict, reason: str) -> None:
 def _recover_refused(policy: dict) -> None:
     """Reassess one historical refusal per tick without touching other closures."""
     for item in _deliveries(policy, include_refused=True):
+        if _read_deferred(item):
+            continue
         if operator_target(item["task_id"]):
             continue
         if _enforce_landing_hold(policy["repo"], item) or item.get("paused"):
@@ -1182,11 +1243,15 @@ def _recover_refused(policy: dict) -> None:
                 ),
             )
             return
+        except GitHubReadDeferred as exc:
+            _deferred(item, "recover", exc)
+            continue
         except (httpx.HTTPError, ValueError) as exc:
             _error(item["task_id"], "recover", exc)
             return
 
 
+@_contain_read()
 def _recover_conflict_without_arming(repo: str, item: dict) -> None:
     if operator_target(item["task_id"]):
         return
@@ -1274,6 +1339,7 @@ def _record_merged(repo: str, item: dict, pr: dict) -> bool:
     return True
 
 
+@_contain_read()
 def _observe_merge(repo: str, item: dict) -> None:
     if operator_target(item["task_id"]):
         return
@@ -1288,6 +1354,7 @@ def _observe_merge(repo: str, item: dict) -> None:
         _error(item["task_id"], "observe_merge", exc)
 
 
+@_contain_read()
 def _observe(repo: str, item: dict) -> None:
     if operator_target(item["task_id"]):
         return
@@ -1446,6 +1513,7 @@ def _verify_rollout(repo: str, item: dict) -> bool:
     return False
 
 
+@_contain_read()
 def _close_issue(repo: str, item: dict) -> None:
     if operator_target(item["task_id"]):
         return
@@ -1575,6 +1643,7 @@ def _defer(item: dict, holder: dict) -> None:
         )
 
 
+@_contain_read(blocked=False, item_index=0)
 def _publish_review_gate(item: dict) -> bool:
     """Publish the exact-head review check before giving this PR to merge."""
     if operator_target(item["task_id"]):
@@ -1611,6 +1680,7 @@ def _publish_review_gate(item: dict) -> bool:
     return False
 
 
+@_contain_read(blocked=True)
 def _handoff_human_delivery(repo: str, item: dict) -> bool:
     """Fence landing, disarm any pending merge and leave the PR with its owner.
 
@@ -1655,6 +1725,7 @@ def _handoff_human_delivery(repo: str, item: dict) -> bool:
         return True
 
 
+@_contain_read(blocked=True)
 def _enforce_owner_pr_hold(repo: str, item: dict, *, pr=None, session=None) -> bool:
     """Fence adopted PR holds before queue observation and the final arm write."""
     from factory.orchestration import owner_prs
@@ -1704,6 +1775,7 @@ def _enforce_owner_pr_hold(repo: str, item: dict, *, pr=None, session=None) -> b
     return True
 
 
+@_contain_read(blocked=True)
 def _enforce_landing_hold(repo: str, item: dict) -> bool:
     """Re-read the receipt before any landing mutation and disarm existing work."""
     from factory.orchestration import factory_controls as controls
@@ -1751,7 +1823,7 @@ def _enforce_landing_hold(repo: str, item: dict) -> bool:
                 raise ValueError("held delivery remains queued")
         _refuse(item, "receipt_landing_held")
         return True
-    except (httpx.HTTPError, ValueError, GitHubReadDeferred) as exc:
+    except (httpx.HTTPError, ValueError) as exc:
         # A read deferred by the rate-limit cooldown observed nothing. Skip the
         # item this tick rather than abort every delivery behind it.
         _error(item["task_id"], "landing_hold", exc)
@@ -1766,6 +1838,7 @@ def landing_tick(policy: dict) -> None:
     records the merge, rather than holding the next delivery for another
     fifteen seconds.
     """
+    token = _deferred_items.set(set())
     try:
         from factory import review_publisher
         from factory.orchestration import factory_rollback_runtime
@@ -1818,8 +1891,20 @@ def landing_tick(policy: dict) -> None:
                 _observe(repo, item)
             if item["merged"] and not item["closed"]:
                 _close_issue(repo, item)
-        live = [item for item in deliveries if not item["refused"]]
-        holder = next((item for item in live if holding(item)), None)
+        live = [
+            item
+            for item in deliveries
+            if not item["refused"] and not _read_deferred(item)
+        ]
+        # An unreadable known holder still occupies the serial landing slot.
+        holder = next(
+            (
+                item
+                for item in deliveries
+                if holding(item) and (not item["refused"] or _read_deferred(item))
+            ),
+            None,
+        )
         waiting = [
             item
             for item in live
@@ -1833,7 +1918,7 @@ def landing_tick(policy: dict) -> None:
             # queue. Bounded list reads, only when there is something to arm.
             try:
                 holder = _armed_on_github(repo)
-            except (httpx.HTTPError, ValueError) as exc:
+            except (httpx.HTTPError, ValueError, GitHubReadDeferred) as exc:
                 # Not knowing whether a factory pull request is already armed
                 # is not a licence to arm a second one.
                 _error(waiting[0]["task_id"], "holder", exc)
@@ -1846,6 +1931,8 @@ def landing_tick(policy: dict) -> None:
         # Bound reads while allowing a refused candidate to release this tick.
         for index, first in enumerate(waiting[:ARM_BATCH]):
             _arm(repo, first)
+            if _read_deferred(first):
+                continue
             if first["merged"] and not first["closed"]:
                 _close_issue(repo, first)
             if holding(first) and not first.get("refused"):
@@ -1856,6 +1943,8 @@ def landing_tick(policy: dict) -> None:
                 break
     except Exception:  # noqa: BLE001 - landing is optional and never stops the lane
         logger.exception("factory landing failed")
+    finally:
+        _deferred_items.reset(token)
 
 
 # Keep stored exceptions readable by replicas on either side of a deploy.

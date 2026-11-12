@@ -891,6 +891,37 @@ def test_final_locked_arm_refuses_drift_after_durable_intent(world, monkeypatch,
     assert len(audits(world, mod.ARM_ACTION)) == 1
 
 
+def test_final_read_cooldown_preserves_the_single_operator_mutation_attempt(
+    world, monkeypatch
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    apply(preview())
+    original = mod.reserve_arm
+    read = landing.github_get
+
+    def reserve(*args):
+        intent = original(*args)
+
+        def deferred(*_args):
+            raise GitHubReadDeferred("final read, no arming write")
+
+        monkeypatch.setattr(landing, "github_get", deferred)
+        return intent
+
+    monkeypatch.setattr(mod, "reserve_arm", reserve)
+    landing._arm(REPO, item())
+    assert not world.calls
+    assert len(audits(world, mod.ARM_ACTION)) == 1
+    assert len(audits(world, "operator_landing_arm_read_deferred")) == 1
+    monkeypatch.setattr(landing, "github_get", read)
+    monkeypatch.setattr(mod, "reserve_arm", original)
+    landing._arm(REPO, item())
+    assert world.calls.count(landing._ARM_AUTO_MERGE) == 1
+    landing._arm(REPO, item())
+    assert world.calls.count(landing._ARM_AUTO_MERGE) == 1
+
+
 def test_unreserved_manual_queue_is_fenced_even_with_an_operator_grant(world):
     apply(preview())
     world.repo.pull.update(

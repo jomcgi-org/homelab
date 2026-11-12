@@ -1410,6 +1410,112 @@ def seed_operator_rows(db, specs):
         )
 
 
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("terminal", [None, "landing_recovery_exhausted", "head_moved"])
+@pytest.mark.parametrize("barrier", [None, "landing_recovery_requested", "merged"])
+def test_effective_landing_refusal_provenance_and_agreement(
+    db, held, terminal, barrier
+):
+    from datetime import datetime, timezone
+    from factory.orchestration import factory_landing as landing
+
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="t-refusal", task_text="work", conductor_model="astra")
+        )
+    seed_operator_rows(
+        db,
+        [
+            {
+                "issue_number": 11,
+                "task_id": "t-refusal",
+                "state": "landing",
+                "direction_json": json.dumps({"landing_hold": None} if held else {}),
+            }
+        ],
+    )
+    when = datetime(2026, 11, 12, 5, tzinfo=timezone.utc)
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryAudit(
+                actor="test",
+                task_id="t-refusal",
+                action="finish_task",
+                detail_json=json.dumps(
+                    {
+                        "evidence": {
+                            "pr_url": "https://github.com/owner/repo/pull/3",
+                            "head_sha": "a" * 40,
+                        }
+                    }
+                ),
+            )
+        )
+        events = []
+        if terminal:
+            events.append(
+                FactoryAudit(
+                    actor="factory:landing",
+                    task_id="t-refusal",
+                    action="merge_arm_refused",
+                    created_at=when,
+                    detail_json=json.dumps(
+                        {
+                            "reason": terminal,
+                            "pr_number": 3,
+                            "private": "never projected",
+                        }
+                    ),
+                )
+            )
+        if barrier:
+            events.append(
+                FactoryAudit(
+                    actor="factory:landing", task_id="t-refusal", action=barrier
+                )
+            )
+        events.extend(
+            FactoryAudit(
+                actor="factory:landing",
+                task_id="t-refusal",
+                action="merge_arm_refused",
+                created_at=when,
+                detail_json=json.dumps(
+                    {"reason": "receipt_landing_held", "pr_number": 3}
+                ),
+            )
+            for _ in range(3)
+        )
+        session.add_all(events)
+        session.flush()
+        expected_event = (
+            events[-1] if held else events[0] if terminal and not barrier else None
+        )
+        expected_id = expected_event.id if expected_event else None
+    with Session(db) as session:
+        before = [r.model_dump() for r in session.exec(select(FactoryAudit)).all()]
+        result = mcp._landing_refusal(session, "t-refusal")
+        [delivery] = landing._deliveries(
+            {"repo": "owner/repo"}, include_refused=True, session=session
+        )
+        assert (result or {}).get("reason") == (delivery["refusal"] or {}).get("reason")
+        if expected_id is None:
+            assert result is None
+        else:
+            assert result == {
+                "source": "recorded_landing_audit",
+                "audit_id": expected_id,
+                "observed_at": mcp.iso_or_str(
+                    session.get(FactoryAudit, expected_id).created_at
+                ),
+                "pr_number": 3,
+                "reason": "receipt_landing_held" if held else terminal,
+            }
+        assert [
+            r.model_dump() for r in session.exec(select(FactoryAudit)).all()
+        ] == before
+
+
 def test_status_payload_trims_the_board_and_stamps_coverage(db, monkeypatch):
     monkeypatch.setattr(mcp, "_now", lambda: "2026-09-12T10:00:00+00:00")
     seed_operator_rows(
