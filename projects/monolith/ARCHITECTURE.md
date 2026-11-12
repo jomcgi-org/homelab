@@ -562,10 +562,6 @@ different questions. See [outcome evidence](factory/orchestration/FACTORY.md#out
 deadlines without creating funding or execution authority.
 See [receipt restrictions](factory/orchestration/FACTORY.md#restrict-receipt-model-choices).
 
-**Why.** Planner-local envelope feedback avoids paying for repeated rejected
-submissions. Advisory previews cannot authorize submission; unavailable delegated
-identity must preserve the operator boundary. See [preview](factory/orchestration/FACTORY.md#planner-preview).
-
 **Why.** Immutable ancestry does not become fresher when reread. A bounded
 publication scan exceeded the shared file cache and evicted its own comparisons;
 unknown evidence still needs a fresh read. See [read pacing](factory/orchestration/FACTORY.md#github-read-pacing).
