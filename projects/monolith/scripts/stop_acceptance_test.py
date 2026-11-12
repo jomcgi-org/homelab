@@ -51,13 +51,13 @@ def evidence():
     )
     for runtime in check.RUNTIMES:
         for seq, offset in ((1, 0), (2, 20)):
-            add("dispatch", offset + 1, runtime, seq)
+            add("dispatch", offset + 1, runtime, seq, triggered_by="owner@example.test")
             usage = [
                 dict(
                     id=f"usage-{runtime}-{seq}",
                     dispatch_id=f"{runtime}-{seq}",
                     observed=True,
-                    units={"input_tokens": seq, "output_tokens": 1},
+                    units={"input_tokens": 1, "output_tokens": 1},
                     list_cost_usd="0.25",
                 )
             ]
@@ -70,6 +70,8 @@ def evidence():
                 vm_destroyed=False,
                 usage=usage,
                 list_cost_usd="0.25",
+                cost_usd="0.25" if runtime == "claude" else None,
+                native_result_id=f"native-{runtime}-{seq}",
             )
             add(
                 "receipt",
@@ -80,6 +82,8 @@ def evidence():
                 result_id=f"result-{runtime}-{seq}",
                 usage_ids=[usage[0]["id"]],
                 list_cost_usd="0.25",
+                cost_usd="0.25" if runtime == "claude" else None,
+                native_result_id=f"native-{runtime}-{seq}",
             )
             add(
                 "settlement",
@@ -92,20 +96,34 @@ def evidence():
                 list_cost_usd="0.25",
             )
             add(
-                "ledger",
+                "agent_turn",
                 offset + 13,
                 runtime,
                 seq,
-                postings=[
+                cost_usd="0.25" if runtime == "claude" else None,
+                list_cost_usd="0.25",
+                usage_json=json.dumps(
                     dict(
-                        usage_id=usage[0]["id"],
-                        receipt_id=f"receipt-{runtime}-{seq}",
-                        settlement_id=f"settlement-{runtime}-{seq}",
-                        list_cost_usd="0.25",
+                        **usage[0]["units"],
+                        native_result_receipt=dict(
+                            receipt_id=f"receipt-{runtime}-{seq}"
+                        ),
                     )
-                ],
-                balance_before_usd="0.00" if seq == 1 else "0.25",
-                balance_after_usd="0.25" if seq == 1 else "0.50",
+                ),
+            )
+            add(
+                "native_totals",
+                offset + 10,
+                runtime,
+                seq,
+                native_session_id=f"native-session-{runtime}",
+                native_result_id=f"native-{runtime}-{seq}",
+                cumulative_cost_usd=("0.25" if seq == 1 else "0.50")
+                if runtime == "claude"
+                else None,
+                cumulative_list_cost_usd="0.25" if seq == 1 else "0.50",
+                cumulative_units={"input_tokens": seq, "output_tokens": seq},
+                price_per_unit_usd={"input_tokens": "0.10", "output_tokens": "0.15"},
             )
         add(
             "export_inventory",
@@ -117,8 +135,8 @@ def evidence():
         )
         for kind, status, second in (
             ("duplicate", 202, 15),
-            ("stale", 409, 35),
-            ("non_owner", 403, 36),
+            ("stale", 409, 25),
+            ("non_owner", 403, 6),
         ):
             add(
                 kind,
@@ -128,23 +146,31 @@ def evidence():
                 http_status=status,
                 additional_relays=0,
                 additional_settlements=0,
-                additional_postings=0,
+                additional_billed_turns=0,
                 additional_destroys=0,
+                authenticated=True,
+                triggered_by="owner@example.test",
+                requester="someone-else@example.test",
             )
     add(
         "background_notification",
         22,
         "claude",
         1,
+        native_type="result",
+        origin={"kind": "task-notification"},
+        native_result_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        native_session_id="native-session-claude",
+        skip_log_locator="fixture-only",
+        usage_ids=["notification-usage"],
         ignored_by_dispatch_id="claude-2",
-        additional_postings=0,
+        additional_billed_turns=0,
         successor_terminated=False,
     )
     for outcome, second, seq in (
         ("requested", 4, 1),
         ("confirmed", 14, 1),
         ("completed", 34, 2),
-        ("failed_unknown", 5, 1),
         ("completion_wins", 34, 2),
     ):
         add(
@@ -174,10 +200,28 @@ def evidence():
         reservation_held=True,
         capacity_held=True,
         held_until=at(10),
+        hold_method={
+            "name": "authorized session-local relay delay",
+            "locator": "fixture-only",
+        },
+        history_complete=True,
+        reservation_history=[
+            dict(
+                at=at(second),
+                reservation_id="reservation-codex-1",
+                reservation_held=True,
+                capacity_held=True,
+                successor_admitted=False,
+                locator="fixture-only",
+            )
+            for second in (2, 8, 10)
+        ],
     )
-    add(
+    fault = add(
         "destroy_fallback",
         50,
+        runtime="claude",
+        dispatched_at=at(39),
         session_id="isolated-fault",
         guest_id="fault-guest",
         turn_seq=1,
@@ -196,6 +240,30 @@ def evidence():
         unrelated_sessions_healthy=True,
         control_session_ids=["unaffected-session"],
         destroy_terminal=True,
+    )
+    fault_identity = {key: fault[key] for key in check.IDENTITY}
+    backend = add(
+        "backend_stop",
+        42,
+        "claude",
+        **fault_identity,
+        requested_at=at(41),
+        http_status=503,
+        outcome="unknown",
+        terminal_result_available=False,
+    )
+    add(
+        "browser_failed_unknown",
+        43,
+        "claude",
+        **fault_identity,
+        capture="actual_browser",
+        trace="raw.json",
+        screenshot="raw.json",
+        status_dispatch_id="fault-dispatch",
+        ui_outcome="unknown",
+        stop_requested_at=at(41),
+        stop_outcome_id=backend["id"],
     )
     return dict(
         schema_version=1, source="live_export", started_at=at(0), ended_at=at(59)
@@ -228,10 +296,10 @@ def test_consistent_fixture_still_requires_raw_review(evidence):
         ("result", "vm_destroyed", True),
         ("receipt", "authoritative", False),
         ("settlement", "state", "held"),
-        ("ledger", "balance_after_usd", "0.50"),
+        ("agent_turn", "list_cost_usd", "0.50"),
         ("duplicate", "http_status", 409),
         ("duplicate", "additional_relays", 1),
-        ("stale", "additional_postings", 1),
+        ("stale", "additional_billed_turns", 1),
         ("non_owner", "http_status", 202),
         ("browser_requested", "capture", "mock"),
         ("browser_confirmed", "dispatch_id", "stale"),
@@ -243,10 +311,11 @@ def test_rejects_unproven_or_conflicting_evidence(evidence, kind, key, value):
         assess(evidence)
 
 
-def test_duplicate_ledger_posting_rejected(evidence):
-    ledger = row(evidence, "ledger")
-    ledger["postings"].append(deepcopy(ledger["postings"][0]))
-    with pytest.raises(check.Incomplete, match="postings"):
+def test_duplicate_agent_turn_rejected(evidence):
+    billed = deepcopy(row(evidence, "agent_turn"))
+    billed["id"] = "second-billed-turn"
+    evidence[1].append(billed)
+    with pytest.raises(check.Incomplete, match="need one agent_turn"):
         assess(evidence)
 
 
@@ -306,7 +375,7 @@ def test_fault_fallback_incomplete(evidence, field, value):
 
 def test_missing_case_and_stale_bundle(evidence):
     evidence[1].pop()
-    with pytest.raises(check.Incomplete, match="destroy_fallback"):
+    with pytest.raises(check.Incomplete, match="browser_failed_unknown"):
         assess(evidence)
     evidence[0]["started_at"] = "2026-11-01T00:00:00+00:00"
     with pytest.raises(check.Incomplete, match="stale"):
@@ -425,7 +494,7 @@ def test_raw_path_escape(tmp_path):
 
 
 def test_extra_accounting_row_rejected(evidence):
-    extra = deepcopy(row(evidence, "ledger"))
+    extra = deepcopy(row(evidence, "agent_turn"))
     extra["id"] = "unexpected-extra-charge"
     extra["turn_seq"] = 3
     evidence[1].append(extra)
@@ -433,13 +502,216 @@ def test_extra_accounting_row_rejected(evidence):
         assess(evidence)
 
 
-def test_usage_allocation_cost_rejected(evidence):
-    row(evidence, "ledger")["postings"][0]["list_cost_usd"] = "0.50"
-    with pytest.raises(check.Incomplete, match="charge mismatch"):
+def test_billed_usage_mismatch(evidence):
+    row(evidence, "agent_turn")["usage_json"] = json.dumps(
+        dict(
+            input_tokens=2,
+            output_tokens=1,
+            native_result_receipt=dict(receipt_id="receipt-claude-1"),
+        )
+    )
+    with pytest.raises(check.Incomplete, match="usage_json mismatch"):
         assess(evidence)
 
 
 def test_unknown_usage_rejected(evidence):
     row(evidence, "result")["usage"][0]["observed"] = False
     with pytest.raises(check.Incomplete, match="unknown"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize("runtime", check.RUNTIMES)
+def test_cumulative_cost_cannot_be_rebilled_under_fresh_ids(evidence, runtime):
+    for kind in ("result", "receipt", "settlement", "agent_turn"):
+        target = row(evidence, kind, runtime, 2)
+        target["list_cost_usd"] = "0.50"
+        if runtime == "claude" and kind != "settlement":
+            target["cost_usd"] = "0.50"
+    row(evidence, "result", runtime, 2)["usage"][0]["list_cost_usd"] = "0.50"
+    with pytest.raises(check.Incomplete, match="cumulative list cost"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize("runtime", check.RUNTIMES)
+def test_cumulative_native_usage_cannot_be_rebilled(evidence, runtime):
+    row(evidence, "result", runtime, 2)["usage"][0]["units"] = dict(
+        input_tokens=3, output_tokens=2
+    )
+    with pytest.raises(check.Incomplete, match="cumulative usage"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize(
+    "kind,second",
+    [("stale", 21), ("stale", 30), ("stale", 35), ("non_owner", 15), ("non_owner", 36)],
+)
+def test_fence_and_owner_need_active_window(evidence, kind, second):
+    row(evidence, kind)["at"] = f"2026-11-12T00:00:{second:02d}+00:00"
+    with pytest.raises(check.Incomplete, match="timestamp order"):
+        assess(evidence)
+
+
+def test_non_owner_can_target_active_successor(evidence):
+    probe = row(evidence, "non_owner")
+    dispatch = row(evidence, "dispatch", seq=2)
+    probe.update({key: dispatch[key] for key in check.IDENTITY})
+    probe["at"] = "2026-11-12T00:00:25+00:00"
+    assert assess(evidence)["status"] == "consistent"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("requester", ""),
+        ("requester", " OWNER@example.test "),
+        ("authenticated", False),
+        ("triggered_by", "another-owner"),
+    ],
+)
+def test_non_owner_needs_authenticated_distinct_requester(evidence, field, value):
+    row(evidence, "non_owner")[field] = value
+    with pytest.raises(check.Incomplete, match="authenticated distinct"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("at", "2026-11-12T00:00:45+00:00"),
+        ("origin", {"kind": "user"}),
+        ("native_type", "assistant"),
+        ("native_result_id", ""),
+        ("native_session_id", "other-session"),
+        ("skip_log_locator", "missing-log"),
+        ("usage_ids", []),
+        ("usage_ids", ["usage-claude-2"]),
+    ],
+)
+def test_notification_requires_native_evidence(evidence, field, value):
+    row(evidence, "background_notification")[field] = value
+    with pytest.raises(check.Incomplete):
+        assess(evidence)
+
+
+def test_notification_cannot_be_successor_native_result(evidence):
+    native_id = row(evidence, "background_notification")["native_result_id"]
+    for kind in ("result", "receipt", "native_totals"):
+        row(evidence, kind, seq=2)["native_result_id"] = native_id
+    with pytest.raises(check.Incomplete, match="attributed to successor"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("http_status", 202),
+        ("dispatch_id", "wrong-dispatch"),
+        ("requested_at", "2026-11-12T00:00:40+00:00"),
+        ("outcome", "interrupted"),
+        ("at", "2026-11-12T00:00:44+00:00"),
+    ],
+)
+def test_failed_browser_needs_matching_backend_failure(evidence, field, value):
+    backend = row(evidence, "backend_stop")
+    backend["terminal_result_available"] = True
+    backend[field] = value
+    with pytest.raises(check.Incomplete):
+        assess(evidence)
+
+
+def test_failed_browser_rejects_successful_stop_identity(evidence):
+    browser = row(evidence, "browser_failed_unknown")
+    browser.update({key: row(evidence, "dispatch")[key] for key in check.IDENTITY})
+    browser.update(
+        status_dispatch_id="claude-1", stop_requested_at="2026-11-12T00:00:02+00:00"
+    )
+    with pytest.raises(check.Incomplete, match="misattributed"):
+        assess(evidence)
+
+
+def test_terminal_result_unavailable_is_unknown(evidence):
+    backend = row(evidence, "backend_stop")
+    backend.update(http_status=202, outcome="terminal_result_unavailable")
+    assert assess(evidence)["status"] == "consistent"
+
+
+def test_millisecond_requested_window_is_incomplete(evidence):
+    delayed = row(evidence, "delayed_stop", "codex")
+    delayed.update(
+        requested_at="2026-11-12T00:00:09.997+00:00",
+        queued_at="2026-11-12T00:00:09.998+00:00",
+        at="2026-11-12T00:00:09.999+00:00",
+    )
+    with pytest.raises(check.Incomplete, match="hold is too short"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("hold_method", {"name": "", "locator": "fixture-only"}),
+        ("history_complete", False),
+        ("reservation_history", []),
+    ],
+)
+def test_delayed_stop_requires_hold_evidence(evidence, field, value):
+    row(evidence, "delayed_stop", "codex")[field] = value
+    with pytest.raises(check.Incomplete):
+        assess(evidence)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reservation_held", False),
+        ("capacity_held", False),
+        ("successor_admitted", True),
+        ("locator", "missing"),
+        ("reservation_id", "other"),
+    ],
+)
+def test_mid_hold_release_cannot_be_hidden(evidence, field, value):
+    row(evidence, "delayed_stop", "codex")["reservation_history"][1][field] = value
+    with pytest.raises(check.Incomplete, match="during hold"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize("kind", ["dispatch", "result", "destroy_fallback"])
+def test_boolean_turn_sequence_rejected(evidence, kind):
+    row(evidence, kind)["turn_seq"] = True
+    with pytest.raises(check.Incomplete, match="invalid turn sequence"):
+        assess(evidence)
+
+
+def test_fault_guest_cannot_overlap_runtime_guest(evidence):
+    for kind in ("destroy_fallback", "backend_stop", "browser_failed_unknown"):
+        row(evidence, kind)["guest_id"] = "guest-claude"
+    with pytest.raises(check.Incomplete, match="isolated guest"):
+        assess(evidence)
+
+
+@pytest.mark.parametrize("runtime", ["codex", "muse", "pi"])
+def test_native_priced_total_must_follow_cumulative_tokens(evidence, runtime):
+    # Even internally consistent inflated costs must match the native token totals.
+    for kind in ("result", "receipt", "settlement", "agent_turn"):
+        row(evidence, kind, runtime, 2)["list_cost_usd"] = "0.50"
+    row(evidence, "result", runtime, 2)["usage"][0]["list_cost_usd"] = "0.50"
+    row(evidence, "native_totals", runtime, 2)["cumulative_list_cost_usd"] = "0.75"
+    with pytest.raises(check.Incomplete, match="token pricing"):
+        assess(evidence)
+
+
+def test_claude_billed_cost_reconciles_native_delta(evidence):
+    for kind in ("result", "receipt", "agent_turn"):
+        row(evidence, kind, seq=2)["cost_usd"] = "0.50"
+    with pytest.raises(check.Incomplete, match="cumulative cost"):
+        assess(evidence)
+
+
+def test_agent_turn_must_link_authoritative_receipt(evidence):
+    billed = row(evidence, "agent_turn")
+    usage = json.loads(billed["usage_json"])
+    usage["native_result_receipt"]["receipt_id"] = "unrelated"
+    billed["usage_json"] = json.dumps(usage)
+    with pytest.raises(check.Incomplete, match="agent_turns receipt"):
         assess(evidence)

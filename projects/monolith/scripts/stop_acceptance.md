@@ -37,9 +37,9 @@ historical comments and merged #6709/#6758/#6755 do not prove live acceptance.
 
 Use a single bounded run with four isolated retained sessions, one per Claude,
 Codex, Muse and Pi. The normalized checker uses turn sequences 1 and 2 in each
-session and one separate isolated fault session. Use fresh sessions with that
-shape, or preserve an explicit raw-to-normalized sequence mapping in each raw
-locator. Never change raw IDs to make a mismatch pass. Finish collection and
+session and one separate isolated fault session. Use fresh native sessions with
+a zero cumulative baseline and a fixed model and price schedule for both turns.
+Preserve raw IDs in each locator. Never change IDs to make a mismatch pass. Finish collection and
 assessment within 72 hours. Fault duration is at most five minutes.
 
 1. Before dispatch, export `verify_deployment` results for monolith and EmberVM,
@@ -51,35 +51,50 @@ assessment within 72 hours. Fault duration is at most five minutes.
    dispatch count and opaque dispatch ID. Interrupt turn 1 as its owner. Confirm
    terminal `user_interrupt` with the same VM retained. Collect its native
    result, authoritative received result receipt, usage and list cost,
-   reservation transition, complete billing postings and account balance delta.
-   Start and complete turn 2 on that retained VM. Collect the same records.
-   Reconcile per-component costs and balances across both turns. Unknown usage
-   leaves this check incomplete. Counting two turn rows is insufficient.
+   reservation transition, and the billed `agent_turns.cost_usd`, `list_cost_usd`
+   and `usage_json` columns. Start and complete turn 2 on that retained VM.
+   Collect the same records, plus native cumulative usage/cost through each
+   terminal result. Reconcile billed turn 2 against the difference between the
+   two native totals. Unknown usage leaves this check incomplete. Fresh result
+   IDs alone cannot rule out cumulative re-billing.
 3. After turn 1 is terminal and before turn 2 dispatches, replay the same proven
    Stop identity. Require successful 202 and no additional relay, settlement,
    charge or Destroy. Once turn 2 dispatches, submit the old identity and require
-   409 without side effects. Verify non-owner 403 without side effects on all
-   four runtimes. Export before/after audit and ledger reads for each assertion.
+   409 before turn 2 becomes terminal, without side effects. Probe non-owner
+   Stop against the currently active turn 1 or 2 before its terminal result.
+   Record the authenticated requester and the session's `triggered_by`; they
+   must differ after trimming and lowercasing. An anonymous 403 or an already
+   fenced identity is insufficient. Export before/after audit and billed-turn
+   reads for each assertion on all four runtimes.
 4. In Claude's reuse case, capture an actual prior background-task notification
-   within 30 seconds of successor dispatch. Show its original dispatch identity,
-   that the successor ignores it, and the successor's eventual successful result
-   on the retained VM. Reconcile the successor's usage components and billing
-   against the notification and interrupted turn. Absence of a notification does
-   not exercise this case.
+   after successor dispatch, within 30 seconds and before its terminal result.
+   Export the native result UUID, `type: result`, `origin.kind: task-notification`,
+   native session ID, usage-slice IDs and the shim skip-log locator. Match the
+   successor's eventual native result and usage IDs against those records; none
+   may be the old notification. Reconcile billing against the interrupted turn.
+   Absence of a notification does not exercise this case.
 5. Use an actual browser to capture requested, confirmed interruption, completed,
    failed/unknown and completion-wins outcomes. Export a trace and screenshot per
    outcome plus matching backend exact-turn status and result records. Capture
    Stop-request timestamps for requested, failed/unknown and completion-wins.
    Requested must precede terminal evidence; a completion-wins run requires the
    request before the completed result. API-only and mocked UI runs remain
-   incomplete. Failed/unknown requires an actual relay error or unknown status.
+   incomplete. Failed/unknown requires a backend Stop outcome for the same
+   request and exact identity: a non-success response, 503 unknown, or a status
+   read proving terminal result unavailable. Include its record ID in the
+   browser record. The separate fault session can supply this evidence.
 6. In one retained session, deliberately hold Stop in requested state using only
    the owner's separately approved session-local method. Queue turn 2 during
    that window. Export request, queue and held-state timestamps, all reservation
    and capacity transitions through the terminal boundary, terminal result,
    settlement and successor admission. Prove no admission or release occurred
    anywhere in the requested-only interval. A quick acknowledgment does not
-   exercise this case.
+   exercise this case. The queued-to-terminal interval must last at least five
+   seconds. Include the authorized hold method's name and raw locator, plus a
+   complete reservation/capacity history from request through terminal evidence.
+   Include all intervening transitions, even if the final held-state read looks
+   correct. Five seconds is the offline verifier's minimum exercise window;
+   it neither authorizes a delay method nor establishes operational acceptance.
 7. In the separate fault session, use only a separately authorized session-local
    timeout/failed-relay method with a five-minute cleanup deadline. Record fault
    start, Stop request, failure, Destroy request, confirmed physical cessation
@@ -123,24 +138,49 @@ Each normalized record has `id`, `kind`, `at` (timezone required),
 `sha256` and `locator`. Raw files retain the unmodified exported evidence.
 Browser trace and screenshot paths must occur in `raw`. Every normalized record
 and timestamp must fall inside the run window; the deployment record is at its
-start. Costs are nonnegative finite decimal strings, never floats or null.
+start. Known costs are nonnegative finite decimal strings, never floats. Preserve
+unreported native cost as null only in the fields specified below; list cost
+and usage must be known.
 The following fields are required in addition to those common fields:
 
 | Kind | Required fields |
 | --- | --- |
 | `deployment` | `monolith`, `embervm`: each has source `revision` (40 hex), `chart_version`, `verified: true`; `contains_prs`: `[6709,6758,6755]`; `stop_configuration` describes the actual deployed path and flag presence/absence. Raw evidence includes verified ancestry. |
-| Every turn-scoped record | `runtime`, `session_id`, `guest_id`, `turn_seq`, `dispatch_id`, `claim_owner`, `dispatch_count`. Preserve the complete identity on results, receipts, settlements, ledger, replay and browser records. |
-| `dispatch` | One per runtime and sequence 1/2, timestamp of actual admission/dispatch. |
-| `result` | `terminal_reason`: `user_interrupt` on 1, `completed`, `end_turn` or `stop` on 2 (preserve the native reason); `vm_destroyed: false`; `list_cost_usd`; nonempty `usage` list. Each component has globally unique native `id`, matching `dispatch_id`, `observed: true`, nonempty `units` map of observed nonnegative integer counts and `list_cost_usd`. Do not invent component IDs from row counts; derive them from exact runtime events or receipt usage slices. Raw records must show the allocation and pricing. |
-| `receipt` | `authoritative: true`, `result_id`, ordered `usage_ids`, `list_cost_usd`. Include received result body/digest and supersession state in raw evidence. |
+| Every turn-scoped record | `runtime`, `session_id`, `guest_id`, `turn_seq`, `dispatch_id`, `claim_owner`, `dispatch_count`. Preserve the complete identity on results, receipts, settlements, billing, replay and browser records. |
+| `dispatch` | One per runtime and sequence 1/2, timestamp of actual admission/dispatch, session owner `triggered_by`. |
+| `result` | Native `native_result_id`, reported `cost_usd` (decimal string or null when unreported), `terminal_reason`: `user_interrupt` on 1, `completed`, `end_turn` or `stop` on 2 (preserve the native reason); `vm_destroyed: false`; `list_cost_usd`; nonempty `usage` list. Each component has globally unique native `id`, matching `dispatch_id`, `observed: true`, nonempty `units` map of observed nonnegative integer counts and `list_cost_usd`. Do not invent component IDs from row counts; derive them from exact runtime events or receipt usage slices. Raw records must show the allocation and pricing. |
+| `receipt` | `authoritative: true`, `result_id`, `native_result_id`, ordered `usage_ids`, `cost_usd`, `list_cost_usd`. Include received result body/digest and supersession state in raw evidence. |
 | `settlement` | `receipt_id`, `state: "settled"`, same `usage_ids`, `list_cost_usd`. |
-| `ledger` | `balance_before_usd`, `balance_after_usd`, complete `postings` list. Each posting has `usage_id`, `receipt_id`, `settlement_id`, `list_cost_usd`. Include every account-affecting posting in the window; unexplained charges or reversals remain incomplete. |
-| `export_inventory` | Per runtime: `complete: true`, `turns: [1,2]`, `record_ids` listing the ten dispatch/result/receipt/settlement/ledger records. Raw query evidence establishes that nothing was omitted. |
-| `duplicate`, `stale`, `non_owner` | Per runtime, original identity, `http_status` 202/409/403 respectively; `additional_relays`, `additional_settlements`, `additional_postings`, `additional_destroys` all zero, established by bounded before/after reads. |
-| `background_notification` | Claude original identity, `ignored_by_dispatch_id` of turn 2, `additional_postings: 0`, `successor_terminated: false`. |
-| `browser_requested`, `browser_confirmed`, `browser_completed`, `browser_failed_unknown`, `browser_completion_wins` | Exact turn identity, `capture: "actual_browser"`, `trace` and `screenshot` raw paths, `status_dispatch_id`, `ui_outcome`: requested/confirmed/completed/unknown/completed respectively, `stop_requested_at` where specified above. Raw traces must show status agreement and the observed outcome. |
-| `delayed_stop` | Original identity, `requested_at`, `queued_at`, `successor_dispatch_id`, `successor_admitted: false`, `reservation_held: true`, `capacity_held: true`, `held_until` equal to terminal result timestamp. `at` is a held-state read after queuing and before the terminal result; raw interval history proves the full hold. |
-| `destroy_fallback` | Separate exact session identity, `failure`: timeout/failed_relay, `fault_started_at`, `stop_requested_at`, `stop_failed_at`, `destroy_requested_at`, `destroy_confirmed_at`, `cleaned_at`; `scope: "session"`, `cleaned: true`, `destroy_terminal: true`, `unrelated_sessions_healthy: true`, nonempty `control_session_ids`. Raw evidence covers the control sessions and whole fault window. |
+| `agent_turn` | Export of the billed `agent_sessions.agent_turns` row, with its primary key in `raw`, `cost_usd` (decimal string or null), `list_cost_usd` and unmodified `usage_json` string. Parsed usage counters must match component sums and `native_result_receipt.receipt_id` must match the authoritative receipt. No balance or posting table exists. |
+| `native_totals` | Per turn: `native_session_id`, `native_result_id`, `cumulative_units` map, `cumulative_cost_usd` (decimal string or null if not reported), `cumulative_list_cost_usd`. Token-priced runtimes also provide `price_per_unit_usd`, a decimal USD-per-token map with the same keys as `cumulative_units`. Preserve native observations and pricing references in `raw`; see normalization below. |
+| `export_inventory` | Per runtime: `complete: true`, `turns: [1,2]`, `record_ids` listing the twelve dispatch/result/receipt/settlement/agent_turn/native_totals records. Raw query evidence establishes that nothing was omitted. |
+| `duplicate`, `stale`, `non_owner` | Per runtime, exact target identity, `http_status` 202/409/403 respectively; `additional_relays`, `additional_settlements`, `additional_billed_turns`, `additional_destroys` all zero, established by bounded before/after reads. Duplicate uses turn 1 after its result and before successor dispatch; stale uses turn 1 strictly between successor dispatch and terminal result. Non-owner uses an active turn 1 or 2 and includes `authenticated: true`, nonempty `requester` and session `triggered_by`, with distinct normalized identities. |
+| `background_notification` | Claude original identity, native `native_result_id` UUID, `native_type: "result"`, `origin: {"kind": "task-notification"}`, `native_session_id`, nonempty `usage_ids` and `skip_log_locator` present among raw locators. `ignored_by_dispatch_id` is turn 2, `additional_billed_turns: 0`, `successor_terminated: false`. Timestamp must fall after successor dispatch, within 30 seconds, and before its result. Successor result/usage IDs must be disjoint. |
+| `backend_stop` | Exact identity (may be the fault session), `requested_at`, `http_status`, `outcome`: failed/unknown/terminal_result_unavailable, `terminal_result_available`. Its timestamp is the response/status read. A 202 requires unknown/unavailable with `terminal_result_available: false`; a successful interruption cannot establish failed/unknown UI. |
+| `browser_requested`, `browser_confirmed`, `browser_completed`, `browser_failed_unknown`, `browser_completion_wins` | Exact turn identity, `capture: "actual_browser"`, `trace` and `screenshot` raw paths, `status_dispatch_id`, `ui_outcome`: requested/confirmed/completed/unknown/completed respectively, `stop_requested_at` where specified above. For failed/unknown also include `stop_outcome_id` matching the backend Stop record, with the same request timestamp. Raw traces must show status agreement and the observed outcome. |
+| `delayed_stop` | Original identity, `requested_at`, `queued_at`, `successor_dispatch_id`, `successor_admitted: false`, `reservation_held: true`, `capacity_held: true`, `held_until` equal to terminal result timestamp. `at` is a held-state read after queuing and before the terminal result; the queued-to-terminal interval is at least five seconds. `hold_method` has `name` and raw `locator`; `history_complete: true`; `reservation_history` contains at least two ordered states spanning exactly `requested_at` through `held_until`. Each state has `at`, stable nonempty `reservation_id`, raw `locator`, `reservation_held: true`, `capacity_held: true`, `successor_admitted: false`. Export every intervening transition. |
+| `destroy_fallback` | Separate session and guest identity with `runtime`, `dispatched_at`, `failure`: timeout/failed_relay, `fault_started_at`, `stop_requested_at`, `stop_failed_at`, `destroy_requested_at`, `destroy_confirmed_at`, `cleaned_at`; `scope: "session"`, `cleaned: true`, `destroy_terminal: true`, `unrelated_sessions_healthy: true`, nonempty `control_session_ids`. Raw evidence covers the control sessions and whole fault window. |
+
+For native totals, use Claude's pre-delta `total_cost_usd` (or retained
+`cumulative_total_cost_usd`/interrupt cost-state) and cumulative model usage;
+Claude list cost equals the native reported cost. Use Codex
+`thread/tokenUsage/updated.total` for the same thread, never `last`. Muse exposes
+session cumulative counters. For Pi or an event stream without cumulative
+counters, sum the complete native usage events from session start through each
+result, deduplicated by native event ID. Include the complete event inventory
+and aggregation locators. Never derive native totals from the billed turn rows.
+Unknown, reset or missing counters leave this bounded run incomplete.
+
+Map native counters into the persisted `usage_json` token fields, preserving
+raw field paths and cache allocation. Token-priced runtimes must export the
+fixed deployed model's per-unit prices alongside the native observations. The
+checker recomputes cumulative list cost as the sum of native counts times those
+prices, then compares each turn's billed list cost and units with the native
+delta. Preserve unreported `cost_usd` as null and compare it to result/receipt
+values; do not invent a reported cost for Codex. Raw review must confirm the
+pricing schedule and native-to-persisted counter mapping, including disjoint
+cache categories. Mixed models or counter resets require a separate supported
+normalization; do not flatten them into this fixed-model bundle.
 
 Run from the repository root:
 

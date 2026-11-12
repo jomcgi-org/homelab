@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 
 RUNTIMES = ("claude", "codex", "muse", "pi")
+MIN_HOLD = timedelta(seconds=5)
 SUCCESS_REASONS = {"completed", "end_turn", "stop"}
 IDENTITY = (
     "session_id",
@@ -124,7 +125,9 @@ def assess(bundle, records, now=None):
         "result",
         "receipt",
         "settlement",
-        "ledger",
+        "agent_turn",
+        "native_totals",
+        "backend_stop",
         "duplicate",
         "stale",
         "non_owner",
@@ -142,7 +145,12 @@ def assess(bundle, records, now=None):
             in turn_kinds | {"deployment", "export_inventory", "destroy_fallback"},
             "unknown evidence kind",
         )
-        if record["kind"] in turn_kinds | {"export_inventory"}:
+        if record["kind"] in turn_kinds | {"destroy_fallback"}:
+            require(
+                type(record.get("turn_seq")) is int and record["turn_seq"] > 0,
+                "invalid turn sequence",
+            )
+        if record["kind"] in turn_kinds | {"export_inventory", "destroy_fallback"}:
             require(record.get("runtime") in RUNTIMES, "missing or unknown runtime")
         require(record["id"] not in ids, "duplicate record id")
         ids.add(record["id"])
@@ -165,7 +173,8 @@ def assess(bundle, records, now=None):
 
     def same(left, right):
         require(
-            all(
+            left.get("runtime") == right.get("runtime")
+            and all(
                 left.get(k) is not None and left.get(k) == right.get(k)
                 for k in IDENTITY
             ),
@@ -201,11 +210,18 @@ def assess(bundle, records, now=None):
     for runtime in RUNTIMES:
         current = []
         for seq in (1, 2):
-            dispatch, result, receipt, settlement, ledger = [
+            dispatch, result, receipt, settlement, billed, native = [
                 one(k, runtime, seq)
-                for k in ("dispatch", "result", "receipt", "settlement", "ledger")
+                for k in (
+                    "dispatch",
+                    "result",
+                    "receipt",
+                    "settlement",
+                    "agent_turn",
+                    "native_totals",
+                )
             ]
-            for row in (result, receipt, settlement, ledger):
+            for row in (result, receipt, settlement, billed, native):
                 same(dispatch, row)
             require(
                 type(dispatch["dispatch_count"]) is int
@@ -221,8 +237,8 @@ def assess(bundle, records, now=None):
                 "receipt order",
             )
             require(
-                stamp(settlement["at"]) <= stamp(ledger["at"]),
-                "ledger precedes settlement",
+                stamp(settlement["at"]) <= stamp(billed["at"]),
+                "billing export precedes settlement",
             )
             require(
                 result["terminal_reason"]
@@ -240,8 +256,7 @@ def assess(bundle, records, now=None):
                 and settlement["state"] == "settled",
                 "unsettled reservation",
             )
-            # Export every usage component and every ledger posting, including reversals.
-            # Disjoint component IDs and exact allocations prevent cumulative successor rebilling.
+            # Unique IDs alone cannot detect cumulative totals billed under fresh IDs.
             components = result["usage"]
             require(bool(components), "missing/unknown observed usage")
             usage_ids = [c["id"] for c in components]
@@ -277,29 +292,126 @@ def assess(bundle, records, now=None):
                 and money(settlement["list_cost_usd"]) == total,
                 "settlement cost mismatch",
             )
-            postings = ledger["postings"]
             require(
-                len(postings) == len(components), "duplicate or missing ledger postings"
+                money(billed["list_cost_usd"]) == total,
+                "agent_turns list cost mismatch",
             )
-            require(
-                {p["usage_id"] for p in postings} == set(usage_ids),
-                "ledger allocation mismatch",
-            )
-            expected = {c["id"]: money(c["list_cost_usd"]) for c in components}
-            for posting in postings:
+            # cost_usd can be null for token-priced runtimes. Preserve that fact.
+            for observed in (result, receipt):
                 require(
-                    posting["receipt_id"] == receipt["id"]
-                    and posting["settlement_id"] == settlement["id"]
-                    and money(posting["list_cost_usd"])
-                    == expected[posting["usage_id"]],
-                    "ledger charge mismatch",
+                    observed["cost_usd"] == billed["cost_usd"], "billed cost mismatch"
                 )
-            require(
-                money(ledger["balance_after_usd"]) - money(ledger["balance_before_usd"])
-                == total,
-                "ledger delta includes extra billing",
+            if billed["cost_usd"] is not None:
+                money(billed["cost_usd"])
+            persisted_usage = json.loads(
+                billed["usage_json"], object_pairs_hook=strict_object
             )
-            current.append((dispatch, result, settlement, ledger))
+            require(
+                persisted_usage["native_result_receipt"]["receipt_id"] == receipt["id"],
+                "agent_turns receipt mismatch",
+            )
+            require(
+                bool(native["native_session_id"])
+                and bool(native["native_result_id"])
+                and native["native_result_id"]
+                == result["native_result_id"]
+                == receipt["native_result_id"],
+                "native result identity mismatch",
+            )
+            require(
+                stamp(dispatch["at"]) < stamp(native["at"]) <= stamp(result["at"]),
+                "native totals outside turn",
+            )
+            cumulative = native["cumulative_units"]
+            require(
+                isinstance(cumulative, dict)
+                and bool(cumulative)
+                and all(type(v) is int and v >= 0 for v in cumulative.values()),
+                "unknown native cumulative usage",
+            )
+            previous = current[-1][4] if current else None
+            if previous:
+                require(
+                    previous["native_session_id"] == native["native_session_id"]
+                    and previous["native_result_id"] != native["native_result_id"]
+                    and previous["cumulative_units"].keys() == cumulative.keys(),
+                    "native cumulative stream mismatch",
+                )
+            units = {key: 0 for key in cumulative}
+            for component in components:
+                require(
+                    component["units"].keys() == units.keys(), "usage fields mismatch"
+                )
+                for key, count in component["units"].items():
+                    units[key] += count
+            baseline = (
+                previous["cumulative_units"] if previous else dict.fromkeys(units, 0)
+            )
+            require(
+                units
+                == {key: count - baseline[key] for key, count in cumulative.items()},
+                "native cumulative usage rebilled or omitted",
+            )
+            require(
+                all(
+                    type(persisted_usage.get(key)) is int
+                    and persisted_usage[key] == count
+                    for key, count in units.items()
+                ),
+                "agent_turns usage_json mismatch",
+            )
+            prior_list = (
+                money(previous["cumulative_list_cost_usd"]) if previous else Decimal(0)
+            )
+            require(
+                total == money(native["cumulative_list_cost_usd"]) - prior_list,
+                "native cumulative list cost rebilled or omitted",
+            )
+            if runtime != "claude":
+                prices = native["price_per_unit_usd"]
+                require(
+                    prices.keys() == cumulative.keys(), "native pricing fields mismatch"
+                )
+                require(
+                    previous is None or previous["price_per_unit_usd"] == prices,
+                    "native pricing changed within bounded run",
+                )
+                require(
+                    money(native["cumulative_list_cost_usd"])
+                    == sum(
+                        (
+                            money(prices[key]) * count
+                            for key, count in cumulative.items()
+                        ),
+                        Decimal(0),
+                    ),
+                    "native cumulative token pricing mismatch",
+                )
+            cumulative_cost = native["cumulative_cost_usd"]
+            require(
+                runtime != "claude" or cumulative_cost is not None,
+                "missing native Claude cost",
+            )
+            require(
+                previous is None
+                or (previous["cumulative_cost_usd"] is None)
+                == (cumulative_cost is None),
+                "native cost coverage changed",
+            )
+            if runtime == "claude":
+                require(
+                    money(cumulative_cost) == money(native["cumulative_list_cost_usd"]),
+                    "native Claude list cost mismatch",
+                )
+            if cumulative_cost is not None:
+                prior_cost = (
+                    money(previous["cumulative_cost_usd"]) if previous else Decimal(0)
+                )
+                require(
+                    money(billed["cost_usd"]) == money(cumulative_cost) - prior_cost,
+                    "native cumulative cost rebilled or omitted",
+                )
+            current.append((dispatch, result, settlement, billed, native))
         first, successor = current
         require(
             first[0]["session_id"] == successor[0]["session_id"]
@@ -311,17 +423,12 @@ def assess(bundle, records, now=None):
             "successor dispatch reused",
         )
         ordered(first[2], successor[0])
-        require(
-            money(first[3]["balance_after_usd"])
-            == money(successor[3]["balance_before_usd"]),
-            "unreconciled between-turn billing",
-        )
         audit = one("export_inventory", runtime)
         require(
             audit["complete"] is True and set(audit["turns"]) == {1, 2},
             "partial accounting export",
         )
-        require(len(audit["record_ids"]) == 10, "extra or missing accounting records")
+        require(len(audit["record_ids"]) == 12, "extra or missing accounting records")
         require(
             set(audit["record_ids"])
             == {
@@ -329,25 +436,52 @@ def assess(bundle, records, now=None):
                 for r in records
                 if r.get("runtime") == runtime
                 and r["kind"]
-                in {"dispatch", "result", "receipt", "settlement", "ledger"}
+                in {
+                    "dispatch",
+                    "result",
+                    "receipt",
+                    "settlement",
+                    "agent_turn",
+                    "native_totals",
+                }
             },
             "accounting inventory mismatch",
         )
         for kind, status in (("duplicate", 202), ("stale", 409), ("non_owner", 403)):
             check = one(kind, runtime)
-            same(first[0], check)
+            if kind == "non_owner":
+                active = (
+                    current[check["turn_seq"] - 1]
+                    if check["turn_seq"] in (1, 2)
+                    else None
+                )
+                require(active is not None, "non-owner target missing")
+                same(active[0], check)
+                ordered(active[0], check, active[1])
+                owner = active[0]["triggered_by"].strip().lower()
+                requester = check["requester"].strip().lower()
+                require(
+                    check["authenticated"] is True
+                    and bool(owner)
+                    and bool(requester)
+                    and check["triggered_by"].strip().lower() == owner
+                    and requester != owner,
+                    "non-owner needs an authenticated distinct requester",
+                )
+            else:
+                same(first[0], check)
             require(
                 check["http_status"] == status
                 and check["additional_relays"] == 0
                 and check["additional_settlements"] == 0
-                and check["additional_postings"] == 0
+                and check["additional_billed_turns"] == 0
                 and check["additional_destroys"] == 0,
                 f"{kind} side effects/status",
             )
             if kind == "duplicate":
                 ordered(first[1], check, successor[0])
-            else:
-                ordered(successor[0], check)
+            elif kind == "stale":
+                ordered(successor[0], check, successor[1])
         turns[runtime] = current
 
     require(
@@ -366,13 +500,35 @@ def assess(bundle, records, now=None):
         <= timedelta(seconds=30),
         "notification outside successor dispatch race",
     )
+    ordered(successor[0], notification, successor[1])
+    require(
+        notification["native_type"] == "result"
+        and notification["origin"]["kind"] == "task-notification"
+        and re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+            notification["native_result_id"],
+        )
+        and notification["native_session_id"] == old[4]["native_session_id"]
+        and notification["skip_log_locator"]
+        in {ref["locator"] for ref in notification["raw"]},
+        "notification lacks native identity or skip log",
+    )
+    require(
+        bool(notification["usage_ids"])
+        and notification["native_result_id"] != successor[1]["native_result_id"]
+        and not set(notification["usage_ids"]).intersection(
+            c["id"] for c in successor[1]["usage"]
+        ),
+        "notification attributed to successor result or usage",
+    )
     require(
         notification["ignored_by_dispatch_id"] == successor[0]["dispatch_id"]
-        and notification["additional_postings"] == 0
+        and notification["additional_billed_turns"] == 0
         and notification["successor_terminated"] is False,
         "stale Claude notification affected successor",
     )
 
+    fault = one("destroy_fallback")
     for outcome in (
         "requested",
         "confirmed",
@@ -392,7 +548,10 @@ def assess(bundle, records, now=None):
             <= {ref["path"] for ref in browser["raw"]},
             "browser capture lacks raw references",
         )
-        target = one("dispatch", browser["runtime"], browser["turn_seq"])
+        if outcome == "failed_unknown" and browser["session_id"] == fault["session_id"]:
+            target = {**fault, "at": fault["dispatched_at"]}
+        else:
+            target = one("dispatch", browser["runtime"], browser["turn_seq"])
         same(target, browser)
         require(
             browser["status_dispatch_id"] == target["dispatch_id"]
@@ -423,6 +582,33 @@ def assess(bundle, records, now=None):
                 < stamp(browser["stop_requested_at"])
                 <= stamp(browser["at"]),
                 "missing browser Stop request order",
+            )
+        if outcome == "failed_unknown":
+            backend = one("backend_stop")
+            same(target, backend)
+            require(
+                backend["runtime"] == browser["runtime"]
+                and browser["stop_outcome_id"] == backend["id"]
+                and backend["requested_at"] == browser["stop_requested_at"]
+                and stamp(backend["requested_at"])
+                < stamp(backend["at"])
+                <= stamp(browser["at"]),
+                "browser lacks matching backend Stop outcome",
+            )
+            require(
+                type(backend["http_status"]) is int
+                and (
+                    400 <= backend["http_status"] <= 599
+                    or (
+                        backend["http_status"] == 202
+                        and backend["terminal_result_available"] is False
+                        and backend["outcome"]
+                        in {"unknown", "terminal_result_unavailable"}
+                    )
+                )
+                and backend["outcome"]
+                in {"failed", "unknown", "terminal_result_unavailable"},
+                "backend Stop succeeded without unknown status",
             )
         if outcome == "requested":
             require(
@@ -460,6 +646,36 @@ def assess(bundle, records, now=None):
         delayed["held_until"] == first[1]["at"], "held interval lacks terminal boundary"
     )
 
+    require(
+        stamp(delayed["held_until"]) - stamp(delayed["queued_at"]) >= MIN_HOLD,
+        "requested-only hold is too short",
+    )
+    locators = {ref["locator"] for ref in delayed["raw"]}
+    require(
+        bool(delayed["hold_method"]["name"].strip())
+        and delayed["hold_method"]["locator"] in locators
+        and delayed["history_complete"] is True,
+        "delayed hold lacks method or complete history",
+    )
+    history = delayed["reservation_history"]
+    require(len(history) >= 2, "missing reservation history")
+    ordered(*history)
+    require(
+        history[0]["at"] == delayed["requested_at"]
+        and history[-1]["at"] == delayed["held_until"],
+        "reservation history does not cover hold",
+    )
+    for state in history:
+        require(
+            state["reservation_held"] is True
+            and state["capacity_held"] is True
+            and state["successor_admitted"] is False
+            and bool(state["reservation_id"])
+            and state["reservation_id"] == history[0]["reservation_id"]
+            and state["locator"] in locators,
+            "reservation released or successor admitted during hold",
+        )
+
     fault = one("destroy_fallback")
     require(
         fault["failure"] in {"timeout", "failed_relay"},
@@ -468,6 +684,10 @@ def assess(bundle, records, now=None):
     require(
         fault["session_id"] not in {t[0][0]["session_id"] for t in turns.values()},
         "fault must use separate isolated session",
+    )
+    require(
+        fault["guest_id"] not in {t[0][0]["guest_id"] for t in turns.values()},
+        "fault must use separate isolated guest",
     )
     require(all(fault.get(k) for k in IDENTITY), "fault dispatch identity missing")
     times = [
