@@ -628,7 +628,7 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
 - **Direct API calls.** The browser calls the API itself. The `-grimoire`
   HTTPRoute (`chart/templates/httproute-grimoire.yaml`) forwards each prefix
   in `cfIngress.grimoire.apiPrefixes` to the API port. The list is
-  `BROWSER_API_PREFIXES` in `grimoire/browser_lane.py`: the three Grimoire
+  `BROWSER_API_PREFIXES` in `grimoire/browser_lane.py`: the four Grimoire
   prefixes defined there and the four account-API prefixes in
   `auth/browser_cookie.py`. `/api/grimoire` and `/api/auth/platform` are never
   routed whole. `/api/grimoire/books` and `/api/grimoire/chunks/*/image` have
@@ -712,6 +712,37 @@ originates either header; the private sheets loader
 of the invitation flow and the account pages against the production gateway is
 outstanding (#7698). The port of the browser rehearsal harness in
 `projects/monolith/dev/grimoire` to the React app is in progress.
+
+### Feedback
+
+Every page header has a Feedback action. `POST /api/grimoire/feedback` stores
+the text (up to 2,000 characters), the in-app path, the campaign when the path
+has one, and the sender's verified email in `grimoire.feedback`. A campaign id
+must be one the sender belongs to. Each sender may store ten rows in any 24
+hours; the next request answers 429.
+
+Only operators read the rows, at `/grimoire/feedback`. The routes apply the
+lobby's `can_administer_accounts` rule (`operators` group) on every request.
+The lobby carries `new_feedback_count` for operators and zero for everyone
+else.
+
+An operator dismisses an item or files it. Filing creates one issue in
+`GITHUB_REPO` through `core.github.create_issue`, holding only the title and
+body the operator typed, the footer `Filed from Grimoire feedback.` and the
+labels `grimoire` and `feedback`. The issue carries no readiness label, so the
+factory's refine step picks it up. A GitHub failure answers 502 and leaves the
+row `new`; a row that is already filed or dismissed answers 409.
+
+**Why.** `jomcgi-org/homelab` is public. A friend's raw words can name people
+or a campaign, so nothing from the row is published: the dialog prefills the
+body with the text for the operator to edit, and the server sends only what
+comes back. The GitHub call runs before the row is marked, under a row lock,
+so two operators cannot file one item twice. It is a single attempt with no
+retry, because retrying a write whose answer was lost would file a duplicate.
+
+**Tested.** `grimoire/feedback_test.py` asserts on the captured GitHub payload
+and covers the rate limit, the operator rule and the failure paths.
+`core/github_test.py` covers `create_issue`.
 
 ## Friend onboarding and campaign ownership
 

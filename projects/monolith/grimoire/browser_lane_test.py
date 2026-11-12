@@ -135,6 +135,18 @@ def test_cookie_writes_require_the_configured_origin(browser, headers, status):
     assert response.status_code == status
 
 
+@pytest.mark.parametrize(
+    "headers,status", [({"origin": ORIGIN}, 201), ({"origin": "null"}, 403), ({}, 403)]
+)
+def test_feedback_writes_share_the_cookie_rules(browser, headers, status):
+    response = browser.post(
+        "/api/grimoire/feedback",
+        json={"text": "The dice feel slow.", "page": "/"},
+        headers={**_cookie(browser.token()), **headers},
+    )
+    assert response.status_code == status
+
+
 def test_repeated_origin_header_fails_closed(browser):
     response = browser.post(
         "/api/grimoire/campaigns",
@@ -195,6 +207,7 @@ def test_prefixes_match_whole_segments():
         "/api/grimoire/lobby",
         "/api/grimoire/campaigns",
         "/api/grimoire/invitations",
+        "/api/grimoire/feedback",
     )
     assert BROWSER_API_PREFIXES[: len(GRIMOIRE_API_PREFIXES)] == GRIMOIRE_API_PREFIXES
     assert is_browser_path("/api/grimoire/campaigns/abc/notes")

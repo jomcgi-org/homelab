@@ -3927,6 +3927,8 @@ class InvitationView(BaseModel):
 
 class LobbyView(BaseModel):
     can_administer_accounts: bool
+    # Feedback awaiting triage. Zero for everyone but an operator.
+    new_feedback_count: int = 0
     invitation_enrollment_enabled: bool = False
     can_create_game: bool = True
     user: LobbyUserView
@@ -3992,6 +3994,9 @@ def get_lobby(
     ).all()
     from auth.api import platform_enforcement_enabled, require_application_permission
 
+    from grimoire.feedback import new_feedback_count
+
+    operator = principal.has_group("operators")
     can_create = True
     if platform_enforcement_enabled():
         try:
@@ -4001,7 +4006,8 @@ def get_lobby(
     return LobbyView(
         can_create_game=can_create,
         invitation_enrollment_enabled=enrollment_enabled(),
-        can_administer_accounts=principal.has_group("operators"),
+        can_administer_accounts=operator,
+        new_feedback_count=new_feedback_count(session) if operator else 0,
         user=LobbyUserView(
             id=user.id, email=user.email, display_name=user.display_name
         ),

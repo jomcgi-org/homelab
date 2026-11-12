@@ -15,6 +15,7 @@ GRIMOIRE_API_PREFIXES = (
     "/api/grimoire/lobby",
     "/api/grimoire/campaigns",
     "/api/grimoire/invitations",
+    "/api/grimoire/feedback",
 )
 
 # Everything the gateway routes to the API port from the friends lane: the

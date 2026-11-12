@@ -7056,6 +7056,22 @@ py_test(
     ],
 )
 
+# In-app feedback: private intake, operator triage, and what reaches GitHub.
+py_test(
+    name = "grimoire_feedback_test",
+    srcs = ["grimoire/feedback_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 # The anonymous invitation landing and its signed-in acceptance endpoints.
 py_test(
     name = "grimoire_join_landing_test",

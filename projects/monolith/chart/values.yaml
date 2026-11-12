@@ -2124,6 +2124,7 @@ cfIngress:
       - /api/grimoire/lobby
       - /api/grimoire/campaigns
       - /api/grimoire/invitations
+      - /api/grimoire/feedback
       # The account pages. Never /api/auth/platform whole: its enrollment
       # routes are capability callbacks with no identity check.
       - /api/auth/platform/commands

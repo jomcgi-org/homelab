@@ -698,3 +698,69 @@ def test_fetch_merged_pull_requests_warns_at_page_cap(monkeypatch, caplog):
     assert len(pulls) == 2
     assert calls == 2
     assert "pagination hit the 2-page cap" in caplog.text
+
+
+def _issue_transport(monkeypatch, handler):
+    real_client = httpx.Client
+
+    def client(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(github.httpx, "Client", client)
+
+
+def test_create_issue_posts_exactly_the_given_fields(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-issue-token")
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(201, json={"number": 42, "html_url": "ignored"})
+
+    _issue_transport(monkeypatch, handler)
+
+    number = github.create_issue(
+        "owner/repo", "A title", "A body", ["one", "two"], user_agent="test-agent"
+    )
+
+    assert number == 42
+    assert len(seen) == 1
+    assert seen[0].method == "POST"
+    assert str(seen[0].url) == "https://api.github.com/repos/owner/repo/issues"
+    assert json.loads(seen[0].content) == {
+        "title": "A title",
+        "body": "A body",
+        "labels": ["one", "two"],
+    }
+    assert seen[0].headers["authorization"] == "Bearer fake-issue-token"
+    assert seen[0].headers["user-agent"] == "test-agent"
+
+
+@pytest.mark.parametrize(
+    "response,error",
+    [
+        (httpx.Response(403, json={"message": "no"}), httpx.HTTPStatusError),
+        (httpx.Response(301, headers={"location": "/x"}), httpx.HTTPStatusError),
+        (httpx.Response(201, json={"number": "42"}), ValueError),
+        (httpx.Response(201, json=[]), ValueError),
+        (httpx.Response(201, content=b"x" * 1_000_001), ValueError),
+    ],
+)
+def test_create_issue_fails_closed(monkeypatch, response, error):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return response
+
+    _issue_transport(monkeypatch, handler)
+
+    with pytest.raises(error):
+        github.create_issue("owner/repo", "t", "b", [], user_agent="test-agent")
+    assert len(calls) == 1
+
+
+def test_create_issue_rejects_a_malformed_repository(monkeypatch):
+    _issue_transport(monkeypatch, lambda request: pytest.fail("no request expected"))
+    with pytest.raises(ValueError):
+        github.create_issue("owner/repo/../x", "t", "b", [], user_agent="test-agent")
