@@ -28596,7 +28596,7 @@ def test_memory_sampling_only_occurs_when_read_window_is_emitted(monkeypatch, ca
     assert all(type(value) is int for value in sample["rollout_cache_entries"].values())
 
 
-def _saved_finish_case(monkeypatch):
+def _saved_finish_case(monkeypatch, *, saved_finish=True, landing_hold=True):
     from datetime import datetime, timedelta
     from factory.orchestration import factory_controls as controls
 
@@ -28624,32 +28624,34 @@ def _saved_finish_case(monkeypatch):
         head=head,
         deps=["implement_fix"],
     )
-    complete_feedback_node(
-        task,
-        policy,
-        "conductor_final",
-        {
-            "action": "finish",
-            "pr_number": 3,
-            "head_sha": head,
-            "reason": "Completed reviewed delivery",
-        },
-    )
-    with controls._locked_session() as (db, _):
-        controls._receipt(db, task["id"]).direction_json = json.dumps(
+    if saved_finish:
+        complete_feedback_node(
+            task,
+            policy,
+            "conductor_final",
             {
-                "landing_hold": {
-                    "actor": "operator",
-                    "reason": "Draft repository delivery only",
-                }
-            }
+                "action": "finish",
+                "pr_number": 3,
+                "head_sha": head,
+                "reason": "Completed reviewed delivery",
+            },
         )
+    if landing_hold:
+        with controls._locked_session() as (db, _):
+            controls._receipt(db, task["id"]).direction_json = json.dumps(
+                {
+                    "landing_hold": {
+                        "actor": "operator",
+                        "reason": "Draft repository delivery only",
+                    }
+                }
+            )
     task = conductor._task(task["id"])
     pr = {
         "number": 3,
         "node_id": "PR_3",
         "state": "open",
-        "draft": True,
+        "draft": landing_hold,
         "merged": False,
         "auto_merge": None,
         "body": "Closes #7",
@@ -28679,6 +28681,375 @@ def _saved_finish_case(monkeypatch):
     deadline = datetime.fromisoformat(before["deadline_at"])
     monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=7))
     return task, policy, pr, before
+
+
+def _approved_deadline_recovery(monkeypatch, *, fresh=True, start_status=None):
+    from factory.orchestration import factory_controls as controls
+
+    task, policy, pr, before = _saved_finish_case(
+        monkeypatch, saved_finish=False, landing_hold=False
+    )
+    admitted = datetime.fromisoformat(before["admitted_at"])
+    monkeypatch.setattr(controls, "_now", lambda: admitted + timedelta(seconds=60))
+    runs = conductor.graph.node_runs(task["id"])
+    evidence = conductor.verify_delivery(task, 3, runs, issue_number=7)
+    assert controls.finish_task(task["id"], "succeeded", "test", evidence=evidence)[
+        "ok"
+    ]
+    assert controls.request_landing_recovery(
+        task["id"], 3, pr["head"]["sha"], "merge_queue", "test"
+    )["ok"]
+    deadline = datetime.fromisoformat(controls.task_snapshot(task["id"])["deadline_at"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline - timedelta(seconds=1))
+    request = conductor._landing_recovery_requests(task["id"])[0]
+    conductor._record_landing_recovery_round(task["id"], request, 1)
+    if fresh:
+        complete_feedback_node(
+            task,
+            policy,
+            "correct_recovery",
+            {"pr_number": 3, "head_sha": pr["head"]["sha"]},
+            head=pr["head"]["sha"],
+        )
+        complete_feedback_node(
+            task,
+            policy,
+            "review_recovery",
+            {"pr_number": 3, "head_sha": pr["head"]["sha"], "verdict": "approve"},
+            head=pr["head"]["sha"],
+            deps=["correct_recovery"],
+        )
+    if start_status:
+        start_key = f"factory-node:{task['id']}:conductor_final:1"
+        assert controls.authorize_start(
+            task["id"], start_key, "test", model="opus", max_cost_usd=1
+        )["ok"]
+        if start_status == "uncertain":
+            assert controls.record_start_outcome(
+                task["id"], start_key, "uncertain", "test"
+            )["ok"]
+    before = controls.task_snapshot(task["id"])
+    monkeypatch.setattr(controls, "_now", lambda: deadline + timedelta(seconds=1))
+    monkeypatch.setattr(
+        conductor,
+        "_dispatch_ready",
+        lambda *a, **kw: pytest.fail("no execution after deadline"),
+    )
+    from factory.orchestration import factory_funding
+
+    monkeypatch.setattr(
+        factory_funding, "request", lambda *a, **kw: pytest.fail("no new allocation")
+    )
+    return task, policy, pr, before
+
+
+@pytest.mark.parametrize("auto_merge", [False, True])
+def test_recovery_approval_before_deadline_settles_without_planner_finish(
+    feedback_db, monkeypatch, auto_merge
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, pr, before = _approved_deadline_recovery(monkeypatch)
+    if auto_merge:
+        assert controls.request_control(
+            "enable_auto_merge",
+            "operator",
+            request_key="enable-landing",
+            expected_version=conductor._task(task["id"])["factory_control_version"],
+        )["ok"]
+    assert not any(
+        r["node_key"].startswith("conductor_")
+        for r in conductor.graph.node_runs(task["id"])
+    )
+    for _ in range(2):
+        conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == ("landing" if auto_merge else "succeeded")
+    assert after["evidence"]["head_sha"] == pr["head"]["sha"]
+    for key in (
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+        "policy",
+        "starts",
+    ):
+        assert after[key] == before[key]
+    with controls._read_session() as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "recovery_review_adopted",
+            )
+        ).all()
+        assert len(events) == 1
+        assert json.loads(events[0].detail_json)["head_sha"] == pr["head"]["sha"]
+
+
+def test_capacity_waiting_recovery_has_no_deadline_or_adoption(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_intake import admit_next, receive_issue
+
+    task, policy, pr, before = _saved_finish_case(
+        monkeypatch, saved_finish=False, landing_hold=False
+    )
+    admitted = datetime.fromisoformat(before["admitted_at"])
+    monkeypatch.setattr(controls, "_now", lambda: admitted + timedelta(seconds=60))
+    evidence = conductor.verify_delivery(
+        task, 3, conductor.graph.node_runs(task["id"]), issue_number=7
+    )
+    assert controls.finish_task(task["id"], "succeeded", "test", evidence=evidence)[
+        "ok"
+    ]
+    assert controls.set_control(
+        "configure", "operator", policy={**policy, "issue_numbers": [7, 8]}
+    )["ok"]
+    receive_issue(
+        "owner/repo",
+        8,
+        "Other work",
+        "Other work",
+        "https://github.com/owner/repo/issues/8",
+        "test",
+        task_class="bug-fix",
+    )
+    other = admit_next("scheduler")
+    assert other["ok"]
+    assert controls.request_landing_recovery(
+        task["id"], 3, pr["head"]["sha"], "merge_queue", "test"
+    ) == {"ok": False, "reason": "delivery_capacity", "pending": True}
+    request = conductor._landing_recovery_requests(task["id"])
+    assert len(request) == 1 and request[0]["deadline_at"] is None
+    with controls._read_session() as db:
+        assert controls._landing_recovery_deadline(db, task["id"]) is None
+    before = controls.task_snapshot(task["id"])
+    monkeypatch.setattr(controls, "_now", lambda: admitted + timedelta(days=2))
+    monkeypatch.setattr(
+        conductor,
+        "_dispatch_ready",
+        lambda *a, **kw: pytest.fail("capacity-waiting request cannot dispatch"),
+    )
+    for _ in range(2):
+        conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == "succeeded"
+    assert after["starts"] == before["starts"]
+    assert conductor._landing_recovery_requests(task["id"]) == request
+    assert controls.task_snapshot(other["task_id"])["state"] == "admitted"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "receipt",
+        "graph",
+        "run",
+        "barrier",
+        "decision",
+        "reserved",
+        "head",
+        "cancel",
+        "stopped",
+    ],
+)
+def test_recovery_deadline_rechecks_state_after_external_read(
+    feedback_db, monkeypatch, change
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.models import SwarmNodeRun, SwarmPlanVersion
+    from factory.orchestration.factory_models import FactoryStart
+
+    task, policy, pr, before = _approved_deadline_recovery(monkeypatch)
+    read = conductor.github_get
+    changed = False
+    raced = None
+
+    def changed_read(repo, path):
+        nonlocal changed, raced
+        result = read(repo, path)
+        if path.endswith("/status") and not changed:
+            changed = True
+            with controls._locked_session() as (db, control):
+                if change == "receipt":
+                    controls._receipt(db, task["id"]).direction_json = json.dumps(
+                        {
+                            "landing_hold": {
+                                "actor": "operator",
+                                "reason": "hold during verification",
+                            }
+                        }
+                    )
+                if change == "decision":
+                    monkeypatch.setattr(controls, "decision_in_flight", lambda *_: True)
+                if change == "cancel":
+                    controls._receipt(db, task["id"]).cancellation_requested = True
+                if change == "stopped":
+                    control.state = "stopped"
+                if change == "graph":
+                    version = db.exec(
+                        select(SwarmPlanVersion)
+                        .where(SwarmPlanVersion.task_id == task["id"])
+                        .order_by(SwarmPlanVersion.version.desc())
+                    ).first()
+                    version.version += 1
+                if change == "run":
+                    row = db.exec(
+                        select(SwarmNodeRun)
+                        .where(SwarmNodeRun.task_id == task["id"])
+                        .order_by(SwarmNodeRun.id.desc())
+                    ).first()
+                    row.head_sha = "b" * 40
+                if change == "barrier":
+                    controls._audit(
+                        db,
+                        "test",
+                        "landing_recovery_requested",
+                        task_id=task["id"],
+                        run_id_floor=999,
+                        pr_number=3,
+                        head_sha=pr["head"]["sha"],
+                    )
+                if change == "reserved":
+                    db.add(
+                        FactoryStart(
+                            task_id=task["id"],
+                            start_key="late-reservation",
+                            actor="test",
+                            model="opus",
+                            max_cost_usd=1,
+                            status="reserved",
+                        )
+                    )
+                if change == "head":
+                    pr["head"]["sha"] = "b" * 40
+            raced = controls.task_snapshot(task["id"])
+        return result
+
+    monkeypatch.setattr(conductor, "github_get", changed_read)
+    conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert changed
+    assert after["state"] == ("failed" if change == "head" else "admitted")
+    for key in (
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+    ):
+        assert after[key] == raced[key]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "stale",
+        "head",
+        "ci",
+        "foreign",
+        "base",
+        "nonindependent",
+        "landing_hold",
+        "decision",
+        "reserved",
+        "uncertain",
+        "read_failure",
+        "granted_pr",
+        "missing_grant",
+        "missing_round",
+        "stale_correction",
+    ],
+)
+def test_recovery_deadline_preserves_delivery_fences(feedback_db, monkeypatch, change):
+    import httpx
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.models import SwarmNodeRun
+
+    task, policy, pr, before = _approved_deadline_recovery(
+        monkeypatch,
+        fresh=change != "stale",
+        start_status=change if change in ("reserved", "uncertain") else None,
+    )
+    if change == "head":
+        pr["head"]["sha"] = "b" * 40
+    if change == "foreign":
+        pr["head"]["ref"] = "foreign"
+    if change == "base":
+        pr["base"]["ref"] = "other"
+    if change == "missing_grant":
+        pr["head"]["ref"] = "factory/t-another-delivery"
+    read = conductor.github_get
+    if change in ("ci", "read_failure"):
+
+        def changed_read(repo, path):
+            if change == "read_failure":
+                raise httpx.ConnectError("temporary read failure")
+            if path.endswith("/status"):
+                return {"statuses": [{"context": "pr-checks", "state": "failure"}]}
+            return read(repo, path)
+
+        monkeypatch.setattr(conductor, "github_get", changed_read)
+    if change == "decision":
+        monkeypatch.setattr(controls, "decision_in_flight", lambda *_: True)
+    with controls._locked_session() as (db, _):
+        if change == "granted_pr":
+            controls._receipt(db, task["id"]).direction_json = json.dumps(
+                {"delivery_pr_number": 4, "delivery_branch": pr["head"]["ref"]}
+            )
+        if change == "missing_round":
+            event = db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task["id"],
+                    FactoryAudit.action == "landing_recovery_round",
+                )
+            ).one()
+            db.delete(event)
+        if change == "landing_hold":
+            controls._receipt(db, task["id"]).direction_json = json.dumps(
+                {"landing_hold": {"actor": "operator", "reason": "test"}}
+            )
+        if change == "nonindependent":
+            runs = db.exec(
+                select(SwarmNodeRun)
+                .where(SwarmNodeRun.task_id == task["id"])
+                .order_by(SwarmNodeRun.id)
+            ).all()
+            runs[-1].session_id = runs[-2].session_id
+        if change == "stale_correction":
+            row = db.exec(
+                select(SwarmNodeRun).where(
+                    SwarmNodeRun.task_id == task["id"],
+                    SwarmNodeRun.node_key == "correct_recovery",
+                )
+            ).one()
+            row.head_sha = "b" * 40
+    conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])
+    assert after["state"] == (
+        "uncertain"
+        if change == "uncertain"
+        else "admitted"
+        if change in ("landing_hold", "decision", "reserved", "read_failure")
+        else "failed"
+    )
+    for key in (
+        "turns_used",
+        "planner_turns_used",
+        "committed_cost_usd",
+        "deadline_at",
+        "starts",
+    ):
+        assert after[key] == before[key]
+    assert after["unresolved_starts"] == (
+        1 if change in ("reserved", "uncertain") else 0
+    )
+    if change == "read_failure":
+        monkeypatch.setattr(conductor, "github_get", read)
+        conductor.reconcile_task(task["id"], policy, object())
+        assert controls.task_snapshot(task["id"])["state"] == "succeeded"
 
 
 def test_saved_finish_after_deadline_settles_without_execution(

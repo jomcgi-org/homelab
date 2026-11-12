@@ -6742,13 +6742,18 @@ def _settle_paused_task(
     return closed_landing_hold
 
 
-def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
+def _adopt_saved_finish(
+    task: dict, policy: dict, runs: list[dict], *, recovery_review: bool = False
+) -> bool:
     """Reconcile completed evidence before admission of any new paid work.
 
     A deadline fences starts, not already completed results. No model decision
     is replayed here: gates, graph edits and funding remain on their old path.
     Draft acceptance requires an existing typed landing hold; prose cannot
     create one. A candidate awaiting valid evidence blocks new planning.
+    At the fixed recovery deadline, a completed post-barrier review can supply
+    the candidate without a planner finish. Definitively invalid evidence then
+    leaves the expired task eligible for ordinary failed settlement.
     """
     from factory.orchestration import factory_controls as controls
     from factory.orchestration.factory_refine import task_class_for
@@ -6763,20 +6768,43 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
         if r["node_key"].startswith("conductor_")
         and not r["node_key"].startswith("conductor_funding_")
     ]
-    if not planners:
-        return False
-    latest = max(planners, key=lambda r: r["id"])
-    decision = _artifact(latest)
-    if latest["status"] != "succeeded" or decision.get("action") != "finish":
-        return False
-    cause = f"factory-decision:{latest['node_key']}:{latest['attempt']}"
-    if _decision_processed(task["id"], cause) or decision.get("gate") is not None:
-        return False
+    barrier = None
+    if recovery_review:
+        if _landing_recovery_settlement_held(task["id"]):
+            return True
+        barrier = controls.landing_recovery_barrier(task["id"])
+        if not barrier or not barrier["round_recorded"]:
+            return False
+        reviews = [
+            r
+            for r in runs
+            if r["node_key"].startswith("review_")
+            and r["id"] > barrier["run_id_floor"]
+            and r["status"] == "succeeded"
+            and _artifact(r).get("pr_number") == barrier["pr_number"]
+        ]
+        if not reviews:
+            return False
+        latest = max(reviews, key=lambda r: r["id"])
+        decision = _artifact(latest)
+        cause = f"factory-recovery-review:{barrier['request_id']}:{latest['id']}"
+    else:
+        if not planners:
+            return False
+        latest = max(planners, key=lambda r: r["id"])
+        decision = _artifact(latest)
+        if latest["status"] != "succeeded" or decision.get("action") != "finish":
+            return False
+        cause = f"factory-decision:{latest['node_key']}:{latest['attempt']}"
+        if _decision_processed(task["id"], cause) or decision.get("gate") is not None:
+            return False
     revision = graph.current_version(task["id"])
     nodes = graph.load_graph(task["id"])
     planner = next((n for n in nodes if n["node_key"] == latest["node_key"]), None)
     # An old proposal cannot settle work added or discarded after its snapshot.
-    if planner is None or planner["created_in_version"] != revision:
+    if not recovery_review and (
+        planner is None or planner["created_in_version"] != revision
+    ):
         return False
     newest = {r["node_key"]: r for r in sorted(runs, key=lambda r: r["id"])}
     if any(
@@ -6786,7 +6814,7 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
         and newest.get(n["node_key"], {}).get("status") != "succeeded"
         for n in nodes
     ):
-        return True
+        return not recovery_review
     with controls._read_session() as db:
         receipt = controls._receipt(db, task["id"])
         receipt_identity = receipt.model_dump() if receipt else None
@@ -6801,7 +6829,7 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
             issue_number=task.get("issue_number"),
         )
         if decision.get("head_sha", evidence["head_sha"]) != evidence["head_sha"]:
-            return True
+            return not recovery_review
         with controls._locked_session() as (db, control):
             graph._lock_task(db, task["id"])
             fresh = _task(task["id"], session=db)
@@ -6842,6 +6870,17 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
                 ).first()
                 is not None
                 or _landing_recovery_requests(task["id"], session=db)
+                or (
+                    recovery_review
+                    and (
+                        controls.landing_recovery_barrier(task["id"], session=db)
+                        != barrier
+                        or controls.landing_held(controls._receipt(db, task["id"]))
+                        or controls.decision_in_flight(
+                            db, controls._receipt(db, task["id"]).id
+                        )
+                    )
+                )
             ):
                 return True
             # Revalidate the full delivery after locking, including current CI,
@@ -6874,15 +6913,21 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
                 controls._audit(
                     db,
                     ACTOR,
-                    "saved_finish_adopted",
+                    "recovery_review_adopted"
+                    if recovery_review
+                    else "saved_finish_adopted",
                     task_id=task["id"],
                     cause=cause,
                     run_id=latest["id"],
                     graph_revision=revision,
                     head_sha=evidence["head_sha"],
                 )
+            elif recovery_review and result.get("reason") == "landing_recovery_pending":
+                return False
         return True
-    except (ValueError, httpx.HTTPError):
+    except ValueError:
+        return not recovery_review
+    except httpx.HTTPError:
         # Missing/temporarily unreadable evidence never authorizes new work or
         # loses a completed result. Existing holds remain independently binding.
         return True
@@ -7094,7 +7139,12 @@ def reconcile_task(
         not permission["ok"]
         and permission["reason"]
         in {"task_deadline", "landing_recovery_deadline", "funding_lease_due"}
-        and _adopt_saved_finish(task, policy, runs)
+        and _adopt_saved_finish(
+            task,
+            policy,
+            runs,
+            recovery_review=permission["reason"] == "landing_recovery_deadline",
+        )
     ):
         return
     if not permission["ok"] and permission["reason"] == "task_paused":

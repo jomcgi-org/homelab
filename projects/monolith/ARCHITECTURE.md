@@ -772,6 +772,12 @@ swarm coverage must stay explicit (#5983). See [permit boundaries](factory/orche
 fences can then strand it indefinitely; elapsed time or a missing binding alone
 cannot prove no delivery (#6285). See [execution](factory/orchestration/FACTORY.md#execution-and-evidence).
 
+**Why.** A fresh recovery approval can complete before the fixed deadline while
+the planner finish has not started. Deadline reconciliation verifies that head
+before failure and uses the existing locked finish owner (#7710). Deterministic
+regressions target zero failed settlements with valid fresh approval. Production
+acceptance remains staged on #7710 until the authorized rollout is verified.
+
 **Why.** Zero local turns do not prove no guest ran. Bound-zero-turn recovery
 requires a terminal owning workflow, a run and start still active and unpriced,
 and a session owning one bound guest with zero turns and one matching running or
