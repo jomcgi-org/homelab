@@ -83,7 +83,9 @@ what the same person already holds.
 `projects/platform/authentik/blueprints/` define one OAuth2 provider and
 one application per lane (`dev`, `kargo`, `preview`, `moving`, `grimoire`, `mcp-friends`,
 `mcp-agents`), each bound to a group (`homelab-admin`, `family` or `kg-agents`) or, for
-Grimoire, to the `grimoire-human-access` policy. Renaming a group in authentik
+Grimoire, to the `grimoire-human-access` policy. The `mcp-friends`
+application is the exception: no blueprint creates it, and `mcp-auth.yaml`
+only binds groups to it and patches its provider's scope mappings. Renaming a group in authentik
 silently breaks every lane bound to it: the `groups` claim is matched by
 name. authentik runs on the hub with its own CNPG cluster and publishes
 `auth.jomcgi.dev` with no `SecurityPolicy`, because the login and setup
