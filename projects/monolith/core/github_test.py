@@ -1,5 +1,6 @@
 """Tests for shared GitHub repository configuration and client."""
 
+import asyncio
 import importlib
 import json
 import logging
@@ -698,3 +699,130 @@ def test_fetch_merged_pull_requests_warns_at_page_cap(monkeypatch, caplog):
     assert len(pulls) == 2
     assert calls == 2
     assert "pagination hit the 2-page cap" in caplog.text
+
+
+def _issue_transport(monkeypatch, handler):
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(github.httpx, "AsyncClient", client)
+
+
+def test_create_issue_posts_exactly_the_given_fields(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-issue-token")
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(201, json={"number": 42, "html_url": "ignored"})
+
+    _issue_transport(monkeypatch, handler)
+
+    number = github.create_issue(
+        "owner/repo", "A title", "A body", ["one", "two"], user_agent="test-agent"
+    )
+
+    assert number == 42
+    assert len(seen) == 1
+    assert seen[0].method == "POST"
+    assert str(seen[0].url) == "https://api.github.com/repos/owner/repo/issues"
+    assert json.loads(seen[0].content) == {
+        "title": "A title",
+        "body": "A body",
+        "labels": ["one", "two"],
+    }
+    assert seen[0].headers["authorization"] == "Bearer fake-issue-token"
+    assert seen[0].headers["user-agent"] == "test-agent"
+    assert seen[0].extensions["timeout"] == {
+        "connect": 2,
+        "write": 2,
+        "read": 3,
+        "pool": 1,
+    }
+    assert github._ISSUE_WRITE_TIMEOUT_SECONDS == 8
+
+
+@pytest.mark.parametrize(
+    "response,error",
+    [
+        (httpx.Response(403, json={"message": "no"}), httpx.HTTPStatusError),
+        (httpx.Response(301, headers={"location": "/x"}), httpx.HTTPStatusError),
+        (httpx.Response(201, json={"number": "42"}), ValueError),
+        (httpx.Response(201, json=[]), ValueError),
+        (httpx.Response(201, content=b"x" * 1_000_001), ValueError),
+    ],
+)
+def test_create_issue_fails_closed(monkeypatch, response, error):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return response
+
+    _issue_transport(monkeypatch, handler)
+
+    with pytest.raises(error):
+        github.create_issue("owner/repo", "t", "b", [], user_agent="test-agent")
+    assert len(calls) == 1
+
+
+def test_create_issue_rejects_a_malformed_repository(monkeypatch):
+    _issue_transport(monkeypatch, lambda request: pytest.fail("no request expected"))
+    with pytest.raises(ValueError):
+        github.create_issue("owner/repo/../x", "t", "b", [], user_agent="test-agent")
+
+
+def test_create_issue_propagates_read_timeout_without_retry(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("response lost", request=request)
+
+    _issue_transport(monkeypatch, handler)
+    with pytest.raises(httpx.ReadTimeout, match="response lost"):
+        github.create_issue("owner/repo", "t", "b", [], user_agent="test-agent")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["headers", "body"])
+def test_create_issue_total_deadline_cancels_io(monkeypatch, phase):
+    calls = []
+    cancelled = []
+    closed = []
+    chunks = []
+
+    class DrippingResponse(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            try:
+                for _ in range(50):
+                    chunks.append(b" ")
+                    yield b" "
+                    await asyncio.sleep(0.005)
+                yield b'{"number": 42}'
+            finally:
+                cancelled.append("body")
+
+        async def aclose(self):
+            closed.append(True)
+
+    async def handler(request):
+        calls.append(request)
+        if phase == "headers":
+            try:
+                await asyncio.sleep(0.25)
+            finally:
+                cancelled.append("headers")
+        return httpx.Response(201, stream=DrippingResponse())
+
+    _issue_transport(monkeypatch, handler)
+    monkeypatch.setattr(github, "_ISSUE_WRITE_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(httpx.ReadTimeout, match="deadline exceeded"):
+        github.create_issue("owner/repo", "t", "b", [], user_agent="test-agent")
+    assert len(calls) == 1
+    assert cancelled == [phase]
+    if phase == "body":
+        assert chunks
+        assert closed == [True]

@@ -20,6 +20,9 @@ import { gateway, paths } from "../../app/paths";
 import { useAction } from "../../app/useAction";
 import { CampaignCard } from "./CampaignCard";
 
+const inboxLabel = (count: number) =>
+  count > 0 ? `Feedback inbox (${count})` : "Feedback inbox";
+
 /** The signed-in home: invitations, campaigns, and starting a new one. */
 export function Lobby() {
   const lobby = useLobby();
@@ -31,7 +34,13 @@ export function Lobby() {
         <>
           <Button label="Character sheets" href={paths.sheets()} />
           {lobby.data?.can_administer_accounts && (
-            <Button label="Accounts" href={paths.platform} />
+            <>
+              <Button label="Accounts" href={paths.platform} />
+              <Button
+                label={inboxLabel(lobby.data.new_feedback_count ?? 0)}
+                href={paths.feedback}
+              />
+            </>
           )}
           <Button label="Sign out" variant="ghost" href={gateway.signOut} />
         </>

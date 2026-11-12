@@ -16,6 +16,7 @@ API_PREFIXES = [
     "/api/grimoire/lobby",
     "/api/grimoire/campaigns",
     "/api/grimoire/invitations",
+    "/api/grimoire/feedback",
     "/api/auth/platform/commands",
     "/api/auth/platform/invitations",
     "/api/auth/platform/management",

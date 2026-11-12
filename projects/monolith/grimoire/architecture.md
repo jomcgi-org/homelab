@@ -628,7 +628,7 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
 - **Direct API calls.** The browser calls the API itself. The `-grimoire`
   HTTPRoute (`chart/templates/httproute-grimoire.yaml`) forwards each prefix
   in `cfIngress.grimoire.apiPrefixes` to the API port. The list is
-  `BROWSER_API_PREFIXES` in `grimoire/browser_lane.py`: the three Grimoire
+  `BROWSER_API_PREFIXES` in `grimoire/browser_lane.py`: the four Grimoire
   prefixes defined there and the four account-API prefixes in
   `auth/browser_cookie.py`. `/api/grimoire` and `/api/auth/platform` are never
   routed whole. `/api/grimoire/books` and `/api/grimoire/chunks/*/image` have
@@ -710,8 +710,56 @@ originates either header; the private sheets loader
 (`frontend/src/routes/private/grimoire/+page.server.js`) copies
 `x-grimoire-token` only when an incoming request carries it. Live verification
 of the invitation flow and the account pages against the production gateway is
-outstanding (#7698). The port of the browser rehearsal harness in
-`projects/monolith/dev/grimoire` to the React app is in progress.
+outstanding (#7698). The browser rehearsal harness in
+`projects/monolith/dev/grimoire` drives the React app.
+
+### Feedback
+
+Every page header has a Feedback action. `POST /api/grimoire/feedback` stores
+the text (up to 2,000 characters), the in-app path, the campaign when the path
+has one, and the sender's verified email in `grimoire.feedback`. A campaign
+the sender does not belong to is dropped from the row. Each sender may
+store ten rows in any 24 hours; the next request answers 429. An advisory
+transaction lock per sender serializes the count and the insert through commit.
+The count takes a fresh READ COMMITTED snapshot after lock acquisition. A
+pathname cannot carry a host, query, fragment, backslash or control character.
+
+Only operators read the rows, at `/grimoire/feedback`. The routes apply the
+lobby's `can_administer_accounts` rule (`operators` group) on every request.
+The lobby carries `new_feedback_count` for operators and zero for everyone
+else.
+
+An operator dismisses an item or files it. Filing creates one issue in
+`GITHUB_REPO` through `core.github.create_issue`, holding only the title and
+body the operator typed, the footer `Filed from Grimoire feedback.` and the
+labels `grimoire` and `feedback`. The issue carries no readiness label, so the
+factory's refine step picks it up. A GitHub failure answers 502 and leaves the
+row `new`; a row that is already filed or dismissed answers 409.
+
+**Why.** `jomcgi-org/homelab` is public. A friend's raw words can name people
+or a campaign, and the factory reads the issue, so nothing from the row is
+published: the dialog shows the private text separately for reference with an
+initially empty, required public body. This staged repository delivery explicitly
+rescopes the original prefilled-body detail to preserve the privacy boundary.
+Operational acceptance remains outstanding. The server sends only what the
+operator typed. The GitHub call runs before the row is marked, under a row lock,
+so two operators cannot file one item twice. It is a single attempt with no
+retry, because retrying a write whose answer was lost would file a duplicate.
+A lost response or a database failure after publication returns a 502 warning
+to reconcile GitHub before filing again. The GitHub request has an eight-second
+overall deadline, including streamed response reads, inside the browser's
+15-second budget. If the browser times out, loses the connection or receives
+an unreadable gateway response, filing shows the same reconciliation warning.
+Neither path retries automatically.
+
+**Tested.** `grimoire/feedback_test.py` asserts on the captured GitHub payload
+and covers the rate limit, the operator rule and the failure paths.
+`core/github_test.py` covers `create_issue`.
+`grimoire/feedback_postgres_test.py` uses the ephemeral PostgreSQL migration
+harness and separate connections to cover simultaneous quota requests, the
+rolling boundary, sender isolation, concurrent resolution and public-reader
+privileges. The concurrency tests pause after count or row locking and inspect
+PostgreSQL's waiters before releasing the first transaction.
 
 ## Friend onboarding and campaign ownership
 

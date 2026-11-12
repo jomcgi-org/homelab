@@ -13,6 +13,7 @@ import {
 import { Link } from "@astryxdesign/core/Link";
 import { Text } from "@astryxdesign/core/Text";
 import { useEffect } from "react";
+import { SendFeedback } from "./SendFeedback";
 import { useSignIn } from "./useSignIn";
 
 interface PageProps {
@@ -31,7 +32,8 @@ interface PageProps {
 
 /**
  * The frame every screen renders inside: back link, eyebrow, title, actions,
- * and the sign-in notice. Screens supply only their content.
+ * the Feedback action and the sign-in notice. Screens supply only their
+ * content.
  */
 export function Page({
   title,
@@ -66,11 +68,10 @@ export function Page({
                 <Heading level={1}>{title}</Heading>
               </VStack>
             </StackItem>
-            {actions && (
-              <HStack gap={2} wrap="wrap" hAlign="end">
-                {actions}
-              </HStack>
-            )}
+            <HStack gap={2} wrap="wrap" hAlign="end">
+              {actions}
+              <SendFeedback />
+            </HStack>
           </HStack>
         </LayoutHeader>
       }

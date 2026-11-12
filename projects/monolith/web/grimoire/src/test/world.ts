@@ -7,6 +7,7 @@
 import type { OtherRoutes, Routes } from "./backend";
 import { characters, invitation, lobby, members } from "./fixtures";
 import { sessionRoutes } from "./fixtures/session";
+import { feedbackRoutes } from "./fixtures/feedback";
 import { handoutsRoutes } from "./fixtures/handouts";
 import { inventoryRoutes } from "./fixtures/inventory";
 import { joinOther } from "./fixtures/join";
@@ -26,6 +27,7 @@ export const world: Routes = {
   ],
   "GET /campaigns/{campaign_id}/join-links": { status: 503 },
   ...sessionRoutes,
+  ...feedbackRoutes,
   ...handoutsRoutes,
   ...inventoryRoutes,
   ...journalRoutes,

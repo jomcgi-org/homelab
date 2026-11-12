@@ -13,6 +13,7 @@ export const paths = {
   joinAccept: "/join/accept",
   platform: "/platform",
   profile: "/platform/profile",
+  feedback: "/feedback",
   entity: (campaignId: string, entityId: string) =>
     `/campaigns/${campaignId}/entities/${entityId}`,
 };

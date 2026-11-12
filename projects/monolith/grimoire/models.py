@@ -1587,6 +1587,60 @@ class KnowledgeGrant(SQLModel, table=True):
     )
 
 
+FeedbackStatus = Literal["new", "filed", "dismissed"]
+
+
+class Feedback(SQLModel, table=True):
+    """In-app feedback awaiting operator triage. Mirrors
+    chart/migrations/20261112120000_grimoire_feedback.sql - keep in sync.
+
+    Private: `author_email` and `text` leave only through the operator triage
+    API and are never sent to GitHub.
+    """
+
+    __tablename__ = "feedback"
+    __table_args__ = (
+        Index("feedback_status_created_idx", "status", "created_at"),
+        Index("feedback_author_created_idx", "author_email", "created_at"),
+        CheckConstraint(
+            "status IN ('new', 'filed', 'dismissed')", name="feedback_status_chk"
+        ),
+        CheckConstraint("length(text) BETWEEN 1 AND 2000", name="feedback_text_chk"),
+        CheckConstraint("length(page) <= 200", name="feedback_page_chk"),
+        CheckConstraint(
+            "(status = 'filed') = (issue_number IS NOT NULL)",
+            name="feedback_issue_chk",
+        ),
+        CheckConstraint(
+            "(status = 'new') = (resolved_at IS NULL)", name="feedback_resolved_chk"
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    author_email: str = Field(sa_column=Column(String, nullable=False))
+    campaign_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.campaign.id", ondelete="SET NULL"),
+    )
+    page: str = Field(sa_column=Column(String, nullable=False))
+    text: str = Field(sa_column=Column(String, nullable=False))
+    status: FeedbackStatus = Field(
+        default="new", sa_column=Column(String, nullable=False)
+    )
+    issue_number: int | None = Field(default=None, sa_column=Column(Integer))
+    resolved_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
 # Entity types with no row here (faction, deity, item) are spine-only per
 # ADR 011: extraction can emit them but no typed detail table exists yet.
 ENTITY_DETAIL_MODELS: dict[str, type[SQLModel]] = {

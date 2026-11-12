@@ -60,6 +60,7 @@ export const invitation: InvitationView = {
 
 export const lobby = (overrides: Partial<LobbyView> = {}): LobbyView => ({
   can_administer_accounts: false,
+  new_feedback_count: 0,
   invitation_enrollment_enabled: false,
   can_create_game: true,
   user: {

@@ -107,6 +107,38 @@ export interface DmVoiceView {
   speaker_name?: string | null;
 }
 
+export interface FeedbackIssue {
+  issue_number: number;
+  issue_url: string;
+}
+
+export interface FeedbackIssueRequest {
+  title: string;
+  body: string;
+}
+
+export interface FeedbackReceipt {
+  id: string;
+}
+
+export interface FeedbackRequest {
+  text: string;
+  page: string;
+  campaign_id?: string | null;
+}
+
+export interface FeedbackView {
+  id: string;
+  created_at: string;
+  author: string;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  page: string;
+  text: string;
+  status: "new" | "filed" | "dismissed";
+  issue_number: number | null;
+}
+
 export interface GameSessionUpdateRequest {
   status: "active" | "paused" | "ended";
 }
@@ -252,6 +284,7 @@ export interface LobbyUserView {
 
 export interface LobbyView {
   can_administer_accounts: boolean;
+  new_feedback_count?: number;
   invitation_enrollment_enabled?: boolean;
   can_create_game?: boolean;
   user: LobbyUserView;
@@ -714,6 +747,26 @@ export interface Operations {
     query: undefined;
     body: undefined;
     response: undefined;
+  };
+  "GET /feedback": {
+    query: {status?: "new" | "filed" | "dismissed";};
+    body: undefined;
+    response: Array<FeedbackView>;
+  };
+  "POST /feedback": {
+    query: undefined;
+    body: FeedbackRequest;
+    response: FeedbackReceipt;
+  };
+  "POST /feedback/{feedback_id}/dismiss": {
+    query: undefined;
+    body: undefined;
+    response: undefined;
+  };
+  "POST /feedback/{feedback_id}/file": {
+    query: undefined;
+    body: FeedbackIssueRequest;
+    response: FeedbackIssue;
   };
   "POST /invitations/{invitation_id}/{decision}": {
     query: undefined;
