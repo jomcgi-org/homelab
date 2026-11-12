@@ -2744,6 +2744,51 @@ def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
     assert not audits(db, "landing_recovery_requested")
 
 
+def test_released_hold_refusal_no_longer_keeps_the_delivery_out_of_arming(
+    db, monkeypatch
+):
+    delivered(db, "t-held", 11, 3)
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, "t-held"
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    pulls = {3: pull(3)}
+    github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    assert (
+        audits(db, "merge_arm_refused", "t-held")[0]["reason"] == "receipt_landing_held"
+    )
+    # Releasing the hold leaves the old refusal in the audit trail. It must not
+    # keep the delivery refused forever.
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-held").direction_json = "{}"
+    [item] = landing._deliveries(POLICY)
+    assert item["refusal"] is None
+    pulls[3] = {**pulls[3], "mergeable": False}
+    landing.landing_tick(POLICY)
+    [request] = audits(db, "landing_recovery_requested", "t-held")
+    assert request["source"] == "delivered_pr"
+    assert len(audits(db, "merge_arm_refused", "t-held")) == 1
+
+
+def test_deferred_github_read_skips_one_item_without_aborting_the_tick(db, monkeypatch):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-held", 11, 3)
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, "t-held"
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    item = landing._deliveries(POLICY)[0]
+
+    def deferred(*_args, **_kwargs):
+        raise GitHubReadDeferred("deferred")
+
+    monkeypatch.setattr(landing, "github_get", deferred)
+    # Fails closed for this item, and does not raise into the landing tick.
+    assert landing._enforce_landing_hold(POLICY["repo"], item) is True
+
+
 @pytest.mark.parametrize("entry", ["auto-merge", "queue"])
 def test_typed_unmerged_scope_prevents_landing_with_auto_merge_enabled(
     db, monkeypatch, entry

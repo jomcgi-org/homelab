@@ -2978,6 +2978,17 @@ measure is zero admitted receipts with `landing_recovery_expired` and no
 unresolved starts older than one tick. Revert if a settled task loses a
 delivery that a recovery round would still have landed.
 
+**Why a released hold no longer keeps its refusal:** on 2026-11-12 #7694 and
+#7329 stayed out of arming for hours after their landing holds were released.
+`_enforce_landing_hold` had recorded `receipt_landing_held` on each visit, and
+only a new recovery request starts a new landing epoch, so `_deliveries` kept
+returning that stale refusal and `_arm` never ran. A `receipt_landing_held`
+refusal is now ignored once the receipt is no longer held; the next tick
+re-enforces any remaining hold. A `GitHubReadDeferred` cooldown in hold
+enforcement or the queue fence now skips one item instead of aborting the
+tick. Measure: released receipts still refused `receipt_landing_held`,
+baseline 2, expected 0. Revert if a held receipt arms.
+
 **Why a settled recovery no longer holds its receipt:** on 2026-11-12 #7547's
 recovery round settled the delivery with a fresh exact-head approval, then its
 fixed deadline passed. `_recovery_held` treated any expired deadline as a

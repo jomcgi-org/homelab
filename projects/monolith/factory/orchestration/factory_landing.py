@@ -37,6 +37,7 @@ from factory.orchestration.factory_controls import (
     request_landing_recovery,
     finish_task,
 )
+from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 from factory.orchestration.factory_controls import (
     operator_landing_target as operator_target,
@@ -493,11 +494,20 @@ def _deliveries(
         audits = state[row.task_id]
         from factory.orchestration.factory_controls import landing_held
 
+        held = landing_held(row)
+        refusal = (
+            audits["merge_arm_refused"][-1] if audits["merge_arm_refused"] else None
+        )
         if (
-            audits["merge_arm_refused"]
-            and not include_refused
-            and not landing_held(row)
+            refusal is not None
+            and refusal.get("reason") == "receipt_landing_held"
+            and not held
         ):
+            # A hold refusal answers the hold, not the delivery. Once the hold is
+            # released, the next tick re-enforces any remaining hold and
+            # otherwise arms or recovers as usual.
+            refusal = None
+        if refusal is not None and not include_refused and not held:
             continue
         armed, ejected = audits["merge_armed"], audits["merge_ejected"]
         touched = bool(
@@ -541,9 +551,7 @@ def _deliveries(
                     and not audits["landing_recovery_round"]
                     else None
                 ),
-                "refusal": audits["merge_arm_refused"][-1]
-                if audits["merge_arm_refused"]
-                else None,
+                "refusal": refusal,
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
@@ -1022,7 +1030,7 @@ def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) 
             _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
         else:
             _scope_wait(item, refusal)
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, ValueError, GitHubReadDeferred) as exc:
         _error(item["task_id"], "scoped_landing", exc)
         item["refused"] = True
     return True
@@ -1743,7 +1751,9 @@ def _enforce_landing_hold(repo: str, item: dict) -> bool:
                 raise ValueError("held delivery remains queued")
         _refuse(item, "receipt_landing_held")
         return True
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, ValueError, GitHubReadDeferred) as exc:
+        # A read deferred by the rate-limit cooldown observed nothing. Skip the
+        # item this tick rather than abort every delivery behind it.
         _error(item["task_id"], "landing_hold", exc)
         return True
 
