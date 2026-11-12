@@ -1,7 +1,7 @@
 """The single home for every grimoire-chat budget check (ADR 005, layer 2+4).
 
-A verbatim copy of the retired notes chat's ``chat_public/limits.py`` (the
-budgets are corpus-agnostic); the ``CHAT_PUBLIC_*`` env vars keep their name.
+Adapted from the retired notes chat's budgets; the ``CHAT_PUBLIC_*`` env vars
+keep their name.
 There is no ``if len(x) > ...`` anywhere else in ``grimoire_chat``: every
 per-session and per-message ceiling is enforced here, so the limits are auditable
 in one place and the tests assert against one set of knobs.
@@ -9,18 +9,18 @@ in one place and the tests assert against one set of knobs.
 Env vars are DELIBERATELY the shared ``CHAT_PUBLIC_*`` names, not renamed. This is
 a hardening choice, not laziness:
 
-- The GPU reserved-headroom control (``CHAT_PUBLIC_ADVISORY_CLASSID`` +
+- The concurrency control (``CHAT_PUBLIC_ADVISORY_CLASSID`` +
   ``CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT``) is a CLUSTER-WIDE Postgres advisory-lock
-  namespace. Sharing the SAME classid + ceiling with chat_public means the two
-  public chat surfaces contend for the SAME pool of in-flight slots, so aggregate
-  public inference against the shared vLLM stays capped at GLOBAL_MAX_CONCURRENT
-  and is NOT doubled by adding a second surface. A separate namespace would
-  silently double public GPU load and erode the reservation for trusted callers.
+  namespace. The checked-in hub overlay uses hosted Spark inference and a
+  concurrency ceiling of one. The slots bound concurrent provider requests and
+  anonymous spend, including across public pods. They reserve no local GPU
+  capacity. Reusing the namespace preserves one aggregate pool for callers
+  using these shared knobs.
 - The per-session/per-message budgets sharing the same env vars means one uniform
   public policy across both surfaces, which the chart configures once.
 
 The chart supplies these via env vars on the public binary; changing a default
-here means grepping the test tree for the old value (per CLAUDE.md).
+here means grepping the test tree for the old value (per AGENTS.md).
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "180
 # No per-IP session-mint cap: Turnstile is anonymous proof-of-humanity, not a
 # user identity, and a per-IP cap mostly penalises NAT-shared legitimate users
 # without stopping IP-rotating abusers. The real protections are aggregate (the
-# global circuit breaker below + the Phase 3 reserved-headroom semaphore) plus
+# global circuit breaker below) plus
 # the per-session budgets above. ip_hash is still stored (see sessions.py) for
 # reactive abuse forensics and targeted blocking, not a pre-emptive cap.
 
@@ -63,15 +63,12 @@ SESSION_TTL_SECONDS = int(os.environ.get("CHAT_PUBLIC_SESSION_TTL_SECONDS", "180
 # flight at once, across the WHOLE cluster (ADR 005 layer 2+3). Over the ceiling
 # the message path sheds with a "busy" event rather than spending a slot.
 #
-# This is the reserved-headroom GPU-isolation control: it bounds how many public
-# requests are in flight to the shared vLLM at once, leaving decode slots for the
-# Discord bot, private chat, and the agent platform. It is CLUSTER-WIDE, not
-# per-pod, enforced in Postgres (advisory locks, see acquire_slot). It shares the
-# CHAT_PUBLIC_* env var AND the advisory classid with chat_public so the two
-# public chat surfaces contend for ONE aggregate pool of slots (see docstring).
+# The hub's hosted-inference overlay sets this to one. Postgres advisory locks
+# enforce the ceiling across pods (see acquire_slot), bounding provider
+# concurrency and spend. CHAT_PUBLIC_* and the advisory classid stay shared.
 GLOBAL_MAX_CONCURRENT = int(os.environ.get("CHAT_PUBLIC_GLOBAL_MAX_CONCURRENT", "2"))
 
-# Advisory-lock namespace (classid) for the GPU limiter. A stable app-specific
+# Advisory-lock namespace (classid) for the inference limiter. A stable app-specific
 # magic so these locks never collide with any other advisory lock; the objid is
 # the slot index in [0, GLOBAL_MAX_CONCURRENT). SHARED with chat_public on purpose
 # so aggregate public in-flight inference is capped across both surfaces.
@@ -86,7 +83,7 @@ _ADVISORY_CLASSID = int(os.environ.get("CHAT_PUBLIC_ADVISORY_CLASSID", "11292705
 
 # Usable context window of the shared model, in tokens. Compaction is sized as a
 # fraction of this. It is a tuning knob, not a hard model property: keep it at or
-# below the real vLLM context length.
+# below the configured provider model's context length.
 MODEL_WINDOW_TOKENS = int(os.environ.get("CHAT_PUBLIC_MODEL_WINDOW_TOKENS", "32768"))
 
 # Fraction of the model window at which compaction triggers. At 0.70 the older
@@ -103,7 +100,7 @@ COMPACTION_KEEP_MESSAGES = int(
 )
 
 # Max tokens the rolling-summary generation may emit. A summary is meant to be
-# short, and it spends GPU under the same in-flight slot as a real turn, so cap
+# short, and it uses hosted inference under the same slot as a real turn, so cap
 # it tightly (ADR 005: a summary is far cheaper than an unbounded context).
 SUMMARY_MAX_TOKENS = int(os.environ.get("CHAT_PUBLIC_SUMMARY_MAX_TOKENS", "512"))
 
@@ -279,7 +276,7 @@ def _acquire_advisory_slot(bind) -> _AdvisorySlot | None:
 
 
 def acquire_slot(db):
-    """Acquire a global in-flight GPU slot, or return None when the ceiling is hit.
+    """Acquire a global inference slot, or return None when the ceiling is hit.
 
     Cluster-wide via Postgres advisory locks on the public_writer chat engine
     (the engine behind ``db``); falls back to the in-process breaker on the SQLite
