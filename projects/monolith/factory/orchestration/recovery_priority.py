@@ -1,13 +1,15 @@
 """Retry durable landing requests before admission, under its control-row lock."""
 
 import json
+import re
 
 import httpx
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import select
 
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt, WorkItem
+from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
 
 def retry_pending(db, control):
@@ -57,8 +59,10 @@ def retry_pending(db, control):
         fenced = db.exec(
             select(FactoryAudit.id).where(
                 FactoryAudit.task_id == request.task_id,
-                FactoryAudit.action.in_(
-                    ("landing_recovery_skipped", "merged", "human_handoff")
+                or_(
+                    FactoryAudit.action.in_(("merged", "human_handoff")),
+                    (FactoryAudit.action == "landing_recovery_skipped")
+                    & (FactoryAudit.id > request.id),
                 ),
             )
         ).first()
@@ -87,6 +91,10 @@ def retry_pending(db, control):
             reason = detail["reason"]
             if reason not in controls.LANDING_RECOVERY_REASONS:
                 continue
+            if reason != "merge_conflict" and not controls.repo_auto_merge_enabled(
+                policy, row.repo
+            ):
+                continue
             issue = landing.github_get(row.repo, f"issues/{row.issue_number}")
             if issue.get("state") != "open" or "human" in _label_names(issue):
                 continue
@@ -96,12 +104,36 @@ def retry_pending(db, control):
                 if reason == "head_moved"
                 else detail["head_sha"]
             )
+            if pr.get("merged"):
+                continue
+            # Match the landing loop's round-local skips. A closed/draft PR or
+            # superseded head must not be re-read on every admission call.
+            head = (pr.get("head") or {}).get("sha")
+            skip_reason = None
+            if pr.get("state") == "closed" or pr.get("draft") is True:
+                skip_reason = "pull_request_not_ready"
+            elif (
+                isinstance(head, str)
+                and re.fullmatch(r"[0-9a-f]{40}", head)
+                and head != expected_head
+            ):
+                skip_reason = "head_moved"
+            if skip_reason is not None:
+                controls._audit(
+                    db,
+                    "factory:recovery-priority",
+                    "landing_recovery_skipped",
+                    task_id=request.task_id,
+                    request_id=request.id,
+                    pr_number=detail["pr_number"],
+                    reason=skip_reason,
+                )
+                continue
             node_id = pr.get("node_id")
             if (
-                pr.get("merged")
-                or pr.get("state") != "open"
+                pr.get("state") != "open"
                 or pr.get("draft")
-                or (pr.get("head") or {}).get("sha") != expected_head
+                or head != expected_head
                 or not isinstance(node_id, str)
                 or not node_id
                 or pr.get("auto_merge") is not None
@@ -129,7 +161,7 @@ def retry_pending(db, control):
                 reason=reason,
                 current_head_sha=detail.get("current_head_sha"),
             )
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        except (GitHubReadDeferred, httpx.HTTPError, KeyError, TypeError, ValueError):
             # No speculative reservation: the next eligible request or ordinary
             # admission may use capacity, and the durable request stays intact.
             continue

@@ -106,6 +106,13 @@ reserving capacity, so later recoveries and ordinary admission can proceed.
 Advisory-only admission remains independent. GitHub ownership, head and queue
 reads run under the same lock; unavailable evidence skips that candidate for
 this call. The transaction rolls recovery and admission back together on failure.
+This includes GitHub read cooldowns; they leave requests intact and do not block
+queued delivery or advisory admission. Requests excluded by automatic-landing
+policy make no GitHub reads. Closed/draft PRs and superseded heads record the
+same round-local skip as the landing loop, preventing repeated reads on later
+admission calls. A new request resets that skip; merged and human-handoff fences
+remain terminal. Readiness checks for other candidates still run under the lock
+and use fresh evidence.
 
 This delivery remains in an unmerged PR, with no deployed value or durable policy
 change. Activation requires the authorized owner's reviewed merge and verified

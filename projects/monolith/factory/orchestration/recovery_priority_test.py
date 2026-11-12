@@ -30,6 +30,7 @@ from factory.orchestration.factory_models import (
     WorkItemEvent,
 )
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
+from factory.orchestration.github_read_cooldown import GitHubReadCooldown
 
 HEAD = "a" * 40
 MOVED = "b" * 40
@@ -401,11 +402,185 @@ def test_multiple_requests_start_in_order_and_advisory_is_independent(db, policy
     assert admit_next("test", lanes=("delivery",))["receipt_id"] == queued["receipt_id"]
 
 
+@pytest.mark.parametrize("read", ["issue", "pull", "queue"])
+@pytest.mark.parametrize("lanes", [("delivery",), ("delivery", "advisory")])
+def test_cooldown_does_not_block_delivery_or_advisory_admission(
+    db, policy, monkeypatch, read, lanes
+):
+    holder = receipt(db, policy, 1, "admitted")
+    recovery = receipt(db, policy, 2)
+    assert request_recovery(recovery)["pending"]
+    [request] = audits(db, recovery, "landing_recovery_requested")
+    queued = queue(db, policy)
+    advisory = queue(db, policy, 5, "advisory-diagnosis")
+    state(db, holder, "succeeded")
+    now = 0
+    cooldown = GitHubReadCooldown(monotonic=lambda: now, wall_time=lambda: 0)
+    assert cooldown.observe(
+        {"status": 429, "classification": "rate_limited", "retry_after": "3600"}
+    )
+    original_get = landing.github_get
+    deferred = []
+
+    def check():
+        deferred.append(read)
+        cooldown.check()
+        return set()
+
+    def github(repo, suffix):
+        if (read == "issue" and suffix.startswith("issues/")) or (
+            read == "pull" and suffix.startswith("pulls/")
+        ):
+            check()
+        return original_get(repo, suffix)
+
+    monkeypatch.setattr(landing, "github_get", github)
+    if read == "queue":
+        monkeypatch.setattr(landing, "_queued_ids", lambda _ids: check())
+    admitted = admit_next("test", lanes=lanes)
+    assert admitted["ok"], admitted
+    assert admitted["receipt_id"] == queued["receipt_id"]
+    assert deferred == [read]
+    assert (
+        admit_next("test", lanes=("advisory",))["receipt_id"] == advisory["receipt_id"]
+    )
+    assert deferred == [read]
+    assert state(db, recovery) == "landing"
+    assert not audits(db, recovery, "landing_recovery_started")
+    assert not audits(db, recovery, "landing_recovery_skipped")
+    assert [
+        row.detail_json for row in audits(db, recovery, "landing_recovery_requested")
+    ] == [request.detail_json]
+    now = 3602
+    state(db, admitted["task_id"], "succeeded")
+    queue(db, policy, 6)
+    assert not admit_next("test", lanes=("delivery",))["ok"]
+    assert state(db, recovery) == "admitted"
+    [started] = audits(db, recovery, "landing_recovery_started")
+    assert json.loads(started.detail_json)["request_id"] == request.id
+
+
+@pytest.mark.parametrize(
+    "action", ["landing_recovery_skipped", "merged", "human_handoff"]
+)
+def test_only_round_local_skip_expires_at_new_request(db, policy, action):
+    holder = receipt(db, policy, 1, "admitted")
+    recovery = receipt(db, policy, 2)
+    assert request_recovery(recovery)["pending"]
+    [old_request] = audits(db, recovery, "landing_recovery_requested")
+    with Session(db) as session, session.begin():
+        controls._audit(session, "test", action, task_id=recovery)
+        session.flush()
+        controls._audit(
+            session,
+            "test",
+            "landing_recovery_requested",
+            task_id=recovery,
+            **json.loads(old_request.detail_json),
+        )
+    queued = queue(db, policy)
+    state(db, holder, "succeeded")
+    result = admit_next("test", lanes=("delivery",))
+    if action == "landing_recovery_skipped":
+        assert not result["ok"]
+        assert state(db, recovery) == "admitted"
+        [started] = audits(db, recovery, "landing_recovery_started")
+        latest = audits(db, recovery, "landing_recovery_requested")[-1]
+        assert json.loads(started.detail_json)["request_id"] == latest.id
+    else:
+        assert result["receipt_id"] == queued["receipt_id"]
+        assert state(db, recovery) == "landing"
+        assert not audits(db, recovery, "landing_recovery_started")
+
+
+@pytest.mark.parametrize("mismatch", ["pr_number", "head_sha"])
+@pytest.mark.parametrize("pending", [False, True])
+def test_replayed_recovery_rejects_different_pr_or_head(db, policy, mismatch, pending):
+    if pending:
+        holder = receipt(db, policy, 1, "admitted")
+    recovery = receipt(db, policy, 2)
+    original = request_recovery(recovery)
+    assert original.get("pending") if pending else original["ok"]
+    [request] = audits(db, recovery, "landing_recovery_requested")
+    with Session(db) as session:
+        allowance = controls._receipt(session, recovery).allowance_json
+        deadline = controls._landing_recovery_deadline(session, recovery)
+    if pending:
+        state(db, holder, "succeeded")
+    result = controls.request_landing_recovery(
+        recovery,
+        7712 if mismatch == "pr_number" else 7711,
+        MOVED if mismatch == "head_sha" else HEAD,
+        "merge_queue",
+        "test",
+    )
+    assert result == {"ok": False, "reason": "recovery_authority_mismatch"}
+    assert state(db, recovery) == ("landing" if pending else "admitted")
+    assert [
+        row.detail_json for row in audits(db, recovery, "landing_recovery_requested")
+    ] == [request.detail_json]
+    assert not audits(db, recovery, "landing_recovery_started")
+    with Session(db) as session:
+        assert controls._receipt(session, recovery).allowance_json == allowance
+        assert controls._landing_recovery_deadline(session, recovery) == deadline
+    replay = request_recovery(recovery)
+    assert replay["ok"] and replay["replayed"]
+
+
+@pytest.mark.parametrize(
+    "guard", ["closed", "draft", "moved", "missing_head", "missing_state"]
+)
+def test_unready_pr_reads_are_bounded_without_fencing_unavailable_evidence(
+    db, policy, monkeypatch, guard
+):
+    holder = receipt(db, policy, 1, "admitted")
+    recovery = receipt(db, policy, 2)
+    assert request_recovery(recovery)["pending"]
+    [request] = audits(db, recovery, "landing_recovery_requested")
+    with controls._locked_session() as (_session, control):
+        updated = json.loads(control.policy_json)
+        updated["auto_merge"] = False
+        control.policy_json = json.dumps(updated)
+    state(db, holder, "succeeded")
+    original_get = landing.github_get
+    reads = []
+
+    def github(repo, suffix):
+        reads.append(suffix)
+        result = original_get(repo, suffix)
+        if suffix.startswith("pulls/"):
+            if guard == "closed":
+                result["state"] = "closed"
+            elif guard == "draft":
+                result["draft"] = True
+            elif guard == "moved":
+                result["head"]["sha"] = MOVED
+            elif guard == "missing_head":
+                result.pop("head")
+            else:
+                result.pop("state")
+        return result
+
+    monkeypatch.setattr(landing, "github_get", github)
+    for _ in range(3):
+        assert not admit_next("test", lanes=("delivery",))["ok"]
+    skipped = audits(db, recovery, "landing_recovery_skipped")
+    if guard.startswith("missing_"):
+        assert len(reads) == 6
+        assert not skipped
+    else:
+        assert len(reads) == 2
+        assert len(skipped) == 1
+        assert json.loads(skipped[0].detail_json)["request_id"] == request.id
+    assert state(db, recovery) == "landing"
+    assert not audits(db, recovery, "landing_recovery_started")
+
+
 @pytest.mark.parametrize(
     "change",
     ["disabled", "paused", "stopped", "repo_paused", "repo_disabled", "auto_merge"],
 )
-def test_policy_guards_do_not_reopen_recovery(db, policy, change):
+def test_policy_guards_do_not_reopen_recovery(db, policy, monkeypatch, change):
     holder = receipt(db, policy, 1, "admitted")
     recovery = receipt(db, policy, 2)
     assert request_recovery(recovery, "review_stale")["pending"]
@@ -426,6 +601,11 @@ def test_policy_guards_do_not_reopen_recovery(db, policy, change):
                     }
                 }
             control.policy_json = json.dumps(updated)
+
+    def unexpected_read(*_args):
+        pytest.fail("policy-excluded recovery must not read GitHub")
+
+    monkeypatch.setattr(landing, "github_get", unexpected_read)
     result = admit_next("test", lanes=("delivery",))
     assert state(db, recovery) == "landing"
     assert not audits(db, recovery, "landing_recovery_started")

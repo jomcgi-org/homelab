@@ -522,6 +522,9 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     caller holding a reason to keep one shut, and an unnamed lane admits
     nothing rather than falling back to the policy.
 
+    Delivery admission rechecks pending recovery evidence on GitHub while
+    holding the control-row lock. Advisory-only admission makes no such reads.
+
     max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
     intake must keep admitting as tasks settle. Total work per generation is
     bounded by the receipts it can hold (one per repo/issue/generation/class)
