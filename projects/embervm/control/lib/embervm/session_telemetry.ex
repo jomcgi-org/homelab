@@ -308,6 +308,7 @@ defmodule Embervm.SessionTelemetry do
   def reason({:worker_down, _reason}), do: "worker_down"
   def reason({:no_channel, _reason}), do: "no_channel"
   def reason({:rpc, _status}), do: "rpc_error"
+  def reason({:guest_transport, _class} = error), do: Embervm.Session.invoke_diagnostic(error)
   def reason({:prime_failed, _reason}), do: "prime_failed"
   def reason({:prime_dial_failed, _reason}), do: "prime_dial_failed"
   def reason({:lineage_relinquishment_failed, _reason}), do: "lineage_relinquishment_failed"

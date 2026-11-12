@@ -30,6 +30,39 @@ func codexTestConfig() config {
 	}
 }
 
+func TestCodexInvokeSafeDiagnostic(t *testing.T) {
+	for _, diagnostic := range []string{"guest_transport:eof", "guest_transport:connection_reset", "guest_transport:broken_pipe", "guest_transport:vsock_dial", "guest_transport:unknown", "relight", "", "secret token", "guest_transport:eof?token=secret", strings.Repeat("x", 4096)} {
+		t.Run(diagnostic[:min(len(diagnostic), 40)], func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Ember-Invoke-Diagnostic", diagnostic)
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = io.WriteString(w, "secret prompt output token and provider payload")
+			}))
+			defer server.Close()
+			client := &controlPlaneClient{baseURL: server.URL, http: server.Client()}
+			_, err := invokeCodexProbe(context.Background(), codexTestConfig(), client, sessionIdentity{ID: "s-1", Token: "test"}, "", "proof", "command", nil)
+			if err == nil {
+				t.Fatal("expected failure")
+			}
+			want := "invoke returned status=502"
+			if strings.HasPrefix(diagnostic, "guest_transport:") && !strings.Contains(diagnostic, "?") || diagnostic == "relight" {
+				want += " diagnostic=" + diagnostic
+			}
+			if err.Error() != want {
+				t.Fatalf("got %q, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestInvokeDiagnosticRejectsUntrustedValues(t *testing.T) {
+	for _, value := range []string{"EOF", "guest_transport:secret", "guest_transport:eof\n", "guest_transport:eof\r", "guest_transport:eof\x1b", "guest_transport:eof\u2028", "guest_transport:eof\x00", "guest_transport:eof,relight", strings.Repeat("x", 1<<20)} {
+		if got := safeInvokeDiagnostic(value); got != "" {
+			t.Fatalf("untrusted diagnostic accepted: %q", got)
+		}
+	}
+}
+
 func codexTestTurn(cfg config, nonce, artifactPath, command string) codexProbeTurn {
 	encoded, _ := json.Marshal(map[string]any{
 		"session_id":      "codex-thread",

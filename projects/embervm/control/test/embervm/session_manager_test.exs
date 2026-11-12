@@ -219,7 +219,7 @@ defmodule Embervm.SessionManagerTest do
         end),
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
       destroy_exact_fun: Keyword.get(opts, :destroy_exact_fun, fn _ch, _req -> {:error, :unsupported} end),
-      invalidate_fun: fn _node, _ch -> :ok end,
+      invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _ch -> :ok end),
       brick_status_fun:
         Keyword.get(opts, :brick_status_fun, fn _node ->
           # Matches both real producers (SessionManager.brick_status/2 and
@@ -6715,6 +6715,27 @@ defmodule Embervm.SessionManagerTest do
     Process.sleep(300)
     assert {:ok, %{status_code: 200, body: "b"}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "b"})
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "suspect diagnostics survive the invoke worker, fail durably and never replay" do
+    parent = self()
+    for value <- ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown", "secret\n", String.duplicate("x", 4096)] do
+      ctx = start_stack(assign_fun: fn _, _ ->
+        send(parent, :diagnostic_assigned)
+        {:ok, %SessionAssignResponse{suspect: true, response: %GuestResponse{
+          status_code: 502, headers: %{"x-ember-guest-transport" => value}, body: "private output"}}}
+      end, invalidate_fun: fn _, _ -> send(parent, :diagnostic_invalidated) end,
+      destroy_fun: fn _, _ -> send(parent, :diagnostic_destroyed); {:ok, %{teardown_confirmed: true}} end)
+      put_session_workload(ctx, "wl-diagnostic")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-diagnostic", "p1")
+      expected = if value in ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown"], do: value, else: "unknown"
+      assert {:error, {:guest_transport, ^expected}} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "private prompt"})
+      assert_receive :diagnostic_assigned
+      assert_receive :diagnostic_destroyed, 1_000
+      refute_received :diagnostic_assigned
+      refute_received :diagnostic_invalidated
+      assert {:ok, %{state: :failed}} = SessionStore.get(ctx.store, created.session_id)
+    end
   end
 
   test "a suspect/transport failure on invoke fails the session and 502s the caller" do

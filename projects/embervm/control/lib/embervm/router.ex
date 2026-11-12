@@ -2012,9 +2012,17 @@ defmodule Embervm.Router do
             status = if unavailable_error?(reason), do: 503, else: 502
             SessionTelemetry.mark_error(reason)
 
+            diagnostic = Embervm.Session.invoke_diagnostic(reason)
+            conn = if diagnostic do
+              Logger.warning("session invoke failed", session_id: session_id, reason: diagnostic)
+              put_resp_header(conn, "x-ember-invoke-diagnostic", diagnostic)
+            else
+              conn
+            end
+
             send_json(conn, status, %{
               error: "session invoke failed",
-              reason: inspect(reason),
+              reason: diagnostic || inspect(reason),
               session_id: session_id,
               retryable: classify_error_as_retryable(reason)
             })
@@ -3125,6 +3133,8 @@ defmodule Embervm.Router do
   # they are the connection's business, not the payload's. Compared lowercased.
   # `x-ember-truncated` is also reserved (set by the caller above, never overwritten).
   @denied_guest_headers MapSet.new([
+                          "x-ember-invoke-diagnostic",
+                          "x-ember-guest-transport",
                           "x-ember-invoke-outcome",
                           "content-length",
                           "transfer-encoding",

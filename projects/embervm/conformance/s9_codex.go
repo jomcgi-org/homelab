@@ -241,6 +241,9 @@ func invokeCodexProbe(ctx context.Context, cfg config, client *controlPlaneClien
 	if response.status != http.StatusOK {
 		// Provider or egress failures must fail S9, unlike lifecycle-only S2.
 		// Do not copy arbitrary provider response bodies to verdicts or logs.
+		if diagnostic := safeInvokeDiagnostic(response.diagnostic); diagnostic != "" {
+			return codexProbeTurn{}, fmt.Errorf("invoke returned status=%d diagnostic=%s", response.status, diagnostic)
+		}
 		return codexProbeTurn{}, fmt.Errorf("invoke returned status=%d", response.status)
 	}
 	var turn codexProbeTurn

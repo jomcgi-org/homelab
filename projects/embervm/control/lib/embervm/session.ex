@@ -991,9 +991,9 @@ defmodule Embervm.Session do
         }
 
         case ctx.assign_fun.(channel, assign_req) do
-          {:ok, %SessionAssignResponse{suspect: true}} ->
+          {:ok, %SessionAssignResponse{suspect: true} = response} ->
             status = safe_brick_status(ctx)
-            classification = classify_invoke_error(:suspect, status)
+            classification = classify_invoke_error(response, status)
             maybe_invalidate(ctx, channel, classification.invalidate_channel)
             {:error, classification.reason, status}
 
@@ -1034,9 +1034,29 @@ defmodule Embervm.Session do
     :ok
   end
 
+  # Only daemon-authored suspect answers carry this contract. Never inspect a
+  # guest body or an arbitrary error string to infer a transport stage.
+  defp normalize_invoke_error(%SessionAssignResponse{suspect: true, response: response}) do
+    case response do
+      %GuestResponse{headers: %{"x-ember-guest-transport" => value}} ->
+        {:guest_transport, safe_transport_reason(value)}
+
+      _ -> :suspect
+    end
+  end
+
   defp normalize_invoke_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded
   defp normalize_invoke_error(%GRPC.RPCError{} = e), do: {:rpc, e.status}
   defp normalize_invoke_error(reason), do: reason
+
+  defp safe_transport_reason(value) when value in ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown"], do: value
+  defp safe_transport_reason(_), do: "unknown"
+
+  @doc "Allowlisted invoke attribution for response headers and structured logs."
+  def invoke_diagnostic({:guest_transport, value}), do: "guest_transport:" <> safe_transport_reason(value)
+  def invoke_diagnostic({:relight, _}), do: "relight"
+  def invoke_diagnostic({:relight_failed, _}), do: "relight"
+  def invoke_diagnostic(_), do: nil
 
   # FAILED_PRECONDITION means noded or the guest rechecked the identity after
   # the control-plane validation and found that the exact dispatch had ended.
@@ -1094,6 +1114,7 @@ defmodule Embervm.Session do
   # guest's state is unknown) that rode a healthy channel, so it never tears the
   # channel down from under every other session multiplexed on it (D-R2.7.2).
   defp invalidate_channel?(:suspect), do: false
+  defp invalidate_channel?(%SessionAssignResponse{suspect: true}), do: false
 
   defp invalidate_channel?(_reason), do: true
 

@@ -2047,8 +2047,10 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 			return nil, status.Errorf(codes.DeadlineExceeded, "noded: session guest did not respond within %s (vm left alive, suspect)", timeout)
 		}
 		abandoned = ctx.Err() == context.Canceled
+		reason := sessionTransportReason(err)
+		s.logger.Warn("noded: session guest transport failed", "reason", reason)
 		return &nodev1.SessionAssignResponse{
-			Response: &nodev1.GuestResponse{StatusCode: uint32(http.StatusBadGateway)},
+			Response: &nodev1.GuestResponse{StatusCode: uint32(http.StatusBadGateway), Headers: map[string]string{"x-ember-guest-transport": reason}},
 			Usage:    &nodev1.UsageStats{WallMs: time.Since(t0).Milliseconds()},
 			Suspect:  true,
 		}, nil
@@ -2077,6 +2079,24 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 		},
 		Usage: usage,
 	}, nil
+}
+
+// sessionTransportReason never serializes err: wrapped errors may contain URLs,
+// paths, credentials or guest data. These fixed values are the wire contract.
+func sessionTransportReason(err error) string {
+	switch {
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "eof"
+	case errors.Is(err, unix.ECONNRESET):
+		return "connection_reset"
+	case errors.Is(err, unix.EPIPE):
+		return "broken_pipe"
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" && op.Net == "unix" {
+		return "vsock_dial"
+	}
+	return "unknown"
 }
 
 // SessionInterrupt relays one exact active or caller-abandoned dispatch to the

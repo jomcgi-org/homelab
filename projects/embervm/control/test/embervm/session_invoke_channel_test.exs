@@ -26,4 +26,20 @@ defmodule Embervm.SessionInvokeChannelTest do
     assert %{invalidate_channel: true} = Session.classify_invoke_error(dead, @healthy)
     assert %{invalidate_channel: true} = Session.classify_invoke_error(:closed, @healthy)
   end
+
+  test "suspect diagnostics are allowlisted, legacy compatible and subordinate to brick loss" do
+    alias Embervm.Node.V1.{GuestResponse, SessionAssignResponse}
+
+    for value <- ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown", "secret\n\e", String.duplicate("x", 4096)] do
+      response = %SessionAssignResponse{suspect: true, response: %GuestResponse{
+        status_code: 502, headers: %{"x-ember-guest-transport" => value}, body: "secret payload"}}
+      expected = if value in ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown"], do: value, else: "unknown"
+      assert %{reason: {:guest_transport, ^expected}, invalidate_channel: false} = Session.classify_invoke_error(response, @healthy)
+      assert %{reason: :brick_gone, invalidate_channel: false} = Session.classify_invoke_error(response, %{@healthy | health: :down})
+    end
+
+    for response <- [nil, %GuestResponse{status_code: 502, body: "eof secret"}] do
+      assert %{reason: :suspect, invalidate_channel: false} = Session.classify_invoke_error(%SessionAssignResponse{suspect: true, response: response}, @healthy)
+    end
+  end
 end
