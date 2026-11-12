@@ -3796,6 +3796,27 @@ defmodule Embervm.SessionManagerTest do
     refute_receive :unexpected_prime
   end
 
+  test "a store-less restoring create still attempts the restore and fails closed (#7731)" do
+    # The store-less skip is rejoin-only: a create's empty fingerprint does not
+    # prove the lineage's volume is local, so a refused restore must deny.
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-storeless-create"),
+        channel_fun: fake_channel_fun(),
+        artifact_store_configured: false,
+        restore_artifact_fun: fn _ch, _req ->
+          {:error, %GRPC.RPCError{status: 9, message: "object store not configured"}}
+        end
+      )
+
+    original = create_persistence_session(ctx)
+    {:ok, _} = SessionManager.destroy(ctx.mgr, original.session_id)
+    assert wait_for_state(ctx, original.session_id, :destroyed).state == :destroyed
+
+    assert {:error, {:denied, {:session_workspace_restore_failed, %GRPC.RPCError{status: 9}}}} =
+             SessionManager.create(ctx.mgr, "wl-persist", "p1", original.session_id)
+  end
+
   test "restore_lineage validation: unknown lineage is denied, not a normal create" do
     ctx = start_stack()
     put_session_workload(ctx, "wl-persist", persistence_workload_opts())

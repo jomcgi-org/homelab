@@ -3999,7 +3999,7 @@ defmodule Embervm.SessionManager do
 
     result =
       with {:ok, _restored} <-
-             restore_session_workspace(
+             restore_rejoin_workspace(
                state,
                dial_id,
                workload,
@@ -4207,6 +4207,23 @@ defmodule Embervm.SessionManager do
     end
   end
 
+  # A rejoin onto the session's own volume node (expected fingerprint "") on a
+  # store-less deployment has nothing to restore: the workspace never left the
+  # node, and both capability stamping and noded refuse a store restore (#7731).
+  # Only the rejoin paths may use this; a create's empty fingerprint does not
+  # prove the volume is local.
+  defp restore_rejoin_workspace(state, dial_id, workload, lineage, principal, gen, "", _owner) do
+    if Map.get(state, :artifact_store_configured, true) == false do
+      {:ok, false}
+    else
+      restore_session_workspace(state, dial_id, workload, lineage, principal, gen, "", nil)
+    end
+  end
+
+  defp restore_rejoin_workspace(state, dial_id, workload, lineage, principal, gen, expected, owner) do
+    restore_session_workspace(state, dial_id, workload, lineage, principal, gen, expected, owner)
+  end
+
   defp restore_session_workspace(
          state,
          node_id,
@@ -4216,34 +4233,6 @@ defmodule Embervm.SessionManager do
          generation,
          expected_fingerprint \\ "",
          owner_node_id \\ nil
-       ) do
-    if expected_fingerprint == "" and Map.get(state, :artifact_store_configured, true) == false do
-      # Same-node rejoin on a store-less deployment: the workspace never left
-      # this node, so there is nothing to restore (#7731).
-      {:ok, false}
-    else
-      do_restore_session_workspace(
-        state,
-        node_id,
-        workload,
-        lineage_id,
-        principal,
-        generation,
-        expected_fingerprint,
-        owner_node_id
-      )
-    end
-  end
-
-  defp do_restore_session_workspace(
-         state,
-         node_id,
-         workload,
-         lineage_id,
-         principal,
-         generation,
-         expected_fingerprint,
-         owner_node_id
        ) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE, workload: workload, ref: lineage_id}
 
@@ -7742,7 +7731,7 @@ defmodule Embervm.SessionManager do
   defp perform_residency_wake(state, session, brick, entry, true, _restore_plan) do
     dial_id = Brick.dial_id(brick)
     expected = if brick.node_id != session.volume_node_id, do: workspace_evidence(state, session).fingerprint, else: ""
-    with {:ok, _} <- restore_session_workspace(state, dial_id, session.workload, session.lineage_id,
+    with {:ok, _} <- restore_rejoin_workspace(state, dial_id, session.workload, session.lineage_id,
            session.principal, session.generation || 0, expected, if(expected != "", do: brick.node_id, else: nil)),
          {:ok, vm_id} <- prime(state, dial_id, session.workload, get_in(brick, [:workloads, session.workload, :snapshot_ref]), entry, session.lineage_id) do
       {:ok, brick.node_id, vm_id, 0, dial_id}
