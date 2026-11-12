@@ -1184,6 +1184,20 @@ ADMISSION_CANDIDATE_SCAN_LIMIT = 100
 # Per-repo operator switches that bypass generation: flipping one never
 # retires another repo's queue.
 REPO_ACTIONS = ("pause_repo", "resume_repo", "enable_repo", "disable_repo")
+LANDING_POLICY_TRANSITIONS = (
+    "configure",
+    "owner_pr_control_applied",
+    "refill_control_applied",
+    "problem_issues_control_applied",
+    "set_auto_merge",
+    "restore_active_intake",
+    "prepare_refinement_batch",
+    "prepare_broad_refinement",
+    "enable",
+    "pause_admissions",
+    "stop",
+    *REPO_ACTIONS,
+)
 
 
 def _validate_repo_entry(slug: str, value: object) -> dict:
@@ -2010,6 +2024,51 @@ def _locked_session(
             raise
 
 
+def landing_policy_terms(policy, state, family):
+    """Low-level policy projection; audits must not import landing executors."""
+    repo = policy.get("repo")
+    stored = _stored_repos(policy).get(repo, {})
+    merge = repo_auto_merge_enabled(policy, repo)
+    value = {
+        "repo": repo,
+        "base_branch": policy.get("base_branch"),
+        "enabled": state == "enabled",
+        "auto_merge": merge,
+        "repo_enabled": stored.get("enabled", True),
+        "repo_paused": stored.get("paused", False),
+        "landing": stored.get("landing", "merge_queue" if merge else "none"),
+    }
+    if family == "owner_pr_landing":
+        intake = intake_policy(policy)
+        value["intake"] = {
+            key: intake[key]
+            for key in (
+                "owner_pr_author",
+                "enabled",
+                "refine_enabled",
+                "refinement_batch",
+                "labels",
+                "exclude_labels",
+            )
+        }
+        for key in ("labels", "exclude_labels"):
+            value["intake"][key] = stored.get(key, intake[key])
+    return value
+
+
+def landing_policy_evidence(control):
+    policy = json.loads(control.policy_json or "{}")
+    return {
+        "schema_version": 1,
+        "policy_sha256": digest(policy),
+        "intake_policy_sha256": digest(policy.get("intake") or {}),
+        "terms": {
+            name: landing_policy_terms(policy, control.state, name)
+            for name in ("repair_landing", "delivery_landing", "owner_pr_landing")
+        },
+    }
+
+
 def _audit(
     db: Session,
     actor: str,
@@ -2018,21 +2077,16 @@ def _audit(
     task_id: str | None = None,
     **detail: object,
 ) -> None:
-    from factory.orchestration.factory_landing_release import POLICY_TRANSITIONS
-    from factory.orchestration import landing_authority_policy
-
     outcome = detail.get("result", detail)
     if (
-        action in POLICY_TRANSITIONS
+        action in LANDING_POLICY_TRANSITIONS
         and isinstance(outcome, dict)
         and outcome.get("ok") is True
     ):
         control = db.get(FactoryControl, "factory")
         if control is not None:
             try:
-                detail["landing_policy_evidence"] = landing_authority_policy.evidence(
-                    control
-                )
+                detail["landing_policy_evidence"] = landing_policy_evidence(control)
             except (AttributeError, KeyError, TypeError, ValueError):
                 # Unknown legacy policy must refuse compatibility, not prevent
                 # its operator from pausing or stopping the lane.

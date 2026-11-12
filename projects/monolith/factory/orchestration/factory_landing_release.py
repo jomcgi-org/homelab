@@ -21,20 +21,7 @@ from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
 ACTION = "operator_landing_hold_released"
 SCOPE_ACTION = "operator_scoped_landing_authorized"
-POLICY_TRANSITIONS = (
-    "configure",
-    "owner_pr_control_applied",
-    "refill_control_applied",
-    "problem_issues_control_applied",
-    "set_auto_merge",
-    "restore_active_intake",
-    "prepare_refinement_batch",
-    "prepare_broad_refinement",
-    "enable",
-    "pause_admissions",
-    "stop",
-    *controls.REPO_ACTIONS,
-)
+POLICY_TRANSITIONS = controls.LANDING_POLICY_TRANSITIONS
 # This operator-approved exception is deliberately not a generic terminal handoff.
 HANDOFF_ACCEPTED_HEAD = controls.OPERATOR_DOCS_HANDOFF_ACCEPTED_HEAD
 HANDOFF_REVIEW_SESSION = 24402

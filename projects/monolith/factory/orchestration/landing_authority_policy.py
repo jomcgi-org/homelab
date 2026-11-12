@@ -13,48 +13,8 @@ from sqlmodel import select
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl
 
-FAMILIES = ("repair_landing", "delivery_landing", "owner_pr_landing")
-
-
-def terms(policy, state, family):
-    repo = policy.get("repo")
-    stored = controls._stored_repos(policy).get(repo, {})
-    merge = controls.repo_auto_merge_enabled(policy, repo)
-    value = {
-        "repo": repo,
-        "base_branch": policy.get("base_branch"),
-        "enabled": state == "enabled",
-        "auto_merge": merge,
-        "repo_enabled": stored.get("enabled", True),
-        "repo_paused": stored.get("paused", False),
-        "landing": stored.get("landing", "merge_queue" if merge else "none"),
-    }
-    if family == "owner_pr_landing":
-        intake = controls.intake_policy(policy)
-        value["intake"] = {
-            key: intake[key]
-            for key in (
-                "owner_pr_author",
-                "enabled",
-                "refine_enabled",
-                "refinement_batch",
-                "labels",
-                "exclude_labels",
-            )
-        }
-        for key in ("labels", "exclude_labels"):
-            value["intake"][key] = stored.get(key, intake[key])
-    return value
-
-
-def evidence(control):
-    policy = json.loads(control.policy_json or "{}")
-    return {
-        "schema_version": 1,
-        "policy_sha256": controls.digest(policy),
-        "intake_policy_sha256": controls.digest(policy.get("intake") or {}),
-        "terms": {name: terms(policy, control.state, name) for name in FAMILIES},
-    }
+evidence = controls.landing_policy_evidence
+terms = controls.landing_policy_terms
 
 
 def compatible(db, event, proposal, family):
@@ -65,8 +25,6 @@ def compatible(db, event, proposal, family):
 
 
 def _compatible(db, event, proposal, family):
-    from factory.orchestration.factory_landing_release import POLICY_TRANSITIONS
-
     control = db.get(FactoryControl, "factory")
     current = evidence(control)
     binding = proposal.get("binding", proposal)
@@ -74,7 +32,10 @@ def _compatible(db, event, proposal, family):
     saved = proposal.get("landing_policy_evidence")
     transitions = db.exec(
         select(FactoryAudit)
-        .where(FactoryAudit.action.in_(POLICY_TRANSITIONS), FactoryAudit.id > event.id)
+        .where(
+            FactoryAudit.action.in_(controls.LANDING_POLICY_TRANSITIONS),
+            FactoryAudit.id > event.id,
+        )
         .order_by(FactoryAudit.id)
     ).all()
     # Existing grants remain valid without reinterpretation at their original

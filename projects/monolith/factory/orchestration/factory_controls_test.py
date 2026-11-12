@@ -1,6 +1,7 @@
 """File-backed control, reservation and stop-ordering regressions."""
 
 import json
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Event
@@ -147,6 +148,31 @@ def admitted(policy):
         "poller",
     )
     return admit_next("scheduler")["task_id"]
+
+
+@pytest.mark.parametrize("action", ["decision_request", "configure"])
+def test_audit_policy_evidence_keeps_lightweight_controls_boundary(
+    db, policy, monkeypatch, action
+):
+    # Status and execution targets intentionally omit the landing executor.
+    for name in ("factory_landing_release", "landing_authority_policy"):
+        monkeypatch.setitem(sys.modules, f"factory.orchestration.{name}", None)
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        control.policy_json = dumps(controls.validate_policy(policy))
+        control.state = "enabled"
+        controls._audit(session, "operator", action, result={"ok": True})
+    with Session(db) as session:
+        audit = session.exec(select(FactoryAudit)).one()
+        detail = json.loads(audit.detail_json)
+        if action == "configure":
+            assert detail[
+                "landing_policy_evidence"
+            ] == controls.landing_policy_evidence(
+                session.get(FactoryControl, "factory")
+            )
+        else:
+            assert "landing_policy_evidence" not in detail
 
 
 def test_rollback_policy_is_optional_and_default_off(policy):
