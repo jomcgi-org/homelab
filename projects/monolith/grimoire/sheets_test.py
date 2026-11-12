@@ -403,6 +403,43 @@ def test_sheet_options_offer_what_a_draft_accepts_with_class_facts(
     assert dm_view.json() == options
 
 
+@pytest.mark.parametrize("scope", ["partial", "name_only"])
+def test_a_narrowed_global_entry_is_neither_offered_nor_accepted(
+    session: Session, client: TestClient, table, scope
+):
+    """A grant below full on a global class hides its mechanics from the character."""
+    campaign, character = table
+    entity = Entity(
+        entity_type="class",
+        name="Warlock",
+        is_global=True,
+        detail={"hit_die": "d8", "saves": "Wisdom, Charisma"},
+    )
+    session.add(entity)
+    session.flush()
+    session.add(
+        KnowledgeGrant(
+            campaign_id=campaign["id"],
+            entity_id=entity.id,
+            player_character_id=character["id"],
+            grant_scope=scope,
+        )
+    )
+    session.commit()
+
+    options = client.get(_options_path(campaign, character), headers=_auth(PLAYER))
+    assert options.status_code == 200
+    assert "Warlock" not in [item["name"] for item in options.json()["classes"]]
+    assert "Wisdom, Charisma" not in options.text
+    draft = _post(
+        client,
+        _draft_path(campaign, character),
+        PLAYER,
+        {**_sheet(), "class_name": "Warlock"},
+    )
+    assert draft.status_code == 422
+
+
 def test_sheet_options_are_hidden_from_other_players_and_campaigns(
     client: TestClient, table
 ):

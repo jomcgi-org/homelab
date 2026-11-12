@@ -76,7 +76,9 @@ def _usable_corpus_entities(
     """Entities a sheet for this character may name, in a stable order.
 
     Global entries and ones granted with full scope. Partial and name-only
-    grants do not count: the character does not know the mechanics.
+    grants do not count: the character does not know the mechanics. That
+    holds for a global entry too, where such a grant narrows what the
+    character knows.
     """
     rows = session.exec(
         visible_entities_query(campaign_id, player_character_id)
@@ -86,7 +88,8 @@ def _usable_corpus_entities(
     return [
         entity
         for entity, grant in rows
-        if entity.is_global or (grant is not None and grant.grant_scope == "full")
+        if (grant is None and entity.is_global)
+        or (grant is not None and grant.grant_scope == "full")
     ]
 
 

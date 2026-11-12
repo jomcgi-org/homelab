@@ -59,10 +59,15 @@ const facts = (base: CharacterSheetV1 | null): CharacterSheetV1 => {
   };
 };
 
+/**
+ * Upper then lower case approximates the backend's casefold, so "Straße"
+ * and "strasse" match here as they do there.
+ */
+const fold = (value: string) => value.toUpperCase().toLowerCase();
+
 /** The option a saved name refers to. The backend matches names without case. */
 const named = <T extends { name: string }>(options: T[], name: string) =>
-  options.find((option) => option.name.toLowerCase() === name.toLowerCase()) ??
-  null;
+  options.find((option) => fold(option.name) === fold(name)) ?? null;
 
 /** The corpus facts behind a choice, as one plain line. Absent facts are left out. */
 const factLine = (parts: Array<[label: string, value: string | null]>) =>
