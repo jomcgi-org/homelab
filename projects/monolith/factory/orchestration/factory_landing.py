@@ -1197,6 +1197,8 @@ def _recover_refused(policy: dict) -> None:
             if pr.get("merged"):
                 if _record_merged(policy["repo"], item, pr):
                     _close_issue(policy["repo"], item)
+                if _read_deferred(item):
+                    continue
                 return
             if pr.get("state") != "open" or pr.get("draft"):
                 _record(

@@ -2814,6 +2814,7 @@ def test_deferred_github_read_skips_one_item_without_aborting_the_tick(db, monke
         ("_fence_operator_queue_entry", "_queued_ids", 1, "operator-unheld"),
         ("_fence_operator_queue_entry", "_queued_ids", 2, "operator-unheld-queued"),
         ("_recover_refused", "github_get", 1, "recovery"),
+        ("_recover_refused", "github_get", 2, "recovery-merged"),
         ("_recover_refused", "_queued_ids", 1, "recovery"),
         ("_arm", "github_get", 1, "ready"),
         ("_arm", "github_get", 2, "ready"),
@@ -2858,13 +2859,15 @@ def test_read_deferral_matrix_preserves_later_work_and_retries(
         )
     if setup in {"armed", "ejected", "conflict"}:
         landing._append("t-1", "merge_armed", pr_number=3, head_sha=HEAD)
-    if setup == "recovery":
+    if setup in {"recovery", "recovery-merged"}:
         landing._record(
             "t-1", "merge_arm_refused", pr_number=3, reason="merge_conflict"
         )
     pulls = {
         3: {
-            **pull(3, armed=setup == "armed", merged=setup == "merged"),
+            **pull(
+                3, armed=setup == "armed", merged=setup in {"merged", "recovery-merged"}
+            ),
             "user": {"id": 42},
             "mergeable": setup != "conflict",
             "queue_entry": {"id": "MQ_3"}
@@ -2916,6 +2919,10 @@ def test_read_deferral_matrix_preserves_later_work_and_retries(
             else args[1].split("?", 1)[0]
             in {"pulls/3", "issues/11", "issues/3/comments"}
         )
+        if site == "_recover_refused" and seam == "github_get":
+            # Ownership's earlier issue read must succeed. Reach recovery's
+            # own PR read (or its later closure verification) deliberately.
+            target = args[1] == "pulls/3"
         if active and (active[-1] == "t-1" or site == "_recover_refused") and target:
             reads.append(args)
             if failing and len(reads) == nth:
@@ -2962,7 +2969,10 @@ def test_read_deferral_matrix_preserves_later_work_and_retries(
     failing = False
     before = len(reads)
     landing.landing_tick(policy)
-    assert len(reads) > before
+    if setup == "recovery-merged":
+        assert audits(db, "issue_closed", "t-1")
+    else:
+        assert len(reads) > before
 
 
 @pytest.mark.parametrize("nth", [1, 2])
@@ -3140,8 +3150,9 @@ def test_publication_collect_cooldown_uses_real_collector_and_retries(
     assert audits(db, "merge_armed", "t-1")
 
 
+@pytest.mark.parametrize("late", [False, True])
 def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
-    db, monkeypatch
+    db, monkeypatch, late
 ):
     from factory.orchestration.github_read_cooldown import GitHubReadDeferred
 
@@ -3154,7 +3165,9 @@ def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
     github(
         monkeypatch,
         pulls={
-            number + 2: pull(number + 2, task_id=f"t-{number}")
+            number + 2: pull(
+                number + 2, task_id=f"t-{number}", merged=late and number == 1
+            )
             for number in range(1, 4)
         },
     )
@@ -3163,7 +3176,7 @@ def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
 
     def read(repo, path):
         reads.append(path)
-        if path == "pulls/3":
+        if path == "pulls/3" and reads.count(path) == (2 if late else 1):
             raise GitHubReadDeferred("first recovery unknown")
         return get(repo, path)
 
@@ -3173,7 +3186,11 @@ def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
         "_recover_delivery",
         lambda item, *_a, **_kw: recoveries.append(item["task_id"]),
     )
-    landing._recover_refused(POLICY)
+    token = landing._deferred_items.set(set())
+    try:
+        landing._recover_refused(POLICY)
+    finally:
+        landing._deferred_items.reset(token)
     assert recoveries == ["t-2"]
     assert "pulls/5" not in reads
 
