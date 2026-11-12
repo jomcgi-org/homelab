@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
@@ -53,6 +53,12 @@ export function FeedbackInbox() {
 
 function Inbox({ items }: { items: FeedbackView[] }) {
   const [filing, setFiling] = useState<FeedbackView | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const closeFiling = () => {
+    setFiling(null);
+    // Wait for conditional dialog removal before returning keyboard focus.
+    requestAnimationFrame(() => trigger.current?.focus());
+  };
   const dismiss = useAction(dismissFeedback, {
     invalidate: changed,
     success: "Dismissed.",
@@ -83,7 +89,13 @@ function Inbox({ items }: { items: FeedbackView[] }) {
               />
             </Text>
             <HStack gap={2} wrap="wrap">
-              <Button label="File issue" onClick={() => setFiling(item)} />
+              <Button
+                label="File issue"
+                onClick={(event) => {
+                  trigger.current = event.currentTarget;
+                  setFiling(item);
+                }}
+              />
               <Button
                 label="Dismiss"
                 variant="ghost"
@@ -95,11 +107,7 @@ function Inbox({ items }: { items: FeedbackView[] }) {
         </Card>
       ))}
       {filing && (
-        <FileIssue
-          key={filing.id}
-          item={filing}
-          onClose={() => setFiling(null)}
-        />
+        <FileIssue key={filing.id} item={filing} onClose={closeFiling} />
       )}
     </>
   );

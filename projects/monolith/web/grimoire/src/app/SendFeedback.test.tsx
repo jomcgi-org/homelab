@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { findToast, openApp } from "../test/app";
 import { ids } from "../test/fixtures";
@@ -75,6 +75,11 @@ describe("Sending feedback", () => {
     const dialog = await write(user, "Half a thought");
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Feedback" })).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Feedback" }),
+      ),
+    );
     await user.click(screen.getByRole("button", { name: "Feedback" }));
     const reopened = await screen.findByRole("dialog", { name: "Feedback" });
     expect(

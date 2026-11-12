@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocation, useMatch } from "react-router";
 import { Button } from "@astryxdesign/core/Button";
 import { TextArea } from "@astryxdesign/core/TextArea";
@@ -23,26 +23,38 @@ export function SendFeedback() {
   const campaignId = useMatch("/campaigns/:campaignId/*")?.params.campaignId;
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
+  const trigger = useRef<HTMLButtonElement>(null);
+  const close = () => {
+    setOpen(false);
+    // The conditional dialog unmounts on close. Restore after its removal,
+    // including the library's own modal cleanup and descendant autofocus.
+    requestAnimationFrame(() => trigger.current?.focus());
+  };
   const send = useAction(sendFeedback, {
     invalidate: [feedbackKeys.inbox, lobbyKeys.lobby],
     success: "Thanks. Sent.",
     onSuccess: () => {
       setText("");
-      setOpen(false);
+      close();
     },
   });
   if (signedOut) return null;
   const trimmed = text.trim();
   return (
     <>
-      <Button label="Feedback" variant="ghost" onClick={() => setOpen(true)} />
+      <Button
+        ref={trigger}
+        label="Feedback"
+        variant="ghost"
+        onClick={() => setOpen(true)}
+      />
       {open && (
         <FormDialog
           title="Feedback"
           submitLabel="Send"
           isPending={send.isPending}
           isInvalid={!trimmed || trimmed.length > TEXT_MAX}
-          onClose={() => setOpen(false)}
+          onClose={close}
           onSubmit={() =>
             send.run({
               text: trimmed,

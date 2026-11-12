@@ -31,6 +31,16 @@ const rowan = { name: "Feedback from rowan@example.test" };
 const wren = { name: "Feedback from wren@example.test" };
 
 describe("Feedback inbox", () => {
+  it("returns keyboard focus to the filing opener after cancelling", async () => {
+    const { user } = openApp(inbox(), paths.feedback);
+    const item = await screen.findByRole("article", wren);
+    const opener = within(item).getByRole("button", { name: "File issue" });
+    await user.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "File issue" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
   it("lists what was said, by whom, where and when", async () => {
     const { backend } = openApp(inbox(), paths.feedback);
     const item = await screen.findByRole("article", rowan);
