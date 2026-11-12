@@ -106,7 +106,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
         with page.expect_response(
             lambda response: (
                 response.request.method == "POST"
-                and urlsplit(response.url).path == "/grimoire/join/accept"
+                and urlsplit(response.url).path == "/grimoire/join/accept/confirm"
             )
         ) as answered:
             page.get_by_role("button", name="Accept invitation", exact=True).click()

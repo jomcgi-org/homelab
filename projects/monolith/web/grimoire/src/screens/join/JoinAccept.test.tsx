@@ -10,7 +10,7 @@ import {
 } from "../../test/fixtures/join";
 
 const STATE = "GET /grimoire/join/accept/state";
-const ACCEPT = "POST /grimoire/join/accept";
+const ACCEPT = "POST /grimoire/join/accept/confirm";
 const CLOSE = "POST /grimoire/join";
 
 const lobbyRoutes: Routes = {
