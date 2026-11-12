@@ -1,4 +1,4 @@
-"""GitHub receipt deduplication and single-task admission, without network calls."""
+"""GitHub receipt deduplication and serialized recovery-before-intake admission."""
 
 from __future__ import annotations
 
@@ -522,6 +522,9 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     caller holding a reason to keep one shut, and an unnamed lane admits
     nothing rather than falling back to the policy.
 
+    Delivery admission rechecks pending recovery evidence on GitHub while
+    holding the control-row lock. Advisory-only admission makes no such reads.
+
     max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
     intake must keep admitting as tasks settle. Total work per generation is
     bounded by the receipts it can hold (one per repo/issue/generation/class)
@@ -551,6 +554,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         if control.state != "enabled":
             return {"ok": False, "reason": control.state}
         retry_capacity_releases(session=db)
+        from factory.orchestration.recovery_priority import retry_pending
+
+        if "delivery" in lanes:
+            retry_pending(db, control)
         policy = validate_policy(json.loads(control.policy_json))
         limits = lane_limits(policy)
         active = db.exec(

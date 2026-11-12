@@ -88,6 +88,40 @@ Dispatch pins effort by role: Planner and review nodes `xhigh`; funding judges, 
 
 Admitted and uncertain receipts count across generations, except paused or landing-held receipts with no reserved or uncertain starts; missing evidence retains the slot. Factory nodes, drainer and probes share permits (`agentSessions.admission`: code 4/3/2, chart 16/12/2).
 
+#### Landing recovery before delivery admission
+
+The repository-staged #7711 change retries pending null-deadline landing requests
+on the landing tick and inside `admit_next`, under the singleton control-row lock
+held through admission. The landing tick also covers capacity freed after the
+conductor's active-task snapshot.
+It considers each task's latest request in audit order, for every recovery reason.
+An eligible recovery acquires the first free delivery slot through the existing
+`request_landing_recovery` transition. Its linked `landing_recovery_started`
+starts the fixed deadline; replay preserves the request, authority and accounting.
+
+Readiness, human ownership, holds, paused or disabled policy, unknown execution,
+duplicate work and existing recovery limits remain fences. A recorded round or
+start cannot acquire another slot. Ineligible candidates are skipped without
+reserving capacity, so later recoveries and ordinary admission can proceed.
+Advisory-only admission remains independent. GitHub ownership, head and queue
+reads run under the same lock; unavailable evidence skips that candidate for
+this call. The transaction rolls recovery and admission back together on failure.
+This includes GitHub read cooldowns; they leave requests intact and do not block
+queued delivery or advisory admission. Requests excluded by automatic-landing
+policy make no GitHub reads. Closed/draft PRs and superseded heads record the
+same round-local skip as the landing loop, preventing repeated reads on later
+admission calls. A new request resets that skip; merged and human-handoff fences
+remain terminal. Readiness checks for other candidates still run under the lock
+and use fresh evidence.
+
+This delivery remains in an unmerged PR, with no deployed value or durable policy
+change. Activation requires the authorized owner's reviewed merge and verified
+rollout. Operational acceptance stays open on #7711: verify the CI-published
+monolith chart revision, then read already-recorded capacity, recovery and
+admission events over at most 72 hours. Confirm recovery wins a contended freed
+slot within one tick and report pre/post median request-to-start latency. Missing
+comparable contention evidence is inconclusive.
+
 ### Quota evidence and probe cleanup
 
 KG admission needs at least one fresh permitting grant observation. Exhausted accounts never veto a healthy one. Tokenbroker refreshes usage; the Codex probe backs it up.
