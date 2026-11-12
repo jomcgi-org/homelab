@@ -72,13 +72,10 @@ def references(value):
     return set()
 
 
-def test_disabled_by_default_and_secret_references_are_optional():
+def test_disabled_by_default_with_no_secret_references():
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     assert values["grimoireDiscordSource"]["enabled"] is False
-    env = {v["name"]: v for v in values["authentik"]["global"]["env"]}
-    for name in ("GRIMOIRE_DISCORD_CLIENT_ID", "GRIMOIRE_DISCORD_CLIENT_SECRET"):
-        ref = env[name]["valueFrom"]["secretKeyRef"]
-        assert ref["name"] == "grimoire-discord-oauth" and ref["optional"] is True
+    assert "DISCORD" not in (CHART / "values.yaml").read_text().split("authentik:")[1]
     blueprints, items = render(False)
     assert "grimoire-discord-oauth" not in items
     assert MARKER in blueprints["grimoire-auth.yaml"]
@@ -284,3 +281,23 @@ def test_hub_enables_the_source_from_the_shared_discord_application():
     # The cluster Secret keeps its name; the credentials come from Bosun's item.
     assert item["metadata"]["name"] == "grimoire-discord-oauth"
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/discord-bosun"
+    # Both pods that read the blueprint's !Env values wait for the Secret:
+    # an optional reference would start them without credentials.
+    deployments = {
+        d["metadata"]["name"]: d
+        for d in yaml.safe_load_all(result.stdout)
+        if d and d["kind"] == "Deployment"
+    }
+    assert set(deployments) == {"authentik-server", "authentik-worker"}
+    for deployment in deployments.values():
+        (container,) = deployment["spec"]["template"]["spec"]["containers"]
+        env = {e["name"]: e for e in container["env"]}
+        assert len(env) == len(container["env"]), "duplicate environment names"
+        for name, key in (
+            ("GRIMOIRE_DISCORD_CLIENT_ID", "client-id"),
+            ("GRIMOIRE_DISCORD_CLIENT_SECRET", "client-secret"),
+        ):
+            assert env[name]["valueFrom"]["secretKeyRef"] == {
+                "name": "grimoire-discord-oauth",
+                "key": key,
+            }

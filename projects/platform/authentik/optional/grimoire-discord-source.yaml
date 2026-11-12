@@ -3,7 +3,8 @@
   # so !KeyOf resolves inside one blueprint. The Discord application is
   # registered by hand; its callback is
   # https://auth.jomcgi.dev/source/oauth/callback/discord/ and its credentials
-  # live in the 1Password item grimoire-discord-oauth.
+  # come from the 1Password item at grimoireDiscordSource.itemPath, through
+  # the grimoire-discord-oauth Secret.
   #
   # Identity is the Discord account id. Email is contact information only:
   # user_matching_mode identifier never links an existing account by email,

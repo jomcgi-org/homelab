@@ -71,9 +71,11 @@ application, whose redirect is
 match by account id only, never by email, and create external users under the
 `grimoire` path with no group.
 
-Disabled does not mean identical manifests: the server and worker still gain
-optional Secret environment references, and the Grimoire blueprint contains a
-splice-marker comment. No Discord source or Discord OnePasswordItem is rendered.
+With the flag off, the Grimoire blueprint contains only a splice-marker
+comment: no Discord source, OnePasswordItem or environment reference is
+rendered. The hub overlay gives the server and worker required references to
+the `grimoire-discord-oauth` Secret, so a pod waits for the Secret and the
+change rolls the pods; a newly created Secret alone would not restart them.
 Joe registered the application, provisioned the credentials and approved
 enablement on 2026-11-12. Any Discord account with a verified email can now
 enrol, and campaign creation is open to every account while platform
