@@ -15,6 +15,8 @@ from urllib.parse import quote
 REFUSAL = "operator_landing_evidence_unverified"
 CHANGED = "operator_landing_evidence_changed"
 MAX_FILES = 64
+# A logical rename consumes two independently proved tree changes.
+MAX_CHANGED_PATHS = 2 * MAX_FILES
 MAX_BLOB_BYTES = 512 * 1024
 MAX_CONTENT_BYTES = 8 * 1024 * 1024
 MAX_READS = 384
@@ -123,7 +125,9 @@ def _check_manifest(files):
     if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
         _refuse()
     paths = []
+    endpoints = set()
     for item in files:
+        renamed = isinstance(item, dict) and item.get("status") == "renamed"
         if (
             not isinstance(item, dict)
             or set(item)
@@ -140,14 +144,34 @@ def _check_manifest(files):
                 "head_content_sha256",
                 "base_tip_content_sha256",
             }
-            or item["status"] not in {"added", "modified"}
+            | (
+                {
+                    "previous_filename",
+                    "previous_base_tip_mode",
+                    "previous_base_tip_blob_sha",
+                    "previous_base_tip_content_sha256",
+                }
+                if renamed
+                else set()
+            )
+            or item["status"] not in {"added", "modified", "removed", "renamed"}
         ):
             _refuse()
         paths.append(_path(item["path"]))
+        affected = {item["path"]}
+        if renamed:
+            previous = _path(item["previous_filename"])
+            if previous == item["path"]:
+                _refuse()
+            affected.add(previous)
+        if endpoints & affected:
+            _refuse()
+        endpoints.update(affected)
         for prefix, required in (
-            ("base", item["status"] == "modified"),
-            ("head", True),
+            ("base", item["status"] != "added"),
+            ("head", item["status"] != "removed"),
             ("base_tip", False),
+            *((("previous_base_tip", False),) if renamed else ()),
         ):
             mode = item[f"{prefix}_mode"]
             sha = item[f"{prefix}_blob_sha"]
@@ -166,6 +190,8 @@ def _check_manifest(files):
         if (
             item["status"] == "added"
             and item["base_mode"] is not None
+            or item["status"] == "removed"
+            and item["head_mode"] is not None
             or item["status"] == "modified"
             and item["base_mode"] == item["head_mode"]
             and item["base_blob_sha"] == item["head_blob_sha"]
@@ -305,32 +331,40 @@ class _Git:
             if len(prefix.split("/")) > MAX_DEPTH:
                 _refuse()
             before = self.tree(before_sha) if before_sha is not None else {}
-            after = self.tree(after_sha)
+            after = self.tree(after_sha) if after_sha is not None else {}
             for name in sorted(before.keys() | after.keys()):
                 left, right = before.get(name), after.get(name)
                 if left == right:
                     continue
                 path = _path(prefix + name)
-                if right is None:
-                    _refuse()
-                if right["type"] == "tree":
-                    if left is not None and left["type"] != "tree":
+                if (right or left)["type"] == "tree":
+                    if any(
+                        entry and entry["type"] != "tree" for entry in (left, right)
+                    ):
                         _refuse()
-                    walk(left["sha"] if left else None, right["sha"], path + "/")
+                    walk(
+                        left["sha"] if left else None,
+                        right["sha"] if right else None,
+                        path + "/",
+                    )
                     continue
                 if (
-                    right["mode"] not in REGULAR_MODES
+                    (right is not None and right["mode"] not in REGULAR_MODES)
                     or (left is not None and left["mode"] not in REGULAR_MODES)
-                    or len(result) >= MAX_FILES
+                    or len(result) >= MAX_CHANGED_PATHS
                 ):
                     _refuse()
                 result[path] = {
                     "path": path,
-                    "status": "modified" if left else "added",
+                    "status": "removed"
+                    if right is None
+                    else "modified"
+                    if left
+                    else "added",
                     "base_mode": left["mode"] if left else None,
-                    "head_mode": right["mode"],
+                    "head_mode": right["mode"] if right else None,
                     "base_blob_sha": left["sha"] if left else None,
-                    "head_blob_sha": right["sha"],
+                    "head_blob_sha": right["sha"] if right else None,
                 }
 
         walk(base_tree, head_tree, "")
@@ -340,10 +374,12 @@ class _Git:
 def evidence(pull):
     """Return exact immutable inputs or refuse; this grants no authority.
 
-    Only additions/modifications of regular UTF-8 files fit this bounded proof.
+    Only added, modified, removed or renamed regular UTF-8 files fit this proof.
     The digest is SHA-256 of canonical JSON for the returned object without its
-    ``manifest_sha256`` member. ``base_*`` file fields refer to the merge base;
-    ``base_tip_*`` fields describe the current target branch at the same paths.
+    ``manifest_sha256`` member. ``base_*`` file fields refer to the merge base.
+    For renames, ``base_*`` describes ``previous_filename`` and ``head_*`` the
+    destination. ``base_tip_*`` always describes the destination at the current
+    target branch; ``previous_base_tip_*`` separately binds the rename source.
     HTTP failures and the shared GitHub cooldown remain caller-owned failures.
     """
     try:
@@ -367,19 +403,66 @@ def evidence(pull):
             path = _path(item["filename"])
             if (
                 path in reported
-                or item["status"] not in {"added", "modified"}
-                or "previous_filename" in item
+                or item["status"] not in {"added", "modified", "removed", "renamed"}
+                or ("previous_filename" in item) != (item["status"] == "renamed")
             ):
                 _refuse()
-            reported[path] = (item["status"], _sha(item["sha"]))
+            previous = (
+                _path(item["previous_filename"])
+                if item["status"] == "renamed"
+                else None
+            )
+            reported[path] = (item["status"], _sha(item["sha"]), previous)
         changes = git.changes(git.root(merge_base), git.root(head))
-        if len(changes) != count or set(changes) != set(reported):
-            _refuse()
         tip_tree = git.root(base_tip)
         manifest = []
-        for path, item in sorted(changes.items()):
-            if reported[path] != (item["status"], item["head_blob_sha"]):
+        consumed = set()
+        for path, (status, sha, previous) in sorted(reported.items()):
+            item = changes.get(path)
+            if item is None or path in consumed:
                 _refuse()
+            consumed.add(path)
+            if status == "renamed":
+                source = changes.get(previous)
+                if (
+                    previous in consumed
+                    or source is None
+                    or source["status"] != "removed"
+                    or item["status"] != "added"
+                ):
+                    _refuse()
+                consumed.add(previous)
+                item = {
+                    **item,
+                    "status": status,
+                    "previous_filename": previous,
+                    "base_mode": source["base_mode"],
+                    "base_blob_sha": source["base_blob_sha"],
+                }
+            if (
+                status != item["status"]
+                or sha
+                != item["head_blob_sha" if status != "removed" else "base_blob_sha"]
+            ):
+                _refuse()
+            previous_fields = {}
+            if previous is not None:
+                previous_tip = git.at(tip_tree, previous)
+                if (
+                    previous_tip is not None
+                    and previous_tip["mode"] not in REGULAR_MODES
+                ):
+                    _refuse()
+                previous_blob = previous_tip["sha"] if previous_tip else None
+                previous_fields = {
+                    "previous_base_tip_mode": previous_tip["mode"]
+                    if previous_tip
+                    else None,
+                    "previous_base_tip_blob_sha": previous_blob,
+                    "previous_base_tip_content_sha256": git.blob(previous_blob)
+                    if previous_blob
+                    else None,
+                }
             at_tip = git.at(tip_tree, path)
             if at_tip is not None and at_tip["mode"] not in REGULAR_MODES:
                 _refuse()
@@ -388,13 +471,17 @@ def evidence(pull):
             manifest.append(
                 {
                     **item,
+                    **previous_fields,
                     "base_tip_mode": at_tip["mode"] if at_tip else None,
                     "base_tip_blob_sha": tip_blob,
                     "base_content_sha256": git.blob(base_blob) if base_blob else None,
-                    "head_content_sha256": git.blob(head_blob),
+                    "head_content_sha256": git.blob(head_blob) if head_blob else None,
                     "base_tip_content_sha256": git.blob(tip_blob) if tip_blob else None,
                 }
             )
+        if consumed != set(changes):
+            _refuse()
+        _check_manifest(manifest)
         if git.tip(branch) != base_tip:
             _refuse()
         result = {

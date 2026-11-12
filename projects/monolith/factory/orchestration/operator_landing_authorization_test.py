@@ -40,6 +40,8 @@ from factory.orchestration.operator_landing_evidence_test import (
     REF,
     TIP,
     Repository,
+    proof_hash,
+    removal_and_rename,
 )
 
 NOW = datetime(2026, 11, 8, 15, tzinfo=timezone.utc)
@@ -397,6 +399,52 @@ def test_preview_apply_binds_actor_native_review_git_ci_and_preserves_delivery(w
         assert row.state == "landing" and not row.task_paused
         assert db.get(SwarmTask, TASK).budget_usd == 50
         assert db.exec(select(FactoryStart)).one().cost_usd == 2
+
+
+@pytest.mark.parametrize("review_paths", ["destination", "source", "both"])
+def test_mixed_removed_renamed_preview_confirms_exact_new_name_scope(
+    world, review_paths
+):
+    # Repository/DB fixtures only. This is no evidence of #7380's live preview.
+    old_pull = copy.deepcopy(world.repo.pull)
+    removal_and_rename(world.repo, edited=True)
+    old_pull["changed_files"] = world.repo.pull["changed_files"]
+    world.repo.pull = old_pull
+    paths = sorted(
+        item["filename"] for item in world.repo.data[f"compare/{TIP}...{HEAD}"]["files"]
+    )
+    if review_paths == "source":
+        paths = ["chat_public/retention.py", "tests/old/retention_test.py"]
+    elif review_paths == "both":
+        paths = sorted([*paths, "chat_public/retention.py"])
+    with Session(world.db) as db, db.begin():
+        db.get(SwarmNodeRun, 200).outcome_json = outcome(
+            {**world.typed, "paths": paths}
+        )
+    if review_paths != "destination":
+        with pytest.raises(ValueError, match="operator_landing_review_scope_changed"):
+            preview()
+        return
+    proposal = preview()
+    proof = proposal["operator_evidence"]["git"]
+    assert [item["status"] for item in proof["files"]] == ["renamed", "removed"]
+    world.repo.calls.clear()
+    assert evidence.confirm(world.repo.pull, proof) is None
+    assert world.repo.calls == [REF]
+    assert not audits(world, releases.SCOPE_ACTION)
+    result = apply(proposal)
+    assert result["ok"] and not result["delivery_accepted"]
+    assert refusal(world) is None
+    # A valid-looking replacement manifest cannot authenticate itself by
+    # recomputing its digest; the persisted audit must still match byte-for-byte.
+    with Session(world.db) as db, db.begin():
+        row = db.get(FactoryReceipt, RECEIPT)
+        direction = json.loads(row.direction_json)
+        stored = direction["landing_authorization"]["operator_evidence"]["git"]
+        stored["files"][0]["previous_filename"] = "forged/source.py"
+        stored["manifest_sha256"] = proof_hash(stored)
+        row.direction_json = json.dumps(direction)
+    assert refusal(world) == "operator_landing_grant_unaudited"
 
 
 @pytest.mark.parametrize("changed", ["actor", "scope", "reason", "request_key"])

@@ -1156,9 +1156,15 @@ client-created file manifest.
 The server reads the actual base branch tip and records it separately from the
 immutable merge base and PR head. Complete GitHub comparison and tree evidence
 binds each path, change status, file mode, blob identity and content hash. The
-supported diff contains at most 64 added or modified regular UTF-8 files with
-mode `100644` or `100755`, each at most 512 KiB. Unsupported file kinds,
-renames, deletions, binary content and incomplete evidence refuse approval.
+supported diff contains at most 64 added, modified, removed or renamed regular
+UTF-8 files with mode `100644` or `100755`, each at most 512 KiB. Removals prove
+the merge-base blob and absence at the head. Renames consume an exact source
+removal and destination addition from the complete tree diff; content may change.
+The manifest binds `previous_filename`, source base bytes and destination head
+bytes. Current-base-tip evidence covers the destination in `base_tip_*` and the
+source in `previous_base_tip_*`. Native review paths use the new name only.
+Tree traversal permits at most 128 changed endpoints for 64 logical files.
+Unsupported statuses, file kinds, binary content and incomplete evidence refuse approval.
 Total decoded content is capped at 8 MiB, with bounded path traversal and GitHub
 reads. Audit records retain metadata and hashes, without source contents.
 
