@@ -88,6 +88,7 @@ function Workspace({ history }: { history: SheetHistory }) {
           key={latest ? `${latest.id}:${latest.updated_at}` : "new"}
           campaignId={character.campaign_id}
           characterId={character.id}
+          characterName={character.character_name}
           draft={draft}
           base={latest?.sheet ?? null}
         />
@@ -97,7 +98,8 @@ function Workspace({ history }: { history: SheetHistory }) {
           Version {submitted.version} is waiting for the DM.
         </Text>
       )}
-      {latest && <SheetSummary version={latest} showFacts={!editing} />}
+      {/* The editor previews the mechanics itself. */}
+      {latest && !editing && <SheetSummary version={latest} />}
       {role === "dm" && submitted && (
         <Decision
           campaignId={character.campaign_id}
