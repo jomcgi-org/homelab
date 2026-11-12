@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy.exc import OperationalError
 from auth.api import Authority, Principal, PrincipalKind
 from core.db import get_session
 from fastapi import FastAPI, HTTPException, Request
@@ -136,6 +137,11 @@ def test_submit_stores_trimmed_text_and_answers_with_the_id_only(setup):
         {"page": ""},
         {"page": "/" + "p" * 200},
         {"page": "https://elsewhere.example/"},
+        {"page": "//elsewhere.example/"},
+        {"page": "/\\elsewhere.example/"},
+        {"page": "/sheets?private=value"},
+        {"page": "/sheets#private"},
+        {"page": "/a\nb"},
         {"campaign_id": "not-a-uuid"},
         {"author_email": "someone@example.test"},
     ],
@@ -356,6 +362,36 @@ def test_github_failure_leaves_the_feedback_new(setup, monkeypatch, error):
     assert row["status"] == "new"
     assert row["issue_number"] is None and row["resolved_at"] is None
     assert len(client.get(API, headers=h("admin")).json()) == 1
+
+
+def test_post_publication_commit_failure_warns_before_any_retry(
+    setup, github, monkeypatch
+):
+    client, engine, _cid = setup
+    feedback_id = send(client).json()["id"]
+    commit = Session.commit
+
+    def fail_commit(session):
+        if github:
+            raise OperationalError("commit", {}, RuntimeError("database unavailable"))
+        return commit(session)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "commit", fail_commit)
+        response = client.post(
+            f"{API}/{feedback_id}/file",
+            headers=h("admin"),
+            json={"title": "T", "body": "B"},
+        )
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "GitHub created the issue but saving its resolution failed. "
+        "Check the repository before filing again."
+    }
+    assert len(github) == 1
+    (row,) = rows(engine)
+    assert row["status"] == "new"
+    assert row["issue_number"] is None and row["resolved_at"] is None
 
 
 def test_a_resolved_item_cannot_be_filed_or_dismissed_again(setup, github):

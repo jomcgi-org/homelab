@@ -18,6 +18,7 @@ from core.github import GITHUB_REPO, create_issue
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from grimoire.access import get_authenticated_email, get_authenticated_identity
@@ -50,7 +51,12 @@ class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     # Postgres text cannot hold NUL, so it is refused here as a 422.
     text: str = Field(min_length=1, max_length=2000, pattern=r"^[^\x00]*$")
-    page: str = Field(min_length=1, max_length=200, pattern=r"^/[^\x00]*$")
+    # A pathname from the app, without a host, query, fragment or controls.
+    page: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^/([^\x00-\x20/\\?#][^\x00-\x20\\?#]*)?$",
+    )
     campaign_id: UUID | None = None
 
 
@@ -106,8 +112,10 @@ def submit_feedback(
         except HTTPException:
             campaign_id = None
     # Serialize one sender's submissions so parallel requests cannot all read
-    # the same count and overshoot the limit. SQLite has no advisory locks and
-    # only backs single-connection tests.
+    # the same count and overshoot the limit. Session autobegin holds this
+    # transaction lock through count/insert until commit (or rollback/close
+    # on rejection). PostgreSQL's default READ COMMITTED gives the count a
+    # fresh snapshot after a waiting request acquires the lock.
     if session.get_bind().dialect.name == "postgresql":
         session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
@@ -204,7 +212,19 @@ def file_feedback(
     row.status = "filed"
     row.issue_number = number
     row.resolved_at = utc_now()
-    session.commit()
+    try:
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        logger.warning(
+            "grimoire feedback: issue published but resolution unconfirmed (%s)",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="GitHub created the issue but saving its resolution failed. "
+            "Check the repository before filing again.",
+        ) from None
     return FeedbackIssue(
         issue_number=number,
         issue_url=f"https://github.com/{GITHUB_REPO}/issues/{number}",

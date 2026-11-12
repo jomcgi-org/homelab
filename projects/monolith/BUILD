@@ -7063,6 +7063,16 @@ py_test(
 )
 
 # In-app feedback: private intake, operator triage, and what reaches GitHub.
+bdd_test(
+    name = "grimoire_feedback_postgres_test",
+    srcs = ["grimoire/feedback_postgres_test.py"],
+    deps = [
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "grimoire_feedback_test",
     srcs = ["grimoire/feedback_test.py"],
