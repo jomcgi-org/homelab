@@ -134,9 +134,11 @@ def _compatible(db, event, proposal, family):
 
 
 def previously_enabled(db, action):
-    """A deliberately unconfigured family is not an intervention request."""
+    """The latest successful decision can retire earlier standing authority."""
     for raw in db.exec(
-        select(FactoryAudit.detail_json).where(FactoryAudit.action == action)
+        select(FactoryAudit.detail_json)
+        .where(FactoryAudit.action == action)
+        .order_by(FactoryAudit.id.desc())
     ).all():
         try:
             result = json.loads(raw)["result"]
@@ -144,8 +146,7 @@ def previously_enabled(db, action):
                 continue
             if result.get("ok") is not True or type(result.get("enabled")) is not bool:
                 return True
-            if result.get("ok") is True and result.get("enabled") is True:
-                return True
+            return result["enabled"]
         except (AttributeError, KeyError, TypeError, ValueError):
             # A configured record of unknown shape cannot prove deliberate
             # non-configuration. Its refusal must remain visible too.

@@ -777,9 +777,12 @@ def advance_base(world, tip, content):
 
 
 @pytest.mark.parametrize("busy", [False, True])
+@pytest.mark.parametrize("receipt_state", ["landing", "succeeded"])
 def test_base_file_drift_tick_requests_explicit_rebind_and_fresh_grant_resolves(
-    world, monkeypatch, busy
+    world, monkeypatch, busy, receipt_state
 ):
+    with Session(world.db) as db, db.begin():
+        db.get(FactoryReceipt, RECEIPT).state = receipt_state
     granted = apply(preview())
     with Session(world.db) as db:
         before = db.get(FactoryReceipt, RECEIPT).model_dump()
@@ -818,6 +821,91 @@ def test_base_file_drift_tick_requests_explicit_rebind_and_fresh_grant_resolves(
         status(world)["needs_operator"][0]["authorization_audit_id"]
         == fresh["authorization_audit_id"]
     )
+
+
+@pytest.mark.parametrize("fresh_grant", [False, True])
+def test_arm_reuses_negative_observation_with_concurrent_grant_fence(
+    world, monkeypatch, fresh_grant
+):
+    apply(preview())
+    advance_base(world, "8" * 40, b"another base edit\n")
+    observed = []
+    scoped_refusal = releases.scoped_refusal
+
+    def observe(*args, **kwargs):
+        observed.append(scoped_refusal(*args, **kwargs))
+        return observed[-1]
+
+    monkeypatch.setattr(releases, "scoped_refusal", observe)
+    arm = landing._arm
+
+    def arm_after_grant(repo, candidate):
+        if fresh_grant:
+            apply(preview(), key="concurrent-fresh-grant")
+        arm(repo, candidate)
+
+    monkeypatch.setattr(landing, "_arm", arm_after_grant)
+    tick(world, monkeypatch)
+    assert observed == ["operator_landing_evidence_changed"]
+    assert bool(status(world)["needs_operator"]) is not fresh_grant
+    assert len(audits(world, "landing_authorization_wait")) == 1
+    assert len(audits(world, releases.SCOPE_ACTION)) == 1 + int(fresh_grant)
+    assert not audits(world, mod.ARM_ACTION)
+    assert landing._ARM_AUTO_MERGE not in world.calls
+
+
+@pytest.mark.parametrize("receipt_state", ["landing", "succeeded"])
+def test_successful_observation_never_replaces_fresh_arm_validation(
+    world, monkeypatch, receipt_state
+):
+    with Session(world.db) as db, db.begin():
+        db.get(FactoryReceipt, RECEIPT).state = receipt_state
+    apply(preview())
+    observed = []
+    scoped_refusal = releases.scoped_refusal
+
+    def observe(*args, **kwargs):
+        observed.append(scoped_refusal(*args, **kwargs))
+        return observed[-1]
+
+    monkeypatch.setattr(releases, "scoped_refusal", observe)
+    arm = landing._arm
+
+    def arm_after_drift(repo, candidate):
+        advance_base(world, "8" * 40, b"edit after successful observation\n")
+        arm(repo, candidate)
+
+    monkeypatch.setattr(landing, "_arm", arm_after_drift)
+    tick(world, monkeypatch)
+    assert observed == [None, "operator_landing_evidence_changed"]
+    assert status(world)["needs_operator"][0]["reason"] == observed[-1]
+    assert not audits(world, mod.ARM_ACTION)
+    assert landing._ARM_AUTO_MERGE not in world.calls
+
+
+@pytest.mark.parametrize("receipt_state", ["landing", "succeeded"])
+def test_closed_pull_request_supersedes_stale_rebind_wait(
+    world, monkeypatch, receipt_state
+):
+    with Session(world.db) as db, db.begin():
+        db.get(FactoryReceipt, RECEIPT).state = receipt_state
+    apply(preview())
+    advance_base(world, "8" * 40, b"another base edit\n")
+    tick(world, monkeypatch)
+    assert (
+        status(world)["needs_operator"][0]["reason"]
+        == "operator_landing_evidence_changed"
+    )
+    world.repo.pull["state"] = "closed"
+    for _ in range(2):
+        tick(world, monkeypatch)
+        assert not status(world)["needs_operator"]
+    assert (
+        json.loads(audits(world, "merge_arm_refused")[-1]["detail_json"])["reason"]
+        == "pull request is not open and ready"
+    )
+    assert not audits(world, mod.ARM_ACTION)
+    assert len(audits(world, releases.SCOPE_ACTION)) == 1
 
 
 @pytest.mark.parametrize(

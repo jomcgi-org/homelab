@@ -813,6 +813,12 @@ def _arm(repo: str, item: dict) -> None:
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")
             return
+        if refusal := item.get("observed_authority_refusal"):
+            # A negative observation can only defer this tick. Keep its grant
+            # digest so a concurrent fresh grant cannot inherit the old wait.
+            # Successful observations never replace fresh arming validation.
+            _scope_wait(item, refusal)
+            return
         from factory import review_publisher
         from factory.orchestration import factory_landing_release as releases
         from factory.orchestration.factory_controls import (
@@ -1059,6 +1065,7 @@ def _observe_explicit_authority(item, pull):
         refusal = releases.scoped_refusal(
             db, row, item["pr_number"], pull.get("head", {}).get("sha")
         )
+    item["observed_authority_refusal"] = refusal
     if refusal:
         _scope_wait(item, refusal)
 

@@ -323,7 +323,7 @@ def _landing_refusal(db, task_id):
     }
 
 
-# A grant, recovery request or merge answers the wait recorded before it.
+# New authority, recovery or a later landing outcome supersedes the old wait.
 _LANDING_WAIT_SUPERSEDED_BY = (
     "delivery_landing_authorized",
     "owner_pr_landing_authorized",
@@ -332,6 +332,27 @@ _LANDING_WAIT_SUPERSEDED_BY = (
     "landing_recovery_requested",
     "merge_armed",
     "merged",
+    "merge_arm_refused",
+    "issue_closed",
+    "repository_delivery_complete",
+)
+
+# These states have a retry owner. Substring matching hides durable refusals
+# such as public_docs_unverified and direct_brief_unavailable.
+_LANDING_RETRY_REASONS = (
+    "operator_landing_observation_unavailable",
+    "operator_landing_ci_unverified",
+    "operator_landing_queue_unverified",
+    "repair_landing_observation_unavailable",
+    "delivery_landing_observation_unavailable",
+    "owner_pr_landing_observation_unavailable",
+    "owner_pr_landing_operator_handoff_ci_unverified",
+    "owner_pr_landing_execution_unsettled",
+    "owner_pr_landing_canonical_execution_unsettled",
+    "owner_pr_landing_referenced_execution_unsettled",
+    "repair_landing_rolling_limit",
+    "delivery_landing_rolling_limit",
+    "owner_pr_landing_rolling_limit",
 )
 
 
@@ -355,6 +376,10 @@ def _landing_wait(db, task_id):
     ).first()
     if event is None or event.action != "landing_authorization_wait":
         return None
+    return _landing_wait_row(event)
+
+
+def _landing_wait_row(event):
     detail = json.loads(event.detail_json)
     return {
         "source": "recorded_landing_audit",
@@ -390,68 +415,12 @@ def _status_payload(
             "observed_at": _now(),
             "coverage": COVERAGE,
         }
-    open_escalations = [
-        item for item in view.get("escalations") or [] if item.get("open")
-    ]
     active = [_task_row(receipt) for receipt in view.get("active") or []]
     queued_receipts = view.get("queued") or []
     queued = [
         _task_row(receipt, queue_position=index)
         for index, receipt in enumerate(queued_receipts, start=offset + 1)
     ]
-    needs_operator = [
-        {
-            "issue_number": item.get("issue_number"),
-            "title": item.get("title"),
-            "kind": item.get("kind"),
-            "question": item.get("question"),
-        }
-        for item in open_escalations
-    ]
-    for receipt in view.get("active") or []:
-        wait = receipt.get("landing_wait")
-        if not wait:
-            continue
-        reason = wait["reason"]
-        # Network/evidence availability is a retry, not a new human decision.
-        if any(word in reason for word in ("unavailable", "unverified")):
-            continue
-        if not reason.startswith(
-            (
-                "operator_landing_",
-                "scoped_landing_",
-                "repair_landing_",
-                "delivery_landing_",
-                "owner_pr_landing_",
-            )
-        ):
-            continue
-        needs_operator.append(
-            {
-                **wait,
-                "kind": "landing_authorization",
-                "receipt_id": receipt.get("id"),
-                "task_id": receipt.get("task_id"),
-                "repo": receipt.get("repo"),
-                "issue_number": receipt.get("issue_number"),
-                "title": receipt.get("title"),
-                "question": "Re-bind explicit landing authority to current evidence."
-                if reason == "operator_landing_evidence_changed"
-                else "Review the recorded landing authority refusal.",
-            }
-        )
-    for family in ("repair_landing", "delivery_landing", "owner_pr_landing"):
-        authority = view.get(family) or {}
-        if authority.get("needs_operator"):
-            needs_operator.append(
-                {
-                    "kind": "standing_landing_authority",
-                    "family": family,
-                    "authorization_id": authority["authorization_id"],
-                    "reason": authority["reason"],
-                    "question": "Re-authorize or retire the invalid standing landing authority.",
-                }
-            )
     payload = {
         "ok": True,
         "state": view.get("state"),
@@ -475,7 +444,7 @@ def _status_payload(
         "delivery_landing": view.get("delivery_landing"),
         "active": active,
         "queued": queued,
-        "needs_operator": needs_operator,
+        "needs_operator": view["needs_operator"],
         "coverage": COVERAGE,
         "capabilities": CAPABILITIES,
         "pagination": view["pagination"],
@@ -776,6 +745,112 @@ def _decision_page(db, include_resolved: bool, offset: int, limit: int) -> dict:
     }
 
 
+def _landing_operator_page(db, offset: int, limit: int) -> dict:
+    """Page current waits, including succeeded receipts still awaiting landing.
+
+    Count from audit identities; load only selected receipt metadata, never
+    terminal bodies, graphs or sessions. Recent-task pagination is independent.
+    """
+    from sqlalchemy import func, or_
+    from sqlmodel import select
+    from factory.orchestration.factory_models import (
+        FactoryAudit as A,
+        FactoryReceipt as R,
+    )
+    from factory.private_view import ACTIVE_STATES
+
+    latest = (
+        select(func.max(A.id).label("id"))
+        .where(
+            A.action.in_(("landing_authorization_wait", *_LANDING_WAIT_SUPERSEDED_BY))
+        )
+        .group_by(A.task_id)
+        .subquery()
+    )
+    reason = _audit_text(("reason",), db.get_bind().dialect.name)
+    predicate = (
+        R.state.in_((*ACTIVE_STATES, "succeeded")),
+        A.action == "landing_authorization_wait",
+        reason.not_in(_LANDING_RETRY_REASONS),
+        or_(
+            *(
+                reason.startswith(prefix, autoescape=True)
+                for prefix in (
+                    "operator_landing_",
+                    "scoped_landing_",
+                    "repair_landing_",
+                    "delivery_landing_",
+                    "owner_pr_landing_",
+                )
+            )
+        ),
+    )
+    count = (
+        select(func.count())
+        .select_from(R)
+        .join(A, A.task_id == R.task_id)
+        .join(latest, latest.c.id == A.id)
+        .where(*predicate)
+    )
+    total = db.exec(count).one()
+    query = (
+        select(R.id, R.task_id, R.repo, R.issue_number, R.title, A)
+        .join(A, A.task_id == R.task_id)
+        .join(latest, latest.c.id == A.id)
+        .where(*predicate)
+        .order_by(R.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    items = []
+    for receipt_id, task_id, repo, issue_number, title, event in db.exec(query).all():
+        wait = _landing_wait_row(event)
+        items.append(
+            {
+                **wait,
+                "kind": "landing_authorization",
+                "receipt_id": receipt_id,
+                "task_id": task_id,
+                "repo": repo,
+                "issue_number": issue_number,
+                "title": title,
+                "question": "Re-bind explicit landing authority to current evidence."
+                if wait["reason"] == "operator_landing_evidence_changed"
+                else "Review the recorded landing authority refusal.",
+            }
+        )
+    return {"items": items, "total": total}
+
+
+def _needs_operator_page(db, decisions, authorities, offset: int, limit: int):
+    """One bounded page across decisions, receipt waits and standing authority."""
+    items = [
+        {key: item.get(key) for key in ("issue_number", "title", "kind", "question")}
+        for item in decisions["items"]
+        if item.get("open")
+    ]
+    decision_count = decisions["pagination"]["total"]
+    landing = _landing_operator_page(
+        db, max(0, offset - decision_count), max(0, limit - len(items))
+    )
+    items.extend(landing["items"])
+    standing = [
+        {
+            "kind": "standing_landing_authority",
+            "family": family,
+            "authorization_id": authority["authorization_id"],
+            "reason": authority["reason"],
+            "question": "Re-authorize or retire the invalid standing landing authority.",
+        }
+        for family, authority in authorities.items()
+        if authority.get("needs_operator")
+    ]
+    start = max(0, offset - decision_count - landing["total"])
+    items.extend(standing[start : start + max(0, limit - len(items))])
+    total = decision_count + landing["total"] + len(standing)
+    return {"items": items, "pagination": _pagination(total, offset, limit, len(items))}
+
+
 def _operator_view(
     include_recent: bool, offset: int, limit: int, *, session=None
 ) -> dict:
@@ -880,6 +955,12 @@ def _operator_view(
         )
 
         refill_status = refill_control.status(db, control)
+        authorities = {
+            "repair_landing": repair_landing_delegation.status(db),
+            "delivery_landing": delivery_landing_delegation.status(db),
+            "owner_pr_landing": owner_pr_landing_delegation.status(db),
+        }
+        needs_operator = _needs_operator_page(db, decisions, authorities, offset, limit)
         return {
             "ok": True,
             "state": control.state,
@@ -893,9 +974,7 @@ def _operator_view(
             "admitted_count": control.admitted_count,
             "generated_at": generated,
             "refill": refill_status,
-            "repair_landing": repair_landing_delegation.status(db),
-            "owner_pr_landing": owner_pr_landing_delegation.status(db),
-            "delivery_landing": delivery_landing_delegation.status(db),
+            **authorities,
             "intake": controls.intake_state(policy, session=db),
             "lanes": controls.lane_usage(
                 policy,
@@ -905,7 +984,11 @@ def _operator_view(
             "review_routing": controls.review_routing_view(policy, session=db),
             **buckets,
             "escalations": decisions["items"],
-            "pagination": {**pagination, "needs_operator": decisions["pagination"]},
+            "needs_operator": needs_operator["items"],
+            "pagination": {
+                **pagination,
+                "needs_operator": needs_operator["pagination"],
+            },
         }
 
 

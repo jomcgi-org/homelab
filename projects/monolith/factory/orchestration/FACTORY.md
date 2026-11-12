@@ -803,8 +803,16 @@ landing-term evidence proves semantic compatibility, as defined in architecture
 section 4. Relevant disable/change/restore never revives an earlier grant.
 Invalid previously granted standing authority and explicit grants needing a
 fresh evidence binding appear in `factory_status.needs_operator`; status reads
-remain read-only and GitHub observation failures remain retries.
-Disable/change/restore cannot revive an earlier grant. It explicitly permits
+remain read-only and known GitHub observation failures remain retries. Latest
+family retirement and natural trial expiry clear the standing-authority alert.
+Receipt waits include `succeeded` deliveries still awaiting landing and clear
+after a fresh grant or later landing outcome, including a closed-PR refusal.
+All operator entries share one bounded page with complete counts. The landing
+observer visits at most five unfinished receipts per tick, so detection takes
+multiple ticks for a larger cohort. Final arming still revalidates authority.
+Complete legacy configure history with unchanged landing terms can restore a
+previously drift-refused standing grant on rollout without a new operator action.
+The owner-PR delegation explicitly permits
 pre-existing PRs and already adopted receipts with genuine `receive_owner_pr`
 provenance, canonical work-item ownership, and either an accepted issue or a
 server-settled direct PR refinement. Legacy cards supply no authority.

@@ -1003,8 +1003,20 @@ file proof on an explicit operator grant requires a fresh preview and grant,
 even when GitHub reports a clean merge and the approved head is unchanged.
 Landing retains the grant and its audit, and records a deduplicated wait with
 receipt, task, PR, head and authorization audit identity. `factory_status` adds
-that actionable wait to `needs_operator`; unavailable GitHub evidence stays a
-retry. A fresh grant answers the old wait without rebinding its evidence.
+that actionable wait to `needs_operator`, including settled `succeeded` receipts
+still awaiting landing. Escalations, receipt waits and standing-authority alerts
+share one counted, bounded page, independent of the active and recent pages.
+Known observation, CI, queue, execution and rolling-rate retries stay with their
+existing owners; durable refusals stay visible even when their names contain
+`unavailable` or `unverified`. A fresh grant or later landing refusal answers the
+old wait without rebinding its evidence. A closed PR retains its actual refusal.
+
+The landing observer rotates through at most five unfinished deliveries per
+tick. A wait appears when its receipt is visited; more than five unfinished
+deliveries require multiple ticks. Observation does not authorize arming: the
+arming owner reuses a negative observation only to defer that tick, with the
+original grant-digest fence. A successful observation still requires fresh
+authority validation before the locked arming reservation.
 
 Standing repair, delivery and owner-PR decisions retain their original identity,
 expiry, path/effect profiles, rolling usage and derivation bounds. Successful
@@ -1025,9 +1037,14 @@ bounds keep their separate validators and revocation lineage. Legacy grants
 retain their original digest semantics unless a complete configure journal can
 prove the original policy and every later transition proves unchanged terms.
 Unknown, malformed or partial history refuses compatibility; no migration
-re-grants authority. Previously granted but now invalid standing authority is
-visible in `needs_operator` even without a landing receipt. Never-configured
-delegation creates no alert. Status reads do not write audits or refresh grants.
+re-grants authority. On rollout, this proof can restore a legacy grant previously
+reported as `policy_changed` or `policy_replaced`, without another operator
+action, when every intervening full configure record preserves its terms.
+Previously granted but now invalid standing authority is visible in
+`needs_operator` even without a landing receipt. A latest deliberate family
+disable or natural repair-trial expiry resolves that standing alert without
+renewing authority. Never-configured delegation creates no alert. Status reads
+do not write audits or refresh grants.
 
 Typed `receipt_admission`, `prepared_admission` and `promotion_admission` failures
 map to `projects/monolith/factory/execution/admission.py` and `admission_test.py`.

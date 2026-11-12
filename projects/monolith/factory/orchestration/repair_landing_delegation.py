@@ -295,7 +295,8 @@ def status(db):
             "reason": str(exc)
             if isinstance(exc, ValueError)
             else "repair_landing_evidence_invalid",
-            "needs_operator": landing_authority_policy.previously_enabled(db, CONTROL),
+            "needs_operator": str(exc) != "repair_landing_expired"
+            and landing_authority_policy.previously_enabled(db, CONTROL),
         }
 
 

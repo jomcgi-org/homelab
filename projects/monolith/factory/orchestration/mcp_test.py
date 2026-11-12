@@ -1682,6 +1682,8 @@ def test_status_landing_refusal_is_bounded_read_only_and_epoch_scoped(
         "landing_recovery_requested",
         "merge_armed",
         "merged",
+        "issue_closed",
+        "repository_delivery_complete",
     ],
 )
 def test_status_landing_wait_reads_latest_reason_until_answered(
@@ -1732,7 +1734,7 @@ def test_status_landing_wait_reads_latest_reason_until_answered(
                 )
             )
     wait = mcp._status_payload(False)["active"][0]["landing_wait"]
-    if superseding in (None, "merge_arm_refused"):
+    if superseding is None:
         assert wait["reason"] == "path_denied"
         assert wait["pr_number"] == 17
         assert set(wait) == {
@@ -1744,6 +1746,64 @@ def test_status_landing_wait_reads_latest_reason_until_answered(
         }
     else:
         assert wait is None
+
+
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        ("scoped_landing_public_docs_unverified", True),
+        ("owner_pr_landing_direct_brief_unavailable", True),
+        ("owner_pr_landing_execution_unsettled", False),
+        ("owner_pr_landing_canonical_execution_unsettled", False),
+        ("owner_pr_landing_referenced_execution_unsettled", False),
+        ("operator_landing_observation_unavailable", False),
+        ("delivery_landing_observation_unavailable", False),
+        ("repair_landing_observation_unavailable", False),
+        ("owner_pr_landing_observation_unavailable", False),
+        ("owner_pr_landing_operator_handoff_ci_unverified", False),
+        ("operator_landing_ci_unverified", False),
+        ("operator_landing_queue_unverified", False),
+        ("delivery_landing_rolling_limit", False),
+        ("repair_landing_rolling_limit", False),
+        ("owner_pr_landing_rolling_limit", False),
+        ("operator_landing_revoked", True),
+        ("operator_landing_expired", True),
+        ("operator_landing_future_unavailable_reason", True),
+    ],
+)
+def test_operator_wait_filters_only_known_retry_reasons(
+    db, monkeypatch, reason, expected
+):
+    with Session(db) as session, session.begin():
+        session.add(
+            SwarmTask(id="synthetic", task_text="work", conductor_model="astra")
+        )
+    seed_operator_rows(
+        db, [{"issue_number": 7, "task_id": "synthetic", "state": "succeeded"}]
+    )
+    with Session(db) as session, session.begin():
+        session.add(
+            FactoryAudit(
+                actor="factory:landing",
+                task_id="synthetic",
+                action="landing_authorization_wait",
+                detail_json=json.dumps({"reason": reason, "pr_number": 17}),
+            )
+        )
+    monkeypatch.setattr(
+        controls,
+        "_snapshot",
+        lambda *args, **kwargs: pytest.fail(
+            "landing alerts must not hydrate succeeded receipts"
+        ),
+    )
+    with Session(db) as session:
+        payload = mcp._status_payload(False, session=session)
+        assert not session.new and not session.dirty and not session.deleted
+    assert bool(payload["needs_operator"]) is expected
+    assert payload["pagination"]["needs_operator"]["total"] == int(expected)
+    if expected:
+        assert payload["needs_operator"][0]["reason"] == reason
 
 
 def test_status_payload_pages_each_bucket_and_keeps_queue_positions(db):

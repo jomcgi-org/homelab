@@ -790,7 +790,7 @@ def test_restoring_identical_policy_cannot_revive_authority(db, action):
         assert delegation.status(session)["enabled"] is True
 
 
-def standing_family(engine, family):
+def standing_family(engine, family, *, enabled=True, trial=False):
     from factory.orchestration import delivery_landing_delegation as delivery
     from factory.orchestration import repair_landing_delegation as repair
 
@@ -819,18 +819,18 @@ def standing_family(engine, family):
         version = control.version
     args = (
         {"max_landings": 5}
-        if module is delivery
+        if module is delivery and enabled
         else {"mode": "ongoing", "duration_minutes": None}
-        if module is repair
+        if module is repair and not trial
         else {}
     )
     preview = module.configure(
-        principal(), "preview", True, version, "Standing scope", **args
+        principal(), "preview", enabled, version, "Standing scope", **args
     )
     module.configure(
         principal(),
         "apply",
-        True,
+        enabled,
         version,
         "Standing scope",
         **args,
@@ -840,11 +840,13 @@ def standing_family(engine, family):
     return module
 
 
-def authority_status(engine):
+def authority_status(engine, **options):
     from factory.orchestration import mcp
 
     with Session(engine) as session:
-        payload = mcp._status_payload(False, session=session)
+        payload = mcp._status_payload(
+            session=session, **{"include_recent": False, **options}
+        )
         assert not session.new and not session.dirty and not session.deleted
         return payload
 
@@ -914,6 +916,132 @@ def test_landing_terms_change_visible_without_receipt_and_restore_never_renews(
 def test_unconfigured_delegation_has_no_perpetual_operator_alert(db, family):
     assert authority_status(db)[family]["enabled"] is False
     assert not authority_status(db)["needs_operator"]
+
+
+@pytest.mark.parametrize(
+    "family", ["repair_landing", "delivery_landing", "owner_pr_landing"]
+)
+@pytest.mark.parametrize("invalidated", [False, True])
+def test_latest_standing_disable_resolves_operator_alert(db, family, invalidated):
+    module = standing_family(db, family)
+    if invalidated:
+        with Session(db) as session:
+            current = json.loads(session.get(FactoryControl, "factory").policy_json)
+        assert controls.set_control(
+            "configure", "operator", policy={**current, "base_branch": "other-base"}
+        )["ok"]
+        assert authority_status(db)["needs_operator"]
+    standing_family(db, family, enabled=False)
+    for _ in range(2):
+        payload = authority_status(db)
+        assert payload[family]["enabled"] is False
+        assert payload[family]["reason"] == family + "_disabled"
+        assert not payload["needs_operator"]
+    with Session(db) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == module.GRANT)
+        ).all()
+
+
+@pytest.mark.parametrize("retire", [False, True])
+def test_expired_standing_trial_resolves_operator_alert_without_renewal(
+    db, monkeypatch, retire
+):
+    module = standing_family(db, "repair_landing", trial=True)
+    with Session(db) as session:
+        original = module.status(session)
+    monkeypatch.setattr(controls, "_now", lambda: NOW + timedelta(hours=2))
+    if retire:
+        standing_family(db, "repair_landing", enabled=False, trial=True)
+    payload = authority_status(db)
+    assert payload["repair_landing"]["enabled"] is False
+    assert payload["repair_landing"]["reason"] == (
+        "repair_landing_disabled" if retire else "repair_landing_expired"
+    )
+    assert not payload["needs_operator"]
+    with Session(db) as session:
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == module.GRANT)
+        ).all()
+        if not retire:
+            assert (
+                module.status(session)["authorization_id"]
+                == original["authorization_id"]
+            )
+
+
+@pytest.mark.parametrize("include_recent", [False, True])
+@pytest.mark.parametrize("limit", [1, 2, 3, 10])
+def test_operator_pagination_includes_decisions_waits_and_standing_families(
+    db, include_recent, limit
+):
+    for family in ("repair_landing", "delivery_landing", "owner_pr_landing"):
+        standing_family(db, family)
+    with Session(db) as session:
+        current = json.loads(session.get(FactoryControl, "factory").policy_json)
+    assert controls.set_control(
+        "configure", "operator", policy={**current, "base_branch": "other-base"}
+    )["ok"]
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                FactoryReceipt(
+                    repo=delegation.REPO,
+                    issue_number=n,
+                    title=f"Work {n}",
+                    body="private receipt body",
+                    url=f"https://github.com/{delegation.REPO}/issues/{n}",
+                    actor="operator",
+                    task_id=f"task-{n}",
+                    state="landing" if n == 2 else "succeeded",
+                    policy_json=dumps(current),
+                    escalation_json=dumps({"question": f"Decision {n}?"})
+                    if n in (3, 4)
+                    else None,
+                )
+                for n in range(1, 6)
+            ]
+            + [
+                FactoryAudit(
+                    actor="factory:landing",
+                    task_id=f"task-{n}",
+                    action="landing_authorization_wait",
+                    detail_json=dumps(
+                        {"reason": "operator_landing_evidence_changed", "pr_number": n}
+                    ),
+                )
+                for n in (1, 2, 5)
+            ]
+        )
+        session.flush()
+        session.add(
+            FactoryAudit(
+                actor="factory:landing",
+                task_id="task-5",
+                action="repository_delivery_complete",
+            )
+        )
+    entries = []
+    for offset in range(0, 7 + limit, limit):
+        payload = authority_status(
+            db, include_recent=include_recent, offset=offset, limit=limit
+        )
+        page = payload["pagination"]["needs_operator"]
+        assert page["total"] == 7
+        assert (
+            page["returned"]
+            == len(payload["needs_operator"])
+            == min(limit, max(0, 7 - offset))
+        )
+        assert page["next_offset"] == (offset + limit if offset + limit < 7 else None)
+        entries.extend(payload["needs_operator"])
+    assert [item["issue_number"] for item in entries[:4]] == [4, 3, 1, 2]
+    assert {item["family"] for item in entries[4:]} == {
+        "repair_landing",
+        "delivery_landing",
+        "owner_pr_landing",
+    }
+    assert all(item["kind"] == "standing_landing_authority" for item in entries[4:])
 
 
 @pytest.mark.parametrize(
