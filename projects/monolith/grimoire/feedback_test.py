@@ -159,12 +159,18 @@ def test_submit_requires_an_identity(setup):
     assert rows(engine) == []
 
 
-def test_campaign_must_be_one_the_sender_belongs_to(setup):
+def test_a_campaign_the_sender_is_not_in_is_dropped_not_refused(setup):
     client, engine, cid = setup
     for campaign_id in (cid, str(uuid4())):
         response = send(client, "player", campaign_id=campaign_id)
-        assert response.status_code == 404
-        assert response.json() == {"detail": "campaign not found"}
+        assert response.status_code == 201
+    assert [row["campaign_id"] for row in rows(engine)] == [None, None]
+
+
+def test_nul_characters_are_refused(setup):
+    client, engine, _cid = setup
+    assert send(client, text="a\x00b").status_code == 422
+    assert send(client, page="/a\x00b").status_code == 422
     assert rows(engine) == []
 
 
@@ -343,7 +349,8 @@ def test_github_failure_leaves_the_feedback_new(setup, monkeypatch, error):
     )
     assert response.status_code == 502
     assert response.json() == {
-        "detail": "GitHub did not accept the issue. The feedback is still here."
+        "detail": "GitHub did not confirm the issue. "
+        "Check the repository before filing again."
     }
     (row,) = rows(engine)
     assert row["status"] == "new"

@@ -48,8 +48,9 @@ Operator = Annotated[Principal, Depends(_operator)]
 
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    text: str = Field(min_length=1, max_length=2000)
-    page: str = Field(min_length=1, max_length=200, pattern=r"^/")
+    # Postgres text cannot hold NUL, so it is refused here as a 422.
+    text: str = Field(min_length=1, max_length=2000, pattern=r"^[^\x00]*$")
+    page: str = Field(min_length=1, max_length=200, pattern=r"^/[^\x00]*$")
     campaign_id: UUID | None = None
 
 
@@ -93,12 +94,17 @@ def submit_feedback(
     email: AuthEmail,
     session: DatabaseSession,
 ) -> FeedbackReceipt:
+    # The campaign is context for triage. A sender who is not a member (a
+    # stale link, a removed player) still gets heard, without the campaign.
     campaign_id = None
     if body.campaign_id is not None:
         from grimoire.router import _get_member_or_404
 
-        campaign_id = str(body.campaign_id)
-        _get_member_or_404(session, campaign_id, email)
+        try:
+            _get_member_or_404(session, str(body.campaign_id), email)
+            campaign_id = str(body.campaign_id)
+        except HTTPException:
+            campaign_id = None
     recent = session.exec(
         select(func.count())
         .select_from(Feedback)
@@ -184,7 +190,8 @@ def file_feedback(
         logger.warning("grimoire feedback: issue not filed (%s)", type(exc).__name__)
         raise HTTPException(
             status_code=502,
-            detail="GitHub did not accept the issue. The feedback is still here.",
+            detail="GitHub did not confirm the issue. "
+            "Check the repository before filing again.",
         ) from None
     row.status = "filed"
     row.issue_number = number

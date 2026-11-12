@@ -106,8 +106,9 @@ function Inbox({ items }: { items: FeedbackView[] }) {
 }
 
 /**
- * The repository is public, so the operator writes what is published. The
- * body starts as the sender's words to edit, never to send unread.
+ * The repository is public and the factory reads the issue, so the operator
+ * writes what is published. The sender's words are shown for reference and
+ * are never the default body.
  */
 function FileIssue({
   item,
@@ -117,7 +118,7 @@ function FileIssue({
   onClose: () => void;
 }) {
   const [title, setTitle] = useState("");
-  const [body, setBody] = useState(item.text);
+  const [body, setBody] = useState("");
   const file = useAction(fileFeedback, {
     invalidate: changed,
     success: (issue) => `Filed as issue #${issue.issue_number}.`,
@@ -127,7 +128,8 @@ function FileIssue({
   const cleanBody = body.trim();
   const invalid = !cleanTitle || !cleanBody || cleanBody.length > BODY_MAX;
   const submit = () => {
-    if (!invalid) file.run({ id: item.id, title: cleanTitle, body: cleanBody });
+    if (!invalid && !file.isPending)
+      file.run({ id: item.id, title: cleanTitle, body: cleanBody });
   };
   return (
     <FormDialog
@@ -138,6 +140,7 @@ function FileIssue({
       onSubmit={submit}
       onClose={onClose}
     >
+      <NoteText text={item.text} />
       <TextInput
         label="Title"
         isRequired
@@ -149,6 +152,7 @@ function FileIssue({
       />
       <TextArea
         label="Body"
+        isRequired
         value={body}
         onChange={setBody}
         maxLength={BODY_MAX}

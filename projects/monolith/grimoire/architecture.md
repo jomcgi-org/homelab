@@ -710,16 +710,16 @@ originates either header; the private sheets loader
 (`frontend/src/routes/private/grimoire/+page.server.js`) copies
 `x-grimoire-token` only when an incoming request carries it. Live verification
 of the invitation flow and the account pages against the production gateway is
-outstanding (#7698). The port of the browser rehearsal harness in
-`projects/monolith/dev/grimoire` to the React app is in progress.
+outstanding (#7698). The browser rehearsal harness in
+`projects/monolith/dev/grimoire` drives the React app.
 
 ### Feedback
 
 Every page header has a Feedback action. `POST /api/grimoire/feedback` stores
 the text (up to 2,000 characters), the in-app path, the campaign when the path
-has one, and the sender's verified email in `grimoire.feedback`. A campaign id
-must be one the sender belongs to. Each sender may store ten rows in any 24
-hours; the next request answers 429.
+has one, and the sender's verified email in `grimoire.feedback`. A campaign
+the sender does not belong to is dropped from the row. Each sender may
+store ten rows in any 24 hours; the next request answers 429.
 
 Only operators read the rows, at `/grimoire/feedback`. The routes apply the
 lobby's `can_administer_accounts` rule (`operators` group) on every request.
@@ -734,9 +734,9 @@ factory's refine step picks it up. A GitHub failure answers 502 and leaves the
 row `new`; a row that is already filed or dismissed answers 409.
 
 **Why.** `jomcgi-org/homelab` is public. A friend's raw words can name people
-or a campaign, so nothing from the row is published: the dialog prefills the
-body with the text for the operator to edit, and the server sends only what
-comes back. The GitHub call runs before the row is marked, under a row lock,
+or a campaign, and the factory reads the issue, so nothing from the row is
+published: the dialog shows the text for reference with an empty body, and the
+server sends only what the operator typed. The GitHub call runs before the row is marked, under a row lock,
 so two operators cannot file one item twice. It is a single attempt with no
 retry, because retrying a write whose answer was lost would file a duplicate.
 

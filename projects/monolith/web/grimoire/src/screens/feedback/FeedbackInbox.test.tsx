@@ -54,9 +54,13 @@ describe("Feedback inbox", () => {
     ).toBeTruthy();
     const submit = within(dialog).getByRole("button", { name: "File issue" });
     const body = within(dialog).getByRole<HTMLTextAreaElement>("textbox", {
-      name: "Body",
+      name: /^Body/,
     });
-    expect(body.value).toBe("The spell list is hard to scan on a phone.");
+    // The sender's words are shown for reference, never as the default body.
+    expect(
+      within(dialog).getByText("The spell list is hard to scan on a phone."),
+    ).toBeTruthy();
+    expect(body.value).toBe("");
 
     // The title is required: nothing is sent without one.
     await user.click(submit);
@@ -66,7 +70,6 @@ describe("Feedback inbox", () => {
       within(dialog).getByRole("textbox", { name: /^Title/ }),
       " Spell list on small screens ",
     );
-    await user.clear(body);
     await user.type(body, "Group spells by level at 390px.");
     await user.click(submit);
 
@@ -84,7 +87,7 @@ describe("Feedback inbox", () => {
 
   it("keeps the item and the dialog when GitHub refuses", async () => {
     const refusal =
-      "GitHub did not accept the issue. The feedback is still here.";
+      "GitHub did not confirm the issue. Check the repository before filing again.";
     const { user } = openApp(
       {
         ...inbox(),
@@ -98,6 +101,10 @@ describe("Feedback inbox", () => {
     await user.type(
       within(dialog).getByRole("textbox", { name: /^Title/ }),
       "Spell list",
+    );
+    await user.type(
+      within(dialog).getByRole("textbox", { name: /^Body/ }),
+      "Group spells by level.",
     );
     await user.click(
       within(dialog).getByRole("button", { name: "File issue" }),
