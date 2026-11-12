@@ -2188,6 +2188,22 @@ the conflict; the cost is a filegroup in every doc-owning package, held
 complete by the coverage check. One pretty-printed committed file per doc was
 the fallback: mergeable, but still generated state in git.
 
+### Retain recovery inputs and stored app data
+
+Hikes seed SQL and its loader/generator remain disaster-recovery tooling, with
+explicit SQLite input and operator-only production loading documented in
+`hikes/README.md`. Vessel IMO, call sign, dimensions and draught remain stored
+and ingested even though the ships API omits them. Campsite retained-only
+fields keep their existing ingestion and serving behavior.
+
+**Why.** Joe's #7030 decision retains hikes reseeding and vessel data because
+dropping existing data has no benefit. Campsites follow the audit's conservative
+retention option, without claiming an additional human decision. The unused
+mooring duration setting is removed. Retirement of dashboard snapshot alerts
+is staged with a column-only migration and PostgreSQL transition tests;
+`home/README.md` records the required maintenance window and rollback limits.
+Production column removal and rollout remain outstanding on #7030.
+
 ## 11. Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
@@ -2196,6 +2212,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retain hikes recovery tooling and stored vessel/campsite data; retire unused snapshot alerts | Joe's 2026-10-28 decision and the conservative audit option for campsites | #7030 | repository-only staged delivery under a draft landing hold; production migration and rollout acceptance remain |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |

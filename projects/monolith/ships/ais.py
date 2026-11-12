@@ -25,7 +25,6 @@ DEDUP_TIME_THRESHOLD = int(os.getenv("DEDUP_TIME_THRESHOLD", "300"))  # seconds
 
 # Moored detection settings.
 MOORED_RADIUS_METERS = float(os.getenv("MOORED_RADIUS_METERS", "500"))
-MOORED_MIN_DURATION_HOURS = float(os.getenv("MOORED_MIN_DURATION_HOURS", "1"))
 
 # AISStream sends time_utc in a Go-style layout, e.g.
 # "2024-01-15 10:00:00.000000000 +0000 UTC". ISO 8601 (the shape used in tests
