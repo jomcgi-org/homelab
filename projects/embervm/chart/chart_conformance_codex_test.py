@@ -366,6 +366,7 @@ def test_stamped_flag_preserves_the_generic_b2_transition_contract() -> None:
         "model": "terra",
         "providerModel": "gpt-6.1-terra",
         "cliVersion": "0.167.0",
+        "resumeReportOnly": False,
     }
     result = _helm(("dev", "dev-gke"), ["rootfsBuilder.bakeFormatVersion=b3"])
     assert result.returncode != 0
