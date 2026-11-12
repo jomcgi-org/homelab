@@ -327,8 +327,10 @@ embervm/038, `noded/server/activator.go`).
   [#6132](https://github.com/jomcgi-org/homelab/issues/6132);
   [#3864](https://github.com/jomcgi-org/homelab/issues/3864) closed without it
   and records the reopen gate.
-- **Decided direction, persistence as a declared property**: workloads declare
-  persistence flags; memory and filesystem persistence decouple from class.
+- **Not planned, persistence declared independently of workload class**:
+  reopen when a named supported consumer needs a persistence combination that
+  current class semantics cannot satisfy
+  ([#7008](https://github.com/jomcgi-org/homelab/issues/7008)).
 
 **Why.** Per-request tenant isolation (one fresh VM per request, destroyed after
 the response, re-primed locally with no control-plane hop) is the fast execution
@@ -347,11 +349,11 @@ routing is assessed first, and a retry never replays tenant work after an
 uncertain result. The per-brick fail-closed quota lease remains withdrawn and
 [#3867](https://github.com/jomcgi-org/homelab/issues/3867) stays closed.
 
-**Why.** Classes originally bundled persistence policy, leaving no class for a
-filesystem-backed workload without a memory snapshot (ADR embervm/027). A new
-class for each persistence shape was rejected because persistence is orthogonal
-to class scheduling and network semantics; composite groups were rejected as the
-default application graph because joint lifecycle and private networking couple
+**Why.** The historical ADR embervm/027 proposal sought filesystem persistence
+without a memory snapshot. It rejected a new class for each persistence shape
+because persistence is orthogonal to class scheduling and network semantics.
+The historical proposals also rejected composite groups as the default
+application graph because joint lifecycle and private networking couple
 otherwise independent components (ADR embervm/022, ADR embervm/027). The
 historical mediated-bindings alternative is not an active programme:
 [#5813](https://github.com/jomcgi-org/homelab/issues/5813) closed as not planned,
@@ -710,10 +712,19 @@ the CP's Workload admission both reject a `bankedTtlSeconds` greater than or
 equal to `warmthS3Gc.sessionTtlMs`, because a banked snapshot has no expiry
 hold in that GC), after which resume takes the session-expiry 410 path; the durable
 workspace lineage is adoptable for 7 days, so a new session generation
-inherits the prior workspace rather than starting blank. **Decided direction**:
-capture decouples from bank (close-triggered for no-memory-snapshot workloads).
-Artifact GC keeps only the newest artifact. `latest + N` remains the planned
-retention direction. The CRD exposes no filesystem retention setting: the
+inherits the prior workspace rather than starting blank.
+
+**Not planned, capture decoupled from bank**: reopen when a named supported
+workload needs durable workspace capture on close without a memory snapshot and
+the existing bank lifecycle cannot meet that requirement
+([#7008](https://github.com/jomcgi-org/homelab/issues/7008)).
+
+Artifact GC keeps only the newest artifact. **Not planned, filesystem
+`latest + N` retention**: reopen for a concrete supported recovery or rollback
+requirement that newest-only retention cannot meet. Specify bounded retention
+and GC semantics before implementation
+([#7008](https://github.com/jomcgi-org/homelab/issues/7008)). This criterion does
+not authorize data deletion. The CRD exposes no filesystem retention setting: the
 former `persistence.filesystem.retention` field had no runtime reader and was
 removed with its chart declarations in #7053. A
 workspace size budget is not planned until
@@ -1163,8 +1174,12 @@ against them.
 
 7. **Durable-before-observed for the journal.** Every lifecycle and
    enforcement action is an ordered op-log append; callers await the
-   durable commit (one transaction per append today; group commit is a
-   **Decided direction**, not built). The op-log doubles as the audit record.
+   durable commit, with one transaction per append today. The op-log doubles
+   as the audit record. **Not planned, op-log group commit**: reopen on measured
+   append/commit latency or throughput showing per-append transactions are a
+   bottleneck for a supported workload. Any implementation must preserve
+   durable-before-observed and ordered commit semantics
+   ([#7008](https://github.com/jomcgi-org/homelab/issues/7008)).
 
 8. **Kubernetes arbitrates pods; EmberVM arbitrates VMs; the pod is the
    ABI.** No scheduler or autoscaler code is imported and no node
@@ -1324,9 +1339,11 @@ full durable volume would stop submissions because lifecycle writes fail closed
 (ADR embervm/002). A larger unbounded volume was rejected because it delays the
 same outage; central placement and metering on every dispatch were rejected as
 control-plane throughput ceilings (ADR embervm/002, ADR embervm/020). Projections,
-prefix compaction, group commit, and forecast-time assignment keep durable work
-off dispatch. Separating payloads from journal facts adds a second write and an
-orphan-reclamation path, an accepted consequence of shorter payload retention
+prefix compaction, and forecast-time assignment reduce dispatch-path work.
+Group commit was proposed in the historical journal design; it is not built
+and is not planned under #7008. Separating payloads from journal facts adds a
+second write and an orphan-reclamation path, an accepted consequence of shorter
+payload retention
 and principal-scoped erasure (ADR embervm/019).
 
 ---
@@ -2677,7 +2694,7 @@ has the full text.
 | embervm/024 | Identity hierarchy, platform principal, guest identity assertion | Draft historical rationale; domain/platform-principal work is not planned ([#5072](https://github.com/jomcgi-org/homelab/issues/5072)), guest identity mechanism superseded by 041 | deleted |
 | embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted |
 | embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted |
-| embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction for persistence modes and retention; size budget superseded by the evidence gate in [#5074](https://github.com/jomcgi-org/homelab/issues/5074) | deleted |
+| embervm/027 | Snapshot modes as a declared workload property | Historical draft; persistence independent of class, capture decoupled from bank, and latest + N retention are Not planned under [#7008](https://github.com/jomcgi-org/homelab/issues/7008); size budget superseded by the evidence gate in [#5074](https://github.com/jomcgi-org/homelab/issues/5074) | deleted |
 | embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, not planned (#4182); Phase 0 measured on #4182 | deleted |
 | embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
 | embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |
