@@ -332,6 +332,10 @@ class _Git:
                 _refuse()
             before = self.tree(before_sha) if before_sha is not None else {}
             after = self.tree(after_sha) if after_sha is not None else {}
+            # Empty Git trees have no logical compare-file entry. A changed
+            # empty directory must not disappear from the completeness proof.
+            if not before and not after:
+                _refuse()
             for name in sorted(before.keys() | after.keys()):
                 left, right = before.get(name), after.get(name)
                 if left == right:

@@ -277,6 +277,35 @@ def test_unknown_status_refused(repository, status):
     rejected(repository)
 
 
+@pytest.mark.parametrize("commit", [BASE, HEAD])
+def test_unreported_empty_directory_change_cannot_disappear(repository, commit):
+    # Git can contain empty trees constructed outside the normal index. Prove
+    # their complete hashes too, and refuse an unreportable directory change.
+    empty_sha = git_hash("tree", b"")
+    repository.data[f"git/trees/{empty_sha}"] = {
+        "sha": empty_sha,
+        "truncated": False,
+        "tree": [],
+    }
+    tree = copy.deepcopy(repository.root_tree(commit))
+    tree["tree"].append(
+        {"path": "empty", "mode": "040000", "type": "tree", "sha": empty_sha}
+    )
+    rows = sorted(
+        tree["tree"],
+        key=lambda row: (row["path"] + ("/" if row["type"] == "tree" else "")).encode(),
+    )
+    raw = b"".join(
+        f"{int(row['mode'])} {row['path']}".encode() + b"\0" + bytes.fromhex(row["sha"])
+        for row in rows
+    )
+    tree["sha"] = git_hash("tree", raw)
+    tree["tree"] = rows
+    repository.data[f"git/trees/{tree['sha']}"] = tree
+    repository.data[f"git/commits/{commit}"]["tree"]["sha"] = tree["sha"]
+    rejected(repository)
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -507,6 +536,12 @@ def test_complete_diff_distinguishes_merge_base_and_current_target(repository):
     assert proof["repo"] == REPO and proof["pr_number"] == 7
     assert proof["schema_version"] == 1
     assert proof["manifest_sha256"] == proof_hash(proof)
+    # Captured from the original collector at 7e930566f. Existing added/modified
+    # audited proofs retain exactly the same canonical bytes and schema.
+    assert (
+        proof["manifest_sha256"]
+        == "3b7f2551084d2d3296ceb65aef00180827e116a866f6f8dd10f20e001270f206"
+    )
     files = {item["path"]: item for item in proof["files"]}
     assert list(files) == ["run.sh", "src/a.py", "src/new.py"]
     changed = files["src/a.py"]
