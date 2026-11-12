@@ -332,6 +332,7 @@ def test_file_rejects_invalid_bodies_without_calling_github(setup, github, body)
     "error",
     [
         httpx.ConnectTimeout("timed out"),
+        httpx.ReadTimeout("GitHub accepted the issue but its response was lost"),
         httpx.HTTPStatusError(
             "refused",
             request=httpx.Request("POST", "https://api.github.com/x"),

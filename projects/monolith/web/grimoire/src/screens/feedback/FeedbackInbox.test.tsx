@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Routes } from "../../test/backend";
 import { findToast, openApp } from "../../test/app";
 import { lobby } from "../../test/fixtures";
@@ -123,6 +123,71 @@ describe("Feedback inbox", () => {
     expect(screen.getByRole("dialog", { name: "File issue" })).toBeTruthy();
     expect(screen.getByRole("article", wren)).toBeTruthy();
   });
+
+  it.each([
+    [
+      "timeout",
+      () => Promise.reject(new DOMException("Timed out", "TimeoutError")),
+    ],
+    ["network failure", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["abort", () => Promise.reject(new DOMException("Aborted", "AbortError"))],
+    [
+      "gateway page",
+      () => Promise.resolve(new Response("Bad gateway", { status: 502 })),
+    ],
+    [
+      "static fallback",
+      () => Promise.resolve(new Response("<html>Fallback</html>")),
+    ],
+    [
+      "invalid JSON",
+      () =>
+        Promise.resolve(
+          new Response("{", {
+            headers: { "content-type": "application/json" },
+          }),
+        ),
+    ],
+  ])(
+    "warns to reconcile GitHub after a %s without retrying",
+    async (_name, reply) => {
+      const { user } = openApp(inbox(), paths.feedback);
+      const item = await screen.findByRole("article", wren);
+      await user.click(
+        within(item).getByRole("button", { name: "File issue" }),
+      );
+      const dialog = await screen.findByRole("dialog", { name: "File issue" });
+      const title = within(dialog).getByRole<HTMLInputElement>("textbox", {
+        name: /^Title/,
+      });
+      const body = within(dialog).getByRole<HTMLTextAreaElement>("textbox", {
+        name: /^Body/,
+      });
+      await user.type(title, "Spell list");
+      await user.type(body, "Group spells by level.");
+      const request = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementationOnce(reply);
+      try {
+        await user.click(
+          within(dialog).getByRole("button", { name: "File issue" }),
+        );
+        expect(
+          await findToast(
+            "GitHub did not confirm the issue. Check the repository before filing again.",
+          ),
+        ).toBeTruthy();
+        expect(screen.queryByText(/Nothing was lost/)).toBeNull();
+        expect(screen.getByRole("dialog", { name: "File issue" })).toBeTruthy();
+        expect(screen.getByRole("article", wren)).toBeTruthy();
+        expect(title.value).toBe("Spell list");
+        expect(body.value).toBe("Group spells by level.");
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        request.mockRestore();
+      }
+    },
+  );
 
   it("dismisses an item without asking", async () => {
     const { user, backend } = openApp(inbox(), paths.feedback);

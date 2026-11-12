@@ -28,6 +28,9 @@ export class ApiError extends Error {
   }
 }
 
+/** A gateway/page response cannot confirm whether a write completed. */
+export class UnexpectedResponseError extends ApiError {}
+
 /** The sign-in lapsed. Nothing was saved; `signIn` drives the recovery. */
 export class SignInError extends ApiError {
   constructor() {
@@ -138,7 +141,7 @@ export async function requestJson<T>(
   // The gateway's static fallback must never answer for data. If it does,
   // say so plainly instead of failing inside JSON.parse.
   if (!type.includes("json")) {
-    throw new ApiError(
+    throw new UnexpectedResponseError(
       response.status,
       "Grimoire answered with a page instead of data. Reload and try again.",
     );

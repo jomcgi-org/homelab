@@ -746,7 +746,11 @@ operator typed. The GitHub call runs before the row is marked, under a row lock,
 so two operators cannot file one item twice. It is a single attempt with no
 retry, because retrying a write whose answer was lost would file a duplicate.
 A lost response or a database failure after publication returns a 502 warning
-to reconcile GitHub before filing again. Neither path retries automatically.
+to reconcile GitHub before filing again. The GitHub request has an eight-second
+overall deadline, including streamed response reads, inside the browser's
+15-second budget. If the browser times out, loses the connection or receives
+an unreadable gateway response, filing shows the same reconciliation warning.
+Neither path retries automatically.
 
 **Tested.** `grimoire/feedback_test.py` asserts on the captured GitHub payload
 and covers the rate limit, the operator rule and the failure paths.

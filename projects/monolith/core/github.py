@@ -5,6 +5,7 @@ The repository moved from ``jomcgi/homelab`` to ``jomcgi-org/homelab`` on
 follow redirects by default.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -94,7 +95,7 @@ async def async_github_get(
         return await client.get(url, headers=github_headers(user_agent))
 
 
-_ISSUE_WRITE_TIMEOUT_SECONDS = 15
+_ISSUE_WRITE_TIMEOUT_SECONDS = 8
 _ISSUE_RESPONSE_LIMIT_BYTES = 1_000_000
 
 
@@ -109,26 +110,42 @@ def create_issue(
     """
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")
-    with (
-        httpx.Client(timeout=_ISSUE_WRITE_TIMEOUT_SECONDS) as client,
-        client.stream(
-            "POST",
-            f"{GITHUB_API}/repos/{repo}/issues",
-            headers=github_headers(user_agent),
-            json={"title": title, "body": body, "labels": labels},
-        ) as response,
-    ):
-        response.raise_for_status()
-        content = bytearray()
-        for chunk in response.iter_bytes():
-            if len(content) + len(chunk) > _ISSUE_RESPONSE_LIMIT_BYTES:
-                raise ValueError("GitHub response exceeds the issue limit")
-            content.extend(chunk)
-    created = json.loads(bytes(content) or b"{}")
-    number = created.get("number") if isinstance(created, dict) else None
-    if type(number) is not int or number <= 0:
-        raise ValueError("GitHub issue response had an unexpected shape")
-    return number
+    # Called from synchronous route workers. Async I/O lets the total deadline
+    # cancel the request itself, including a response that keeps dripping bytes.
+    return asyncio.run(_create_issue(repo, title, body, labels, user_agent=user_agent))
+
+
+async def _create_issue(
+    repo: str, title: str, body: str, labels: list[str], *, user_agent: str
+) -> int:
+    try:
+        async with asyncio.timeout(_ISSUE_WRITE_TIMEOUT_SECONDS):
+            async with (
+                httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=2, write=2, read=3, pool=1),
+                    follow_redirects=False,
+                ) as client,
+                client.stream(
+                    "POST",
+                    f"{GITHUB_API}/repos/{repo}/issues",
+                    headers=github_headers(user_agent),
+                    json={"title": title, "body": body, "labels": labels},
+                ) as response,
+            ):
+                response.raise_for_status()
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(content) + len(chunk) > _ISSUE_RESPONSE_LIMIT_BYTES:
+                        raise ValueError("GitHub response exceeds the issue limit")
+                    content.extend(chunk)
+            created = json.loads(bytes(content) or b"{}")
+            number = created.get("number") if isinstance(created, dict) else None
+            if type(number) is not int or number <= 0:
+                raise ValueError("GitHub issue response had an unexpected shape")
+            return number
+    except TimeoutError as exc:
+        # Keep the existing route's ambiguous-outcome warning and rollback path.
+        raise httpx.ReadTimeout("GitHub issue deadline exceeded") from exc
 
 
 def _parse_github_datetime(value: str | None) -> datetime | None:
