@@ -873,21 +873,23 @@ func TestS9ResumeReportOnlyStillBlocksFirstTurn(t *testing.T) {
 }
 
 func TestControlPlaneInvokeReasonOnlyEchoesRouterEnvelope(t *testing.T) {
-	router := []byte(`{"error":"session invoke failed","reason":"{:suspect, :transport}","session_id":"s-1"}`)
-	if got := controlPlaneInvokeReason(router); got != ` reason="{:suspect, :transport}"` {
+	envelope := []byte(`{"error":"session invoke failed","reason":"{:suspect, :transport}","session_id":"s-1"}`)
+	if got := controlPlaneInvokeReason(apiResponse{status: http.StatusBadGateway, body: envelope}); got != ` reason="{:suspect, :transport}"` {
 		t.Fatalf("router reason = %q", got)
 	}
-	for _, body := range [][]byte{
-		[]byte(`{"error":"provider-secret-sentinel","reason":"leak"}`),
-		[]byte(`provider-secret-sentinel`),
-		[]byte(`{"error":"session invoke failed"}`),
+	for name, response := range map[string]apiResponse{
+		"guest mimics envelope": {status: http.StatusBadGateway, body: envelope, invokeOutcome: "guest_response"},
+		"guest 500 envelope":    {status: http.StatusInternalServerError, body: envelope},
+		"other error":           {status: http.StatusBadGateway, body: []byte(`{"error":"provider-secret-sentinel","reason":"leak"}`)},
+		"plain body":            {status: http.StatusBadGateway, body: []byte(`provider-secret-sentinel`)},
+		"no reason":             {status: http.StatusBadGateway, body: []byte(`{"error":"session invoke failed"}`)},
 	} {
-		if got := controlPlaneInvokeReason(body); got != "" {
-			t.Fatalf("non-router body echoed: %q", got)
+		if got := controlPlaneInvokeReason(response); got != "" {
+			t.Fatalf("%s echoed: %q", name, got)
 		}
 	}
 	long := []byte(`{"error":"session invoke failed","reason":"` + strings.Repeat("x", 500) + `"}`)
-	if got := controlPlaneInvokeReason(long); len(got) > 220 {
+	if got := controlPlaneInvokeReason(apiResponse{status: http.StatusBadGateway, body: long}); len(got) > 220 {
 		t.Fatalf("reason not truncated: %d", len(got))
 	}
 }
