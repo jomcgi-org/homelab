@@ -590,6 +590,12 @@ defmodule Embervm.SessionManager do
       # bundle is exported but no longer locally reported. Injected for tests;
       # production dials the real NodeService stub.
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      # Whether the control plane has an artifact object store (#7731). Without
+      # one, a same-node rejoin's workspace is node-resident and there is no
+      # store copy to restore, so the restore RPC is skipped instead of being
+      # refused (capability stamping and noded both need a store). Defaults to
+      # true so callers that do not say keep the previous behaviour.
+      artifact_store_configured: Keyword.get(opts, :artifact_store_configured, true),
       archive_volume_fun: Keyword.get(opts, :archive_volume_fun, &default_archive_volume/2),
       export_artifact_fun: Keyword.get(opts, :export_artifact_fun, &default_export_artifact/2),
       attach_epochs: %{},
@@ -4210,6 +4216,34 @@ defmodule Embervm.SessionManager do
          generation,
          expected_fingerprint \\ "",
          owner_node_id \\ nil
+       ) do
+    if expected_fingerprint == "" and Map.get(state, :artifact_store_configured, true) == false do
+      # Same-node rejoin on a store-less deployment: the workspace never left
+      # this node, so there is nothing to restore (#7731).
+      {:ok, false}
+    else
+      do_restore_session_workspace(
+        state,
+        node_id,
+        workload,
+        lineage_id,
+        principal,
+        generation,
+        expected_fingerprint,
+        owner_node_id
+      )
+    end
+  end
+
+  defp do_restore_session_workspace(
+         state,
+         node_id,
+         workload,
+         lineage_id,
+         principal,
+         generation,
+         expected_fingerprint,
+         owner_node_id
        ) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE, workload: workload, ref: lineage_id}
 
