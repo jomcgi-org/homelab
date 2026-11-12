@@ -517,6 +517,16 @@ coordinates must be inside Scotland. There is no listing endpoint.
 Coordinates are rounded to 0.01 degrees and walk names normalized so equal
 questions share an ETag.
 
+These narrow, capped connector answers bound answer size and scope. They
+provide no protection for data published by the web app. The
+[web publication contract](../monolith/ARCHITECTURE.md#8-public-apps) retains
+whole-corpus CDN snapshots for fast delivery and accepts that published sites,
+walks and historical map snapshots can be copied (#7254). Published history
+is not confidential; continued refresh and unpublished accumulated data
+remain separate. Technical copyability grants no permission to redistribute
+and no new licence. The response contract, source-specific permissions,
+independent licensing obligations and attribution requirements remain unchanged.
+
 **Why.** Queries take coordinates, with no place-name lookup. The calling
 assistant already knows where Glencoe or Skye is, to well within the search
 radius, and can search for anything obscure. A gazetteer here would be a
