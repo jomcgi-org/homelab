@@ -285,10 +285,12 @@ def _landing_refusal(db, task_id):
     """Latest recorded refusal, not a live queue or GitHub observation."""
     from sqlmodel import select
     from factory.orchestration.factory_models import FactoryAudit
+    from factory.orchestration.factory_controls import _receipt, landing_held
 
     if not task_id:
         return None
-    event = db.exec(
+    held = landing_held(_receipt(db, task_id))
+    events = db.exec(
         select(FactoryAudit)
         .where(
             FactoryAudit.task_id == task_id,
@@ -301,11 +303,15 @@ def _landing_refusal(db, task_id):
             ),
         )
         .order_by(FactoryAudit.id.desc())
-        .limit(1)
-    ).first()
-    if event is None or event.action != "merge_arm_refused":
+    )
+    for event in events:
+        if event.action != "merge_arm_refused":
+            return None
+        detail = json.loads(event.detail_json)
+        if held or detail.get("reason") != "receipt_landing_held":
+            break
+    else:
         return None
-    detail = json.loads(event.detail_json)
     return {
         "source": "recorded_landing_audit",
         "audit_id": event.id,

@@ -3017,10 +3017,17 @@ delivery that a recovery round would still have landed.
 `_enforce_landing_hold` had recorded `receipt_landing_held` on each visit, and
 only a new recovery request starts a new landing epoch, so `_deliveries` kept
 returning that stale refusal and `_arm` never ran. A `receipt_landing_held`
-refusal is now ignored once the receipt is no longer held; the next tick
-re-enforces any remaining hold. A `GitHubReadDeferred` cooldown in hold
-enforcement or the queue fence now skips one item instead of aborting the
-tick. Measure: released receipts still refused `receipt_landing_held`,
+refusal is now ignored once the receipt is no longer held; selection retains
+the latest other refusal within the current recovery or merge epoch. MCP status
+uses the same current hold state and preserves the selected audit's provenance.
+A `GitHubReadDeferred` cooldown fences the affected receipt for the rest of the
+tick, including later phases and recovery's reloaded receipt. A failed global
+holder read fences new arming. Independent observation continues, and the next
+tick retries unavailable reads. Final locked read deferrals unwind before
+recording errors. An operator arming intent whose reads deferred before any
+arming write keeps an append-only deferral answer; unknown write outcomes still
+consume the single mutation attempt. #7717 owns these repository regressions.
+Measure: released receipts still refused `receipt_landing_held`,
 baseline 2, expected 0. Revert if a held receipt arms.
 
 **Why a settled recovery no longer holds its receipt:** on 2026-11-12 #7547's

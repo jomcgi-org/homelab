@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_landing as landing
+from factory import review_publisher
 from factory.orchestration import factory_rollout
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -28,6 +29,7 @@ from factory.orchestration.models import SwarmNodeRun, SwarmTask
 NOW = datetime(2026, 9, 11, 12, tzinfo=timezone.utc)
 POLICY = {"repo": "owner/repo", "auto_merge": True}
 HEAD = "a" * 40
+COLLECT_REVIEW = review_publisher.collect
 
 
 @pytest.fixture
@@ -2787,6 +2789,419 @@ def test_deferred_github_read_skips_one_item_without_aborting_the_tick(db, monke
     monkeypatch.setattr(landing, "github_get", deferred)
     # Fails closed for this item, and does not raise into the landing tick.
     assert landing._enforce_landing_hold(POLICY["repo"], item) is True
+
+
+# Site/read-path matrix. Wrapping the phase only selects the injection window;
+# the original production function and its nested guards still run. In
+# particular, a late read must not be hidden by an earlier mocked guard.
+@pytest.mark.parametrize(
+    "site,seam,nth,setup",
+    [
+        ("_enforce_landing_hold", "github_get", 1, "held"),
+        ("_enforce_landing_hold", "_queued_ids", 1, "held"),
+        ("_enforce_landing_hold", "_queued_ids", 2, "held-queued"),
+        ("_enforce_landing_hold", "github_get", 1, "operator"),
+        ("_enforce_landing_hold", "_queued_ids", 1, "operator"),
+        ("_enforce_landing_hold", "_queued_ids", 2, "operator-queued"),
+        ("_enforce_owner_pr_hold", "github_get", 1, "owner"),
+        ("_enforce_owner_pr_hold", "github_list", 1, "owner"),
+        ("_enforce_owner_pr_hold", "_queued_ids", 1, "owner-held"),
+        ("_enforce_owner_pr_hold", "_queued_ids", 2, "owner-held"),
+        ("_fence_ungranted_queue_entry", "github_get", 1, "ready"),
+        ("_fence_ungranted_queue_entry", "github_get", 2, "queued"),
+        ("_fence_ungranted_queue_entry", "_queued_ids", 2, "queued"),
+        ("_recover_refused", "github_get", 1, "recovery"),
+        ("_recover_refused", "_queued_ids", 1, "recovery"),
+        ("_arm", "github_get", 1, "ready"),
+        ("_arm", "github_get", 2, "ready"),
+        ("_arm", "github_list", 2, "owner"),
+        ("_observe_merge", "github_get", 1, "ready"),
+        ("_observe", "github_get", 1, "armed"),
+        ("_observe", "_queued_ids", 2, "ejected"),
+        ("_observe", "_queued_ids", 2, "conflict"),
+        ("_handoff_human_delivery", "github_get", 1, "ready"),
+        ("_handoff_human_delivery", "github_get", 2, "human"),
+        ("_handoff_human_delivery", "_queued_ids", 1, "human"),
+        ("_handoff_human_delivery", "_queued_ids", 2, "human-queued"),
+        ("_recover_conflict_without_arming", "github_get", 1, "disabled"),
+        ("_close_issue", "github_get", 2, "merged"),
+    ],
+)
+def test_read_deferral_matrix_preserves_later_work_and_retries(
+    db, monkeypatch, caplog, site, seam, nth, setup
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    if setup in {"owner", "owner-held"}:
+        owner_delivery(db)
+    else:
+        delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    if setup in {"held", "operator", "held-queued", "operator-queued"}:
+        with Session(db) as session, session.begin():
+            row = controls._receipt(session, "t-1")
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator"}
+            row.direction_json = json.dumps(direction)
+    if setup in {"operator", "operator-queued"}:
+        monkeypatch.setattr(landing, "operator_target", lambda task: task == "t-1")
+        monkeypatch.setattr(
+            controls, "OPERATOR_DOCS_HANDOFF_TARGET", ("owner/repo", "t-1", 11, 3)
+        )
+    if setup in {"armed", "ejected", "conflict"}:
+        landing._append("t-1", "merge_armed", pr_number=3, head_sha=HEAD)
+    if setup == "recovery":
+        landing._record(
+            "t-1", "merge_arm_refused", pr_number=3, reason="merge_conflict"
+        )
+    pulls = {
+        3: {
+            **pull(3, armed=setup == "armed", merged=setup == "merged"),
+            "user": {"id": 42},
+            "mergeable": setup != "conflict",
+            "queue_entry": {"id": "MQ_3"}
+            if setup
+            in {
+                "queued",
+                "held-queued",
+                "operator-queued",
+                "owner-held",
+                "human-queued",
+            }
+            else None,
+            "labels": [{"name": "needs-human"}] if setup == "owner-held" else [],
+        },
+        4: {**pull(4, task_id="t-later", merged=True), "body": "Closes #12"},
+    }
+    calls = github(
+        monkeypatch,
+        pulls=pulls,
+        issues={
+            11: {"state": "open", "labels": [{"name": "human"}]}
+            if setup in {"human", "human-queued"}
+            else {"state": "open"}
+        },
+    )
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: [] if "/comments?" in path else listing(repo, path),
+    )
+    original_phase, original_read = getattr(landing, site), getattr(landing, seam)
+    active, reads, failures = [], [], []
+    failing = True
+
+    def phase(*args, **kwargs):
+        task = None if site == "_recover_refused" else args[1]["task_id"]
+        active.append(task)
+        try:
+            return original_phase(*args, **kwargs)
+        finally:
+            active.pop()
+
+    def read(*args, **kwargs):
+        target = (
+            args[0] == ["PR_3"]
+            if seam == "_queued_ids"
+            else args[1].split("?", 1)[0]
+            in {"pulls/3", "issues/11", "issues/3/comments"}
+        )
+        if active and (active[-1] == "t-1" or site == "_recover_refused") and target:
+            reads.append(args)
+            if failing and len(reads) == nth:
+                failures.append(args)
+                raise GitHubReadDeferred("matrix cooldown")
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(landing, site, phase)
+    monkeypatch.setattr(landing, seam, read)
+    policy = {**POLICY, "auto_merge": setup != "disabled"}
+    landing.landing_tick(policy)
+    assert len(failures) == 1, (site, seam, nth, reads)
+    assert len(reads) == nth  # No later phase retried this receipt this tick.
+    assert audits(db, "issue_closed", "t-later"), "later delivery must still close"
+    assert not audits(db, "merge_armed", "t-1") or setup in {
+        "armed",
+        "ejected",
+        "conflict",
+    }
+    assert not audits(db, "landing_recovery_requested", "t-1")
+    assert not audits(db, "issue_closed", "t-1")
+    assert not audits(db, "review_publish_refused", "t-1")
+    first_mutations = [c for c in calls["graphql"] if c.get("pullRequestId") == "PR_3"]
+    # A successful membership read can authorize a dequeue before its verifying
+    # read defers. That unknown outcome must not permit publication or closure.
+    assert len(first_mutations) == int(
+        nth == 2
+        and setup in {"held-queued", "operator-queued", "owner-held", "human-queued"}
+    )
+    assert receipt_state(db, "t-1") != "cancelled"
+    assert landing._deferred_items.get() is None
+    assert not any(
+        record.message == "factory landing failed" for record in caplog.records
+    )
+    assert audits(db, "landing_error", "t-1")[-1]["error"] == "GitHubReadDeferred"
+    # The failed identity is not a durable refusal or a cross-tick skip.
+    failing = False
+    before = len(reads)
+    landing.landing_tick(policy)
+    assert len(reads) > before
+
+
+@pytest.mark.parametrize("nth", [1, 2])
+def test_deferred_arm_does_not_break_before_later_eligible_candidate(
+    db, monkeypatch, nth
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4, task_id="t-later")})
+    original_arm, original_read = landing._arm, landing.github_get
+    active, reads = [], []
+
+    def arm(repo, item):
+        active.append(item["task_id"])
+        try:
+            return original_arm(repo, item)
+        finally:
+            active.pop()
+
+    def read(repo, path):
+        if active and active[-1] == "t-1":
+            reads.append(path)
+            if len(reads) == nth:
+                raise GitHubReadDeferred("candidate unavailable")
+        return original_read(repo, path)
+
+    monkeypatch.setattr(landing, "_arm", arm)
+    monkeypatch.setattr(landing, "github_get", read)
+    landing.landing_tick(POLICY)
+    assert len(reads) == nth
+    assert calls["graphql"] == [{"pullRequestId": "PR_4"}]
+    assert not audits(db, "merge_arm_refused", "t-1")
+    assert audits(db, "merge_armed", "t-later")
+
+
+@pytest.mark.parametrize("seam", ["github_list", "_queued_ids"])
+def test_global_holder_deferral_fences_arming_but_not_independent_work(
+    db, monkeypatch, seam
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    calls = github(
+        monkeypatch,
+        pulls={
+            3: pull(3),
+            4: {**pull(4, merged=True, task_id="t-later"), "body": "Closes #12"},
+        },
+    )
+    original_phase, original_read = landing._armed_on_github, getattr(landing, seam)
+    active, reached = [], []
+
+    def holder(repo):
+        active.append(True)
+        try:
+            return original_phase(repo)
+        finally:
+            active.pop()
+
+    def read(*args, **kwargs):
+        if active:
+            reached.append(True)
+            raise GitHubReadDeferred("holder unknown")
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(landing, "_armed_on_github", holder)
+    monkeypatch.setattr(landing, seam, read)
+    landing.landing_tick(POLICY)
+    assert reached == [True]
+    assert audits(db, "issue_closed", "t-later")
+    assert not audits(db, "merge_armed")
+    assert calls["arm_heads"] == []
+    monkeypatch.setattr(landing, seam, original_read)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_armed", "t-1")
+
+
+def test_publication_collect_cooldown_uses_real_collector_and_retries(db, monkeypatch):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        row.policy_json = json.dumps({**POLICY, "base_branch": "main"})
+        value = {
+            "verdict": "approve",
+            "head_sha": HEAD,
+            "pr_number": 3,
+            "summary": "Exact head",
+        }
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    task_id="t-1",
+                    action="admit_next",
+                    detail_json='{"policy_version": 0}',
+                ),
+                SwarmNodeRun(
+                    task_id="t-1",
+                    node_key="implement_fix",
+                    attempt=1,
+                    session_id=10,
+                    status="succeeded",
+                    head_sha=HEAD,
+                ),
+                SwarmNodeRun(
+                    task_id="t-1",
+                    node_key="review_fix",
+                    attempt=1,
+                    session_id=11,
+                    status="succeeded",
+                    head_sha=HEAD,
+                    outcome_json=json.dumps(
+                        {
+                            "value": value,
+                            "artifact": {"status": "ok", "value": value, "errors": []},
+                        }
+                    ),
+                ),
+            ]
+        )
+    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4, task_id="t-later")})
+    monkeypatch.setattr(review_publisher, "enabled", lambda: True)
+    reviewed = review_publisher.collect
+    active, reached, published = [], [], []
+    original_get = landing.github_get
+
+    def collect(task_id, **kwargs):
+        if task_id != "t-1":
+            return reviewed(task_id, **kwargs)
+        active.append(True)
+        try:
+            return COLLECT_REVIEW(task_id, **kwargs)
+        finally:
+            active.pop()
+
+    def read(repo, path):
+        if active:
+            reached.append(path)
+            raise GitHubReadDeferred("real review read unavailable")
+        return original_get(repo, path)
+
+    def publish(evidence):
+        published.append(evidence.task_id)
+        return {
+            "action": "already_published",
+            "conclusion": "success",
+            "head_sha": HEAD,
+            "review_run_id": 1,
+            "check_id": 1,
+        }
+
+    monkeypatch.setattr(review_publisher, "collect", collect)
+    monkeypatch.setattr(review_publisher, "publish", publish)
+    monkeypatch.setattr(landing, "github_get", read)
+    landing.landing_tick(POLICY)
+    assert reached == ["pulls/3"]
+    assert published == ["t-later"]
+    assert calls["graphql"] == [{"pullRequestId": "PR_4"}]
+    assert not audits(db, "merge_arm_refused", "t-1")
+    assert not audits(db, "review_publish_refused", "t-1")
+    # Release the other holder, then the same receipt can publish and arm.
+    landing.github_graphql(landing._DISARM_AUTO_MERGE, {"pullRequestId": "PR_4"})
+    monkeypatch.setattr(landing, "github_get", original_get)
+    landing.landing_tick(POLICY)
+    assert "t-1" in published
+    assert audits(db, "merge_armed", "t-1")
+
+
+def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
+    db, monkeypatch
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    for number in range(1, 4):
+        task_id = f"t-{number}"
+        delivered(db, task_id, number + 10, number + 2)
+        landing._record(
+            task_id, "merge_arm_refused", reason="merge_conflict", pr_number=number + 2
+        )
+    github(
+        monkeypatch,
+        pulls={
+            number + 2: pull(number + 2, task_id=f"t-{number}")
+            for number in range(1, 4)
+        },
+    )
+    get = landing.github_get
+    reads, recoveries = [], []
+
+    def read(repo, path):
+        reads.append(path)
+        if path == "pulls/3":
+            raise GitHubReadDeferred("first recovery unknown")
+        return get(repo, path)
+
+    monkeypatch.setattr(landing, "github_get", read)
+    monkeypatch.setattr(
+        landing,
+        "_recover_delivery",
+        lambda item, *_a, **_kw: recoveries.append(item["task_id"]),
+    )
+    landing._recover_refused(POLICY)
+    assert recoveries == ["t-2"]
+    assert "pulls/5" not in reads
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [None, "landing_recovery_exhausted", "merged_delivery_identity_mismatch"],
+)
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("barrier", [None, "landing_recovery_requested", "merged"])
+def test_effective_refusal_keeps_terminal_history_and_reset_barriers(
+    db, monkeypatch, terminal, held, barrier
+):
+    delivered(db, "t-1", 11, 3)
+    if terminal:
+        landing._record("t-1", "merge_arm_refused", reason=terminal, pr_number=3)
+    if barrier:
+        landing._record("t-1", barrier, pr_number=3)
+    # Preserve multiple append-only hold observations, not just the newest one.
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="factory:landing",
+                    action="merge_arm_refused",
+                    task_id="t-1",
+                    detail_json=json.dumps(
+                        {"reason": "receipt_landing_held", "pr_number": 3}
+                    ),
+                )
+                for _ in range(3)
+            ]
+        )
+        if held:
+            row = controls._receipt(session, "t-1")
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator"}
+            row.direction_json = json.dumps(direction)
+    [item] = landing._deliveries(POLICY, include_refused=True)
+    expected = "receipt_landing_held" if held else terminal if barrier is None else None
+    assert (item["refusal"] or {}).get("reason") == expected
+    if terminal and not held and barrier is None:
+        calls = []
+        monkeypatch.setattr(landing, "_arm", lambda *_args: calls.append(True))
+        github(monkeypatch, pulls={3: pull(3)})
+        landing.landing_tick(POLICY)
+        assert calls == []
 
 
 @pytest.mark.parametrize("entry", ["auto-merge", "queue"])

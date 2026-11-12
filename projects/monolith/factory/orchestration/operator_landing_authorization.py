@@ -544,6 +544,15 @@ def _grant(row):
 
 
 def _attempts(db, grant):
+    deferred = {
+        controls.audit_detail(event).get("attempt_audit_id")
+        for event in db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "operator_landing_arm_read_deferred",
+                FactoryAudit.task_id == grant["task_id"],
+            )
+        ).all()
+    }
     return [
         event
         for event in db.exec(
@@ -554,7 +563,36 @@ def _attempts(db, grant):
         ).all()
         if controls.audit_detail(event).get("authorization_audit_id")
         == grant["authorization_audit_id"]
+        and event.id not in deferred
     ]
+
+
+def defer_unattempted_arm(task_id, reservation):
+    """Answer only an intent whose final reads deferred before the arm write.
+
+    Unknown write outcomes never call this. Both the intent and this answer
+    remain append-only evidence; a successful later intent is still single-use.
+    """
+    with controls._locked_session() as (db, _control):
+        event = db.get(FactoryAudit, reservation["attempt_audit_id"])
+        _require(
+            event is not None
+            and event.task_id == task_id
+            and event.action == ARM_ACTION,
+            "arming_intent_missing",
+        )
+        _require(
+            controls.audit_detail(event).get("authorization_audit_id")
+            == reservation["authorization_audit_id"],
+            "arming_intent_changed",
+        )
+        controls._audit(
+            db,
+            "factory:landing",
+            "operator_landing_arm_read_deferred",
+            task_id=task_id,
+            **reservation,
+        )
 
 
 def reserve_arm(task_id, number, head, node_id):
