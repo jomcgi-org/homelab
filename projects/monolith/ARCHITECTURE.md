@@ -2966,6 +2966,18 @@ dispatch pins and deadline supervision. A second recovery cannot renew it.
 pinned policy. Merely reopening the old task would replay its previous decision
 or retry its failed preflight before the operator's replacement plan was read.
 
+An idle task past its fixed landing-recovery deadline settles `failed`
+with `task_deadline` evidence through the ordinary `finish_task` fence. It
+waits while any start is unresolved, a run is active, a landing hold applies or
+an operator decision is in flight. **Why the expired recovery cap settles:** on
+2026-11-11 admitted, unpaused receipts held all ten delivery slots for
+days. `can_start` reported `landing_recovery_deadline`, funding
+correctly declined to renew the cap, and the conductor settled only
+`task_deadline`, so nothing ended them until an operator cancelled them. The
+measure is zero admitted receipts with `landing_recovery_expired` and no
+unresolved starts older than one tick. Revert if a settled task loses a
+delivery that a recovery round would still have landed.
+
 The proposed internal recovery worker is staged off behind
 `swarm.factoryRecoveryDelegationEnabled`; its exact grant contract is in
 [FACTORY.md](factory/orchestration/FACTORY.md#proposed-internal-recovery-authorization).

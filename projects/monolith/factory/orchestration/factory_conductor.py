@@ -6888,6 +6888,19 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
         return True
 
 
+def _landing_recovery_settlement_held(task_id: str) -> bool:
+    """An explicit landing hold or in-flight operator decision owns the task."""
+    from factory.orchestration import factory_controls as controls
+
+    with controls._read_session() as db:
+        row = controls._receipt(db, task_id)
+        return (
+            row is None
+            or controls.landing_held(row)
+            or controls.decision_in_flight(db, row.id)
+        )
+
+
 def reconcile_task(
     task_id: str, policy: dict, dbos, *, human_owned: bool = False
 ) -> None:
@@ -7104,6 +7117,25 @@ def reconcile_task(
                 evidence={
                     "state": "task_deadline",
                     "reason": "Absolute task deadline elapsed; all admitted attempts are reconciled.",
+                },
+            )
+        elif permission[
+            "reason"
+        ] == "landing_recovery_deadline" and not _landing_recovery_settlement_held(
+            task_id
+        ):
+            # The fixed landing-recovery cap is never renewed, so nothing
+            # else will start here. finish_task still refuses unresolved
+            # starts; a landing hold or open decision keeps its owner.
+            from factory.orchestration.factory_controls import finish_task
+
+            finish_task(
+                task_id,
+                "failed",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Landing recovery deadline elapsed; all admitted attempts are reconciled.",
                 },
             )
         return
