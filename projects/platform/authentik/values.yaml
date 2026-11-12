@@ -6,9 +6,13 @@ grimoireLinkEnrollment:
 # Optional Discord sign-in and self-enrollment for Grimoire (#7461). Adds a
 # Grimoire-only authentication flow with a Discord source; the shared default
 # login flow and every other application are unchanged. Requires the
-# grimoire-discord-oauth 1Password item. No group, permission or token.
+# 1Password item at itemPath with client-id and client-secret fields. No
+# group, permission or token. The hub overlay enables it.
 grimoireDiscordSource:
   enabled: false
+  # The shared Discord application (Bosun), not one made for Grimoire. The
+  # cluster Secret keeps the name grimoire-discord-oauth.
+  itemPath: vaults/k8s-homelab/items/discord-bosun
 
 platformManagement:
   # Adds protected account-type claims for explicit operator bootstrap before

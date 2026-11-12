@@ -1,6 +1,12 @@
 # Hub overlay: one authentik server and worker replica. CNPG bootstraps by
 # recovery from the retired home cluster's GCS Barman archive prefix.
 # Consumed by the platform-gke authentik Application.
+# Discord sign-in for Grimoire is on (#7461, enabled by Joe on 2026-11-12).
+# Any Discord account with a verified email can enrol; campaign admission
+# still needs an invitation or campaign link.
+grimoireDiscordSource:
+  enabled: true
+
 authentik:
   server:
     replicas: 1
