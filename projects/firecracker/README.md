@@ -7,7 +7,7 @@ it was unused; CI Semgrep scanning runs on Semgrep Managed Scans.
 
 | Directory | Current role |
 | --- | --- |
-| [`sandbox/`](sandbox/) | Python sandbox guest retained for the EmberVM task and session runtimes. |
+| [`sandbox/`](sandbox/) | Sandbox guests (Python, Go, Rust, Elixir, OCaml, JavaScript) and their shared `guest-init`, used by EmberVM task and session workloads. |
 | [`substrate/`](substrate/) | Shared guest shim, wire types, egress proxy, and rootfs-builder image. |
 | [`tools/`](tools/) | Generators shared by the guest images. |
 

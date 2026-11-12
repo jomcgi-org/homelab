@@ -117,7 +117,7 @@ Stage skipping leaves the workflow invocation in place. The seven-day acceptance
 
 **Why.** Joe's 2026-10-28 decision retired the unused BDD future lane (#7088). Its commented action, CI tag exclusions and macro parameter were removed: no active target carried either excluded tag and no caller supplied the parameter. Ordinary `bdd_test` targets keep the `bdd` tag and run through the standard test selection.
 
-The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in `AGENTS.md`, "Git and PRs".
+The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in `docs/agents/reference.md`, "Delivery mechanics".
 
 (see: `buildbuddy.yaml`, `bazel/remote.bazelrc`, `.bazelrc` under `common:ci`, `bazel/images/push/push-changed.sh`, `bazel/helm/write-back-versions.sh`, `bazel/helm/chart-version.sh`)
 
