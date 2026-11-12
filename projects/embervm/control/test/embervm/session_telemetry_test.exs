@@ -3,6 +3,13 @@ defmodule Embervm.SessionTelemetryTest do
 
   alias Embervm.SessionTelemetry
 
+  test "transport attribution never copies an untrusted diagnostic into telemetry" do
+    assert SessionTelemetry.reason({:guest_transport, "broken_pipe"}) == "guest_transport:broken_pipe"
+    for value <- ["secret\n\e", String.duplicate("x", 4096), %{token: "secret"}] do
+      assert SessionTelemetry.reason({:guest_transport, value}) == "guest_transport:unknown"
+    end
+  end
+
   test "classifies actual create and invoke reason variants" do
     assert SessionTelemetry.reason(:session_cap) == "session_cap"
     assert SessionTelemetry.reason(:workload_cap) == "workload_cap"

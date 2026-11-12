@@ -72,8 +72,9 @@ type controlPlaneClient struct {
 }
 
 type apiResponse struct {
-	status int
-	body   []byte
+	status     int
+	body       []byte
+	diagnostic string
 }
 
 type nodesView struct {
@@ -140,7 +141,25 @@ func (c *controlPlaneClient) request(ctx context.Context, method, path string, b
 	if err != nil {
 		return apiResponse{}, err
 	}
-	return apiResponse{status: resp.StatusCode, body: responseBody}, nil
+	diagnostic := ""
+	if values := resp.Header.Values("X-Ember-Invoke-Diagnostic"); len(values) == 1 {
+		diagnostic = safeInvokeDiagnostic(values[0])
+	}
+	return apiResponse{status: resp.StatusCode, body: responseBody, diagnostic: diagnostic}, nil
+}
+
+// Only fixed control-plane diagnostic values may reach verdicts. Check the
+// bound before parsing or serializing; bodies and arbitrary headers are untrusted.
+func safeInvokeDiagnostic(value string) string {
+	if len(value) > 40 {
+		return ""
+	}
+	switch value {
+	case "guest_transport:eof", "guest_transport:connection_reset", "guest_transport:broken_pipe", "guest_transport:vsock_dial", "guest_transport:unknown", "relight":
+		return value
+	default:
+		return ""
+	}
 }
 
 func httpErrorDetail(method, path string, response apiResponse) string {

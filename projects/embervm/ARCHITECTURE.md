@@ -2552,6 +2552,19 @@ and architecture acceptance matrix for restore-time vsock overrides is a
 separate manual readiness gate in
 [`docs/drills/vsock-override-acceptance.md`](docs/drills/vsock-override-acceptance.md).
 
+Session invoke transport diagnostics use fixed values only. Noded's synthetic
+suspect 502 carries `x-ember-guest-transport`: `eof`, `connection_reset`,
+`broken_pipe`, `vsock_dial` or `unknown`, classified from typed wrapped errors.
+It logs the same value without the error text. The session classifier retains
+the class while preserving brick-loss precedence, channel ownership and
+at-most-once invocation. Older noded responses retain the legacy suspect result.
+The router emits `x-ember-invoke-diagnostic` and a matching response reason;
+guest responses cannot set either diagnostic header. Typed relight failures
+carry `relight`. A generic 502 supplies no evidence of relight or capture.
+S9 accepts only the bounded allowlist in that header, never response bodies.
+This diagnostic-first follow-up for #7731 does not establish the cause of the
+parked Codex resume failure. Resume repair and operational acceptance remain open.
+
 Hub dev also requires S9 before promotion. It creates one bounded native
 `claude-runtime` session and runs Codex at `xhigh`, then waits for that session
 to park and resumes the same CLI thread. Each turn must produce positive input

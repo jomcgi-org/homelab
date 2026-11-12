@@ -2665,6 +2665,50 @@ func containsStr(xs []string, want string) bool {
 // TestSessionAssignSurvives: SessionAssign delivers a request to a live session VM
 // and the VM SURVIVES (no reap), unlike Assign. A second SessionAssign to the same
 // vm_id succeeds against the still-live VM.
+func TestSessionAssignTransportDiagnostic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"eof", fmt.Errorf("private token: %w", io.EOF), "eof"},
+		{"reset", fmt.Errorf("private prompt: %w", unix.ECONNRESET), "connection_reset"},
+		{"pipe", fmt.Errorf("private output: %w", unix.EPIPE), "broken_pipe"},
+		{"dial", fmt.Errorf("vsockhttp: dial uds private: %w", &net.OpError{Op: "dial", Net: "unix", Err: unix.ENOENT}), "vsock_dial"},
+		{"unknown", errors.New("EOF broken pipe secret\n\x1b[31m"), "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drv := &fakeDriver{}
+			tr := &fakeTransport{roundTripErr: tc.err}
+			client, srv := newSessionTestServer(t, drv, tr, 8)
+			var logs bytes.Buffer
+			srv.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			vmID := primeSessionVM(t, srv, drv, "s-1", "echo", "sref-1", "")
+			resp, err := client.SessionAssign(context.Background(), &nodev1.SessionAssignRequest{
+				VmId: vmID, SessionId: "s-1", Request: &nodev1.GuestRequest{Body: []byte("secret prompt")}, TimeoutMs: 1000,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !resp.GetSuspect() || resp.GetResponse().GetStatusCode() != 502 {
+				t.Fatalf("response = %v", resp)
+			}
+			if got := resp.GetResponse().GetHeaders()["x-ember-guest-transport"]; got != tc.want {
+				t.Errorf("diagnostic=%q, want %q", got, tc.want)
+			}
+			if !strings.Contains(logs.String(), `"reason":"`+tc.want+`"`) || strings.Contains(logs.String(), "private") || strings.Contains(logs.String(), "secret") {
+				t.Errorf("unsafe or missing diagnostic log: %s", logs.String())
+			}
+			if tr.roundTripCount() != 1 {
+				t.Fatal("invocation replayed")
+			}
+			if _, releases, _, _ := drv.counts(); releases != 0 {
+				t.Fatal("suspect VM destroyed by noded")
+			}
+		})
+	}
+}
+
 func TestSessionAssignSurvives(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}

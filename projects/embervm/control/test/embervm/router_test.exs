@@ -235,6 +235,12 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, "s-pressure", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8, message: "pressure:mem"}}}}
     def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
     def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
+    def invoke(_srv, "s-diagnostic", req) do
+      response = %Embervm.Node.V1.SessionAssignResponse{suspect: true, response: %Embervm.Node.V1.GuestResponse{
+        status_code: 502, headers: %{"x-ember-guest-transport" => req.body}, body: "private provider payload"}}
+      %{reason: reason} = Embervm.Session.classify_invoke_error(response, %{health: :healthy})
+      {:error, reason}
+    end
 
     def interrupt(_srv, "s-live", "dispatch-ok"),
       do: {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}}
@@ -276,6 +282,8 @@ defmodule Embervm.RouterTest do
              "content-type" => "application/json",
              # A guest cannot claim the control plane's outcome marker.
              "x-ember-invoke-outcome" => "forged",
+             "x-ember-invoke-diagnostic" => "guest_transport:eof",
+             "x-ember-guest-transport" => "eof",
              "x-ember-phase-hydration-ms" => "0",
              "x-ember-phase-hydration-start-offset-ms" => "0",
              "x-ember-phase-hydration-status" => "failed",
@@ -330,6 +338,7 @@ defmodule Embervm.RouterTest do
   defmodule FakeSessionStore do
     # s-live's token is "sess-token-live"; any other token is unauthorized.
     def verify_token(_srv, "s-live", "sess-token-live"), do: {:ok, %{session_id: "s-live"}}
+    def verify_token(_srv, "s-diagnostic", "sess-token-diagnostic"), do: {:ok, %{session_id: "s-diagnostic"}}
     def verify_token(_srv, "s-live", _), do: {:error, :unauthorized}
     def verify_token(_srv, "s-queue", "sess-token-queue"), do: {:ok, %{session_id: "s-queue"}}
     def verify_token(_srv, "s-unavailable", "sess-token-unavailable"),
@@ -2227,6 +2236,25 @@ defmodule Embervm.RouterTest do
     refute Map.has_key?(TestSpanExporter.attributes(successful_wait), "ember.reason")
   end
 
+  test "suspect diagnostics pass through the classifier and router without raw data" do
+    with_session_fakes()
+    for value <- ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown", "secret\n\e", String.duplicate("x", 4096)] do
+      expected = if value in ["eof", "connection_reset", "broken_pipe", "vsock_dial", "unknown"], do: value, else: "unknown"
+      log = ExUnit.CaptureLog.capture_log(fn ->
+        resp = req(:post, "/v1/sessions/s-diagnostic/invoke", auth("sess-token-diagnostic"), value)
+        assert resp.status == 502
+        assert json(resp.body)["retryable"] == false
+        assert json(resp.body)["reason"] == "guest_transport:" <> expected
+        assert header(resp, "x-ember-invoke-diagnostic") == "guest_transport:" <> expected
+        refute resp.body =~ "private"
+        refute resp.body =~ "secret"
+      end)
+      assert log =~ "session invoke failed"
+      refute log =~ "secret"
+      refute log =~ "private"
+    end
+  end
+
   test "invoke-start op-log unavailability maps to a retryable 503" do
     with_session_fakes()
 
@@ -2288,6 +2316,8 @@ defmodule Embervm.RouterTest do
 
     assert guest.status == 503
     assert header(guest, "x-ember-invoke-outcome") == "guest_response"
+    refute has_resp_header?(guest, "x-ember-invoke-diagnostic")
+    refute has_resp_header?(guest, "x-ember-guest-transport")
 
     assert Enum.count(guest.headers, fn {k, _v} ->
              String.downcase(k) == "x-ember-invoke-outcome"
