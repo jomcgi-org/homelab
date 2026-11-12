@@ -102,11 +102,16 @@ _ISSUE_RESPONSE_LIMIT_BYTES = 1_000_000
 def create_issue(
     repo: str, title: str, body: str, labels: list[str], *, user_agent: str
 ) -> int:
-    """Create one issue with bounded I/O and return its number.
+    """Create one issue with cancellable I/O and return its number.
 
     One attempt, no redirects and no retry: a caller that retries a write whose
     answer was lost would file the issue twice. Raises ``httpx.HTTPError`` or
     ``ValueError`` on any failure.
+
+    The async deadline bounds the request, including streamed response reads.
+    A stalled DNS resolver can delay asyncio.run() executor shutdown after
+    cancellation, so this synchronous helper has no eight-second wall-clock
+    guarantee. The caller retains its worker and any row lock while waiting.
     """
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")

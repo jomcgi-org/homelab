@@ -746,11 +746,15 @@ operator typed. The GitHub call runs before the row is marked, under a row lock,
 so two operators cannot file one item twice. It is a single attempt with no
 retry, because retrying a write whose answer was lost would file a duplicate.
 A lost response or a database failure after publication returns a 502 warning
-to reconcile GitHub before filing again. The GitHub request has an eight-second
-overall deadline, including streamed response reads, inside the browser's
-15-second budget. If the browser times out, loses the connection or receives
-an unreadable gateway response, filing shows the same reconciliation warning.
-Neither path retries automatically.
+to reconcile GitHub before filing again. The async GitHub request has an
+eight-second deadline, including streamed response reads. This does not bound
+the synchronous helper's wall-clock time: a stalled DNS resolver can keep
+`asyncio.run()` waiting for its default executor after request cancellation.
+The worker, database connection and row lock remain held until the helper
+returns. Cancellation prevents the stalled lookup from later sending the
+request. The browser's separate 15-second budget can expire first and shows
+the reconciliation warning. Connection loss or an unreadable gateway response
+shows the same warning. Neither path retries automatically.
 
 **Tested.** `grimoire/feedback_test.py` asserts on the captured GitHub payload
 and covers the rate limit, the operator rule and the failure paths.
