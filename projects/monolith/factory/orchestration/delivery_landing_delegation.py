@@ -180,15 +180,6 @@ def _require(condition, reason):
         raise ValueError("delivery_landing_" + reason)
 
 
-def _latest(db, action):
-    return db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action == action)
-        .order_by(FactoryAudit.id.desc())
-        .limit(1)
-    ).first()
-
-
 def configure(
     principal,
     operation,
@@ -245,7 +236,7 @@ def configure(
             ),
             "policy_not_enabled",
         )
-        prior = _latest(db, CONTROL)
+        prior = controls.latest_audit(db, CONTROL)
         proposal = dict(
             enabled=enabled,
             standing_actor=principal.subject,
@@ -307,7 +298,7 @@ def configure(
 
 
 def _authority(db):
-    event = _latest(db, CONTROL)
+    event = controls.latest_audit(db, CONTROL)
     _require(event is not None, "disabled")
     saved = json.loads(event.detail_json)
     proposal, result = saved["proposal"], saved["result"]
@@ -363,7 +354,7 @@ def _rolling_grants(db):
 
 
 def status(db):
-    event = _latest(db, CONTROL)
+    event = controls.latest_audit(db, CONTROL)
     if event is None:
         return {"enabled": False, "reason": "delivery_landing_disabled"}
     try:
@@ -617,7 +608,7 @@ def prepare(task_id, number, head):
     """Landing only: derive once under the same lock as revocation and arming."""
     try:
         with controls._locked_session() as (db, _):
-            if _latest(db, CONTROL) is None:
+            if controls.latest_audit(db, CONTROL) is None:
                 return "scoped_landing_authorization_missing"
             candidate = _candidate(db, controls._receipt(db, task_id), number, head)
             grants = _grants(db, task_id=task_id)
@@ -641,7 +632,7 @@ def prepare(task_id, number, head):
 
 
 def refusal(db, row, number, head):
-    if _latest(db, CONTROL) is None:
+    if controls.latest_audit(db, CONTROL) is None:
         return "scoped_landing_authorization_missing"
     try:
         candidate = _candidate(db, row, number, head)

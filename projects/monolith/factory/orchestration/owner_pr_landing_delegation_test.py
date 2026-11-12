@@ -671,7 +671,7 @@ def test_native_hold_after_derivation_is_rechecked_before_arm(db, monkeypatch):
     def github(repo, suffix):
         if suffix == "pulls/100" and not observed:
             with Session(db) as session:
-                derived = delegation._latest(session, delegation.GRANT)
+                derived = controls.latest_audit(session, delegation.GRANT)
             if derived:
                 observed.append(True)
                 case.comments[1].append({"body": "Do not merge after this review"})

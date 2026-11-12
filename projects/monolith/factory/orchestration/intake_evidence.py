@@ -13,21 +13,13 @@ from core.clock import aware, aware_iso
 from sqlalchemy import func, tuple_
 from sqlmodel import select
 
+from factory.orchestration.factory_controls import latest_audit
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
     WorkItem,
     WorkItemEdge,
 )
-
-
-def latest(db, action):
-    return db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action == action)
-        .order_by(FactoryAudit.id.desc())
-        .limit(1)
-    ).first()
 
 
 class Sweep:
@@ -81,7 +73,7 @@ class Sweep:
         from factory.orchestration.factory_controls import _audit, _locked_session
 
         with _locked_session() as (db, _control):
-            previous = latest(db, "intake_pending")
+            previous = latest_audit(db, "intake_pending")
             if (
                 previous is not None
                 and json.loads(previous.detail_json)["sweep_id"] >= self.id
@@ -111,14 +103,14 @@ def finalize():
     )
 
     with _read_session() as db:
-        pending = latest(db, "intake_pending")
-        completed = latest(db, "intake_inventory")
+        pending = latest_audit(db, "intake_pending")
+        completed = latest_audit(db, "intake_inventory")
         if pending is None or (completed is not None and completed.id > pending.id):
             return
 
     with _locked_session() as (db, _control):
-        pending = latest(db, "intake_pending")
-        completed = latest(db, "intake_inventory")
+        pending = latest_audit(db, "intake_pending")
+        completed = latest_audit(db, "intake_inventory")
         if pending is None or (completed is not None and completed.id > pending.id):
             return
         data = json.loads(pending.detail_json)
@@ -240,8 +232,8 @@ def backlog(db, now=None):
     from factory.orchestration.factory_controls import is_advisory, receipt_task_class
 
     now = aware(now or datetime.now(UTC))
-    snapshot = latest(db, "intake_inventory")
-    swept = latest(db, "intake_swept")
+    snapshot = latest_audit(db, "intake_inventory")
+    swept = latest_audit(db, "intake_swept")
     data = json.loads(snapshot.detail_json) if snapshot is not None else {}
     observations = {
         (row["repo"], row["issue_number"]): row for row in data.get("issues", [])

@@ -2375,6 +2375,15 @@ def continuation_grant(task_id: str, *, session: Session | None = None) -> dict 
         return json.loads(row.detail_json) if row else None
 
 
+def latest_audit(db, action: str) -> FactoryAudit | None:
+    return db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action == action)
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+
+
 def record_allowance(
     task_id: str,
     policy: dict,
