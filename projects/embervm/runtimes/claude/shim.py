@@ -7514,6 +7514,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _send(self, status, value):
         body = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        # #7731: a resumed turn's reply never reaches the host. Log the turn
+        # reply size before writing and the write time after, so a blocked
+        # vsock write is distinguishable from a reply that was never sent.
+        turn_reply = getattr(self, "command", None) == "POST" and getattr(
+            self, "path", None
+        ) in (TURN_PATH, FUNDING_PATH)
+        started = _turn_timing_now() if turn_reply else None
+        if turn_reply:
+            _emit_turn_timing(
+                "reply_start", 0, status=status, extra={"bytes": len(body)}
+            )
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -7521,6 +7532,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(body)
+        if turn_reply:
+            try:
+                self.wfile.flush()
+            finally:
+                _emit_elapsed("reply_written", started, status=status)
 
     def _load_phase_headers(self):
         self._phase_headers = {}

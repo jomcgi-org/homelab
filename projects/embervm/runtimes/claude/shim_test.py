@@ -12295,3 +12295,31 @@ def test_browser_preflight_success_overwrites_model_usage_claim(monkeypatch, tmp
     monkeypatch.setattr(shim, "_workspace_handoff_preflight", lambda *_: observed)
     result = manager.turn("review", workspace_handoff={})
     assert result["usage"] == {"tokens": 10, "workspace_preflight": observed}
+
+
+def test_turn_reply_logs_size_before_and_write_time_after(capsys):
+    handler = object.__new__(shim.RequestHandler)
+    handler.command = "POST"
+    handler.path = shim.TURN_PATH
+    handler.wfile = io.BytesIO()
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda *_args: None
+    handler.end_headers = lambda: None
+    handler._send(200, {"result": "ok"})
+    err = capsys.readouterr().err
+    body = json.dumps({"result": "ok"}, separators=(",", ":")).encode()
+    assert "turn-timing phase=reply_start status=200 ms=0 bytes=%d" % len(body) in err
+    assert "turn-timing phase=reply_written status=200 ms=" in err
+    assert err.index("reply_start") < err.index("reply_written")
+
+
+def test_non_turn_reply_does_not_log(capsys):
+    handler = object.__new__(shim.RequestHandler)
+    handler.command = "GET"
+    handler.path = "/shim/ready"
+    handler.wfile = io.BytesIO()
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda *_args: None
+    handler.end_headers = lambda: None
+    handler._send(200, {"ready": True})
+    assert "reply_" not in capsys.readouterr().err
