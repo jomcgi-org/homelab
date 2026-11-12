@@ -998,6 +998,37 @@ No provisioning, policy change, canary or rollout occurs in this patch.
 
 ### Native repair landing authority
 
+**Landing authority stays bound to its original decision.** A changed base-tip
+file proof on an explicit operator grant requires a fresh preview and grant,
+even when GitHub reports a clean merge and the approved head is unchanged.
+Landing retains the grant and its audit, and records a deduplicated wait with
+receipt, task, PR, head and authorization audit identity. `factory_status` adds
+that actionable wait to `needs_operator`; unavailable GitHub evidence stays a
+retry. A fresh grant answers the old wait without rebinding its evidence.
+
+Standing repair, delivery and owner-PR decisions retain their original identity,
+expiry, path/effect profiles, rolling usage and derivation bounds. Successful
+policy transitions journal versioned landing-term evidence. Compatibility checks
+every intervening transition, not just the current bytes. All three bind the
+primary repository/base, lane enablement, repository enable/pause flags,
+effective auto-merge and landing mode. Owner-PR authority also binds the owner
+login/ID, intake/refinement enablement, selected refinement batch and effective
+label eligibility. Repair provenance and ordinary delivery admission remain
+bound to their original receipt/audit, not the current producer or intake
+selection limits. Existing per-head review, CI, holds and execution fences still
+run on each candidate.
+
+Funding, model, generation, rate-of-intake and unrelated refill changes do not
+change these landing terms. A relevant disable/change/restore cannot revive an
+old decision. Family configuration, profiles, effects, expiry and derivation
+bounds keep their separate validators and revocation lineage. Legacy grants
+retain their original digest semantics unless a complete configure journal can
+prove the original policy and every later transition proves unchanged terms.
+Unknown, malformed or partial history refuses compatibility; no migration
+re-grants authority. Previously granted but now invalid standing authority is
+visible in `needs_operator` even without a landing receipt. Never-configured
+delegation creates no alert. Status reads do not write audits or refresh grants.
+
 Typed `receipt_admission`, `prepared_admission` and `promotion_admission` failures
 map to `projects/monolith/factory/execution/admission.py` and `admission_test.py`.
 `receipt_prepare` and `receipt_promotion` map to `result_receipts.py` and

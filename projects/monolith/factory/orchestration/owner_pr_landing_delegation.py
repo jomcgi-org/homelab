@@ -142,10 +142,13 @@ def configure(
                     return saved["result"]
         _require(control.version == expected_version, "version_changed")
         prior = _latest(db, CONTROL)
+        from factory.orchestration import landing_authority_policy
+
         proposal = {
             "enabled": enabled,
             "version": control.version,
             "binding": _binding(db, control, enabled=enabled),
+            "landing_policy_evidence": landing_authority_policy.evidence(control),
             "previous_authorization_id": prior.id if prior else None,
             "path_profile": PATH_PROFILE,
             "allowed_paths": sorted(ALLOWED_PATHS),
@@ -181,6 +184,8 @@ def configure(
 
 
 def _authority(db):
+    from factory.orchestration import landing_authority_policy
+
     event = _latest(db, CONTROL)
     _require(event is not None, "disabled")
     saved = json.loads(event.detail_json)
@@ -197,8 +202,17 @@ def _authority(db):
         "bounds_changed",
     )
     control = db.get(FactoryControl, "factory")
+    current = _binding(db, control, enabled=True)
     _require(
-        proposal["binding"] == _binding(db, control, enabled=True), "policy_changed"
+        all(
+            proposal["binding"][key] == current[key]
+            for key in ("owner", "repo", "base_branch")
+        ),
+        "policy_changed",
+    )
+    _require(
+        landing_authority_policy.compatible(db, event, proposal, "owner_pr_landing"),
+        "policy_changed",
     )
     return event, proposal, result
 
@@ -245,11 +259,16 @@ def status(db):
             "derivations_used": used,
             "derivations_remaining": max(0, MAX_DERIVATIONS - used),
         }
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        from factory.orchestration import landing_authority_policy
+
         return {
             "enabled": False,
             "authorization_id": event.id,
-            "reason": "owner_pr_landing_authority_unavailable",
+            "reason": str(exc)
+            if isinstance(exc, ValueError)
+            else "owner_pr_landing_evidence_invalid",
+            "needs_operator": landing_authority_policy.previously_enabled(db, CONTROL),
         }
 
 

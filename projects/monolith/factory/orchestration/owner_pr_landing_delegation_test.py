@@ -487,8 +487,17 @@ def test_native_owner_feed_review_and_landing_without_per_head_grant(
         assert events[0].actor == delegation.ACTOR
         row = controls._receipt(session, case.task["id"])
         assert "landing_authorization" not in json.loads(row.direction_json)
-    landing.landing_tick(case.live)
+        before = delegation.status(session)
+    neutral = {
+        **case.live,
+        "generation": case.live["generation"] + 1,
+        "task_budget_usd": case.live["task_budget_usd"] + 1,
+    }
+    assert controls.set_control("configure", "operator", policy=neutral)["ok"]
+    landing.landing_tick(neutral)
+    assert case.queue == {"owner-pr"}
     with Session(db) as session:
+        assert delegation.status(session) == before
         assert (
             len(
                 session.exec(
@@ -767,13 +776,245 @@ def test_delegated_or_nonhuman_caller_has_no_standing_authority(db, kind, author
 def test_restoring_identical_policy_cannot_revive_authority(db, action):
     configure(db)
     with controls._locked_session() as (session, control):
-        controls._audit(session, "operator", action, ok=True)
+        # Pre-upgrade partial records cannot prove semantic compatibility.
+        session.add(
+            FactoryAudit(
+                actor="operator", action=action, detail_json=dumps({"ok": True})
+            )
+        )
         control.version += 1
     with Session(db) as session, pytest.raises(ValueError, match="policy_changed"):
         delegation._authority(session)
     configure(db)
     with Session(db) as session:
         assert delegation.status(session)["enabled"] is True
+
+
+def standing_family(engine, family):
+    from factory.orchestration import delivery_landing_delegation as delivery
+    from factory.orchestration import repair_landing_delegation as repair
+
+    module = {
+        "owner_pr_landing": delegation,
+        "delivery_landing": delivery,
+        "repair_landing": repair,
+    }[family]
+    with Session(engine) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        current = json.loads(control.policy_json)
+        if "conductor_model" not in current:
+            current = controls.validate_policy(
+                {
+                    "conductor_model": "opus",
+                    "worker_model": "luna",
+                    "allowed_models": ["opus", "luna"],
+                    "max_turns_per_task": 10,
+                    "turn_timeout_seconds": 60,
+                    "task_timeout_seconds": 3600,
+                    "max_attempts": 2,
+                    **current,
+                }
+            )
+            control.policy_json = dumps(current)
+        version = control.version
+    args = (
+        {"max_landings": 5}
+        if module is delivery
+        else {"mode": "ongoing", "duration_minutes": None}
+        if module is repair
+        else {}
+    )
+    preview = module.configure(
+        principal(), "preview", True, version, "Standing scope", **args
+    )
+    module.configure(
+        principal(),
+        "apply",
+        True,
+        version,
+        "Standing scope",
+        **args,
+        request_key=f"{family}:{version}",
+        expected_preview_sha256=preview["preview_sha256"],
+    )
+    return module
+
+
+def authority_status(engine):
+    from factory.orchestration import mcp
+
+    with Session(engine) as session:
+        payload = mcp._status_payload(False, session=session)
+        assert not session.new and not session.dirty and not session.deleted
+        return payload
+
+
+@pytest.mark.parametrize(
+    "family", ["repair_landing", "delivery_landing", "owner_pr_landing"]
+)
+def test_neutral_policy_configure_preserves_identity_bounds_and_status(db, family):
+    module = standing_family(db, family)
+    with Session(db) as session:
+        original = module.status(session)
+        current = json.loads(session.get(FactoryControl, "factory").policy_json)
+    # Actual policy owner, not a fabricated transition: funding/model and
+    # generation changes grant no new landing scope or accounting allowance.
+    result = controls.set_control(
+        "configure",
+        "operator",
+        policy={**current, "generation": 2, "task_budget_usd": 101},
+    )
+    assert result["ok"]
+    with Session(db) as session:
+        assert module.status(session) == original
+    assert authority_status(db)[family] == original
+    assert not authority_status(db)["needs_operator"]
+
+
+@pytest.mark.parametrize(
+    "family", ["repair_landing", "delivery_landing", "owner_pr_landing"]
+)
+@pytest.mark.parametrize("restore", [False, True])
+def test_landing_terms_change_visible_without_receipt_and_restore_never_renews(
+    db, monkeypatch, family, restore
+):
+    from factory.orchestration import factory_landing as landing
+
+    module = standing_family(db, family)
+    with Session(db) as session:
+        identity = module._authority(session)[0].id
+        current = json.loads(session.get(FactoryControl, "factory").policy_json)
+    changed = {**current, "generation": 2, "base_branch": "other-base"}
+    assert controls.set_control("configure", "operator", policy=changed)["ok"]
+    if restore:
+        assert controls.set_control(
+            "configure", "operator", policy={**current, "generation": 3}
+        )["ok"]
+    for _ in range(2):
+        landing.landing_tick(current)
+        payload = authority_status(db)
+        assert payload[family]["enabled"] is False
+        entry = next(
+            item for item in payload["needs_operator"] if item.get("family") == family
+        )
+        assert entry["authorization_id"] == identity
+        assert entry["reason"].startswith(family + "_policy_")
+    with Session(db) as session:
+        assert not session.exec(select(FactoryReceipt)).all()
+        assert not session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == module.GRANT)
+        ).all()
+    standing_family(db, family)
+    assert not authority_status(db)["needs_operator"]
+
+
+@pytest.mark.parametrize(
+    "family", ["repair_landing", "delivery_landing", "owner_pr_landing"]
+)
+def test_unconfigured_delegation_has_no_perpetual_operator_alert(db, family):
+    assert authority_status(db)[family]["enabled"] is False
+    assert not authority_status(db)["needs_operator"]
+
+
+@pytest.mark.parametrize(
+    "family", ["repair_landing", "delivery_landing", "owner_pr_landing"]
+)
+def test_legacy_authorization_uses_full_configure_history_without_regrant(db, family):
+    module = standing_family(db, family)
+    with Session(db) as session:
+        current = json.loads(session.get(FactoryControl, "factory").policy_json)
+    # A durable pre-grant configure journal is sufficient to reconstruct the
+    # exact original policy of a pre-upgrade grant without rewriting it.
+    assert controls.set_control("configure", "operator", policy=current)["ok"]
+    standing_family(db, family)
+    with Session(db) as session, session.begin():
+        audit = module._authority(session)[0]
+        identity = audit.id
+        detail = json.loads(audit.detail_json)
+        detail["proposal"].pop("landing_policy_evidence")
+        proposal = detail["proposal"]
+        proposal.pop("preview_sha256")
+        proposal["preview_sha256"] = controls.digest(proposal)
+        audit.detail_json = dumps(detail)
+        original = module.status(session)
+    assert controls.set_control(
+        "configure",
+        "operator",
+        policy={**current, "generation": 2, "task_budget_usd": 102},
+    )["ok"]
+    with Session(db) as session:
+        assert module.status(session) == original
+        assert module._authority(session)[0].id == identity
+    assert not authority_status(db)["needs_operator"]
+
+
+@pytest.mark.parametrize(
+    "family", ["repair_landing", "delivery_landing", "owner_pr_landing"]
+)
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unknown_version",
+        "partial_history",
+        "unaudited_change",
+        "malformed_authorization",
+    ],
+)
+def test_insufficient_compatibility_evidence_stays_invalid_and_visible(
+    db, family, fault
+):
+    module = standing_family(db, family)
+    with Session(db) as session, session.begin():
+        audit = module._authority(session)[0]
+        identity = audit.id
+        if fault == "unknown_version":
+            detail = json.loads(audit.detail_json)
+            detail["proposal"]["landing_policy_evidence"]["schema_version"] = 99
+            audit.detail_json = dumps(detail)
+        elif fault == "malformed_authorization":
+            audit.detail_json = "[]"
+        elif fault == "partial_history":
+            session.add(
+                FactoryAudit(
+                    actor="operator",
+                    action="refill_control_applied",
+                    detail_json=dumps({"result": {"ok": True}}),
+                )
+            )
+        else:
+            control = session.get(FactoryControl, "factory")
+            policy = json.loads(control.policy_json)
+            control.policy_json = dumps({**policy, "task_budget_usd": 103})
+    payload = authority_status(db)
+    assert payload[family]["enabled"] is False
+    assert any(
+        item.get("authorization_id") == identity for item in payload["needs_operator"]
+    )
+
+
+def test_unknown_legacy_policy_does_not_prevent_operator_pause(db):
+    standing_family(db, "owner_pr_landing")
+    with Session(db) as session, session.begin():
+        control = session.get(FactoryControl, "factory")
+        policy = json.loads(control.policy_json)
+        policy["intake"]["owner_pr_author"] = "unknown legacy shape"
+        control.policy_json = dumps(policy)
+    result = controls.set_control("pause_admissions", "operator")
+    assert result["ok"]
+    with Session(db) as session:
+        assert session.get(FactoryControl, "factory").state == "paused"
+        event = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "pause_admissions")
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        assert json.loads(event.detail_json)["landing_policy_evidence"] == {
+            "schema_version": 1,
+            "reason": "invalid_policy",
+        }
+        status = delegation.status(session)
+        assert status["enabled"] is False
+        assert status["needs_operator"] is True
 
 
 def landing_off_on(engine):
@@ -888,6 +1129,17 @@ def test_native_repair_grant_is_not_revived_by_real_landing_toggle(
             )
         with Session(engine) as session:
             authorization_id = repair._authority(session)[0].id
+            before = repair.status(session)
+        neutral = {
+            **case.live,
+            "generation": case.live["generation"] + 1,
+            "task_budget_usd": case.live["task_budget_usd"] + 1,
+        }
+        assert controls.set_control("configure", "operator", policy=neutral)["ok"]
+        landing.landing_tick(neutral)
+        assert case.queue == {"repair-pr"}
+        with Session(engine) as session:
+            assert repair.status(session) == before
         landing_off_on(engine)
         for _ in range(2):
             landing.landing_tick(case.live)

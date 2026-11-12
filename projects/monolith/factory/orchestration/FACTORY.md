@@ -797,7 +797,13 @@ head, followed by the existing merge queue and rollout owner.
 `owner_pr_landing_delegation` is a separate, default-off standing landing
 decision, configured through `factory_configure_refill` with
 `target: owner_pr_landing`. Preview binds the configured login and numeric owner
-ID, repository/base, intake policy and latest relevant configuration event.
+ID, repository/base, intake eligibility and latest relevant configuration event.
+Standing landing decisions survive only policy transitions whose durable
+landing-term evidence proves semantic compatibility, as defined in architecture
+section 4. Relevant disable/change/restore never revives an earlier grant.
+Invalid previously granted standing authority and explicit grants needing a
+fresh evidence binding appear in `factory_status.needs_operator`; status reads
+remain read-only and GitHub observation failures remain retries.
 Disable/change/restore cannot revive an earlier grant. It explicitly permits
 pre-existing PRs and already adopted receipts with genuine `receive_owner_pr`
 provenance, canonical work-item ownership, and either an accepted issue or a

@@ -22,15 +22,20 @@ from factory.orchestration import operator_landing_evidence as evidence
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
+    FactoryClassTier,
+    FactoryReviewVerdict,
     FactoryReceipt,
     FactoryStart,
     WorkItem,
+    WorkItemEdge,
+    WorkItemEvent,
 )
 from factory.orchestration.models import (
     SwarmNodeRun,
     SwarmPlanNode,
     SwarmPlanVersion,
     SwarmTask,
+    SwarmConductorCall,
 )
 from factory.orchestration.operator_landing_evidence_test import (
     BASE,
@@ -99,6 +104,7 @@ def world(tmp_path, monkeypatch):
         "task_budget_usd": 50,
         "turn_budget_usd": 4,
         "max_turns_per_task": 10,
+        "task_timeout_seconds": 3600,
     }
     typed = {
         "classification": "requires_operator",
@@ -128,10 +134,15 @@ def world(tmp_path, monkeypatch):
                 SwarmPlanVersion,
                 SwarmPlanNode,
                 FactoryControl,
+                FactoryClassTier,
+                FactoryReviewVerdict,
                 FactoryReceipt,
                 FactoryStart,
                 FactoryAudit,
                 WorkItem,
+                WorkItemEdge,
+                WorkItemEvent,
+                SwarmConductorCall,
             )
         ],
     )
@@ -207,6 +218,7 @@ def world(tmp_path, monkeypatch):
                 ),
                 SwarmNodeRun(
                     id=100,
+                    reserved_cost_usd=4,
                     task_id=TASK,
                     node_key="implement_fix",
                     attempt=1,
@@ -216,6 +228,7 @@ def world(tmp_path, monkeypatch):
                 ),
                 SwarmNodeRun(
                     id=200,
+                    reserved_cost_usd=4,
                     task_id=TASK,
                     node_key="review_fix",
                     attempt=1,
@@ -722,6 +735,161 @@ def test_current_grant_refuses_drift_after_apply(world, change):
     apply(preview())
     mutate(world, change)
     assert refusal(world) is not None
+
+
+def status(world):
+    from factory.orchestration import mcp
+
+    with Session(world.db) as db:
+        payload = mcp._status_payload(False, session=db)
+        assert not db.new and not db.dirty and not db.deleted
+        return payload
+
+
+def tick(world, monkeypatch, *, busy=False):
+    original_get = landing.github_get
+
+    def get(repo, suffix):
+        if suffix == "issues/123":
+            return {"number": 123, "labels": [], "state": "open", "body": "Repair"}
+        return original_get(repo, suffix)
+
+    monkeypatch.setattr(landing, "github_get", get)
+    monkeypatch.setattr(landing, "github_list", lambda *a: [])
+    monkeypatch.setattr(
+        landing,
+        "_armed_on_github",
+        lambda *a: {"task_id": "another-task", "pr_number": 99} if busy else None,
+    )
+    landing.landing_tick(world.policy)
+
+
+def advance_base(world, tip, content):
+    world.repo.tip["src/a.py"] = ("100644", content)
+    world.repo.data[f"git/commits/{tip}"] = {
+        "sha": tip,
+        "tree": {"sha": world.repo.tree(world.repo.tip)},
+    }
+    world.repo.data[REF]["object"]["sha"] = tip
+    comparison = copy.deepcopy(world.repo.data[f"compare/{TIP}...{HEAD}"])
+    comparison["base_commit"]["sha"] = tip
+    world.repo.data[f"compare/{tip}...{HEAD}"] = comparison
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_base_file_drift_tick_requests_explicit_rebind_and_fresh_grant_resolves(
+    world, monkeypatch, busy
+):
+    granted = apply(preview())
+    with Session(world.db) as db:
+        before = db.get(FactoryReceipt, RECEIPT).model_dump()
+    # Same head, merge base, native approval and CI; only a touched file at
+    # the base tip changes. GitHub still reports a cleanly mergeable PR.
+    advance_base(world, "8" * 40, b"another base edit\n")
+    world.repo.pull["mergeable"] = True
+    for _ in range(2):
+        tick(world, monkeypatch, busy=busy)
+        waits = status(world)["needs_operator"]
+        assert len(waits) == 1
+        wait = waits[0]
+        assert wait["reason"] == "operator_landing_evidence_changed"
+        assert wait["receipt_id"] == RECEIPT
+        assert wait["task_id"] == TASK
+        assert wait["pr_number"] == NUMBER
+        assert wait["head_sha"] == HEAD
+        assert wait["authorization_audit_id"] == granted["authorization_audit_id"]
+        assert "Re-bind" in wait["question"]
+    assert len(audits(world, "landing_authorization_wait")) == 1
+    assert not audits(world, mod.ARM_ACTION)
+    assert landing._ARM_AUTO_MERGE not in world.calls
+    if busy:
+        assert len(audits(world, "merge_deferred")) == 1
+    with Session(world.db) as db:
+        assert db.get(FactoryReceipt, RECEIPT).model_dump() == before
+    fresh = apply(preview(), key="fresh-grant")
+    assert fresh["authorization_audit_id"] != granted["authorization_audit_id"]
+    assert not status(world)["needs_operator"]
+    assert len(audits(world, releases.SCOPE_ACTION)) == 2
+    # The same reason after a fresh grant is a new wait, not a suppressed one.
+    advance_base(world, "7" * 40, b"third edit\n")
+    tick(world, monkeypatch)
+    assert len(audits(world, "landing_authorization_wait")) == 2
+    assert (
+        status(world)["needs_operator"][0]["authorization_audit_id"]
+        == fresh["authorization_audit_id"]
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["expired", "revoked", "invalid", "review", "head", "unavailable"]
+)
+def test_granted_delivery_tick_never_renews_invalid_or_unavailable_evidence(
+    world, monkeypatch, change
+):
+    granted = apply(preview())
+    if change == "expired":
+        world.clock[0] = NOW + timedelta(hours=2)
+    elif change == "revoked":
+        revoke(granted)
+    elif change == "invalid":
+        with Session(world.db) as db, db.begin():
+            row = db.get(FactoryReceipt, RECEIPT)
+            direction = json.loads(row.direction_json)
+            direction["landing_authorization"]["operator_evidence"] = {}
+            row.direction_json = json.dumps(direction)
+    elif change == "unavailable":
+
+        def unavailable(*a):
+            raise httpx.ReadTimeout("GitHub unavailable")
+
+        monkeypatch.setattr(evidence, "_get", unavailable)
+    else:
+        mutate(world, change)
+    for _ in range(2):
+        tick(world, monkeypatch)
+    assert not audits(world, mod.ARM_ACTION)
+    assert landing._ARM_AUTO_MERGE not in world.calls
+    assert len(audits(world, releases.SCOPE_ACTION)) == 1
+    payload = status(world)
+    if change in {"expired", "revoked", "invalid"}:
+        assert len(payload["needs_operator"]) == 1
+        assert payload["needs_operator"][0]["reason"] == refusal(world)
+        assert (
+            payload["needs_operator"][0]["authorization_audit_id"]
+            == granted["authorization_audit_id"]
+        )
+        assert len(audits(world, "landing_authorization_wait")) == 1
+    elif change == "unavailable":
+        assert not payload["needs_operator"]
+        assert (
+            payload["active"][0]["landing_wait"]["reason"]
+            == "operator_landing_observation_unavailable"
+        )
+    with Session(world.db) as db:
+        row = db.get(FactoryReceipt, RECEIPT)
+        assert row.task_id == TASK and row.state == "landing"
+        assert not row.task_paused and not row.cancellation_requested
+
+
+def test_fresh_concurrent_grant_cannot_inherit_an_older_stale_observation(
+    world, monkeypatch
+):
+    apply(preview())
+    advance_base(world, "8" * 40, b"base moved\n")
+    record = landing._scope_wait
+    fresh = []
+
+    def grant_before_record(item, reason):
+        if not fresh:
+            fresh.append(apply(preview(), key="concurrent-fresh-grant"))
+        record(item, reason)
+
+    monkeypatch.setattr(landing, "_scope_wait", grant_before_record)
+    tick(world, monkeypatch, busy=True)
+    assert len(fresh) == 1
+    assert not status(world)["needs_operator"]
+    assert not audits(world, "landing_authorization_wait")
+    assert not audits(world, mod.ARM_ACTION)
 
 
 @pytest.mark.parametrize(

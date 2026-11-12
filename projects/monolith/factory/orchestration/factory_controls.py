@@ -2018,6 +2018,28 @@ def _audit(
     task_id: str | None = None,
     **detail: object,
 ) -> None:
+    from factory.orchestration.factory_landing_release import POLICY_TRANSITIONS
+    from factory.orchestration import landing_authority_policy
+
+    outcome = detail.get("result", detail)
+    if (
+        action in POLICY_TRANSITIONS
+        and isinstance(outcome, dict)
+        and outcome.get("ok") is True
+    ):
+        control = db.get(FactoryControl, "factory")
+        if control is not None:
+            try:
+                detail["landing_policy_evidence"] = landing_authority_policy.evidence(
+                    control
+                )
+            except (AttributeError, KeyError, TypeError, ValueError):
+                # Unknown legacy policy must refuse compatibility, not prevent
+                # its operator from pausing or stopping the lane.
+                detail["landing_policy_evidence"] = {
+                    "schema_version": 1,
+                    "reason": "invalid_policy",
+                }
     if task_id is not None and db.get(SwarmTask, task_id) is None:
         detail["requested_task_id"] = task_id
         task_id = None

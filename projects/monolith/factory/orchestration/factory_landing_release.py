@@ -43,7 +43,7 @@ HANDOFF_REVIEW_SESSION = 24402
 operator_target = controls.operator_landing_target
 
 
-def latest_policy_transition(db):
+def latest_policy_transition(db, *, before=None):
     """Durable fence shared by delegates, even after policy bytes are restored.
 
     Reads, failed mutations and request replays do not renew or revoke authority.
@@ -51,17 +51,15 @@ def latest_policy_transition(db):
     Legacy policy audits without an outcome remain an indeterminate transition,
     preserving their existing fail-closed fence instead of resurrecting a grant.
     """
-    return db.exec(
-        select(FactoryAudit)
-        .where(
-            FactoryAudit.action.in_(POLICY_TRANSITIONS),
-            ~FactoryAudit.detail_json.contains('"ok":false'),
-            (FactoryAudit.action != "set_auto_merge")
-            | ~FactoryAudit.detail_json.contains('"changed":false'),
-        )
-        .order_by(FactoryAudit.id.desc())
-        .limit(1)
-    ).first()
+    query = select(FactoryAudit).where(
+        FactoryAudit.action.in_(POLICY_TRANSITIONS),
+        ~FactoryAudit.detail_json.contains('"ok":false'),
+        (FactoryAudit.action != "set_auto_merge")
+        | ~FactoryAudit.detail_json.contains('"changed":false'),
+    )
+    if before is not None:
+        query = query.where(FactoryAudit.id < before)
+    return db.exec(query.order_by(FactoryAudit.id.desc()).limit(1)).first()
 
 
 PUBLIC_DOCS = frozenset(

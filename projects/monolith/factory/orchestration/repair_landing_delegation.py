@@ -16,7 +16,11 @@ import jsonschema
 from sqlmodel import select
 
 from factory.access import is_operator
-from factory.orchestration import factory_controls as controls, graph
+from factory.orchestration import (
+    factory_controls as controls,
+    graph,
+    landing_authority_policy,
+)
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
@@ -177,6 +181,7 @@ def configure(
             enabled=enabled,
             version=control.version,
             policy_sha256=controls.digest(policy),
+            landing_policy_evidence=landing_authority_policy.evidence(control),
             repo=REPO,
             previous_authorization_id=prior.id if prior else None,
             duration_minutes=duration_minutes,
@@ -252,17 +257,11 @@ def _authority(db):
         proposal["repo"] == REPO
         and proposal.get("path_profile", "observation") in PATH_PROFILES
         and proposal["allowed_paths"]
-        == sorted(PATH_PROFILES[proposal.get("path_profile", "observation")])
-        and proposal["policy_sha256"] == controls.digest(policy),
+        == sorted(PATH_PROFILES[proposal.get("path_profile", "observation")]),
         "policy_changed",
     )
-    # Every successful policy owner participates, including landing-only off/on.
-    # Restoring the bytes cannot renew standing authority or a derived grant.
-    from factory.orchestration.factory_landing_release import latest_policy_transition
-
-    transition = latest_policy_transition(db)
     _require(
-        transition is None or transition.id <= event.id,
+        landing_authority_policy.compatible(db, event, proposal, "repair_landing"),
         "policy_replaced",
     )
     return event, proposal, result
@@ -289,8 +288,15 @@ def status(db):
             "derivations_used": used,
             "derivations_remaining": max(0, proposal["max_repairs"] - used),
         }
-    except ValueError as exc:
-        return {"enabled": False, "authorization_id": event.id, "reason": str(exc)}
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        return {
+            "enabled": False,
+            "authorization_id": event.id,
+            "reason": str(exc)
+            if isinstance(exc, ValueError)
+            else "repair_landing_evidence_invalid",
+            "needs_operator": landing_authority_policy.previously_enabled(db, CONTROL),
+        }
 
 
 def _provenance(db, row, authorization_id):

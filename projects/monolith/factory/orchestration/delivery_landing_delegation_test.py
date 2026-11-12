@@ -650,7 +650,17 @@ def test_native_delivery_lands_without_per_head_grant(db, monkeypatch):
         row = controls._receipt(session, case.task["id"])
         assert "landing_authorization" not in json.loads(row.direction_json or "{}")
         assert delegation.status(session)["derivations_used"] == 1
-    landing.landing_tick(case.live)
+        before = delegation.status(session)
+    neutral = {
+        **case.live,
+        "generation": case.live["generation"] + 1,
+        "task_budget_usd": case.live["task_budget_usd"] + 1,
+    }
+    assert controls.set_control("configure", "operator", policy=neutral)["ok"]
+    landing.landing_tick(neutral)
+    assert case.queue == {"delivery-pr"}
+    with Session(db) as session:
+        assert delegation.status(session) == before
     assert len(grants(db)) == 1
 
 

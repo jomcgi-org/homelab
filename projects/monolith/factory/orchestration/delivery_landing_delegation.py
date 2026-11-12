@@ -246,11 +246,14 @@ def configure(
             "policy_not_enabled",
         )
         prior = _latest(db, CONTROL)
+        from factory.orchestration import landing_authority_policy
+
         proposal = dict(
             enabled=enabled,
             standing_actor=principal.subject,
             version=control.version,
             policy_sha256=controls.digest(policy),
+            landing_policy_evidence=landing_authority_policy.evidence(control),
             repo=REPO,
             previous_authorization_id=prior.id if prior else None,
             path_profile=PATH_PROFILE,
@@ -307,6 +310,8 @@ def configure(
 
 
 def _authority(db):
+    from factory.orchestration import landing_authority_policy
+
     event = _latest(db, CONTROL)
     _require(event is not None, "disabled")
     saved = json.loads(event.detail_json)
@@ -331,15 +336,13 @@ def _authority(db):
         "policy_not_enabled",
     )
     _require(
-        proposal["repo"] == REPO
-        and proposal["policy_sha256"] == controls.digest(policy),
+        proposal["repo"] == REPO,
         "policy_changed",
     )
-    # Restoring earlier policy bytes cannot renew standing or derived authority.
-    from factory.orchestration.factory_landing_release import latest_policy_transition
-
-    transition = latest_policy_transition(db)
-    _require(transition is None or transition.id <= event.id, "policy_replaced")
+    _require(
+        landing_authority_policy.compatible(db, event, proposal, "delivery_landing"),
+        "policy_replaced",
+    )
     return event, proposal, result
 
 
@@ -380,8 +383,17 @@ def status(db):
             "derivations_used": used,
             "derivations_remaining": max(0, proposal["max_landings"] - used),
         }
-    except ValueError as exc:
-        return {"enabled": False, "authorization_id": event.id, "reason": str(exc)}
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        from factory.orchestration import landing_authority_policy
+
+        return {
+            "enabled": False,
+            "authorization_id": event.id,
+            "reason": str(exc)
+            if isinstance(exc, ValueError)
+            else "delivery_landing_evidence_invalid",
+            "needs_operator": landing_authority_policy.previously_enabled(db, CONTROL),
+        }
 
 
 def _issue(row):

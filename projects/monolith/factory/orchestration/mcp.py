@@ -364,6 +364,11 @@ def _landing_wait(db, task_id):
         "pr_number": detail.get("pr_number")
         if type(detail.get("pr_number")) is int
         else None,
+        **{
+            key: detail[key]
+            for key in ("receipt_id", "head_sha", "authorization_audit_id")
+            if key in detail
+        },
     }
 
 
@@ -403,6 +408,50 @@ def _status_payload(
         }
         for item in open_escalations
     ]
+    for receipt in view.get("active") or []:
+        wait = receipt.get("landing_wait")
+        if not wait:
+            continue
+        reason = wait["reason"]
+        # Network/evidence availability is a retry, not a new human decision.
+        if any(word in reason for word in ("unavailable", "unverified")):
+            continue
+        if not reason.startswith(
+            (
+                "operator_landing_",
+                "scoped_landing_",
+                "repair_landing_",
+                "delivery_landing_",
+                "owner_pr_landing_",
+            )
+        ):
+            continue
+        needs_operator.append(
+            {
+                **wait,
+                "kind": "landing_authorization",
+                "receipt_id": receipt.get("id"),
+                "task_id": receipt.get("task_id"),
+                "repo": receipt.get("repo"),
+                "issue_number": receipt.get("issue_number"),
+                "title": receipt.get("title"),
+                "question": "Re-bind explicit landing authority to current evidence."
+                if reason == "operator_landing_evidence_changed"
+                else "Review the recorded landing authority refusal.",
+            }
+        )
+    for family in ("repair_landing", "delivery_landing", "owner_pr_landing"):
+        authority = view.get(family) or {}
+        if authority.get("needs_operator"):
+            needs_operator.append(
+                {
+                    "kind": "standing_landing_authority",
+                    "family": family,
+                    "authorization_id": authority["authorization_id"],
+                    "reason": authority["reason"],
+                    "question": "Re-authorize or retire the invalid standing landing authority.",
+                }
+            )
     payload = {
         "ok": True,
         "state": view.get("state"),

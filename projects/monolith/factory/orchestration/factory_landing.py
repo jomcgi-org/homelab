@@ -821,7 +821,14 @@ def _arm(repo: str, item: dict) -> None:
         )
 
         with _read_session() as db:
-            owner = releases.delegation_owner(_receipt(db, item["task_id"]))
+            receipt = _receipt(db, item["task_id"])
+            direction = json.loads(receipt.direction_json or "{}") if receipt else {}
+            item["observed_grant_sha256"] = controls.digest(
+                direction.get("landing_authorization")
+                if isinstance(direction, dict)
+                else None
+            )
+            owner = releases.delegation_owner(receipt)
             refusal = releases.scoped_refusal(
                 db, _receipt(db, item["task_id"]), number, head
             )
@@ -974,21 +981,53 @@ def _scope_wait(item: dict, reason: str) -> None:
     # One row per change of reason: status reads the latest, so a wait that
     # moves from "no delegation" to "path denied" must not keep the old answer.
     with _locked_session() as (db, _control):
+        row = controls._receipt(db, item["task_id"])
+        try:
+            direction = json.loads(row.direction_json or "{}") if row else {}
+        except ValueError:
+            direction = {}
+        grant = (
+            direction.get("landing_authorization")
+            if isinstance(direction, dict)
+            else None
+        )
+        if "observed_grant_sha256" in item and item[
+            "observed_grant_sha256"
+        ] != controls.digest(grant):
+            return  # A concurrent fresh grant answers the older observation.
+        identity = {
+            "receipt_id": row.id if row else None,
+            "head_sha": item.get("approved_head_sha", item.get("head_sha")),
+            "authorization_audit_id": grant.get("authorization_audit_id")
+            if isinstance(grant, dict)
+            else None,
+        }
         last = db.exec(
             select(FactoryAudit)
             .where(
                 FactoryAudit.task_id == item["task_id"],
-                FactoryAudit.action == "landing_authorization_wait",
+                FactoryAudit.action.in_(
+                    (
+                        "landing_authorization_wait",
+                        "operator_scoped_landing_authorized",
+                        "repair_landing_authorized",
+                        "delivery_landing_authorized",
+                        "owner_pr_landing_authorized",
+                        "landing_recovery_requested",
+                        "merge_armed",
+                        "merged",
+                    )
+                ),
             )
             .order_by(FactoryAudit.id.desc())
             .limit(1)
         ).first()
-        if last is not None:
+        if last is not None and last.action == "landing_authorization_wait":
             detail = json.loads(last.detail_json)
             if (detail.get("reason"), detail.get("pr_number")) == (
                 reason,
                 item["pr_number"],
-            ):
+            ) and all(detail.get(key) == value for key, value in identity.items()):
                 return
         _audit(
             db,
@@ -997,7 +1036,31 @@ def _scope_wait(item: dict, reason: str) -> None:
             task_id=item["task_id"],
             reason=reason,
             pr_number=item["pr_number"],
+            **identity,
         )
+
+
+def _observe_explicit_authority(item, pull):
+    """Observe grants even when another PR owns the serial arming slot.
+
+    This records no grant and changes no receipt. Queue mutation and final
+    locked authority checks remain with their existing owners.
+    """
+    from factory.orchestration import factory_landing_release as releases
+
+    with _read_session() as db:
+        row = controls._receipt(db, item["task_id"])
+        direction = json.loads(row.direction_json or "{}") if row else {}
+        if not isinstance(direction, dict) or "landing_authorization" not in direction:
+            return
+        item["observed_grant_sha256"] = controls.digest(
+            direction["landing_authorization"]
+        )
+        refusal = releases.scoped_refusal(
+            db, row, item["pr_number"], pull.get("head", {}).get("sha")
+        )
+    if refusal:
+        _scope_wait(item, refusal)
 
 
 @_contain_read(blocked=True)
@@ -1058,6 +1121,7 @@ def _fence_ungranted_queue_entry(repo: str, item: dict, pr: dict | None = None) 
             raise ValueError("ungranted holder has no node id")
         queued = node_id in _queued_ids([node_id])
         if pr.get("auto_merge") is None and not queued:
+            _observe_explicit_authority(item, pr)
             return False
         # A preview from before a concurrent control change cannot dequeue a
         # newly authorized head. Re-observe under the same lock as grant apply.
