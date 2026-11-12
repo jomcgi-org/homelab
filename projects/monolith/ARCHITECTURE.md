@@ -1999,6 +1999,30 @@ semantics where their data permits it.
 (see: /projects/platform/ARCHITECTURE.md)
 (see: /projects/monolith/hikes/router.py)
 
+**Why (published snapshots).** Joe's [2026-11-10 decision on #7254](https://github.com/jomcgi-org/homelab/issues/7254#issuecomment-6762322227)
+retains whole-corpus, CDN-cached responses for fast user-facing delivery.
+The web app keeps snapshot loading rather than narrower per-request queries.
+`/app/stars` loads the materialized `/api/stars/sites` snapshot;
+`/app/stars/map` and `/app/stars/history-map` proxy the materialized
+`/api/stars/map` and `/api/stars/history-map` snapshots. `/app/hikes` loads
+`/api/hikes/walks`, the whole walk index with viable days. These backend
+`/api` paths are SSR-only and are not exposed directly on the public origin.
+The public app responses publish their contents to visitors.
+(see: /projects/monolith/frontend/src/routes/public/app/stars/+page.server.js)
+(see: /projects/monolith/frontend/src/routes/public/app/stars/map/+server.js)
+(see: /projects/monolith/frontend/src/routes/public/app/stars/history-map/+server.js)
+(see: /projects/monolith/frontend/src/routes/public/app/hikes/+page.server.js)
+
+Published sites, walks and historical map snapshots can be copied. Published
+history is not confidential. Continued refresh and unpublished accumulated
+data remain distinct from already-published history; retaining unpublished
+data does not protect fields already delivered to visitors. This decision
+accepts the existing publication contract and authorizes no additional data
+exposure. Technical copyability grants no permission to redistribute and no
+new licence. Independent source licensing and attribution obligations remain.
+The [connector's capped answers](../scotland-connector/ARCHITECTURE.md#contract)
+bound its answer size and scope and provide no protection for web-published data.
+
 **Why.** These data products share the monolith's typed data, composition,
 frontend, and operational controls, so splitting each into a service would add
 deployment boundaries without removing their shared storage dependency (ADR
@@ -2196,6 +2220,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |
