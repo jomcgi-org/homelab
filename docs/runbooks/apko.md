@@ -12,7 +12,8 @@ summary: apko.yaml, locks, and apko_image patterns (amd64 images)
 All container images in this repo are built with apko + rules_apko via the custom `apko_image` macro. Read `bazel/tools/oci/apko_image.bzl` first to understand the macro before wiring a new image.
 
 Builds and pushes happen in CI / via `ci test` remote execution (see
-`docs/agents/ci-triage.md` and the Commands section of `AGENTS.md`).
+`docs/agents/ci-triage.md` and the Commands section of
+`docs/agents/reference.md`).
 Locally you edit `apko.yaml` and BUILD files, regenerate locks when they change, and push.
 
 ## Architecture

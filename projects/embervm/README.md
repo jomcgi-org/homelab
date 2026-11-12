@@ -28,7 +28,7 @@ substrate:
 | [STPA.md](STPA.md) | The safety model: unsafe control actions and feedback that drive the system into a loss, with severity |
 | [deploy/README.md](deploy/README.md) | The GKE hub reference deployment: value layers, placement, store and read-only preflight |
 | [ARCHITECTURE.md, section 13](ARCHITECTURE.md#13-decision-history) | Why: each decision's status and where its rationale now lives (the `**Why.**` paragraph per section) |
-| [specs/](specs/) | TLA+ models (`adoption`, `bank_relight`, `quota`, `session_create`), run under TLC in the build |
+| [specs/](specs/) | TLA+ models of the concurrency-critical protocols, run under TLC in the build; [specs/README.md](specs/README.md) lists them |
 
 ## Layout
 
@@ -42,7 +42,11 @@ substrate:
 | `tokenbroker/`, `image/`, `scratch-prep/` | Token broker, base image build, scratch provisioning |
 | `xds/`      | Envoy endpoint publisher sidecar                                       |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |
-| `specs/`    | TLA+ models for the adoption, bank/relight, quota, and session-create protocols |
+| `specs/`    | TLA+ models of the concurrency-critical protocols |
+| `conformance/` | Conformance runner for the dev lane |
+| `dev/`      | Dev-lane values (`dev/deploy/`) and the Apple Silicon local harness (`dev/apple/`) |
+| `rootfs/`   | Rootfs chunk-sizing tools |
+| `stpa/`, `docs/drills/` | STPA model data and drill records |
 
 Everything builds in Bazel, including the Elixir control plane via a
 hermetic OTP toolchain with pinned hex dependencies. Images are apko-based;

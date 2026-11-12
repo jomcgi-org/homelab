@@ -2,7 +2,8 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
-the ten tracked specs are `adoption.tla`, `adoption_trace.tla`,
+the thirteen tracked specs are `adoption.tla`, `adoption_trace.tla`,
+`adoption_destroy.tla`, `destroy_contract.tla`, `admission.tla`,
 `bank_relight.tla`, `quota.tla`, `session_create.tla`,
 `generation_issuance.tla`, `stateful.tla`, `session_lineage.tla`,
 `warmth_gc.tla`, and `dual_wake.tla`. The directory also contains their registered

@@ -172,8 +172,8 @@ and Helm lint errors return nonzero.
 ## Tests
 
 `helm_template_test` and `helm_lint_test` are `sh_test`-backed and cached by
-Bazel on input hashes. Run remotely in BuildBuddy CI (see the root
-`AGENTS.md`). Template tests retain the ordered values-file hierarchy;
+Bazel on input hashes. Run remotely in BuildBuddy CI (see
+`docs/agents/reference.md`). Template tests retain the ordered values-file hierarchy;
 lint tests run Helm's strict validation.
 
 ## Scripts

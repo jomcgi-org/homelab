@@ -61,7 +61,7 @@ The established pattern (see `hikes/jobs.py`, `ships/retention.py`):
   in tests while Postgres is tz-aware. Assert `isinstance(value, datetime)`,
   not `value.tzinfo is not None`; coerce before comparing
   (`dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)`); serialize through
-  an `_as_utc`/`_iso` helper (see `ships/router.py`) so JSON and ETags match
+  `as_utc`/`iso` from `core.clock` (see `ships/router.py`) so JSON and ETags match
   across SQLite and Postgres.
 - `build_app()` calls `logging.basicConfig(force=True)`, which removes
   pytest's caplog handler: re-add it after `build_app`.

@@ -5,7 +5,9 @@ components used by EmberVM and its guest images:
 
 | Directory | Role |
 | --- | --- |
+| `bootenv/` | Boot-argument env codec shared by guest-init binaries. |
 | `egress-proxy/` | Applies the guest egress allowlist and injects credentials outside the microVM. |
+| `guestvolume/` | Linux guest volume mount helper shared by the Postgres and Python guest-inits. |
 | `guestvsock/` | Linux guest listener and accepted-file adapters, shared by Ping, Postgres, k3s, Shotter and the sandbox. |
 | `rootfs-builder/` | Exports OCI images into Firecracker root filesystems. |
 | `shim/` | Shared in-guest HTTP server (/invoke dispatch and the /shim/* control surface). |

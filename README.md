@@ -61,7 +61,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
 ├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
-├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
+├── firecracker/      #   Guest images and shared guest utilities used by EmberVM
 ├── gke-apps/         #   Active GKE Applications for app workloads
 ├── gke-cluster/      #   Hand-maintained ArgoCD root and parent Application for the GKE hub
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
@@ -69,7 +69,7 @@ bazel/                # Build infrastructure (rules, tools, images)
 docs/                 # Cross-domain documentation and runbooks
 ```
 
-See [AGENTS.md](AGENTS.md) for the rules every change follows and the map of where to look next. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
+See [AGENTS.md](AGENTS.md) for the rules every change follows and the [agent reference](docs/agents/reference.md) for commands and the map of where to look next. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
 
 ## What's next
 

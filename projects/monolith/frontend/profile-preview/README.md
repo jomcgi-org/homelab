@@ -69,10 +69,8 @@ require loaded map content, no overflow, one chrome/control, keyboard scheme
 changes without camera/filter/track loss, URL restoration, pan, zoom and
 attribution. Provider bytes can be relayed through the guest's curl egress;
 they are not replaced with a mock map. This requires public provider access
-and does not test real-host data or post-merge rollout. Selected reviewed
-captures are archived under `projects/monolith/dev/ships/evidence/`, following
-the existing `dev/grimoire/evidence/` convention. Other generated output stays
-outside tracked source. The PR links the archived files directly.
+and does not test real-host data or post-merge rollout. Generated output stays
+outside tracked source.
 
 ## Firecracker evidence
 

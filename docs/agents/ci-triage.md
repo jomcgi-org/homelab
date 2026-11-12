@@ -70,7 +70,7 @@ cause.** Do not raise infrastructure (BuildBuddy outages, flaky runners, RBE
 hiccups) until a real test failure has been ruled out.
 
 A green exit proves nothing on its own: judge a run by its `Executed N out of
-M tests` line (`AGENTS.md`, Commands).
+M tests` line (`docs/agents/reference.md`, Commands).
 
 ## Retrigger discipline
 
@@ -116,8 +116,9 @@ share the remote cache.
   the digests pinned in the published chart against what the run built, because
   "nothing to publish" and "failed to notice a change" print almost the same
   thing.
-- **Generated files drifting.** `ci regen` runs the committed generators (home
-  cluster kustomization, posts manifest, routes, orchestrator bundle). The
+- **Generated files drifting.** `ci regen` runs the committed generators
+  (push-all image list, guest environment docs, routes, posts manifest,
+  orchestrator bundle). The
   repo-docs and public docs manifests are genrule outputs (#6446); a
   `repo-docs coverage: FAIL` from `validate-generate-scripts.sh` means a tracked
   doc sits in a package with no `repo_docs` filegroup, and its message says
