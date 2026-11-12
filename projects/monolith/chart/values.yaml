@@ -1869,6 +1869,11 @@ platformAuth:
   enrollmentFlowUrl: ""
 
 grimoire:
+  campaignCreation:
+    # Staged only. Enable and select verified creator mailboxes separately.
+    restrictionEnabled: false
+    # Empty denies all creation when restrictionEnabled is true.
+    allowedEmails: []
   kg:
     # Session-end facts queue regardless; this separate rolling daily cap gates
     # Luna claims. Enable only after reviewing real-session operational checks.

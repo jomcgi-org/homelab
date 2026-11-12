@@ -80,6 +80,33 @@ def h(user):
     return {"test-subject": user}
 
 
+def test_creation_restriction_preserves_registered_player_link_acceptance(
+    setup, monkeypatch
+):
+    client, engine, cid = setup
+    monkeypatch.setenv("GRIMOIRE_CREATION_RESTRICTION_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_CREATOR_EMAILS", "")
+    # Empty creation authority does not remove existing owners' link authority.
+    link = issue(client, cid).json()
+    assert capability(client, "redeem", link["token"], "other").status_code == 403
+    assert capability(client, "redeem", link["token"], "player").json() == {
+        "campaign_id": cid,
+        "status": "accepted",
+    }
+    lobby = client.get("/api/grimoire/lobby", headers=h("player"))
+    assert lobby.status_code == 200
+    assert lobby.json()["campaigns"][0]["role"] == "player"
+    assert lobby.json()["can_create_game"] is False
+    assert (
+        client.post(
+            "/api/grimoire/campaigns", headers=h("player"), json={"name": "Denied"}
+        ).status_code
+        == 403
+    )
+    with Session(engine) as session:
+        assert len(session.exec(select(CampaignMember)).all()) == 2
+
+
 def issue(client, cid, user="owner", email="player@example.test", **options):
     return client.post(
         f"/api/grimoire/campaigns/{cid}/join-links",

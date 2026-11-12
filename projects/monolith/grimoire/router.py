@@ -52,6 +52,7 @@ from sqlmodel import Session, or_, select
 
 from grimoire import aliases, images, library
 from grimoire.access import (
+    can_create_game,
     get_authenticated_email,
     get_authenticated_identity,
     get_game_creator_email,
@@ -3992,19 +3993,11 @@ def get_lobby(
         )
         .order_by(CampaignInvitation.created_at)
     ).all()
-    from auth.api import platform_enforcement_enabled, require_application_permission
-
     from grimoire.feedback import new_feedback_count
 
     operator = principal.has_group("operators")
-    can_create = True
-    if platform_enforcement_enabled():
-        try:
-            require_application_permission(session, principal, "grimoire.create_game")
-        except HTTPException:
-            can_create = False
     return LobbyView(
-        can_create_game=can_create,
+        can_create_game=can_create_game(session, principal),
         invitation_enrollment_enabled=enrollment_enabled(),
         can_administer_accounts=operator,
         new_feedback_count=new_feedback_count(session) if operator else 0,

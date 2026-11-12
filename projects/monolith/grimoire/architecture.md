@@ -786,7 +786,8 @@ Cloudflare identity. An email collision between established identities fails
 closed and requires explicit operator reconciliation; signing in through a
 new provider never silently takes over another identity's memberships.
 
-Every registered user can create a campaign and becomes its owner and initial
+With platform enforcement off, registered users can create campaigns unless the
+staged local creation restriction is enabled. Creators become owner and initial
 DM. Owners invite registered players by exact email, without a user directory.
 Recipients must accept in their lobby before any campaign data becomes
 available. Decline, cancellation and membership revocation are durable;
@@ -794,6 +795,40 @@ re-inviting creates a fresh invitation ID so an old acceptance cannot be
 replayed. Ownership controls invitations and membership removal; the existing
 DM role continues to control gameplay. Membership admission uses accepted
 invitations or campaign join links; the direct provisioning endpoint is removed.
+
+### Staged campaign creation policy
+
+`grimoire.campaignCreation.restrictionEnabled` defaults to false in the chart;
+no deployment overlay enables it. It supplies
+`GRIMOIRE_CREATION_RESTRICTION_ENABLED`. When true and platform enforcement is
+off, `grimoire.campaignCreation.allowedEmails` (default `[]`, supplied as the
+comma-separated `GRIMOIRE_CREATOR_EMAILS`) restricts creation to verified
+mailboxes. Both configuration entries and signed emails are stripped and
+lowercased. An empty allowlist denies every creator. No live identity is seeded.
+Mailbox proof is `email_verified` or the configured trusted Cloudflare Access
+issuer, as for legacy account linking. Request fields, proxy email projections,
+campaign ownership, membership and roles cannot grant creation rights.
+
+The mutation dependency and lobby `can_create_game` use one policy. The existing
+frontend capability handling hides creation when denied. With global platform
+enforcement on, `grimoire.create_game` remains required regardless of the local
+switch or allowlist; the local list never substitutes for a platform grant.
+SQL visibility and audience predicates, admin invitations and registered-player
+single-recipient links are unchanged. A recipient must still sign in before the
+DM can link them.
+
+**Why.** A local allowlist bounds creation without enabling platform enrollment
+or duplicating the SQL visibility rules. The active platform permission check
+stays authoritative when global enforcement is on.
+
+This is repository-only staging for #7461. Activation and creator selection need
+a fresh decision from Joe. Authentik, credentials, Discord registration,
+1Password provisioning, source enablement and disposable-account tests remain
+human-owned. Operational acceptance remains on #7461. Within 72 hours after
+separately authorized landing, the delivery owner must record the CI-published
+monolith chart version containing this change and a `verify_deployment` result
+of `verified`, including its live revision and checks. That rollout check does
+not satisfy the human-owned activation checklist.
 
 The campaign DM assigns characters with
 `PUT /campaigns/{campaign_id}/members/{member_id}/character`: supply either
