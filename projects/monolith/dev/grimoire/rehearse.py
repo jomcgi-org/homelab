@@ -1672,13 +1672,14 @@ def main():
                 "Invited players accept into a new campaign; player creates Nyx and DM creates and assigns Wren"
             )
             for player, name, class_name in (
-                (a, "Nyx", "ranger"),
-                (b, "Wren", "fighter"),
+                (a, "Nyx", "Ranger"),
+                (b, "Wren", "Fighter"),
             ):
                 player.goto(f"{LOBBY}/sheets")
                 sheet = player.get_by_role("region", name=name, exact=True)
-                field(sheet, "Ancestry").fill("Human")
-                field(sheet, "Class").fill(class_name)
+                # Ancestry and class are picked from the rules corpus.
+                choose(sheet, "Ancestry", "Human")
+                choose(sheet, "Class", class_name)
                 for ability, score in (
                     ("STR", "14"),
                     ("DEX", "14"),
