@@ -1632,6 +1632,8 @@ def admission_eligible(
     *,
     task_class: str = DEFAULT_TASK_CLASS,
     repo: str | None = None,
+    receipt=None,
+    session=None,
 ) -> bool:
     """Whether admit_next could ever admit a queued receipt for this issue.
 
@@ -1641,6 +1643,11 @@ def admission_eligible(
     the policy allowlist; an intake receipt qualifies the same way, or by
     intake authorship while intake is enabled.
     """
+    from factory.orchestration import operator_readmission
+
+    if actor == operator_readmission.ACTOR:
+        with _read_session(session) as db:
+            return operator_readmission.authorized(db, receipt)
     if actor == "factory:backlog-refill":
         from factory.orchestration.backlog_refill_policy import normalize
 
@@ -1726,6 +1733,7 @@ def execution_slot_holders(
                 get("actor"),
                 task_class=get("task_class"),
                 repo=get("repo"),
+                receipt=row,
             )
         )
 
@@ -2751,6 +2759,7 @@ def _snapshot(
             "issue_number",
             "work_item_id",
             "generation",
+            "recurrence_key",
             "title",
             "url",
             "actor",

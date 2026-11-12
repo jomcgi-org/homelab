@@ -556,7 +556,12 @@ def evaluate_factory(
                 continue
             try:
                 eligible = admission_eligible(
-                    policy, issue, actor, task_class=task_class, repo=repo
+                    policy,
+                    issue,
+                    actor,
+                    task_class=task_class,
+                    repo=repo,
+                    receipt={"id": rid, "actor": actor},
                 )
             except Exception:  # noqa: BLE001 - a policy it cannot read admits nothing
                 eligible = False

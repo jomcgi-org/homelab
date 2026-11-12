@@ -984,7 +984,13 @@ def _requeue_blocker(db, row: FactoryReceipt, ignore_request=None) -> str | None
 
     # Keep rebriefs aligned with bounded natural and selected admission.
     if not admission_eligible(
-        policy, row.issue_number, row.actor, task_class=row.task_class, repo=row.repo
+        policy,
+        row.issue_number,
+        row.actor,
+        task_class=row.task_class,
+        repo=row.repo,
+        receipt=row,
+        session=db,
     ):
         return (
             "this issue is neither in the policy allowlist nor discoverable "

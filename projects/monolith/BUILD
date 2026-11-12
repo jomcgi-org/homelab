@@ -5021,6 +5021,27 @@ py_test(
 )
 
 py_test(
+    name = "swarm_operator_readmission_test",
+    srcs = ["factory/orchestration/operator_readmission_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "swarm_operator_readmission_postgres_test",
+    srcs = [
+        "factory/orchestration/operator_readmission_postgres_test.py",
+        "factory/orchestration/operator_readmission_test.py",
+    ],
+)
+
+py_test(
     name = "swarm_factory_intake_test",
     srcs = ["factory/orchestration/factory_intake_test.py"],
     imports = ["."],

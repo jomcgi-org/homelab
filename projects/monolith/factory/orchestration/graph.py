@@ -218,6 +218,22 @@ def load_graph(
         nodes = [
             _node_fields(node) for node in _visible_nodes(db, task_id, selected_version)
         ]
+        # An exact operator recurrence retains a conservative prior-attempt debt.
+        # Keep the immutable admission cap in both readiness and physical dispatch,
+        # including fixed review nodes and renamed nodes in later plan revisions.
+        bounds = db.exec(
+            select(SwarmPlanVersion).where(
+                SwarmPlanVersion.task_id == task_id,
+                SwarmPlanVersion.op == "operator_readmission_bounds",
+                SwarmPlanVersion.version <= selected_version,
+            )
+        ).all()
+        for bound in bounds:
+            cap = json.loads(bound.change_json)["max_attempts"]
+            nodes = [
+                {**node, "max_attempts": min(node["max_attempts"], cap)}
+                for node in nodes
+            ]
         return project(db, task_id, nodes, selected_version)
 
 
@@ -1526,7 +1542,7 @@ def admit_dispatch(
             n for n in load_graph(task_id, session=db) if n["node_key"] == node_key
         )
         grant = projected.get("evidence_continuation")
-        limit = node.max_attempts
+        limit = projected["max_attempts"]
         if grant:
             try:
                 evidence_continuation.validate_dispatch(db, task_id, projected, context)

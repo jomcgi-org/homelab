@@ -924,3 +924,47 @@ delivery outside the boundary records a `landing_authorization_wait` whose
 reason usually starts `delivery_landing_`, and still needs
 `factory_release_landing_hold`. Activation dispatches nothing and is not
 evidence that any delivery landed.
+
+## Re-admit one terminal-history issue
+
+`factory_readmit_issue` is a staged standing-human control. Deployment applies
+nothing. Its `preview` operation is the read-only eligibility/status check for
+one exact repository and issue, including issues absent from `issue_numbers`.
+The native `factory_status.control_catalog` reports registration, argument names,
+operations and schema hash. There is no delegated or public control.
+
+Call preview with `repo`, `issue_number`, an operator `reason` and a stable
+`request_key`. It reads the fresh open issue, configured intake and excluded
+labels, mandatory human ownership, canonical/alias/legacy receipts and execution
+ledgers. A successful response contains `preview_sha256`, prior task identities,
+attempt debt, accounting, remaining allowance and rolling application quota.
+A refusal names its blocker. Neither response creates work or charges quota.
+
+To queue that exact recurrence, call `apply` with identical arguments and the
+returned `expected_preview_sha256`. Apply rechecks the evidence under the existing
+control lock. The audit binds the authenticated operator, reason, request,
+lineage and fresh recurrence key. Exact actor/key/argument replay returns its
+original result; changed arguments refuse. The shared repository limit is 24
+successful applications in the preceding 24 hours, across operators and keys.
+An application exactly 24 hours old leaves that window.
+
+The new receipt retains policy generation and receives no broad issue-selection
+or landing permission. Natural discovery still excludes cancelled, held and
+failed-refinement history. SQL selection, Python queue projections, rebrief and
+final admission require the exact audit-backed recurrence. Final admission
+re-reads GitHub and protected history. Lane capacity, enabled repositories,
+funding and ordinary admission controls still apply.
+
+Landing holds always refuse, including holds on an older advisory alias beside
+cancelled history. Human handoffs, active or queued owners, unsettled tasks,
+uncertain starts and existing recovery authority require their existing owner.
+This control never releases them. Prior records remain unchanged. It subtracts
+prior work/planner turns and conservatively charges the sum of each prior task’s largest node
+attempt lineage to every new node, including renamed and fixed review nodes.
+Exhausted attempt or turn bounds refuse. This may decline work whose original
+graph could be resumed by a narrower recovery owner; it grants no new recovery
+allowance. Prior model restrictions and conductor gates carry forward.
+
+Operational acceptance remains on #7741: verified monolith and monolith-agents
+rollouts, followed by read-only previews for its listed issues. This repository
+change re-admits none of those live issues.

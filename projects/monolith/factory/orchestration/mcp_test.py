@@ -642,6 +642,7 @@ def test_factory_tools_are_registered():
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_configure_owner_prs",
+        "factory_readmit_issue",
         "factory_release_owner_pr_hold",
         "factory_request_landing_rereview",
         "factory_reconcile",
@@ -672,6 +673,7 @@ def test_status_distinguishes_native_registration_from_caller_catalog(monkeypatc
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_configure_owner_prs",
+        "factory_readmit_issue",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -1857,6 +1859,27 @@ def test_escalations_payload_passes_through_an_uninitialised_factory(db):
     "name,args",
     [
         ("factory_submit_issue", {"repo": "owner/repo", "issue_number": 7}),
+        (
+            "factory_readmit_issue",
+            {
+                "operation": "preview",
+                "repo": "owner/repo",
+                "issue_number": 7,
+                "reason": "reason",
+                "request_key": "readmission",
+            },
+        ),
+        (
+            "factory_readmit_issue",
+            {
+                "operation": "apply",
+                "repo": "owner/repo",
+                "issue_number": 7,
+                "reason": "reason",
+                "request_key": "readmission",
+                "expected_preview_sha256": "a" * 64,
+            },
+        ),
         (
             "factory_control",
             {"action": "stop", "request_key": "stop", "expected_version": 1},
@@ -5113,3 +5136,30 @@ def test_existing_refill_name_dispatches_only_owner_pr_target(monkeypatch):
     )
     assert refused["reason"] == "owner_pr_target_arguments_invalid"
     assert len(calls) == 1
+
+
+def test_readmission_discovery_and_owner_authentication(monkeypatch):
+    from factory.orchestration import operator_readmission
+
+    calls = []
+    monkeypatch.setattr(
+        operator_readmission,
+        "control",
+        lambda *args: calls.append(args) or {"ok": True, "eligible": True},
+    )
+    principal = _principal()
+    result = _as(
+        principal,
+        lambda: mcp.factory_readmit_issue(
+            "preview", "owner/repo", 7777, "reason", "key"
+        ),
+    )
+    assert result["ok"]
+    assert calls == [(principal, "preview", "owner/repo", 7777, "reason", "key", None)]
+    tool = asyncio.run(mcp.mcp.get_tool("factory_readmit_issue"))
+    properties = tool.parameters["properties"]
+    assert properties["operation"]["enum"] == ["preview", "apply"]
+    assert "actor" not in properties and "principal" not in properties
+    assert (
+        properties["expected_preview_sha256"]["anyOf"][0]["pattern"] == "^[0-9a-f]{64}$"
+    )

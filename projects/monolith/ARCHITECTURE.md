@@ -349,6 +349,34 @@ This section records monolith ownership, trust boundaries, acceptance and ration
 The Conductor owns operator-facing coordination, the policy-pinned Planner proposes
 the task graph, and the Executor dispatches admitted nodes. Role names grant no authority.
 
+### Exact operator issue recurrence
+
+`factory_readmit_issue` previews and applies one existing open intake-labelled
+issue through the private standing-human control surface. Deployment applies
+nothing. Each successful application creates an explicit `recurrence_key` in the
+current policy generation and records its authenticated operator, reason and
+prior lineage in the existing audit. The shared repository bound is 24 successful
+applications per rolling 24 hours. Preview and refusal consume none.
+
+**Why.** Extending `issue_numbers` would preserve selection permission beyond the
+specific recurrence. The audit instead authorizes one exact receipt, checked by
+SQL candidates and Python queue/rebrief eligibility. Apply and final admission
+recheck fresh issue state, history and holds under the existing control lock.
+Cancelled and failed-refinement history remain excluded from natural discovery.
+Landing holds, human ownership, unsettled execution and recovery restrictions
+remain binding across canonical, alias and legacy identities.
+
+Prior receipt/task/run/start records and standing landing grants remain unchanged.
+The new pinned envelope subtracts prior work/planner turns. The sum of each prior task’s largest
+node attempt lineage reduces every fresh node's cap, including renamed and fixed
+review nodes, through an immutable graph admission record. Exhausted bounds
+refuse. This conservative charge can require the original recovery owner even
+when a narrower original graph might retain room. It avoids granting another
+attempt allocation through recurrence. Model restrictions and conductor gates
+carry forward. The [operator contract](factory/MCP.md#re-admit-one-terminal-history-issue)
+records replay, quota and refusal semantics. Rollout and read-only checks for the
+listed live issues remain on #7741; no live re-admission is part of this delivery.
+
 ### Ownership and trust
 
 Factory owns orchestration, session execution, recovery and private projections.
@@ -485,6 +513,7 @@ and the documented 72-hour measure and stop-condition verdict.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Exact standing-operator recurrence for ready issues fenced by terminal history | #7741; recorded staged Conductor rescope | #7741 | repository-only control; deployment applies nothing; verified rollouts and read-only eligibility checks remain on the issue |
 | Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |

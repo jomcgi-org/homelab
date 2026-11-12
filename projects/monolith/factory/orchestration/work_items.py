@@ -333,6 +333,7 @@ def _mint_or_sync_from_github_locked(
     *,
     actor: str,
     trusted_authors: frozenset[str] | None = None,
+    backfill_receipts: bool = True,
 ) -> tuple[WorkItem | None, str]:
     """Apply one snapshot after its source fence and item lock are held."""
     number = _issue_number(issue)
@@ -368,15 +369,16 @@ def _mint_or_sync_from_github_locked(
             cause_ref=item.source_ref,
             stated_reason="minted from GitHub issue",
         )
-        db.exec(
-            update(FactoryReceipt)
-            .where(
-                FactoryReceipt.repo == repo,
-                FactoryReceipt.issue_number == number,
-                FactoryReceipt.work_item_id.is_(None),
+        if backfill_receipts:
+            db.exec(
+                update(FactoryReceipt)
+                .where(
+                    FactoryReceipt.repo == repo,
+                    FactoryReceipt.issue_number == number,
+                    FactoryReceipt.work_item_id.is_(None),
+                )
+                .values(work_item_id=item.id)
             )
-            .values(work_item_id=item.id)
-        )
         return item, "minted"
 
     changes: dict[str, Any] = {}
@@ -457,6 +459,7 @@ def mint_or_sync_from_github(
     *,
     actor: str,
     trusted_authors: frozenset[str] | None = None,
+    backfill_receipts: bool = True,
     source_ordered: bool = False,
     source_ref: str | None = None,
     allow_pull_request: bool = False,
@@ -501,6 +504,7 @@ def mint_or_sync_from_github(
         item,
         actor=actor,
         trusted_authors=trusted_authors,
+        backfill_receipts=backfill_receipts,
     )
 
 

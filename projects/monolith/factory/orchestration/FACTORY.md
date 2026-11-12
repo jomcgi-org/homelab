@@ -113,6 +113,21 @@ Issue labels select the class: `security-finding` and `needs-thought` give `judg
 
 A refine task runs one planner-class node, at most two attempts and no DAG, posts one `## Agent brief` comment and reaches one of five verdicts: `agent-ready`, `defer` (`needs-thought`), `needs-human` (`recommend:` plus one question), `reject` (`wontfix`) or `stale`; the last two close as `not_planned`. The server settles from a re-read of the issue, never from the node artifact alone. A new `leave_unmerged` hold needs server-observed operator provenance when `FACTORY_PLANNER_HOLD_REFUSAL_ENABLED` is on.
 
+### Explicit operator issue recurrence
+
+The staged private `factory_readmit_issue` preview/apply control authorizes one
+exact open issue outside `issue_numbers`, with a fresh recurrence key in the
+existing generation. It has no automatic producer or deployment activation.
+The [operator contract](../MCP.md#re-admit-one-terminal-history-issue) specifies
+authentication, replay and the 24-success rolling repository bound. SQL selection,
+Python eligibility, queue projections, rebrief and final admission verify the
+exact server audit. Prior records, cumulative accounting and landing authorities
+remain unchanged. Prior turns reduce the new envelope; the sum of each prior task’s largest node
+attempt lineage reduces every fresh node's cap. Exhausted bounds, landing holds,
+human handoffs, active owners, unknown execution and existing recovery authority
+refuse. Natural discovery retains its cancelled and failed-refinement fences.
+Rollout and read-only issue eligibility acceptance remain on #7741.
+
 ### GitHub read pacing
 
 The factory GitHub reader shares a monotonic cooldown across callers and repositories after an observed rate limit or a response consuming the last request. Calls during it fail before network I/O and supply no cached ownership evidence.

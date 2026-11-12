@@ -869,6 +869,7 @@ async def _control_catalog() -> dict:
         "factory_configure_refill",
         "factory_configure_problem_issues",
         "factory_configure_owner_prs",
+        "factory_readmit_issue",
         "factory_amend_policy",
         "factory_reconcile",
         "factory_continue_evidence",
@@ -1499,6 +1500,49 @@ async def factory_submit_issue(
     return await asyncio.to_thread(
         _submit_issue, repo, issue_number, generation, principal
     )
+
+
+@mcp.tool
+async def factory_readmit_issue(
+    operation: Literal["preview", "apply"],
+    repo: str,
+    issue_number: Annotated[MCPInteger, Field(gt=0, le=2**31 - 1)],
+    reason: Annotated[str, Field(min_length=1, max_length=2000)],
+    request_key: Annotated[str, Field(min_length=1, max_length=200)],
+    expected_preview_sha256: Annotated[
+        str | None, Field(pattern=r"^[0-9a-f]{64}$")
+    ] = None,
+) -> dict:
+    """Preview eligibility or queue one exact terminal-history issue recurrence.
+
+    Standing human operators only; no delegated authority. Preview reads fresh
+    GitHub state and protected history without creating work or charging quota.
+    Apply binds the preview, operator, reason and stable request key. At most 24
+    successful applications per repository per rolling 24 hours across operators.
+    Cancelled or failed-refinement history can qualify outside issue_numbers.
+    Landing holds, human handoffs, active owners, unresolved execution and spent
+    attempt/recovery bounds refuse. No policy, generation or landing grant changes.
+    Deployment applies nothing automatically. Normal admission controls still bind.
+    """
+    principal = current_principal()
+    refusal = _refuse(principal)
+    if refusal is not None:
+        return refusal
+    from factory.orchestration import operator_readmission
+
+    try:
+        return await asyncio.to_thread(
+            operator_readmission.control,
+            principal,
+            operation,
+            repo,
+            issue_number,
+            reason,
+            request_key,
+            expected_preview_sha256,
+        )
+    except ValueError as exc:
+        return {"ok": False, "reason": str(exc)}
 
 
 def _request_control(

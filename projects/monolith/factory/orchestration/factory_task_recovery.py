@@ -48,6 +48,8 @@ def _capacity(db, control, row):
             row.actor,
             task_class=row.task_class,
             repo=row.repo,
+            receipt=row,
+            session=db,
         )
     ):
         raise ValueError("recovery_admission_disabled")

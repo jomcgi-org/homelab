@@ -1,4 +1,4 @@
-"""GitHub receipt deduplication and single-task admission, without network calls."""
+"""GitHub receipt deduplication and serialized single-task admission."""
 
 from __future__ import annotations
 
@@ -399,8 +399,14 @@ def open_lanes(policy: dict, rows, lanes=LANES, *, unresolved_task_ids=None) -> 
 
 def _eligible_clause(policy: dict):
     """The SQL twin of admission_eligible for the queued-receipt query."""
-    eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"]) & (
-        FactoryReceipt.actor != "factory:backlog-refill"
+    from factory.orchestration import operator_readmission
+
+    eligible = or_(
+        FactoryReceipt.issue_number.in_(policy["issue_numbers"])
+        & FactoryReceipt.actor.not_in(
+            ("factory:backlog-refill", operator_readmission.ACTOR)
+        ),
+        operator_readmission.authority_clause(),
     )
     intake = intake_policy(policy)
     if intake["enabled"]:
@@ -474,6 +480,7 @@ def _audit_throttled(
     *,
     work_item_id: int | None = None,
     blocked_by: list[int] | None = None,
+    reason: str | None = None,
 ) -> None:
     """Write one audit per hour, throttled within a locked session.
 
@@ -507,6 +514,8 @@ def _audit_throttled(
             last_at = last_at.replace(tzinfo=timezone.utc)
     if last_at is None or _now() - last_at >= timedelta(seconds=IDLE_AUDIT_SECONDS):
         kwargs = {"receipt_id": receipt_id}
+        if reason is not None:
+            kwargs["reason"] = reason
         if work_item_id is not None:
             kwargs["work_item_id"] = work_item_id
         if blocked_by is not None:
@@ -748,7 +757,24 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         recovery_refusal = None
         from factory.orchestration.factory_rollback_runtime import admission_identity
 
+        from factory.orchestration import operator_readmission
+
+        readmission_policy = None
         for candidate in candidates:
+            if candidate.actor == operator_readmission.ACTOR:
+                try:
+                    readmission_policy = operator_readmission.admission_policy(
+                        db, control, candidate
+                    )
+                except ValueError as exc:
+                    _audit_throttled(
+                        db,
+                        actor,
+                        "operator_readmission_refused",
+                        receipt_id=candidate.id,
+                        reason=str(exc),
+                    )
+                    continue
             if candidate.actor in (
                 INTAKE_ACTOR,
                 "factory:reconciler",
@@ -916,7 +942,11 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # grant overlay prices only this task; it is never pinned, and
         # for a single-entry primary policy the pinned value is the
         # global policy unchanged.
-        pinned_policy = repo_effective_policy(policy, row.repo)
+        pinned_policy = (
+            readmission_policy
+            if row.actor == operator_readmission.ACTOR
+            else repo_effective_policy(policy, row.repo)
+        )
         effective_policy = {
             **pinned_policy,
             **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
@@ -962,6 +992,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         )
         db.add(task)
         db.flush()
+        if row.actor == operator_readmission.ACTOR:
+            operator_readmission.pin_bounds(db, task_id, pinned_policy)
         from knowledge.api import prepare_recall
 
         prepare_recall(db, task.task_text)
