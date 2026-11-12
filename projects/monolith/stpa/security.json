@@ -5,7 +5,7 @@
     "summary": "Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod.",
     "designed": "A narrower-than-operators scope for the production-moving MCP tools (#6475), principal attribution on MCP-driven cluster mutations (#6476), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.",
-    "note": "Refreshed for the operators-group MCP gate (core/mcp_policy.py) and kargo_promote (#6458/#6459); other findings retain their earlier review stamp."
+    "note": "Bounded #7097 corrections against 8e4107491 (2026-10-19): the named closed trackers, MCP boundaries and public-content checks. No fresh live validation; existing safeguard statuses and unrelated findings retain their earlier review stamp."
   },
   "losses": [
     {
@@ -33,18 +33,17 @@
     {
       "key": "unrestricted-tool-visibility",
       "view": "logical",
-      "statement": "A monolith MCP tool is callable by a principal outside the operators group: GroupPolicyMiddleware denies such calls in prod and no tool carries mcp:public, but an absent bearer resolves to an anonymous principal rather than a 401, anonymous tools/list returns the full catalogue by design, and one env var (MCP_GROUP_POLICY_ENFORCED=false) reverts the gate to allow-all without a redeploy",
+      "statement": "A non-operator reaches a shared MCP tool if MCP_GROUP_POLICY_ENFORCED is disabled in the process environment; the default-on GroupPolicyMiddleware denies that call and no tool carries mcp:public. Anonymous tools/list returns the catalogue without authorizing calls (projects/monolith/core/mcp_policy.py)",
       "losses": [
         "L.unauthorized-access"
       ],
       "maturity": "built",
-      "status": "enforced-prod",
-      "issue": "#4569"
+      "status": "enforced-prod"
     },
     {
       "key": "unredacted-public-doc",
       "view": "logical",
-      "statement": "The docs/posts manifest generators copy an allowlisted document's full body into the public site verbatim, gating only on which path may be published, never on what the content contains, so an internal-only identifier (a cluster-internal hostname, a secret env var name) left in a published project's README/ARCHITECTURE/STPA reaches the public docs route",
+      "statement": "An allowlisted document leaks an internal identifier outside check_public_content's fixed marker set; the generators fail on known markers, but unmatched identifiers still publish verbatim (projects/monolith/knowledge/tools/public_content.py)",
       "losses": [
         "L.secret-exposure"
       ],
@@ -197,14 +196,13 @@
       "view": "logical",
       "control_action": "docs.publish",
       "guideword": "providing",
-      "condition": "A document is added to an allowlisted path and the generator publishes it unreviewed for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments); internal identifiers not matching these markers still pass through",
+      "condition": "A document added to an allowlisted path contains an internal identifier outside the content gate's fixed marker set; the generator rejects known markers but publishes unmatched content verbatim",
       "severity": "medium",
       "hazards": [
         "unredacted-public-doc"
       ],
       "status": "enforced-prod",
-      "issue": "#5275",
-      "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:128"
+      "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:149"
     },
     {
       "key": "shotter.capture.providing",
@@ -218,7 +216,6 @@
         "private-capture-retained"
       ],
       "status": "enforced-prod",
-      "issue": "#4569",
       "evidence": "projects/monolith/shotter/mcp.py:123"
     },
     {
@@ -233,7 +230,6 @@
         "sandbox-credential-egress"
       ],
       "status": "enforced-prod",
-      "issue": "#4569",
       "evidence": "projects/monolith/sandbox/mcp.py:15"
     },
     {
@@ -262,7 +258,6 @@
         "unrestricted-tool-visibility"
       ],
       "status": "enforced-prod",
-      "issue": "#4569",
       "evidence": "projects/monolith/factory/execution/mcp.py:1580"
     },
     {
@@ -276,7 +271,6 @@
         "unrestricted-tool-visibility"
       ],
       "status": "enforced-prod",
-      "issue": "#4569",
       "evidence": "projects/monolith/agent/mcp.py:380"
     },
     {
@@ -301,14 +295,13 @@
       "to": "public-frontend",
       "signal": "allowlisted document content published to public site",
       "guideword": "unauthorized-source",
-      "condition": "A document is added to an allowlisted path and the generator publishes it unreviewed for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments); internal identifiers not matching these markers still pass through",
+      "condition": "A document added to an allowlisted path contains an internal identifier outside the content gate's fixed marker set; the generator rejects known markers but publishes unmatched content verbatim",
       "severity": "medium",
       "hazards": [
         "unredacted-public-doc"
       ],
       "status": "enforced-prod",
-      "issue": "#5275",
-      "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:128"
+      "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:149"
     },
     {
       "key": "sandbox-dedupe.stale",
@@ -376,8 +369,10 @@
   "open_questions": [
     "structure gap: k8s.mutate is labelled ArgoCD sync only, and there is no control action for kargo_promote (private-binary to a Kargo Promotion) or node for the GroupPolicyMiddleware operators gate; this lens folds kargo_promote into k8s.mutate.providing until the logic lens models them.",
     "Does Kargo's admission webhook itself refuse a Promotion for Freight not yet available to the Stage, so a holder of the monolith ServiceAccount token (bypassing cluster/kargo.py plan_promotion) cannot promote unverified Freight into production?",
-    "The monolith-agents MCP surface (projects/monolith/app/agents_main.py) rejects anonymous callers but applies no operators gate; should any authenticated token reach its board and knowledge write tools?",
-    "When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?",
+    "The agent surface admits non-anonymous callers to knowledge tools, with caller-scoped search; board tools additionally require their enable flag and a trusted server binding, and Kubernetes tools require standing kg-agent-sa in kg-agents. Should the knowledge reporting tools have a narrower grant? (app/agents_main.py, knowledge/retrieval_policy.py, knowledge/board.py, agent_kubernetes/mcp.py)",
+    "What object-level authorization should constrain direct get_note and monolith_agent_detail reads by an admitted operator? search_knowledge already filters caller scopes; direct note and session-result reads do not. This residual has no open tracker here after #4569 closed as consolidated into #5573 (knowledge/mcp.py, factory/execution/mcp.py).",
+    "The public-content gate closed #5275, but unmatched internal identifiers still publish verbatim; that residual has no open tracker here (knowledge/tools/public_content.py).",
+    "When will the staged native default-deny egress NetworkPolicy (#5277) be validated and activated for the private pod's open-ended cluster and internet reach? #3897 completed repository-only default-off policy support.",
     "Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?",
     "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?"
   ],

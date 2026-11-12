@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 3d874faa3._
+_Reviewed against commit 8e4107491 (2026-10-19); listed issue states checked the same day._
 
 Open security findings across everything the cluster hosts, ranked.
 The live list is the
@@ -29,7 +29,7 @@ graph LR
     GH["GitHub<br/>PRs, dependencies"] --> CI["CI<br/>BuildBuddy runners,<br/>merge queue"]
     CFE --> CFD
     CI -- "publishes charts and images;<br/>ArgoCD pulls" --> K8S
-    subgraph K8S ["Cluster (Cilium, Kyverno, ArgoCD)"]
+    subgraph K8S ["GKE hub (Dataplane V2, Kyverno, ArgoCD)"]
         CFD["cloudflared"] --> GW["Envoy Gateway"]
         GW --> PUB["Public tier<br/>jomcgi.dev, monolith-public"]
         GW --> PRIV["Private tier<br/>private.jomcgi.dev<br/>Cloudflare Access + authentik"]
@@ -55,6 +55,8 @@ graph LR
 ## Open findings
 
 Ranked by what an attacker gets. Each issue holds the detail.
+Closed trackers leave this index even when closed without remediation;
+residual concerns remain in the scoped security and MCP documentation.
 
 1. **A Firecracker escape is not contained in production**
    ([#5255](https://github.com/jomcgi-org/homelab/issues/5255)).
@@ -69,42 +71,27 @@ Ranked by what an attacker gets. Each issue holds the detail.
    channels between co-resident guests are an accepted risk: nothing pins
    a guest to cores or isolates SMT siblings. Whether the Spot brick
    nodes run SMT is set in gcloud, not in git, and is unverified.
-2. **Any valid token reaches every MCP tool**
-   ([#4569](https://github.com/jomcgi-org/homelab/issues/4569)).
-   The monolith verifies who is calling; no tool then checks whether
-   that caller should reach it. Finding 1 of the
-   [monolith STPA security lens](../projects/monolith/STPA.md).
-3. **A compromised public-tier pod can reach every in-cluster endpoint**
+2. **A compromised public-tier pod can reach every in-cluster endpoint**
    ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
    The destination-scoped Cilium egress template was removed by #5816. It
    never enforced on the GKE hub, which exposes no Cilium policy CRD. No
    egress policy renders for the public tier there; replacement enforcement
    remains tracked in #5276.
-4. **The private monolith pod has no egress policy at all**
+3. **The private monolith pod has no enforced egress policy**
    ([#5277](https://github.com/jomcgi-org/homelab/issues/5277)).
-   The pod holding every backend secret can send anywhere the node
-   can reach.
-5. **One storage credential can delete any tenant's artifacts**
+   The native policy is built but disabled in the hub values; the pod
+   holding every backend secret can send anywhere the node can reach.
+4. **One storage credential can delete any tenant's artifacts**
    ([#4691](https://github.com/jomcgi-org/homelab/issues/4691)).
    Encryption stops reads of tenant state; shared base images stay
    plaintext, and deletes and overwrites are open to every holder of
    the shared credential.
-6. **The egress allowlist is shared across every EmberVM workload**
+5. **The egress allowlist is shared across every EmberVM workload**
    ([#5320](https://github.com/jomcgi-org/homelab/issues/5320)).
    A destination added for one workload is reachable, with injected
    credentials, from every egress-enabled workload.
-7. **The public docs guard is a fixed marker list, not redaction**
-   ([#5275](https://github.com/jomcgi-org/homelab/issues/5275)).
-   `check_public_content` fails CI on known internal markers; an
-   internal identifier that matches no marker still publishes
-   verbatim.
-8. **Production promotion has no functional check**
+6. **Production promotion has no functional check**
    ([#4745](https://github.com/jomcgi-org/homelab/issues/4745)).
    Promotion waits for rollout health and a short soak, and only
    EmberVM runs a conformance test first. A change that deploys
    cleanly but misbehaves promotes.
-9. **The auth domain has no delegated workload identity**
-   ([#4940](https://github.com/jomcgi-org/homelab/issues/4940)).
-   The design umbrella behind finding 2: authentik issues standing
-   identity, while monolith-side attenuation, a broker, and delegated
-   delivery remain gated proposals with no selected implementation.
