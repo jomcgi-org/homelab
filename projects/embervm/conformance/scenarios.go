@@ -78,6 +78,9 @@ type controlPlaneClient struct {
 type apiResponse struct {
 	status int
 	body   []byte
+	// invokeOutcome is the router's X-Ember-Invoke-Outcome header. The router
+	// sets it on guest-authored responses and never on its own error envelope.
+	invokeOutcome string
 }
 
 type nodesView struct {
@@ -144,7 +147,7 @@ func (c *controlPlaneClient) request(ctx context.Context, method, path string, b
 	if err != nil {
 		return apiResponse{}, err
 	}
-	return apiResponse{status: resp.StatusCode, body: responseBody}, nil
+	return apiResponse{status: resp.StatusCode, body: responseBody, invokeOutcome: resp.Header.Get("X-Ember-Invoke-Outcome")}, nil
 }
 
 func httpErrorDetail(method, path string, response apiResponse) string {

@@ -250,7 +250,7 @@ func invokeCodexProbe(ctx context.Context, cfg config, client *controlPlaneClien
 		// Provider or egress failures must fail S9, unlike lifecycle-only S2.
 		// Do not copy arbitrary provider response bodies to verdicts or logs:
 		// only the elapsed time and a control-plane-authored failure reason.
-		return codexProbeTurn{}, fmt.Errorf("invoke returned status=%d after %dms%s", response.status, time.Since(invokeStarted).Milliseconds(), controlPlaneInvokeReason(response.body))
+		return codexProbeTurn{}, fmt.Errorf("invoke returned status=%d after %dms%s", response.status, time.Since(invokeStarted).Milliseconds(), controlPlaneInvokeReason(response))
 	}
 	var turn codexProbeTurn
 	if err := json.Unmarshal(response.body, &turn); err != nil {
@@ -302,15 +302,19 @@ func validateCodexProbeTurn(turn codexProbeTurn, cfg config, cliSessionID, artif
 }
 
 // controlPlaneInvokeReason returns the router's own failure reason for a
-// session invoke (#7731). Guest and provider bodies are never echoed: only the
-// control plane's "session invoke failed" envelope qualifies, and the reason
-// is truncated.
-func controlPlaneInvokeReason(body []byte) string {
+// session invoke (#7731). Guest and provider bodies are never echoed: the
+// router passes a guest 4xx/5xx through with X-Ember-Invoke-Outcome set, so
+// only a 502/503 without that header and with the router's "session invoke
+// failed" envelope qualifies. The reason is truncated.
+func controlPlaneInvokeReason(response apiResponse) string {
+	if response.invokeOutcome != "" || (response.status != http.StatusBadGateway && response.status != http.StatusServiceUnavailable) {
+		return ""
+	}
 	var envelope struct {
 		Error  string `json:"error"`
 		Reason string `json:"reason"`
 	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Error != "session invoke failed" || envelope.Reason == "" {
+	if json.Unmarshal(response.body, &envelope) != nil || envelope.Error != "session invoke failed" || envelope.Reason == "" {
 		return ""
 	}
 	reason := envelope.Reason
