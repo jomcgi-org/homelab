@@ -134,6 +134,37 @@ def get_game_creator_email(
     email: Annotated[str, Depends(get_authenticated_email)],
     session: Annotated[Session, Depends(get_session)],
 ) -> str:
+    require_game_creator(session, principal)
+    return email
+
+
+def require_game_creator(session: Session, principal: Principal) -> None:
+    """Apply the same creation policy to the mutation and lobby capability."""
     if platform_enforcement_enabled():
         require_application_permission(session, principal, "grimoire.create_game")
-    return email
+        return
+    if os.getenv("GRIMOIRE_CREATION_RESTRICTION_ENABLED", "") != "true":
+        return
+
+    # Match the mailbox proof accepted for legacy account linking. Cloudflare
+    # Access verifies its mailbox itself and does not carry email_verified.
+    verified_email = principal.email_verified or (
+        bool(principal.issuer)
+        and principal.issuer == os.getenv("AUTH_CLOUDFLARE_ACCESS_ISSUER")
+    )
+    email = (principal.email or "").strip().lower()
+    allowed = {
+        entry.strip().lower()
+        for entry in os.getenv("GRIMOIRE_CREATOR_EMAILS", "").split(",")
+        if entry.strip()
+    }
+    if not verified_email or not email or email not in allowed:
+        raise HTTPException(403, "campaign creation not permitted")
+
+
+def can_create_game(session: Session, principal: Principal) -> bool:
+    try:
+        require_game_creator(session, principal)
+    except HTTPException:
+        return False
+    return True

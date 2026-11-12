@@ -666,6 +666,10 @@ spec:
             - name: GRIMOIRE_INVITATION_FLOW_ID
               value: {{ required "reviewed Grimoire invitation flow ID is required" .Values.grimoire.invitationLinks.flowID | quote }}
             {{- end }}
+            - name: GRIMOIRE_CREATION_RESTRICTION_ENABLED
+              value: {{ .Values.grimoire.campaignCreation.restrictionEnabled | quote }}
+            - name: GRIMOIRE_CREATOR_EMAILS
+              value: {{ join "," .Values.grimoire.campaignCreation.allowedEmails | quote }}
             {{- if .Values.grimoire.enabled }}
             # Grimoire D&D ingest pipeline (private tier only; spec
             # the grimoire pg-first design, section 4.3). The S3
