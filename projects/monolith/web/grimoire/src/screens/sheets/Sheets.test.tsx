@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Routes } from "../../test/backend";
-import { findToast, openApp } from "../../test/app";
+import { chooseOption, findToast, openApp } from "../../test/app";
 import { campaigns, ids, lobby } from "../../test/fixtures";
 import {
   brannochSheet,
@@ -10,6 +10,7 @@ import {
   miraDraft,
   miraSheet,
   playerHistory,
+  sheetOptions,
   sheetsRoutes,
   sheetVersion,
   versionIds,
@@ -21,6 +22,8 @@ const CREATE =
   "POST /campaigns/{campaign_id}/characters/{player_character_id}/sheets/drafts";
 const UPDATE =
   "PATCH /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}";
+const OPTIONS =
+  "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options";
 const SUBMIT =
   "POST /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}/submit";
 const APPROVE =
@@ -44,8 +47,26 @@ async function open(routes: Routes, name: string, path = "/sheets") {
   const app = openApp(routes, path);
   const sheet = await screen.findByRole("region", { name });
   await within(sheet).findByText(/^Version history/);
+  // The editor loads its corpus choices after the history.
+  await waitFor(() =>
+    expect(sheet.querySelector('[aria-busy="true"]')).toBeNull(),
+  );
   return { ...app, sheet };
 }
+
+const chosen = (sheet: HTMLElement, control: string) =>
+  within(sheet).getByRole("combobox", { name: control }).textContent;
+
+/** The modifier shown with one ability score. */
+const modifier = (sheet: HTMLElement, label: string) =>
+  (within(sheet).getByLabelText(label).getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .map((id) => document.getElementById(id)?.textContent)
+    .find((text) => text?.startsWith("Modifier"));
+
+/** The value shown for one line of the preview. */
+const calculated = (sheet: HTMLElement, label: string) =>
+  within(sheet).getByText(label).closest("dt")?.nextElementSibling?.textContent;
 
 const withDraft = (routes: Routes = {}) =>
   playerRoutes({
@@ -120,19 +141,20 @@ describe("Character sheets, as the player", () => {
     const { sheet } = await open(playerRoutes(), "Mira Vale");
     expect(within(sheet).getByText("Wizard · level 3")).toBeTruthy();
     expect(within(sheet).getByText("Returned")).toBeTruthy();
-    expect(
-      (within(sheet).getByLabelText(/^Ancestry/) as HTMLInputElement).value,
-    ).toBe("Elf");
+    expect(chosen(sheet, "Ancestry")).toContain("Elf");
+    expect(chosen(sheet, "Class")).toContain("Wizard");
     expect(
       (within(sheet).getByLabelText("Level") as HTMLInputElement).value,
     ).toBe("4");
     expect(
       (within(sheet).getByLabelText("INT") as HTMLInputElement).value,
     ).toBe("16");
-    expect(within(sheet).getByText("INT mod / save")).toBeTruthy();
-    expect(within(sheet).getByText("+3 / +5")).toBeTruthy();
-    expect(within(sheet).getByText("-1 / -1")).toBeTruthy();
-    expect(within(sheet).getByText("d6")).toBeTruthy();
+    expect(modifier(sheet, "INT")).toBe("Modifier +3");
+    expect(modifier(sheet, "STR")).toBe("Modifier -1");
+    expect(calculated(sheet, "INT save")).toContain("+5, proficient");
+    expect(calculated(sheet, "Hit die")).toContain("d6");
+    // The saved version's own summary gives way to the live preview.
+    expect(within(sheet).queryByText("Calculated mechanics")).toBeNull();
     expect(
       within(sheet).getByText("We have not reached level 4 yet."),
     ).toBeTruthy();
@@ -151,9 +173,14 @@ describe("Character sheets, as the player", () => {
       "Mira Vale",
     );
     expect(within(sheet).getByText("No sheet")).toBeTruthy();
+    expect(chosen(sheet, "Class")).toContain("Choose a class");
+    expect(chosen(sheet, "Ancestry")).toContain("Choose an ancestry");
     expect(
-      (within(sheet).getByLabelText(/^Class/) as HTMLInputElement).value,
-    ).toBe("");
+      within(sheet).getByText(
+        "Choose a class to see hit points and saving throws.",
+      ),
+    ).toBeTruthy();
+    expect(within(sheet).queryByText("Maximum hit points")).toBeNull();
     expect(
       (within(sheet).getByLabelText("Level") as HTMLInputElement).value,
     ).toBe("1");
@@ -165,9 +192,7 @@ describe("Character sheets, as the player", () => {
 
   it("starts the next version from the edited facts", async () => {
     const { user, sheet, backend } = await open(playerRoutes(), "Mira Vale");
-    const ancestry = within(sheet).getByLabelText(/^Ancestry/);
-    await user.clear(ancestry);
-    await user.type(ancestry, "  High   Elf ");
+    await chooseOption(sheet, "Ancestry", "Marsh Otterkin");
     const level = within(sheet).getByLabelText("Level");
     await user.clear(level);
     await user.type(level, "3");
@@ -180,7 +205,7 @@ describe("Character sheets, as the player", () => {
       campaign_id: ids.joined,
       player_character_id: ids.mira,
     });
-    expect(call?.body).toEqual({ ...miraSheet, ancestry: "High Elf" });
+    expect(call?.body).toEqual({ ...miraSheet, ancestry: "Marsh Otterkin" });
     expect(backend.callsTo(SHEETS).length).toBeGreaterThan(1);
   });
 
@@ -207,6 +232,7 @@ describe("Character sheets, as the player", () => {
       await user.clear(field);
       await user.type(field, value);
     };
+    expect(within(sheet).getByText("Whole numbers from 3 to 20.")).toBeTruthy();
     await set("STR", "25");
     await set("DEX", "2");
     await set("CON", "12.5");
@@ -224,26 +250,222 @@ describe("Character sheets, as the player", () => {
     });
   });
 
-  it("asks for a missing ancestry or class instead of saving", async () => {
-    const { user, sheet, backend } = await open(withDraft(), "Mira Vale");
-    await user.clear(within(sheet).getByLabelText(/^Ancestry/));
-    await user.clear(within(sheet).getByLabelText(/^Class/));
-    await user.type(within(sheet).getByLabelText(/^Class/), "   ");
-    await user.click(within(sheet).getByRole("button", { name: "Save draft" }));
-    expect(await within(sheet).findByText("Enter an ancestry.")).toBeTruthy();
-    expect(within(sheet).getByText("Enter a class.")).toBeTruthy();
-    expect(backend.callsTo(UPDATE)).toHaveLength(0);
+  it("offers the ancestries and classes the corpus holds for the character", async () => {
+    const { user, sheet, backend } = await open(
+      playerRoutes({ [SHEETS]: playerHistory([]) }),
+      "Mira Vale",
+    );
+    expect(backend.callsTo(OPTIONS)[0]?.params).toEqual({
+      campaign_id: ids.joined,
+      player_character_id: ids.mira,
+    });
+    const options = (control: string) => {
+      const combobox = within(sheet).getByRole("combobox", { name: control });
+      const listbox = document.getElementById(
+        combobox.getAttribute("aria-controls") ?? "",
+      )!;
+      return within(listbox)
+        .getAllByRole("option")
+        .map((option) => option.textContent);
+    };
+    await user.click(within(sheet).getByRole("combobox", { name: "Class" }));
+    expect(options("Class")).toEqual(["Fighter", "Lamplighter", "Wizard"]);
+    await user.keyboard("{Escape}");
+    await user.click(within(sheet).getByRole("combobox", { name: "Ancestry" }));
+    expect(options("Ancestry")).toEqual(["Dwarf", "Elf", "Marsh Otterkin"]);
+    // Nothing is typed: the names come from the corpus.
+    expect(within(sheet).queryByRole("textbox", { name: /Class/ })).toBeNull();
   });
 
-  it("caps names at the contract's 120 characters", async () => {
-    const { user, sheet } = await open(withDraft(), "Mira Vale");
-    const ancestry = within(sheet).getByLabelText(
-      /^Ancestry/,
-    ) as HTMLInputElement;
-    await user.clear(ancestry);
-    await user.click(ancestry);
-    await user.paste("x".repeat(130));
-    expect(ancestry.value).toHaveLength(120);
+  it("shows a chosen class's facts and what Grimoire will calculate", async () => {
+    const { user, sheet } = await open(
+      playerRoutes({ [SHEETS]: playerHistory([]) }),
+      "Mira Vale",
+    );
+    expect(
+      within(sheet).getByRole("heading", {
+        name: "What Grimoire will calculate",
+      }),
+    ).toBeTruthy();
+    await chooseOption(sheet, "Class", "Fighter");
+    expect(
+      await within(sheet).findByText(
+        "Hit die d10. Saving throws: Strength, Constitution. Primary ability: Strength or Dexterity.",
+      ),
+    ).toBeTruthy();
+    await chooseOption(sheet, "Ancestry", "Dwarf");
+    expect(
+      await within(sheet).findByText("Size Medium. Speed 25 feet."),
+    ).toBeTruthy();
+    const set = async (label: string, value: string) => {
+      const field = within(sheet).getByLabelText(label);
+      await user.clear(field);
+      await user.type(field, value);
+      await user.tab();
+    };
+    await set("Level", "5");
+    await set("STR", "16");
+    await set("DEX", "14");
+    await set("CON", "14");
+    await set("WIS", "12");
+    await set("CHA", "8");
+    // The level 5 fighter grimoire/sheets_test.py pins.
+    expect(modifier(sheet, "STR")).toBe("Modifier +3");
+    expect(modifier(sheet, "CHA")).toBe("Modifier -1");
+    expect(calculated(sheet, "Proficiency bonus")).toContain("+3");
+    expect(calculated(sheet, "Armour class, unarmoured")).toContain("12");
+    expect(calculated(sheet, "Maximum hit points")).toContain("44");
+    expect(calculated(sheet, "Hit die")).toContain("d10");
+    expect(calculated(sheet, "STR save")).toContain("+6, proficient");
+    expect(calculated(sheet, "CON save")).toContain("+5, proficient");
+    expect(calculated(sheet, "WIS save")).toContain("+1");
+    expect(calculated(sheet, "WIS save")).not.toContain("proficient");
+  });
+
+  it("gives the server's refusal for a class entry it cannot calculate from", async () => {
+    const { sheet, user, backend } = await open(
+      withDraft({
+        [OPTIONS]: sheetOptions({
+          classes: [
+            {
+              id: "72222222-2222-4222-8222-222222222222",
+              name: "Wizard",
+              hit_die: "1d6",
+              primary_ability: null,
+              saves: "Intelligence, Wisdom",
+            },
+          ],
+        }),
+      }),
+      "Mira Vale",
+    );
+    expect(
+      within(sheet).getByText(
+        "Grimoire cannot calculate hit points or saving throws for Wizard: class corpus entry has no supported hit die. Choose another class or ask your DM to fix the entry.",
+      ),
+    ).toBeTruthy();
+    expect(within(sheet).queryByText("Maximum hit points")).toBeNull();
+    // The choice is still the server's to refuse.
+    await user.click(within(sheet).getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(backend.callsTo(UPDATE)).toHaveLength(1));
+  });
+
+  it("asks for a missing ancestry or class instead of saving", async () => {
+    const { user, sheet, backend } = await open(
+      playerRoutes({ [SHEETS]: playerHistory([]) }),
+      "Mira Vale",
+    );
+    await user.click(
+      within(sheet).getByRole("button", { name: "Start new draft" }),
+    );
+    expect(await within(sheet).findByText("Choose an ancestry.")).toBeTruthy();
+    expect(within(sheet).getByText("Choose a class.")).toBeTruthy();
+    expect(backend.callsTo(CREATE)).toHaveLength(0);
+  });
+
+  it("directs the player to the DM when the corpus offers no class", async () => {
+    const { user, sheet, backend } = await open(
+      playerRoutes({
+        [SHEETS]: playerHistory([]),
+        [OPTIONS]: sheetOptions({ classes: [] }),
+      }),
+      "Mira Vale",
+    );
+    expect(
+      within(sheet).getByText(
+        "No class is available to Mira Vale. Ask your DM to share a class with Mira Vale.",
+      ),
+    ).toBeTruthy();
+    expect(within(sheet).queryByText(/No ancestry is available/)).toBeNull();
+    const save = within(sheet).getByRole("button", { name: "Start new draft" });
+    expect(
+      save.hasAttribute("disabled") ||
+        save.getAttribute("aria-disabled") === "true",
+    ).toBe(true);
+    await user.click(save);
+    expect(backend.callsTo(CREATE)).toHaveLength(0);
+  });
+
+  it("directs the player to the DM when the corpus offers no ancestry", async () => {
+    const { sheet } = await open(
+      playerRoutes({
+        [SHEETS]: playerHistory([]),
+        [OPTIONS]: sheetOptions({ ancestries: [] }),
+      }),
+      "Mira Vale",
+    );
+    expect(
+      within(sheet).getByText(
+        "No ancestry is available to Mira Vale. Ask your DM to share an ancestry with Mira Vale.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("flags a saved choice the character can no longer use", async () => {
+    const { user, sheet, backend } = await open(
+      withDraft({
+        [OPTIONS]: sheetOptions({
+          classes: sheetOptions().classes.filter(
+            ({ name }) => name !== "Wizard",
+          ),
+        }),
+      }),
+      "Mira Vale",
+    );
+    expect(
+      within(sheet).getByText(
+        "Wizard is no longer available to Mira Vale. Choose another class.",
+      ),
+    ).toBeTruthy();
+    expect(chosen(sheet, "Class")).toContain("Choose a class");
+    expect(chosen(sheet, "Ancestry")).toContain("Elf");
+    await user.click(within(sheet).getByRole("button", { name: "Save draft" }));
+    await user.click(
+      within(sheet).getByRole("button", { name: "Submit to DM" }),
+    );
+    expect(backend.callsTo(UPDATE)).toHaveLength(0);
+    expect(backend.callsTo(SUBMIT)).toHaveLength(0);
+
+    await chooseOption(sheet, "Class", "Lamplighter");
+    await user.click(within(sheet).getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(backend.callsTo(UPDATE)).toHaveLength(1));
+    expect(backend.callsTo(UPDATE)[0]?.body).toEqual({
+      ...miraSheet,
+      class_name: "Lamplighter",
+    });
+  });
+
+  it("keeps a saved choice selected whatever its letter case", async () => {
+    const { sheet } = await open(
+      withDraft({
+        [SHEETS]: playerHistory([
+          { ...miraDraft, sheet: { ...miraSheet, class_name: "wizard" } },
+        ]),
+      }),
+      "Mira Vale",
+    );
+    expect(chosen(sheet, "Class")).toContain("Wizard");
+    expect(
+      within(sheet).getByText("Submitting locks version 3 for DM review."),
+    ).toBeTruthy();
+  });
+
+  it("offers a retry when the choices cannot load", async () => {
+    const { sheet } = await open(
+      playerRoutes({
+        [OPTIONS]: { status: 500, detail: "Database unavailable." },
+      }),
+      "Mira Vale",
+    );
+    expect(
+      await within(sheet).findByText(
+        "Could not load the choices for this sheet",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(sheet).getByRole("button", { name: "Try again" }),
+    ).toBeTruthy();
+    expect(within(sheet).queryByRole("button", { name: /draft/ })).toBeNull();
   });
 
   it("shows why the backend refused a draft", async () => {
@@ -282,7 +504,7 @@ describe("Character sheets, as the player", () => {
 
   it("holds submission until edits are saved", async () => {
     const { user, sheet, backend } = await open(withDraft(), "Mira Vale");
-    await user.type(within(sheet).getByLabelText(/^Class/), "x");
+    await chooseOption(sheet, "Class", "Fighter");
     expect(
       within(sheet).getByText("Save your changes before submitting version 3."),
     ).toBeTruthy();
@@ -305,7 +527,10 @@ describe("Character sheets, as the player", () => {
     expect(
       within(sheet).getByText("Version 3 is waiting for the DM."),
     ).toBeTruthy();
-    expect(within(sheet).queryByLabelText(/^Ancestry/)).toBeNull();
+    expect(
+      within(sheet).queryByRole("combobox", { name: "Ancestry" }),
+    ).toBeNull();
+    expect(within(sheet).getByText("Calculated mechanics")).toBeTruthy();
     expect(within(sheet).queryByRole("button", { name: /draft/ })).toBeNull();
     expect(
       within(sheet).queryByRole("button", { name: "Approve version" }),
@@ -344,7 +569,9 @@ describe("Character sheets, as the DM", () => {
     expect(within(sheet).getByText("Dwarf")).toBeTruthy();
     expect(within(sheet).getByText(String(brannochSheet.level))).toBeTruthy();
     expect(within(sheet).getByText("+3 / +5")).toBeTruthy();
-    expect(within(sheet).queryByLabelText(/^Ancestry/)).toBeNull();
+    expect(
+      within(sheet).queryByRole("combobox", { name: "Ancestry" }),
+    ).toBeNull();
     expect(within(sheet).queryByRole("button", { name: /draft/ })).toBeNull();
   });
 

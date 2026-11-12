@@ -163,6 +163,9 @@ CASES = {
         denials={"player_a": 409, "player_b": 409, "dm": 403},
     ),
     ("GET", PREFIX + CHARACTER): Case(params={"player_character_id": "$character.id"}),
+    ("GET", PREFIX + CHARACTER + "/options"): Case(
+        params={"player_character_id": "$character.id"}
+    ),
     ("POST", PREFIX + CHARACTER + "/drafts"): Case(
         params={"player_character_id": "$character.id"},
         body=SHEET_BODY,
@@ -372,7 +375,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 64  # Campaign routes, including eight transcript routes.
+    assert len(enumerated) == 65  # Campaign routes, including eight transcript routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):

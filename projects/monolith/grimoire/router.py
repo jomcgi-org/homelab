@@ -128,7 +128,12 @@ from grimoire.session_events import (
     append_event,
     require_transcript_enabled,
 )
-from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
+from grimoire.sheets import (
+    CharacterSheetV1,
+    SheetValidationError,
+    derive_sheet,
+    sheet_options,
+)
 from grimoire.visibility import (
     Viewer,
     entity_belongs_to_campaign,
@@ -1385,6 +1390,26 @@ class CharacterSheetHistoryView(BaseModel):
     versions: list[CharacterSheetView]
 
 
+class SheetAncestryOption(BaseModel):
+    id: str
+    name: str
+    size: str | None
+    speed: str | None
+
+
+class SheetClassOption(BaseModel):
+    id: str
+    name: str
+    hit_die: str | None
+    primary_ability: str | None
+    saves: str | None
+
+
+class SheetOptionsView(BaseModel):
+    ancestries: list[SheetAncestryOption]
+    classes: list[SheetClassOption]
+
+
 class SheetDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1487,6 +1512,25 @@ def list_character_sheet_versions(
             for version in versions
         ],
     )
+
+
+@router.get(
+    "/campaigns/{campaign_id}/characters/{player_character_id}/sheets/options",
+    response_model=SheetOptionsView,
+)
+def list_character_sheet_options(
+    campaign_id: str,
+    player_character_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The corpus ancestries and classes a sheet for this character may name.
+
+    The same selection ``derive_sheet`` validates against, with the class
+    facts it calculates from, so the form offers only what a draft accepts.
+    """
+    _require_character_reader(session, campaign_id, player_character_id, email)
+    return sheet_options(session, campaign_id, player_character_id)
 
 
 @router.post(

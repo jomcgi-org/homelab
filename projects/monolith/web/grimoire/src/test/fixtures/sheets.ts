@@ -4,6 +4,7 @@ import type {
   CharacterSheetV1,
   CharacterSheetView,
   CharacterView,
+  SheetOptionsView,
 } from "../../api/schema";
 import type { SheetDerived } from "../../api/sheets";
 import type { Call, Routes } from "../backend";
@@ -116,6 +117,56 @@ export const brannochDerived: SheetDerived = {
     class_entity_id: "74444444-4444-4444-8444-444444444444",
   },
 };
+
+/** The corpus choices offered to a character, with the facts behind each. */
+export const sheetOptions = (
+  overrides: Partial<SheetOptionsView> = {},
+): SheetOptionsView => ({
+  ancestries: [
+    {
+      id: "73333333-3333-4333-8333-333333333333",
+      name: "Dwarf",
+      size: "Medium",
+      speed: "25 feet",
+    },
+    {
+      id: "71111111-1111-4111-8111-111111111111",
+      name: "Elf",
+      size: "Medium",
+      speed: "30 feet",
+    },
+    {
+      id: "75555555-5555-4555-8555-555555555555",
+      name: "Marsh Otterkin",
+      size: "Small",
+      speed: null,
+    },
+  ],
+  classes: [
+    {
+      id: "74444444-4444-4444-8444-444444444444",
+      name: "Fighter",
+      hit_die: "d10",
+      primary_ability: "Strength or Dexterity",
+      saves: "Strength, Constitution",
+    },
+    {
+      id: "76666666-6666-4666-8666-666666666666",
+      name: "Lamplighter",
+      hit_die: "d8",
+      primary_ability: null,
+      saves: "Wisdom and Charisma",
+    },
+    {
+      id: "72222222-2222-4222-8222-222222222222",
+      name: "Wizard",
+      hit_die: "d6",
+      primary_ability: "Intelligence",
+      saves: "Intelligence, Wisdom",
+    },
+  ],
+  ...overrides,
+});
 
 /** One of Mira's versions. Pass the fields a case cares about. */
 export const sheetVersion = (
@@ -250,6 +301,8 @@ export const sheetsRoutes: Routes = {
     call.params.player_character_id === ids.mira
       ? playerHistory()
       : dmHistory(),
+  "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options":
+    sheetOptions(),
   "POST /campaigns/{campaign_id}/characters/{player_character_id}/sheets/drafts":
     written(draftFrom),
   "PATCH /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}":

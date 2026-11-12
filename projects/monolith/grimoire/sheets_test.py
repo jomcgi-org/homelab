@@ -11,7 +11,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from grimoire.access import get_authenticated_identity
 from grimoire.models import AppUser, CampaignMember
-from grimoire.models import CharacterSheetVersion, Entity, PlayerCharacter
+from grimoire.models import (
+    CharacterSheetVersion,
+    Entity,
+    KnowledgeGrant,
+    PlayerCharacter,
+)
 from grimoire.router import router
 
 DM = "dm@example.test"
@@ -322,3 +327,88 @@ def test_sheet_selections_must_exist_in_visible_campaign_corpus(
     assert response.json()["detail"] == (
         "ancestry is not available in this campaign corpus"
     )
+
+
+def _options_path(campaign: dict, character: dict) -> str:
+    return _draft_path(campaign, character).replace("/drafts", "/options")
+
+
+def test_sheet_options_offer_what_a_draft_accepts_with_class_facts(
+    session: Session, client: TestClient, table
+):
+    campaign, character = table
+    scopes = {"Full": "full", "Partial": "partial", "Named": "name_only"}
+    for label, scope in scopes.items():
+        entity = Entity(
+            entity_type="class",
+            name=f"{label} Homebrew",
+            is_global=False,
+            source_type="homebrew",
+            detail={"hit_die": "d8 per level", "saves": "WIS and CHA"},
+        )
+        session.add(entity)
+        session.flush()
+        session.add(
+            KnowledgeGrant(
+                campaign_id=campaign["id"],
+                entity_id=entity.id,
+                player_character_id=character["id"],
+                grant_scope=scope,
+            )
+        )
+    session.add(Entity(entity_type="class", name="Hidden", is_global=False, detail={}))
+    session.add(Entity(entity_type="class", name="fighter", is_global=True))
+    session.add(Entity(entity_type="class", name="Odd  Spacing", is_global=True))
+    session.add(Entity(entity_type="class", name="Bare", is_global=True, detail={}))
+    session.add(Entity(entity_type="spell", name="Fireball", is_global=True))
+    session.commit()
+
+    response = client.get(_options_path(campaign, character), headers=_auth(PLAYER))
+    assert response.status_code == 200
+    options = response.json()
+    assert [
+        (item["name"], item["size"], item["speed"]) for item in options["ancestries"]
+    ] == [("Human", None, "30 feet")]
+    classes = {item["name"]: item for item in options["classes"]}
+    assert sorted(classes) == ["Bare", "Fighter", "Full Homebrew"]
+    assert classes["Fighter"]["hit_die"] == "d10"
+    assert classes["Fighter"]["saves"] == "Strength, Constitution"
+    assert classes["Full Homebrew"]["hit_die"] == "d8 per level"
+    assert classes["Bare"] == {
+        "id": classes["Bare"]["id"],
+        "name": "Bare",
+        "hit_die": None,
+        "primary_ability": None,
+        "saves": None,
+    }
+
+    # Every offered pair is one a draft accepts or refuses for its class facts.
+    for name, expected in (("Partial Homebrew", 422), ("Full Homebrew", 200)):
+        draft = _post(
+            client,
+            _draft_path(campaign, character),
+            PLAYER,
+            {**_sheet(), "class_name": name},
+        )
+        assert draft.status_code == expected, name
+        if expected == 200:
+            assert (
+                draft.json()["derived"]["corpus"]["class_entity_id"]
+                == (classes[name]["id"])
+            )
+            assert draft.json()["derived"]["hit_die"] == "d8"
+
+    dm_view = client.get(_options_path(campaign, character), headers=_auth(DM))
+    assert dm_view.status_code == 200
+    assert dm_view.json() == options
+
+
+def test_sheet_options_are_hidden_from_other_players_and_campaigns(
+    client: TestClient, table
+):
+    campaign, character = table
+    other = _character(client, DM, campaign["id"], "Bryn")
+    _member(client, DM, campaign["id"], OTHER_PLAYER, other["id"])
+    path = _options_path(campaign, character)
+    assert client.get(path, headers=_auth(OTHER_PLAYER)).status_code == 404
+    assert client.get(path, headers=_auth(OTHER_DM)).status_code == 404

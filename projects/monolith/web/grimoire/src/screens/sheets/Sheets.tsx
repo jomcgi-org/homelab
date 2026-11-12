@@ -29,8 +29,9 @@ export function Sheets() {
           ) : (
             <>
               <Text type="body" color="secondary">
-                Players author base facts. Grimoire calculates the mechanics and
-                keeps every submitted decision as history.
+                You choose your character's ancestry, class, level and ability
+                scores, Grimoire works out the numbers, and your DM approves the
+                sheet.
               </Text>
               {data.campaigns.map((campaign) => (
                 <CampaignSheets key={campaign.id} campaign={campaign} />

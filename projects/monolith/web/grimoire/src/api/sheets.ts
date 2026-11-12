@@ -7,6 +7,7 @@ import type {
   CharacterSheetHistoryView,
   CharacterSheetV1,
   CharacterSheetView,
+  SheetOptionsView,
 } from "./schema";
 
 export type Ability = keyof AbilityScores;
@@ -67,9 +68,20 @@ const toVersion = (view: CharacterSheetView): SheetVersion => ({
       : null,
 });
 
+/** The corpus ancestries and classes a character's sheet may name. */
+export type SheetOptions = SheetOptionsView;
+
 export const keys = {
   sheets: (campaignId: string, characterId: string) =>
     [...lobbyKeys.characters(campaignId), characterId, "sheets"] as const,
+  // Under `sheets`, so a save that refreshes the history refreshes these too.
+  options: (campaignId: string, characterId: string) =>
+    [
+      ...lobbyKeys.characters(campaignId),
+      characterId,
+      "sheets",
+      "options",
+    ] as const,
 };
 
 interface CharacterRef {
@@ -101,6 +113,20 @@ export const useSheetHistory = (campaignId: string, characterId: string) =>
       );
       return { ...history, versions: history.versions.map(toVersion) };
     },
+  });
+
+/**
+ * What `derive_sheet` would accept for this character: global corpus entries
+ * and ones the DM shared in full, with the class facts it calculates from.
+ */
+export const useSheetOptions = (campaignId: string, characterId: string) =>
+  useQuery({
+    queryKey: keys.options(campaignId, characterId),
+    queryFn: (): Promise<SheetOptions> =>
+      api(
+        "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options",
+        { params: characterParams({ campaignId, characterId }) },
+      ),
   });
 
 /** Updates the open draft, or starts the next version when there is none. */

@@ -364,8 +364,28 @@ export interface SessionJournalView {
   journal: Journal;
 }
 
+export interface SheetAncestryOption {
+  id: string;
+  name: string;
+  size: string | null;
+  speed: string | null;
+}
+
+export interface SheetClassOption {
+  id: string;
+  name: string;
+  hit_die: string | null;
+  primary_ability: string | null;
+  saves: string | null;
+}
+
 export interface SheetDecisionRequest {
   comment?: string | null;
+}
+
+export interface SheetOptionsView {
+  ancestries: Array<SheetAncestryOption>;
+  classes: Array<SheetClassOption>;
 }
 
 export interface TranscriptConsentRequest {
@@ -457,6 +477,11 @@ export interface Operations {
     query: undefined;
     body: CharacterSheetV1;
     response: CharacterSheetView;
+  };
+  "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options": {
+    query: undefined;
+    body: undefined;
+    response: SheetOptionsView;
   };
   "PATCH /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}": {
     query: undefined;
