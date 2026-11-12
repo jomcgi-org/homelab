@@ -1413,9 +1413,8 @@ def seed_operator_rows(db, specs):
 @pytest.mark.parametrize("held", [False, True])
 @pytest.mark.parametrize("terminal", [None, "landing_recovery_exhausted", "head_moved"])
 @pytest.mark.parametrize("barrier", [None, "landing_recovery_requested", "merged"])
-def test_effective_landing_refusal_provenance_and_agreement(
-    db, held, terminal, barrier
-):
+def test_legacy_landing_refusal_provenance_and_agreement(db, held, terminal, barrier):
+    """Defensive projection coverage, separate from real hold/release acceptance."""
     from datetime import datetime, timezone
     from factory.orchestration import factory_landing as landing
 

@@ -48,9 +48,10 @@ from factory.orchestration import factory_controls as controls
 
 logger = logging.getLogger(__name__)
 
-# Receipt dictionaries are reloaded by recovery. Share only unavailable-read
-# identities within this invocation, never across ticks or concurrent contexts.
-_deferred_items: ContextVar[set[str] | None] = ContextVar(
+# Recovery reloads receipts and scans beyond the rotating observation page.
+# Retain deferred items even when early filters remove them, so an unreadable
+# known holder keeps its slot. This evidence belongs only to the current tick.
+_deferred_items: ContextVar[dict[str, dict] | None] = ContextVar(
     "landing_deferred", default=None
 )
 
@@ -62,7 +63,7 @@ def _read_deferred(item: dict) -> bool:
 def _deferred(item: dict, stage: str, exc: GitHubReadDeferred) -> None:
     skipped = _deferred_items.get()
     if skipped is not None:
-        skipped.add(item["task_id"])
+        skipped[item["task_id"]] = item
     _error(item["task_id"], stage, exc)
 
 
@@ -250,6 +251,7 @@ def _record(task_id: str, action: str, **detail: object) -> bool:
     of them on every tick until the next one takes, so the audit table is the
     fence as well as the record. Arming and ejection are not once-only and use
     ``_append``: their counts are what say whether the delivery holds the slot.
+    A hold-only refusal does not consume the epoch's terminal refusal slot.
     """
     if action in _REPEATABLE:
         raise ValueError(f"{action} is a repeatable landing action")
@@ -269,13 +271,22 @@ def _record(task_id: str, action: str, **detail: object) -> bool:
                 or 0
             )
         existing = db.exec(
-            select(FactoryAudit.id).where(
+            select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,
                 FactoryAudit.action == action,
                 FactoryAudit.id > epoch,
             )
-        ).first()
-        if existing is not None:
+        ).all()
+        if (
+            action == "merge_arm_refused"
+            and detail.get("reason") != "receipt_landing_held"
+        ):
+            existing = [
+                raw
+                for raw in existing
+                if json.loads(raw).get("reason") != "receipt_landing_held"
+            ]
+        if existing:
             return False
         _audit(db, ACTOR, action, task_id=task_id, **detail)
     return True
@@ -1840,7 +1851,8 @@ def landing_tick(policy: dict) -> None:
     records the merge, rather than holding the next delivery for another
     fifteen seconds.
     """
-    token = _deferred_items.set(set())
+    deferred = {}
+    token = _deferred_items.set(deferred)
     try:
         from factory import review_publisher
         from factory.orchestration import factory_rollback_runtime
@@ -1898,13 +1910,14 @@ def landing_tick(policy: dict) -> None:
             for item in deliveries
             if not item["refused"] and not _read_deferred(item)
         ]
-        # An unreadable known holder still occupies the serial landing slot.
+        # Include holders removed by initial filters or human handoff, and ones
+        # only seen by recovery. GitHub's fallback scans factory/ branches and
+        # cannot rediscover an adopted owner PR on an arbitrary branch.
         holder = next(
-            (
-                item
-                for item in deliveries
-                if holding(item) and (not item["refused"] or _read_deferred(item))
-            ),
+            (item for item in deferred.values() if holding(item)),
+            None,
+        ) or next(
+            (item for item in deliveries if holding(item) and not item["refused"]),
             None,
         )
         waiting = [
