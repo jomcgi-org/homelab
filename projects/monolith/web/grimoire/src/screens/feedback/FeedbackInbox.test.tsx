@@ -189,14 +189,65 @@ describe("Feedback inbox", () => {
     },
   );
 
-  it("dismisses an item without asking", async () => {
+  it("shows how many people voted for each item", async () => {
+    openApp(inbox(), paths.feedback);
+    expect(
+      within(await screen.findByRole("article", rowan)).getByText(/2 votes/),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByRole("article", wren)).getByText(/0 votes/),
+    ).toBeTruthy();
+  });
+
+  it("dismisses with the reason the roadmap will show", async () => {
+    const { user, backend } = openApp(inbox(), paths.feedback);
+    const item = await screen.findByRole("article", wren);
+    await user.click(within(item).getByRole("button", { name: "Dismiss" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dismiss" });
+    expect(
+      within(dialog).getByText("The spell list is hard to scan on a phone."),
+    ).toBeTruthy();
+    const reason = within(dialog).getByRole<HTMLInputElement>("textbox", {
+      name: /^Reason \(shown on the roadmap\)/,
+    });
+    await user.type(
+      reason,
+      `  Covered by the sheet rework.  ${"x".repeat(200)}`,
+    );
+    expect(reason.value).toHaveLength(200);
+    await user.clear(reason);
+    await user.type(reason, "  Covered by the sheet rework.  ");
+    await user.click(within(dialog).getByRole("button", { name: "Dismiss" }));
+    expect(await findToast("Dismissed.")).toBeTruthy();
+    const [call] = backend.callsTo("POST /feedback/{feedback_id}/dismiss");
+    expect(call?.params).toEqual({ feedback_id: feedbackIds.sheets });
+    expect(call?.body).toEqual({ reason: "Covered by the sheet rework." });
+    await waitFor(() => expect(screen.queryByRole("article", wren)).toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Dismiss" })).toBeNull();
+  });
+
+  it("returns keyboard focus to the dismiss opener after cancelling", async () => {
+    const { user, backend } = openApp(inbox(), paths.feedback);
+    const item = await screen.findByRole("article", wren);
+    const opener = within(item).getByRole("button", { name: "Dismiss" });
+    await user.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "Dismiss" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(backend.callsTo("POST /feedback/{feedback_id}/dismiss")).toEqual([]);
+    expect(screen.getByRole("article", wren)).toBeTruthy();
+  });
+
+  it("dismisses without a reason and sends no body", async () => {
     const { user, backend } = openApp(inbox(), paths.feedback);
     const item = await screen.findByRole("article", rowan);
     await user.click(within(item).getByRole("button", { name: "Dismiss" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dismiss" });
+    await user.click(within(dialog).getByRole("button", { name: "Dismiss" }));
     expect(await findToast("Dismissed.")).toBeTruthy();
-    expect(
-      backend.callsTo("POST /feedback/{feedback_id}/dismiss")[0]?.params,
-    ).toEqual({ feedback_id: feedbackIds.dice });
+    const [call] = backend.callsTo("POST /feedback/{feedback_id}/dismiss");
+    expect(call?.params).toEqual({ feedback_id: feedbackIds.dice });
+    expect(call?.body).toBeUndefined();
     await waitFor(() =>
       expect(screen.queryByRole("article", rowan)).toBeNull(),
     );

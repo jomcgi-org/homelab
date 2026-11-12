@@ -118,6 +118,20 @@ def create_issue(
 async def _create_issue(
     repo: str, title: str, body: str, labels: list[str], *, user_agent: str
 ) -> int:
+    created = await _issue_request(
+        "POST",
+        f"{GITHUB_API}/repos/{repo}/issues",
+        user_agent=user_agent,
+        json={"title": title, "body": body, "labels": labels},
+    )
+    number = created.get("number") if isinstance(created, dict) else None
+    if type(number) is not int or number <= 0:
+        raise ValueError("GitHub issue response had an unexpected shape")
+    return number
+
+
+async def _issue_request(method: str, url: str, *, user_agent: str, **request):
+    """One bounded request: total deadline, no redirects, capped response."""
     try:
         async with asyncio.timeout(_ISSUE_WRITE_TIMEOUT_SECONDS):
             async with (
@@ -126,10 +140,7 @@ async def _create_issue(
                     follow_redirects=False,
                 ) as client,
                 client.stream(
-                    "POST",
-                    f"{GITHUB_API}/repos/{repo}/issues",
-                    headers=github_headers(user_agent),
-                    json={"title": title, "body": body, "labels": labels},
+                    method, url, headers=github_headers(user_agent), **request
                 ) as response,
             ):
                 response.raise_for_status()
@@ -138,14 +149,59 @@ async def _create_issue(
                     if len(content) + len(chunk) > _ISSUE_RESPONSE_LIMIT_BYTES:
                         raise ValueError("GitHub response exceeds the issue limit")
                     content.extend(chunk)
-            created = json.loads(bytes(content) or b"{}")
-            number = created.get("number") if isinstance(created, dict) else None
-            if type(number) is not int or number <= 0:
-                raise ValueError("GitHub issue response had an unexpected shape")
-            return number
+            return json.loads(bytes(content) or b"{}")
     except TimeoutError as exc:
         # Keep the existing route's ambiguous-outcome warning and rollback path.
         raise httpx.ReadTimeout("GitHub issue deadline exceeded") from exc
+
+
+def list_issue_states(repo: str, labels: list[str], *, user_agent: str) -> dict:
+    """Read the state of up to 100 labelled issues in one bounded request.
+
+    Returns ``{number: 'open' | 'completed' | 'not_planned'}`` for the most
+    recently updated issues carrying every label. One attempt with the same
+    deadline and size cap as ``create_issue``. Pull requests are skipped.
+    Raises ``httpx.HTTPError`` or ``ValueError`` on any failure.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("invalid repository")
+    listed = asyncio.run(
+        _issue_request(
+            "GET",
+            f"{GITHUB_API}/repos/{repo}/issues",
+            user_agent=user_agent,
+            params={
+                "labels": ",".join(labels),
+                "state": "all",
+                "sort": "updated",
+                "direction": "desc",
+                "per_page": "100",
+            },
+        )
+    )
+    if not isinstance(listed, list):
+        raise ValueError("GitHub issue list had an unexpected shape")
+    states = {}
+    for issue in listed:
+        if not isinstance(issue, dict):
+            raise ValueError("GitHub issue list had an unexpected shape")
+        if "pull_request" in issue:
+            continue
+        number = issue.get("number")
+        if type(number) is not int or number <= 0:
+            raise ValueError("GitHub issue list had an unexpected shape")
+        if issue.get("state") == "open":
+            states[number] = "open"
+        elif issue.get("state") == "closed":
+            # GitHub closes as completed, not_planned or duplicate. Only an
+            # explicit completion (or a legacy close with no reason) is done.
+            reason = issue.get("state_reason")
+            states[number] = (
+                "completed" if reason in (None, "completed") else "not_planned"
+            )
+        else:
+            raise ValueError("GitHub issue list had an unexpected shape")
+    return states
 
 
 def _parse_github_datetime(value: str | None) -> datetime | None:

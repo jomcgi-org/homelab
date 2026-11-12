@@ -1,10 +1,27 @@
-/** Sending feedback, and the operator's private triage inbox. */
+/** Sending feedback, the shared roadmap, and the operator's triage inbox. */
 import { useQuery } from "@tanstack/react-query";
 import { api, ApiError, UnexpectedResponseError } from "./client";
 
 export const keys = {
   inbox: ["feedback", "new"] as const,
+  roadmap: ["feedback", "roadmap"] as const,
 };
+
+/** Every signed-in user: what was suggested and what happened to it. */
+export const useRoadmap = () =>
+  useQuery({
+    queryKey: keys.roadmap,
+    queryFn: () => api("GET /feedback/roadmap"),
+  });
+
+/** Adds or withdraws the caller's "Me too" on someone else's item. */
+export const setVote = (input: { id: string; voted: boolean }) =>
+  api(
+    input.voted
+      ? "PUT /feedback/{feedback_id}/vote"
+      : "DELETE /feedback/{feedback_id}/vote",
+    { params: { feedback_id: input.id } },
+  );
 
 /** Operators only: anyone else is refused with a 403. */
 export const useFeedbackInbox = () =>
@@ -53,5 +70,9 @@ export const fileFeedback = async (input: {
   }
 };
 
-export const dismissFeedback = (id: string) =>
-  api("POST /feedback/{feedback_id}/dismiss", { params: { feedback_id: id } });
+/** The reason, when given, is shown on the roadmap. */
+export const dismissFeedback = (input: { id: string; reason?: string }) =>
+  api("POST /feedback/{feedback_id}/dismiss", {
+    params: { feedback_id: input.id },
+    ...(input.reason ? { body: { reason: input.reason } } : {}),
+  });

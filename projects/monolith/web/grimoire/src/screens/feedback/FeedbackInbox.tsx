@@ -25,9 +25,11 @@ import { NoteText } from "../../notes/NoteText";
 
 const TITLE_MAX = 120;
 const BODY_MAX = 4000;
-const changed = [keys.inbox, lobbyKeys.lobby];
+const REASON_MAX = 200;
+const changed = [keys.inbox, keys.roadmap, lobbyKeys.lobby];
+const votes = (count: number) => (count === 1 ? "1 vote" : `${count} votes`);
 
-/** The operator's private inbox: file each item as an issue, or dismiss it. */
+/** The operator's inbox: file each item as an issue, or dismiss it. */
 export function FeedbackInbox() {
   const inbox = useFeedbackInbox();
   const refused =
@@ -52,17 +54,16 @@ export function FeedbackInbox() {
 }
 
 function Inbox({ items }: { items: FeedbackView[] }) {
-  const [filing, setFiling] = useState<FeedbackView | null>(null);
+  const [open, setOpen] = useState<{
+    item: FeedbackView;
+    dialog: "file" | "dismiss";
+  } | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
-  const closeFiling = () => {
-    setFiling(null);
+  const close = () => {
+    setOpen(null);
     // Wait for conditional dialog removal before returning keyboard focus.
     requestAnimationFrame(() => trigger.current?.focus());
   };
-  const dismiss = useAction(dismissFeedback, {
-    invalidate: changed,
-    success: "Dismissed.",
-  });
   if (items.length === 0) {
     return <EmptyState isCompact title="No new feedback." />;
   }
@@ -86,30 +87,77 @@ function Inbox({ items }: { items: FeedbackView[] }) {
                 type="inherit"
                 color="inherit"
                 hasTooltip={false}
-              />
+              />{" "}
+              · {votes(item.votes)}
             </Text>
             <HStack gap={2} wrap="wrap">
               <Button
                 label="File issue"
                 onClick={(event) => {
                   trigger.current = event.currentTarget;
-                  setFiling(item);
+                  setOpen({ item, dialog: "file" });
                 }}
               />
               <Button
                 label="Dismiss"
                 variant="ghost"
-                isDisabled={dismiss.isPending}
-                onClick={() => dismiss.run(item.id)}
+                onClick={(event) => {
+                  trigger.current = event.currentTarget;
+                  setOpen({ item, dialog: "dismiss" });
+                }}
               />
             </HStack>
           </VStack>
         </Card>
       ))}
-      {filing && (
-        <FileIssue key={filing.id} item={filing} onClose={closeFiling} />
+      {open?.dialog === "file" && (
+        <FileIssue key={open.item.id} item={open.item} onClose={close} />
+      )}
+      {open?.dialog === "dismiss" && (
+        <Dismiss key={open.item.id} item={open.item} onClose={close} />
       )}
     </>
+  );
+}
+
+/** A dismissed item moves to Rejected on the roadmap, with the reason if any. */
+function Dismiss({
+  item,
+  onClose,
+}: {
+  item: FeedbackView;
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const dismiss = useAction(dismissFeedback, {
+    invalidate: changed,
+    success: "Dismissed.",
+    onSuccess: onClose,
+  });
+  const submit = () => {
+    if (!dismiss.isPending)
+      dismiss.run({ id: item.id, reason: reason.trim() || undefined });
+  };
+  return (
+    <FormDialog
+      title="Dismiss"
+      submitLabel="Dismiss"
+      isPending={dismiss.isPending}
+      isInvalid={false}
+      onSubmit={submit}
+      onClose={onClose}
+    >
+      <NoteText text={item.text} />
+      <TextInput
+        label="Reason (shown on the roadmap)"
+        isOptional
+        value={reason}
+        onChange={(value) => setReason(value.slice(0, REASON_MAX))}
+        onEnter={submit}
+        width="100%"
+        hasAutoFocus
+      />
+    </FormDialog>
   );
 }
 

@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { findToast, openApp } from "../test/app";
 import { ids } from "../test/fixtures";
+import { roadmapItems } from "../test/fixtures/feedback";
 import { world } from "../test/world";
 import { paths } from "./paths";
 import { signIn } from "./signIn";
@@ -45,6 +46,51 @@ describe("Sending feedback", () => {
       text: "More colour, please.",
       page: "/",
     });
+  });
+
+  it("says who will see the note and links to what is already suggested", async () => {
+    const { user } = openApp(world);
+    const dialog = await write(user, "Half a thought");
+    expect(
+      within(dialog).getByText(/Everyone signed in can see this\./),
+    ).toBeTruthy();
+    const link = within(dialog).getByRole("link", {
+      name: "See what's already suggested",
+    });
+    expect(link.getAttribute("href")).toBe(paths.roadmap);
+    await user.click(link);
+    expect(
+      await screen.findByRole("heading", { name: "Roadmap" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Feedback" })).toBeNull();
+  });
+
+  it("shows a sent note on the roadmap without a reload", async () => {
+    const sent = {
+      ...roadmapItems[0]!,
+      id: "f9999999-9999-4999-8999-999999999999",
+      text: "Dark mode for handouts.",
+      votes: 0,
+      mine: true,
+    };
+    let items = roadmapItems;
+    const { user } = openApp(
+      {
+        ...world,
+        "GET /feedback/roadmap": () => items,
+        "POST /feedback": () => {
+          items = [sent, ...items];
+          return { id: sent.id };
+        },
+      },
+      paths.roadmap,
+    );
+    await screen.findByRole("tab", { name: "New (2)" });
+    const dialog = await write(user, sent.text);
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    expect(await findToast("Thanks. Sent.")).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "New (3)" })).toBeTruthy();
+    expect(screen.getByText(sent.text)).toBeTruthy();
   });
 
   it("does not send an empty note", async () => {
