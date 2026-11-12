@@ -43,10 +43,6 @@ A paused task’s pending decision presents exact receipt/decision identities fo
 
 **Charter content.** The charter states authority, untrusted data, outcome/exit criteria and defaults the server cannot infer. Server-enforced mechanics (reserved keys, cost clamping, turn arithmetic, exception field minimums) live in the schema, refusal codes and `decision_feedback`. Restore removed lines only after repeated planner failures unprevented by feedback.
 
-### Planner preview
-
-Decision preview is staged behind `swarm.factoryPlannerPreviewEnabled=false`. Even enabled, the verifier returns no binding; results remain advisory. Acceptance lives on [the #6650 brief](https://github.com/jomcgi-org/homelab/issues/6650#issuecomment-5927671458).
-
 ## Availability and operator policy
 
 Chart `swarm.factoryEnabled` defaults false; admission needs a separate durable operator transition. Policies name repo, issues, generation, caps, envelopes, models, base branch, timeouts and attempt bounds; admission pins them immutably. `max_task_turns_hard` is the envelope an accepted plan must fit; `task_budget_usd` records for accounting and never refuses a plan. `max_parallel_nodes` defaults to 1, `max_review_rounds` 2 and `max_review_recovery_rounds` 0.

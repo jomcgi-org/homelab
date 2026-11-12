@@ -293,8 +293,6 @@ spec:
               value: {{ .Values.swarm.factoryTransientStopRetryEnabled | default false | quote }}
             - name: FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED
               value: {{ .Values.swarm.factoryDrainedLossSettlementEnabled | default false | quote }}
-            - name: FACTORY_PLANNER_PREVIEW_ENABLED
-              value: {{ .Values.swarm.factoryPlannerPreviewEnabled | default false | quote }}
             - name: FACTORY_PLANNER_HOLD_REFUSAL_ENABLED
               value: {{ .Values.swarm.factoryPlannerHoldRefusalEnabled | default false | quote }}
             - name: FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED
