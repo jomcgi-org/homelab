@@ -8,6 +8,9 @@
 {{- if and (hasKey $codex "enabled") (not (kindIs "bool" $codex.enabled)) }}
 {{- fail "conformance.codex.enabled must be a boolean" }}
 {{- end }}
+{{- if and (hasKey $codex "resumeReportOnly") (not (kindIs "bool" $codex.resumeReportOnly)) }}
+{{- fail "conformance.codex.resumeReportOnly must be a boolean" }}
+{{- end }}
 {{- if $codex.enabled }}
 {{- $claude := .Values.claudeRuntimeWorkload }}
 {{- if not .Values.rootfsBuilder.stampImageDigest }}
@@ -114,6 +117,11 @@ spec:
             - { name: S9_CODEX_GUEST_DIGEST, value: {{ .Values.runtimeClaude.guestImage.digest | quote }} }
             - { name: S9_CODEX_CLI_VERSION, value: {{ required "conformance.codex.cliVersion is required" $codex.cliVersion | quote }} }
             - { name: S9_BUDGET, value: {{ .Values.conformance.budgets.s9 | quote }} }
+            {{- if $codex.resumeReportOnly }}
+            # Temporary (#7731): the first turn still gates promotion; a resumed
+            # turn failure is reported in the S9 detail only.
+            - { name: S9_CODEX_RESUME_REPORT_ONLY, value: "true" }
+            {{- end }}
             {{- end }}
             {{- if $s6.enabled }}
             # The TLC toolchain the image ships under /opt/tla (conformance BUILD

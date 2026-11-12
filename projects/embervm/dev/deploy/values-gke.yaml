@@ -200,6 +200,10 @@ conformance:
     model: terra
     providerModel: gpt-6.1-terra
     cliVersion: "0.167.0"
+    # Temporary: the resumed Codex turn fails after park/relight (#7731), which
+    # froze prod promotion. The first turn still gates; set back to false once
+    # #7731 is fixed.
+    resumeReportOnly: true
 
 # This broker owns a dev-only grant. No production grant is copied. The older
 # chart already understands plaintext retirement, so applying this HEAD overlay

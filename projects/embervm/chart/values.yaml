@@ -488,6 +488,10 @@ conformance:
     model: terra
     providerModel: gpt-6.1-terra
     cliVersion: "0.167.0"
+    # true reports a resumed (post-park) turn failure without failing S9; the
+    # first authenticated turn still gates promotion. Keep false except while
+    # a known resume defect is tracked (#7731).
+    resumeReportOnly: false
   budgets:
     s1: 90s
     # The guest shim's inner init read timeout is 90s. A 180s outer budget safely

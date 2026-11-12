@@ -2565,6 +2565,13 @@ confirms removal, including after failure, with an independent cleanup deadline.
 It retains a successful result for the current runner and chart, and stops
 after two failed attempts so an unavailable provider cannot consume quota on
 every scheduled suite. A runner restart resets that bounded attempt count.
+Retained failures expire after an hour, so a provider-side fix is retested.
+
+`conformance.codex.resumeReportOnly` (default false) keeps the first turn as
+the gate and reports a resumed-turn failure in the S9 detail without failing
+it. Hub dev sets it to true temporarily, because the resumed turn after
+park/relight returns 502 (#7731) and froze production promotion. Set it back
+to false once #7731 is fixed.
 
 The digest stamp is an explicit dev opt-in. `stampImageDigest: true` derives
 the effective `b3` rootfs cache identity while the generic format remains `b2`.

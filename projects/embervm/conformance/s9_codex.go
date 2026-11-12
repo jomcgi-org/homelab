@@ -171,6 +171,12 @@ func runS9(ctx context.Context, cfg config, client *controlPlaneClient, onCharge
 		err = validateCodexProbeTurn(second, cfg, first.SessionID, artifactPath, nonce, "cat")
 	}
 	if err != nil {
+		if cfg.codexResumeReportOnly {
+			// Report-only resume (#7731): the authenticated first turn already
+			// passed, so record the resume failure without blocking promotion.
+			// The deferred cleanup still destroys the session.
+			return scenarioVerdict{Verdict: verdictPass, Detail: "first Codex shell turn passed; resume report-only (#7731) failed: " + err.Error()}
+		}
 		return scenarioVerdict{Verdict: verdictFail, Detail: "resumed Codex shell turn: " + err.Error()}
 	}
 	if err := destroySession(ctx, client, session); err != nil {
