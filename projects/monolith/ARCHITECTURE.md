@@ -617,6 +617,21 @@ the historical migration is never rerun or rewritten (#6983).
 
 ### Capacity and delivery rationale
 
+The repository-staged #7711 arbitration retries eligible pending landing
+recoveries on the landing tick and before allocating delivery capacity to queued
+or new intake. Both transitions hold the same control-row lock. The retry uses
+the latest durable request's original reason and heads, rechecks GitHub ownership
+and readiness, and acquires capacity through the existing recovery owner.
+Ineligible requests reserve nothing; advisory-only admission remains independent.
+Holds, limits, deadlines and accounting remain unchanged. The measure is one tick
+from a freed contended slot to recovery start, measured from linked request/start
+audits. Merge and rollout belong to the authorized owner; the PR remains unmerged
+and no runtime policy changes in this delivery. Acceptance stays on #7711 until
+a verified rollout and one bounded read of existing contention events establish
+priority and pre/post median request-to-start latency. Missing comparable events
+leave the result inconclusive. See the
+[capacity contract](factory/orchestration/FACTORY.md#landing-recovery-before-delivery-admission).
+
 **Why.** A completed Claude quota probe could destroy its guest after bounded
 receipt-fence release retries failed, then retain its binding forever because
 workflow cleanup excludes probes. The leader now retries only delivered Claude

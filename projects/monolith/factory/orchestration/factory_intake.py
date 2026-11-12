@@ -1,4 +1,4 @@
-"""GitHub receipt deduplication and single-task admission, without network calls."""
+"""GitHub receipt deduplication and serialized recovery-before-intake admission."""
 
 from __future__ import annotations
 
@@ -551,6 +551,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         if control.state != "enabled":
             return {"ok": False, "reason": control.state}
         retry_capacity_releases(session=db)
+        from factory.orchestration.recovery_priority import retry_pending
+
+        if "delivery" in lanes:
+            retry_pending(db, control)
         policy = validate_policy(json.loads(control.policy_json))
         limits = lane_limits(policy)
         active = db.exec(

@@ -5240,6 +5240,18 @@ def request_landing_recovery(
             previous
             and (previous[-1].id > latest_finish or not barrier["round_recorded"])
         )
+        if replaying:
+            authority = json.loads(previous[-1].detail_json)
+            if (pr_number, head_sha) != (
+                authority.get("pr_number"),
+                authority.get("head_sha"),
+            ):
+                return {"ok": False, "reason": "recovery_authority_mismatch"}
+            # A retry cannot turn an operator re-review into conflict repair
+            # and thereby bypass its automatic-landing policy requirement.
+            reason = authority["reason"]
+            source = authority["source"]
+            current_head_sha = authority.get("current_head_sha")
         if replaying and row.state == "admitted":
             return {"ok": True, "replayed": True, "state": row.state}
         if not replaying and len(previous) >= MAX_LANDING_RECOVERIES:

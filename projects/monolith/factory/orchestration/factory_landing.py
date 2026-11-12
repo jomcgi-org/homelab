@@ -1762,6 +1762,13 @@ def landing_tick(policy: dict) -> None:
 
         factory_rollback_runtime.tick(policy)
 
+        from factory.orchestration.recovery_priority import retry_pending
+
+        # Reconciliation can free capacity after the conductor's active-task
+        # snapshot. Retry here even when that stale snapshot suppresses intake.
+        with _locked_session() as (db, control):
+            retry_pending(db, control)
+
         merge_enabled = auto_merge_enabled(policy)
         publish_enabled = review_publisher.enabled()
         deliveries = [

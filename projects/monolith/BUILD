@@ -5169,6 +5169,11 @@ bdd_test(
     srcs = ["factory/orchestration/factory_daily_admission_limit_postgres_test.py"],
 )
 
+bdd_test(
+    name = "swarm_recovery_priority_test",
+    srcs = ["factory/orchestration/recovery_priority_test.py"],
+)
+
 # Only the new-admission implementation pool changes in this guarded migration.
 bdd_test(
     name = "swarm_factory_implement_sol_first_postgres_test",
