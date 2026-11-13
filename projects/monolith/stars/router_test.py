@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from core.db import get_session
@@ -740,7 +740,7 @@ class TestHistory:
         assert r.json() == {"sites": [], "count": 0}
 
 
-@pytest.mark.parametrize("path", ["/api/stars/sites", "/api/stars/history"])
+@pytest.mark.parametrize("path", ["/api/stars/history"])
 def test_conditional_response_preserves_payload_and_cache_headers(client, path):
     first = client.get(path)
     assert first.status_code == 200
@@ -756,3 +756,35 @@ def test_conditional_response_preserves_payload_and_cache_headers(client, path):
     assert cached.content == b""
     for header in ["ETag", "Cache-Control", "Last-Modified"]:
         assert cached.headers.get(header) == first.headers.get(header)
+
+
+def test_dictionary_sites_conditional_response_preserves_payload(session):
+    _seed_site(session, "galloway-forest")
+    session.add(_hour("galloway-forest", 1))
+    session.commit()
+    response = Response()
+    payload = stars_router._build_sites_from_db(
+        Request({"type": "http", "headers": []}), response, session
+    )
+    etag = response.headers["ETag"]
+    for validator in ['"different"', f"W/{etag}", f'{etag}, "other"', "*", etag]:
+        injected = Response()
+        result = stars_router._build_sites_from_db(
+            Request(
+                {"type": "http", "headers": [(b"if-none-match", validator.encode())]}
+            ),
+            injected,
+            session,
+        )
+        if validator == etag:
+            assert isinstance(result, Response)
+            assert result.status_code == 304
+            assert result.body == b""
+            assert result.headers["ETag"] == etag
+            assert result.headers["Cache-Control"] == response.headers["Cache-Control"]
+        else:
+            assert result == payload
+            assert injected.headers["ETag"] == etag
+            assert (
+                injected.headers["Cache-Control"] == response.headers["Cache-Control"]
+            )
