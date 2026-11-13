@@ -16,9 +16,10 @@ spec:
             - port: "443"
               protocol: TCP
 ---
-# cloudflared: outbound to Cloudflare's tunnel edge only. Routing to an origin
-# adds an egress rule here, so every public path is a reviewed change to this
-# file as well as to the edge Gateway.
+# cloudflared: outbound to Cloudflare's tunnel edge and to the one origin, the
+# authenticated Envoy proxy in `edge` (projects/platform-factory/edge/).
+# Another origin would need an egress rule here, so every public path is a
+# reviewed change to this file as well as to the edge Gateway.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -46,4 +47,14 @@ spec:
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+    # The Envoy proxy's listener (Service port 80 maps to container port 10080).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "10080"
               protocol: TCP

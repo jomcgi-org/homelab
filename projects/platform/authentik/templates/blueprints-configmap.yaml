@@ -9,8 +9,11 @@ admin UI, and it survives a database rebuild the way clicked config does not.
 
 Blueprint entries match on `identifiers`, so re-application is idempotent and a
 re-applied entry updates in place rather than creating duplicates.
+
+blueprintsDirectory picks the set: the hub's blueprints/, or the factory
+cluster's factory-blueprints/ (values-factory.yaml).
 */}}
-{{- $files := .Files.Glob "blueprints/*.yaml" }}
+{{- $files := .Files.Glob (printf "%s/*.yaml" .Values.blueprintsDirectory) }}
 {{- if $files }}
 apiVersion: v1
 kind: ConfigMap

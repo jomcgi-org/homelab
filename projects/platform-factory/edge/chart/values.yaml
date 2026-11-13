@@ -1,0 +1,85 @@
+# Envoy Gateway for the factory home cluster (projects/factory-cluster/README.md,
+# "factory.jomcgi.dev"). The controller and its one proxy run in the `edge`
+# namespace, the only namespace the cfgate tunnel Gateway accepts routes from.
+
+gateway-helm:
+  # Gateway API CRDs belong to k3s; Envoy Gateway's own come from
+  # gateway-crds-helm below.
+  crds:
+    enabled: false
+  deployment:
+    envoyGateway:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+  # Only adds zone labels to proxy pods, which this cluster has no use for, and
+  # would need the apiserver to reach the controller's webhook port.
+  topologyInjector:
+    enabled: false
+  config:
+    envoyGateway:
+      provider:
+        type: Kubernetes
+        kubernetes:
+          # Each proxy runs in its Gateway's namespace, so a proxy for any
+          # other Gateway could never take the edge proxy's namespace and
+          # network identity.
+          deploy:
+            type: GatewayNamespace
+      # EnvoyPatchPolicy and the Backend API stay off (the defaults): either
+      # could route around the gateway-wide SecurityPolicy.
+      extensionApis: {}
+
+gateway-crds-helm:
+  crds:
+    gatewayAPI:
+      enabled: false
+    envoyGateway:
+      enabled: true
+
+# Namespaces whose HTTPRoutes may attach to the edge Gateway, by name (the
+# apiserver sets kubernetes.io/metadata.name and nothing can change it). Every
+# route there is behind Authentik except the identity provider's own, which
+# lives in edge. A new application adds its namespace here.
+routeNamespaces:
+  - edge
+  - argocd
+
+# Host of the permanent route that keeps the OIDC filter on the listener
+# (templates/oidc-sentinel.yaml).
+sentinelHostname: factory.jomcgi.dev
+
+authentik:
+  hostname: factory-auth.jomcgi.dev
+  service:
+    name: authentik-server
+    namespace: authentik
+    port: 80
+  # The only /api/v3/ prefixes reachable from the internet: what the flow
+  # interface calls while signing in and enrolling MFA. Everything else under
+  # /api/v3/ answers 403 (templates/authentik-route.yaml).
+  publicAPIPrefixes:
+    - /api/v3/flows/executor/
+    - /api/v3/root/config/
+    - /api/v3/core/brands/current/
+  # The gateway's own OIDC client (projects/platform/authentik/factory-blueprints/).
+  oidc:
+    clientID: factory-edge
+    applicationSlug: factory-edge
+    # Written by the authentik secret-init Job (projects/platform-factory/authentik/resources/).
+    clientSecretName: edge-oidc-client
+
+proxy:
+  # Name of the Service Envoy Gateway creates for the proxy. The tunnel route
+  # and the edge-admission policy name it.
+  serviceName: edge-proxy
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

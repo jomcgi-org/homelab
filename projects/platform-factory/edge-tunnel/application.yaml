@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: edge-tunnel
+  namespace: argocd
+  annotations:
+    # Last: after the edge Gateway, Authentik and the OIDC client secret.
+    # Child Application waves order creation but do not wait for health; the
+    # gateway-wide policy fails closed until its secret exists.
+    argocd.argoproj.io/sync-wave: "6"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/edge-tunnel/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: edge
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

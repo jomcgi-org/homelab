@@ -1,0 +1,87 @@
+# Factory home cluster overlay (projects/platform-factory/authentik).
+#
+# Authentik signs people in to everything published at *.jomcgi.dev from the
+# factory cluster: Envoy Gateway's gateway-wide OIDC policy and ArgoCD's own
+# OIDC both use it. It is reached at factory-auth.jomcgi.dev through the edge
+# Gateway, whose route lives in the `edge` namespace and blocks the admin
+# interface and the initial-setup flow (projects/platform-factory/edge/).
+#
+# Nothing here comes from 1Password. The authentik-secret-init Job generates
+# AUTHENTIK_SECRET_KEY and the OIDC client secrets into authentik-secrets once,
+# and CloudNativePG generates the database credentials. The secret key moves to
+# 1Password once Postgres has off-node backups: until then a lost cluster loses
+# the database too, so a key held elsewhere would protect nothing.
+
+blueprintsDirectory: factory-blueprints
+
+grimoireOidc:
+  enabled: false
+
+grimoireDiscordSource:
+  enabled: false
+
+platformManagement:
+  enabled: false
+
+authentik:
+  global:
+    # Upstream image matching the chart; the hub's private fork needs a GHCR
+    # pull secret this cluster does not have.
+    image:
+      repository: ghcr.io/goauthentik/server
+      tag: "2026.5.6"
+      digest: "sha256:ed120caf710ccf82ef0026f0bc74e51615bc95ebff228a7a2d6fc60c441c3868"
+    imagePullSecrets: []
+    env:
+      - name: AUTHENTIK_POSTGRESQL__HOST
+        value: authentik-pg-rw
+      - name: AUTHENTIK_POSTGRESQL__NAME
+        value: authentik
+      - name: AUTHENTIK_POSTGRESQL__USER
+        value: authentik
+      - name: AUTHENTIK_POSTGRESQL__PORT
+        value: "5432"
+      - name: AUTHENTIK_POSTGRESQL__PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: authentik-pg-app
+            key: password
+      # No outbound calls: the namespace's egress allows only Postgres.
+      - name: AUTHENTIK_DISABLE_UPDATE_CHECK
+        value: "true"
+      - name: AUTHENTIK_DISABLE_STARTUP_ANALYTICS
+        value: "true"
+      - name: AUTHENTIK_ERROR_REPORTING__ENABLED
+        value: "false"
+      - name: AUTHENTIK_AVATARS
+        value: initials
+      # Outposts are not used (Envoy runs the OIDC flow), so the worker does
+      # not look for a Kubernetes integration to manage them with.
+      - name: AUTHENTIK_OUTPOSTS__DISCOVER
+        value: "false"
+  server:
+    replicas: 1
+    route:
+      main:
+        # The route is in the edge namespace (projects/platform-factory/edge/).
+        enabled: false
+  worker:
+    replicas: 1
+  # Only needed for managed outposts.
+  serviceAccount:
+    create: false
+  additionalObjects: []
+
+cnpg:
+  storage:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  # No backups yet: the factory cluster has no off-node store
+  # (projects/factory-cluster/README.md, "Not yet done").
+  backup:
+    enabled: false

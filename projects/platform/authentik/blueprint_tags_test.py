@@ -104,6 +104,8 @@ def _parse_and_check_blueprint(yaml_text, label):
 
 # Real blueprint files
 BLUEPRINT_DIR = pathlib.Path(__file__).resolve().parent / "blueprints"
+# The factory cluster's set (values-factory.yaml, blueprintsDirectory).
+FACTORY_BLUEPRINT_DIR = BLUEPRINT_DIR.parent / "factory-blueprints"
 
 
 def _blueprint_files():
@@ -114,6 +116,7 @@ def _blueprint_files():
         return sorted(
             [
                 *BLUEPRINT_DIR.glob("*.yaml"),
+                *FACTORY_BLUEPRINT_DIR.glob("*.yaml"),
                 BLUEPRINT_DIR.parent / "dev" / "mcp-recovery.yaml",
             ]
         )

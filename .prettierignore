@@ -55,3 +55,7 @@ projects/monolith/web/grimoire/src/api/schema.ts
 
 # Compiled by `astryx theme build` from sheetTheme.ts in the same directory.
 projects/monolith/web/grimoire/src/theme/sheet.*
+
+# Vendored upstream release manifests are kept byte-for-byte so their
+# recorded sha256 still matches.
+**/upstream/*-install.yaml

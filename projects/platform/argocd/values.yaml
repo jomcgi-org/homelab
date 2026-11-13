@@ -52,7 +52,6 @@ argo-cd:
       tag: v2.44.0
   configs:
     cm:
-      accounts.mcp-agent: apiKey
       # The OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_PROTOCOL ignores
       # were REMOVED with SigNoz (#5362), and removing them is the point rather
       # than cleanup.
@@ -140,8 +139,3 @@ argo-cd:
         jqPathExpressions:
           - '.metadata.annotations | select(. != null and length == 0)'
           - '.metadata.labels | select(. != null and length == 0)'
-    rbac:
-      policy.csv: |
-        p, mcp-agent, applications, *, */*, allow
-        p, mcp-agent, projects, get, *, allow
-        p, mcp-agent, clusters, get, *, allow

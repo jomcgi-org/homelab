@@ -1,0 +1,260 @@
+# The factory cluster's only internet path is Cloudflare Tunnel, then the cfgate
+# Gateway, then the Envoy Gateway in `edge`, which signs every request in through
+# Authentik. These policies keep every piece of that path inside `edge` (and
+# `cfgate-system` for the tunnel Gateway), so nothing elsewhere can publish a
+# hostname, run a proxy under the edge's identity or replace the gateway-wide
+# SecurityPolicy.
+#
+# They are ValidatingAdmissionPolicies, evaluated by the API server for every
+# namespace including kube-system, kube-public and kube-node-lease.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-edge-namespace-label
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [namespaces]
+  validations:
+    - expression: >-
+        object.metadata.name == 'edge' ||
+        !has(object.metadata.labels) ||
+        !('factory.jomcgi.dev/edge' in object.metadata.labels)
+      message: Only the edge namespace may carry the factory.jomcgi.dev/edge label.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-edge-namespace-label
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-edge-namespace-label
+  validationActions: [Deny]
+---
+# Only the two GatewayClasses that exist. Another class naming Envoy Gateway's
+# controller would let a namespace run its own proxy.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-edge-gatewayclasses
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [gateway.networking.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [gatewayclasses]
+  validations:
+    - expression: >-
+        (object.metadata.name == 'edge' &&
+         object.spec.controllerName == 'gateway.envoyproxy.io/gatewayclass-controller' &&
+         has(object.spec.parametersRef) &&
+         object.spec.parametersRef.kind == 'EnvoyProxy' &&
+         object.spec.parametersRef.name == 'edge' &&
+         has(object.spec.parametersRef.namespace) &&
+         object.spec.parametersRef.namespace == 'edge')
+        ||
+        (object.metadata.name == 'cfgate' &&
+         object.spec.controllerName == 'cfgate.io/cloudflare-tunnel-controller' &&
+         !has(object.spec.parametersRef))
+      message: The only GatewayClasses are `edge` (Envoy Gateway, EnvoyProxy edge/edge) and `cfgate`.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-edge-gatewayclasses
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-edge-gatewayclasses
+  validationActions: [Deny]
+---
+# One Gateway per class, in its own namespace, with no per-Gateway EnvoyProxy
+# override and no ListenerSets.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-edge-gateways
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [gateway.networking.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [gateways]
+  validations:
+    - expression: >-
+        object.spec.gatewayClassName != 'edge' ||
+        (request.namespace == 'edge' && object.metadata.name == 'edge')
+      message: Gateways of class edge belong in the edge namespace (edge/edge only).
+    - expression: >-
+        object.spec.gatewayClassName != 'cfgate' ||
+        (request.namespace == 'cfgate-system' && object.metadata.name == 'cloudflare-tunnel')
+      message: Gateways of class cfgate belong in cfgate-system (cloudflare-tunnel only).
+    - expression: >-
+        !has(object.spec.infrastructure) || !has(object.spec.infrastructure.parametersRef)
+      message: A Gateway may not override its class's EnvoyProxy.
+    - expression: "!has(object.spec.allowedListeners)"
+      message: ListenerSets may not attach to Gateways on this cluster.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-edge-gateways
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-edge-gateways
+  validationActions: [Deny]
+---
+# EnvoyProxy shapes the proxy Deployment (labels, volumes, patches). A route
+# SecurityPolicy replaces the gateway-wide one; the other kinds can rewrite the
+# listener or filter chain, or add arbitrary backends.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-edge-envoy-resources
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [gateway.envoyproxy.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources:
+          - envoyproxies
+          - securitypolicies
+          - envoypatchpolicies
+          - envoyextensionpolicies
+          - clienttrafficpolicies
+          - backends
+  validations:
+    - expression: request.namespace == 'edge'
+      message: >-
+        EnvoyProxy, SecurityPolicy, EnvoyPatchPolicy, EnvoyExtensionPolicy,
+        ClientTrafficPolicy and Backend objects belong in the edge namespace.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-edge-envoy-resources
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-edge-envoy-resources
+  validationActions: [Deny]
+---
+# A route on the tunnel publishes a hostname. Any parentRef into cfgate-system
+# counts, whatever the Gateway's name. Only an HTTPRoute in edge may attach,
+# its only backend is the edge-proxy Service, and it carries no filters (a
+# RequestMirror would copy traffic elsewhere).
+#
+# factory-auth.jomcgi.dev is routed only from edge, where its route blocks
+# Authentik's admin interface and API.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-edge-routes
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [gateway.networking.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [httproutes, grpcroutes, tcproutes, tlsroutes, udproutes]
+  variables:
+    - name: onTunnel
+      expression: >-
+        has(object.spec.parentRefs) && object.spec.parentRefs.exists(p,
+          (has(p.namespace) ? p.namespace : request.namespace) == 'cfgate-system')
+  validations:
+    - expression: >-
+        !variables.onTunnel ||
+        (request.kind.kind == 'HTTPRoute' &&
+         request.namespace == 'edge' &&
+         (!has(object.spec.rules) || object.spec.rules.all(r,
+           !has(r.filters) &&
+           (!has(r.backendRefs) || r.backendRefs.all(b,
+             b.name == 'edge-proxy' &&
+             (!has(b.kind) || b.kind == 'Service') &&
+             (!has(b.group) || b.group == '') &&
+             (!has(b.namespace) || b.namespace == 'edge') &&
+             !has(b.filters))))))
+      message: >-
+        Only an HTTPRoute in edge may attach to the tunnel Gateway, with the
+        edge-proxy Service as its only backend and no filters.
+    - expression: >-
+        request.namespace == 'edge' ||
+        !has(object.spec.hostnames) ||
+        !object.spec.hostnames.exists(h, h == 'factory-auth.jomcgi.dev')
+      message: Only the edge namespace may route factory-auth.jomcgi.dev.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-edge-routes
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-edge-routes
+  validationActions: [Deny]
+---
+# cfgate turns these into Cloudflare tunnels and DNS records; outside
+# cfgate-system they could publish hostnames around the edge.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-edge-cfgate-resources
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [cfgate.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [cloudflarednses, cloudflaretunnels]
+  validations:
+    - expression: request.namespace == 'cfgate-system'
+      message: CloudflareDNS and CloudflareTunnel objects belong in cfgate-system.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-edge-cfgate-resources
+  annotations:
+    # Deleting this Application must not drop the guards while the edge runs.
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-edge-cfgate-resources
+  validationActions: [Deny]

@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: edge
+  namespace: argocd
+  annotations:
+    # After edge-admission, which guards what this creates.
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/edge/chart
+    helm:
+      releaseName: edge
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: edge
+  # authentik-secret-init writes the real OIDC client secret.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: edge-oidc-client
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # The cfgate tunnel Gateway admits routes only from this namespace.
+    managedNamespaceMetadata:
+      labels:
+        factory.jomcgi.dev/edge: "true"
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+      # A sync applies only what differs, so the OIDC client secret's real
+      # value (ignored above) is never reset to the chart's placeholder.
+      - ApplyOutOfSyncOnly=true
+      # The Envoy Gateway CRDs arrive in the same sync.
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -15,6 +15,14 @@ grimoireDiscordSource:
   # cluster Secret keeps the name grimoire-discord-oauth.
   itemPath: vaults/k8s-homelab/items/discord-bosun
 
+# Directory of authentik blueprints rendered into the blueprints ConfigMap.
+# The factory cluster uses its own set (values-factory.yaml).
+blueprintsDirectory: blueprints
+
+# The Grimoire OIDC client secret from 1Password. Hub only.
+grimoireOidc:
+  enabled: true
+
 platformManagement:
   # Adds protected account-type claims for explicit operator bootstrap before
   # enrollment/enforcement. No group, permission or flow gate changes.

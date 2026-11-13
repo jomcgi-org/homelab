@@ -1,0 +1,100 @@
+{{- /*
+The edge namespace's allowlist under the cluster-wide default-deny
+(projects/platform-factory/network-policy/). A new backend behind the gateway
+needs an egress rule here and an ingress rule in its own namespace.
+*/}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: envoy-gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      control-plane: envoy-gateway
+  ingress:
+    # xDS to the proxies.
+    - fromEndpoints:
+        - matchLabels:
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
+      toPorts:
+        - ports:
+            - port: "18000"
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+---
+# The certgen Job writes the control plane's TLS and OIDC HMAC Secrets. It is a
+# Helm pre-install hook, which ArgoCD runs as a PreSync hook before any
+# ordinary resource of this chart exists, so its policy is a PreSync hook too.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: certgen
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: certgen
+  egress:
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: proxy
+  namespace: {{ .Release.Namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: edge
+      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
+  ingress:
+    # Only the tunnel's connectors reach the listener (port 80 maps to 10080).
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cfgate-system
+            app.kubernetes.io/name: cloudflared
+            app.kubernetes.io/managed-by: cfgate
+      toPorts:
+        - ports:
+            - port: "10080"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            control-plane: envoy-gateway
+      toPorts:
+        - ports:
+            - port: "18000"
+              protocol: TCP
+    # The OIDC token endpoint, through Cloudflare like any client.
+    - toFQDNs:
+        - matchName: {{ .Values.authentik.hostname }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Route backends.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+            app.kubernetes.io/name: authentik
+            app.kubernetes.io/component: server
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: argocd
+            app.kubernetes.io/name: argocd-server
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
