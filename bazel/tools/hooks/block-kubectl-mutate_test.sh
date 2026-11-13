@@ -68,6 +68,10 @@ expect 2 "kubectl create sa x"
 expect 2 "kubectl rollout undo deploy/x"
 expect 2 "helm uninstall x -n a"
 expect 2 "helm upgrade --install x ./chart"
+expect 2 "kubectl --context homelab-hub apply -f x.yaml"
+expect 2 "KUBECONFIG=~/.kube/config kubectl apply -f x.yaml"
+expect 2 "KUBECONFIG=~/.kube/factory.yaml kubectl get pods && kubectl delete pod x"
+expect 2 "kubectl --kubeconfig ~/.kube/not-factory.yaml apply -f x.yaml"
 
 # Allowed.
 expect 0 "cat x.md  # mentions kubectl delete"
@@ -93,6 +97,14 @@ expect 0 "kubectl create token embervm -n embervm"
 expect 0 "kubectl auth can-i delete pods"
 expect 0 "git commit -m 'docs: never kubectl apply'"
 expect 0 "ls -la"
+
+# The factory home cluster, named explicitly, is writable during bootstrap.
+expect 0 "KUBECONFIG=~/.kube/factory.yaml kubectl apply --server-side -k x"
+expect 0 "cd ~/repos/homelab && KUBECONFIG=/home/u/.kube/factory.yaml kubectl delete pod x"
+expect 0 "kubectl --kubeconfig ~/.kube/factory.yaml rollout restart ds/cilium -n kube-system"
+expect 0 "kubectl --kubeconfig=~/.kube/factory.yaml patch x"
+expect 0 "kubectl --context factory delete pod x"
+expect 0 "helm --kube-context=factory upgrade --install x ./chart"
 
 if [[ "$fails" -ne 0 ]]; then
 	echo "$fails case(s) failed" >&2

@@ -534,7 +534,7 @@ a convention this document asks for and nothing enforces.
 | STPA security rows carry `status` and `issue` | the validator in `docs/agents/stpa.md` BLOCK A | at authoring time |
 | `public_reader` grant, migration size, em-dashes | PreToolUse hooks in `.claude/settings.json`, `bazel/tools/hooks/` | Claude-side only; a hand edit or any other agent bypasses them |
 | Chart `version:` and `targetRevision:` moved on a branch | `bazel/tools/ci/chart_version_guard.py` in PR checks | every author; lowering a pin (the revert lever) is allowed |
-| `kubectl` read-only | `bazel/tools/hooks/block-kubectl-mutate.sh` for Claude's shell; `source_ratchet.py` for writes committed into scripts | no agent-identity RBAC yet, so another agent's shell is unguarded |
+| `kubectl` read-only (the factory home cluster, named explicitly, is writable while it is bootstrapped) | `bazel/tools/hooks/block-kubectl-mutate.sh` for Claude's shell; `source_ratchet.py` for writes committed into scripts | no agent-identity RBAC yet, so another agent's shell is unguarded |
 | Hand-pinned digests on repo-built images, in-cluster URLs in source, sync Session I/O in `async def` | `bazel/tools/ci/source_ratchet.py` in PR checks | new instances only; existing ones grandfathered; `ratchet-allow` opt-outs visible in review |
 
 **Adding or changing a service, what to verify by hand**, because the

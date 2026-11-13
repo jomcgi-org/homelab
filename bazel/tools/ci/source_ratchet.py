@@ -281,6 +281,40 @@ def command_writes(command: str) -> list[str]:
     return [w for seg in _segments(command) if (w := cluster_write(seg))]
 
 
+# The factory home cluster (#7817) is bootstrapped by hand before ArgoCD owns
+# it, so the Claude hook lets writes through when the command names it
+# explicitly. The hub stays read-only, and the CI ratchet is unchanged.
+_FACTORY_KUBECONFIG = "factory.yaml"
+_FACTORY_CONTEXT = "factory"
+
+
+def targets_factory(segment: list[str]) -> bool:
+    """True when this simple command explicitly targets the factory cluster."""
+    for i, arg in enumerate(segment):
+        nxt = segment[i + 1] if i + 1 < len(segment) else ""
+        if arg.startswith("KUBECONFIG="):
+            if arg.split("=", 1)[1].rsplit("/", 1)[-1] == _FACTORY_KUBECONFIG:
+                return True
+        elif arg == "--kubeconfig" or arg.startswith("--kubeconfig="):
+            path = arg.split("=", 1)[1] if "=" in arg else nxt
+            if path.rsplit("/", 1)[-1] == _FACTORY_KUBECONFIG:
+                return True
+        elif arg in {"--context", "--kube-context"}:
+            if nxt == _FACTORY_CONTEXT:
+                return True
+        elif arg in {f"--context={_FACTORY_CONTEXT}", f"--kube-context={_FACTORY_CONTEXT}"}:
+            return True
+    return False
+
+
+def hook_writes(command: str) -> list[str]:
+    return [
+        w
+        for seg in _segments(command)
+        if (w := cluster_write(seg)) and not targets_factory(seg)
+    ]
+
+
 def kubectl_mutate(path: str, text: str) -> Iterator[Finding]:
     if not path.endswith((".sh", ".bash")) or _is_test_path(path):
         return
@@ -498,14 +532,16 @@ def _changes(base: str, head: str) -> list[tuple[str | None, str | None]]:
 def _hook() -> int:
     payload = json.load(sys.stdin)
     command = payload.get("tool_input", {}).get("command", "")
-    writes = command_writes(command)
+    writes = hook_writes(command)
     if not writes:
         return 0
     print(
         f"BLOCKED: {', '.join(sorted(set(writes)))}. kubectl and helm are read-only "
         "here: the cluster is GitOps.\n\nTo change something, edit "
         "projects/<service>/deploy/values.yaml (or the chart), commit, push, and "
-        "let ArgoCD sync it. Read-only verbs and --dry-run are fine.",
+        "let ArgoCD sync it. Read-only verbs and --dry-run are fine. Writes to the "
+        "factory home cluster pass when the command names it (KUBECONFIG=.../"
+        "factory.yaml, --kubeconfig, or --context factory).",
         file=sys.stderr,
     )
     return 2
