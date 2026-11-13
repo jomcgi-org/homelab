@@ -23,8 +23,8 @@ from sqlmodel import Session, text
 
 logger = logging.getLogger(__name__)
 
-# Workload kinds scanned by the health rollup. Mirrors dashboard._HEALTH_KINDS
-# and cluster.mcp._HEALTH_KINDS.
+# Workload kinds scanned by the health rollup, matching cluster.mcp._HEALTH_KINDS.
+# The dashboard consumes this snapshot and falls back to a live scan when stale.
 _HEALTH_KINDS = ("deployments", "statefulsets", "daemonsets", "pods", "applications")
 
 # Serve a stored snapshot up to this age. Older than this, the read path treats

@@ -3,8 +3,8 @@
 The dashboard reads one aggregate response from ``GET /api/moving/state``.
 Tasks, spans, milestones, and roles have dedicated create, patch, and delete
 endpoints; tasks add done and undone toggles, and computed collisions can be
-acknowledged (the UI driving the non-task writes is tracked in #5007). Every
-route resolves its viewer through ``get_viewer``; routes never read the
+acknowledged through the friends planner management UI (``ManagePanel.svelte``).
+Every route resolves its viewer through ``get_viewer``; routes never read the
 identity header directly.
 """
 

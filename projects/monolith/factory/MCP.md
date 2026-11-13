@@ -191,7 +191,8 @@ This is a delivery slice of #5788, not the complete conductor interface.
 - Standalone conductor conversations and private external-chat transcripts
   remain outside the receipt-level contract. Broader conversation continuity
   (#5787) and planner context handoff (#5849) closed not planned; continuity
-  enablement and live validation are #6561.
+  enablement merged in PR #6587 and the current path is unconditional. Live
+  validation remains on #6561.
 - Existing lower-level agent session tools are not conductor conversations.
 
 The targeted tests cover the operation owners and an in-process FastMCP

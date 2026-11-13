@@ -4,7 +4,12 @@ AI-powered Discord bot with embeddings, vision, web search, and channel summaris
 
 ## Overview
 
-Responds to messages using configured external LLM provider APIs, with context from the knowledge graph. Supports channel summarisation, multimodal inputs (images via vision), and an owner-gated `/agent <prompt> [repo] [model]` command that runs a coding-agent session (leave `repo` empty to build an artifact).
+Responds through configured inference endpoints and models, with context from
+the knowledge graph. Supports channel summarisation, multimodal inputs (images
+via vision), and an owner-gated `/agent <prompt> [repo] [model]` command that
+runs a coding-agent session. Leave `repo` empty to build an artifact; there is
+no separate `/artifact` command. Deployment values and the shared inference
+client select the providers.
 
 | Module           | Description                                                                      |
 | ---------------- | -------------------------------------------------------------------------------- |

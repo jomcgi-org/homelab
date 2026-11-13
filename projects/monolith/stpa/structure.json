@@ -1,14 +1,15 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "cbe0525ff",
+  "commit": "13f14ce0a",
   "nodes": [
     {
       "key": "console-caller",
-      "label": "Private /agents console (human operator)",
+      "label": "Private factory console (human operator)",
       "view": "logical",
       "layer": "actor",
-      "maturity": "built"
+      "maturity": "built",
+      "evidence": "projects/monolith/frontend/src/routes/private/factory/+page.svelte:1"
     },
     {
       "key": "discord-user",
@@ -187,10 +188,11 @@
     },
     {
       "key": "shotter-store",
-      "label": "SeaweedFS shotter bucket (content-addressed PNGs)",
+      "label": "R2 shotter bucket (content-addressed PNGs)",
       "view": "physical",
       "layer": "data",
-      "maturity": "built"
+      "maturity": "built",
+      "evidence": "projects/monolith/shotter/s3.py:71; projects/monolith/core/s3.py:16; projects/monolith/chart/values.yaml:1974; projects/monolith/chart/templates/deployment.yaml:595"
     },
     {
       "key": "cf-ingress",
@@ -576,7 +578,7 @@
       "from": "private-binary",
       "to": "shotter-store",
       "maturity": "built",
-      "evidence": "projects/monolith/shotter/s3.py:83"
+      "evidence": "projects/monolith/shotter/s3.py:71; projects/monolith/core/s3_upload.py:4"
     },
     {
       "key": "shotter.validate",
@@ -639,7 +641,7 @@
       "from": "kg-feed",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/execution/kg_feed.py:328"
+      "evidence": "projects/monolith/factory/execution/kg_feed.py:298"
     },
     {
       "key": "kg-drainer.dispatch",

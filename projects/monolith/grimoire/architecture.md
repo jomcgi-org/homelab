@@ -300,7 +300,7 @@ results or seeds. A dependency override lets tests use a seeded RNG and assert
 the exact stored body without changing production randomness. Characterless
 players' table-only rule keeps every accepted roll visible to its roller.
 
-Part of #6610, which owns live audience checks.
+The event log shipped under #6610; its remaining live audience check moved to #6609.
 
 ### Handouts
 
@@ -396,7 +396,8 @@ under the feed's DM-or-self rules.
 
 **Why.** A hidden or retracted reply cannot change a player's journal state.
 Reply ordering uses the session sequence, so an earlier reference cannot close
-a later action. Live enablement and audience checks remain owned by #6610.
+a later action. #6610 records enablement in PR #6795; the remaining live
+audience check is owned by #6609.
 
 The UI ships a props-driven `JournalPanel`
 (`web/grimoire/src/journal/JournalPanel.tsx`), used by the campaign journal
@@ -445,7 +446,10 @@ On the entity list, DM-only `not_granted_to` means "hide entities that PC
 already knows": exclude global entities and any grant scope using a
 correlated grant alias in the shared visibility query. Knowledge search does
 not accept this filter. Authorization checks membership, DM role, then PC
-campaign membership, in that order. Live audience checks remain in #6610.
+campaign membership, in that order. The remaining event-log live audience check is on #6609; #6610 is closed.
+#6612 delivered the session screen and tests in PRs #6795 and #6928; its
+phone/laptop rehearsal moved to #6606. These closures do not complete those
+separate live checks.
 
 **Why.** The grantee projection bounds the stored feed snapshot. One
 transaction keeps knowledge and feed changes together; an identity-free
@@ -544,6 +548,18 @@ objects. The feed's pin action posts `from_event_id` to the notes route.
 **Why.** Notes are player-owned records. DM access to generic play rows does not
 authorize access to a private character note. Read-time chip resolution retains
 each viewer's entity grants without sharing another player's identity.
+
+## Extraction eval evidence
+
+The 2026-07-06 Fable final eval sampled 280 chunks across three cells, plus
+live spot-checks of the first full v5 corpus run. It found missing named
+2024-format class features, roughly 20% RELATED_TO edges, and poisoned
+bestiary hierarchy (41% of tome-of-beasts-3 chunks under one heading).
+v6 adds class-feature heading and adventure-anthology guidance; no post-v6
+recall audit is recorded in that evidence. Candidates, fix shapes, rerun
+scope and the original observations are preserved in
+[#7762](https://github.com/jomcgi-org/homelab/issues/7762).
+DM guidance retrieval retains its separate staged scope and acceptance on #7015.
 
 ## Ingestion
 

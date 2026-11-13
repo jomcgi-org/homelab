@@ -499,10 +499,9 @@ and the documented 72-hour measure and stop-condition verdict.
 | Restore Astra planning and refinement, retain Sol routine implementation and Opus independent review | #6983, factory model pools | #6983 | follow-up migration staged for the already-allowed Astra policy; rollout and live Astra planner observation remain |
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
-| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (open child #5788) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity enablement is #6561 |
+| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5788 (parent #5784 closed into it) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity live acceptance is #6561 |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
-| Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
-| Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository-only; 7-item live checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566); #7186 owns the Renovate switches and schedule activation |
+| Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository slice delivered; #6799 closed completed with a historical activation checklist, no rollout inferred; #7186 owns Renovate switches and schedule activation |
 | Post-guest proof settles bound zero-turn attempts with read-only live evidence per item | The factory conductor, staged flag | [#6559](https://github.com/jomcgi-org/homelab/issues/6559) | repository delivery merged, default-off; 6-item live validation plus runbook detail on [the issue](https://github.com/jomcgi-org/homelab/issues/6559#issuecomment-6545695108) |
 | Trusted `factory/review` check publisher with session-distinct approval and dedicated token | PR #6213 | [#3835](https://github.com/jomcgi-org/homelab/issues/3835) | repository-only; 4-item activation checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/3835#issuecomment-6545692966) |
 | Fail-closed push-format validation for source guests, staged repository-only | The factory conductor, staged flag | [#7458](https://github.com/jomcgi-org/homelab/issues/7458) | repository-only; PR #7473 merged 2026-10-31; hypothesis, 14-day window and stop conditions on the issue; trial pending |
@@ -854,8 +853,9 @@ for one exact attempt on an operator reviewed fingerprint (#6025, #6288).
 
 **Why.** The node workflow carries a brick-drain relay
 through to an owner in the node workflow, with continuation retirement and
-stop supervision; a stranded state otherwise needs the control-plane root
-cause on #6091 (#6256).
+stop supervision. PR #6101 fixed the departed-node parked-session root cause
+from #6091, which closed completed; #6256 records the monolith-side mitigation.
+Neither reference is an open root-cause task.
 
 
 **Why.** The recurring repair loop belongs to the existing problem producer,
@@ -1388,9 +1388,9 @@ cluster in 81c58b2ae, the entity spine (`knowledge/entities.yaml`, b3b2ea20b)
 and the recall floor (#5828) already anchor facts to projects and services in the
 same database the factory reads, and a second store would split provenance and
 scope enforcement (#5573) across two systems before either had a measured
-retrieval baseline. Expansion is gated on that baseline: #6128 measures a
+retrieval baseline. #6128 delivered that baseline in PR #6297: a
 labelled set of real agent queries with expected evidence, including abstention
-cases, and each later slice (entity-aware drain, work-item linkage, runtime
+cases. Each later slice (entity-aware drain, work-item linkage, runtime
 revalidation, component overviews) lands as its own issue only after the
 baseline names the failure it fixes.
 
@@ -1673,8 +1673,17 @@ image-derived chunks, records section hierarchy and image references, embeds
 chunks, and extracts typed entities and relationships through a hosted model
 whose endpoint, model and concurrency are values. Chunk loading runs daily;
 extraction and hierarchy backfill are suspended, manual-only jobs.
-Post-extraction stat verification and alias merging remain accepted design
-work rather than current runtime passes (#3912, #3913).
+Post-extraction stat verification ships as the bounded, resumable
+`grimoire-verify-entities` job: it reads marker-bearing mention chunks and
+commits validated field corrections or nulls with a successful verification
+marker. Alias scans only report same-type, same-book candidates with co-mention
+evidence. Approval and execution require a standing human operator and a current
+state hash; execution revalidates approval and rewrites the graph transactionally.
+These are the delivered services/014 passes (#3912, #3913), not evidence that a
+corpus-wide run has occurred.
+(see: /projects/monolith/grimoire/verifier.py)
+(see: /projects/monolith/grimoire/aliases.py)
+(see: /projects/monolith/app/jobs_main.py)
 (see: /projects/monolith/grimoire/ingest.py)
 (see: /projects/monolith/grimoire/extract.py)
 (see: /projects/monolith/deploy/values.yaml)
@@ -1987,7 +1996,7 @@ by trust in the guest.
 - `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
-- `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
+- `/factory` (private hostname): the factory board of section 4; `/factory/execution` serves agent sessions and execution detail. The retired `/agents` route has no redirect. (see: /projects/monolith/frontend/src/routes/private/factory/+page.svelte) (see: /projects/monolith/frontend/src/routes/private/factory/execution/+page.svelte)
 - `/` (private hostname): the operator console, read phone-first. Its load merges the home aggregate with a summary of the factory board (open decisions, lane counts, the conductor link) so one page says what needs Joe and where every private tool is; the same merged read backs its 60-second refresh. (see: /projects/monolith/frontend/src/lib/private/dashboard-load.js)
 
 The obsolete `/app/dr-jobs` and `/app/campsites` frontend pages are retired.
@@ -2089,14 +2098,14 @@ Each Codex or Spark probe run has an independent `ember.probe.<demo>` root
 span with final `ember.probe.demo`, `ember.probe.ok` and bounded
 `ember.probe.detail` attributes (ERROR status on failure). The retrying demo
 probes (Bazel, pages, Postgres) and their `ember.probe.attempt.*` child spans
-left with the public exhibits (#6913). The Honeycomb
-`ember-demo-probe-failed.yaml` trigger counts failed root outcomes in
-`monolith-backend`, grouped by demo and trace ID, over an hour every 15
-minutes. The trigger uses `on_change`, so it notifies once while open and a
-second component failing in the same window sends no new notification. Probe
-outcomes use spans; no OTLP probe metric is emitted.
+left with the public exhibits (#6913). The Honeycomb demo-probe trigger was
+removed under the platform's one-trigger policy, with no replacement alert
+for that condition. Probe outcomes remain available as spans for investigation;
+no OTLP probe metric is emitted. Current advisory factory alerts are defined
+separately in `factory/ops_health.py`.
 (see: /projects/monolith/ember_public/synthetic_probe.py)
-(see: /projects/platform/honeycomb/triggers/ember-demo-probe-failed.yaml)
+(see: /projects/platform/honeycomb/README.md)
+(see: /projects/monolith/factory/ops_health.py)
 
 The private profile instruments FastAPI and outbound HTTP calls and exports
 spans over HTTP/protobuf to the platform's OpenTelemetry collector, which
@@ -2119,8 +2128,9 @@ collects those sources; public requests only read the snapshot.
 (#6914). Removing the DCGM scrape, its configuration and the public GPU
 presentation together stops new snapshots from carrying unsupported GPU status
 (#7028). Cached snapshots can retain the old field until refreshed; the frontend
-ignores it. This is repository-only staged delivery, with live acceptance still
-tracked on #7028.
+ignores it. PR #7102 delivered the retirement; #7028 closed completed and
+records a verified monolith chart 0.772.7 on 2026-11-12. That historical rollout
+result does not establish a fresh scheduled rollup or public rendering check.
 
 **Why.** Process liveness alone stayed green through downstream failures, while
 alert-only maintenance failures could remain unread for days.
@@ -2227,7 +2237,6 @@ is tracked in [section 4](#factory-acceptance).
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
-| Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
 | Bound oversized source coverage with exact literal witnesses and reconsider deterministic blocks by cited blob identity | section 6, source coverage | #6995 | default-off contract; broader behavioral and negative claims require complete evidence |
 | Every public, private and friends surface renders in the technical-drawing language; the brutalist, ember and grimoire stylesheets retire with their last consumer | section 8, visual language | #7016 | every tier renders on the sheet in the repository; live acceptance of the rollout and the final stylesheet retirement (#7160, after the Grimoire rehearsal) remain |
@@ -2351,7 +2360,10 @@ Every dependency success waits for exact-head `pr-checks`; each target is
 revalidated immediately before publication, including durable approval, with a
 60-second collection budget.
 
-Activation still requires the operator checklist on [issue #6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566), including
+The historical operator checklist is archived on closed-completed
+[#6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566).
+Its closure supplies no rollout or live-canary evidence and assigns no new
+live-check owner. Before activation, the documented prerequisites still include
 App-pinned ruleset enforcement on both PR and merge-group commits and resolving
 the BuildBuddy credential boundary (#7005). Tick-time checks and revocation
 cannot guarantee atomic freshness when an advisory appears after a successful
@@ -2420,8 +2432,11 @@ safely available subscription quota doing useful work toward agreed product
 goals while preserving platform health, interactive responsiveness, and the
 capacity to finish and verify what it started. The monolith owns the durable
 state and the deterministic enforcement; planning and execution stay in EmberVM
-guests. Tracked by #5784; the Owner column below names each aspect's issue and
-its state. The full design text is on #5784.
+guests. The historical parent #5784 closed into #5788, which owns the remaining MCP
+interface scope. The Owner column below records each aspect's disposition;
+the full historical design remains on #5784. Its proposed execution profiles
+(implement, investigate, debug, research) have no separate active owner after
+that closure. Current role/model policy is documented in FACTORY.md.
 
 **Why.** The `human` issue label declares human ownership independently of
 assignment and readiness. Both intake lanes exclude it, queued receipts check
@@ -2453,7 +2468,7 @@ PR lifecycle sweeps, and intake keeps its normal cooldown.
 | Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786, closed 2026-09-14; its status and evidence requirements were consolidated into #5788 without an outcome/milestone/task hierarchy, and the materialised index was dropped |
 | Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786, closed 2026-09-14; its status and evidence requirements were consolidated into #5788, and the materialised index was dropped |
 | Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804, closed not planned until a capacity or starvation problem is demonstrated |
-| Continuity | The existing receipt escalation document retains producer-authored Conductor briefs and authenticated operator replies with actor, source, time, conversation, task, decision and request identity. Generic coding-agent turns have no Conductor identity and are excluded. Fresh Conductor context combines public exact-receipt knowledge with only the authenticated operator's receipt-specific personal scope and current factory control, queue, task, budget and decision records. Shared receipt raws exclude operator replies and actor-addressed briefs. When the dedicated default-off gate is enabled, the Astra Planner receives only the public exact-receipt scope plus current task and acceptance records. Retrieved text is evidence only and never replays a command, changes queue order, reopens a resolved approval, or revives stopped authority | #5787, repository slice PR #6388; closed not planned and split to #6561, which owns enablement and live validation |
+| Continuity | The existing receipt escalation document retains producer-authored Conductor briefs and authenticated operator replies with actor, source, time, conversation, task, decision and request identity. Generic coding-agent turns have no Conductor identity and are excluded. Fresh Conductor context combines public exact-receipt knowledge with only the authenticated operator's receipt-specific personal scope and current factory control, queue, task, budget and decision records. Shared receipt raws exclude operator replies and actor-addressed briefs. The current unconditional continuity path gives the Astra Planner only the public exact-receipt scope plus current task and acceptance records. Retrieved text is evidence only and never replays a command, changes queue order, reopens a resolved approval, or revives stopped authority | #5787, repository slice PR #6388; closed not planned and split to #6561; enablement merged in PR #6587, live validation remains on #6561 |
 | Authority | Read, coordinate, act, and escalate are separately gated tiers; every mutation validates principal, target, tier, charter version, executor ownership, and control generation on the server; every tool call has a ledger row with intent persisted before the side effect; timestamped health inputs drive normal, reduced-concurrency, admissions-paused, and recovering behaviour. Delivered staged by PR #6387 as enforcement of existing controls: the standing-human operator dependency, exact targets, `request_key` and `expected_version` on every supported mutation, and the existing audit records; no new tier or ledger. #5789 closed 2026-09-30; its closing comment reports anonymous and invalid-bearer 401s from the gateway but no legitimate-bearer, replay or stale-version drill. Legitimate-bearer discovery and replay remain live checks on open #5788; no issue owns the stale-version drill | #5789, closed |
 | Stop | Pause admissions, pause task, and stop factory have distinct semantics; stop fences the conductor and its descendants, cancels queued starts, and survives any wakeup or restart; an unreachable worker stays explicitly unconfirmed. Delivered staged by PR #6387: stop state is reported from durable factory-owned evidence as cancellation requested, still running, unknown or unreachable, or cessation confirmed only on exact external proof; exact-attempt MCP stop stays unavailable. The unreachable-worker stop trial did not run before #5789 closed; its closing comment leaves the trial unplanned and asks for a specific bug if an incident shows a gap | #5789, closed |
 
@@ -2466,15 +2481,17 @@ Continuity updates have durable triggers rather than a session-end prompt:
 | Unresolved planning questions and approved decisions | Conductor brief and operator reply records carry receipt, task and decision identity | Brief settlement triggers `report_receipt_with_deadline`; request completion triggers `report_with_deadline`; both use deterministic existing raw ingestion and extraction owners |
 | Useful summaries | Each receipt message carries a summary plus its source message ID; KG raws list all evidence message IDs | The brief and decision producers write summaries in the same transaction as the source record, before KG extraction |
 | Corrections and supersession | Both old and new raw provenance remain visible; retrieved notes expose invalidation, dispute and in-scope `supersedes` edges | The existing knowledge extraction and gardening owners classify the correction; retold decision evidence hashes to the same raw input |
-| Current task, queue, control, budget and decision state | Factory control and receipt records, never KG | Opening `factory_context` triggers a fresh read; `knowledge.conductorContinuity.enabled` separately stages Planner injection and brief maintenance |
+| Current task, queue, control, budget and decision state | Factory control and receipt records, never KG | Opening `factory_context` triggers a fresh read; Planner injection and brief maintenance now use unconditional continuity, with live acceptance on #6561 |
 
 The shared retrieval contract reports KG failure explicitly. Knowledge
 maintenance and summarisation cannot roll back an acknowledgement or block task
 recovery, ownership fencing, or stop behavior.
 
-Rollout priority is quota routing and observation recovery (#5753, #5803), the
-message board (#5704), goal records and the read-only conductor, coordinate
-with its controls, then act. Read-only index and recommendation work does not
+The original rollout order put quota routing and observation recovery before
+the message board (#5704), goal records, the read-only Conductor, coordination
+and action. #5753 closed completed; #5803 closed not planned after repository
+persistence shipped in PR #6393 and an operator split its live checks to #6560.
+Read-only index and recommendation work does not
 wait for the mutation gates. Act waits on the conductor's own budget line,
 shared reservations across every covered dispatch path, the health gates, and
 an STPA governance pass. Reserve values, estimation margins, freshness and

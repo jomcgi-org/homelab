@@ -13,7 +13,10 @@ directory per feature area, each owning its own routes, models, and tests
 colocated as `*_test.py` files next to the code they cover. Domains talk to a
 shared Postgres database (`core/db.py`) through SQLModel. Argo CronWorkflows
 run background jobs (ingest, retention, digests, backfills) through
-`app/jobs_main.py`.
+`app/jobs_main.py`. The retained `scheduler.scheduled_jobs` rows back list/get
+and accepted run-now names. `ARGO_JOBS` also accepts names from chart
+`replaces` annotations, including suspended manual-only CronWorkflows;
+run-now submits the matching CronWorkflow as a one-off Workflow.
 
 The frontend is a SvelteKit app (`frontend/`) that renders both the public
 website and the private app surfaces. The friends Grimoire UI is a separate

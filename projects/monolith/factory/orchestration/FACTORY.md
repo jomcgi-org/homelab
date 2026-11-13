@@ -24,7 +24,7 @@ The **Factory** orchestrates Ember agents. Its operator-facing **Conductor** sel
 
 ### Authoritative records and context
 
-Owners: `swarm.work_item`; `swarm.factory_receipt` for submission, queue and admission state; `swarm.swarm_task`, `swarm_plan_version`, `swarm_node` and `swarm_node_run` for the task, DAG history, nodes and evidence; receipt `escalation_json` and `direction_json`; append-only `swarm.factory_audit` rows; the singleton `swarm.factory_control` row for authoritative state, policy and version. Queue order is `(created_at, id)`. Issues #5787/#5788/#5849 own Conductor knowledge, MCP exposure and Planner context.
+Owners: `swarm.work_item`; `swarm.factory_receipt` for submission, queue and admission state; `swarm.swarm_task`, `swarm_plan_version`, `swarm_node` and `swarm_node_run` for the task, DAG history, nodes and evidence; receipt `escalation_json` and `direction_json`; append-only `swarm.factory_audit` rows; the singleton `swarm.factory_control` row for authoritative state, policy and version. Queue order is `(created_at, id)`. Roles shipped under #5785. #5787 and #5849 closed not planned after their repository slices; #6561 owns continuity live acceptance following merged enablement. #5784 closed into #5788, the remaining MCP interface owner.
 
 ### Submit, plan, execute, report
 
@@ -422,7 +422,7 @@ The health loop reports landing/observed-merged work waiting over 30 minutes wit
 
 #### Dependency queue evidence
 
-`factory/dependency-evidence` is a trusted monolith check, staged off with `factory.dependencyGate.enabled: false`. The publisher uses only the dedicated App installation token through the trusted broker path. A dependency PR needs a settled, unpaused, uncancelled latest receipt generation and both safe independent assessments on its exact head; changed, moved, unsafe or invalid evidence records `dependency_approval_invalidated` and that receipt never passes again. Success waits for exact-head `pr-checks`. Live checks are on [issue #6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566); #7186 owns the Renovate switches and schedule.
+`factory/dependency-evidence` is a trusted monolith check, staged off with `factory.dependencyGate.enabled: false`. The publisher uses only the dedicated App installation token through the trusted broker path. A dependency PR needs a settled, unpaused, uncancelled latest receipt generation and both safe independent assessments on its exact head; changed, moved, unsafe or invalid evidence records `dependency_approval_invalidated` and that receipt never passes again. Success waits for exact-head `pr-checks`. The historical activation checklist is archived on closed-completed [#6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566). Closure supplies no rollout or canary evidence and establishes no new live-check owner; #7186 owns the Renovate switches and schedule.
 
 #### Landing recovery authority
 

@@ -890,7 +890,8 @@ _V5_PROMPT_TEXT = _V4_PROMPT_TEXT + _V5_MECHANICS_CLARIFICATION_ADDENDUM
 
 
 # v6: two extraction defects the first full v5 corpus run surfaced (see
-# grimoire/prompt-backlog.md). (1) Treasure/magic-item tables and spell lists were
+# https://github.com/jomcgi-org/homelab/issues/7762).
+# (1) Treasure/magic-item tables and spell lists were
 # exploded into dozens of junk row entities ("+1 Arrow", "10 Gems worth 100 GP")
 # and a bare "3rd Level" spell-list heading became a phantom class_feature; the new
 # ``table`` type captures a whole table as ONE entity. (2) 2024-format class

@@ -1,11 +1,11 @@
 {
   "lens": "security",
-  "commit": "5f9363262",
+  "commit": "13f14ce0a",
   "scope": {
     "summary": "Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod.",
     "designed": "A narrower-than-operators scope for the production-moving MCP tools (#6475), principal attribution on MCP-driven cluster mutations (#6476), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.",
-    "note": "Refreshed for the operators-group MCP gate (core/mcp_policy.py) and kargo_promote (#6458/#6459); other findings retain their earlier review stamp."
+    "note": "Refreshed for the operators-group MCP gate (core/mcp_policy.py) and kargo_promote (#6458/#6459); other findings retain their earlier review stamp. Focused #7098 analysis at 13f14ce0a: shotter uploads through the credentialed R2 S3 client and returns inline PNG bytes plus an unsigned endpoint URL. Network reach and hash knowledge do not prove read authorization. No application expiry is set; bucket lifecycle and effective read grants are unresolved. No live retention or access validation is claimed."
   },
   "losses": [
     {
@@ -101,7 +101,7 @@
     {
       "key": "private-capture-retained",
       "view": "physical",
-      "statement": "A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it",
+      "statement": "A private-tier capture remains in R2 beyond its intended use and is disclosed to a reader with object access; application code specifies no expiry, while effective bucket lifecycle and read policy remain unverified",
       "losses": [
         "L.unauthorized-access"
       ],
@@ -211,7 +211,7 @@
       "view": "logical",
       "control_action": "shotter.capture",
       "guideword": "providing",
-      "condition": "A caller outside the operators group (anonymous, or a token without the groups claim) calls the screenshot tool for private.jomcgi.dev pages, disclosing private-tier page content retained indefinitely at a guessable URL",
+      "condition": "A caller outside the operators group invokes a private-tier capture if the group gate is disabled or bypassed, obtaining inline PNG bytes and causing a best-effort R2 archive. GroupPolicyMiddleware currently denies that call by default. The archive URL is unsigned; later object access requires separate authorization and retention evidence",
       "severity": "high",
       "hazards": [
         "unrestricted-tool-visibility",
@@ -219,7 +219,7 @@
       ],
       "status": "enforced-prod",
       "issue": "#4569",
-      "evidence": "projects/monolith/shotter/mcp.py:123"
+      "evidence": "projects/monolith/shotter/mcp.py:123; projects/monolith/shotter/mcp.py:168; projects/monolith/core/mcp_policy.py:81; projects/monolith/shotter/s3.py:59"
     },
     {
       "key": "sandbox.run.providing",
@@ -379,7 +379,8 @@
     "The monolith-agents MCP surface (projects/monolith/app/agents_main.py) rejects anonymous callers but applies no operators gate; should any authenticated token reach its board and knowledge write tools?",
     "When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?",
     "Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?",
-    "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?"
+    "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?",
+    "What R2 shotter bucket grants and lifecycle govern private captures after upload? core/s3.py supplies credentials for signed S3 operations; shotter has no read route or presigning and sets no application TTL or delete path. Establish effective authenticated read access and retention before claiming either anonymous exposure or indefinite URL durability (projects/monolith/core/s3.py:26; projects/monolith/shotter/s3.py:59; projects/monolith/chart/templates/onepassworditem-r2-s3.yaml:1)."
   ],
   "system_dir": "projects/monolith"
 }
