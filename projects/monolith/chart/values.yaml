@@ -1869,6 +1869,19 @@ platformAuth:
   enrollmentFlowUrl: ""
 
 grimoire:
+  tts:
+    enabled: false
+    cacheEnabled: false
+    image:
+      repository: ghcr.io/jomcgi/homelab/projects/monolith/grimoire-tts
+      digest: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        cpu: "1"
+        memory: 128Mi
   campaignCreation:
     # Staged only. Enable and select verified creator mailboxes separately.
     restrictionEnabled: false

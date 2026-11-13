@@ -1,9 +1,10 @@
 import { Collapsible } from "@astryxdesign/core/Collapsible";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
+import { loadEventAudio } from "../api/tts";
 import type { SessionEvent } from "../api/session";
 import {
   createEventReader,
@@ -36,6 +37,8 @@ interface Speaker {
 }
 const newSpeaker = createSpeaker as unknown as (options: {
   onSpeakingChange: (speaking: boolean) => void;
+  serverAudio:
+    ((event: SessionEvent, signal: AbortSignal) => Promise<string>) | null;
 }) => Speaker;
 
 /** The choices are kept on this device. Reading it throws where storage is disabled. */
@@ -58,15 +61,27 @@ export function ReadAloud({
   const [settings, setSettings] = useState(
     () => loadReadAloudSettings(deviceStorage(), campaignId, role) as Settings,
   );
-  const [reader] = useState(createEventReader);
+  const reader = useMemo(
+    () => createEventReader(),
+    [campaignId, role, characterId],
+  );
   const [speaker, setSpeaker] = useState<Speaker | null>(null);
   const [speaking, setSpeaking] = useState(false);
 
   useEffect(() => {
-    const created = newSpeaker({ onSpeakingChange: setSpeaking });
+    const created = newSpeaker({
+      onSpeakingChange: setSpeaking,
+      serverAudio:
+        role === "dm"
+          ? (event, signal) => loadEventAudio(campaignId, event.id, signal)
+          : null,
+    });
+    setSettings(
+      loadReadAloudSettings(deviceStorage(), campaignId, role) as Settings,
+    );
     setSpeaker(created);
     return () => created.dispose();
-  }, []);
+  }, [campaignId, role, characterId]);
 
   // The reader's first pass marks the history already on screen as handled,
   // so only events that arrive afterwards are spoken.

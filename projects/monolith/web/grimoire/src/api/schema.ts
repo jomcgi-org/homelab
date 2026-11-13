@@ -10,6 +10,10 @@ export interface AbilityScores {
   charisma: number;
 }
 
+export interface AudioView {
+  audio_base64: string;
+}
+
 export interface Body_upload_handout_image_api_grimoire_campaigns__campaign_id__handouts_uploads_post {
   file: string;
 }
@@ -96,6 +100,10 @@ export interface CharacterView {
   class_name: string | null;
   level: number | null;
   sheet: Record<string, unknown>;
+}
+
+export interface ClipView {
+  clip_id: string;
 }
 
 export interface DismissRequest {
@@ -415,6 +423,10 @@ export interface TranscriptSettingsRequest {
 
 export interface TranscriptStateRequest {
   state: "off" | "on" | "paused";
+}
+
+export interface TtsRequest {
+  event_id: string;
 }
 
 export interface UtteranceAudience {
@@ -779,6 +791,16 @@ export interface Operations {
     query: undefined;
     body: TranscriptSettingsRequest;
     response: Record<string, unknown>;
+  };
+  "POST /campaigns/{campaign_id}/tts": {
+    query: undefined;
+    body: TtsRequest;
+    response: ClipView;
+  };
+  "GET /campaigns/{campaign_id}/tts/{event_id}/{clip_id}": {
+    query: undefined;
+    body: undefined;
+    response: AudioView;
   };
   "GET /campaigns/{campaign_id}/voices": {
     query: undefined;

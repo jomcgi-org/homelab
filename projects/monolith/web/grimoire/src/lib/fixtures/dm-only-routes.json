@@ -23,7 +23,9 @@
     [
       "DELETE",
       "/api/grimoire/campaigns/{campaign_id}/sessions/{session_id}/initiative"
-    ]
+    ],
+    ["POST", "/api/grimoire/campaigns/{campaign_id}/tts"],
+    ["GET", "/api/grimoire/campaigns/{campaign_id}/tts/{event_id}/{clip_id}"]
   ],
   "dm_only_query_params": ["not_granted_to"],
   "player_operations": [
@@ -41,7 +43,9 @@
       "activeIndex": 0,
       "round": 1
     },
-    "initiativeAdvance": { "direction": "next" },
+    "initiativeAdvance": {
+      "direction": "next"
+    },
     "initiativeEnd": {}
   }
 }

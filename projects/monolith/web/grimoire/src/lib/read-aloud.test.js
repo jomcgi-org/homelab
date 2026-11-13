@@ -379,3 +379,112 @@ describe("received event selection", () => {
     ).not.toThrow();
   });
 });
+
+describe("server narration queue", () => {
+  function serverDevice(serverAudio) {
+    const synth = { getVoices: () => [], cancel: vi.fn(), speak: vi.fn() };
+    const micPauser = { pause: vi.fn(), resume: vi.fn() };
+    const audios = [];
+    class Audio {
+      constructor(source) {
+        this.source = source;
+        audios.push(this);
+      }
+      play = vi.fn(() => Promise.resolve());
+      pause = vi.fn();
+      load = vi.fn();
+      removeAttribute = vi.fn();
+    }
+    const speaker = createSpeaker({
+      synth,
+      Utterance: class {},
+      Audio,
+      serverAudio,
+      micPauser,
+    });
+    return { synth, micPauser, audios, speaker };
+  }
+  const flush = async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  };
+  it("plays clips in order under the microphone pause", async () => {
+    const d = serverDevice(async (event) => `audio:${event.id}`);
+    d.speaker.deliver([
+      { event: narration("one", 1), text: "one" },
+      { event: narration("two", 2), text: "two" },
+    ]);
+    await flush();
+    expect(d.audios.map((a) => a.source)).toEqual(["audio:one"]);
+    expect(d.micPauser.pause).toHaveBeenCalledTimes(1);
+    d.audios[0].onplaying();
+    d.audios[0].onended();
+    await flush();
+    expect(d.audios.map((a) => a.source)).toEqual(["audio:one", "audio:two"]);
+    d.audios[1].onended();
+    expect(d.micPauser.resume).toHaveBeenCalledTimes(1);
+    expect(d.synth.speak).not.toHaveBeenCalled();
+    d.speaker.dispose();
+  });
+  it.each([404, 503, "TimeoutError"])("falls back once on %s", async () => {
+    const d = serverDevice(async () => {
+      throw new Error("unavailable");
+    });
+    d.speaker.speak(narration("one", 1));
+    await flush();
+    expect(d.synth.speak).toHaveBeenCalledTimes(1);
+    expect(d.audios).toHaveLength(0);
+    d.speaker.dispose();
+  });
+  it("falls back once on pre-playback audio failure", async () => {
+    const d = serverDevice(async () => "audio");
+    d.speaker.speak(narration("one", 1));
+    await flush();
+    d.audios[0].onerror();
+    d.audios[0].onerror();
+    expect(d.synth.speak).toHaveBeenCalledTimes(1);
+    d.speaker.dispose();
+  });
+  it("never repeats partially played audio", async () => {
+    const d = serverDevice(async () => "audio");
+    d.speaker.speak(narration("one", 1));
+    await flush();
+    d.audios[0].onplaying();
+    d.audios[0].onerror();
+    expect(d.synth.speak).not.toHaveBeenCalled();
+    expect(d.micPauser.resume).toHaveBeenCalledTimes(1);
+    d.speaker.dispose();
+  });
+  it.each(["stop", "dispose", "new narration"])(
+    "ignores pending responses after %s",
+    async (action) => {
+      let resolve, signal;
+      const d = serverDevice((event, requestSignal) => {
+        signal = requestSignal;
+        return new Promise((done) => {
+          resolve = done;
+        });
+      });
+      d.speaker.speak(narration("old", 1));
+      await flush();
+      if (action === "new narration") d.speaker.speak(narration("new", 2));
+      else d.speaker[action]();
+      expect(signal.aborted).toBe(true);
+      resolve("stale audio");
+      await flush();
+      expect(d.audios).toHaveLength(0);
+      expect(d.synth.speak).not.toHaveBeenCalled();
+      d.speaker.dispose();
+    },
+  );
+  it("keeps private speech and reveals on the browser path", async () => {
+    const server = vi.fn();
+    const d = serverDevice(server);
+    d.speaker.speak(narration("private", 1, { audience: "pcs" }));
+    d.synth.speak.mock.calls[0][0].onend();
+    d.speaker.deliver([{ event: reveal("reveal", 2), text: "name only" }]);
+    await flush();
+    expect(server).not.toHaveBeenCalled();
+    expect(d.synth.speak).toHaveBeenCalledTimes(2);
+    d.speaker.dispose();
+  });
+});

@@ -46,11 +46,15 @@ function open(props: Partial<ReadAloudProps> = {}) {
       {...props}
     />
   );
-  const view = renderPanel(panel(props.events ?? history));
+  const view = renderPanel(panel(props.events ?? history), {
+    "POST /campaigns/{campaign_id}/tts": { status: 404 },
+  });
   return {
     ...view,
     receive: (events: SessionEventView[]) =>
-      act(() => view.rerender(panel(events))),
+      act(async () => {
+        view.rerender(panel(events));
+      }),
   };
 }
 const box = (name: string) =>
@@ -59,14 +63,14 @@ const box = (name: string) =>
 beforeEach(() => window.localStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
 
-describe("ReadAloud", () => {
-  it("hides its controls where the browser cannot speak", () => {
+describe("ReadAloud", async () => {
+  it("hides its controls where the browser cannot speak", async () => {
     open();
     expect(screen.queryByRole("region", { name: "Read aloud" })).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
-  it("reads narration by default for the DM and not for a player", () => {
+  it("reads narration by default for the DM and not for a player", async () => {
     installSpeech();
     open();
     expect(box("Read DM narration").checked).toBe(true);
@@ -77,23 +81,23 @@ describe("ReadAloud", () => {
     ).toBeNull();
   });
 
-  it("offers a player both choices, off until chosen", () => {
+  it("offers a player both choices, off until chosen", async () => {
     installSpeech();
     open({ role: "player", characterId: ids.mira });
     expect(box("Read DM narration").checked).toBe(false);
     expect(box("Read my reveals and private narration").checked).toBe(false);
   });
 
-  it("stays silent for the history already on screen", () => {
+  it("stays silent for the history already on screen", async () => {
     installSpeech();
     open();
     expect(spoken).toHaveLength(0);
   });
 
-  it("speaks narration that arrives later, with the speaker's saved voice", () => {
+  it("speaks narration that arrives later, with the speaker's saved voice", async () => {
     installSpeech();
     const { receive } = open();
-    receive([
+    await receive([
       ...history,
       narration("The cellar door creaks.", {
         body: { text: "The cellar door creaks.", speaker_key: "Innkeeper" },
@@ -105,10 +109,10 @@ describe("ReadAloud", () => {
     expect(spoken[0]!.rate).toBe(1.2);
   });
 
-  it("falls back to the narrator's voice for an unknown speaker", () => {
+  it("falls back to the narrator's voice for an unknown speaker", async () => {
     installSpeech();
     const { receive } = open();
-    receive([...history, narration("A bell tolls.")]);
+    await receive([...history, narration("A bell tolls.")]);
     expect(spoken[0]!.rate).toBe(0.9);
     expect(spoken[0]!.lang).toBe("en-GB");
   });
@@ -118,7 +122,7 @@ describe("ReadAloud", () => {
     const { user, receive } = open();
     await user.click(box("Read DM narration"));
     expect(cancel).toHaveBeenCalled();
-    receive([...history, narration("A bell tolls.")]);
+    await receive([...history, narration("A bell tolls.")]);
     expect(spoken).toHaveLength(0);
     expect(JSON.parse(window.localStorage.getItem(STORED)!)).toEqual({
       narration: false,
@@ -126,7 +130,7 @@ describe("ReadAloud", () => {
     });
   });
 
-  it("restores the choices saved on this device for this campaign", () => {
+  it("restores the choices saved on this device for this campaign", async () => {
     installSpeech();
     window.localStorage.setItem(
       STORED,
@@ -144,10 +148,10 @@ describe("ReadAloud", () => {
       audience_pc_ids: [ids.mira],
     });
     const { user, receive } = open({ role: "player", characterId: ids.mira });
-    receive([...history, whisper]);
+    await receive([...history, whisper]);
     expect(spoken).toHaveLength(0);
     await user.click(box("Read my reveals and private narration"));
-    receive([
+    await receive([
       ...history,
       whisper,
       narration("And again.", { audience: "pcs", audience_pc_ids: [ids.mira] }),
@@ -155,10 +159,10 @@ describe("ReadAloud", () => {
     expect(spoken.map((utterance) => utterance.text)).toEqual(["And again."]);
   });
 
-  it("never speaks a retracted event", () => {
+  it("never speaks a retracted event", async () => {
     installSpeech();
     const { receive } = open();
-    receive([
+    await receive([
       ...history,
       narration("Struck from the record.", {
         retracted_at: "2026-11-10T19:30:00Z",
@@ -177,7 +181,7 @@ describe("ReadAloud", () => {
     const idle = () =>
       stop().disabled || stop().getAttribute("aria-disabled") === "true";
     expect(idle()).toBe(true);
-    receive([...history, narration("A bell tolls.")]);
+    await receive([...history, narration("A bell tolls.")]);
     expect(idle()).toBe(false);
     cancel.mockClear();
     await user.click(stop());
@@ -185,10 +189,10 @@ describe("ReadAloud", () => {
     expect(idle()).toBe(true);
   });
 
-  it("stops speaking when the session screen lets go of it", () => {
+  it("stops speaking when the session screen lets go of it", async () => {
     installSpeech();
     const { receive, rerender } = open();
-    receive([...history, narration("A bell tolls.")]);
+    await receive([...history, narration("A bell tolls.")]);
     cancel.mockClear();
     act(() => rerender(null));
     expect(cancel).toHaveBeenCalled();

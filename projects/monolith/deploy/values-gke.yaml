@@ -174,3 +174,8 @@ deploymentObservations:
 healthAlerts:
   cnpgBackups:
     enabled: true
+
+grimoire:
+  tts:
+    enabled: false
+    cacheEnabled: false

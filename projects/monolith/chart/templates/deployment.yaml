@@ -59,6 +59,24 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
+        {{- if .Values.grimoire.tts.enabled }}
+        - name: grimoire-tts
+          image: "{{ .Values.grimoire.tts.image.repository }}@{{ .Values.grimoire.tts.image.digest }}"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            {{- toYaml .Values.grimoire.tts.resources | nindent 12 }}
+          volumeMounts:
+            - name: tts-tmp
+              mountPath: /tmp
+        {{- end }}
         - name: backend
           lifecycle:
             preStop:
@@ -624,6 +642,10 @@ spec:
               value: {{ .Values.artifact.bucket | quote }}
             {{- end }}
             {{- end }}
+            - name: GRIMOIRE_TTS_ENABLED
+              value: {{ .Values.grimoire.tts.enabled | quote }}
+            - name: GRIMOIRE_TTS_CACHE_ENABLED
+              value: {{ and .Values.grimoire.tts.enabled .Values.grimoire.tts.cacheEnabled | quote }}
             - name: GRIMOIRE_TRANSCRIPT_ENABLED
               value: {{ .Values.grimoire.transcript.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
@@ -980,6 +1002,12 @@ spec:
       # serving images have no persistent filesystem state; Python tempfile
       # users and any language cache fallback can use only these mounts.
       volumes:
+        {{- if .Values.grimoire.tts.enabled }}
+        - name: tts-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi
+        {{- end }}
         - name: backend-tmp
           emptyDir: {}
         - name: progress-ingest-tmp

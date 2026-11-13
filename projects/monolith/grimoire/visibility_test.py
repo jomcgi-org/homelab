@@ -354,7 +354,7 @@ def _dm_guarded_routes() -> set[tuple[str, str]]:
                 isinstance(decorator, ast.Call)
                 and isinstance(decorator.func, ast.Attribute)
                 and isinstance(decorator.func.value, ast.Name)
-                and decorator.func.value.id == "router"
+                and decorator.func.value.id in ("router", "tts_router")
                 and decorator.args
                 and isinstance(decorator.args[0], ast.Constant)
             ):
@@ -377,7 +377,8 @@ def test_dm_route_fixture_matches_require_dm_guards():
     reachable = {
         route
         for route in guarded
-        if "/grants" in route[1]
+        if "/tts" in route[1]
+        or "/grants" in route[1]
         or "/initiative" in route[1]
         or "/inventory" in route[1]
         or route[1].endswith(("/sessions", "/{session_id}"))

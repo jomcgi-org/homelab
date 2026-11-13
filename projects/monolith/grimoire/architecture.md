@@ -1072,3 +1072,101 @@ that answers for a different account, role or character reloads the session
 screen, because panels such as knowledge search keep their own state. The live
 check remains: hold a real login past the access-token lifetime and confirm
 the session stays Live without a reload.
+
+## Staged server read-aloud (#6629)
+
+`grimoire.tts.enabled` and `grimoire.tts.cacheEnabled` are false in chart
+and deployment values, including GKE. They feed `GRIMOIRE_TTS_ENABLED` and
+`GRIMOIRE_TTS_CACHE_ENABLED`; the latter is forced false while speech is off.
+The API gate returns 404 before reading the request body or initializing a
+runtime or object-store client. Disabled renders contain no synthesis container,
+temporary volume or retention job. Nothing in this change enables the service.
+
+The staged CPU runtime is eSpeak NG 1.52.0-r0 from Alpine 3.22 community.
+`grimoire/tts_runtime/apko.yaml` and its generated lock pin the Linux amd64
+package, dependencies and their checksums. Bazel packages the standard-library
+worker into that apko image. eSpeak's bundled English formant data is the model:
+`espeak-ng-1.52.0-r0:en-gb:v1`. There is no model download, hosted TTS API or
+new secret. Upstream source and model data are at
+<https://github.com/espeak-ng/espeak-ng/tree/1.52.0>, GPL-3.0-or-later;
+Alpine's package metadata records the same license. Upstream COPYING provides the license text.
+Source corresponding to the package is available through Alpine's
+aports repository, community/espeak-ng, commit
+`e5f14c0a087c0fbd2877700307955e6153f805af`.
+
+**Why.** Formant synthesis runs on CPU with small memory needs and packaged
+voice data. It sounds more synthetic than neural narration. That tradeoff
+keeps this repository delivery reproducible without new downloads or services.
+
+When separately enabled, the pod gains a non-root, read-only-root-filesystem
+sidecar listening only on `127.0.0.1:8094`, with no Service port or credential
+environment. It requests 100m CPU and 64 MiB and limits itself to one CPU and
+128 MiB. An 8 MiB memory-backed `/tmp` bounds transient output. One HTTP request
+and one subprocess run at a time, with an eight-second process timeout and
+killing/reaping on timeout. The API allows one in-flight synthesis per process,
+returns 429 rather than queueing, and applies a ten-second loopback HTTP timeout.
+The browser allows twelve seconds across creation and retrieval before falling
+back. Text is capped at 2,000 characters, request JSON at 256 bytes and WAV at
+2 MiB (base64 JSON delivery adds one third). Plain stdin is used without SSML,
+client-controlled paths or executable voice names.
+
+Both POST `/campaigns/{campaign_id}/tts` and GET
+`/campaigns/{campaign_id}/tts/{event_id}/{clip_id}` require the existing browser
+identity dependency and current campaign DM membership. Only unretracted table
+narration in a session belonging to that campaign qualifies. The server derives
+text and speaker from that stored event before accessing inference or a cache.
+GET rechecks those conditions on every request, including cache hits, and checks
+the current synthesis identity before reading audio. Responses are private and
+no-store. Bucket objects remain private; no public or presigned URLs exist.
+Opaque SHA-256 clip names contain no NPC identifiers. A revoked membership,
+changed role, private audience, retraction or changed preset denies a replay.
+
+Each API process permits six speech requests per member per rolling minute,
+including retrievals; its identity table is capped at 1,024 active members.
+The GKE overlay has two replicas, so the aggregate bound is twelve requests
+per member per minute and two simultaneous syntheses. This assumes the existing
+single API process per pod. Scale/worker changes require revisiting these limits.
+The optional private R2 cache shares clips between replicas. With caching off,
+a retrieval routed to a different replica may miss its local cache; the browser
+falls back. A cache outage has the same behavior. This is a future enablement
+tradeoff to validate with the deployed routing and replica count.
+
+Speaker keys use the existing campaign map. `narrator` selects `en-gb`; an
+available NPC UUID or free label with a saved preset deterministically hashes
+its canonical campaign/key pair into `en-gb`, `en-gb+m1`, `en-gb+f2`,
+`en-gb+m3` or `en-gb+f4`. Missing presets and deleted/unavailable NPCs use the
+narrator preset, then rate/pitch 1. Server voices use the preset's rate and
+pitch; browser language/name hints remain browser hints. The cache identity
+includes canonical campaign, exact stored text, selected voice, rate, pitch,
+preset key/hints/update timestamp and model/version. A preset or model change
+invalidates the old clip. Browser payloads retain existing opaque player refs.
+
+The process cache is bounded to 32 MiB. Optional R2 storage lazily uses the
+existing HTTPS S3 endpoint, bucket and Operator-provided credentials, with
+bounded reads and no retries. It creates no bucket, policy or secret. Keys live
+under `tts/v1/`; metadata sets expiry seven days after synthesis. Expired
+objects are never served. `R2Cache.retention_page` stages a bounded 100-object
+sweep for objects last modified at least seven days ago, with a continuation
+token. No scheduler, endpoint, startup hook or delivered workload calls it.
+Physical deletion therefore remains outstanding until separately authorized
+retention execution exists. Tests mock all storage and deletion operations.
+
+The DM device tries server audio for fresh table narration through the existing
+queue and typed API module. Players keep browser synthesis and their separate
+opt-ins for table and own-private narration/reveals. Initial history stays
+silent. Stop, unmount, campaign/identity change and newer narration abort pending
+requests, pause audio and fence late responses. Microphone pause spans loading
+and playback, then resumes on drain or stop. Disabled, failed or timed-out
+requests fall back to browser speech once. An audio failure after playback has
+started advances without repeating already spoken text. Existing reveal
+projection, player privacy and microphone implementation remain unchanged.
+
+Before enablement, the authorized owner must review resource behavior, voice
+quality, per-replica limits, routing/cache misses and private storage access,
+then authorize any cache/retention execution separately. Full enabled-service
+latency, playback, cache and retention acceptance remains outstanding on #6629.
+Repository tests and chart renders provide no live acceptance evidence. After
+landing, the owner must obtain `verify_deployment` success for the delivered
+revision and read configuration/workload status to confirm speech remains off
+and no inference workload or retention job is active. These staged-rollout
+checks do not close #6629.

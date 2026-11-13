@@ -332,6 +332,9 @@ platformAuth:
   enrollmentFlowUrl: ""
 
 grimoire:
+  tts:
+    enabled: false
+    cacheEnabled: false
   # Registered-player pilot (#6858). Account enrollment remains disabled;
   # this path requires no Authentik invitation credential or permission grant.
   invitationLinks:

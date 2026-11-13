@@ -19,6 +19,8 @@ import { sheetsRoutes } from "./fixtures/sheets";
 import { turnsRoutes } from "./fixtures/turns";
 
 export const world: Routes = {
+  "POST /campaigns/{campaign_id}/tts": { status: 404 },
+  "GET /campaigns/{campaign_id}/tts/{event_id}/{clip_id}": { status: 404 },
   "GET /lobby": lobby(),
   "GET /campaigns/{campaign_id}/members": members,
   "GET /campaigns/{campaign_id}/characters": characters,

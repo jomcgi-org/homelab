@@ -10025,3 +10025,39 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+# CPU formant synthesis is isolated from the API image and omitted when off.
+pkg_tar(
+    name = "grimoire_tts_worker_tar",
+    srcs = ["grimoire/tts_runtime/worker.py"],
+    package_dir = "/app",
+    remap_paths = {"worker.py": "tts_worker.py"},
+    strip_prefix = "grimoire/tts_runtime",
+)
+
+apko_image(
+    name = "grimoire_tts_image",
+    arm64 = False,
+    config = "grimoire/tts_runtime/apko.yaml",
+    contents = "@grimoire_tts_lock//:contents",
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/grimoire-tts",
+    tars = [":grimoire_tts_worker_tar"],
+)
+
+py_test(
+    name = "grimoire_tts_test",
+    srcs = ["grimoire/tts_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//boto3",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)

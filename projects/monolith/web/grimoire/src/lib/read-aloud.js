@@ -160,6 +160,8 @@ export function createSpeaker({
   Utterance = globalThis.SpeechSynthesisUtterance,
   micPauser = { pause() {}, resume() {} },
   onSpeakingChange = () => {},
+  serverAudio = null,
+  Audio = globalThis.Audio,
 } = {}) {
   const available = Boolean(synth && Utterance);
   let voices = available ? synth.getVoices() : [];
@@ -167,6 +169,7 @@ export function createSpeaker({
   let current = null;
   let generation = 0;
   let running = false;
+  let disposed = false;
   const updateVoices = () => {
     voices = synth.getVoices();
   };
@@ -181,6 +184,13 @@ export function createSpeaker({
   function stop() {
     generation += 1;
     queue = [];
+    current?.controller?.abort();
+    if (current?.audio) {
+      current.audio.pause();
+      current.audio.removeAttribute("src");
+      current.audio.load();
+    }
+    clearTimeout(current?.timer);
     current = null;
     if (available) synth.cancel();
     finishRun();
@@ -197,37 +207,100 @@ export function createSpeaker({
       micPauser.pause();
       onSpeakingChange(true);
     }
-    const utterance = new Utterance(next.text);
-    const preset = next.preset;
-    const voice = resolveVoice(voices, preset.voice_hint);
-    if (voice) utterance.voice = voice;
-    if (preset.voice_hint?.lang) utterance.lang = preset.voice_hint.lang;
-    utterance.rate = preset.rate ?? 1;
-    utterance.pitch = preset.pitch ?? 1;
-    current = utterance;
+    const token = { controller: new AbortController() };
+    current = token;
     const run = generation;
+    const active = () => run === generation && current === token;
     const done = () => {
-      if (run !== generation || current !== utterance) return;
+      if (!active()) return;
+      clearTimeout(token.timer);
+      if (token.audio) {
+        token.audio.pause();
+        token.audio.removeAttribute("src");
+        token.audio.load();
+      }
       current = null;
       advance();
     };
-    utterance.onend = done;
-    utterance.onerror = done;
-    try {
-      synth.speak(utterance);
-    } catch {
-      done();
+    const browser = () => {
+      if (!active()) return;
+      const utterance = new Utterance(next.text);
+      const preset = next.preset;
+      const voice = resolveVoice(voices, preset.voice_hint);
+      if (voice) utterance.voice = voice;
+      if (preset.voice_hint?.lang) utterance.lang = preset.voice_hint.lang;
+      utterance.rate = preset.rate ?? 1;
+      utterance.pitch = preset.pitch ?? 1;
+      utterance.onend = done;
+      utterance.onerror = done;
+      try {
+        synth.speak(utterance);
+      } catch {
+        done();
+      }
+    };
+    if (
+      !serverAudio ||
+      !Audio ||
+      next.event.kind !== "narration" ||
+      next.event.audience !== "table"
+    ) {
+      browser();
+      return;
     }
+    // The caller supplies serverAudio only on the DM device. Both requests
+    // and late playback callbacks are fenced by this queue's generation.
+    const signal = AbortSignal.any([
+      token.controller.signal,
+      AbortSignal.timeout(12_000),
+    ]);
+    Promise.resolve()
+      .then(() => serverAudio(next.event, signal))
+      .then((source) => {
+        if (!active()) return;
+        const audio = new Audio(source);
+        token.audio = audio;
+        let started = false;
+        let settled = false;
+        const failed = () => {
+          if (settled || !active()) return;
+          settled = true;
+          clearTimeout(token.timer);
+          audio.pause();
+          audio.removeAttribute("src");
+          audio.load();
+          if (started) done();
+          else browser();
+        };
+        audio.onplaying = () => {
+          started = true;
+        };
+        audio.onended = () => {
+          if (settled) return;
+          settled = true;
+          done();
+        };
+        audio.onerror = failed;
+        token.timer = setTimeout(failed, 180_000);
+        try {
+          Promise.resolve(audio.play()).catch(failed);
+        } catch {
+          failed();
+        }
+      })
+      .catch(() => browser());
   }
+
   // Cancel older deliveries once, then enqueue this delivery in sequence order.
   function deliver(items, presets = []) {
-    if (!available || !items.length) return;
+    if (disposed || !available || !items.length) return;
     if (items.some(({ event }) => event.kind === "narration")) stop();
     queue.push(
       ...[...items]
         .sort((a, b) => a.event.seq - b.event.seq)
         .map(({ event, text }) => ({
           text,
+          event,
           preset: voicePreset(presets, event.body?.speaker_key),
         })),
     );
@@ -241,6 +314,7 @@ export function createSpeaker({
       deliver([{ event, text: event.body?.text || "" }], presets);
     },
     dispose() {
+      disposed = true;
       stop();
       if (available) synth.removeEventListener?.("voiceschanged", updateVoices);
     },

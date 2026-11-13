@@ -1,0 +1,26 @@
+# eSpeak's bundled English formant data is the model; no runtime downloads.
+contents:
+  repositories:
+    - https://dl-cdn.alpinelinux.org/alpine/v3.22/main
+    - https://dl-cdn.alpinelinux.org/alpine/v3.22/community
+  keyring:
+    - https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+  packages:
+    - python3
+    - espeak-ng=1.52.0-r0
+archs:
+  - x86_64
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+environment:
+  HOME: /tmp
+  PYTHONDONTWRITEBYTECODE: "1"
+entrypoint:
+  command: /usr/bin/python3 /app/tts_worker.py

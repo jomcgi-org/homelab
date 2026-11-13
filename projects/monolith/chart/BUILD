@@ -42,6 +42,7 @@ helm_chart(
     name = "chart",
     images = {
         "backend.image": "//projects/monolith:image.info",
+        "grimoire.tts.image": "//projects/monolith:grimoire_tts_image.info",
         "frontend.image": "//projects/monolith/frontend:image.info",
         "jobs.image": "//projects/monolith:jobs_image.info",
         "progress.image": "//projects/monolith:progress_image.info",
@@ -546,4 +547,24 @@ py_test(
     ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     deps = ["@pip//pyyaml"],
+)
+
+py_test(
+    name = "grimoire_tts_test",
+    srcs = ["grimoire_tts_test.py"],
+    data = [
+        ":chart",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )

@@ -34,6 +34,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.routing import APIRoute
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
@@ -50,7 +51,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, or_, select
 
-from grimoire import aliases, images, library
+from grimoire import aliases, images, library, tts
 from grimoire.access import (
     can_create_game,
     get_authenticated_email,
@@ -4193,3 +4194,82 @@ def decide_invitation(
 
 # Specific public-capability endpoints stay behind their own default-off gate.
 router.include_router(join_links_router)
+
+# --- Staged event speech ------------------------------------------------------
+
+
+class _TtsRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def bounded(request):
+            tts.require_enabled()
+            if request.method == "POST":
+                chunks, size = [], 0
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > 256:
+                        raise HTTPException(413, "speech request too large")
+                    chunks.append(chunk)
+                request._body = b"".join(chunks)
+            return await handler(request)
+
+        return bounded
+
+
+tts_router = APIRouter(route_class=_TtsRoute)
+
+
+def _tts_selection(session, campaign_id, event_id):
+    # Table narration is the sole server playback surface. Private DM/PC
+    # narration and reveals remain on their existing opt-in browser paths.
+    event = session.exec(
+        select(SessionEvent).where(
+            func.lower(SessionEvent.id) == event_id.lower(),
+            SessionEvent.campaign_id == campaign_id,
+            SessionEvent.kind == "narration",
+            SessionEvent.audience == "table",
+            SessionEvent.retracted_at.is_(None),
+        )
+    ).first()
+    if event is None:
+        raise HTTPException(404, "event not found")
+    _session_in_campaign(session, campaign_id, event.session_id)
+    return tts.select_voice(session, campaign_id, event)
+
+
+@tts_router.post("/campaigns/{campaign_id}/tts", response_model=tts.ClipView)
+def create_event_audio(
+    campaign_id: str,
+    body: tts.TtsRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+):
+    member = _require_dm(session, campaign_id, email)
+    selection = _tts_selection(session, campaign_id, str(body.event_id))
+    tts.service.admit(member.id)
+    return tts.service.create(selection.identity(campaign_id), selection)
+
+
+@tts_router.get(
+    "/campaigns/{campaign_id}/tts/{event_id}/{clip_id}", response_model=tts.AudioView
+)
+def get_event_audio(
+    campaign_id: str,
+    event_id: UUID,
+    clip_id: str,
+    response: Response,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+):
+    member = _require_dm(session, campaign_id, email)
+    selection = _tts_selection(session, campaign_id, str(event_id))
+    if clip_id != selection.identity(campaign_id):
+        raise HTTPException(404, "clip not found")
+    tts.service.admit(member.id)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return tts.service.retrieve(clip_id)
+
+
+router.include_router(tts_router)
