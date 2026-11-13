@@ -501,7 +501,7 @@ and the documented 72-hour measure and stop-condition verdict.
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5788 (parent #5784 closed into it) | roles (#5785) and staged MCP mutation enforcement (#5789) delivered; #5786, #5787 and #5804 closed not planned; continuity live acceptance is #6561 |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
-| Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository slice delivered; #6799 closed completed with a historical activation checklist, no rollout inferred; #7186 owns Renovate switches and schedule activation |
+| Trusted `factory/dependency-evidence` gate with App-pinned identity, exact-head assessments and invalidation | PR #6806, staged rollout | [#6799](https://github.com/jomcgi-org/homelab/issues/6799) | repository slice delivered; #6799 closed completed; activation still requires its archived checklist, no rollout inferred; #7186 owns Renovate switches and schedule activation |
 | Post-guest proof settles bound zero-turn attempts with read-only live evidence per item | The factory conductor, staged flag | [#6559](https://github.com/jomcgi-org/homelab/issues/6559) | repository delivery merged, default-off; 6-item live validation plus runbook detail on [the issue](https://github.com/jomcgi-org/homelab/issues/6559#issuecomment-6545695108) |
 | Trusted `factory/review` check publisher with session-distinct approval and dedicated token | PR #6213 | [#3835](https://github.com/jomcgi-org/homelab/issues/3835) | repository-only; 4-item activation checklist on [the issue](https://github.com/jomcgi-org/homelab/issues/3835#issuecomment-6545692966) |
 | Fail-closed push-format validation for source guests, staged repository-only | The factory conductor, staged flag | [#7458](https://github.com/jomcgi-org/homelab/issues/7458) | repository-only; PR #7473 merged 2026-10-31; hypothesis, 14-day window and stop conditions on the issue; trial pending |
@@ -2360,10 +2360,10 @@ Every dependency success waits for exact-head `pr-checks`; each target is
 revalidated immediately before publication, including durable approval, with a
 60-second collection budget.
 
-The historical operator checklist is archived on closed-completed
+Activation still requires the full operator checklist archived on closed-completed
 [#6799](https://github.com/jomcgi-org/homelab/issues/6799#issuecomment-6545691566).
-Its closure supplies no rollout or live-canary evidence and assigns no new
-live-check owner. Before activation, the documented prerequisites still include
+Its closure covers the repository slice, supplies no rollout or live-canary
+evidence and assigns no new live-check owner. The prerequisites include
 App-pinned ruleset enforcement on both PR and merge-group commits and resolving
 the BuildBuddy credential boundary (#7005). Tick-time checks and revocation
 cannot guarantee atomic freshness when an advisory appears after a successful
