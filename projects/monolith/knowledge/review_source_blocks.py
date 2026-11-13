@@ -17,7 +17,7 @@ MAX_PROBES = 2
 
 def record_block(session, run, outcome, identity, now):
     """Commit atomically with the first durable unsupported result."""
-    if not coverage.enabled() or not identity:
+    if not identity:
         return
     note = session.exec(
         select(Note)
@@ -59,8 +59,6 @@ def probe(session, now, *, fetch=None):
     probes keep the block and the six-hour cooldown. No outcome, claim, paid
     receipt or invocation fence is changed here.
     """
-    if not coverage.enabled():
-        return
     from knowledge import fact_review as review
 
     if session.get_bind().dialect.name != "sqlite":

@@ -77,23 +77,15 @@ def _backend_env(documents: list[dict]) -> dict[str, str | None]:
 
 
 @pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
-def test_source_coverage_defaults_and_production_opt_in(values, tmp_path):
+def test_retired_coverage_switch_does_not_affect_current_chart(values, tmp_path):
     before = _render_documents(*values)
-    env = _backend_env(before)
-    expected = "true" if DEPLOY in values else "false"
-    assert env.get("KG_FACT_REVIEW_COVERAGE_ENABLED", "false") == expected
-    domain = tmp_path / "knowledge.yaml"
-    domain.write_text(
-        "knowledge:\n  enabled: true\n  factReview:\n    coverageEnabled: false\n"
-    )
-    before = _render_documents(*values, domain)
-    env = _backend_env(before)
-    assert env["KG_FACT_REVIEW_COVERAGE_ENABLED"] == "false"
+    assert "KG_FACT_REVIEW_COVERAGE_ENABLED" not in _backend_env(before)
     override = tmp_path / "coverage.yaml"
-    override.write_text("knowledge:\n  factReview:\n    coverageEnabled: true\n")
-    after = _render_documents(*values, domain, override)
-    assert _backend_env(after) == env | {"KG_FACT_REVIEW_COVERAGE_ENABLED": "true"}
-    assert _cronworkflows(before) == _cronworkflows(after)
+    for enabled in ("false", "true"):
+        override.write_text(
+            "knowledge:\n  factReview:\n    coverageEnabled: " + enabled + "\n"
+        )
+        assert _render_documents(*values, override) == before
 
 
 @pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
@@ -304,14 +296,11 @@ def test_learning_handoff_is_explicit_and_does_not_add_scheduler(values, tmp_pat
 
 def test_production_learning_activation_preserves_all_other_controls(tmp_path):
     before_values = tmp_path / "before.yaml"
-    before_values.write_text(
-        "knowledge:\n  factReview:\n    coverageEnabled: false\nagents:\n  drainer:\n    learningHandoffEnabled: false\n"
-    )
+    before_values.write_text("agents:\n  drainer:\n    learningHandoffEnabled: false\n")
     before = _render_documents(DEPLOY, GKE, before_values)
     after = _render_documents(DEPLOY, GKE)
     env = _backend_env(after)
     assert env == _backend_env(before) | {
-        "KG_FACT_REVIEW_COVERAGE_ENABLED": "true",
         "FACTORY_LEARNING_HANDOFF_ENABLED": "true",
     }
     for key in (

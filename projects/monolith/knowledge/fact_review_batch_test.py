@@ -120,7 +120,6 @@ def streamed_coverage(
 def test_streamed_aggregate_blob_limit_precedes_reads_and_preserves_siblings(
     monkeypatch, count, size, pin_padding, tree_padding, batched
 ):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     files = {
         f"projects/example/large-{index}.py": bytes([65 + index]) * size
         for index in range(count)
@@ -154,7 +153,6 @@ def test_streamed_blob_envelope_bound_is_enforced_without_stopping_batch(
 ):
     from knowledge import review_coverage as coverage
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     files = {
         f"projects/example/large-{index}.py": bytes([65 + index]) * 115_000
         for index in range(3)
@@ -219,16 +217,53 @@ def notes(db, count=3, *, start=0, paths=None):
     return rows
 
 
+def source_bytes(path):
+    return (SOURCE + "\n# " + path).encode()
+
+
+def blob_sha(path):
+    raw = source_bytes(path)
+    return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+
+FIXTURE_PATHS = ["projects/example/app.py", "projects/a.py", "projects/b.py"] + [
+    path
+    for i in range(32)
+    for path in (f"projects/member-{i}.py", f"projects/member-{i}/app.py")
+]
+
+
 def fetch(path):
     if "/git/ref/" in path:
         return {"object": {"sha": SHA}}
-    assert path.endswith("?ref=" + SHA)
+    if "/git/trees/" in path:
+        assert "/git/trees/" + SHA + ":" in path
+        directory = path.split(":", 1)[1]
+        return {
+            "truncated": False,
+            "tree": [
+                {
+                    "path": Path(cited).name,
+                    "type": "blob",
+                    "mode": "100644",
+                    "sha": blob_sha(cited),
+                    "size": len(source_bytes(cited)),
+                }
+                for cited in FIXTURE_PATHS
+                if str(Path(cited).parent) == directory
+            ],
+        }
+    cited = next(
+        cited
+        for cited in FIXTURE_PATHS
+        if path.endswith("/git/blobs/" + blob_sha(cited))
+    )
+    raw = source_bytes(cited)
     return {
-        "type": "file",
-        "path": path.split("/contents/", 1)[1].split("?", 1)[0],
+        "sha": blob_sha(cited),
         "encoding": "base64",
-        "content": base64.b64encode(SOURCE.encode()).decode(),
-        "size": len(SOURCE),
+        "content": base64.b64encode(raw).decode(),
+        "size": len(raw),
     }
 
 
@@ -284,7 +319,7 @@ def test_one_session_shares_sources_but_renews_32_separate_claims(db):
     data = json.loads(
         prompt.split("BEGIN UNTRUSTED REVIEW DATA\n")[1].split("\nEND UNTRUSTED")[0]
     )
-    assert len(calls) == 2 and len(data["sources"]) == 1 and len(data["claims"]) == 32
+    assert len(calls) == 3 and len(data["sources"]) == 1 and len(data["claims"]) == 32
     result = apply(db, cost_usd=0.25)
     assert result["outcomes"] == {"renewed": 32}
     assert len(db.exec(select(ReviewOutcome)).all()) == 32
@@ -295,8 +330,8 @@ def test_one_session_shares_sources_but_renews_32_separate_claims(db):
         assert row.verification_state == "verified"
     stats = batch.status(db, now=NOW + timedelta(minutes=2))
     assert stats["last_hour"]["distinct_completed"] == 32
-    assert stats["last_24h"]["source_requests"] == 2
-    assert stats["last_24h"]["source_cache_hits"] == 31
+    assert stats["last_24h"]["source_requests"] == 3
+    assert stats["last_24h"]["source_cache_hits"] == 62
     assert stats["last_24h"]["model_cost_usd"] == 0.25
     assert stats["last_24h"]["batches_with_reported_cost"] == 1
 
@@ -467,12 +502,10 @@ def test_transport_outage_makes_one_request_and_never_chains(db):
     assert db.exec(select(ReviewOutcome)).all() == []
 
 
-@pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize(
     "failure", [401, 403, 429, 500, 502, 503, httpx.ConnectError, httpx.ConnectTimeout]
 )
-def test_streamed_batch_stops_after_provider_failure(db, monkeypatch, enabled, failure):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(enabled).lower())
+def test_streamed_batch_stops_after_provider_failure(db, monkeypatch, failure):
     monkeypatch.setenv("KG_FACT_REVIEW_BATCH_SIZE", "32")
     notes(db, 32, paths=[f"projects/member-{i}/app.py" for i in range(32)])
     calls = []
@@ -504,10 +537,9 @@ def test_streamed_batch_stops_after_provider_failure(db, monkeypatch, enabled, f
 
 
 @pytest.mark.parametrize("failure", [404, httpx.ReadTimeout])
-def test_enabled_streamed_batch_isolates_member_failure(monkeypatch, failure):
+def test_streamed_batch_isolates_member_failure(monkeypatch, failure):
     from knowledge.review_sources import EvidenceUnavailable
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     calls = []
 
     def transport(request):
@@ -539,8 +571,7 @@ def test_prompt_budget_does_not_turn_temporary_deferral_into_unsupported(
     }
 
 
-def test_staged_mixed_batch_shared_large_source_and_failure_isolation(db, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+def test_mixed_batch_shared_large_source_and_failure_isolation(db, monkeypatch):
     path = "projects/monolith/knowledge/extraction.py"
     files = {
         path: Path(__file__).with_name("extraction.py").read_bytes(),
@@ -612,7 +643,6 @@ def test_staged_mixed_batch_shared_large_source_and_failure_isolation(db, monkey
 
 
 def test_batch_rejects_cross_claim_witnesses_without_poisoning_sibling(db, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     path = "projects/monolith/knowledge/extraction.py"
     rows = notes(db, 2, paths=[path])
     for row, literal in zip(rows, ["RAW_BODY_CAP = 60_000", "DOC_DRIFT_CAP = 10"]):
@@ -652,7 +682,6 @@ def test_batch_rejects_cross_claim_witnesses_without_poisoning_sibling(db, monke
 
 
 def test_batch_block_reconsideration_does_not_charge_unchanged_polls(db, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     path = "projects/monolith/knowledge/extraction.py"
     notes(db, 3, paths=[path])
     raw = Path(__file__).with_name("extraction.py").read_bytes()
@@ -696,11 +725,10 @@ def test_batch_block_reconsideration_does_not_charge_unchanged_polls(db, monkeyp
         )
 
 
-def test_staged_cache_counts_escaped_bytes_and_rejected_transfers(monkeypatch):
+def test_cache_counts_escaped_bytes_and_rejected_transfers(monkeypatch):
     from knowledge import review_batch_sources as cache
     from knowledge.review_sources import EvidenceUnavailable, EvidenceUnsupported
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     monkeypatch.setattr(cache, "MAX_CACHE_BYTES", 300_000)
     value = {"x": "é" * 35_000}
     with BatchSources(fetch=lambda _: value) as reader:
@@ -712,8 +740,7 @@ def test_staged_cache_counts_escaped_bytes_and_rejected_transfers(monkeypatch):
         assert reader.requests == 2 and reader.stopped
 
 
-def test_staged_batch_prompt_limit_preserves_backoff_and_valid_sibling(db, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
+def test_batch_prompt_limit_preserves_backoff_and_valid_sibling(db, monkeypatch):
     notes(db, 2, paths=["projects/a.py", "projects/b.py"])
     monkeypatch.setattr(batch, "MAX_PROMPT_BYTES", 12_000)
     prompt = prepare(
@@ -758,7 +785,7 @@ def test_interrupted_fetch_resumes_same_main_revision_and_saved_sources(db):
     notes(db, 2, paths=["projects/a.py", "projects/b.py"])
 
     def crash(path):
-        if "/b.py?" in path:
+        if path.endswith("/git/blobs/" + blob_sha("projects/b.py")):
             raise RuntimeError("worker lost")
         return fetch(path)
 
@@ -768,11 +795,12 @@ def test_interrupted_fetch_resumes_same_main_revision_and_saved_sources(db):
 
     def resumed(path):
         calls.append(path)
-        assert "/git/ref/" not in path and "/a.py?" not in path
+        assert "/git/ref/" not in path
+        assert not path.endswith("/git/blobs/" + blob_sha("projects/a.py"))
         return fetch(path)
 
     prepare(db, fetch=resumed)
-    assert len(calls) == 1 and db.get(FactReviewBatch, "batch").repo_revision == SHA
+    assert len(calls) == 2 and db.get(FactReviewBatch, "batch").repo_revision == SHA
     assert apply(db)["outcomes"] == {"renewed": 2}
 
 
@@ -869,20 +897,31 @@ def test_collection_bound_preserves_attempts_defers_suffix_and_makes_progress(
     calls = []
     clock = [0.0]
     if bound == "request":
-        monkeypatch.setattr(sources, "MAX_REQUESTS", 3)  # pin plus two members
+        monkeypatch.setattr(sources, "MAX_REQUESTS", 5)  # pin plus two tree/blob pairs
     elif bound == "byte":
-        pin_size = len(json.dumps({"object": {"sha": SHA}}).encode())
-        response_size = len(
-            json.dumps(fetch("/contents/projects/member-0/app.py?ref=" + SHA)).encode()
+        from knowledge import review_coverage as coverage
+
+        paths = [f"projects/member-{i}/app.py" for i in range(2)]
+        prefix = [f"/git/ref/heads/main"] + [
+            endpoint
+            for path in paths
+            for endpoint in (
+                f"/git/trees/{SHA}:{Path(path).parent}",
+                f"/git/blobs/{blob_sha(path)}",
+            )
+        ]
+        monkeypatch.setattr(
+            sources,
+            "MAX_CACHE_BYTES",
+            sum(coverage.serialized_size(fetch(path)) for path in prefix),
         )
-        monkeypatch.setattr(sources, "MAX_CACHE_BYTES", pin_size + 2 * response_size)
     else:
         monkeypatch.setattr(sources.time, "monotonic", lambda: clock[0])
 
     def read(path):
         calls.append(path)
         result = fetch(path)
-        if bound == "deadline" and len(calls) == 3:
+        if bound == "deadline" and len(calls) == 6:
             clock[0] = sources.DEADLINE_SECONDS + 1
         return result
 
@@ -891,7 +930,7 @@ def test_collection_bound_preserves_attempts_defers_suffix_and_makes_progress(
     parent = db.get(FactReviewBatch, "batch")
     members = [db.get(FactReviewRun, key) for key in parent.member_keys]
     assert [bool(r.sources) for r in members] == [True, True, False, False, False]
-    expected_failed = 1 if bound == "byte" else 0
+    expected_failed = 1 if bound in {"byte", "deadline"} else 0
     assert len(db.exec(select(ReviewOutcome)).all()) == expected_failed
     assert (
         sum(r.result.get("outcome") == "deferred" for r in members)
@@ -949,7 +988,6 @@ def test_streamed_transport_bound_preserves_attempt_and_defers_untouched(
 ):
     from knowledge import review_batch_sources as source_batch
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", 35_000)
     files = {
         f"projects/example/member-{i}.py": SOURCE.encode() + bytes([65 + i]) * 11_000
@@ -984,8 +1022,8 @@ def test_crash_after_defer_commit_preserves_sources_and_terminal_suffix(
 ):
     from knowledge import review_batch_sources as source_batch
 
-    notes(db, 4, paths=[f"projects/member-{i}.py" for i in range(4)])
-    monkeypatch.setattr(source_batch, "MAX_REQUESTS", 2)
+    notes(db, 4, paths=[f"projects/member-{i}/app.py" for i in range(4)])
+    monkeypatch.setattr(source_batch, "MAX_REQUESTS", 3)
     original = batch._defer
     interrupted = [False]
 
@@ -1004,6 +1042,9 @@ def test_crash_after_defer_commit_preserves_sources_and_terminal_suffix(
     deferred = dict(db.get(FactReviewRun, "batch:fact:2").result)
     calls = []
     monkeypatch.setattr(batch, "_defer", original)
+    monkeypatch.setattr(
+        source_batch, "MAX_REQUESTS", 4
+    )  # two remaining tree/blob pairs
     prepare(db, fetch=lambda path: (calls.append(path), fetch(path))[1])
     assert db.get(FactReviewRun, "batch:fact:1").sources == saved
     assert db.get(FactReviewRun, "batch:fact:2").result == deferred
@@ -1022,13 +1063,24 @@ def test_repeated_batch_does_not_let_one_expensive_member_starve_siblings(
     from knowledge import review_batch_sources as source_batch
 
     notes(db, 4, paths=[f"projects/member-{i}.py" for i in range(4)])
-    monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", 600)
+    from knowledge import review_coverage as coverage
+
+    budget = sum(
+        coverage.serialized_size(fetch(path))
+        for path in (
+            "/git/ref/heads/main",
+            f"/git/trees/{SHA}:projects",
+            f"/git/blobs/{blob_sha('projects/member-0.py')}",
+            f"/git/blobs/{blob_sha('projects/member-1.py')}",
+        )
+    )
+    monkeypatch.setattr(source_batch, "MAX_CACHE_BYTES", budget)
     seen = []
 
     def expensive(path):
         seen.append(path)
         result = fetch(path)
-        if "member-0.py" in path:
+        if path.endswith("/git/blobs/" + blob_sha("projects/member-0.py")):
             result["envelope"] = "x" * 1000
         return result
 
@@ -1037,7 +1089,7 @@ def test_repeated_batch_does_not_let_one_expensive_member_starve_siblings(
         "unavailable": 1,
         "deferred": 3,
     }
-    assert len(seen) == 2  # pin and the actually attempted expensive member
+    assert len(seen) == 3  # pin, directory and the attempted expensive blob
     seen.clear()
     later = NOW + timedelta(minutes=16)  # the first member's cooldown has expired
     assert review._candidates(db, later, limit=4)[0].note_id == "fact-1"
@@ -1045,5 +1097,5 @@ def test_repeated_batch_does_not_let_one_expensive_member_starve_siblings(
     answer = output(db, "later")
     result = batch.apply(db, "later", json.dumps(answer), now=later)
     assert result["outcomes"]["renewed"] >= 2
-    assert "member-1.py" in seen[1]
+    assert seen[2].endswith("/git/blobs/" + blob_sha("projects/member-1.py"))
     assert db.get(FactReviewRun, "batch:fact:1").result["outcome"] == "unavailable"

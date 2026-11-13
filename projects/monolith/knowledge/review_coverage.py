@@ -1,4 +1,4 @@
-"""Default-off exact literal witnesses and bounded, content-based file identities.
+"""Exact literal witnesses and bounded, content-based file identities.
 
 Only the closed literal-presence grammar can use incomplete file coverage. Every
 other claim still requires complete files. Nothing here infers absence or source
@@ -15,7 +15,6 @@ import time
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
-from core.env import flag
 from core.github import GITHUB_API, _github_headers
 
 from knowledge.review_sources import EvidenceUnavailable, EvidenceUnsupported
@@ -32,10 +31,6 @@ _CLAUSE = re.compile(
     r"`((?:projects|docs|bazel)/[\w./-]+\.[A-Za-z0-9]+)` contains the exact text "
     r"`([^`\r\n]{8,2000})`\."
 )
-
-
-def enabled():
-    return flag("KG_FACT_REVIEW_COVERAGE_ENABLED")
 
 
 def serialized_size(value):

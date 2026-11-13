@@ -59,7 +59,6 @@ def status() -> dict:
     from core.db import get_engine
 
     from knowledge.fact_review_batch import status as batch_status
-    from knowledge.review_coverage import enabled as source_coverage_enabled
 
     max_daily, interval = settings()
     with Session(get_engine()) as session:
@@ -72,7 +71,7 @@ def status() -> dict:
         ).all()
         return {
             "enabled": True,
-            "source_coverage_enabled": source_coverage_enabled(),
+            "source_coverage_enabled": True,
             "max_daily": max_daily,
             "interval_seconds": interval,
             "public_facts": fact_summary(session, now=now),
@@ -311,37 +310,34 @@ def _candidate_query(now: datetime):
     unsupported = (
         ReviewOutcome.status == "unsupported"
     ) & ReviewOutcome.reason.startswith(PREFIX)
-    coverage_blocked = False
-    if coverage.enabled():
-        reconsidered = (
-            select(FactReviewSourceBlock.note_id)
-            .where(
-                FactReviewSourceBlock.note_id == Note.note_id,
-                FactReviewSourceBlock.outcome_id == ReviewOutcome.id,
-                or_(
-                    FactReviewSourceBlock.released.is_(True),
-                    FactReviewSourceBlock.identity["version"].as_string()
-                    != coverage.VERSION,
-                    FactReviewSourceBlock.content_hash != Note.content_hash,
-                ),
-            )
-            .correlate(Note, ReviewOutcome)
-            .exists()
-        )
-        unsupported = unsupported & ~reconsidered
-        coverage_blocked = (
-            select(FactReviewSourceBlock.note_id)
-            .where(
-                FactReviewSourceBlock.note_id == Note.note_id,
-                FactReviewSourceBlock.revision == Note.revision,
-                FactReviewSourceBlock.content_hash == Note.content_hash,
+    reconsidered = (
+        select(FactReviewSourceBlock.note_id)
+        .where(
+            FactReviewSourceBlock.note_id == Note.note_id,
+            FactReviewSourceBlock.outcome_id == ReviewOutcome.id,
+            or_(
+                FactReviewSourceBlock.released.is_(True),
                 FactReviewSourceBlock.identity["version"].as_string()
-                == coverage.VERSION,
-                FactReviewSourceBlock.released.is_(False),
-            )
-            .correlate(Note)
-            .exists()
+                != coverage.VERSION,
+                FactReviewSourceBlock.content_hash != Note.content_hash,
+            ),
         )
+        .correlate(Note, ReviewOutcome)
+        .exists()
+    )
+    unsupported = unsupported & ~reconsidered
+    coverage_blocked = (
+        select(FactReviewSourceBlock.note_id)
+        .where(
+            FactReviewSourceBlock.note_id == Note.note_id,
+            FactReviewSourceBlock.revision == Note.revision,
+            FactReviewSourceBlock.content_hash == Note.content_hash,
+            FactReviewSourceBlock.identity["version"].as_string() == coverage.VERSION,
+            FactReviewSourceBlock.released.is_(False),
+        )
+        .correlate(Note)
+        .exists()
+    )
     blocked = (
         select(ReviewOutcome.id)
         .where(
@@ -421,8 +417,6 @@ def _digest(claim: dict) -> str:
 
 
 def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
-    from knowledge import review_coverage as coverage
-
     if run.status == "complete" or not run.note_id:
         if progress_signal and run.note_id:
             return NO_MODEL
@@ -453,8 +447,6 @@ def _prompt(run: FactReviewRun, progress_signal: bool = False) -> str:
             "the exact positive literal-presence clause shown, never behavior or absence. "
             "For such sources, quote EVERY complete witness, including different literals in "
             "the same file. Missing coverage is unsupported, never changed.\n"
-            if coverage.enabled()
-            else ""
         )
         + "Literal citation contract: quote is checked as an exact substring of the assigned "
         "source's decoded text value, not rendered Markdown or reformatted code. Preserve "
@@ -489,10 +481,9 @@ def prepare(
 ) -> str:
     """Pin the claim first; perform network reads outside a database transaction."""
     now = utc(now or datetime.now(UTC))
-    from knowledge import review_coverage as coverage
     from knowledge.review_source_blocks import probe, record_block
 
-    if coverage.enabled() and session.get(FactReviewRun, invocation_key) is None:
+    if session.get(FactReviewRun, invocation_key) is None:
         probe(session, now, fetch=probe_fetch)
     if session.get_bind().dialect.name != "sqlite":
         session.execute(
@@ -565,11 +556,7 @@ def prepare(
         session.commit()
         return prompt
     run.sources, run.observed_at = sources, observed
-    if (
-        coverage.enabled()
-        and not failure
-        and len(_prompt(run).encode("utf-8")) > MAX_PROMPT_BYTES
-    ):
+    if not failure and len(_prompt(run).encode("utf-8")) > MAX_PROMPT_BYTES:
         failure, status = "complete prompt exceeds byte bound", "unsupported"
         identity = next(
             (s["coverage"]["identity"] for s in sources if "coverage" in s), None
@@ -612,8 +599,6 @@ class Verdict(BaseModel):
 
 
 def apply(session: Session, invocation_key: str, result_text: str, *, now=None) -> dict:
-    from knowledge import review_coverage as coverage
-
     now = utc(now or datetime.now(UTC))
     run = session.exec(
         select(FactReviewRun)
@@ -629,9 +614,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         return {**run.result, "replayed": True}
     try:
         blocks = re.findall(r"```json\s*\n(.*?)\n```", result_text, re.DOTALL)
-        result_size = (
-            len(result_text.encode("utf-8")) if coverage.enabled() else len(result_text)
-        )
+        result_size = len(result_text.encode("utf-8"))
         if result_size > 32_000 or len(blocks) != 1:
             raise ValueError("one bounded JSON block required")
         verdict = Verdict.model_validate_json(blocks[0])

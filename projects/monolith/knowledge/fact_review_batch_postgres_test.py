@@ -163,7 +163,6 @@ def test_coverage_migration_restart_and_concurrent_probe_reservations(pg, monkey
     repo = scope.removeprefix("repo:")
     now = datetime.now(UTC)
     engine = create_engine(pg.url)
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     monkeypatch.setenv("KG_FACT_REVIEW_MAX_DAILY", "20000")
     monkeypatch.setattr(review, "_get_repo_scope", lambda: scope)
     raw = b"bounded_identity = True\n" * 3000

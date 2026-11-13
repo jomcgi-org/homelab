@@ -231,10 +231,9 @@ def prepare(session: Session, key: str, *, fetch=None, now=None) -> str:
         return utc(fixed_now or datetime.now(UTC))
 
     now = completed_now()
-    from knowledge import review_coverage as coverage
     from knowledge.review_source_blocks import probe
 
-    if coverage.enabled() and session.get(FactReviewBatch, key) is None:
+    if session.get(FactReviewBatch, key) is None:
         probe(session, now, fetch=fetch)
     keys = _reserve(session, key, now)
     if not keys:

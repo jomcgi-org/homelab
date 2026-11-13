@@ -1540,8 +1540,16 @@ an explicit allowed-source list for every claim. The reviewer must support
 every clause and qualification, and cite exact quotations from that claim's
 sources. Partial coverage cannot renew a fact.
 
-`knowledge.factReview.coverageEnabled` defaults to false. When enabled, both
-review paths resolve cited files through non-recursive directory trees at one
+The current chart and image always use bounded source coverage (#7800).
+Production values retain `knowledge.factReview.coverageEnabled=true` for
+supported older charts. HEAD values reach those charts independently of their
+Kargo revision during promotion or pin-lowering rollback. The compatibility key
+stays until those charts leave rollback support. All five knowledge-review
+workflows remain suspended. Authorized landing and verified live revision/health
+remain separate; #6812 and outstanding #6995 observations remain outside this
+repository retirement.
+
+Both review paths resolve cited files through non-recursive directory trees at one
 pinned main commit and verify decoded bytes against the returned Git blob hash.
 Wire responses and their serialized JSON are capped at 192,000 bytes, decoded
 files at 128,000 bytes, and per-claim transfer at 512,000 bytes. The existing
@@ -1558,10 +1566,10 @@ response bytes remain charged. Preflight overflow is unsupported with a resolved
 file identity and leaves the batch reader available to later members.
 
 HTTP 401/403/429, server errors and transport failures stop further batch reads;
-the enabled path isolates a single read timeout to its member. HTTP 404 remains
+a single read timeout is isolated to its member. HTTP 404 remains
 member-local. Invalid JSON/UTF-8 response envelopes, unexpected content encoding
 and response serialization overflow record unavailable outcomes with backoff on
-both enabled paths, without creating source blocks. Blob content failures and
+both review paths, without creating source blocks. Blob content failures and
 explicit wire/file/coverage bounds retain deterministic unsupported outcomes.
 
 **Why.** A shared provider failure must not fan out across the remaining batch.

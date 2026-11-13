@@ -141,6 +141,9 @@ knowledge:
   enabled: true
   factReview:
     # Approved bounded source coverage; existing review quotas stay unchanged.
+    # Preserve enabled coverage for supported older charts during promotion or
+    # pin-lowering rollback: their chart revision is independent of HEAD values.
+    # The current chart and image ignore this compatibility key.
     coverageEnabled: true
     # Catch-up allowance. Actual coverage is reported separately from retries;
     # bounded batches retain an independent evidence verdict for each fact.

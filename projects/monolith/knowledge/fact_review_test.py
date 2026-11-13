@@ -141,23 +141,17 @@ def test_renewal_preserves_original_observation_and_labels(db):
     assert outcome.status == "success" and SOURCE["url"] in outcome.evidence[1]
 
 
-@pytest.mark.parametrize("staged", [False, True])
-def test_witness_prompt_instructions_are_default_off(db, monkeypatch, staged):
+def test_witness_prompt_instructions_are_unconditional(db):
     from knowledge import fact_review_batch
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(staged).lower())
     note(db)
     single = prepare(db)
     batched = fact_review_batch._prompt([db.get(FactReviewRun, "invocation")])
     for prompt in (single, batched):
-        assert ("A literal-witness source" in prompt) is staged
+        assert "A literal-witness source" in prompt
 
 
-@pytest.mark.parametrize("staged", [False, True])
-def test_response_byte_limit_preserves_flag_off_character_limit(
-    db, monkeypatch, staged
-):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(staged).lower())
+def test_response_limit_counts_utf8_bytes(db):
     note(db)
     quote = "é" * 1800
     prepare(db, sources=[SOURCE | {"text": quote}])
@@ -165,11 +159,8 @@ def test_response_byte_limit_preserves_flag_off_character_limit(
         "\\u00e9", "é"
     )
     assert len(result) < 32_000 < len(result.encode("utf-8"))
-    if staged:
-        with pytest.raises(ExtractionOutputInvalid, match="bounded JSON"):
-            review.apply(db, "invocation", result, now=NOW)
-    else:
-        assert review.apply(db, "invocation", result, now=NOW)["outcome"] == "renewed"
+    with pytest.raises(ExtractionOutputInvalid, match="bounded JSON"):
+        review.apply(db, "invocation", result, now=NOW)
 
 
 def test_replay_uses_pinned_sources_and_commits_only_once(db):
@@ -568,7 +559,6 @@ def witness_output(db, key, **changes):
 
 
 def test_large_source_real_collector_prepare_apply_and_restart_replay(db, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     literal_note(db, two=True)
     now = datetime.now(UTC)
     prompt = production_prepare(db, "large", now=now)
@@ -605,7 +595,6 @@ def test_large_source_real_collector_prepare_apply_and_restart_replay(db, monkey
 def test_witnesses_cannot_bypass_complete_claim_or_freshness_guards(
     db, monkeypatch, case
 ):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     row = literal_note(db, two=True)
     now = datetime.now(UTC)
     production_prepare(db, "large", now=now)
@@ -647,7 +636,6 @@ def test_unchanged_blocks_survive_restarts_without_spending_selection_allowance(
 ):
     from knowledge.models import FactReviewSourceBlock
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     note(db, content="Behavior of " + LARGE_PATH)
     assert production_prepare(db, "blocked") == review.NO_REVIEW
     assert db.get(FactReviewSourceBlock, "fact").identity["files"][LARGE_PATH]
@@ -709,7 +697,6 @@ def test_unresolved_identity_cannot_be_released_by_a_fresh_probe(db, monkeypatch
     from knowledge.models import FactReviewSourceBlock
     from knowledge.review_source_blocks import probe
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     # The claim's pin exhausts its request allowance before identity collection.
     # The independent probe has a fresh allowance and can resolve that same tree.
     monkeypatch.setattr(review_sources, "MAX_REQUESTS", 1)
@@ -738,7 +725,6 @@ def test_changed_claim_or_coverage_policy_is_eligible_without_probe(
 ):
     from knowledge import review_coverage, review_sources
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     if unresolved:
         monkeypatch.setattr(review_sources, "MAX_REQUESTS", 1)
     row = note(db, content="Behavior of " + LARGE_PATH)
@@ -758,7 +744,6 @@ def test_probe_failure_is_bounded_and_does_not_starve_valid_candidates(db, monke
     from knowledge.models import FactReviewSourceBlock
     from knowledge.review_source_blocks import probe
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     for index in range(4):
         note(db, f"blocked-{index}", content="Behavior of " + LARGE_PATH)
         production_prepare(db, f"blocked-run-{index}")
@@ -795,7 +780,6 @@ def test_probe_failure_is_bounded_and_does_not_starve_valid_candidates(db, monke
 
 
 def test_transient_large_source_failures_keep_existing_backoff(db, monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     literal_note(db)
     production_prepare(
         db, "outage", fetch=large_fetch(failure=EvidenceUnavailable("provider offline"))
@@ -818,7 +802,6 @@ def test_response_envelope_anomalies_remain_retryable(
     from knowledge import fact_review_batch as batch
     from knowledge.models import FactReviewSourceBlock
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     literal_note(db)
     healthy = large_fetch()
     calls = []
@@ -1106,13 +1089,9 @@ def test_citations_preserve_markup_comments_and_escaping_without_repair(
     assert len(db.exec(select(ReviewOutcome)).all()) == 1
 
 
-@pytest.mark.parametrize("coverage_enabled", [False, True])
-def test_operator_status_reports_actual_source_policy(
-    db, monkeypatch, coverage_enabled
-):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", str(coverage_enabled).lower())
+def test_operator_status_reports_unconditional_source_coverage(db, monkeypatch):
     monkeypatch.setattr("core.db.get_engine", lambda: db.get_bind())
     result = review.status()
     assert result["enabled"] is True
-    assert result["source_coverage_enabled"] is coverage_enabled
+    assert result["source_coverage_enabled"] is True
     assert result["throughput"]["attempts"] == 0

@@ -514,8 +514,6 @@ spec:
               value: {{ .Values.knowledge.recall.limit | quote }}
             - name: KG_AUDIT_ENABLED
               value: {{ .Values.knowledge.audit.enabled | quote }}
-            - name: KG_FACT_REVIEW_COVERAGE_ENABLED
-              value: {{ .Values.knowledge.factReview.coverageEnabled | quote }}
             - name: KG_FACT_REVIEW_MAX_DAILY
               value: {{ .Values.knowledge.factReview.maxDaily | quote }}
             - name: KG_FACT_REVIEW_INTERVAL_SECONDS

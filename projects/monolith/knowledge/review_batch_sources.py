@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 
 import httpx
-from core.github import GITHUB_API, GITHUB_REPO, _github_headers
+from core.github import GITHUB_REPO
 
 from knowledge import review_coverage as coverage
 from knowledge.review_sources import (
@@ -59,7 +58,7 @@ class BatchSources:
         try:
             if self.fetch is not None:
                 result = self.fetch(path)
-            elif coverage.enabled():
+            else:
                 result = coverage.read_response(
                     self.client,
                     path,
@@ -67,47 +66,27 @@ class BatchSources:
                     charge=self._charge,
                     max_bytes=max_bytes,
                 )
-            else:
-                response = self.client.get(GITHUB_API + path, headers=_github_headers())
-                if response.status_code != 200:
-                    message = f"GitHub returned {response.status_code}"
-                    if (
-                        response.status_code in {401, 403, 429}
-                        or response.status_code >= 500
-                    ):
-                        self.stopped = message
-                    raise EvidenceUnavailable(message)
-                result = response.json()
         except coverage.SourceHTTPError as exc:
             if exc.status_code in {401, 403, 429} or exc.status_code >= 500:
                 self.stopped = str(exc)
             raise
         except httpx.HTTPError as exc:
             message = "batch source transport unavailable"
-            if not coverage.enabled() or not isinstance(exc, httpx.ReadTimeout):
+            if not isinstance(exc, httpx.ReadTimeout):
                 self.stopped = message
             raise EvidenceUnavailable(message) from exc
         if not isinstance(result, dict):
             raise EvidenceUnavailable("malformed GitHub response")
-        size = (
-            coverage.serialized_size(result)
-            if coverage.enabled()
-            else len(json.dumps(result).encode())
-        )
-        if coverage.enabled():
-            if self.fetch is not None:
-                self._charge(size)
-            if coverage.response_size(result) > min(
-                max_bytes, coverage.MAX_RESPONSE_BYTES
-            ):
-                raise EvidenceUnsupported("source response byte bound exceeded")
-        if coverage.enabled() and time.monotonic() - self.started >= DEADLINE_SECONDS:
+        size = coverage.serialized_size(result)
+        if self.fetch is not None:
+            self._charge(size)
+        if coverage.response_size(result) > min(max_bytes, coverage.MAX_RESPONSE_BYTES):
+            raise EvidenceUnsupported("source response byte bound exceeded")
+        if time.monotonic() - self.started >= DEADLINE_SECONDS:
             self.stopped = "batch source deadline exhausted"
             raise EvidenceUnavailable(self.stopped)
         if self.bytes + size > MAX_CACHE_BYTES:
             message = "batch source byte budget exhausted"
-            if not coverage.enabled():
-                self.stopped = message
             raise EvidenceUnavailable(message)
         self.bytes += size
         self.cache[path] = result
@@ -121,7 +100,7 @@ class BatchSources:
 
     def pin(self):
         result = self.read(f"/repos/{self.repo}/git/ref/heads/main")
-        self.pin_bytes = coverage.response_size(result) if coverage.enabled() else 0
+        self.pin_bytes = coverage.response_size(result)
         sha = result.get("object", {}).get("sha")
         if not re.fullmatch(r"[0-9a-f]{40}", str(sha)):
             raise EvidenceUnavailable("missing main commit")

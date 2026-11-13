@@ -65,14 +65,8 @@ def test_files_are_pinned_to_one_main_commit():
         calls.append(path)
         if "/git/ref/" in path:
             return {"object": {"sha": SHA}}
-        assert path.endswith("?ref=" + SHA)
-        return {
-            "type": "file",
-            "path": path.split("/contents/", 1)[1].split("?", 1)[0],
-            "encoding": "base64",
-            "size": 7,
-            "content": base64.b64encode(b"content").decode(),
-        }
+        cited = "docs/guide.md" if ":docs" in path else "projects/app/main.py"
+        return blob_fetch(b"content", path=cited)(path)
 
     sources, _ = collect_sources(
         {
@@ -81,7 +75,8 @@ def test_files_are_pinned_to_one_main_commit():
         },
         fetch=fetch,
     )
-    assert len(calls) == 3 and len(sources) == 2
+    assert len(calls) == 5 and len(sources) == 2
+    assert all("/contents/" not in path for path in calls)
     assert all("/blob/" + SHA + "/" in item["url"] for item in sources)
 
 
@@ -198,7 +193,6 @@ def literal_claim(text="RAW_BODY_CAP = 60_000", path=REAL_PATH):
 def test_real_oversized_file_has_exact_pinned_witness_and_explicit_omissions(
     monkeypatch,
 ):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     raw = Path(__file__).with_name("extraction.py").read_bytes()
     assert len(raw) > MAX_BYTES
     calls = []
@@ -230,35 +224,24 @@ def test_real_oversized_file_has_exact_pinned_witness_and_explicit_omissions(
     ],
 )
 def test_partial_negative_and_incomplete_claims_fail_closed(monkeypatch, change):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     raw = Path(__file__).with_name("extraction.py").read_bytes()
     with pytest.raises(EvidenceUnsupported, match="incomplete coverage") as error:
         collect_sources(literal_claim() | change, fetch=blob_fetch(raw))
     assert error.value.identity["files"][REAL_PATH]["size"] == len(raw)
 
 
-def test_off_path_keeps_legacy_size_gate(monkeypatch):
+def test_absent_switch_uses_verified_blobs_for_oversized_witness(monkeypatch):
     monkeypatch.delenv("KG_FACT_REVIEW_COVERAGE_ENABLED", raising=False)
     raw = Path(__file__).with_name("extraction.py").read_bytes()
-
-    def fetch(url):
-        if "/git/ref/" in url:
-            return {"object": {"sha": SHA}}
-        return {
-            "type": "file",
-            "path": REAL_PATH,
-            "encoding": "base64",
-            "size": len(raw),
-            "content": base64.b64encode(raw).decode(),
-        }
-
-    with pytest.raises(EvidenceUnavailable) as error:
-        collect_sources(literal_claim(), fetch=fetch)
-    assert type(error.value) is EvidenceUnavailable
+    calls = []
+    sources, _ = collect_sources(literal_claim(), fetch=blob_fetch(raw, calls=calls))
+    assert sources[0]["text"] == "RAW_BODY_CAP = 60_000"
+    assert sources[0]["coverage"]["kind"] == coverage.VERSION
+    assert any("/git/blobs/" in path for path in calls)
+    assert all("/contents/" not in path for path in calls)
 
 
 def test_exact_serialized_boundary_and_utf8_witness_offsets(monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     path = "projects/a.py"
     overhead = coverage.serialized_size(
         [
@@ -301,7 +284,6 @@ def test_exact_serialized_boundary_and_utf8_witness_offsets(monkeypatch):
     ],
 )
 def test_malformed_blob_cannot_become_evidence(monkeypatch, mutation, deterministic):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     with pytest.raises(EvidenceUnavailable) as error:
         collect_sources(
             literal_claim(), fetch=blob_fetch(b"source data", mutate=mutation)
@@ -313,7 +295,6 @@ def test_malformed_blob_cannot_become_evidence(monkeypatch, mutation, determinis
     "raw", [b"\xff", b"binary\x00data", b"a" * (coverage.MAX_FILE_BYTES + 1)]
 )
 def test_binary_and_decode_budget_fail_deterministically(monkeypatch, raw):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     with pytest.raises(EvidenceUnsupported) as error:
         collect_sources(literal_claim(), fetch=blob_fetch(raw))
     assert error.value.identity
@@ -351,7 +332,6 @@ def test_streaming_bounds_wire_decoding_and_json_expansion():
 
 
 def test_duplicate_references_and_all_positive_clauses_are_covered(monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     raw = Path(__file__).with_name("extraction.py").read_bytes()
     claim = literal_claim() | {
         "content": literal_claim()["title"]
@@ -395,7 +375,6 @@ def test_duplicate_references_and_all_positive_clauses_are_covered(monkeypatch):
     ],
 )
 def test_unsupported_tree_or_file_type_has_a_durable_identity(monkeypatch, change):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     fetch = blob_fetch(b"source")
 
     def read(path):
@@ -410,7 +389,6 @@ def test_unsupported_tree_or_file_type_has_a_durable_identity(monkeypatch, chang
 def test_enabled_request_bound_is_deterministic_but_deadline_is_transient(monkeypatch):
     from knowledge import review_sources
 
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     monkeypatch.setattr(review_sources, "MAX_REQUESTS", 2)
     with pytest.raises(EvidenceUnsupported, match="request bound") as error:
         collect_sources(literal_claim(), fetch=blob_fetch(b"source"))
@@ -424,7 +402,6 @@ def test_enabled_request_bound_is_deterministic_but_deadline_is_transient(monkey
 
 
 def test_enabled_foreign_claim_does_not_reach_metadata_probe(monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     with pytest.raises(EvidenceUnsupported, match="another repository"):
         collect_sources(
             literal_claim()
@@ -434,7 +411,6 @@ def test_enabled_foreign_claim_does_not_reach_metadata_probe(monkeypatch):
 
 
 def test_pointers_inside_a_literal_are_not_extra_source_subjects(monkeypatch):
-    monkeypatch.setenv("KG_FACT_REVIEW_COVERAGE_ENABLED", "true")
     literal = "PR #1 names projects/other/source.py"
     raw = ("# padding\n" * 8000 + literal).encode()
     calls = []
