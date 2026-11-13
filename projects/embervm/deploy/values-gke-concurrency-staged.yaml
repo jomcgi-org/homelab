@@ -1,0 +1,51 @@
+# INACTIVE #7378. No Application selects this supplemental overlay.
+# Keep observed admission; #6965 owns changing that mode.
+claudeRuntimeWorkload:
+  cap: 64
+  session:
+    maxSessions: 96
+bricks:
+  classes:
+  - name: 1gi
+    maxLiveVMs: 6
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 1Gi
+  - name: 2gi
+    maxLiveVMs: 14
+    resources:
+      requests:
+        cpu: '1'
+        memory: 2Gi
+      limits:
+        memory: 2Gi
+  - name: 4gi
+    resources:
+      requests:
+        cpu: '2'
+        memory: 4Gi
+      limits:
+        memory: 4Gi
+  - name: 8gi
+    resources:
+      requests:
+        cpu: '3'
+        memory: 8Gi
+      limits:
+        memory: 8Gi
+  - name: 16gi
+    resources:
+      requests:
+        cpu: '4'
+        memory: 16Gi
+      limits:
+        memory: 16Gi
+  autoscale:
+    maxReplicas:
+      2gi: 4
+      4gi: 4
+      8gi: 32
+      16gi: 0

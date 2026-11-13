@@ -1,0 +1,8 @@
+# INACTIVE #7378. No Application selects this supplemental overlay.
+# Activate only after the EmberVM capacity prerequisite in ARCHITECTURE.md.
+swarm:
+  factoryMaxConcurrentTasks: 48
+agentSessions:
+  admission:
+    total: 64
+    background: 56

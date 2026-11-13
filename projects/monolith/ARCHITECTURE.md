@@ -349,6 +349,72 @@ This section records monolith ownership, trust boundaries, acceptance and ration
 The Conductor owns operator-facing coordination, the policy-pinned Planner proposes
 the task graph, and the Executor dispatches admitted nodes. Role names grant no authority.
 
+### Inactive concurrency package (#7378)
+
+**Why.** `deploy/values-gke-concurrency-staged.yaml` prepares a factory ceiling
+of 48 and shared session admission total/background of 64/56. No Application
+selects it. Chart defaults, selected production overlays and Atlas inputs stay
+unchanged. `deploy/factory_concurrency_staged.sql` is test data outside the
+chart. It updates only the exact homelab `max_tasks` map `{delivery:10,
+advisory:2}` to `{delivery:40,advisory:4}`, increments control version and
+appends one `policy_migrated` audit. Replay is inert. Generation, control state,
+other policy fields/repositories and every pinned receipt remain unchanged.
+Customized maps require a separate decision. PostgreSQL tests exercise these
+cases against the repository's pinned PostgreSQL harness.
+
+`lane_limits()` serves delivery first under the chart ceiling; 40 + 4 = 44
+fits 48 without clipping. Forty-eight is a hard ceiling, not a claim that the
+44 policy slots fill it. Factory background reserve remains 2: 56 background
+permits leave 54 for factory use before other background consumers. The 64
+shared permits include foreground sessions, probes and drainers, with 8 held
+outside background. Runtime caps must also rise: EmberVM's staged workload
+cap is 64 and retained-session cap is 96 (64 live plus 32 banked or creating
+sessions). Banked sessions consume disk and must fit scratch budgets; this
+headroom grants no live VM memory. Provider grants, quota_guard, ownership,
+pinned policy, per-task parallelism, budgets and unknown-start fencing remain
+unchanged. More ceilings do not create provider quota or physical capacity.
+
+Activation remains separately authorized. Joe owns the target and node-pool
+spending prerequisite. Follow [EmberVM section 7](../embervm/ARCHITECTURE.md#7-capacity-bricks-and-kubernetes)
+for the 21-node planning maximum, capacity assumptions and stop conditions.
+Promote and verify EmberVM capacity first. Only after that check passes may the
+activation owner copy the monolith supplemental keys into
+`projects/monolith/deploy/values-gke.yaml`. Do not select this supplemental file
+in ArgoCD as a shortcut. Values from main can apply to an older Kargo-selected
+chart before promotion, so **do not merge the monolith activation values or
+active policy SQL with the EmberVM activation change**. Confirm the current
+monolith chart accepts the values, then land its activation change, promote
+through Kargo and verify the delivered activation revision.
+
+Move the SQL into `projects/monolith/chart/migrations/` only in that later
+monolith activation PR, with a fresh ordered timestamp and matching migration
+actor/audit identity. Update the explicit test input and identity, regenerate
+`atlas.sum` using the normal Atlas check and run PostgreSQL, admission and Helm
+checks. CI owns chart versions, deployment pins and images. The migration may
+run before the new monolith chart promotion; the already-verified EmberVM
+capacity must therefore precede even merging the SQL. Existing chart ceilings
+remain protective during this transition; confirm runtime and policy agree
+after promotion. Do not advance receipt generations or rewrite pinned policy.
+
+Rollback admission first: restore the old selected chart overrides, and use an
+audited, exact-current-map policy update to restore 10/2 for new admissions.
+Keep capacity while existing sessions drain. Pin lowering is the chart revert
+lever; it does not undo database policy. Revert EmberVM limits only after live
+and retained sessions fit them. Never delete receipts to release capacity.
+
+The throughput hypothesis is fewer capacity denials and shorter eligible-work
+queue delay when grants and backlog permit. Arithmetic does not establish
+hundreds of deliveries. Operational acceptance stays on #7378: verify both
+activation revisions in order; read policy, migration audit and effective
+runtime limits; read node-pool, Ready brick and measured capacity status; query
+one completed post-rollout intake sweep and its autoscaler events; read its
+quota_guard decisions and timestamped Codex grant-pool telemetry. Record usage
+change against the preceding completed sweep and confounders. Each is a bounded
+read after rollout. Stop activation or roll admission back on brick OOM,
+Pending capacity, mismatched limits, lost fencing, or exhausted-grant starts.
+A sweep that fails to fill eligible capacity records the binding denial;
+no multi-day observation is required to settle these checks.
+
 ### Ownership and trust
 
 Factory owns orchestration, session execution, recovery and private projections.
@@ -2226,6 +2292,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Stage opt-in factory concurrency and physical capacity | section 4; Conductor repository-only rescope | #7378 | inactive package; Joe target/spending decision, activation and bounded operational checks remain |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |

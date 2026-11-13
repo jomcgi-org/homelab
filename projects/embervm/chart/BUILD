@@ -542,3 +542,16 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+filegroup(
+    name = "concurrency_render_sources",
+    srcs = [
+        "Chart.yaml",
+        "values.yaml",
+    ] + glob([
+        "templates/**/*",
+        "files/**/*",
+        "crds/**/*",
+    ]),
+    visibility = ["//projects/monolith:__pkg__"],
+)

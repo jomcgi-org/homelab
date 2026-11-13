@@ -13,6 +13,7 @@ filegroup(
         "//projects/embervm/chart:__pkg__",
         "//projects/embervm/runtimes/claude:__pkg__",
         "//projects/embervm/runtimes/shotter:__pkg__",
+        "//projects/monolith:__pkg__",
     ],
 )
 
@@ -45,6 +46,7 @@ filegroup(
         "//projects/embervm/chart:__pkg__",
         "//projects/embervm/runtimes/claude:__pkg__",
         "//projects/embervm/runtimes/shotter:__pkg__",
+        "//projects/monolith:__pkg__",
     ],
 )
 
@@ -76,4 +78,10 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+# Explicit opt-in input; excluded from selected production render targets.
+exports_files(
+    ["values-gke-concurrency-staged.yaml"],
+    visibility = ["//visibility:public"],
 )

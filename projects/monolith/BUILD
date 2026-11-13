@@ -10025,3 +10025,46 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+# Staged SQL is explicit test data and never enters Atlas's migration glob.
+py_test(
+    name = "swarm_factory_concurrency_staged_postgres_test",
+    size = "large",
+    srcs = ["factory/orchestration/factory_concurrency_staged_postgres_test.py"],
+    data = [
+        "//projects/monolith/chart:migrations",
+        "//projects/monolith/deploy:factory_concurrency_staged.sql",
+        "@postgres_test//:postgres",
+    ],
+    env = {
+        "PYTEST_ADDOPTS": "-p shared.testing.plugin",
+        "STAGED_SQL": "$(rootpath //projects/monolith/deploy:factory_concurrency_staged.sql)",
+    },
+    imports = ["."],
+    tags = ["bdd"],
+    deps = [
+        ":monolith_backend",
+        ":shared_testing",
+    ],
+)
+
+py_test(
+    name = "factory_concurrency_staged_render_test",
+    srcs = ["factory/orchestration/factory_concurrency_staged_render_test.py"],
+    data = [
+        "//projects/embervm/chart:concurrency_render_sources",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/embervm/deploy:values-gke-concurrency-staged.yaml",
+        "//projects/monolith/chart:docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/deploy:values-gke-concurrency-staged.yaml",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

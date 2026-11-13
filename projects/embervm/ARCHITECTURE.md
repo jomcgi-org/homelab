@@ -1333,6 +1333,98 @@ and principal-scoped erasure (ADR embervm/019).
 
 ## 7. Capacity, bricks, and Kubernetes
 
+### Inactive factory capacity package (#7378)
+
+**Why.** `deploy/values-gke-concurrency-staged.yaml` is a supplemental,
+unselected overlay. It prepares claude-runtime cap 64, retained-session cap
+96 and autoscaler maxima 2gi/4gi/8gi/16gi = 4/4/32/0. Existing desired and
+minimum counts remain 1/1/1/0; the controller grows on demand, rather than
+prewarming 32 bricks. Runtime ceiling growth stays disabled (`ceilingBound:
+{}`). The full class list preserves CPU requests and maxLiveVMs and raises
+memory requests to limits to avoid node-level memory overcommit. No admission
+mode, jailer or placement-retry setting changes. #6965 owns admission mode.
+The selected production overlays and chart defaults remain unchanged.
+
+At 3072 MiB guest RAM, 256 MiB daemon reserve and 64 MiB conservative per-VM
+overhead, a 4gi brick has floor((4096 - 256) / 3136) = 1 declared guest,
+and an 8gi has floor((8192 - 256) / 3136) = 2. Both also require the observed
+512 MiB reject floor. Under the current observed model, overhead is not
+charged as a declared claim and admission depends on touched pages; these
+numbers are conservative sizing, **not a guaranteed packing bound**. Section
+7's 2026-10-10 whole-brick OOMs remain relevant. `maxLiveVMs=16` limits process
+count, not memory capacity. Do not enable 16gi without separate acceptance.
+Activation requires measured admission supporting the selected concurrency
+without OOMs; if current observed mode cannot establish that, wait for the
+separate #6965 owner. This package grants no mode change.
+
+Four 4gi plus thirty-two 8gi bricks give 68 conservative 3072 MiB seats.
+Forty-eight factory sessions fit; 64 shared permits can consume 64 of those
+seats, leaving four seats for shared placement/transition headroom. Factory
+policy initially admits only 44 tasks; tasks can have session transitions,
+and other shared clients still compete. Smaller guests, pi-runtime, base
+builds and dev are not counted as extra factory seats. The 2gi ceiling of
+four preserves their separate capacity. One lost 8gi leaves 66 seats; observed
+placement, pinned restores and other consumers can reduce usable capacity.
+A permit never reserves a brick; live status and admission denials remain
+authoritative. The 32 retained-session headroom uses disk, not these seats.
+
+Plan a node maximum of **21 n2-standard-8** in `europe-west2`: 18 for this
+brick vector, one for shared clients/dev/embeddings and two for rollout or
+Spot replacement. The selected production overlay records ~27.5 GiB allocatable;
+use 7900m CPU as a conservative planning ceiling before DaemonSets. Validate
+actual allocatable, DaemonSet use and shared demand before activation.
+Each rendered brick includes rootfs-baker (100m/128Mi request, 512Mi limit)
+and egress-proxy (10m/64Mi request/limit). Two 8gi pods request 6220m CPU and
+16768Mi; four of those sixteen nodes can also host a 2gi pod, totaling
+7330m/19008Mi each. The other two nodes each carry two 4gi pods at
+4220m/8576Mi. Total production requests are 112400m and 294400Mi.
+The inactive 1gi class has desired/min/max zero and adds no pods. Shared
+clients must fit the dedicated spare plus residual space after DaemonSets;
+otherwise recompute the target before activation. Guest vcpus=2 are host
+threads, not Kubernetes CPU reservations; two guests per 8gi share its 3 CPU
+request. CPU saturation can bind throughput even when memory fits.
+Bricks use maxSurge=0/maxUnavailable=1 per Deployment. The two spare nodes
+cover rescheduling/preemption and shared rollout demand, not guaranteed Spot
+availability. Scratch size, cold base work and banked-session disk pressure
+also need verification on the chosen pool.
+
+Cost estimate dated **2026-11-13**, USD, Linux, London `europe-west2`,
+`n2-standard-8` (8 vCPU/32 GiB), 730 hours/month: use **$0.50/node-hour
+on demand** and **$0.10/node-hour Spot** as rounded planning rates. At all
+21 nodes continuously allocated this is about **$7,665/month on demand** or
+**$1,533/month Spot**; the extra 18 nodes above the recorded maximum of three
+would be about $6,570 or $1,314/month. A maximum does not charge until nodes
+exist. These are compute-only estimates excluding disks, network, tax and
+shared core costs, without CUD or sustained-use discounts.
+[Google general-purpose pricing](https://cloud.google.com/products/compute/pricing/general-purpose)
+and [Spot pricing](https://cloud.google.com/spot-vms/pricing) are the
+public authority; region-specific tables could not be retrieved reliably in
+this session. [The public n2-standard-8 regional listing](https://www.devzero.io/instances/gcp/n2-standard-8)
+reported London $0.500 on demand and about $0.101 Spot. The rounded rates are
+an estimate limitation, not an authoritative billing quote. Spot varies with
+time and availability; Joe must obtain the current regional quote before the
+spending decision. No billing or node-pool setting is changed here.
+
+Later activation owner: retain Joe's explicit target and node-pool change,
+then copy the supplemental EmberVM values into
+`projects/embervm/deploy/values-gke.yaml` in a separate capacity PR. Kargo
+promotes EmberVM and monolith independently. Main-branch values may reach an
+older chart before promotion, so check that chart's compatibility before
+merging capacity values, then promote EmberVM and verify its activation
+revision Synced/Healthy, effective workload/autoscaler limits and Ready
+measured capacity. Do not merge monolith activation values or move staged SQL
+into Atlas until that prerequisite passes. Monolith section 4 records the
+second PR and checksum sequence. CI owns chart versions and pins.
+
+Rollback lowers monolith admission first, retains capacity until guests drain,
+then restores selected EmberVM overrides or lowers its deployment pin. Stop on
+whole-brick OOM, unschedulable bricks at the approved pool maximum, scratch
+exhaustion, unsafe packing, CPU starvation or quota/fencing regressions. The
+bounded #7378 checks read both verified activation revisions, effective policy
+and audit, capacity status, one completed intake sweep's scaling events and
+quota/grant telemetry. This preparation establishes no live capacity or
+throughput result.
+
 **A brick is the capacity unit everywhere**: a fixed-size noded
 Deployment pod in a T-shirt size class (`2gi` through `16gi`; small classes
 pack tasks densely, the largest hold 1-2 serving/session VMs), with honest
@@ -2635,6 +2727,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Stage opt-in factory concurrency and physical capacity | section 7; Conductor repository-only rescope | #7378 | inactive package; Joe target/spending decision, activation and bounded operational checks remain |
 | Factory guests share credential-free bounded CI log reads | section 4 | #6442 | helper packaged; guest uptake and next-window repeated-call evidence pending |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |

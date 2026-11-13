@@ -51,3 +51,14 @@ filegroup(
     ),
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+# Explicit opt-in input; excluded from selected production render targets.
+exports_files(
+    ["values-gke-concurrency-staged.yaml"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(
+    ["factory_concurrency_staged.sql"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
