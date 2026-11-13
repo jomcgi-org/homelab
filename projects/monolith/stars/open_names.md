@@ -9,7 +9,7 @@ Naming is staged off. Source provisioning and activation need separate authority
 Primary OS documentation checked on 2026-11-13:
 
 - [Supply formats](https://docs.os.uk/os-downloads/products/addresses-and-names-portfolio/os-open-names/os-open-names-technical-specification/supply-formats-overview): CSV, GML 3.2.1 and GeoPackage.
-- [CSV processing](https://docs.os.uk/os-downloads/products/addresses-and-names-portfolio/os-open-names/os-open-names-getting-started-guide/csv-file-processing): header in `Doc/OS_Open_Names_Header.csv`, separate headerless tiles in `Data/`. Combine the header once with the required tiles. Include adjacent tiles out to 20 km when preparing a regional extract. Completeness of that extract remains a provisioning responsibility.
+- [CSV processing](https://docs.os.uk/os-downloads/products/addresses-and-names-portfolio/os-open-names/os-open-names-getting-started-guide/csv-file-processing): header in `Doc/OS_Open_Names_Header.csv`, separate headerless tiles in `Data/`. Combine the header once with the required tiles. Each tile starts with a UTF-8 byte-order mark (BOM), which remains mid-stream when concatenated. The parser removes a leading BOM from each selected row's ID before duplicate detection and lexical tie ordering. Include adjacent tiles out to 20 km when preparing a regional extract. Completeness of that extract remains a provisioning responsibility.
 - [NamedPlace attributes](https://docs.os.uk/os-downloads/products/addresses-and-names-portfolio/os-open-names/os-open-names-technical-specification/feature-type/namedplace): persistent `ID`, official spellings `NAME1`/`NAME2`, `TYPE`, `LOCAL_TYPE`, and point geometry `GEOMETRY_X`/`GEOMETRY_Y` in British National Grid, metre resolution.
 - [Local types](https://docs.os.uk/os-downloads/products/addresses-and-names-portfolio/os-open-names/os-open-names-technical-specification/local-type): settlement classes include City, Town, Village, Hamlet, Other Settlement and Suburban Area. Association selects `TYPE=populatedPlace`; roads, postcodes and landforms are excluded.
 - [October 2026 release](https://docs.os.uk/os-downloads/products/addresses-and-names-portfolio/os-open-names/release-notes/october-2026): 3,051,396 features; next release January 2027.
@@ -26,7 +26,9 @@ returned `opname_csv_gb.zip`, 103,312,081 bytes, MD5
 > Contains National Statistics data © Crown copyright and database right 2026
 
 The two-record [fixture](tests/open_names_sample.csv) retains the official header
-and unmodified Glenmore and Aviemore rows from `Data/NH80.csv` (482 records).
+and Glenmore and Aviemore field values from `Data/NH80.csv` (482 records), with
+line endings normalized to LF. Glenmore retains the tile's leading BOM after
+the header to exercise concatenated input.
 Aviemore is `osgb4000000074554515`, `populatedPlace`, `Town`, at
 289568 E, 812693 N. Glenmore is `osgb4000000074560085`, `Hamlet`, at
 297964 E, 809558 N. The full licence acknowledgements above cover this fixture.

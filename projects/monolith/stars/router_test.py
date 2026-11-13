@@ -758,7 +758,10 @@ def test_real_os_rows_conversion_and_nearest_place():
     assert near["name"] == "Aviemore"
     assert near["feature_id"] == "osgb4000000074554515"
     assert near["distance_km"] == 0.927
-    assert names.nearby(57.166, -3.69)["name"] == "Glenmore"
+    # Glenmore starts a tile: its BOM is mid-stream after the CSV header.
+    near = names.nearby(57.166, -3.69)
+    assert near["name"] == "Glenmore"
+    assert near["feature_id"] == "osgb4000000074560085"
     assert names.nearby(60.3, -1.3) is None
 
 
@@ -773,7 +776,7 @@ def test_os_names_ties_bounds_and_blank_names(tmp_path):
     # Synthetic adversarial cases retain the real OS field layout.
     first = rows[0]
     blank = dict(first, ID="blank", NAME1=" ", NAME2="")
-    fallback = dict(first, ID="a", NAME1=" ", NAME2="Gaelic name")
+    fallback = dict(first, ID="\ufeffa", NAME1=" ", NAME2="Gaelic name")
     tie = dict(first, ID="b", NAME1="Other")
     road = dict(first, ID="road", TYPE="transportNetwork", NAME1="Not a place")
     path = tmp_path / "names.csv"
@@ -823,6 +826,7 @@ def test_names_disabled_input(monkeypatch, path):
         "bad_header",
         "no_places",
         "bad_coordinate",
+        "duplicate_tile_id",
         "truncated",
         "bad_release",
     ],
@@ -837,6 +841,8 @@ def test_bad_configured_names_preserve_last_good_objects(monkeypatch, tmp_path, 
         fields, rows = reader.fieldnames, list(reader)
     if case == "bad_coordinate":
         rows[0]["GEOMETRY_X"] = "nan"
+    if case == "duplicate_tile_id":
+        rows.append(dict(rows[0], ID=rows[0]["ID"].removeprefix("\ufeff")))
     if case == "no_places":
         rows = []
     if case != "missing":

@@ -58,7 +58,8 @@ class OpenNames:
                 name = row["NAME1"].strip() or row["NAME2"].strip()
                 if not name:
                     continue
-                feature_id = row["ID"].strip()
+                # Concatenated tiles retain their BOM at the start of each tile.
+                feature_id = row["ID"].removeprefix("\ufeff").strip()
                 if not feature_id or feature_id in seen:
                     raise ValueError(
                         "missing or duplicate OS Open Names populated-place ID"
