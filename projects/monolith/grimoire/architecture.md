@@ -1097,8 +1097,10 @@ qualified by its full UUID. Concrete type names include that schema, and each
 binds exactly one table. Links remain inside the same partition: every child
 links to Campaign; SessionEvent, CharacterFact and SessionSummary also link to
 GameSession. A future exporter must materialize the required parent rows into
-each partition before using these links. Grant slices, character notes and
-facts reject another campaign or PC. Party notes and facts use facts_global;
+each partition before using these links. PlayerCharacter rows require their
+exact PC or DM partition, including player names and the full sheet. The global
+partition rejects them. Grant slices, character notes and facts reject another
+campaign or PC. Party notes and facts use facts_global;
 DM partitions reject private character notes unless `dm_readable` is true.
 Deleted notes, retracted events and retracted facts require projection retraction,
 rather than export. Raw session events and summaries are restricted to DM partitions until an
@@ -1132,9 +1134,18 @@ independently of the chart-template archive revision:
 
 `insert_*`, `update_*` and `retract_*` definitions use the supported insert,
 update and delete kinds. `upsert_*` is the Python composite contract `upsert`:
-read the identity with `_ids`, insert when missing, update when present. One
-409 or missing update target permits one fresh read and one opposite-branch
-write. A second failure escapes. Caller-owned single-writer serialization is
+read the identity with `_ids` and insert when missing. For existing rows, use
+update only when every optional value is non-null. Pinned Loom's
+`services/query-api/src/action.rs` filters null parameters out of PATCH
+assignments. A payload containing any null optional value therefore requires
+retract then insert under the caller's lease. This clears narrowed grant bodies,
+nullable foreign keys and other optional columns. Replacement is not atomic:
+readers can observe a gap, and a failed insert can leave the projection absent.
+Neither replacement write is retried or reconciled here.
+
+An initial insert/update 409 or missing update target permits one fresh read and
+one opposite-branch operation, which can itself require retract then insert.
+A second failure escapes. Caller-owned single-writer serialization is
 required because Loom inserts do not establish unique identities. This package
 does not claim concurrent atomic upsert. Before calling it twice, a future writer
 must also establish read-after-write visibility: an action acknowledgment alone
@@ -1143,19 +1154,27 @@ serialized calls could insert duplicates. There is no exporter calling upsert
 in this release. Retraction physically deletes the Loom
 projection only; Postgres rows and their soft-deletion semantics remain intact.
 
-Definition application reads before POST, skips equal definitions and refuses
-mismatches. `GET /ontology/types/{name}` exposes model bindings and link metadata;
+Definition application reads before POST, skips equal visible definitions and
+refuses visible mismatches. `GET /ontology/types/{name}` exposes model bindings
+and link metadata;
 `GET /openapi.json` exposes action parameters, targets and success status. The
 pinned API has no full link/action definition GET: link backing and action
 assignments are omitted. Owned definitions retain canonical JSON receipts in
 their descriptions; foreign or changed receipts fail closed. Receipts cannot
 detect an out-of-band edit that changes hidden fields while preserving the old
-description. The future owner must serialize definition administrators and
-prohibit such edits, or upgrade to an upstream full-definition read API before
-requiring complete drift detection. Existing names are never overwritten.
+description. The action check also requires `/objects/{target}` in OpenAPI
+before treating an action as absent. This rejects the HTTP 200 static document
+returned when the pinned server cannot list types, and actions omitted because
+their target type is absent. An action-list failure still produces an actionless
+document with valid type paths. That case is indistinguishable from a new
+catalog through this API, so a rerun can POST existing action names and overwrite
+their definitions. Description receipts cannot prevent that overwrite.
+The future owner must serialize definition administrators and prohibit hidden
+edits. A non-degrading full-definition read API is required before claiming
+complete drift detection or overwrite prevention.
 Changes to projected Postgres columns require an explicit Loom definition
-migration plan: the create-only policy deliberately rejects schema drift under
-an existing name. Only GET retries, with finite timeouts, bounded attempts and jitter. Definition
+migration plan: visible schema drift under an existing name is rejected.
+Only GET retries, with finite timeouts, bounded attempts and jitter. Definition
 creation sequences and uncertain action writes are never blindly retried.
 
 The `grimoire-loom-ontology` CLI command runs only as an explicitly submitted,
@@ -1177,7 +1196,7 @@ never falls back to the dataset-scoped runtime token.
 Enablement remains on #6634: a separate owner must approve the administrative
 subject, provision datasets with these codecs and partition grants, review
 network policy and identifier-length support, establish action-to-mirror read
-visibility, review shared Campaign/PlayerCharacter fields for the intended
+visibility, review shared Campaign fields for the intended
 audience, enable GitOps values and authorize manual job execution. The
 five operational checks in the PR remain unchecked. Local ASGI and Helm tests
 establish repository behavior only; no live request or deployment is claimed.

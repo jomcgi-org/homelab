@@ -268,6 +268,8 @@ class LoomClient:
 
     async def define_action(self, action: Action) -> bool:
         # Pinned API has no GET /admin/actions. Its live OpenAPI enumerates actions.
+        # A failed type listing returns HTTP 200 with static paths only. A failed
+        # action listing is indistinguishable from no actions; see architecture.md.
         spec = (await self._request("GET", "/openapi.json")).json()
         current = spec["paths"].get(f"/actions/{action.name}", {}).get("post")
         body = action.body()
@@ -299,6 +301,10 @@ class LoomClient:
                     f"action differs or lacks ownership receipt: {action.name}"
                 )
             return False
+        if f"/objects/{action.target}" not in spec["paths"]:
+            raise DefinitionMismatch(
+                f"action target missing from OpenAPI: {action.target}"
+            )
         await self._request(
             "POST", "/admin/actions", json={**body, "description": receipt(body)}
         )

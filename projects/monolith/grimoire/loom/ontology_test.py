@@ -107,6 +107,25 @@ def test_private_partition_rejects_foreign_rows(kind):
         p.payload(kind, data)
 
 
+def test_character_sheet_is_only_visible_in_its_owner_or_dm_partition():
+    data = row("PlayerCharacter")
+    data.update(
+        id=OTHER,
+        player_name="Private player",
+        character_name="Private character",
+        class_name="Rogue",
+        level=4,
+        sheet={"secret": "Private sheet"},
+    )
+    for partition in (Partition(CAMPAIGN), Partition(CAMPAIGN, PC)):
+        with pytest.raises(ValueError, match="exact PC or DM partition"):
+            partition.payload("PlayerCharacter", data)
+    for partition in (Partition(CAMPAIGN, OTHER), Partition(CAMPAIGN, dm=True)):
+        assert partition.payload("PlayerCharacter", data)["sheet"] == (
+            '{"secret":"Private sheet"}'
+        )
+
+
 def test_grant_projection_and_lossless_wire_types():
     p = Partition(CAMPAIGN, PC)
     data = row("KnowledgeGrantSlice")

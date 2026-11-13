@@ -211,8 +211,8 @@ class Partition:
                     pc or "party"
                 ):
                     raise ValueError("fact belongs to another partition")
-            if kind == "PlayerCharacter" and pc and row["id"] != pc:
-                raise ValueError("character belongs to another partition")
+            if kind == "PlayerCharacter" and (not pc or row["id"] != pc):
+                raise ValueError("character requires its exact PC or DM partition")
         result = {}
         for prop in properties(kind):
             value = row[prop.name]
@@ -289,18 +289,31 @@ async def upsert(
     visibility before another call. An acknowledged action alone is not a proven
     mirror-visibility barrier. Enablement must establish that contract or supply
     an explicit barrier in the future writer; no exporter calls this today.
-    One latest-state read and
-    one insert/update, with at most one deterministic reconciliation on a 409 or
-    update-target 404. Never retry timeouts, 5xx or uncertain writes. Loom does
-    not promise unique insert identities, so this is NOT concurrent-safe without
-    the caller's single-writer lease. Definitions alone do not acquire a lease.
+    Existing rows with null optional values require retract then insert: Loom's
+    PATCH skips null parameters. Hold the lease across both writes. Replacement
+    is not atomic; a failed insert can leave the projection absent. Neither
+    replacement write is retried or reconciled here.
+    Otherwise use one insert/update, with at most one deterministic reconciliation
+    on a 409 or update-target 404. Never retry timeouts, 5xx or uncertain writes.
+    Loom does not promise unique insert identities, so this is NOT concurrent-safe
+    without the caller's single-writer lease. Definitions alone do not acquire a lease.
     """
     body = partition.payload(kind, row)
     model = partition.model(kind)
-    insert, update, _ = partition.actions(kind)
-    exists = await client.contains(model, body["id"])
-    try:
+    insert, update, retract = partition.actions(kind)
+    replace = any(not p.required and body[p.name] is None for p in model.properties)
+
+    async def write(exists: bool) -> Any:
+        if exists and replace:
+            await client.invoke(retract.name, {"id": body["id"]})
+            return await client.invoke(insert.name, body)
         return await client.invoke(update.name if exists else insert.name, body)
+
+    exists = await client.contains(model, body["id"])
+    if exists and replace:
+        return await write(exists)
+    try:
+        return await write(exists)
     except (Conflict, NotFound) as error:
         # A missing insert action is configuration failure, not an absent row.
         if isinstance(error, NotFound) and not exists:
@@ -308,4 +321,4 @@ async def upsert(
         now_exists = await client.contains(model, body["id"])
         if now_exists == exists:
             raise
-        return await client.invoke(update.name if now_exists else insert.name, body)
+        return await write(now_exists)

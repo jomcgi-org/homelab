@@ -169,6 +169,7 @@ class PinnedLoom:
                     }
                     for name, action in self.actions.items()
                 }
+                | {f"/objects/{name}": {"get": {}} for name in self.models}
             }
         if method == "GET" and path.startswith("/datasets/"):
             return 200, {
@@ -223,6 +224,12 @@ class PinnedLoom:
                 return 404, None
             if action["kind"] == "delete":
                 return 200, self.rows.pop(key)
+            if action["kind"] == "update":
+                # action.rs:1271-1279: identity-targeted PATCH skips Null params.
+                self.rows[key].update(
+                    {k: v for k, v in data.items() if k != "id" and v is not None}
+                )
+                return 200, self.rows[key]
             self.rows[key] = data
             return (201 if action["kind"] == "insert" else 200), data
         return 404, None
@@ -239,7 +246,7 @@ def campaign_row():
         "id": CAMPAIGN,
         "name": "Test",
         "transcript_retention_days": 30,
-        "dm_name": None,
+        "dm_name": "DM",
         "notes_dm_readable_default": False,
         "owner_app_user_id": uuid4(),
         "created_at": datetime(2026, 1, 1, 1, 2, 3, 456789, tzinfo=timezone.utc),
@@ -266,6 +273,163 @@ async def test_apply_twice_and_changed_definitions():
         with pytest.raises(DefinitionMismatch):
             await api.define_action(action)
         assert len([c for c in fake.calls if c[0] == "POST"]) == count
+
+
+@pytest.mark.parametrize("paths", [{}, {"/objects/Unrelated": {"get": {}}}])
+async def test_degraded_openapi_cannot_overwrite_actions(paths):
+    fake = PinnedLoom()
+    async with client(fake) as api:
+        await apply(api, (PARTITION,))
+        action = PARTITION.actions("Campaign")[0]
+        fake.actions[action.name]["description"] = "foreign"
+        original = fake.handle
+
+        def degraded(method, path, query, data):
+            if path == "/openapi.json":
+                return 200, {"paths": paths}
+            return original(method, path, query, data)
+
+        fake.handle = degraded
+        fake.calls.clear()
+        with pytest.raises(DefinitionMismatch, match="target missing from OpenAPI"):
+            await apply(api, (PARTITION,))
+        assert all(c[0] == "GET" for c in fake.calls)
+        assert fake.actions[action.name]["description"] == "foreign"
+
+
+async def test_pinned_update_preserves_null_columns():
+    fake = PinnedLoom()
+    async with client(fake) as api:
+        await apply(api, (PARTITION,))
+        row = campaign_row()
+        await upsert(api, PARTITION, "Campaign", row)
+        row.update(dm_name=None, name="Renamed")
+        update = PARTITION.actions("Campaign")[1]
+        await api.invoke(update.name, PARTITION.payload("Campaign", row))
+        stored = fake.rows[(update.target, CAMPAIGN)]
+        assert stored["name"] == "Renamed"
+        assert stored["dm_name"] == "DM"
+
+
+@pytest.mark.parametrize(
+    "kind,fields,cleared",
+    [
+        ("Campaign", {"name": "Test", "dm_name": "DM"}, {"dm_name": None}),
+        (
+            "PlayerCharacter",
+            {"character_name": "Test", "class_name": "Rogue", "level": 4},
+            {"class_name": None, "level": None},
+        ),
+        (
+            "KnowledgeGrantSlice",
+            {
+                "entity_id": CAMPAIGN,
+                "player_character_id": PC,
+                "grant_scope": "partial",
+                "revealed_details": {"secret": "Previously visible body"},
+            },
+            {"grant_scope": "name_only", "revealed_details": None},
+        ),
+        (
+            "Note",
+            {
+                "kind": "character",
+                "player_character_id": PC,
+                "dm_readable": True,
+                "title": "Test",
+            },
+            {"player_character_id": None},
+        ),
+        (
+            "CharacterFact",
+            {
+                "session_id": CAMPAIGN,
+                "player_character_id": PC,
+                "viewer_key": PC,
+                "statement": "Test",
+                "entity_id": CAMPAIGN,
+                "evidence_event_ids": [CAMPAIGN],
+                "extraction_version": "v1",
+            },
+            {"entity_id": None},
+        ),
+    ],
+)
+async def test_upsert_clears_optional_columns(kind, fields, cleared):
+    partition = Partition(CAMPAIGN, dm=True) if kind == "Note" else PARTITION
+    row = SOURCES[kind](
+        id=CAMPAIGN if kind == "Campaign" else PC, campaign_id=CAMPAIGN, **fields
+    ).model_dump()
+    fake = PinnedLoom()
+    async with client(fake) as api:
+        await apply(api, (partition,))
+        await upsert(api, partition, kind, row)
+        fake.calls.clear()
+        row.update(cleared)
+        await upsert(api, partition, kind, row)
+        model = partition.model(kind)
+        assert fake.rows == {(model.name, row["id"]): partition.payload(kind, row)}
+        assert [c[1] for c in fake.calls if c[0] == "POST"] == [
+            f"/actions/retract_{model.name}",
+            f"/actions/insert_{model.name}",
+        ]
+
+
+@pytest.mark.parametrize("step", ["retract", "insert"])
+@pytest.mark.parametrize(
+    "status,error",
+    [(404, NotFound), (409, Conflict), (503, ServerError), ("timeout", Timeout)],
+)
+async def test_replacement_failure_is_not_retried_or_reconciled(step, status, error):
+    fake = PinnedLoom()
+    async with client(fake) as api:
+        await apply(api, (PARTITION,))
+        row = campaign_row()
+        await upsert(api, PARTITION, "Campaign", row)
+        row["dm_name"] = None
+        original = fake.handle
+
+        def failed(method, path, query, data):
+            if path.startswith(f"/actions/{step}_"):
+                if status == "timeout":
+                    raise httpx.ReadTimeout("uncertain write")
+                return status, None
+            return original(method, path, query, data)
+
+        fake.handle = failed
+        fake.calls.clear()
+        with pytest.raises(error):
+            await upsert(api, PARTITION, "Campaign", row)
+        model = PARTITION.model("Campaign")
+        expected = [
+            f"/ontology/types/{model.name}",
+            f"/objects/{model.name}",
+            f"/actions/retract_{model.name}",
+        ]
+        if step == "insert":
+            expected.append(f"/actions/insert_{model.name}")
+            assert fake.rows == {}
+        else:
+            assert fake.rows[(model.name, CAMPAIGN)]["dm_name"] == "DM"
+        assert [c[1] for c in fake.calls] == expected
+
+
+async def test_insert_conflict_reconciles_with_replacement_for_null_values():
+    fake = PinnedLoom()
+    async with client(fake) as api:
+        await apply(api, (PARTITION,))
+        row = campaign_row()
+        row["dm_name"] = None
+        fake.race = 409
+        fake.calls.clear()
+        await upsert(api, PARTITION, "Campaign", row)
+        model = PARTITION.model("Campaign")
+        assert fake.rows == {(model.name, CAMPAIGN): PARTITION.payload("Campaign", row)}
+        assert [c[1] for c in fake.calls if c[0] == "POST"] == [
+            f"/actions/insert_{model.name}",
+            f"/actions/retract_{model.name}",
+            f"/actions/insert_{model.name}",
+        ]
 
 
 async def test_upsert_insert_update_retract_and_payloads():
