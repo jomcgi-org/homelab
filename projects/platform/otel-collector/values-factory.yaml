@@ -1,0 +1,166 @@
+# Factory home cluster (projects/factory-cluster/README.md). Node and cluster
+# telemetry only: no trace gateway, since nothing on the cluster emits traces
+# yet. Everything lands in the same Honeycomb environment as the hub
+# (homelab), in its own factory-* datasets, with
+# deployment.environment=factory and k8s.cluster.name=factory on every event.
+#
+# Volume. Every distinct resource and attribute set is one Honeycomb event per
+# interval, and the team shares one monthly event budget with the hub, so
+# every source is cut to an allowlist and scraped every 120s. At about 55 pods
+# that is roughly 100 metric events a minute, about 4.5M a month, plus
+# warning-and-above log lines and Warning events. Halve the intervals only
+# with a measured headroom check in Honeycomb's usage view.
+
+# The hub's ingest key (vault k8s-homelab, fields honeycomb-key-secret and
+# honeycomb-key-id). It writes to the homelab environment; the datasets and
+# the two attributes above separate the clusters.
+onepassword:
+  enabled: true
+  itemPath: "vaults/k8s-homelab/items/honeycomb-ingest"
+
+# OTLP over HTTP, the path the hub proved (values-gke.yaml).
+honeycomb:
+  protocol: "http"
+
+environment: factory
+clusterName: factory
+
+gateway:
+  enabled: false
+
+logs:
+  enabled: true
+  # Every namespace, warning and above. The agents' own namespace is left out
+  # so their export errors are not exported.
+  namespaces:
+    - "*"
+  excludeNamespaces:
+    - otel-collector
+  dataset: factory-k8s-logs
+  nodeMetrics:
+    enabled: true
+    dataset: factory-metrics
+    interval: 120s
+    hostMetrics:
+      enabled: true
+    # Node-local Cilium endpoints. The agent runs on the host network, so
+    # this node's IP reaches this node's agent; the CiliumNetworkPolicy in
+    # projects/platform-factory/otel-collector allows exactly these ports.
+    scrapeConfigs:
+      - job_name: cilium-agent
+        scrape_interval: 120s
+        static_configs:
+          - targets: ["${env:K8S_NODE_IP}:9962"]
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            action: keep
+            # Drops by reason, endpoint health, logged errors, and the
+            # unlabelled gauges (failing controllers, unreachable nodes, policy
+            # count), which share one event per scrape.
+            regex: "cilium_(drop_count_total|endpoint_state|errors_warnings_total|controllers_failing|unreachable_nodes|unreachable_health_endpoints|policy)"
+      - job_name: hubble
+        scrape_interval: 120s
+        static_configs:
+          - targets: ["${env:K8S_NODE_IP}:9965"]
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            action: keep
+            regex: "hubble_(drop_total|flows_processed_total|dns_responses_total|lost_events_total)"
+    # Hubble's flow and DNS counters carry per-subtype and per-answer-count
+    # labels that multiply events without changing what a query asks. Drops
+    # keep every label: they are the policy signal.
+    transforms:
+      - include: "^hubble_flows_processed(_total)?$"
+        match_type: regexp
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set: [verdict, type, protocol]
+            aggregation_type: sum
+      - include: "^hubble_dns_responses(_total)?$"
+        match_type: regexp
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set: [rcode]
+            aggregation_type: sum
+
+clusterAgent:
+  enabled: true
+  events:
+    dataset: factory-k8s-events
+  metricsDataset: factory-metrics
+  scrapeConfigs:
+    # Each k3s server's API server, found through the default/kubernetes
+    # EndpointSlice. etcd's own metrics listen on 127.0.0.1:2381 on each
+    # node, out of reach of a pod; the API server's view of etcd is the
+    # cheap substitute: its readiness checks, database size and request
+    # errors.
+    - job_name: apiserver
+      scrape_interval: 120s
+      scheme: https
+      kubernetes_sd_configs:
+        - role: endpointslice
+          namespaces:
+            names: [default]
+      authorization:
+        credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpointslice_port_name]
+          action: keep
+          regex: "kubernetes;https"
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          action: keep
+          regex: "apiserver_storage_size_bytes|etcd_request_errors_total|k3s_etcd_snapshot_reconcile_duration_seconds_count"
+    - job_name: apiserver-health
+      scrape_interval: 120s
+      scheme: https
+      metrics_path: /metrics/slis
+      kubernetes_sd_configs:
+        - role: endpointslice
+          namespaces:
+            names: [default]
+      authorization:
+        credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpointslice_port_name]
+          action: keep
+          regex: "kubernetes;https"
+      metric_relabel_configs:
+        - source_labels: [__name__, name, type]
+          action: keep
+          regex: "kubernetes_healthcheck;(etcd|etcd-readiness|ping);readyz"
+    # Both Cilium operator replicas, wherever they are scheduled.
+    - job_name: cilium-operator
+      scrape_interval: 120s
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [kube-system]
+          selectors:
+            - role: pod
+              label: "io.cilium/app=operator"
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_container_port_name]
+          action: keep
+          regex: prometheus
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: k8s_node_name
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          action: keep
+          regex: "cilium_operator_(errors_warnings_total|unmanaged_pods)"
+  extraRules:
+    - apiGroups: [discovery.k8s.io]
+      resources: [endpointslices]
+      verbs: [get, list, watch]
+    - apiGroups: [""]
+      resources: [services, pods]
+      verbs: [get, list, watch]
+    - nonResourceURLs: [/metrics, /metrics/slis]
+      verbs: [get]

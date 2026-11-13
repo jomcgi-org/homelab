@@ -38,7 +38,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            {{- if .Values.logs.containerMetrics.enabled }}
+            {{- if or .Values.logs.containerMetrics.enabled .Values.logs.nodeMetrics.enabled }}
             # kubelet_stats scrapes this node's kubelet by IP.
             - name: K8S_NODE_IP
               valueFrom:

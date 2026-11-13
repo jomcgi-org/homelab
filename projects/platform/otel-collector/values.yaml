@@ -3,6 +3,12 @@ image:
   tag: "0.159.0"
   pullPolicy: IfNotPresent
 
+# The gateway Deployment (traces, probes, backup check). A cluster that ships
+# only node and cluster telemetry, such as the factory home cluster, turns it
+# off; with it on and nothing else enabled it would have no pipeline at all.
+gateway:
+  enabled: true
+
 replicas: 1
 
 # Opt-in defaults for #7002. The GKE overlay enables the shared checker.
@@ -64,6 +70,11 @@ honeycomb:
 # once both opt in; without it a dev trace and a prod trace are
 # indistinguishable after export, and there is no way to filter one out later.
 environment: ""
+
+# Stamped as the k8s.cluster.name resource attribute by the node and cluster
+# agents, so data from two clusters stays separable within one dataset or
+# query. Empty renders nothing.
+clusterName: ""
 
 # Public health route for external metamonitoring. Disabled by default so the
 # chart renders inert; see templates/httproute.yaml for why this is a direct
@@ -304,6 +315,10 @@ logs:
   # matches every Kargo project namespace and "embervm" does NOT match
   # embervm-dev (the underscore delimits the namespace).
   namespaces: []
+  # Namespaces whose logs are skipped even when a namespaces glob matches
+  # them. The agents' own namespace belongs here when namespaces is "*", so an
+  # export failure the agent logs as a warning is not itself exported.
+  excludeNamespaces: []
   # One dataset for every pod log, not a dataset per service.
   #
   # service.name derived from Kubernetes labels does not line up with the OTel
@@ -345,3 +360,51 @@ logs:
     namespaces: []
     dataset: k8s-metrics
     interval: 60s
+  # Node and pod telemetry from the same node agent: each node's kubelet
+  # (node CPU, memory and filesystem; pod CPU and memory), the host's load,
+  # memory and disk counters, and node-local Prometheus endpoints such as
+  # Cilium's. Requires logs.enabled. Every source is cut to an allowlist
+  # before export because each distinct resource and attribute set is one
+  # Honeycomb event per interval.
+  nodeMetrics:
+    enabled: false
+    dataset: k8s-node-metrics
+    interval: 60s
+    hostMetrics:
+      enabled: false
+      # Block devices the disk scraper reports, as a regular expression.
+      diskDevices: "^nvme[0-9]+n[0-9]+$"
+    # Prometheus scrape_configs, rendered verbatim into a prometheus receiver.
+    # ${env:K8S_NODE_IP} and ${env:K8S_NODE_NAME} are expanded by the
+    # collector, so a static target can name this node only. A literal $ in a
+    # relabel replacement must be written $$.
+    scrapeConfigs: []
+    # metrics_transform transforms applied to the scraped metrics, for
+    # aggregating away high-cardinality labels before export.
+    transforms: []
+
+# Cluster-scoped telemetry from a single-replica Deployment: Kubernetes events
+# and Prometheus endpoints that are not node-local (the API servers, a
+# Deployment's metrics port). It needs no host access and runs no log or
+# kubelet scraping. Disabled by default; the factory cluster enables it.
+clusterAgent:
+  enabled: false
+  events:
+    enabled: true
+    dataset: k8s-events
+    # Server-side field selector on core/v1 Events. "type=Warning" keeps the
+    # events that say something went wrong and drops the Normal stream
+    # (Scheduled, Pulled, Created, Started), which is most of the volume.
+    fieldSelector: "type=Warning"
+  metricsDataset: k8s-node-metrics
+  # Prometheus scrape_configs for cluster-scoped endpoints, rendered verbatim.
+  scrapeConfigs: []
+  # Extra ClusterRole rules the scrape configs need (service discovery,
+  # nonResourceURLs such as /metrics).
+  extraRules: []
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 192Mi

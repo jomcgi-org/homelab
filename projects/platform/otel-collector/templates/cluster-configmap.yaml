@@ -1,0 +1,154 @@
+{{- if .Values.clusterAgent.enabled }}
+{{- $ca := .Values.clusterAgent }}
+{{- if not (or $ca.events.enabled $ca.scrapeConfigs) }}
+{{- fail "clusterAgent.enabled requires clusterAgent.events.enabled or at least one clusterAgent.scrapeConfigs entry" }}
+{{- end }}
+{{- $eventsExporter := "otlp/honeycomb-events" }}
+{{- $metricsExporter := "otlp/honeycomb-cluster-metrics" }}
+{{- if eq (.Values.honeycomb.protocol | default "grpc") "http" }}
+{{- $eventsExporter = "otlphttp/honeycomb-events" }}
+{{- $metricsExporter = "otlphttp/honeycomb-cluster-metrics" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.cluster.labels" . | nindent 4 }}
+data:
+  collector.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      {{- if $ca.events.enabled }}
+      # One watch on core/v1 Events across every namespace. A single replica
+      # owns it, so each event is shipped once. Watch mode starts from the
+      # current resource version: a restart skips what happened while the pod
+      # was down rather than replaying the retained events.
+      k8s_objects:
+        auth_type: serviceAccount
+        objects:
+          - name: events
+            mode: watch
+            {{- with $ca.events.fieldSelector }}
+            field_selector: {{ . | quote }}
+            {{- end }}
+      {{- end }}
+      {{- if $ca.scrapeConfigs }}
+
+      prometheus/cluster:
+        config:
+          scrape_configs:
+            {{- toYaml $ca.scrapeConfigs | nindent 12 }}
+      {{- end }}
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      {{- if $ca.events.enabled }}
+
+      # The watch also reports an event's expiry (DELETED); that is
+      # housekeeping, not news.
+      filter/events:
+        error_mode: ignore
+        logs:
+          log_record:
+            - 'IsMap(log.body) and log.body["type"] == "DELETED"'
+
+      # Lift the fields a query groups by out of the Event object, then make
+      # the message the body. Severity follows the Event type.
+      transform/events:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - set(log.attributes["k8s.event.watch_type"], log.body["type"]) where IsMap(log.body)
+              - set(log.cache["event"], log.body["object"]) where IsMap(log.body) and IsMap(log.body["object"])
+              - set(log.attributes["k8s.event.reason"], log.cache["event"]["reason"]) where log.cache["event"] != nil
+              - set(log.attributes["k8s.event.type"], log.cache["event"]["type"]) where log.cache["event"] != nil
+              - set(log.attributes["k8s.event.count"], log.cache["event"]["count"]) where log.cache["event"] != nil
+              - set(log.attributes["k8s.event.source"], log.cache["event"]["source"]["component"]) where log.cache["event"] != nil and IsMap(log.cache["event"]["source"])
+              - set(log.attributes["k8s.event.source"], log.cache["event"]["reportingComponent"]) where log.cache["event"] != nil and log.attributes["k8s.event.source"] == nil
+              - set(log.attributes["k8s.node.name"], log.cache["event"]["source"]["host"]) where log.cache["event"] != nil and IsMap(log.cache["event"]["source"])
+              - set(log.attributes["k8s.namespace.name"], log.cache["event"]["involvedObject"]["namespace"]) where log.cache["event"] != nil and IsMap(log.cache["event"]["involvedObject"])
+              - set(log.attributes["k8s.object.kind"], log.cache["event"]["involvedObject"]["kind"]) where log.cache["event"] != nil and IsMap(log.cache["event"]["involvedObject"])
+              - set(log.attributes["k8s.object.name"], log.cache["event"]["involvedObject"]["name"]) where log.cache["event"] != nil and IsMap(log.cache["event"]["involvedObject"])
+              - set(log.attributes["k8s.object.field_path"], log.cache["event"]["involvedObject"]["fieldPath"]) where log.cache["event"] != nil and IsMap(log.cache["event"]["involvedObject"])
+              - set(log.severity_text, "WARN") where log.attributes["k8s.event.type"] == "Warning"
+              - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.attributes["k8s.event.type"] == "Warning"
+              - set(log.severity_text, "INFO") where log.attributes["k8s.event.type"] == "Normal"
+              - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.attributes["k8s.event.type"] == "Normal"
+              - set(log.body, log.cache["event"]["message"]) where log.cache["event"] != nil and IsString(log.cache["event"]["message"])
+
+      # Events have no service; group them under one name.
+      resource/events:
+        attributes:
+          - key: service.name
+            value: k8s-events
+            action: insert
+      {{- end }}
+      {{- if .Values.environment }}
+      resource/environment:
+        attributes:
+          - key: deployment.environment
+            value: {{ .Values.environment | quote }}
+            action: upsert
+      {{- end }}
+      {{- if .Values.clusterName }}
+      resource/cluster:
+        attributes:
+          - key: k8s.cluster.name
+            value: {{ .Values.clusterName | quote }}
+            action: upsert
+      {{- end }}
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+
+    exporters:
+      {{- if $ca.events.enabled }}
+      {{- if eq $eventsExporter "otlphttp/honeycomb-events" }}
+      otlphttp/honeycomb-events:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+      {{- else }}
+      otlp/honeycomb-events:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+      {{- end }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ $ca.events.dataset | quote }}
+      {{- end }}
+      {{- if $ca.scrapeConfigs }}
+      {{- if eq $metricsExporter "otlphttp/honeycomb-cluster-metrics" }}
+      otlphttp/honeycomb-cluster-metrics:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+      {{- else }}
+      otlp/honeycomb-cluster-metrics:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+      {{- end }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ $ca.metricsDataset | quote }}
+      {{- end }}
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        {{- if $ca.events.enabled }}
+        logs/events:
+          receivers: [k8s_objects]
+          processors: [memory_limiter, filter/events, transform/events, resource/events{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
+          exporters: [{{ $eventsExporter }}]
+        {{- end }}
+        {{- if $ca.scrapeConfigs }}
+        metrics/cluster:
+          receivers: [prometheus/cluster]
+          processors: [memory_limiter{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
+          exporters: [{{ $metricsExporter }}]
+        {{- end }}
+{{- end }}
