@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -15,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
-from grimoire import join_links, register, register_public, search
+from grimoire import join_links, register, register_public, search, tts
 from grimoire.models import CampaignJoinLink
 from grimoire.testing.leak_harness import (
     PNG_BYTES,
@@ -54,6 +55,15 @@ class Case:
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
+    ("POST", PREFIX + "/tts"): Case(
+        body={"event_id": "$event_table.id"},
+        read_only=True,
+    ),
+    ("GET", PREFIX + "/tts/{event_id}/{clip_id}"): Case(
+        params={"event_id": "$event_table.id", "clip_id": "$tts_clip.id"},
+        reads={"player_a": 403, "player_b": 403, "no_character": 403},
+        read_only=True,
+    ),
     ("POST", PREFIX + "/facts/{fact_id}/dispute"): Case(
         params={"fact_id": "$fact_a.id"},
         caller="player_a",
@@ -322,9 +332,21 @@ CAPABILITY_CASES = {
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_TTS_ENABLED", "true")
+    monkeypatch.setattr(tts, "service", tts.SpeechService())
+    monkeypatch.setattr(tts, "object_cache", lambda: None)
     monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     with sqlite_harness(tmp_path / "inventory.db") as h:
         monkeypatch.setattr(search, "knn_embeddings", fake_knn)
+        # Cache bytes are mocked; both TTS handlers still authorize real rows.
+        event = h.rows["event_table"]
+        event.body = {**event.body, "text": "The table hears this narration."}
+        h.session.commit()
+        clip = tts.select_voice(h.session, h.rows["campaign"].id, event).identity(
+            h.rows["campaign"].id
+        )
+        h.rows["tts_clip"] = SimpleNamespace(id=clip)
+        tts.service.put(clip, b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 36)
         s3 = seed_handouts(h)
         monkeypatch.setattr("grimoire.ingest.build_s3_client", lambda: s3)
         links = []
@@ -375,7 +397,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 65  # Campaign routes, including eight transcript routes.
+    assert len(enumerated) == 67  # Includes transcript and staged event speech routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
