@@ -2569,9 +2569,9 @@ Retained failures expire after an hour, so a provider-side fix is retested.
 
 `conformance.codex.resumeReportOnly` (default false) keeps the first turn as
 the gate and reports a resumed-turn failure in the S9 detail without failing
-it. Hub dev sets it to true temporarily, because the resumed turn after
-park/relight returns 502 (#7731) and froze production promotion. Set it back
-to false once #7731 is fixed.
+it. It is an escape hatch for a known resume defect. Hub dev used it while
+#7731 was open: a store-less same-node rejoin was refused its workspace
+restore. Fixed by #7747; the resume gates promotion again.
 
 The digest stamp is an explicit dev opt-in. `stampImageDigest: true` derives
 the effective `b3` rootfs cache identity while the generic format remains `b2`.
