@@ -18,119 +18,35 @@ package telemetry
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"strconv"
-	"time"
 
+	shared "github.com/jomcgi/homelab/projects/shared/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// InitializeTracing sets up OpenTelemetry tracing using standard OTEL environment variables.
+// InitializeTracing configures tracing using the standard OTEL environment variables.
 func InitializeTracing(ctx context.Context) (*sdktrace.TracerProvider, error) {
-	if os.Getenv("OTEL_SDK_DISABLED") == "true" {
-		return sdktrace.NewTracerProvider(), nil
-	}
-
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if endpoint == "" {
-		return sdktrace.NewTracerProvider(), nil
-	}
-
-	serviceName := os.Getenv("OTEL_SERVICE_NAME")
-	if serviceName == "" {
-		serviceName = "oci-model-cache-operator"
-	}
-
-	serviceVersion := os.Getenv("OTEL_SERVICE_VERSION")
-	if serviceVersion == "" {
-		serviceVersion = "dev"
-	}
-
-	samplerType := os.Getenv("OTEL_TRACES_SAMPLER")
-	if samplerType == "" {
-		samplerType = "parentbased_traceidratio"
-	}
-
-	samplerArg := os.Getenv("OTEL_TRACES_SAMPLER_ARG")
-	if samplerArg == "" {
-		samplerArg = "1.0"
-	}
-
-	sampleRate, err := strconv.ParseFloat(samplerArg, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid OTEL_TRACES_SAMPLER_ARG %q: %w", samplerArg, err)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	exporter, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
-	}
-
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewSchemaless(
-			attribute.String("service.name", serviceName),
-			attribute.String("service.version", serviceVersion),
-			attribute.String("k8s.operator.type", "custom-controller"),
-			attribute.String("k8s.operator.name", "oci-model-cache-operator"),
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
-	}
-
-	var sampler sdktrace.Sampler
-	switch samplerType {
-	case "always_on":
-		sampler = sdktrace.AlwaysSample()
-	case "always_off":
-		sampler = sdktrace.NeverSample()
-	case "traceidratio":
-		sampler = sdktrace.TraceIDRatioBased(sampleRate)
-	case "parentbased_always_on":
-		sampler = sdktrace.ParentBased(sdktrace.AlwaysSample())
-	case "parentbased_always_off":
-		sampler = sdktrace.ParentBased(sdktrace.NeverSample())
-	case "parentbased_traceidratio":
-		sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRate))
-	default:
-		return nil, fmt.Errorf("unknown OTEL_TRACES_SAMPLER: %s", samplerType)
-	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sampler),
-	)
-
-	otel.SetTracerProvider(tp)
-
-	return tp, nil
+	return initializeTracing(ctx, newOTLPExporter, otel.SetTracerProvider)
 }
 
-// Shutdown gracefully shuts down the tracer provider.
+func initializeTracing(ctx context.Context, exporter shared.ExporterFactory, install func(trace.TracerProvider)) (*sdktrace.TracerProvider, error) {
+	cfg := shared.ConfigFromEnv("oci-model-cache-operator")
+	cfg.Attributes = []attribute.KeyValue{attribute.String("k8s.operator.type", "custom-controller"), attribute.String("k8s.operator.name", "oci-model-cache-operator")}
+	return shared.Initialize(ctx, cfg, exporter, install)
+}
+
+func newOTLPExporter(ctx context.Context, endpoint string) (sdktrace.SpanExporter, error) {
+	return otlptracegrpc.New(ctx, exporterOptions(endpoint)...)
+}
+
+func exporterOptions(endpoint string) []otlptracegrpc.Option {
+	return []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint), otlptracegrpc.WithInsecure()}
+}
+
+// Shutdown flushes spans within the shared shutdown bound.
 func Shutdown(ctx context.Context, tp *sdktrace.TracerProvider) error {
-	if tp == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	if err := tp.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown tracer provider: %w", err)
-	}
-
-	return nil
+	return shared.Shutdown(ctx, tp)
 }

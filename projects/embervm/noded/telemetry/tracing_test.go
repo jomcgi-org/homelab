@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
+	shared "github.com/jomcgi/homelab/projects/shared/telemetry"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -14,11 +14,11 @@ import (
 
 func TestInitializeTracingWithoutEndpointStaysDisabled(t *testing.T) {
 	cfg := testConfig()
-	cfg.endpoint = ""
+	cfg.Endpoint = ""
 	factoryCalled := false
 	installCalled := false
 
-	tp, err := initializeTracing(
+	tp, err := shared.Initialize(
 		context.Background(),
 		cfg,
 		func(context.Context, string) (sdktrace.SpanExporter, error) {
@@ -46,11 +46,11 @@ func TestInitializeTracingWithoutEndpointStaysDisabled(t *testing.T) {
 
 func TestInitializeTracingRejectsInvalidSamplerBeforeCreatingExporter(t *testing.T) {
 	cfg := testConfig()
-	cfg.samplerArg = "not-a-rate"
+	cfg.SamplerArg = "not-a-rate"
 	factoryCalled := false
 	installCalled := false
 
-	tp, err := initializeTracing(
+	tp, err := shared.Initialize(
 		context.Background(),
 		cfg,
 		func(context.Context, string) (sdktrace.SpanExporter, error) {
@@ -80,12 +80,12 @@ func TestInitializeTracingInstallsProviderExportsAndSetsResourceIdentity(t *test
 	// Exercise that exact order so this test guards the existing call sites.
 	driverTracer := otel.Tracer("embervm-noded/driver")
 
-	tp, err := initializeTracing(
+	tp, err := shared.Initialize(
 		context.Background(),
 		cfg,
 		func(_ context.Context, endpoint string) (sdktrace.SpanExporter, error) {
-			if endpoint != cfg.endpoint {
-				t.Fatalf("exporter endpoint = %q, want %q", endpoint, cfg.endpoint)
+			if endpoint != cfg.Endpoint {
+				t.Fatalf("exporter endpoint = %q, want %q", endpoint, cfg.Endpoint)
 			}
 			return exporter, nil
 		},
@@ -110,12 +110,12 @@ func TestInitializeTracingInstallsProviderExportsAndSetsResourceIdentity(t *test
 	}
 	attrs := spans[0].Resource().Set()
 	serviceName, ok := attrs.Value("service.name")
-	if !ok || serviceName.AsString() != cfg.serviceName {
-		t.Fatalf("service.name = %q (present %t), want %q", serviceName.AsString(), ok, cfg.serviceName)
+	if !ok || serviceName.AsString() != cfg.ServiceName {
+		t.Fatalf("service.name = %q (present %t), want %q", serviceName.AsString(), ok, cfg.ServiceName)
 	}
 	serviceVersion, ok := attrs.Value("service.version")
-	if !ok || serviceVersion.AsString() != cfg.serviceVersion {
-		t.Fatalf("service.version = %q (present %t), want %q", serviceVersion.AsString(), ok, cfg.serviceVersion)
+	if !ok || serviceVersion.AsString() != cfg.ServiceVersion {
+		t.Fatalf("service.version = %q (present %t), want %q", serviceVersion.AsString(), ok, cfg.ServiceVersion)
 	}
 
 	if err := Shutdown(context.Background(), tp); err != nil {
@@ -126,25 +126,13 @@ func TestInitializeTracingInstallsProviderExportsAndSetsResourceIdentity(t *test
 	}
 }
 
-func TestShutdownIsBoundedByTimeout(t *testing.T) {
-	provider := blockingShutdowner{}
-	started := time.Now()
-	err := shutdown(context.Background(), provider, 20*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("shutdown error = %v, want context deadline exceeded", err)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("bounded shutdown took %s, want less than 1s", elapsed)
-	}
-}
-
-func testConfig() tracingConfig {
-	return tracingConfig{
-		endpoint:       "http://collector.example.test:4317",
-		serviceName:    "embervm-noded-test",
-		serviceVersion: "test-version",
-		samplerType:    "always_on",
-		samplerArg:     "1.0",
+func testConfig() shared.Config {
+	return shared.Config{
+		Endpoint:       "http://collector.example.test:4317",
+		ServiceName:    "embervm-noded-test",
+		ServiceVersion: "test-version",
+		SamplerType:    "always_on",
+		SamplerArg:     "1.0",
 	}
 }
 
@@ -178,11 +166,4 @@ func (e *recordingExporter) wasShutdown() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.shutdown
-}
-
-type blockingShutdowner struct{}
-
-func (blockingShutdowner) Shutdown(ctx context.Context) error {
-	<-ctx.Done()
-	return ctx.Err()
 }
