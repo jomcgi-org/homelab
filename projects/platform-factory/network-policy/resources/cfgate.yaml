@@ -30,11 +30,13 @@ spec:
       app.kubernetes.io/name: cloudflared
       app.kubernetes.io/managed-by: cfgate
   egress:
-    # Edge discovery uses SRV records under argotunnel.com; connections go to
-    # region1/region2.v2.argotunnel.com on 7844 over QUIC (UDP) or HTTP/2.
-    - toFQDNs:
-        - matchPattern: "*.v2.argotunnel.com"
-        - matchPattern: "*.argotunnel.com"
+    # Tunnel edge: region1/region2.v2.argotunnel.com on 7844 over QUIC (UDP)
+    # or HTTP/2. cloudflared resolves these once at start and reconnects to the
+    # cached addresses, so a toFQDNs rule loses them; Cloudflare publishes the
+    # fixed ranges instead (developers.cloudflare.com, Tunnel firewall rules).
+    - toCIDR:
+        - 198.41.192.0/24
+        - 198.41.200.0/24
       toPorts:
         - ports:
             - port: "7844"
