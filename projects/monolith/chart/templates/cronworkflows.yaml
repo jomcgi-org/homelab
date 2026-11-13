@@ -28,6 +28,8 @@ image guard elsewhere.
 {{- /* grimoire jobs are private-tier only: skip them entirely unless the
        grimoire module is enabled, so an unrelated (public) deploy never
        renders a CronWorkflow referencing the openrouter secret. */ -}}
+{{- else if and .loomOntology (not (and $.Values.grimoire.enabled $.Values.grimoire.loom.enabled)) }}
+{{- /* Loom remains absent until separately authorized private-tier enablement. */ -}}
 {{- else if and .knowledgePublishFacts (not $.Values.knowledge.publishFacts.enabled) }}
 {{- /* The publication lane is opt-in because it changes public visibility. */ -}}
 {{- else }}
@@ -234,6 +236,22 @@ spec:
                 secretKeyRef:
                   name: monolith-chat-secrets
                   key: GITHUB_TOKEN
+            {{- end }}
+            {{- if .loomOntology }}
+            - name: GRIMOIRE_LOOM_ENABLED
+              value: "true"
+            - name: GRIMOIRE_LOOM_BASE_URL
+              value: {{ $.Values.grimoire.loom.baseUrl | quote }}
+            - name: GRIMOIRE_LOOM_PARTITIONS
+              value: {{ $.Values.grimoire.loom.partitions | toJson | quote }}
+            {{- if $.Values.grimoire.loom.adminExistingSecret }}
+            # Only an explicit, separately reviewed existing admin Secret.
+            - name: GRIMOIRE_LOOM_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.grimoire.loom.adminExistingSecret | quote }}
+                  key: {{ $.Values.grimoire.loom.adminTokenKey | quote }}
+            {{- end }}
             {{- end }}
             {{- if .grimoire }}
             # Grimoire ingest jobs (spec #4.2/#4.3): the loader reads R2 S3 env +

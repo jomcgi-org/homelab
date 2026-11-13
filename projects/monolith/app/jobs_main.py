@@ -938,6 +938,18 @@ def grimoire_load_chunks() -> None:
     _run_job("grimoire-load-chunks", "grimoire.jobs", "grimoire_load_chunks")
 
 
+@app.command("grimoire-loom-ontology")
+def grimoire_loom_ontology() -> None:
+    """Apply staged Loom definitions manually with an explicit reserved-admin subject.
+
+    Runtime dataset credentials cannot authorize definitions. Administrative
+    configuration and execution belong to the separate enablement owner.
+    """
+    from grimoire.loom.jobs import grimoire_loom_ontology as handler
+
+    asyncio.run(handler())
+
+
 @app.command("grimoire-embed-play")
 def grimoire_embed_play() -> None:
     """Embed current notes and eligible session events in a bounded batch job."""

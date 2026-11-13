@@ -3104,3 +3104,15 @@ green. A repeatable fixture and work baseline expose that regression without a
 pre-release performance gate. Latency, cache occupancy and process memory remain
 observations until enough comparable production evidence exists. The existing
 Kargo history and guarded promotion tool remain the deployment authority.
+
+### Dormant Grimoire Loom definitions
+
+[#6634](https://github.com/jomcgi-org/homelab/issues/6634) adds default-off Loom
+working-set definitions and a suspended manual Argo job. Postgres remains
+Grimoire's durable and serving tier; no startup or play path accesses Loom.
+The reserved-admin subject for future definition execution must be configured
+by the separately authorized enablement owner. No administrative credential is
+provisioned, and the dataset-scoped runtime token never authorizes definitions.
+[Grimoire architecture](grimoire/architecture.md#staged-loom-working-set) records
+the pinned contracts, projections, partition isolation, composite upsert and
+remaining operational acceptance.

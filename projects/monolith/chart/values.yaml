@@ -1086,6 +1086,21 @@ jobs:
     # unchanged corpus is cheap. `grimoire: true` injects the SeaweedFS S3 env,
     # GRIMOIRE_S3_BUCKET, and EMBEDDING_URL the loader reads. The cronworkflows
     # template skips both grimoire entries unless grimoire.enabled (private tier).
+    - name: grimoire-loom-ontology
+      args: ["grimoire-loom-ontology"]
+      schedule: "0 0 1 1 *"
+      suspend: true
+      loomOntology: true
+      concurrencyPolicy: Forbid
+      replaces: "grimoire.loom_ontology"
+      activeDeadlineSeconds: 600
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "1"
     - name: grimoire-embed-play
       args: ["grimoire-embed-play"]
       schedule: "*/5 * * * *"
@@ -1869,6 +1884,14 @@ platformAuth:
   enrollmentFlowUrl: ""
 
 grimoire:
+  loom:
+    enabled: false
+    baseUrl: "http://loom-query-api.loom.svc:8080"
+    # Future owner supplies explicit partitions and an existing admin Secret.
+    # The chart neither provisions admin credentials nor reuses the runtime token.
+    partitions: []
+    adminExistingSecret: ""
+    adminTokenKey: token
   campaignCreation:
     # Staged only. Enable and select verified creator mailboxes separately.
     restrictionEnabled: false

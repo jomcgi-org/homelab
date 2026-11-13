@@ -1072,3 +1072,101 @@ that answers for a different account, role or character reloads the session
 screen, because panels such as knowledge search keep their own state. The live
 check remains: hold a real login past the access-token lifetime and confirm
 the session stays Live without a reload.
+
+## Staged Loom working set
+
+Repository support for [#6634](https://github.com/jomcgi-org/homelab/issues/6634)
+ships with `grimoire.loom.enabled: false` in chart and deployment values.
+Postgres remains the durable and serving tier. Play, startup, checkout and
+check-in never construct a Loom client. No data exporter is registered. Public
+and friends compositions gain no Loom routes or credentials.
+
+`grimoire/loom/ontology.py` declares Campaign, PlayerCharacter, GameSession,
+SessionEvent, KnowledgeGrantSlice, Note, CharacterFact and SessionSummary.
+The first six named SQLModel-backed types plus CharacterFact derive columns
+and nullability from the current Postgres models; identity is always required
+even where SQLModel marks a primary key nullable. KnowledgeGrantSlice projects
+KnowledgeGrant alone, with no unrestricted entity-body join. A partial slice
+contains only revealed details; a name-only slice has no retrievable body.
+SessionSummary is a future materialization with required string columns `id`,
+`campaign_id`, `session_id`, `summary` and `created_at`, rather than an existing
+table or an implemented summarizer. No type includes a vector.
+
+Each campaign has explicit `facts_global`, `facts_<pc UUID>` and DM schemas,
+qualified by its full UUID. Concrete type names include that schema, and each
+binds exactly one table. Links remain inside the same partition: every child
+links to Campaign; SessionEvent, CharacterFact and SessionSummary also link to
+GameSession. A future exporter must materialize the required parent rows into
+each partition before using these links. Grant slices, character notes and
+facts reject another campaign or PC. Party notes and facts use facts_global;
+raw session events and summaries are restricted to DM partitions until an
+audience-safe exporter exists. Dataset Read grants must keep DM and other-PC
+schemas inaccessible. This package does not create grants or export rows.
+
+**Why.** Historical `loom-mapping.md` section 3.4 at `ef827f114^` chose dataset
+partitioning. ADR 011 and 012 at `4c9c42c46^` keep the grant overlay and Postgres
+serving boundary. One TableRef per concrete type preserves dataset isolation
+without inventing partition arrays or changing current serving authority.
+
+The client contract is pinned to the deployed image's upstream revision
+[`e6ca13cc43264dd8b2b1a067b675979c4ac323b0`](https://github.com/weave-hand/loom/tree/e6ca13cc43264dd8b2b1a067b675979c4ac323b0/src),
+independently of the chart-template archive revision:
+
+- `services/runtime/src/admin.rs` defines model bodies at lines 516 to 600,
+  link/action serde bodies at 802 to 938, and reserved-admin middleware at 2047.
+- `services/query-api/src/http.rs` exposes type detail at 250 to 320, dataset
+  snapshot ids at 434 to 525 and opaque cursor pages at 727 to 805.
+  `render.rs` returns `{objects, next}`. Every page retains the exact snapshot
+  selector and checks the type's table and identity binding. A 404 can mean
+  unreadable data; a 410 can mean a reclaimed snapshot. Neither triggers fallback
+  to current data.
+- `services/query-api/src/params.rs` accepts a flat parameter object, with
+  required non-null values and no unknown keys. Long values are decimal strings.
+  The scalar-only vocabulary in `control-plane/core/src/logical_type.rs` has no
+  JSON or UUID type. Nested JSON and UUID arrays use canonical JSON strings;
+  timezone-aware timestamps use ISO strings retaining offsets and microseconds,
+  since the native action timestamp parser accepts only second-resolution naive
+  values. These are explicit projection codecs, not lossless native Loom types.
+
+`insert_*`, `update_*` and `retract_*` definitions use the supported insert,
+update and delete kinds. `upsert_*` is the Python composite contract `upsert`:
+read the identity with `_ids`, insert when missing, update when present. One
+409 or missing update target permits one fresh read and one opposite-branch
+write. A second failure escapes. Caller-owned single-writer serialization is
+required because Loom inserts do not establish unique identities. This package
+does not claim concurrent atomic upsert. Retraction physically deletes the Loom
+projection only; Postgres rows and their soft-deletion semantics remain intact.
+
+Definition application reads before POST, skips equal definitions and refuses
+mismatches. `GET /ontology/types/{name}` exposes model bindings and link metadata;
+`GET /openapi.json` exposes action parameters, targets and success status. The
+pinned API has no full link/action definition GET: link backing and action
+assignments are omitted. Owned definitions retain canonical JSON receipts in
+their descriptions; foreign or changed receipts fail closed. Receipts cannot
+detect an out-of-band edit that changes hidden fields while preserving the old
+description. The future owner must serialize definition administrators and
+prohibit such edits, or upgrade to an upstream full-definition read API before
+requiring complete drift detection. Existing names are never overwritten.
+Only GET retries, with finite timeouts, bounded attempts and jitter. Definition
+creation sequences and uncertain action writes are never blindly retried.
+
+The `grimoire-loom-ontology` CLI command runs only as an explicitly submitted,
+suspended Argo CronWorkflow. It has a deadline, resource limits and Forbid
+concurrency. Flag-off chart renders include neither its job nor its runtime
+OnePasswordItem. Flag-on private renders reference
+`k8s-homelab/loom-grimoire-token`; that dataset-scoped runtime token is never
+mounted into this job or a play path. The job needs an explicit future existing
+admin Secret reference, URL and campaign/PC partition list. Missing
+configuration fails before client construction or a network request. No
+administrative Secret or credential is provisioned here.
+
+**Why.** The definition endpoints require a subject with Loom's reserved admin
+role. Dataset Read/Write grants cannot authorize them. Selecting or provisioning
+that subject belongs to the separately authorized enablement owner. The job
+never falls back to the dataset-scoped runtime token.
+
+Enablement remains on #6634: a separate owner must approve the administrative
+subject, provision datasets with these codecs and partition grants, review
+network policy, enable GitOps values and authorize manual job execution. The
+five operational checks in the PR remain unchecked. Local ASGI and Helm tests
+establish repository behavior only; no live request or deployment is claimed.

@@ -83,7 +83,7 @@ spec:
             # suspend controls the recurring schedule; manual submission
             # remains available without a legacy scheduled_jobs row.
             - name: ARGO_JOBS
-              value: "{{- range .Values.jobs.cronWorkflows }}{{- if .replaces }}{{ .replaces }},{{- end }}{{- end }}"
+              value: "{{- range .Values.jobs.cronWorkflows }}{{- if and .replaces (or (not .loomOntology) (and $.Values.grimoire.enabled $.Values.grimoire.loom.enabled)) }}{{ .replaces }},{{- end }}{{- end }}"
             - name: SCHEDULER_WORKFLOW_NAMESPACE
               value: {{ .Values.jobs.workflowNamespace | quote }}
             # Side-effect mute for non-production deployments (#4695). A dev

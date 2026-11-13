@@ -1950,6 +1950,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # public binary; the read path (public/router_public/library/models/
     # visibility plus the extract/ingest helpers it calls) ships.
     "grimoire/jobs.py",
+    "grimoire/loom/**/*.py",
     # FaaS: only the public invocation path ships. The ingestion API (router.py)
     # is the authenticated private-tier author surface (no /api on public); the
     # write path (storage.py = S3, workload.py = K8s CR CRUD) is private-only; the
@@ -10023,5 +10024,43 @@ py_test(
     deps = [
         ":pkg_stars",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "grimoire_loom_client_test",
+    srcs = ["grimoire/loom/client_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "grimoire_loom_ontology_test",
+    srcs = ["grimoire/loom/ontology_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+py_test(
+    name = "grimoire_loom_chart_test",
+    srcs = ["grimoire/loom/chart_test.py"],
+    data = [
+        "//projects/monolith/chart:docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
