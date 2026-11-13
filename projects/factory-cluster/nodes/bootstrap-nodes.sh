@@ -52,7 +52,3 @@ ssh "${FIRST}" 'sudo cat /etc/rancher/k3s/k3s.yaml' |
 		>"${KUBECONFIG_OUT}"
 chmod 0600 "${KUBECONFIG_OUT}"
 KUBECONFIG="${KUBECONFIG_OUT}" kubectl get nodes -o wide
-echo
-echo "Store the cluster token in 1Password (k8s-homelab/factory-k3s-token): it is"
-echo "needed to restore an etcd snapshot. It is on ${FIRST} at"
-echo "/var/lib/rancher/k3s/server/token."

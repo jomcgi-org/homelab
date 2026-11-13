@@ -74,9 +74,10 @@ automatically, and ArgoCD adopts the Connect and ArgoCD installs.
 To upgrade k3s or gVisor, change the pins in `nodes/install-node.sh` and rerun
 step 2. It restarts one node at a time.
 
-To restore from an etcd snapshot, use the cluster token, which is saved to
-1Password as `factory-k3s-token`. Follow `k3s etcd-snapshot restore` on one
-server, then rejoin the others with step 2.
+The cluster holds no state that Git cannot recreate yet, so a lost cluster is
+rebuilt with steps 2 and 3. Snapshots are encrypted with the cluster token on
+each server (`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes
+is part of the backup and restore work below.
 
 ## Operator inputs
 
@@ -89,9 +90,7 @@ These are the only things set up outside Git, plus the reason for each:
 2. **1Password item** `k8s-homelab/factory-cloudflare-api-token`, with a field
    `CLOUDFLARE_API_TOKEN` holding a Cloudflare API token that has:
    Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
-3. **1Password item** `k8s-homelab/factory-k3s-token`: the cluster token from
-   node-1's `/var/lib/rancher/k3s/server/token`, for snapshot restore.
-4. **DHCP reservations** for the three node addresses above.
+3. **DHCP reservations** for the three node addresses above.
 
 ## factory.jomcgi.dev
 
@@ -114,7 +113,8 @@ These come from the #7817 step 1 checklist:
 
 - Agent Substrate install (`ate-setup`) and a recorded Actor start, write,
   suspend and resume. It also needs Postgres and S3-compatible snapshot storage.
-- Replicated storage and off-node etcd snapshots.
+- Replicated storage, and backup and restore: off-node etcd snapshots with a
+  copy of the cluster token, once the cluster holds state Git cannot recreate.
 - Authentik for the factory cluster, ArgoCD OIDC against it, and the
   factory.jomcgi.dev `TunnelBinding`.
 - Observability (OpenTelemetry, Prometheus/Grafana).
