@@ -1,0 +1,30 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: cfgate
+spec:
+  controllerName: cfgate.io/cloudflare-tunnel-controller
+---
+# Routes attach to the tunnel only from namespaces labelled
+# factory.jomcgi.dev/edge=true. The authenticated ingress (Envoy Gateway with
+# Authentik forward-auth, #7817) will be the only such namespace, so an
+# application cannot publish itself by writing an HTTPRoute.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cloudflare-tunnel
+  namespace: cfgate-system
+  annotations:
+    cfgate.io/tunnel-ref: cfgate-system/factory
+spec:
+  gatewayClassName: cfgate
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              factory.jomcgi.dev/edge: "true"

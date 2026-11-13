@@ -41,7 +41,7 @@ router must reserve these three leases.
 | Network | flannel VXLAN, k3s network-policy controller | k3s defaults; Substrate's default-deny namespace policy needs NetworkPolicy enforcement |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
 | Images | embedded Spegel mirror for every registry | Each image crosses the home uplink once |
-| Ingress | Cloudflare Tunnel managed by cloudflare-operator | No inbound ports; tunnel and DNS records are CRs |
+| Ingress | Cloudflare Tunnel managed by cfgate (Gateway API) | No inbound ports; the tunnel, its routes and DNS records are Kubernetes resources. cfgate replaced StringKe/cloudflare-operator, whose last release (v0.51.0) watches Gateway API `v1alpha2` UDPRoute, which current Gateway API no longer serves |
 | Human sign-in | Authentik OIDC at each application, no Cloudflare Access | One identity layer, as #7817 specifies; nothing is published until it signs users in |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault | Repository convention |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
@@ -94,12 +94,17 @@ These are the only things set up outside Git, plus the reason for each:
 
 ## factory.jomcgi.dev
 
-`projects/platform-factory/factory-edge/` declares the tunnel (`ClusterTunnel`
-`factory`). It publishes no hostname yet: every request answers 404.
+`projects/platform-factory/factory-edge/` declares the only path in from the
+internet: the `factory` CloudflareTunnel, the `cloudflare-tunnel` Gateway that
+accepts HTTPRoutes only from namespaces labelled `factory.jomcgi.dev/edge=true`,
+and a CloudflareDNS that creates records only for routes annotated
+`factory.jomcgi.dev/publish=true`. No namespace has the label yet, so nothing
+is published and every request answers 404.
 
-factory.jomcgi.dev is published by adding a `TunnelBinding`, which creates the
-route and its DNS record, in the same change that gives its backend Authentik
-OIDC sign-in. Cloudflare Access is not used. Until then, reach ArgoCD through a
+The authenticated ingress (Envoy Gateway with Authentik forward-auth) will be
+the one edge namespace, so an application cannot publish itself by writing an
+HTTPRoute. factory.jomcgi.dev is published with it. Cloudflare Access is not
+used. Until then, reach ArgoCD through a
 port-forward and sign in as `admin` with the password in the
 `argocd-initial-admin-secret` Secret:
 
@@ -115,6 +120,6 @@ These come from the #7817 step 1 checklist:
   suspend and resume. It also needs Postgres and S3-compatible snapshot storage.
 - Replicated storage, and backup and restore: off-node etcd snapshots with a
   copy of the cluster token, once the cluster holds state Git cannot recreate.
-- Authentik for the factory cluster, ArgoCD OIDC against it, and the
-  factory.jomcgi.dev `TunnelBinding`.
+- Authentik for the factory cluster, the Envoy Gateway edge with forward-auth,
+  and factory.jomcgi.dev.
 - Observability (OpenTelemetry, Prometheus/Grafana).
