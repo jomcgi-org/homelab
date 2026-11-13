@@ -832,3 +832,26 @@ PR. External merges retain the existing merged-delivery verification owner and
 its review/operational fences. #7428 owns that owner's remaining external-review
 handoff. Activation, rollout and a pre-existing PR reaching reviewed, merged and
 verified delivery without manual selection remain open on #7597.
+
+
+### PR credential activation remains blocked
+
+For #7005, [staged CI support](../../../../bazel/tools/ci/PR-CREDENTIALS.md)
+is unwired. The current same-repository PR credential exposure remains open.
+Before activation, the authorized owner must verify:
+
+- Provider-controlled secret selection before PR checkout/code, including
+  pull-only GHCR access and no repository-write checkout/helper credential.
+- Provider enforcement against PR workflow spoofing and transitive
+  `include-secrets=true` requests from the local CI runner.
+- Isolation of snapshots, fallback state, Docker/Git config, caches and mutable
+  executables in both directions between PR and privileged queue/main runs.
+- Restricted PR `pr-checks` with generators, format verification, tests and
+  image/render checks; full queue validation without publication; unchanged
+  main image/chart publication and writeback.
+- Public, redacted policy and invocation evidence on #7005 before operational
+  acceptance. Missing provider evidence fails the checklist.
+
+Credential provisioning and provider activation require separate authority.
+Keep dependency authors, the publisher and existing holds unchanged. The
+candidate document records the future wiring and rollback procedure.

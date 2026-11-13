@@ -2366,8 +2366,9 @@ the issue-close API. Runtime activation is a live policy update after rollout;
 shipping this code alone enables no author accounts. BuildBuddy currently
 injects secrets into same-repository PR events and executes the PR branch
 workflow (`buildbuddy.yaml`). This merge gate does not isolate those earlier
-CI executions. #7005 has no active owner or receipt as of the 2026-10-27
-read-only check. The provider must enforce credential and snapshot isolation
+CI executions. Pull-only authentication and no-write drift helpers are staged,
+unwired, in [the CI candidate](../../bazel/tools/ci/PR-CREDENTIALS.md). #7005
+remains open and the exposure is unresolved. The provider must enforce credential and snapshot isolation
 before executing PR/queue code; PR-editable shell guards or action splits do
 not provide that boundary. No live provider controls are changed here.
 

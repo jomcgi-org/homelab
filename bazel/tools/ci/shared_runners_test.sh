@@ -132,3 +132,4 @@ for args in absent empty; do
 	[[ "$status" == 2 && ! -s "$LOG" ]]
 done
 echo 'PASS shared guard runner missing-base interface fails closed'
+source "$tools/pr-credentials-test.sh"

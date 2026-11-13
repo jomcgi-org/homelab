@@ -142,6 +142,8 @@ sh_test(
     data = [
         "affected-targets.sh",
         "local-affected-test.sh",
+        "pr-credentials.sh",
+        "pr-credentials-test.sh",
         "ratchets.sh",
         "//:buildbuddy.yaml",
     ],

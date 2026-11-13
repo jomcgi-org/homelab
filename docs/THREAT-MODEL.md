@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 3d874faa3._
+_Reviewed CI finding against commit 13f14ce0a; other findings retain their prior review at 3d874faa3._
 
 Open security findings across everything the cluster hosts, ranked.
 The live list is the
@@ -55,6 +55,13 @@ graph LR
 ## Open findings
 
 Ranked by what an attacker gets. Each issue holds the detail.
+
+- **Same-repository PR CI receives publication credentials**
+  ([#7005](https://github.com/jomcgi-org/homelab/issues/7005)).
+  PR-controlled workflows can access a token used to push repository and chart
+  updates. Pull-only helpers are staged and unwired; provider credential and
+  snapshot isolation remain unverified. The supply-chain surface has no domain
+  security lens yet; the finding stays on this index and the issue.
 
 1. **A Firecracker escape is not contained in production**
    ([#5255](https://github.com/jomcgi-org/homelab/issues/5255)).
