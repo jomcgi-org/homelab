@@ -1429,10 +1429,31 @@ def test_factory_node_agent_pipelines():
 
     kubelet = config["receivers"]["kubelet_stats/node"]
     assert kubelet["metric_groups"] == ["node", "pod"]
-    # The agent's own namespace is excluded so its export errors are not exported.
+    # Its own namespace (export errors), the identity provider and the agent
+    # substrate are never collected.
     assert config["receivers"]["file_log"]["exclude"] == [
-        "/var/log/pods/otel-collector_*/*/*.log"
+        f"/var/log/pods/{ns}_*/*/*.log"
+        for ns in ("otel-collector", "authentik", "ate-system")
     ]
+    # Sanitize before parsing; redact and dedup after filtering and before
+    # anything is enriched or exported.
+    order = pipelines["logs"]["processors"]
+    assert (
+        order.index("transform/sanitize")
+        < order.index("transform/parse")
+        < order.index("filter/severity")
+        < order.index("transform/redact")
+        < order.index("log_dedup")
+        < order.index("k8s_attributes")
+    )
+    redact = config["processors"]["transform/redact"]["log_statements"][0][
+        "statements"
+    ]
+    # $${1}: the collector would otherwise expand ${1} as a config variable.
+    assert all("$${1}[REDACTED]" in st for st in redact if "replace" in st)
+    assert any("bearer" in st for st in redact)
+    assert any("authorization" in st for st in redact)
+    assert any("password" in st for st in redact)
     jobs = {
         c["job_name"]: c
         for c in config["receivers"]["prometheus/node"]["config"]["scrape_configs"]
@@ -1474,6 +1495,12 @@ def test_factory_cluster_agent():
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
 
+    # Repeating Events ship on threshold bumps only; expiries never.
+    conditions = config["processors"]["filter/events"]["logs"]["log_record"]
+    assert any('"DELETED"' in c for c in conditions)
+    assert any('"MODIFIED"' in c and "64" in c for c in conditions)
+
+    # Cluster-wide: Events and the metrics paths only. Discovery is namespaced.
     role = next(
         d
         for d in docs
@@ -1481,6 +1508,22 @@ def test_factory_cluster_agent():
     )
     for rule in role["rules"]:
         assert set(rule["verbs"]) <= {"get", "list", "watch"}
+        assert set(rule.get("resources", [])) <= {"events"}
+    roles = {
+        d["metadata"]["namespace"]: d
+        for d in docs
+        if d["kind"] == "Role" and d["metadata"]["name"] == CLUSTER
+    }
+    assert set(roles) == {"default", "kube-system"}
+    assert roles["kube-system"]["rules"] == [
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
+    ]
+    bindings = {
+        d["metadata"]["namespace"]
+        for d in docs
+        if d["kind"] == "RoleBinding" and d["metadata"]["name"] == CLUSTER
+    }
+    assert bindings == {"default", "kube-system"}
 
 
 def test_cluster_agent_requires_a_source():

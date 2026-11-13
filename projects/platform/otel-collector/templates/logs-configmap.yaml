@@ -178,6 +178,60 @@ data:
               - set(log.body, log.attributes["msg"]) where IsString(log.attributes["msg"]) and not IsString(log.attributes["message"])
               - set(log.body, log.attributes["record"]["message"]) where log.attributes["logger"] == "postgres" and IsString(log.attributes["record"]["message"])
 
+      {{- if .Values.logs.sanitize }}
+
+      # Before level parsing, so coloured console output parses like plain
+      # text: strip ANSI escapes and a leading timestamp (the record already
+      # carries the CRI time), then spell out zerolog's console levels.
+      transform/sanitize:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - 'replace_pattern(log.body, "\\x1b\\[[0-9;]*m", "") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^(?:time=\"?[^\"\\s]+\"?|\\d{4}-\\d{2}-\\d{2}[T ][^\\s]+)\\s+", "") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^TRC\\b", "TRACE") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^DBG\\b", "DEBUG") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^INF\\b", "INFO") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^WRN\\b", "WARN") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^ERR\\b", "ERROR") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^FTL\\b", "FATAL") where IsString(log.body)'
+              - 'replace_pattern(log.body, "^PNC\\b", "PANIC") where IsString(log.body)'
+      {{- end }}
+      {{- if .Values.logs.redact }}
+
+      # After parsing, before anything leaves the node. Masks the value after
+      # a bearer scheme, an Authorization header or a credential-named key
+      # (password=, token=, secret=, api_key=, "client_secret": ...) in the
+      # body and in every top-level attribute value, and drops attributes
+      # whose key itself names a credential. ${1} is written $${1} because the
+      # collector expands ${...} in its config.
+      transform/redact:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - 'replace_pattern(log.body, "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]") where IsString(log.body)'
+              - 'replace_pattern(log.body, "(?i)(authorization[\"'']?\\s*[:=]\\s*[\"'']?(?:(?:basic|bearer|token|digest)\\s+)?)[^\"''\\s,;}]+", "$${1}[REDACTED]") where IsString(log.body)'
+              - 'replace_pattern(log.body, "(?i)((?:password|passwd|pwd|[a-z_.-]*token|[a-z_.-]*secret|api[_-]?key|access[_-]?key)[\"'']?\\s*[:=]\\s*[\"'']?)[^\"''\\s&,;}]+", "$${1}[REDACTED]") where IsString(log.body)'
+              - 'replace_all_patterns(log.attributes, "value", "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")'
+              - 'replace_all_patterns(log.attributes, "value", "(?i)(authorization[\"'']?\\s*[:=]\\s*[\"'']?(?:(?:basic|bearer|token|digest)\\s+)?)[^\"''\\s,;}]+", "$${1}[REDACTED]")'
+              - 'replace_all_patterns(log.attributes, "value", "(?i)((?:password|passwd|pwd|[a-z_.-]*token|[a-z_.-]*secret|api[_-]?key|access[_-]?key)[\"'']?\\s*[:=]\\s*[\"'']?)[^\"''\\s&,;}]+", "$${1}[REDACTED]")'
+              - 'delete_matching_keys(log.attributes, "(?i)^(?:.*[._-])?(?:password|passwd|secret|token|authorization|api[_-]?key|credentials?)$")'
+      {{- end }}
+      {{- if .Values.logs.dedup.enabled }}
+
+      # Identical records within the interval become one, with log_count.
+      # Timestamps parsed out of JSON lines are ignored when comparing.
+      log_dedup:
+        interval: {{ .Values.logs.dedup.interval }}
+        log_count_attribute: log_count
+        exclude_fields:
+          - attributes.time
+          - attributes.ts
+          - attributes.timestamp
+      {{- end }}
+
       # Keep warning and above. Everything the parser could not classify has
       # severity 0 (unspecified) and is dropped here too.
       filter/severity:
@@ -324,7 +378,7 @@ data:
       pipelines:
         logs:
           receivers: [file_log]
-          processors: [memory_limiter, transform/parse, filter/severity, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
+          processors: [memory_limiter{{ if .Values.logs.sanitize }}, transform/sanitize{{ end }}, transform/parse, filter/severity{{ if .Values.logs.redact }}, transform/redact{{ end }}{{ if .Values.logs.dedup.enabled }}, log_dedup{{ end }}, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
           exporters: [{{ $hcExporter }}]
         {{- if $cm.enabled }}
         metrics:

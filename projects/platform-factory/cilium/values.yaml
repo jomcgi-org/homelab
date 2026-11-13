@@ -46,9 +46,17 @@ operator:
 
 # Agent metrics on :9962 (host network), scraped node-locally by the
 # otel-collector log agent (projects/platform/otel-collector/values-factory.yaml).
-# The operator serves :9963 by default.
+# The operator serves :9963 by default. Like Hubble's :9965, the listener
+# binds every host interface, tailscale0 included.
 prometheus:
   enabled: true
+
+# Restart one agent at a time. The chart's default of two takes the DNS proxy,
+# and with it every toFQDNs egress, down on two of three nodes at once.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
 
 hubble:
   enabled: true
