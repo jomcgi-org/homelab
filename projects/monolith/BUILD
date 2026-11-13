@@ -7147,6 +7147,15 @@ py_test(
 
 # Hand-registered because grimoire is gazelle-excluded: the bounded v1 sheet
 # contract, version history, workflow transitions, and campaign/role ACLs.
+bdd_test(
+    name = "grimoire_sheets_postgres_test",
+    srcs = ["grimoire/sheets_postgres_test.py"],
+    deps = [
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
 py_test(
     name = "grimoire_sheets_test",
     srcs = ["grimoire/sheets_test.py"],
