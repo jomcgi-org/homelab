@@ -1,9 +1,9 @@
 # Factory home cluster overlay (projects/platform-factory/argocd).
 #
-# The UI is reached at factory.jomcgi.dev through the Cloudflare Tunnel
-# (projects/platform-factory/factory-edge), which terminates TLS at the edge and
-# forwards plain HTTP, so argocd-server serves HTTP. Cloudflare Access gates the
-# hostname before any request reaches it.
+# The UI will be published at factory.jomcgi.dev through the Cloudflare Tunnel
+# once it signs users in through Authentik OIDC. The tunnel terminates TLS at
+# the edge and forwards plain HTTP, so argocd-server serves HTTP. Until then
+# it is reached with kubectl port-forward.
 argo-cd:
   global:
     priorityClassName: system-cluster-critical

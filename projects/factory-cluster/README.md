@@ -41,7 +41,8 @@ router must reserve these three leases.
 | Network | flannel VXLAN, k3s network-policy controller | k3s defaults; Substrate's default-deny namespace policy needs NetworkPolicy enforcement |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
 | Images | embedded Spegel mirror for every registry | Each image crosses the home uplink once |
-| Ingress | Cloudflare Tunnel managed by cloudflare-operator | No inbound ports; tunnel, DNS and Access are CRs |
+| Ingress | Cloudflare Tunnel managed by cloudflare-operator | No inbound ports; tunnel and DNS records are CRs |
+| Human sign-in | Authentik OIDC at each application, no Cloudflare Access | One identity layer, as #7817 specifies; nothing is published until it signs users in |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault | Repository convention |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 
@@ -87,23 +88,25 @@ These are the only things set up outside Git, plus the reason for each:
    they cannot come from the broker.
 2. **1Password item** `k8s-homelab/factory-cloudflare-api-token`, with a field
    `CLOUDFLARE_API_TOKEN` holding a Cloudflare API token that has:
-   Account: Cloudflare Tunnel:Edit; Access: Apps and Policies:Edit;
-   Access: Organizations, Identity Providers, and Groups:Read; Zone `jomcgi.dev`:
-   DNS:Edit and Zone:Read.
-3. **Cloudflare Access group** `factory-operators`, listing who may reach
-   factory.jomcgi.dev. Its members are personal email addresses, and this
-   repository is public.
-4. **1Password item** `k8s-homelab/factory-k3s-token`: the cluster token from
+   Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
+3. **1Password item** `k8s-homelab/factory-k3s-token`: the cluster token from
    node-1's `/var/lib/rancher/k3s/server/token`, for snapshot restore.
-5. **DHCP reservations** for the three node addresses above.
+4. **DHCP reservations** for the three node addresses above.
 
 ## factory.jomcgi.dev
 
 `projects/platform-factory/factory-edge/` declares the tunnel (`ClusterTunnel`
-`factory`), the hostname binding with its DNS record (`TunnelBinding`), and the
-Access application that limits it to `factory-operators`. Until itsaplan is
-deployed, the hostname serves the ArgoCD UI. Sign in as `admin` with the
-password in the `argocd-initial-admin-secret` Secret, until OIDC is configured.
+`factory`). It publishes no hostname yet: every request answers 404.
+
+factory.jomcgi.dev is published by adding a `TunnelBinding`, which creates the
+route and its DNS record, in the same change that gives its backend Authentik
+OIDC sign-in. Cloudflare Access is not used. Until then, reach ArgoCD through a
+port-forward and sign in as `admin` with the password in the
+`argocd-initial-admin-secret` Secret:
+
+```bash
+kubectl --kubeconfig ~/.kube/factory.yaml -n argocd port-forward svc/argocd-server 8080:80
+```
 
 ## Not yet done
 
@@ -112,5 +115,6 @@ These come from the #7817 step 1 checklist:
 - Agent Substrate install (`ate-setup`) and a recorded Actor start, write,
   suspend and resume. It also needs Postgres and S3-compatible snapshot storage.
 - Replicated storage and off-node etcd snapshots.
-- OIDC sign-in for ArgoCD.
+- Authentik for the factory cluster, ArgoCD OIDC against it, and the
+  factory.jomcgi.dev `TunnelBinding`.
 - Observability (OpenTelemetry, Prometheus/Grafana).

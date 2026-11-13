@@ -3,4 +3,6 @@ kind: Kustomization
 
 resources:
   - tunnel.yaml
-  - factory-hostname.yaml
+# factory.jomcgi.dev gets its TunnelBinding (route plus DNS record) only once
+# its backend signs users in through Authentik OIDC (#7817). Until then the
+# tunnel publishes no hostname; reach the UI with kubectl port-forward.
