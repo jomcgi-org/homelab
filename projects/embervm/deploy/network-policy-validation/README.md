@@ -55,10 +55,13 @@ all-namespace grants if probes fail.
 
 ## Record bounded evidence
 
-Use the existing EmberVM conformance workload/API validation infrastructure for
-functional cold/warm operations and its recorded scenario reports. A successful
-TCP handshake below establishes L4 reachability only. It does not establish a
-successful wake, application response, bearer check or SPIFFE handshake.
+Retain the existing conformance runner's `/verdict` and exact chart version as
+the deployment baseline (`conformance/main.go`). Its sandbox/session scenarios
+do not cover serving isolation. The validation owner uses the existing Workload
+CRs and serving APIs for the additional cold/warm operations below and records
+their responses. A successful TCP handshake below establishes L4 reachability
+only. It does not establish a successful wake, application response, bearer
+check or SPIFFE handshake.
 
 1. Record environment, delivered chart/revision, policy manifest, matching pod
    names/UIDs/IPs and labels, namespace labels, other policies, and listener
@@ -73,7 +76,7 @@ successful wake, application response, bearer check or SPIFFE handshake.
    namespace and node. Supply an unlisted namespace source with no allowed
    namespace membership. Avoid hostNetwork and the destination node for the
    negative source so the node exception cannot masquerade as a pod grant.
-3. Prepare known-active workloads using the existing conformance infrastructure.
+3. Prepare known-active workloads using the existing Workload/serving APIs.
    List exact pod IP/port pairs for configured plaintext/TLS listeners, HTTP
    activator, stateful 5400 and 5401, composite 5410, and one warm serving endpoint
    for each serving kind. For overridden ranges use their active equivalents;
@@ -118,7 +121,7 @@ successful wake, application response, bearer check or SPIFFE handshake.
    Health is a separate control: kubelet readiness must remain successful while
    pod-source health connections are denied. Verify local egress sidecar/broker
    operation and any discovered scrape path against the matrix.
-6. Record functional conformance results for HTTP/stateful/composite cold wakes,
+6. Record functional API results for HTTP/stateful/composite cold wakes,
    including 5401, then repeat on warm endpoints. Retain active warm destinations
    for the paired L4 negative checks. Record TLS functionality through the
    existing authenticated CP path without copying credentials into probes.
