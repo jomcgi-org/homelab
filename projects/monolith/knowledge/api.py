@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from core.lazy import lazy_exports
 from knowledge.extraction import (
     EXTRACTION_VERSION,
     KG_JOB_KIND,
@@ -476,13 +477,7 @@ _FACTORY_EXPORTS = {
 }
 
 
-def __getattr__(name: str):
-    module = _FACTORY_EXPORTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from importlib import import_module
-
-    return getattr(import_module(module), name)
+__getattr__ = lazy_exports(__name__, _FACTORY_EXPORTS)
 
 
 def abandon_fact_review_for_recomputation(

@@ -1,5 +1,7 @@
 """Compatibility adapter for the existing Discord integration."""
 
+from core.lazy import lazy_exports
+
 _EXPORTS = frozenset(
     {
         "start_session_for_thread",
@@ -9,9 +11,4 @@ _EXPORTS = frozenset(
 )
 
 
-def __getattr__(name: str):
-    if name not in _EXPORTS:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from factory.execution import api
-
-    return getattr(api, name)
+__getattr__ = lazy_exports(__name__, dict.fromkeys(_EXPORTS, "factory.execution.api"))
