@@ -156,9 +156,11 @@ def test_ingestion_refresh_identity_hierarchy_and_metadata_only(harness):
     row.topic = None
     h.session.commit()
     assert (
-        load(h, {"dmg-synthetic": [manifest(section_path="DM Toolbox")]}, embedder)[
-            "chunks_embedded"
-        ]
+        load(
+            h,
+            {"dmg-synthetic": [manifest(section_path="DM Toolbox revised")]},
+            embedder,
+        )["chunks_embedded"]
         == 0
     )
     assert row.topic == "dm_guidance"
@@ -169,7 +171,7 @@ def test_ingestion_refresh_identity_hierarchy_and_metadata_only(harness):
             h,
             {
                 "dmg-synthetic": [
-                    manifest(section_path="DM Toolbox", section_hierarchy=" ")
+                    manifest(section_path="DM Toolbox revised", section_hierarchy=" ")
                 ]
             },
             embedder,
@@ -177,7 +179,9 @@ def test_ingestion_refresh_identity_hierarchy_and_metadata_only(harness):
         == 0
     )
     assert row.section_hierarchy == original["section_hierarchy"]
-    result = load(h, {"dmg-synthetic": [manifest(section_path="DM Toolbox")]}, embedder)
+    result = load(
+        h, {"dmg-synthetic": [manifest(section_path="DM Toolbox revised")]}, embedder
+    )
     assert result["chunks_upserted"] == 0
     # Content replacement clears stale guidance and re-embeds exactly once.
     mundane = manifest("The gate is made of stone.")
@@ -185,6 +189,24 @@ def test_ingestion_refresh_identity_hierarchy_and_metadata_only(harness):
     assert row.topic is None and row.id == identity and row.created_at == created
     assert load(h, {"dmg-synthetic": [mundane]}, embedder)["chunks_embedded"] == 0
     assert h.session.get(ChunkExtraction, (identity, "test", "v1")) is not None
+
+
+def test_daily_reload_does_not_backfill_unchanged_legacy_chunks(harness):
+    h = harness
+    embedder = Embedder()
+    load(h, {"legacy-dmg": [manifest()]}, embedder)
+    row = chunk(h, "legacy-dmg")
+    row.topic = None
+    h.session.commit()
+    result = load(h, {"legacy-dmg": [manifest()]}, embedder)
+    assert result["chunks_upserted"] == 0
+    assert result["chunks_embedded"] == 0
+    assert row.topic is None and len(embedder.texts) == 1
+    assert (
+        topics.classify_stored_chunks(h.session, book_id="legacy-dmg")["changed"] == 1
+    )
+    h.session.commit()
+    assert row.topic == "dm_guidance"
 
 
 def test_paged_backfill_is_bounded_idempotent_and_does_not_embed(harness):

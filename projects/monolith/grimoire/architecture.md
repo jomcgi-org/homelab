@@ -58,7 +58,9 @@ and broad book ancestry alone never classify a chunk. Setting guides use the
 same rule as DMGs. Conservative false negatives remain possible. Tests contain
 original synthetic prose and source metadata, with no copied book text.
 
-Ingest recomputes topics on new and refreshed chunks, retains stored hierarchy
+Ingest computes topics on new chunks and recomputes on material content or
+metadata refreshes. Unchanged rows retain their stored topic during the daily
+manifest reload; legacy rows require the explicit bounded backfill. Ingest retains stored hierarchy
 when an older manifest omits it, and preserves chunk ids and provenance. Topic
 and hierarchy updates do not trigger embeddings or extraction. Content changes
 reclassify advice and use the existing re-embedding path.

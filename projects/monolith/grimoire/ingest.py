@@ -343,12 +343,8 @@ def _upsert_book_chunks(
                 incoming_hierarchy = item["section_hierarchy"]
                 if incoming_hierarchy is None:
                     incoming_hierarchy = existing.section_hierarchy
-                topic = classify_topic(
-                    item["content"], item["section_path"], incoming_hierarchy
-                )
                 meta_changed = (
-                    existing.topic != topic
-                    or existing.section_path != item["section_path"]
+                    existing.section_path != item["section_path"]
                     or existing.section_hierarchy != incoming_hierarchy
                     or existing.image_ref != item["image_ref"]
                 )
@@ -358,7 +354,12 @@ def _upsert_book_chunks(
                 if existing.seq != seq:
                     existing.seq = seq
                 if content_changed or meta_changed:
-                    existing.topic = topic
+                    # The daily manifest reload must not become a corpus-wide
+                    # topic sweep. Unchanged legacy rows use the explicit bounded
+                    # backfill; material content/metadata refreshes reclassify here.
+                    existing.topic = classify_topic(
+                        item["content"], item["section_path"], incoming_hierarchy
+                    )
                     existing.content = item["content"]
                     existing.section_path = item["section_path"]
                     existing.section_hierarchy = incoming_hierarchy
