@@ -8,6 +8,10 @@ metadata:
     # CRDs, namespaces, keys and volumes (resources/kustomization.yaml marks
     # those Delete=false too).
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    # ArgoCD v3.3's built-in schema predates the Kubernetes 1.37
+    # podCertificate projected volume Substrate's pods use, so the client-side
+    # structured diff fails; the apiserver computes the diff instead.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
     argocd.argoproj.io/sync-wave: "2"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
