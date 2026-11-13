@@ -107,12 +107,16 @@ spec:
           persistentVolumeClaim:
             claimName: rustfs-data
 ---
-# Creates the bucket once rustfs answers; a no-op when it exists.
+# Creates the bucket once rustfs answers; a no-op when it exists. A Sync hook,
+# recreated on each sync, because a Job's pod template is immutable.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: rustfs-bucket-init
   namespace: ate-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 10
   template:

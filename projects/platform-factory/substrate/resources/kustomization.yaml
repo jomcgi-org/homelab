@@ -44,11 +44,32 @@ patches:
   # release its SandboxConfig names, anonymously over HTTPS.
   - path: patches/objectstore-s3.yaml
     target:
-      kind: (Deployment|DaemonSet)
-      name: (ate-api-server|atelet)
+      kind: Deployment
+      name: ate-api-server
+  - path: patches/objectstore-s3.yaml
+    target:
+      kind: DaemonSet
+      name: atelet
   # No GKE image credential provider on these nodes; the kind overlay drops
   # the same flags and host mounts.
   - path: patches/atelet.yaml
+    target:
+      kind: DaemonSet
+      name: atelet
+  # Removing or renaming this Application must not take the cluster's Substrate
+  # state with it: the CRDs (every WorkerPool and SandboxConfig), the
+  # namespaces holding bootstrap-substrate.sh's keys, and the snapshot volume.
+  # The postgres volume comes from a volumeClaimTemplate, which ArgoCD does not
+  # own.
+  - target:
+      kind: (CustomResourceDefinition|Namespace|PersistentVolumeClaim)
+    patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: not-used
+        annotations:
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
   # The bundled PostgreSQL, sized for this cluster, with its role setup run on
   # every start rather than by ate-setup over kubectl exec.
   - path: patches/postgres.yaml

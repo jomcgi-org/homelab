@@ -4,6 +4,10 @@ metadata:
   name: substrate
   namespace: argocd
   annotations:
+    # Removing or renaming this Application must not cascade into Substrate's
+    # CRDs, namespaces, keys and volumes (resources/kustomization.yaml marks
+    # those Delete=false too).
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     argocd.argoproj.io/sync-wave: "2"
   finalizers:
     - resources-finalizer.argocd.argoproj.io

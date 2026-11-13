@@ -37,7 +37,7 @@ router must reserve these three leases.
 | Distribution | k3s `v1.37.2+k3s1`, three servers, embedded etcd | In-place on the existing Ubuntu installs; tolerates one node loss. Agent Substrate needs Kubernetes 1.37+ |
 | Certificates API | `certificates.k8s.io/v1beta1` served | Substrate's podcertificate controller uses the v1beta1 ClusterTrustBundle and PodCertificateRequest clients |
 | Sandboxing | gVisor `release-20261102.0` (`runsc`), RuntimeClass `gvisor` | The same release Substrate's SandboxConfig pins. Substrate stages its own runsc inside worker pods; the RuntimeClass serves other sandboxed pods |
-| Agent Substrate | `v1.0.0` (commit `b34fbee`), images pinned by digest; gVisor class only | Latest release. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run. Installed by ArgoCD from rendered manifests, not `ate-setup` ([Agent Substrate](#agent-substrate)) |
+| Agent Substrate | `v1.0.0` (commit `b34fbee`), images pinned by digest; gVisor class only. The version is set in `substrate/render-upstream.sh` and `bootstrap-substrate.sh` | Latest release. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run. Installed by ArgoCD from rendered manifests, not `ate-setup` ([Agent Substrate](#agent-substrate)) |
 | Node sysctls | proxy ARP/NDP, larger neighbour table, inotify | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
 | Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 was validated here with `cilium connectivity test` before default-deny; rerunning it now needs a temporary policy exempting the `cilium-test-*` namespaces |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
@@ -82,10 +82,16 @@ Cilium, Connect and ArgoCD installs.
 To upgrade k3s or gVisor, change the pins in `nodes/install-node.sh` and rerun
 step 2. It restarts one node at a time.
 
-The cluster holds no state that Git cannot recreate yet, so a lost cluster is
-rebuilt with steps 2 and 3. Snapshots are encrypted with the cluster token on
-each server (`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes
-is part of the backup and restore work below.
+A lost cluster is rebuilt with steps 2 to 4. That recreates everything in
+Git and new Substrate keys, but not Substrate's state: its PostgreSQL (actors,
+templates, atespaces) and its actor snapshots have no backup yet, so they are
+lost with the cluster or with the node holding their volume. The Substrate
+CRDs, namespaces and snapshot volume are marked `Delete=false`, so deleting
+or renaming the ArgoCD Application does not remove them.
+
+etcd snapshots are encrypted with the cluster token on each server
+(`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes is part of
+the backup and restore work below.
 
 ## Operator inputs
 
@@ -164,16 +170,30 @@ kind profile's shape with release images:
   (Prometheus `/metrics` stays on), and Cilium egress allowlists.
 - `bootstrap-substrate.sh` creates the generated Secrets: the podcertificate
   signer CAs, the actor identity CA and JWT keys, the egress MITM CA and the
-  snapshot store's key. They exist only in the cluster. The CAs expire after
-  one year.
+  snapshot store's key. They exist only in the cluster. The CAs expire on
+  2027-11-13, a year after creation. Substrate v1.0.0 has no CA rotation
+  command, so rotation is tracked in
+  [#7831](https://github.com/jomcgi-org/homelab/issues/7831).
 
 Control plane: `ate-system` (ate-api-server, ate-controller, ate-idp-server,
 atenet-router, atenet-egress, the atelet DaemonSet, postgres and rustfs) and
 `podcertificate-controller-system`. WorkerPools may live in any namespace.
-The `substrate-workers` cluster-wide policy lets their pods reach atelet and
-the egress gateway. ate-controller limits their ingress to atenet-router.
-The egress credential provider is off. Actors have no internet egress: the
-gateway's policy allows only ate-api-server.
+The `substrate-workers` cluster-wide policy lets their pods reach only the
+egress gateway. atelet reaches workers over a unix socket on the node.
+ate-controller limits their ingress to atenet-router. The egress credential
+provider is off. Actors have no internet egress: the gateway's policy allows
+only ate-api-server.
+
+Two broad grants are acceptable while only admins hold kubeconfigs. Revisit
+both before actors get internet egress or agents get cluster credentials:
+
+- `substrate-workers`, upstream's atenet-egress ingress policy and the
+  router's egress all select any pod labelled `ate.dev/worker-pool`, in any
+  namespace. Anyone who can create pods can claim the label.
+- The shared `ate-system/ate-client` ServiceAccount is ate-api-server's
+  bootstrap owner (`--authz-bootstrap-owners`, ate-setup's default), so
+  anyone who can mint its token owns every atespace. `kubectl ate` uses it
+  unless given `--token-file`.
 
 Verify an install:
 
@@ -202,7 +222,10 @@ These come from the #7817 step 1 checklist:
 - Actor internet egress and the egress credential provider, with the
   credential broker.
 - Replicated storage, and backup and restore: off-node etcd snapshots with a
-  copy of the cluster token, once the cluster holds state Git cannot recreate.
+  copy of the cluster token, and Substrate's PostgreSQL and snapshots, the
+  first state here that Git cannot recreate.
+- Agent Substrate CA rotation before 2027-11-13
+  ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
 - Authentik for the factory cluster, the Envoy Gateway edge with forward-auth,
   and factory.jomcgi.dev.
 - Observability (OpenTelemetry, Prometheus/Grafana).

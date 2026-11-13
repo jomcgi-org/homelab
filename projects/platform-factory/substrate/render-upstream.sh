@@ -16,6 +16,9 @@
 # Needs git and crane.
 set -euo pipefail
 
+# Keep VERSION in step with SUBSTRATE_VERSION in
+# projects/factory-cluster/bootstrap-substrate.sh and the Agent Substrate row of
+# projects/factory-cluster/README.md.
 VERSION="v1.0.0"
 COMMIT="b34fbee742906494b5eb4f1f36987176bf8770a4"
 REPO="ghcr.io/agent-substrate/substrate"
