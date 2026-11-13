@@ -49,6 +49,9 @@ def test_private_surface_preserves_existing_routes_and_health():
         "factory_stuck",
         "kg_dispute_resolution",
         "cnpg_backups",
+        "kargo_promotions",
+        "embervm_control_errors",
+        "egress_denials",
     }
     assert set(module.MODULE.register_health) == {"factory_reservations"}
     assert set(module.MODULE.register_liveness) == {"factory"}
@@ -69,8 +72,12 @@ def test_public_surface_has_no_private_hooks_or_mutations():
         assert context.route.methods <= {"GET", "HEAD"}
 
 
-def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_health(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "component",
+    ["cnpg_backups", "kargo_promotions", "embervm_control_errors", "egress_denials"],
+)
+def test_advisory_uses_actual_registry_without_changing_probe_or_public_health(
+    tmp_path, monkeypatch, component
 ):
     from fastapi.testclient import TestClient
     from sqlmodel import create_engine
@@ -90,15 +97,17 @@ def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_h
     async def healthy():
         return {"ok": True}
 
-    # Keep the actual cnpg_backups registry object and framework composition.
-    check = ops_health.CHECKS["cnpg_backups"]
-    assert module.MODULE.register_health_advisory["cnpg_backups"] is check
-    assert "cnpg_backups" not in module.MODULE.register_health
-    assert "cnpg_backups" not in module.MODULE.register_liveness
+    # Keep each actual registry object and framework composition.
+    check = ops_health.CHECKS[component]
+    assert module.MODULE.register_health_advisory[component] is check
+    assert component not in module.MODULE.register_health
+    assert component not in module.MODULE.register_liveness
     monkeypatch.setattr(check, "compute", unhealthy)
     check.reset()
+    if check.enabled_env:
+        monkeypatch.setenv(check.enabled_env, "true")
     for name in module.MODULE.register_health_advisory:
-        if name != "cnpg_backups":
+        if name != component:
             monkeypatch.setitem(module.MODULE.register_health_advisory, name, healthy)
     for name in module.MODULE.register_health:
         monkeypatch.setitem(module.MODULE.register_health, name, healthy)
@@ -114,7 +123,7 @@ def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_h
     assert calls == []
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json()["degraded"] == ["cnpg_backups"]
+    assert response.json()["degraded"] == [component]
     assert len(calls) == 1
     public = TestClient(
         build_app(
@@ -123,7 +132,7 @@ def test_backup_advisory_uses_actual_registry_without_changing_probe_or_public_h
         )
     )
     assert public.get("/api/health").status_code == 200
-    assert "cnpg_backups" not in public.get("/api/health").json().get("components", {})
+    assert component not in public.get("/api/health").json().get("components", {})
     assert public.get("/healthz").status_code == 200
     assert len(calls) == 1
     check.reset()
