@@ -42,6 +42,34 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "otel-collector.cluster.fullname" . }}
     namespace: {{ .Release.Namespace }}
+{{- range $namespace, $rules := $ca.namespacedRules }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "otel-collector.cluster.labels" $ | nindent 4 }}
+rules:
+  {{- toYaml $rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "otel-collector.cluster.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "otel-collector.cluster.fullname" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "otel-collector.cluster.fullname" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -52,7 +80,10 @@ metadata:
     {{- include "otel-collector.cluster.labels" . | nindent 4 }}
 spec:
   replicas: 1
-  # Never two watchers at once: a surge replica would ship every event twice.
+  # No surge replica during a rollout, which would ship every event twice.
+  # This is not a guarantee of a single watcher: if the node is partitioned,
+  # the control plane can start a replacement while the old pod still runs
+  # and exports, and both ship events until the old one is stopped.
   strategy:
     type: Recreate
   selector:

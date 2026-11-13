@@ -52,13 +52,18 @@ data:
         spike_limit_percentage: 25
       {{- if $ca.events.enabled }}
 
-      # The watch also reports an event's expiry (DELETED); that is
-      # housekeeping, not news.
+      # The watch reports an Event's expiry (DELETED), which is housekeeping,
+      # and every count bump on a repeating Event (MODIFIED). A failing probe
+      # bumps its Event every few seconds, so only the bumps that reach 2, 4,
+      # 8, 16, 32 or 64, and then every hundredth, are kept: a repeat stays
+      # visible and its count stays current at about 90 records a day rather
+      # than thousands.
       filter/events:
         error_mode: ignore
         logs:
           log_record:
             - 'IsMap(log.body) and log.body["type"] == "DELETED"'
+            - 'IsMap(log.body) and log.body["type"] == "MODIFIED" and not IsMatch(String(log.body["object"]["count"]), "^(2|4|8|16|32|64|[1-9][0-9]*00)$")'
 
       # Lift the fields a query groups by out of the Event object, then make
       # the message the body. Severity follows the Event type.

@@ -48,7 +48,7 @@ router must reserve these three leases.
 | Human sign-in | Authentik OIDC at each application, no Cloudflare Access | One identity layer, as #7817 specifies; nothing is published until it signs users in |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault | Repository convention |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
-| Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs; one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
+| Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
 
 Traefik and ServiceLB are disabled.
 
@@ -251,6 +251,26 @@ For logs, run an environment-wide query filtered on
 `k8s.namespace.name`. etcd's own metrics listen on 127.0.0.1:2381 on each node,
 out of a pod's reach, so etcd health comes from the API servers' readiness
 checks instead.
+
+What is left out or reduced before export:
+
+- Logs from `authentik` and `ate-system` are not collected at all: sign-in
+  details and agent session tokens do not leave the cluster. Every other line
+  has bearer tokens, Authorization values and `password=`/`token=`/`secret=`
+  style values masked, ANSI colour stripped, and identical repeats within a
+  minute collapsed into one record with `log_count`. Nothing caps log volume
+  outright; a noisy component needs its own fix or an exclusion.
+- A repeating Warning event is sent when it first appears and when its count
+  reaches 2, 4, 8, 16, 32, 64 and then every hundredth repeat.
+
+The Cilium agent's metrics (:9962) and Hubble's (:9965) listen on every host
+interface, `tailscale0` included, so any tailnet device that can reach node-1
+can read them. They carry flow counts and drop reasons, not payloads.
+
+The cluster agent is one replica with the `Recreate` strategy, so a rollout
+never runs two Event watchers. That is not a guarantee: if a node is
+partitioned, a replacement can start while the old pod still runs, and both
+ship each Event until the old one stops.
 
 ## Not yet done
 

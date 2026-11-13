@@ -32,12 +32,24 @@ gateway:
 
 logs:
   enabled: true
-  # Every namespace, warning and above. The agents' own namespace is left out
-  # so their export errors are not exported.
+  # Every namespace, warning and above, except:
+  #   otel-collector: the agents' own export errors would be exported;
+  #   authentik: the identity provider logs sign-in details and its database
+  #     logs failed authentications;
+  #   ate-system: Agent Substrate carries agent session traffic and tokens.
+  # Lines from the rest pass through transform/redact before export.
   namespaces:
     - "*"
   excludeNamespaces:
     - otel-collector
+    - authentik
+    - ate-system
+  # Kyverno logs coloured zerolog console lines; sanitize makes them parse.
+  sanitize: true
+  redact: true
+  dedup:
+    enabled: true
+    interval: 60s
   dataset: factory-k8s-logs
   nodeMetrics:
     enabled: true
@@ -89,6 +101,16 @@ logs:
 
 clusterAgent:
   enabled: true
+  # Each k3s API server's /metrics is about 11 MB and is parsed in full
+  # before the keep rule drops all but three series, three servers at once.
+  # 192Mi left the memory_limiter refusing data (and dropping Warning events)
+  # at about 110 MiB; 512Mi gives the parse room.
+  resources:
+    requests:
+      cpu: 20m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
   events:
     dataset: factory-k8s-events
   metricsDataset: factory-metrics
@@ -101,6 +123,9 @@ clusterAgent:
     - job_name: apiserver
       scrape_interval: 120s
       scheme: https
+      # A ceiling, not a filter: the response is parsed whole, so this only
+      # stops a much larger one from taking the agent's memory with it.
+      body_size_limit: 32MB
       kubernetes_sd_configs:
         - role: endpointslice
           namespaces:
@@ -157,12 +182,20 @@ clusterAgent:
         - source_labels: [__name__]
           action: keep
           regex: "cilium_operator_(errors_warnings_total|unmanaged_pods)"
+  # Only the API server metrics paths are cluster-wide; discovery reads two
+  # namespaces.
   extraRules:
-    - apiGroups: [discovery.k8s.io]
-      resources: [endpointslices]
-      verbs: [get, list, watch]
-    - apiGroups: [""]
-      resources: [services, pods]
-      verbs: [get, list, watch]
     - nonResourceURLs: [/metrics, /metrics/slis]
       verbs: [get]
+  namespacedRules:
+    default:
+      - apiGroups: [discovery.k8s.io]
+        resources: [endpointslices]
+        verbs: [get, list, watch]
+      - apiGroups: [""]
+        resources: [services, pods]
+        verbs: [get, list, watch]
+    kube-system:
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [get, list, watch]

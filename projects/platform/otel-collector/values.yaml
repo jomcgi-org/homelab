@@ -319,6 +319,22 @@ logs:
   # them. The agents' own namespace belongs here when namespaces is "*", so an
   # export failure the agent logs as a warning is not itself exported.
   excludeNamespaces: []
+  # Before level parsing: strip ANSI colour codes and a leading timestamp
+  # from the body, and spell out zerolog's console levels (WRN, ERR, FTL), so
+  # coloured console output parses like any other line and identical lines
+  # compare equal for dedup.
+  sanitize: false
+  # After parsing: mask credential-shaped values (bearer tokens,
+  # Authorization headers, password=, token=, secret=, api_key=) in the body
+  # and in every attribute value, and drop attributes whose key names a
+  # credential.
+  redact: false
+  # Collapse identical records within the interval into one record carrying
+  # a log_count attribute. The collector has no hard rate cap for logs; this
+  # is the guard against a crash loop repeating the same lines.
+  dedup:
+    enabled: false
+    interval: 60s
   # One dataset for every pod log, not a dataset per service.
   #
   # service.name derived from Kubernetes labels does not line up with the OTel
@@ -399,9 +415,13 @@ clusterAgent:
   metricsDataset: k8s-node-metrics
   # Prometheus scrape_configs for cluster-scoped endpoints, rendered verbatim.
   scrapeConfigs: []
-  # Extra ClusterRole rules the scrape configs need (service discovery,
-  # nonResourceURLs such as /metrics).
+  # Extra ClusterRole rules the scrape configs need, such as nonResourceURLs
+  # (/metrics). Keep cluster-wide grants to what cannot be namespaced.
   extraRules: []
+  # Namespaced rules, as {namespace: [rules]}: one Role and RoleBinding per
+  # namespace. Service discovery restricted to named namespaces needs only
+  # these.
+  namespacedRules: {}
   resources:
     requests:
       cpu: 10m
