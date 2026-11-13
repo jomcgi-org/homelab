@@ -747,6 +747,53 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
+  for {label, reply, expected_reason} <- [
+        {"store not configured", {:error, %GRPC.RPCError{status: 9, message: "object store not configured"}},
+         %GRPC.RPCError{status: 9, message: "object store not configured"}},
+        {"not found", {:error, %GRPC.RPCError{status: 5}}, %GRPC.RPCError{status: 5}},
+        {"fingerprint mismatch", {:ok, %{content_fingerprint: "wrong-workspace"}}, :fingerprint_mismatch}
+      ] do
+    test "store-less cross-node rejoin #{label} restores before prime and retains parked evidence" do
+      parent = self()
+      {ctx, created, parked} = cross_node_stack(
+        artifact_store_configured: false,
+        export_artifact_fun: fn _, _ -> {:ok, %{content_fingerprint: "storeless-workspace"}} end,
+        restore_artifact_fun: fn ch, req ->
+          send(parent, {:storeless_restore, ch, req})
+          unquote(Macro.escape(reply))
+        end,
+        prime_fun: fn ch, _ ->
+          send(parent, {:storeless_prime, ch})
+          {:ok, %PrimeResponse{vm_id: "vm-storeless"}}
+        end,
+        assign_fun: fn ch, req ->
+          send(parent, {:storeless_assign, ch})
+          default_assign(ch, req)
+        end)
+      assert_receive {:storeless_prime, {:channel, "node-4/pod-owner"}}, 1_000
+      evidence = await_workspace_evidence(ctx, created.session_id)
+      assert evidence.fingerprint == "storeless-workspace"
+      cross_node_target(ctx, parked)
+
+      assert {:error, {:relight_failed, {:session_workspace_restore_failed, reason}}} =
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+      assert reason == unquote(Macro.escape(expected_reason))
+      assert_receive {:storeless_restore, {:channel, "node-b/pod-target"}, request}, 1_000
+      assert request.artifact.kind == :ARTIFACT_KIND_SESSION_WORKSPACE
+      assert request.artifact.workload == parked.workload
+      assert request.artifact.ref == parked.lineage_id
+      assert request.expected_fingerprint == evidence.fingerprint
+      refute_receive {:storeless_prime, {:channel, "node-b/pod-target"}}, 100
+      refute_receive {:storeless_assign, _}, 100
+      assert {:ok, after_invoke} = SessionStore.get(ctx.store, created.session_id)
+      assert after_invoke.state == :parked
+      assert after_invoke.node_id == parked.node_id
+      assert after_invoke.volume_node_id == parked.volume_node_id
+      assert after_invoke.lineage_id == parked.lineage_id
+      assert :sys.get_state(ctx.mgr).workspace_evidence[created.session_id] == evidence
+    end
+  end
+
   test "cross-node pre-prime capacity failure retains proof and retries onto a reachable target" do
     {ctx, created, parked} = cross_node_stack()
     evidence = await_workspace_evidence(ctx, created.session_id)
