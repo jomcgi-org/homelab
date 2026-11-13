@@ -6,9 +6,8 @@ built before any workload moves from the GKE hub. This directory holds its node
 bootstrap and its ArgoCD root; `projects/platform-factory/` holds one
 Application per shared component.
 
-Status (2026-11-13): nodes rebuilt and the k3s cluster is running. The GitOps
-handoff (`bootstrap-gitops.sh`) waits on the 1Password and Cloudflare inputs
-listed under [Operator inputs](#operator-inputs).
+Status (2026-11-13): nodes rebuilt as three k3s servers on Cilium; 1Password
+Connect and ArgoCD run and sync `factory-root`. No hostname is published.
 
 ## Nodes
 

@@ -2,8 +2,8 @@
 # Install the pinned k3s server and gVisor on one factory home node.
 #
 # Idempotent: rerunning on an installed node rewrites the configuration and
-# restarts k3s at the pinned version. Run as root from this directory (the
-# operator's bootstrap.sh copies it to each node):
+# restarts k3s at the pinned version. Run as root from this directory
+# (nodes/bootstrap-nodes.sh copies it to each node):
 #
 #   sudo ./install-node.sh init                      # first server only
 #   sudo K3S_TOKEN=... ./install-node.sh join https://192.168.4.80:6443
