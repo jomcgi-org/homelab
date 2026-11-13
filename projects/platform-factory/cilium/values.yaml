@@ -16,6 +16,11 @@ kubeProxyReplacement: true
 # reach it before any Service routing exists.
 k8sServiceHost: "127.0.0.1"
 k8sServicePort: 6444
+# Only the wired NICs (enp1s0 on node-1, enp2s0 on node-2/3). Auto-detection
+# also picked tailscale0 on node-1 and took its 1280 MTU for every pod there,
+# which dropped full-size QUIC replies from the Cloudflare edge, and exposed
+# KPR services on the tailnet.
+devices: "enp+"
 
 # With flannel disabled, k3s 1.37 leaves containerd on the standard CNI
 # directories (/etc/cni/net.d, /opt/cni/bin), which are Cilium's defaults.
