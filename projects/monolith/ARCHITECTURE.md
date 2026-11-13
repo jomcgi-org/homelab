@@ -295,12 +295,10 @@ database is divided into domain schemas including `knowledge`, `chat`,
 Atlas, and bulk seed data is kept out of it because client-side apply records
 the manifest in an annotation with a 256 KiB ceiling.
 
-Historical migrations still define the retired private demo load tables, the
-Semgrep scan-performance tables, and the Semgrep exhibit savings counter. Their
-application writers and readers are gone,
-but the tables remain because removing them would delete production schema and
-data. Any later cleanup requires a separately authorized migration and retention
-decision.
+Historical migrations define the retired private demo and Semgrep tables.
+The forward migration in PR #7134 retires them with dependency refusal checks;
+repository presence does not establish live application.
+(see: /projects/monolith/chart/migrations/20261018123000_retire_unused_feature_schema.sql)
 (see: /projects/monolith/chart/templates/atlas-migration.yaml)
 (see: /projects/monolith/chart/templates/migrations-configmap.yaml)
 (see: /bazel/tools/hooks/check-large-migration-sql.sh)
@@ -341,6 +339,197 @@ a service or datastore per domain (ADR services/011, ADR services/012). Schemas,
 roles, and definer's-rights views provide the isolation; the physical standby is
 accepted for availability and load isolation, not confidentiality (ADR
 security/004).
+
+### Bound the migration bundle
+
+**Why.** The ConfigMap carries every migration, including definitions removed
+by later SQL. Squashing that history bounds fresh-install work and ConfigMap
+size. [#6921](https://github.com/jomcgi-org/homelab/issues/6921) delivers this
+plan only; rewriting migrations and executing the transition need future work.
+[#7040](https://github.com/jomcgi-org/homelab/issues/7040) is closed completed:
+PR #7134 merged as `a6c565f64efef34cb8ed5874af41ca1ef61222fd`, an ancestor of the
+measured base. Its `20261018123000_retire_unused_feature_schema.sql` is present.
+This establishes the repository prerequisite, with no claim about live application.
+
+#### Measure before scheduling the rewrite
+
+On 2026-11-13 at `13f14ce0a1f70e5f90874cde7283c53dd206689a`, the 287 SQL files
+contain 366,141 bytes and `atlas.sum` contains 26,031 bytes: **392,172 bytes**
+(37.4% of 1 MiB). Reproduce from that checkout, or record the new date and commit
+when repeating this command from the repository root:
+
+```sh
+date -u +%F
+git rev-parse HEAD
+python3 - <<'PY'
+from pathlib import Path
+p = Path('projects/monolith/chart/migrations')
+files = sorted(p.glob('*.sql'))
+sql = sum(len(f.read_bytes()) for f in files)
+checksum = len((p / 'atlas.sum').read_bytes())
+print(len(files), files[-1].name, sql, checksum, sql + checksum)
+PY
+```
+
+This counts source value bytes for the exact bundle selected by
+[the ConfigMap template](chart/templates/migrations-configmap.yaml), excluding
+keys and YAML indentation. At implementation, also render the chart and sum
+UTF-8 lengths of the decoded ConfigMap `data` values (and decoded `binaryData`,
+if introduced); block a payload at or above **786,432 bytes (768 KiB)**. Begin
+squash delivery at **655,360 bytes (640 KiB)**, leaving 384 KiB before Kubernetes'
+[1 MiB ConfigMap data limit](https://kubernetes.io/docs/concepts/configuration/configmap/).
+Remeasure in migration-changing PRs; no scheduled monitor is needed. The issue's
+324 KB and 11 KB/week are October 2026 estimates, not current size or growth rate.
+
+The separate 256 KiB aggregate annotation limit affects client-side apply's
+`last-applied-configuration` copy. The existing resource annotation
+`ServerSideApply=true` avoids that copy; it does not raise the ConfigMap data
+limit. Keep it and keep bulk seeds outside the bundle.
+
+#### Retain the ledger at a fixed cutoff
+
+Use a conventional SQL baseline at cutoff **C = 20261113090000**, the version of
+`20261113090000_grimoire_feedback_roadmap.sql` on the measured base. It includes
+the #7040 drop and all earlier SQL. Archive every original file through C,
+unchanged, with its original checksum manifest and source commit under a future
+`projects/monolith/migration-archive/` directory outside the chart. Ship one
+`20261113090000_baseline.sql` plus unchanged migrations newer than C. Never ship
+the original C file alongside the baseline. New migrations continue with unique
+versions greater than the current maximum; C stays fixed as the tail grows.
+
+Generate the baseline from a disposable PostgreSQL database replayed through C.
+Review its SQL against the complete migration inventory. A schema dump alone
+cannot preserve reference rows or other non-schema effects. Inventory every
+INSERT/UPDATE/DELETE and procedural block: include required fresh-install seed
+state, retain completed data transformations on existing databases, and keep
+external/bulk seed procedures explicit. Compare schemas, extensions, owners,
+roles, grants, default privileges, sequence ownership/defaults, functions,
+triggers and views. Preserve populated data and sequence positions; do not
+replay historical destructive changes during recognition. Role passwords stay
+in their existing Secret delivery path and never enter the archive or baseline.
+
+The local CLI is **Atlas Community v1.1.0**, pinned in
+[/bazel/tools/tools.lock.json](../../bazel/tools/tools.lock.json). Its
+[`Executor.Pending`](https://github.com/ariga/atlas/blob/v1.1.0/sql/migrate/migrate.go)
+validates the directory, reads revisions, and skips fully applied versions up to
+the last revision. With an empty ledger it executes the directory, or records a
+baseline revision if a baseline version is explicitly supplied. That option
+only acts in the empty-ledger branch; it does not repair a managed history.
+A Linux SQLite reproduction with the lockfile-matching binary on 2026-11-13
+confirmed that replacing two applied files with a consolidated file at the same
+last version reports `No migration files to execute`, while an empty database
+executes the consolidated file. This checks version selection, not PostgreSQL
+preservation or operator compatibility.
+
+The operator chart and CRD are pinned to **0.7.28** in
+[/projects/platform-gke/atlas-operator/application.yaml](../platform-gke/atlas-operator/application.yaml)
+and `/MODULE.bazel`. The chart's values do not override its image.
+The upstream [controller](https://github.com/ariga/atlas-operator/blob/v0.7.28/internal/controller/atlasmigration_controller.go)
+uses CLI status/apply and exposes baseline configuration. Its
+[release workflow](https://github.com/ariga/atlas-operator/blob/v0.7.28/.github/workflows/cd-operator-release.yaml)
+builds with `ATLAS_VERSION=extended-latest` and labels the image with the Atlas
+version. Therefore the operator chart pin does **not** establish an embedded
+CLI v1.1.0 pin. Before implementation approval, resolve and record that image's
+digest, `io.ariga.atlas.version` label and actual `atlas version`, then rehearse
+with that exact image. Refuse rollout if its status/apply behavior differs.
+This plan needs no Atlas Pro checkpoint generator or new account.
+
+| Database state | Recognition and execution |
+| --- | --- |
+| Production fully migrated through C or later | Verify the original ledger against the archived directory, including every expected revision, hashes and complete statement counts, plus no errors or drift. Retain all ledger rows unchanged. The existing completed C (or later) version skips baseline SQL; only pending tail migrations execute. |
+| Populated dev or historical database | Apply the same proof and transition as production. Configuration names never authorize destructive recreation or an empty-ledger assumption. |
+| Genuinely empty database | Confirm no managed objects or previous ledger. Apply baseline SQL normally, without a baseline flag, then the tail. Atlas records an executed revision for C with the new baseline hash. |
+| Restore before C | Restore into isolation with matching archived history and its original checksum manifest. Complete missing historical migrations through C, including their data effects and #7040 refusal checks, before switching to the compact bundle. Never apply baseline CREATE statements over restored objects. |
+| Restore at/after C | Identify whether the backup contains original-history or baseline-history revisions. Validate against that lineage's manifest and schema, then use the compact bundle and required tail. Record which lineage and bundle the backup requires. |
+| Partial, dirty, missing, contradictory or unknown history | Refuse the switch, including missing ledger on a populated database, incomplete statement counts, unexplained checksum differences, skipped versions or schema drift. Recover with the matching original bundle or a separately reviewed repair. Do not use allow-dirty, baseline flags, ledger deletion or manual revision-table writes to force acceptance. |
+
+The baseline file has different bytes and a different hash from original C.
+Regenerate `atlas.sum` for the compact directory using the pinned CLI; retain
+both manifests as lineage evidence. Existing completed revision hashes remain
+historical evidence, not values to overwrite with the new baseline hash.
+Atlas's version-based skip is insufficient to establish equivalence: the
+preflight must compare the original ledger and schema **before** removing its
+history from the deployed directory. Record the accepted baseline lineage for
+fresh databases so subsequent audits use the right manifest. Revalidate any
+already-applied tail hashes against their original manifest as well.
+
+#### Keep publication and recovery boundaries
+
+[/bazel/tools/ci/chart_version_guard.py](../../bazel/tools/ci/chart_version_guard.py)
+rejects changes to existing published chart versions and increases to their
+associated semver Application pins. It allows pin reductions as a revert lever.
+It does not check migration order, SQL equivalence or revision hashes. The later
+rewrite changes chart contents; CI publishes the version and writes the matching
+pins through `bazel/helm/write-back-versions.sh`. Do not hand-bump them or disable
+the guard.
+
+Separately, `bazel/tools/format/check-migration-ordering.sh` rejects duplicate
+versions and newly introduced versions below the base maximum. Reusing existing
+C avoids introducing an old version, but does not prove an immutability exception
+safe. The future PR must explicitly authorize this one baseline replacement,
+retain the immutable archive, and test rejection of unrelated historical edits.
+Keep normal ordering and checksum checks. If a compatibility exception is needed,
+limit it to the named archive-to-baseline transition and manifest; no general
+skip switch. [chart/BUILD](chart/BUILD) owns the migration filegroups and
+`atlas_sum_test`; update affected historical SQL fixtures to read the archive,
+keep executable baseline fixtures separate, and verify packaged charts contain
+only the compact directory. SQLite `create_all` tests cannot validate this move.
+
+The assertion in [issue comment 6837739190](https://github.com/jomcgi-org/homelab/issues/6921#issuecomment-6837739190)
+that dev/recovery profiles were deleted does not match the measured tree.
+`dev/deploy/application.yaml`, `values.yaml`, `values-recovery-gke.yaml`,
+`recovery-gke.md` and recovery-network resources remain tracked. Their presence
+establishes configuration applicability, not live deployment. The
+[recovery preset contract](dev/deploy/recovery-gke.md) is inactive, loads directly
+over chart defaults, and uses fresh isolated state. Test that render and empty
+bootstrap with the compact bundle. Historical dev values or production restore
+sources must not be layered into that preset. Any separately authorized populated
+or restored dev database follows the table above. Preserve default-off admission,
+network/identity isolation and existing activation requirements; this plan does
+not activate an overlay.
+
+#### Prove each transition before proceeding
+
+1. Freeze the cutoff inventory and archive manifest; record operator image/CLI
+   identity, PostgreSQL version and extension versions. Audit non-schema effects
+   and historical test references before generating baseline SQL.
+2. On disposable Linux PostgreSQL matching the deployment, replay the original
+   chain and build the baseline. Require the matrix below to pass with both the
+   pinned CLI and operator image. Capture schema/grant comparisons and bundle
+   sizes before opening the implementation PR for independent review and CI.
+3. Before an authorized rollout, inventory each actual database and backup
+   lineage. Require complete histories, no drift, successful #7040 application,
+   a tested restore and a current backup including the revision ledger. Quiesce
+   migration reconciliation and concurrent DDL through the approved operational
+   procedure while recording the switch evidence. No production access occurs
+   in this planning task.
+4. Let CI publish the reviewed compact chart. The landing owner switches only
+   eligible databases, verifies Atlas Ready/current version and no pending
+   migrations, compares data/grants and repeats reconciliation. Preserve the
+   old chart, immutable history and pre-transition backup with the evidence.
+5. Resume normal migration delivery only after those checks pass. Future backup
+   recovery instructions must select a lineage before enabling reconciliation.
+
+| Future PostgreSQL validation | Required evidence |
+| --- | --- |
+| Empty install | Baseline plus tail succeeds; catalog and required seed state equal original-chain replay. |
+| Populated upgrade | Representative data and sequence positions survive; original ledger is unchanged through C; pending tail executes once. |
+| Partial/dirty refusal | Missing revision, partial statement count, wrong hash, populated/no-ledger and schema drift each block the preflight before baseline execution. |
+| Repeat reconcile | Second CLI apply and operator reconcile are no-ops with stable ledger and Ready status. |
+| Grants and data | Owners, roles, default privileges, extensions, functions/triggers and restricted public/agents access match; representative rows and required non-schema effects survive. |
+| Old-backup recovery | Pre-C restore completes archived migrations before switching; post-C restores from both ledger lineages accept the correct bundle and tail. |
+| Rollback boundary | Exercise old-chart compatibility separately for original-history and fresh-baseline ledgers; restore the matching backup when compatibility fails. |
+
+Before the switch, stop and keep the original bundle if any proof fails. After
+switching an original-history database with no new migrations, restoring the
+old chart may be compatible because its ledger was retained; verify it first.
+A fresh baseline ledger lacks the old intermediate revisions, so an old chart
+can report missing/out-of-order history. Any later migration or revision-history
+repair also makes a pin reduction insufficient. Prefer a reviewed forward fix;
+otherwise restore a matched database backup, ledger and chart together under a
+separate operational procedure, accounting for writes since the backup. A chart
+rollback does not reverse SQL or recover data. Actual squash implementation and
+operational execution remain outside #6921's written-plan deliverable.
 
 ## 4. Agents
 
@@ -2226,6 +2415,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Bound the migration bundle with a fixed-cutoff baseline and retained ledger | [database plan](#bound-the-migration-bundle) | [#6921](https://github.com/jomcgi-org/homelab/issues/6921) | written plan delivered by this change; implementation and operations are future work outside the planning issue |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
