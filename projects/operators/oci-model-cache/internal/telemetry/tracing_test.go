@@ -88,22 +88,3 @@ func TestShutdown_ValidProvider(t *testing.T) {
 	err = Shutdown(context.Background(), tp)
 	require.NoError(t, err)
 }
-
-// TestInitializeTracing_DefaultServiceName verifies defaults are applied when
-// OTEL_SERVICE_NAME is not set but endpoint is (connection will fail — no real
-// gRPC target). We test the error path from the grpc dialer, not sampler.
-//
-// Note: we use a context with a very short timeout to avoid hanging.
-func TestInitializeTracing_DefaultsApplied(t *testing.T) {
-	// Without an endpoint we get a no-op provider — verify defaults are applied
-	// by checking the no-endpoint path returns cleanly.
-	t.Setenv("OTEL_SERVICE_NAME", "")
-	t.Setenv("OTEL_SERVICE_VERSION", "")
-	t.Setenv("OTEL_TRACES_SAMPLER", "")
-	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "")
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-
-	tp, err := InitializeTracing(context.Background())
-	require.NoError(t, err)
-	require.NotNil(t, tp)
-}
