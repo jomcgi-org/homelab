@@ -23,7 +23,7 @@ const (
 	MaxAge              = 5 * time.Minute
 	OfficialURL         = "https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings"
 	TermsURL            = "https://www.metoffice.gov.uk/policies/tandc"
-	FeedBase            = "https://weather.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/"
+	FeedBase            = "https://www.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/"
 )
 
 var (

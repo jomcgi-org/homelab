@@ -182,12 +182,12 @@ type transport func(*http.Request) (*http.Response, error)
 func (f transport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func TestCollectorRealHTTPContractAndPartial(t *testing.T) {
 	now := stamp("2026-11-13T12:00:00Z")
-	for _, failure := range []string{"none", "status", "malformed", "timeout", "redirect", "age", "oversized"} {
+	for _, failure := range []string{"none", "status", "malformed", "timeout", "permanent redirect", "redirect", "age", "oversized"} {
 		t.Run(failure, func(t *testing.T) {
 			calls := 0
 			tr := transport(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.URL.Scheme != "https" || r.URL.Host != "weather.metoffice.gov.uk" || r.Header.Get("Authorization") != "" || r.Header.Get("If-None-Match") != "" || r.Header.Get("Cache-Control") != "no-cache" {
+				if r.URL.Scheme != "https" || r.URL.Host != "www.metoffice.gov.uk" || r.Header.Get("Authorization") != "" || r.Header.Get("If-None-Match") != "" || r.Header.Get("Cache-Control") != "no-cache" {
 					t.Fatal(r)
 				}
 				code := strings.TrimPrefix(r.URL.String(), FeedBase)
@@ -205,6 +205,9 @@ func TestCollectorRealHTTPContractAndPartial(t *testing.T) {
 						b = []byte("<rss/>")
 					case "timeout":
 						return nil, context.DeadlineExceeded
+					case "permanent redirect":
+						status = http.StatusMovedPermanently
+						h.Set("Location", "https://evil.example/")
 					case "redirect":
 						status = 302
 						h.Set("Location", "https://evil.example/")

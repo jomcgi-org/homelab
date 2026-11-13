@@ -2,7 +2,9 @@
 
 Retrieved 2026-11-13 without credentials. `{os,he,gr,st,ta,dg}-empty.xml`
 are unchanged response bytes from
-`https://weather.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/{code}`.
+`https://www.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/{code}`.
+The `weather.metoffice.gov.uk` feed URLs redirected here with HTTP 301.
+The producer requests the `www` host directly and continues to reject redirects.
 All six were RSS 2.0 channels with no item elements. Channel pubDate was
 2026-11-10, independent of successful HTTP collection on November 13.
 

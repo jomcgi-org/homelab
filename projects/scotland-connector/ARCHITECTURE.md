@@ -816,7 +816,10 @@ The five-minute bound is application policy; the verified RSS terms contain no
 stricter numerical polling rule.
 
 **Why.** The source decision uses the six regional feeds at
-`https://weather.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/{os,he,gr,st,ta,dg}`.
+`https://www.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/{os,he,gr,st,ta,dg}`.
+The `weather.metoffice.gov.uk` feed URLs returned HTTP 301 to this host on
+2026-11-13. Saved empty feeds contain the unchanged `www` response bytes.
+The producer requests this host directly and continues to reject redirects.
 The website [RSS guidance](https://weather.metoffice.gov.uk/guides/rss) and
 [terms](https://www.metoffice.gov.uk/policies/tandc), checked 2026-11-13,
 permit RSS use for any purpose with unchanged content and direct links,
