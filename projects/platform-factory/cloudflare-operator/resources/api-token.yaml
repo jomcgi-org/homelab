@@ -1,7 +1,6 @@
 # Cloudflare API token the operator acts with. The 1Password item carries one
 # field, CLOUDFLARE_API_TOKEN, scoped to the jomcgi.dev zone and the account:
-#   Account: Cloudflare Tunnel:Edit, Access: Apps and Policies:Edit,
-#            Access: Organizations, Identity Providers, and Groups:Read
+#   Account: Cloudflare Tunnel:Edit
 #   Zone (jomcgi.dev): DNS:Edit, Zone:Read
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem
