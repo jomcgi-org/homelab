@@ -28,15 +28,19 @@ class CompatibilityTest(unittest.TestCase):
                 if archive:
                     with tarfile.open(source) as release:
                         entry = "goose" if goose else "nested/renamed"
-                        expected[arch] = release.extractfile(entry).read()
+                        source_members = {
+                            member.name.removeprefix("./"): member
+                            for member in release.getmembers()
+                        }
+                        expected[arch] = release.extractfile(
+                            source_members[entry]
+                        ).read()
                         if not goose:
-                            self.assertEqual(release.getmember(entry).mode, 0o644)
+                            self.assertEqual(source_members[entry].mode, 0o644)
                 else:
                     expected[arch] = source.read_bytes()
                 self.assertEqual(paths[arch].read_bytes(), expected[arch])
-                self.assertEqual(
-                    os.access(paths[arch], os.X_OK), executable, paths[arch]
-                )
+                self.assertTrue(os.access(paths[arch], os.X_OK), paths[arch])
                 with tarfile.open(paths["tar_" + arch]) as package_tar:
                     members = {
                         member.name.removeprefix("./"): member
