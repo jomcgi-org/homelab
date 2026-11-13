@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Cilium policies for the factory cluster. baseline.yaml denies everything to
+# every pod except DNS; each other file allows exactly what one namespace
+# needs. A component with no file here cannot talk to anything.
+resources:
+  - baseline.yaml
+  - kube-system.yaml
+  - onepassword.yaml
+  - argocd.yaml
+  - cloudflare-operator.yaml

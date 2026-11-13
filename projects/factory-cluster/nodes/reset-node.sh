@@ -32,6 +32,11 @@ fi
 sed -i '\#/var/lib/embervm/#d' /etc/fstab
 rm -rf /var/lib/embervm /var/lib/longhorn /var/lib/kubelet /var/lib/rancher /etc/rancher /var/lib/cni /etc/cni
 rm -f /etc/sysctl.d/99-zzz-override_cilium.conf
+# Cilium's links and BPF state outlive k3s.
+for link in cilium_host cilium_net cilium_vxlan cilium_wg0; do
+	ip link delete "${link}" 2>/dev/null || true
+done
+rm -rf /var/run/cilium /sys/fs/bpf/cilium /sys/fs/bpf/tc/globals/cilium_* 2>/dev/null || true
 systemctl daemon-reload
 sysctl --system >/dev/null
 echo "$(hostname): reset complete"
