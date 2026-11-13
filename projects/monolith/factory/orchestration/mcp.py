@@ -1515,7 +1515,7 @@ async def factory_readmit_issue(
 ) -> dict:
     """Preview eligibility or queue one exact terminal-history issue recurrence.
 
-    Standing human operators only; no delegated authority. Preview reads fresh
+    Standing human operators only. No delegated authority. Preview reads fresh
     GitHub state and protected history without creating work or charging quota.
     Apply binds the preview, operator, reason and stable request key. At most 24
     successful applications per repository per rolling 24 hours across operators.

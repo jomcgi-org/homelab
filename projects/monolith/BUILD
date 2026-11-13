@@ -1524,10 +1524,13 @@ py_library(
         # Refill physical transport reuses exact-model quota freshness and floors.
         "factory/orchestration/model_pool.py",
         "factory/orchestration/models.py",
+        # Queue projections verify exact recurrence audits in the pruned binary.
+        "factory/orchestration/operator_readmission.py",
     ],
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":factory_access",
         ":factory_goal_models",
         ":pkg_core",
         ":pkg_shared",
