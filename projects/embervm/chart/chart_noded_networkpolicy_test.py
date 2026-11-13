@@ -243,7 +243,7 @@ def test_overridden_plaintext_without_tls():
     assert not allows(policy, cp, 9443)
 
 
-def test_empty_composite_supernet_uses_serving_subnet():
+def test_empty_composite_supernet_uses_runtime_fallback():
     docs = render(
         settings=[
             "noded.ingressNetworkPolicy.enabled=true",
@@ -252,14 +252,22 @@ def test_empty_composite_supernet_uses_serving_subnet():
     )
     policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
     policy["metadata"]["namespace"] = "policy"
-    for rule in policy["spec"]["ingress"]:
-        caller = rule["from"][0]["podSelector"]["matchLabels"]
-        for port in (30002, 30254):
+    callers = [
+        p["metadata"]["labels"]
+        for p in workloads(docs)
+        if p["metadata"]["labels"].get("app.kubernetes.io/name") == "embervm"
+        or p["metadata"]["labels"].get("app.kubernetes.io/component") == "serving-envoy"
+    ]
+    assert len(callers) == 2
+    for caller in callers:
+        # The second composite group's .10 member uses the /16 offset 256+10.
+        for port in (30002, 30254, 30255, 30266, 65535):
             assert allows(policy, caller, port)
-        for port in (30001, 30255, 65535):
+        for port in (30000, 30001):
             assert not allows(policy, caller, port)
 
 
+@pytest.mark.parametrize("composite_supernet", ["10.101.0.0/16", ""])
 @pytest.mark.parametrize(
     "settings, listener",
     [
@@ -276,9 +284,15 @@ def test_empty_composite_supernet_uses_serving_subnet():
         (["servingEnvoy.compositeTcpPortRange.end=30002"], "compositeTcpPortRange"),
     ],
 )
-def test_warm_range_cannot_overlap_listeners(settings, listener):
+def test_warm_range_cannot_overlap_listeners(settings, listener, composite_supernet):
     with pytest.raises(subprocess.CalledProcessError) as error:
-        render(settings=["noded.ingressNetworkPolicy.enabled=true", *settings])
+        render(
+            settings=[
+                "noded.ingressNetworkPolicy.enabled=true",
+                f"noded.compositeSupernet={composite_supernet}",
+                *settings,
+            ]
+        )
     assert f"{listener} overlaps the warm DNAT range" in error.value.stderr
 
 
@@ -286,7 +300,7 @@ def test_ports_outside_warm_range_and_disabled_listeners_are_accepted():
     render(
         settings=[
             "noded.ingressNetworkPolicy.enabled=true",
-            "noded.compositeSupernet=",
+            "noded.compositeSupernet=10.101.0.0/24",
             "noded.healthPort=30001",
             "noded.grpcPort=30255",
             "noded.spiffe.enabled=false",

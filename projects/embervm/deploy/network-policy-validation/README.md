@@ -38,8 +38,9 @@ this conclusion against live collector configuration before activation.
 
 Warm ports are `servingPortBase + hostOffset`, rather than the guest service
 port. Serving uses the daemon's fixed default `172.31.0.0/24`; composite uses
-`noded.compositeSupernet`. An empty composite supernet disables composite
-allocation and uses the serving /24 size for this calculation. The policy
+`noded.compositeSupernet`. An empty composite supernet falls back to
+`10.101.0.0/16` in both noded and the control plane. Composite allocation and
+activator listeners remain enabled, with the same range overlap checks. The policy
 covers base+2 through the smaller of base+subnet-size-2 and 65535, including
 serving's /24. With the default /16
 composite supernet and base 30000 this is 30002-65535. Offsets beyond TCP's limit
@@ -157,7 +158,7 @@ SPIFFE handshake.
    separately retain the default 5401 regression. Preserve workload state during
    each comparison. Missing optional listeners are recorded as not applicable,
    never as denied. A listener must have a successful allowed-source control.
-4. From each source, run the following credential-free Python socket check
+4. From each source, run the following credential-free Python 3.10+ socket check
    against the *same* IP/port pairs. Pass numeric pod IPs only. Bound the target
    list to 32 entries, each with a 3-second timeout, and the whole invocation to
    110 seconds in the owner's execution harness. Save stdout, exit code and
