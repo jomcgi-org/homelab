@@ -166,10 +166,10 @@ example, not a read of the current authenticated form:
 | Evidence class | Current observation | Status |
 | --- | --- | --- |
 | Source metadata | Both manifests `0.1.1`; shared skill, icons, MPL-2.0 and no credential declarations reconfirmed at baseline above | Source fact; offline checks below |
-| Source tools | `internal/mcp/tools.go`: light, aurora, plan, check. All have titles, readOnly=true, destructive=false, idempotent=true, openWorld=false. `mcp.go` advertises aurora conditionally | Source fact; live inventory unavailable |
+| Source tools | `internal/mcp/tools.go`: light, aurora, plan, check. All have titles, readOnly=true, destructive=false, idempotent=true, openWorld=false. `mcp.go` advertises aurora conditionally | Live tools/list returned all four; titles, complete input schemas and annotations match source |
 | Source limits | Plan/light: coordinates 54.5–61, -9–-0.5, radius 1–100 km, at most seven days and final date today+13; plan limit 1–5 (default 3). Check: 1–10 items, activity/date, walk ID/name or stargazing coordinates; same horizon. Weather: rain 0–10 mm/h, wind 0–120 km/h, temperature -30–30 C. MCP body cap 64 KiB | Source fact; no boundary stress requests made |
-| Read-only behavior | Calls use snapshots and calculations. Meter counters and internal error logs are incidental effects. Time and snapshot refresh can change results | Source fact; edge denials cannot verify runtime effects |
-| Public wording | Landing web reader shows only plan/check, directory links “soon” and Codex MCP-only config. Shared skill overstates light having no verdict, forecast-only unknown, date horizon and dry marginal slots | Wording gaps; no public-copy edit |
+| Read-only behavior | Calls use snapshots and calculations. Meter counters and internal error logs are incidental effects. Time and snapshot refresh can change results | Successful bounded responses carry snapshot provenance; runtime writes and upstream behavior have not been independently audited |
+| Public wording | Direct landing fetch shows only plan/check, directory links “soon” and Codex MCP-only config. Shared skill overstates light having no verdict, forecast-only unknown, date horizon and dry marginal slots | Wording gaps; no public-copy edit |
 | Privacy/log retention | `policy-data.js` updated 2026-10-21 claims no bodies, rolling gateway logs, no onward copies and short retention. READINESS maps request path/query and user agent to gateway logs; counters/errors exist. No current retention duration, GKE/Cloudflare copy or deletion enforcement evidence | Unavailable operational evidence; do not attest “none is kept” or bounded retention |
 | Rights/affiliation | Package licence does not license datasets. Walkhighlands facts/links boundary in ARCHITECTURE; source credits MET, CERRA, OSM, Natural Earth. Light-pollution rights/attribution #7253 and public NOAA/GMTED credits remain gaps | No new rights clearance. Bare Scotland name may imply affiliation; Joe must approve any disclaimer |
 | Restrictions/support | Public terms source forbids bulk extraction, redistribution and rate-limit evasion. Bounded requests/rate buckets do not prove cross-request enforcement. Contact address exists in source; “within a few days” support and recovery-time promises unverified | No bulk probes or email sent; support ownership pending |
@@ -178,36 +178,39 @@ example, not a read of the current authenticated form:
 
 ### Public URL results
 
-One unauthenticated Python urllib GET per URL on 2026-11-13. No Authorization
-header, cookies or directory credentials. All final URLs equal requested
-URLs; all returned HTTP **403**, body `error code: 1010\n` (17 bytes), SHA-256
-`2938e9f1284180959e33ab1718d0793a72ff6e4cdb8108c34dcd14e69446de5c`.
+One unauthenticated GET per URL with **curl 8.23.0-DEV** on 2026-11-13 at
+**08:29:55 UTC**. The client used its default `curl/8.23.0-DEV` user agent;
+`curl -q` disabled user configuration. No Authorization header, cookies,
+credentials or browser impersonation. All seven returned **200** at the same
+final URLs. Content was inspected, not inferred from status alone.
 
-| Requested and final URL | Expected content | Observed result |
+| Requested and final URL | Observed content | HTTP / bytes |
 | --- | --- | --- |
-| https://jomcgi.dev/scotland | Landing and installation links | 403, unavailable via direct fetch |
-| https://jomcgi.dev/scotland/v1/method | Method documentation | 403, unavailable |
-| https://jomcgi.dev/scotland/privacy | Current privacy policy | 403, unavailable |
-| https://jomcgi.dev/scotland/terms | Current usage restrictions | 403, unavailable |
-| https://jomcgi.dev/scotland/support | Contact and support instructions | 403, unavailable |
-| https://jomcgi.dev/scotland/marketplace.json | JSON catalog, scotland entry and git-subdir source | 403, unavailable |
-| https://jomcgi.dev/scotland/v1/openapi.json | OpenAPI 3.1 response contract | 403, unavailable |
+| https://jomcgi.dev/scotland | Scotland connector landing, installation commands and policy links | 200 / 16,222 |
+| https://jomcgi.dev/scotland/v1/method | Markdown method, verdicts and source attribution | 200 / 15,643 |
+| https://jomcgi.dev/scotland/privacy | Privacy policy, updated 2026-10-21, requests and retention sections | 200 / 16,713 |
+| https://jomcgi.dev/scotland/terms | Terms, updated 2026-10-21, fair-use restrictions and credits | 200 / 15,372 |
+| https://jomcgi.dev/scotland/support | Support, updated 2026-10-21, email contact and reporting instructions | 200 / 14,085 |
+| https://jomcgi.dev/scotland/marketplace.json | JSON catalog named jomcgi; scotland entry points to the plugin git subdirectory on main | 200 / 550 |
+| https://jomcgi.dev/scotland/v1/openapi.json | OpenAPI 3.1.0 with PlanResponse and CheckResponse schemas | 200 / 30,925 |
 
-A public web-reader read separately retrieved landing text matching the source;
-it supplies no HTTP status, deployment revision or policy-page availability.
-Its privacy/terms/support reads failed. These observations do not establish
-an origin outage or a deployed revision. Report edge denial for scope assessment;
-changing Cloudflare rules or disguising the caller is outside this task.
+The earlier Python-urllib client received HTTP 403, Cloudflare error 1010
+(`browser_signature_banned`): that client's user agent is banned. Ordinary
+unauthenticated curl requests succeed. The earlier results do not establish
+a public outage or a need to change edge rules. User-agent bans could affect
+directory fetchers; those clients have not been tested. Page availability
+also does not establish policy accuracy or the deployed revision.
 
 ### Bounded MCP probe
 
-Exactly one tools/list, one plan and one check POST were attempted on
-2026-11-13 at **07:53:49 UTC**. No retries, broad extraction or polling.
-URL for all: `https://jomcgi.dev/scotland/mcp`; no redirects observed.
+One tools/list, one plan and one check POST with the same default curl client
+succeeded on 2026-11-13 at **08:30:13 UTC**, following the earlier urllib
+attempts at 07:53:49 UTC. No broad extraction or polling.
+URL for all: `https://jomcgi.dev/scotland/mcp`; no redirects.
 Headers: `Content-Type: application/json`,
 `Accept: application/json, text/event-stream`,
-`MCP-Protocol-Version: 2025-11-25`. The source permits stateless calls in this
-legacy revision; no account or session is needed for these source contracts.
+`MCP-Protocol-Version: 2025-11-25`. No authentication, cookies or session.
+The retained request bodies contain public example locations only:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/list"}
@@ -221,46 +224,106 @@ legacy revision; no account or session is needed for these source contracts.
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"check","arguments":{"items":[{"activity":"walk","date":"2026-11-13","walk_name":"Ben Nevis"}]}}}
 ```
 
-All returned HTTP 403, 700-byte Cloudflare problem JSON rather than MCP.
-Relevant response fields, with request-specific instance and ray IDs omitted:
+All responses were HTTP **200**, `application/json`, with matching JSON-RPC
+IDs and no error. Plan/check returned `isError: false`; decoded text content
+matched `structuredContent` exactly. Raw response sizes and SHA-256:
+
+| Request | Bytes | SHA-256 |
+| --- | --- | --- |
+| tools/list | 9,238 | `b2d5d4a205f9ade6619167ba318b8ddc83523d6d4aa2e0828adcac8cb6a1244d` |
+| plan | 4,714 | `4d8c784ae66541aa7df4aa67ffd0b7ef6b32a1c96e39f0f3bb403f39bd023a65` |
+| check | 11,346 | `79111c866e9a17b07e400321e58b406ff36098b926919aa89cf4a6b1c7a6dbf6` |
+
+Live discovery returned these tools, in order:
+
+| Name | Title |
+| --- | --- |
+| light | Find Scottish light and night-sky windows |
+| aurora | Check near-term Scottish aurora conditions |
+| plan | Plan a Scottish outdoor trip |
+| check | Check a Scottish outdoor plan |
+
+For every tool, the title, complete `inputSchema` and annotations match
+`internal/mcp/tools.go`. Annotations carry the same title and
+`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`,
+`openWorldHint: false`. Live schemas advertise the coordinate, radius,
+weather, plan limit 1–5 and check item count 1–10 bounds in the source table.
+Their date descriptions carry the seven-day plan and today+13 horizon.
+The 64 KiB body cap is a source declaration, absent from tools/list.
+No tool-definition discrepancy was found. The landing still names only
+plan/check; live discovery includes light and aurora too.
+
+Both request argument objects passed their live input schemas. Both
+`structuredContent` objects passed the published `PlanResponse` or
+`CheckResponse` with local references resolved, using jsonschema 4.26.0
+`Draft202012Validator` and format checking. The fetched OpenAPI SHA-256 was
+`4e6f2c327738bdd607fe31d557a2698badc8e277042503d062965c2627188ea3`.
+
+Response excerpts below retain selected fields from the successful envelopes;
+other fields and HTTP request identifiers are omitted. Full JSON-RPC bodies
+and the requests are retained in the factory correction artifact.
 
 ```json
 {
-  "type": "https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/",
-  "title": "Error 1010: Access denied",
-  "status": 403,
-  "detail": "The site owner has blocked access based on your browser's signature.",
-  "error_code": 1010,
-  "error_name": "browser_signature_banned",
-  "error_category": "access_denied",
-  "timestamp": "2026-11-13T07:53:49Z",
-  "zone": "jomcgi.dev",
-  "cloudflare_error": true,
-  "retryable": false,
-  "owner_action_required": true,
-  "what_you_should_do": "**Do not retry.** Your user-agent has been banned by the site owner.",
-  "footer": "This error was generated by Cloudflare on behalf of the website owner."
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "isError": false,
+    "structuredContent": {
+      "data": {
+        "query": {"lat":57.19,"lon":-3.83,"radius_km":1,"from":"2026-11-13","to":"2026-11-13","activities":["walk"],"limit":1},
+        "days": [{"date":"2026-11-13","walks":[{"name":"Craigellachie, Aviemore","from_point_km":0.6,"verdict":"go"}]}]
+      },
+      "meta": {
+        "api_version": "v1",
+        "generated_at": "2026-11-13T08:30:13Z",
+        "as_of": "2026-11-13T08:00:00Z",
+        "forecast_fetched_at": "2026-11-13T08:20:16Z"
+      }
+    }
+  }
 }
 ```
 
-Raw response SHA-256: tools/list
-`c3123731d602176e48a7b32636f37050ecda2382cb4a4b0c792a0554aead8c0d`;
-plan `6af6559cafd06bfc78415059e1b2a14d82543d0e7be1921bf584550adede96cd`;
-check `25dc85d4efa197eded5cc30e1801aacedf7cf771fde06bc4fb027523da73bf6f`.
-No successful tools/list or tool envelope was received. Schema, live tool
-parity, enforced limits and read-only execution remain **unverified**.
-These failures warrant scope assessment, not an unrelated runtime repair.
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "isError": false,
+    "structuredContent": {
+      "data": {
+        "items": [{
+          "activity": "walk",
+          "date": "2026-11-13",
+          "verdict": "marginal",
+          "why": "Fits only by starting or finishing in the dark: 7 good hours 09:00 to 16:00, wind up to 16 km/h, 0.8 mm of rain, rain in 5 of 7 qualifying hours (at least 0.1 mm/h). At the start point: low cloud up to 100%, fog up to 0%.",
+          "walk": {"name":"Ben Nevis by the Mountain Path","match_note":"2 walks match \"Ben Nevis\" equally well; Ben Nevis by the Mountain Path was checked. Use more words from the name, or a walk_id from plan, to check another."}
+        }]
+      }
+    }
+  }
+}
+```
 
-A later public preflight owner can repeat these three single requests from
-an allowed unauthenticated surface, changing only the date to the current
-Europe/London date. Stop on a non-retryable denial. Compare returned tools,
-input schemas and annotations to the source inventory above. Validate each
-request against its advertised input schema, and successful structuredContent
-against `PlanResponse` or `CheckResponse` in `/v1/openapi.json` (resolve local
-references). Require matching JSON-RPC IDs, no error/isError, bounded days and
-options/items, provenance and explicit unknowns where inputs are missing.
-Retain responses and HTTP status. Inspect unexpected writes or upstream
-behavior as discrepancies; tool hints alone do not prove read-only effects.
+Plan returned exactly one requested day and one walk, 0.6 km from the centre
+within the requested 1 km radius. Check returned one requested item, one
+alternative day and two nearby walks. Both carry forecast timestamps and
+MET Norway/Walkhighlands provenance. These samples satisfy the requested
+bounds; rejection at upper bounds and the body cap was not probed.
+Responses are consistent with snapshot reads. Live hints and response content
+alone cannot audit runtime writes or upstream calls; that read-only check
+remains pending for the operational owner. No deployed revision is claimed.
+
+A later public preflight owner can run these three single requests with a
+standard unauthenticated curl client, changing the date to the current
+Europe/London date. Compare tools, input schemas and annotations with this
+packet; validate request and response schemas, IDs, bounds and provenance.
+Require no error/isError and explicit unknowns where inputs are missing.
+Retain redacted request/response evidence and record discrepancies. Check
+runtime audit/log evidence for unexpected writes or upstream calls before
+accepting read-only behavior. Stop if that client receives a non-retryable
+denial; retain the client identity and exact error.
 
 ## Reproduce package checks
 
@@ -401,7 +464,7 @@ installation of `skills/scotland-trips/SKILL.md`.
 | Target | Preparation | Submission | Receipt | Review/listing outcome |
 | --- | --- | --- | --- | --- |
 | Claude plugin bundle | Source/path/branch and fields drafted; offline validator passed; eligible account unknown | **NOT SUBMITTED** | None | No outcome; account approval, policy accuracy/attestations, client installation and duplicate check pending |
-| Claude remote connector | URL and form fields drafted; live discovery blocked | **NOT SUBMITTED** | None | No outcome; same account hold, all-tool client tests and compliance acknowledgments pending |
+| Claude remote connector | URL and form fields drafted; public discovery and bounded plan/check passed | **NOT SUBMITTED** | None | No outcome; same account hold, all-tool client tests and compliance acknowledgments pending |
 | OpenAI plugin | ZIP and schemas checked; drafts/test cases prepared; video absent | **NOT SUBMITTED** | None | No outcome; exact organization/project/identity, policies, installation, dashboard category/scans and duplicate check pending |
 | MCP Registry | Remote-only metadata schema passed; namespace candidates unapproved; public search empty | **NOT SUBMITTED** | None | No outcome; namespace/credential authorization and authenticated duplicate check pending |
 
