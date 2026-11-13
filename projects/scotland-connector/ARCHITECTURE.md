@@ -506,8 +506,20 @@ Every response is `{data, meta}`. `meta` carries `api_version`,
 `forecast_fetched_at` (the older fetch when an answer draws on both
 snapshots), `data_version` (the R2 ETags behind the answer), `method_url`,
 and `sources` with attribution and licence for MET Norway, Walkhighlands,
-Copernicus CERRA, OpenStreetMap and Natural Earth, as the answer uses them. The light-pollution render is not
-attributed until its licence is confirmed (#7253).
+Copernicus CERRA, OpenStreetMap and Natural Earth, as the answer uses them.
+The light-pollution render remains unattributed pending exact input provenance
+and source-specific permission (#7253). The
+[licence investigation](docs/light-pollution-licence.md) records the historical
+Lorenz download, the separate Falchi terms and the missing evidence. Joe's
+20 October 2026 decision keeps this follow-up non-blocking for launch and
+public promotion; it does not verify the licence.
+
+**Why.** The generator accepts an operator-selected RGB raster. Neither its
+filename nor its palette establishes the producer or the rights to that
+render. Publishing an attribution with an unsupported licence would assert
+permission we have not established. Resume the attribution change when the
+sampled input is linked to authoritative terms covering the render and its
+derived site selection.
 
 Caps live in `internal/connector` and are mirrored in `openapi.json` and the
 MCP input schemas; tests fail if any copy drifts. A plan covers at most 7
