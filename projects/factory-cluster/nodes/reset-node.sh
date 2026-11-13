@@ -4,7 +4,7 @@
 # DESTRUCTIVE. Deletes every container, image, volume and etcd member on the
 # node it runs on: the old k3s install, Longhorn replicas, EmberVM scratch and
 # the Cilium sysctl overrides left by the retired home cluster (#6914). It keeps
-# the OS, SSH, Tailscale and node-1's host cloudflared (bastion.jomcgi.dev).
+# the OS, SSH and Tailscale.
 #
 # Run on the node itself, as root, with the node's hostname as confirmation:
 #   sudo ./reset-node.sh --yes node-2

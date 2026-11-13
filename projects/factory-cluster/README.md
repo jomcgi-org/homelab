@@ -15,7 +15,7 @@ Recorded 2026-11-13, before the reset.
 
 | Node | LAN address (DHCP) | CPU | Memory | Disks | Notes |
 | --- | --- | --- | --- | --- | --- |
-| node-1 | 192.168.4.80 (`enp1s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB KIOXIA NVMe (OS + data) | Host `cloudflared` (bastion.jomcgi.dev SSH, obsidian) and Tailscale; operator workstation |
+| node-1 | 192.168.4.80 (`enp1s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB KIOXIA NVMe (OS + data) | Tailscale; operator workstation |
 | node-2 | 192.168.4.81 (`enp2s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB KIOXIA NVMe; 112 GB Hitachi HDD `sda` (NTFS, unused) | |
 | node-3 | 192.168.4.76 (`enp2s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB SK hynix NVMe | |
 
@@ -23,8 +23,9 @@ All three run Ubuntu 24.04.3 with kernel 6.8.0-138 and have `/dev/kvm`. The
 retired home k3s was crash-looping without etcd quorum. Its join address was
 192.168.1.161, and the LAN is now 192.168.4.0/22. `nodes/reset-node.sh` removed it in place:
 k3s, `/var/lib/{rancher,longhorn,kubelet,embervm}` and the EmberVM scratch
-loop mount. The OS, SSH, Tailscale and node-1's host `cloudflared` stayed.
-node-2's `sda` was not touched.
+loop mount. The OS, SSH and Tailscale stayed.
+node-2's `sda` was not touched. node-1's host `cloudflared` (bastion.jomcgi.dev
+SSH) is disabled; Tailscale replaces it.
 
 The addresses are DHCP leases and embedded etcd records peer IPs, so the
 router must reserve these three leases.
@@ -40,6 +41,7 @@ router must reserve these three leases.
 | Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 is validated here with `cilium connectivity test` |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
 | Images | embedded Spegel mirror for every registry | Each image crosses the home uplink once |
+| Cilium devices | `enp+` (the wired NICs) | Auto-detection also took `tailscale0` on node-1, set every pod there to its 1280 MTU and silently dropped full-size QUIC replies from the Cloudflare edge; it also served KPR services on the tailnet |
 | Tailscale (node-1) | netfilter mode off; `src_valid_mark=0` | With Tailscale managing iptables it sets `src_valid_mark=1`, and the kernel then drops every pod packet Cilium redirects to its DNS or L7 proxy, which breaks `toFQDNs` policies |
 | Ingress | Cloudflare Tunnel managed by cfgate (Gateway API) | No inbound ports; the tunnel, its routes and DNS records are Kubernetes resources. cfgate replaced StringKe/cloudflare-operator, whose last release (v0.51.0) watches Gateway API `v1alpha2` UDPRoute, which current Gateway API no longer serves |
 | Human sign-in | Authentik OIDC at each application, no Cloudflare Access | One identity layer, as #7817 specifies; nothing is published until it signs users in |
