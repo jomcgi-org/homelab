@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import ssl
 import subprocess
 from pathlib import Path
@@ -1448,7 +1449,8 @@ def test_factory_node_agent_pipelines():
     )
     redact = config["processors"]["transform/redact"]["log_statements"][0]["statements"]
     # $${1}: the collector would otherwise expand ${1} as a config variable.
-    assert all("$${1}[REDACTED]" in st for st in redact if "replace" in st)
+    assert any("$${1}[REDACTED]" in st for st in redact)
+    assert not any(re.search(r"(?<!\$)\$\{", st) for st in redact)
     assert any("bearer" in st for st in redact)
     assert any("authorization" in st for st in redact)
     assert any("password" in st for st in redact)
@@ -1543,3 +1545,129 @@ def test_cluster_agent_requires_a_source():
     )
     assert result.returncode != 0
     assert "clusterAgent" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Log redaction: the rendered OTTL rules, run with Python's re.
+# ---------------------------------------------------------------------------
+_OTTL_BODY_RULE = re.compile(
+    r'^replace_pattern\(log\.body, "((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\)'
+)
+
+
+def _ottl_literal(text: str) -> str:
+    """Undo OTTL string escaping and the collector's $$ escape."""
+    return re.sub(r"\\(.)", r"\1", text).replace("$$", "$")
+
+
+def _redaction_statements() -> list[str]:
+    config = _named_collector_config(_render_overlay("values-factory"), LOGS)
+    return config["processors"]["transform/redact"]["log_statements"][0][
+        "statements"
+    ]
+
+
+def _redact(line: str) -> str:
+    """Apply the body rules in order, as replace_pattern does. The rules use
+    only syntax RE2 and Python's re read alike; ${1} becomes \\g<1>."""
+    for statement in _redaction_statements():
+        match = _OTTL_BODY_RULE.match(statement)
+        if not match:
+            continue
+        pattern = _ottl_literal(match.group(1))
+        replacement = _ottl_literal(match.group(2)).replace("${1}", r"\g<1>")
+        line = re.sub(pattern, replacement, line)
+    return line
+
+
+@pytest.mark.parametrize(
+    "line,secret",
+    [
+        ("connecting to postgres://app:s3cr3tpw@db:5432/app", "s3cr3tpw"),
+        ("redis://:r3dispw@cache:6379/0", "r3dispw"),
+        ("ALTER ROLE app WITH LOGIN PASSWORD 'hunter2'", "hunter2"),
+        ("CREATE USER x PASSWORD 'it''s-quoted'", "it''s-quoted"),
+        ("push with ghp_" + "a" * 36, "ghp_" + "a" * 36),
+        ("auth gho_" + "B1" * 18 + " ok", "gho_" + "B1" * 18),
+        ("ghs_" + "c" * 36, "ghs_" + "c" * 36),
+        ("token github_pat_11ABCDEFG0" + "x" * 40, "github_pat_11ABCDEFG0"),
+        ("aws key AKIAIOSFODNN7EXAMPLE used", "AKIAIOSFODNN7EXAMPLE"),
+        ("key sk-ant-api03-" + "Z" * 40, "sk-ant-api03-"),
+        ("openai sk-proj-" + "q" * 30, "sk-proj-"),
+        ("honeycomb hcaik_01" + "k" * 40, "hcaik_01"),
+        (
+            "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqb2UifQ.c2lnbmF0dXJlLXBhcnQ",
+            "c2lnbmF0dXJlLXBhcnQ",
+        ),
+        ("Cookie: session=abc123; csrftoken=def456", "abc123"),
+        ("Set-Cookie: id=a3fWa; Expires=Wed, 21 Oct 2026 07:28:00 GMT", "a3fWa"),
+        ('payload {\\"user\\":\\"joe\\",\\"password\\":\\"pa55w0rd\\"}', "pa55w0rd"),
+        ('{"client_secret":"cs-value","user":"joe"}', "cs-value"),
+        ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("Authorization: Bearer abc.DEF-123", "abc.DEF-123"),
+        ("GET /cb?code=1&access_token=tok123&x=1", "tok123"),
+        ("password=hunter2 user=joe", "hunter2"),
+        ("retry with password: pw456", "pw456"),
+    ],
+)
+def test_redaction_masks(line, secret):
+    redacted = _redact(line)
+    assert secret not in redacted, redacted
+    assert "[REDACTED]" in redacted
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Secret: ns/name not found",
+        'secret "monolith/db-credentials" not found',
+        "failed to refresh token: context canceled",
+        "max_tokens=4096 temperature=0",
+        "dial tcp 10.0.0.1:5432: connect: connection refused",
+        "GET http://argocd-server:8080/api/v1/applications@latest",
+        "task-runner-controller-manager restarted",
+        "user=joe action=login result=ok",
+    ],
+)
+def test_redaction_leaves_ordinary_lines_alone(line):
+    assert _redact(line) == line
+
+
+def test_redaction_keeps_context_around_masked_values():
+    assert (
+        _redact('payload {\\"user\\":\\"joe\\",\\"password\\":\\"x-y\\"}')
+        == 'payload {\\"user\\":\\"joe\\",\\"password\\":\\"[REDACTED]\\"}'
+    )
+    assert (
+        _redact("postgres://app:pw@db:5432/app?sslmode=require")
+        == "postgres://app:[REDACTED]@db:5432/app?sslmode=require"
+    )
+
+
+def test_redaction_covers_nested_attributes():
+    statements = _redaction_statements()
+    flatten = statements.index("flatten(log.attributes)")
+    attribute_rules = [
+        i for i, s in enumerate(statements) if s.startswith("replace_all_patterns")
+    ]
+    body_rules = [i for i, s in enumerate(statements) if _OTTL_BODY_RULE.match(s)]
+    # Every body rule is applied to the flattened attributes too.
+    assert len(attribute_rules) == len(body_rules)
+    assert flatten < min(attribute_rules)
+    delete = next(s for s in statements if s.startswith("delete_matching_keys"))
+    assert statements.index(delete) > flatten
+    key_pattern = re.compile(
+        _ottl_literal(re.match(r'delete_matching_keys\(log\.attributes, "(.*)"\)', delete).group(1))
+    )
+    for key in ("record.password", "client_secret", "token", "auth.api_key"):
+        assert key_pattern.match(key), key
+    for key in ("record.message", "secretName", "max_tokens"):
+        assert not key_pattern.match(key), key
+
+
+def test_redaction_is_off_in_hub_overlays():
+    for name in ("values", "values-prod", "values-gke"):
+        docs = _render_overlay(name)
+        for doc in docs:
+            if doc["kind"] == "ConfigMap" and "collector.yaml" in doc.get("data", {}):
+                assert "transform/redact" not in doc["data"]["collector.yaml"]

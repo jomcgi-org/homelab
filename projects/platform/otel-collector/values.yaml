@@ -324,10 +324,15 @@ logs:
   # coloured console output parses like any other line and identical lines
   # compare equal for dedup.
   sanitize: false
-  # After parsing: mask credential-shaped values (bearer tokens,
-  # Authorization headers, password=, token=, secret=, api_key=) in the body
-  # and in every attribute value, and drop attributes whose key names a
-  # credential.
+  # After parsing: mask credential-shaped values in the body and in every
+  # attribute value, nested ones included: connection-string passwords, SQL
+  # PASSWORD literals, Cookie/Set-Cookie and Authorization values, bearer
+  # tokens, prefix-recognisable tokens (GitHub, AWS key ids, sk- keys,
+  # Honeycomb keys, JWTs), and credential-named keys in key=value, JSON and
+  # escaped-JSON form. Attributes whose key names a credential are dropped.
+  # Turning it on flattens nested attributes (record.message, not a record
+  # map). The rules and their test cases: templates/logs-configmap.yaml and
+  # collector_optin_test.py.
   redact: false
   # Collapse identical records within the interval into one record carrying
   # a log_count attribute. The collector has no hard rate cap for logs; this

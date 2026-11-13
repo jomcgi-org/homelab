@@ -199,25 +199,60 @@ data:
               - 'replace_pattern(log.body, "^PNC\\b", "PANIC") where IsString(log.body)'
       {{- end }}
       {{- if .Values.logs.redact }}
+      {{- /*
+      Each rule is a raw RE2 pattern and its replacement; the template escapes
+      them for OTTL, YAML and the collector's ${...} expansion. Order matters
+      only where a later rule would see an earlier rule's [REDACTED]; every
+      rule leaves that marker alone. collector_optin_test.py runs these rules
+      against the cases they exist for, and against the lines they must not
+      change.
 
-      # After parsing, before anything leaves the node. Masks the value after
-      # a bearer scheme, an Authorization header or a credential-named key
-      # (password=, token=, secret=, api_key=, "client_secret": ...) in the
-      # body and in every top-level attribute value, and drops attributes
-      # whose key itself names a credential. ${1} is written $${1} because the
-      # collector expands ${...} in its config.
+      Colon-separated values are masked for password-like keys only. For
+      "secret" and "token" a colon is usually prose ("Secret: ns/name not
+      found", "failed to refresh token: context canceled"), so those keys are
+      masked only when written key=value or as a quoted JSON key.
+      */}}
+      {{- $keys := `(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)` }}
+      {{- $rules := list
+        (list `([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s@"']*:)[^@/\s"']+@` `${1}[REDACTED]@`)
+        (list `(?i)(\bpassword\s+)'(?:[^']|'')*'` `${1}'[REDACTED]'`)
+        (list `(?i)(\b(?:set-)?cookie["']?\s*[:=]\s*["']?)[^"'\r\n]+` `${1}[REDACTED]`)
+        (list `(?i)(\bauthorization["']?\s*[:=]\s*["']?(?:(?:basic|bearer|token|digest)\s+)?)[^"'\s,;}]+` `${1}[REDACTED]`)
+        (list `(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+` `${1}[REDACTED]`)
+        (list `\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})` `[REDACTED]`)
+        (list `\bAKIA[0-9A-Z]{16}\b` `[REDACTED]`)
+        (list `\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}` `[REDACTED]`)
+        (list `\bhc[ax]ik_[A-Za-z0-9]{20,}` `[REDACTED]`)
+        (list `\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+` `[REDACTED]`)
+        (list (printf `(?i)(\\"[A-Za-z0-9_.-]*?%s\\"\s*:\s*\\")(?:[^"\\]|\\[^"])*` $keys) `${1}[REDACTED]`)
+        (list (printf `(?i)("[A-Za-z0-9_.-]*?%s"\s*:\s*")[^"]*` $keys) `${1}[REDACTED]`)
+        (list (printf `(?i)(\b[A-Za-z0-9_.-]*?%s["']?\s*=\s*["']?)[^"'\s&,;}]+` $keys) `${1}[REDACTED]`)
+        (list `(?i)(\b(?:password|passwd|pwd)["']?\s*:\s*["']?)[^"'\s,;}]+` `${1}[REDACTED]`)
+      }}
+
+      # After parsing, before anything leaves the node. Masks credentials in
+      # the body and in every attribute value: connection-string passwords,
+      # SQL PASSWORD literals, Cookie and Set-Cookie values, Authorization and
+      # bearer values, tokens recognisable by prefix (GitHub, AWS access key
+      # ids, sk- API keys, Honeycomb keys, JWTs), and values of
+      # credential-named keys in key=value, JSON and escaped-JSON form.
+      # Attributes are flattened first (record.message rather than a nested
+      # record map; Honeycomb shows the same column names either way) so
+      # nested values are covered, then attributes whose key names a
+      # credential are dropped.
       transform/redact:
         error_mode: ignore
         log_statements:
           - context: log
             statements:
-              - 'replace_pattern(log.body, "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]") where IsString(log.body)'
-              - 'replace_pattern(log.body, "(?i)(authorization[\"'']?\\s*[:=]\\s*[\"'']?(?:(?:basic|bearer|token|digest)\\s+)?)[^\"''\\s,;}]+", "$${1}[REDACTED]") where IsString(log.body)'
-              - 'replace_pattern(log.body, "(?i)((?:password|passwd|pwd|[a-z_.-]*token|[a-z_.-]*secret|api[_-]?key|access[_-]?key)[\"'']?\\s*[:=]\\s*[\"'']?)[^\"''\\s&,;}]+", "$${1}[REDACTED]") where IsString(log.body)'
-              - 'replace_all_patterns(log.attributes, "value", "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")'
-              - 'replace_all_patterns(log.attributes, "value", "(?i)(authorization[\"'']?\\s*[:=]\\s*[\"'']?(?:(?:basic|bearer|token|digest)\\s+)?)[^\"''\\s,;}]+", "$${1}[REDACTED]")'
-              - 'replace_all_patterns(log.attributes, "value", "(?i)((?:password|passwd|pwd|[a-z_.-]*token|[a-z_.-]*secret|api[_-]?key|access[_-]?key)[\"'']?\\s*[:=]\\s*[\"'']?)[^\"''\\s&,;}]+", "$${1}[REDACTED]")'
-              - 'delete_matching_keys(log.attributes, "(?i)^(?:.*[._-])?(?:password|passwd|secret|token|authorization|api[_-]?key|credentials?)$")'
+              {{- range $rules }}
+              - 'replace_pattern(log.body, "{{ include "otel-collector.ottlString" (index . 0) }}", "{{ include "otel-collector.ottlString" (index . 1) }}") where IsString(log.body)'
+              {{- end }}
+              - 'flatten(log.attributes)'
+              {{- range $rules }}
+              - 'replace_all_patterns(log.attributes, "value", "{{ include "otel-collector.ottlString" (index . 0) }}", "{{ include "otel-collector.ottlString" (index . 1) }}")'
+              {{- end }}
+              - 'delete_matching_keys(log.attributes, "{{ include "otel-collector.ottlString" (printf `(?i)^(?:.*[._-])?(?:%s|authorization|cookie)$` $keys) }}")'
       {{- end }}
       {{- if .Values.logs.dedup.enabled }}
 
