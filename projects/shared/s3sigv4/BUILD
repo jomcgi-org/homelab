@@ -10,10 +10,10 @@ go_library(
     ],
 )
 
-go_test(
+# Keep the acceptance target stable while Gazelle owns the Go test rule.
+alias(
     name = "sigv4_test",
-    srcs = ["sigv4_test.go"],
-    embed = [":s3sigv4"],
+    actual = ":s3sigv4_test",
 )
 
 go_test(
