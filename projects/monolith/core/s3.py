@@ -9,6 +9,7 @@ app's import closure (app/main_public_imports_test.py).
 
 import os
 from functools import lru_cache
+from threading import Lock
 
 
 def path_style_client(endpoint: str):
@@ -32,13 +33,26 @@ def path_style_client(endpoint: str):
     )
 
 
+_shared_client_lock = Lock()
+
+
 @lru_cache(maxsize=4)
+def _cached_shared_client(endpoint: str):
+    return path_style_client(endpoint)
+
+
 def shared_client(endpoint: str):
-    """Return one process-wide client per endpoint, for request paths.
+    """Return one process-wide client per cached endpoint, for request paths.
 
     boto3 clients are thread-safe but costly to build: each holds loaders and
     event handlers in reference cycles, so one per request added about 55 MiB
     of resident memory under concurrent load before the cycle collector ran.
     Credentials come from the pod environment, fixed for the process lifetime.
     """
-    return path_style_client(endpoint)
+    # lru_cache permits concurrent misses. Lock before lookup so waiters reuse
+    # the completed entry instead of each constructing another client.
+    with _shared_client_lock:
+        return _cached_shared_client(endpoint)
+
+
+shared_client.cache_clear = _cached_shared_client.cache_clear
