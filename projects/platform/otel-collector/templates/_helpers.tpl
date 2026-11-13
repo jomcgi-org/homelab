@@ -94,3 +94,12 @@ helm.sh/chart: {{ include "otel-collector.chart" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
+
+{{/*
+A string as the body of a double-quoted OTTL literal inside a YAML
+single-quoted scalar: backslashes and double quotes escaped for OTTL, $ doubled
+so the collector does not expand ${...}, single quotes doubled for YAML.
+*/}}
+{{- define "otel-collector.ottlString" -}}
+{{- . | replace "\\" "\\\\" | replace "\"" "\\\"" | replace "$" "$$" | replace "'" "''" -}}
+{{- end }}
