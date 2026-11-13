@@ -106,6 +106,12 @@ def filtered_knn(session, vector, kinds, limit, model=None, where=None):
             None,
         ),
         ("Pacing", "The pacing bird nests beside the campaign monument.", None),
+        (
+            "Running the Game",
+            "You can move characters thirty feet during encounters.",
+            None,
+        ),
+        ("Creating Encounters", "You can ask your players to roll initiative.", None),
         (None, "This weapon deals damage to nearby characters.", None),
         ("Encounters", "You can carry three torches during encounters.", None),
     ],

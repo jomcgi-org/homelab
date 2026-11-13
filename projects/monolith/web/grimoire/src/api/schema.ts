@@ -636,7 +636,7 @@ export interface Operations {
     response: CampaignJournalView;
   };
   "GET /campaigns/{campaign_id}/knowledge/search": {
-    query: {q: string; k?: number;};
+    query: {q: string; k?: number; topic?: "dm_guidance" | null;};
     body: undefined;
     response: Array<Record<string, unknown>>;
   };

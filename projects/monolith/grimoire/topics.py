@@ -31,8 +31,13 @@ _ADVICE = re.compile(
     r"\b(?:you (?:can|should|might)|consider|avoid|try to|ask (?:your|the) players)\b",
     re.I,
 )
-_SUBJECT = re.compile(
-    r"\b(?:players|characters|campaign|adventure|encounters?|pacing|conflicts?)\b", re.I
+_GUIDANCE_ACTION = re.compile(
+    r"\b(?:involv|engag|reward|challeng|motivat)[a-z]*\b.{0,80}\bplayers\b|"
+    r"\bplayers\b.{0,80}\b(?:interests?|goals?|choices|engaged|invested)\b|"
+    r"\b(?:vary|varying|adjust|design|build|creat|prepar|plan|link|balanc|introduc|"
+    r"develop|manag|alternat)[a-z]*\b.{0,80}\b(?:encounters?|campaign|adventure|"
+    r"pacing|conflicts?|scenes?|factions?)\b",
+    re.I | re.S,
 )
 _DM = re.compile(
     r"\b(?:as (?:a|the) (?:dm|dungeon master)|"
@@ -52,7 +57,7 @@ def classify_topic(
     headings = " > ".join(filter(None, (section_path, section_hierarchy)))
     if (
         _ADVICE.search(content)
-        and _SUBJECT.search(content)
+        and _GUIDANCE_ACTION.search(content)
         and (_HEADING.search(headings) or _DM.search(content))
     ):
         return "dm_guidance"

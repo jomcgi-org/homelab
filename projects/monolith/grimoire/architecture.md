@@ -100,6 +100,10 @@ After the landing owner rolls out this staged revision, obtain a successful
 `verify_deployment` result for monolith identifying the delivered revision within
 72 hours. That rollout check does not satisfy the remaining original requirements.
 
+| Issue | Direction | Acceptance |
+| --- | --- | --- |
+| #7015 | Option 3: nullable chunk topic and cited guidance retrieval | Staged repository slice; #6630 integration, assistant response test and live tagging remain open |
+
 ### Character facts
 
 `character_fact` stores viewer-owned campaign facts and their evidence event ids.
