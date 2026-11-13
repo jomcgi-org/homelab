@@ -1,10 +1,18 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { get } from "svelte/store";
+import { goto } from "$app/navigation";
 import Harness from "./ExecutionHarness.svelte";
 import { createExecutionFixture } from "./execution-fixtures.js";
-import { executionLocation } from "./execution-stores.js";
+import { page, executionLocation } from "./execution-stores.js";
 
+vi.mock("$app/navigation", async (importOriginal) => ({
+  ...(await importOriginal()),
+  goto: vi.fn(),
+}));
+
+let originalPage;
 let component;
 let target;
 let fixture;
@@ -21,6 +29,8 @@ function expectPrivateNavigation() {
   expect(target.querySelector('.trail-row a[href="/"]')).not.toBeNull();
 }
 beforeEach(() => {
+  originalPage = get(page);
+  goto.mockReset();
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-03T12:00:00Z"));
   fixture = createExecutionFixture();
@@ -34,6 +44,9 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   target.remove();
+  page.set(originalPage);
+  goto.mockReset();
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -145,5 +158,121 @@ test("drain mounts an active item, exposes subsequent polling and releases both 
   const calls = JSON.stringify(fixture.stats.calls);
   await vi.advanceTimersByTimeAsync(15000);
   expect(JSON.stringify(fixture.stats.calls)).toBe(calls);
+  expect(fixture.stats.unexpected).toEqual([]);
+});
+
+test("planned task input question preserves the task and focuses the repo", async () => {
+  // Happy DOM 20 only matches inputs for :checked. Svelte's select binding
+  // uses this query to read the selected option after a DOM change event.
+  const querySelector = HTMLSelectElement.prototype.querySelector;
+  vi.spyOn(HTMLSelectElement.prototype, "querySelector").mockImplementation(
+    function (selector) {
+      return selector === ":checked"
+        ? this.selectedOptions[0] || null
+        : querySelector.call(this, selector);
+    },
+  );
+  const origin = "https://private.fixture.invalid";
+  const taskId = "synthetic-needs-input-task";
+  const prompt = "Survey the invented moon orchard";
+  const repo = "invented/moon-orchard";
+  const branch = "synthetic-survey";
+  const submissions = [];
+  let statusReads = 0;
+  const response = (body) => Response.json(body);
+  goto.mockImplementation(async (destination) => {
+    page.update((value) => ({
+      ...value,
+      url: new URL(destination, value.url),
+    }));
+  });
+  vi.stubGlobal("fetch", async (input, options = {}) => {
+    const url = new URL(String(input), origin);
+    const method = options.method || "GET";
+    if (url.origin === origin && url.search === "" && url.hash === "") {
+      if (
+        method === "POST" &&
+        url.pathname === "/api/swarm/classify-and-start"
+      ) {
+        submissions.push(JSON.parse(options.body));
+        return response({ kind: "classifying", task_id: taskId });
+      }
+      if (
+        method === "GET" &&
+        url.pathname === `/api/swarm/tasks/${taskId}/start-status`
+      ) {
+        statusReads += 1;
+        return response({ kind: "needs_input", needs_input: true });
+      }
+      if (method === "GET" && url.pathname === "/factory/execution/repos") {
+        return response({ repos: [{ id: repo }] });
+      }
+      if (
+        method === "GET" &&
+        url.pathname === `/factory/execution/repos/${repo}/branches`
+      ) {
+        return response({
+          default_branch: "main",
+          branches: [{ name: "main" }, { name: branch }],
+        });
+      }
+    }
+    return fixture.fetch(input, options);
+  });
+
+  executionLocation("execution");
+  component = mount(Harness, { target });
+  await settle();
+  target.querySelector("button.new-button").click();
+  await settle();
+  let dialog = target.querySelector('[role="dialog"].new-panel');
+  const textarea = dialog.querySelector("textarea");
+  textarea.value = prompt;
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  await settle();
+  dialog.querySelector('button[type="submit"]').click();
+  await settle();
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0].task).toBe(prompt);
+  expect(submissions[0]).not.toHaveProperty("task_id");
+  expect(get(page).url.searchParams.get("starting")).toBe(taskId);
+
+  await vi.advanceTimersByTimeAsync(2100);
+  await settle();
+  expect(statusReads).toBe(1);
+  dialog = target.querySelector('[role="dialog"].new-panel');
+  expect(dialog).not.toBeNull();
+  expect(dialog.querySelector('[role="status"]').textContent).toContain(
+    "This planned task needs a repository and branch before it can start.",
+  );
+  expect(dialog.querySelector("textarea").value).toBe(prompt);
+  const repository = dialog.querySelector("select.needs-input");
+  expect(repository).not.toBeNull();
+  expect(repository.getAttribute("aria-invalid")).toBe("true");
+  expect(document.activeElement).toBe(repository);
+  repository.value = repo;
+  repository.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  const branchControl = [...dialog.querySelectorAll("select")].at(-1);
+  expect(branchControl.disabled).toBe(false);
+  expect(branchControl.value).toBe("main");
+  branchControl.value = branch;
+  branchControl.dispatchEvent(new Event("change", { bubbles: true }));
+  await settle();
+  dialog.querySelector('button[type="submit"]').click();
+  await settle();
+  expect(submissions).toHaveLength(2);
+  expect(submissions[1].task_id).toBe(taskId);
+  expect(submissions[1]).toMatchObject({ task: prompt, repo, branch });
+  expect(fixture.stats.unexpected).toEqual([]);
+
+  await unmount(component);
+  component = null;
+  expect(fixture.stats.active).toBe(0);
+  // Let the cancelled start poll release its outstanding timeout.
+  await vi.advanceTimersByTimeAsync(16000);
+  expect(statusReads).toBe(1);
+  expect(submissions).toHaveLength(2);
+  expect(vi.getTimerCount()).toBe(0);
   expect(fixture.stats.unexpected).toEqual([]);
 });
