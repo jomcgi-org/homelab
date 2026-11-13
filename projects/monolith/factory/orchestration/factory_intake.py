@@ -524,6 +524,27 @@ def _audit_throttled(
 
 
 def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> dict:
+    """Reserve a slot with at most one fresh recurrence read per call.
+
+    The first locked pass claims a paced read; the second rechecks admission
+    against that observation. Owned transactions release the control lock before
+    network I/O. Explicit session callers retain their transaction as usual.
+    Observations are never reused by another call or another receipt.
+    """
+    from factory.orchestration import operator_readmission
+
+    lanes = tuple(lanes)
+    result = _admit_next(actor, lanes=lanes, session=session, probe=True)
+    request = result.get("readmission_probe")
+    if request is None:
+        return result
+    observation = operator_readmission.admission_issue(request[1], request[2])
+    return _admit_next(
+        actor, lanes=lanes, session=session, observation=(request, observation)
+    )
+
+
+def _admit_next(actor: str, *, lanes, session, probe=False, observation=None) -> dict:
     """Atomically reserve one WIP slot and pin the operator policy to a new SwarmTask.
 
     Each lane is bounded on its own, so a full delivery lane never blocks an
@@ -761,20 +782,6 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
 
         readmission_policy = None
         for candidate in candidates:
-            if candidate.actor == operator_readmission.ACTOR:
-                try:
-                    readmission_policy = operator_readmission.admission_policy(
-                        db, control, candidate
-                    )
-                except ValueError as exc:
-                    _audit_throttled(
-                        db,
-                        actor,
-                        "operator_readmission_refused",
-                        receipt_id=candidate.id,
-                        reason=str(exc),
-                    )
-                    continue
             if candidate.actor in (
                 INTAKE_ACTOR,
                 "factory:reconciler",
@@ -838,6 +845,52 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             )
             if held >= repo_limits[tier]:
                 continue
+            if candidate.actor == operator_readmission.ACTOR:
+                identity = (
+                    candidate.id,
+                    candidate.repo,
+                    candidate.issue_number,
+                    candidate.recurrence_key,
+                    candidate.generation,
+                )
+                if observation is not None and observation[0] == identity:
+                    issue = observation[1]
+                elif probe and operator_readmission.admission_read_due(db, candidate):
+                    operator_readmission.claim_admission_read(db, actor, candidate)
+                    return {"ok": False, "readmission_probe": identity}
+                else:
+                    continue
+                if isinstance(issue, Exception) and not isinstance(
+                    issue, operator_readmission.IssueUnavailable
+                ):
+                    _audit_throttled(
+                        db,
+                        actor,
+                        "operator_readmission_read_failed",
+                        receipt_id=candidate.id,
+                        reason=type(issue).__name__,
+                    )
+                    continue
+                try:
+                    if isinstance(issue, ValueError):
+                        raise issue
+                    readmission_policy = operator_readmission.admission_policy(
+                        db, control, candidate, issue
+                    )
+                except ValueError as exc:
+                    from factory.orchestration.factory_controls import (
+                        _cancel_queued_receipt,
+                    )
+
+                    _cancel_queued_receipt(db, candidate.id, actor)
+                    _audit(
+                        db,
+                        actor,
+                        "operator_readmission_refused",
+                        receipt_id=candidate.id,
+                        reason=str(exc),
+                    )
+                    continue
             row = candidate
             recovery_identity = candidate_recovery_identity
             break

@@ -126,6 +126,13 @@ remain unchanged. Prior turns reduce the new envelope; the sum of each prior tas
 attempt lineage reduces every fresh node's cap. Exhausted bounds, landing holds,
 human handoffs, active owners, unknown execution and existing recovery authority
 refuse. Natural discovery retains its cancelled and failed-refinement fences.
+Preview, apply and final admission require enabled intake without a refinement
+batch (`intake_not_available` otherwise). Final admission reads at most one
+recurrence per call and paces each receipt to one read per minute. The conductor
+releases the control lock for that read, then rechecks local authority and holds.
+Temporary read failures leave a throttled audit and allow unrelated admission.
+Deleted or redirected issues and eligibility refusals cancel the recurrence with
+an audit so it no longer reserves intake room; returning it needs a new preview/apply.
 Rollout and read-only issue eligibility acceptance remain on #7741.
 
 ### GitHub read pacing

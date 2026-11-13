@@ -802,6 +802,7 @@ def _operator_view(
         # Lane accounting needs all active/eligible queue identities, including
         # off-page uncertain starts, but none of their bodies or snapshots.
         columns = (
+            "id",
             "state",
             "generation",
             "task_id",

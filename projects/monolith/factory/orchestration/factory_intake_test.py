@@ -580,28 +580,57 @@ def test_waiting_receipt_retains_issue_and_branch_but_releases_repo_capacity(
         (9, "operator-subject", False, False),
         (9, INTAKE_ACTOR, True, True),
         (9, INTAKE_ACTOR, False, False),
+        (7, "factory:operator-readmission", True, False),
+        (7, "factory:operator-readmission", False, False),
+        (9, "factory:operator-readmission", True, False),
+        (9, "factory:operator-readmission", False, False),
     ],
 )
+@pytest.mark.parametrize(
+    "authority", [None, "exact", "wrong_id", "wrong_key", "legacy"]
+)
 def test_admission_eligibility_sql_matches_python(
-    db, issue_number, actor, intake_enabled, expected
+    db, issue_number, actor, intake_enabled, expected, authority
 ):
     """#6483: the query predicate and the shared helper agree on every case."""
+    from factory.orchestration import operator_readmission
+
     policy = {"issue_numbers": [7], "intake": {"enabled": intake_enabled}}
-    assert admission_eligible(policy, issue_number, actor) is expected
+    if actor == operator_readmission.ACTOR:
+        expected = authority == "exact"
     with Session(db) as session:
-        session.add(
-            FactoryReceipt(
-                repo="owner/repo",
-                issue_number=issue_number,
-                generation=0,
-                title="candidate",
-                body="",
-                url=f"https://github.com/owner/repo/issues/{issue_number}",
-                actor=actor,
-                state="queued",
-            )
+        row = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=issue_number,
+            generation=0,
+            title="candidate",
+            body="",
+            url=f"https://github.com/owner/repo/issues/{issue_number}",
+            actor=actor,
+            state="queued",
+            recurrence_key="operator:test",
         )
+        session.add(row)
+        session.flush()
+        if authority:
+            controls._audit(
+                session,
+                "operator",
+                "operator_readmission_queued"
+                if authority == "legacy"
+                else operator_readmission.ACTION,
+                receipt_id=row.id + (1 if authority == "wrong_id" else 0),
+                recurrence_key="operator:wrong"
+                if authority == "wrong_key"
+                else row.recurrence_key,
+            )
         session.commit()
+        assert (
+            admission_eligible(
+                policy, issue_number, actor, receipt=row, session=session
+            )
+            is expected
+        )
     with Session(db) as session:
         found = session.exec(
             select(FactoryReceipt).where(_eligible_clause(policy))

@@ -939,6 +939,8 @@ labels, mandatory human ownership, canonical/alias/legacy receipts and execution
 ledgers. A successful response contains `preview_sha256`, prior task identities,
 attempt debt, accounting, remaining allowance and rolling application quota.
 A refusal names its blocker. Neither response creates work or charges quota.
+Intake must be enabled with no active refinement batch, including for preview
+and final admission; otherwise the control refuses with `intake_not_available`.
 
 To queue that exact recurrence, call `apply` with identical arguments and the
 returned `expected_preview_sha256`. Apply rechecks the evidence under the existing
@@ -954,6 +956,12 @@ failed-refinement history. SQL selection, Python queue projections, rebrief and
 final admission require the exact audit-backed recurrence. Final admission
 re-reads GitHub and protected history. Lane capacity, enabled repositories,
 funding and ordinary admission controls still apply.
+Each admission call reads at most one recurrence, with a 60-second interval per
+receipt. The conductor releases the control lock during the read and rechecks
+local authority and holds after it. Temporary GitHub failures keep the receipt
+queued with a throttled audit and allow other work to admit. Deleted or redirected
+issues and eligibility refusals cancel that recurrence with an audit, releasing
+its intake room. A later return needs a fresh operator preview/apply.
 
 Landing holds always refuse, including holds on an older advisory alias beside
 cancelled history. Human handoffs, active or queued owners, unsettled tasks,

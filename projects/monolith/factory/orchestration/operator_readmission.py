@@ -5,6 +5,7 @@ import json
 from datetime import timedelta
 from uuid import uuid4
 
+import httpx
 from sqlalchemy import String, cast
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
@@ -24,6 +25,12 @@ from factory.orchestration.factory_models import (
 ACTION = "operator_issue_readmission"
 ACTOR = "factory:operator-readmission"
 LIMIT = 24
+ADMISSION_READ_INTERVAL = 60
+ADMISSION_READ_ACTION = "operator_readmission_check"
+
+
+class IssueUnavailable(ValueError):
+    """The exact issue was deleted or redirected; this recurrence must end."""
 
 
 def _get(row, key):
@@ -516,8 +523,48 @@ def control(
         return result
 
 
-def admission_policy(db, control, row):
-    """Recheck current holds and fresh exact issue state before final admission."""
+def admission_read_due(db, row):
+    """A failed or unused observation cannot cause a read on every admission pass."""
+    return (
+        db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.action == ADMISSION_READ_ACTION,
+                cast(_ReceiptId(FactoryAudit.detail_json), String) == str(row.id),
+                FactoryAudit.created_at
+                > controls._now() - timedelta(seconds=ADMISSION_READ_INTERVAL),
+            )
+        ).first()
+        is None
+    )
+
+
+def claim_admission_read(db, actor, row):
+    db.add(
+        FactoryAudit(
+            actor=actor,
+            action=ADMISSION_READ_ACTION,
+            created_at=controls._now(),
+            detail_json=dumps({"receipt_id": row.id}),
+        )
+    )
+
+
+def admission_issue(repo, number):
+    """Read once outside admission's control lock; failures grant no authority."""
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    try:
+        return _issue(repo, number)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (301, 302, 307, 308, 404, 410):
+            return IssueUnavailable("issue_unavailable")
+        return exc
+    except (GitHubReadDeferred, httpx.HTTPError, ValueError) as exc:
+        return exc
+
+
+def admission_policy(db, control, row, issue):
+    """Recheck current holds against this admission call's fresh issue observation."""
     if not authorized(db, row):
         raise ValueError("readmission_authority_missing")
     evidence = _evidence(
@@ -525,7 +572,7 @@ def admission_policy(db, control, row):
         control,
         row.repo,
         row.issue_number,
-        _issue(row.repo, row.issue_number),
+        issue,
         exclude=row.id,
     )
     policy = controls.repo_effective_policy(json.loads(control.policy_json), row.repo)

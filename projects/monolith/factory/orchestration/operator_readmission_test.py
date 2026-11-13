@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 
+import httpx
 import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -300,6 +301,27 @@ def test_preview_apply_real_admission_preserves_natural_fence_and_accounting(eng
     )
     assert node.ok, node
     assert graph.load_graph(task_id)[0]["max_attempts"] == 2
+    # Advance the plan so the same node is rendered through historical projection.
+    assert graph.add_node(
+        task_id,
+        node_key="later",
+        kind="work",
+        prompt="work",
+        model="luna",
+        deps=["renamed"],
+        max_cost_usd=1,
+        side_effects=True,
+        max_attempts=3,
+        turn_timeout_seconds=60,
+        expected_version=2,
+        author_kind="conductor",
+        author="test",
+        cause_kind="test",
+        cause_ref=None,
+        stated_reason="test",
+    ).ok
+    historical = graph.load_graph(task_id, version=2)
+    assert [(n["node_key"], n["max_attempts"]) for n in historical] == [("renamed", 2)]
     with Session(engine) as db:
         db.add_all(
             [
@@ -589,19 +611,187 @@ def test_rebrief_retains_authority_but_cannot_renew_renamed_attempt_lineage(engi
     assert not admit_next("test")["ok"]
 
 
-@pytest.mark.parametrize("change", ["closed", "human", "missing_label"])
+@pytest.mark.parametrize(
+    "change",
+    ["closed", "human", "missing_label", "assigned", "intake_off", "batch", "hold"],
+)
 def test_final_admission_rechecks_fresh_issue(engine, monkeypatch, change):
-    seed(engine)
-    apply(preview())
+    prior = seed(engine)
+    received = apply(preview())
     snapshot = issue()
     if change == "closed":
         snapshot["state"] = "closed"
     elif change == "human":
         snapshot["labels"].append({"name": "human"})
-    else:
+    elif change == "missing_label":
         snapshot["labels"] = []
-    monkeypatch.setattr(readmission, "_issue", lambda *args: snapshot)
+    elif change == "assigned":
+        snapshot["assignees"] = [{"login": "owner"}]
+    else:
+        with Session(engine) as db:
+            if change == "hold":
+                db.get(FactoryReceipt, prior).direction_json = json.dumps(
+                    {"landing_hold": {"actor": "operator"}}
+                )
+            else:
+                control = db.get(FactoryControl, "factory")
+                policy = json.loads(control.policy_json)
+                policy["intake"]["enabled"] = change != "intake_off"
+                if change == "batch":
+                    policy["intake"]["refine_enabled"] = True
+                    policy["intake"]["refinement_batch"] = [7250]
+                control.policy_json = json.dumps(policy)
+            db.commit()
+    reads = []
+
+    def fresh_issue(*args):
+        reads.append(args)
+        return snapshot
+
+    monkeypatch.setattr(readmission, "_issue", fresh_issue)
     assert not admit_next("test")["ok"]
+    with Session(engine) as db:
+        row = db.get(FactoryReceipt, received["receipt_id"])
+        assert row.state == "cancelled"
+        assert not controls.execution_slot_holders(POLICY, [row], include_queued=True)
+        from factory.orchestration.factory_intake_loop import _slot_holders
+
+        assert not _slot_holders([row], POLICY)
+        assert controls.lane_usage(POLICY, [row])["delivery"]["queued"] == 0
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "operator_readmission_refused"
+            )
+        ).all()
+        assert len(events) == 1
+        assert json.loads(events[0].detail_json)["receipt_id"] == row.id
+    assert not admit_next("test")["ok"]
+    assert len(reads) == 1
+
+
+def queue_allowlisted(engine):
+    with Session(engine) as db:
+        for row in db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.state == "queued")
+        ):
+            row.created_at = NOW
+        row = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=7250,
+            generation=7,
+            title="other work",
+            body="accepted",
+            url=issue(7250)["html_url"],
+            actor="operator",
+            state="queued",
+            created_at=NOW + timedelta(seconds=1),
+        )
+        db.add(row)
+        db.commit()
+        return row.id
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["cooldown", "transport", "invalid_json", "decoding", 301, 404, 410, 429, 503],
+)
+def test_github_read_failure_does_not_block_other_admission(
+    engine, monkeypatch, failure
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    seed(engine)
+    received = apply(preview())
+    other = queue_allowlisted(engine)
+    reads = []
+
+    def unavailable(repo, number):
+        reads.append(number)
+        if failure == "cooldown":
+            raise GitHubReadDeferred("shared cooldown")
+        if failure == "transport":
+            raise httpx.ConnectError("unavailable")
+        if failure == "invalid_json":
+            raise ValueError("invalid JSON response")
+        if failure == "decoding":
+            raise httpx.DecodingError("invalid response encoding")
+        response = httpx.Response(
+            failure, request=httpx.Request("GET", issue(number)["html_url"])
+        )
+        raise httpx.HTTPStatusError(
+            "unavailable", request=response.request, response=response
+        )
+
+    monkeypatch.setattr(readmission, "_issue", unavailable)
+    result = admit_next("test")
+    assert result["ok"] and result["receipt_id"] == other
+    assert not admit_next("test")["ok"]
+    assert reads == [7777]
+    permanent = failure in (301, 404, 410)
+    with Session(engine) as db:
+        row = db.get(FactoryReceipt, received["receipt_id"])
+        assert row.state == ("cancelled" if permanent else "queued")
+        action = (
+            "operator_readmission_refused"
+            if permanent
+            else "operator_readmission_read_failed"
+        )
+        assert (
+            len(
+                db.exec(select(FactoryAudit).where(FactoryAudit.action == action)).all()
+            )
+            == 1
+        )
+    if not permanent:
+        # The failed read never becomes evidence; expiry requires a fresh read.
+        monkeypatch.setattr(controls, "_now", lambda: NOW + timedelta(seconds=60))
+        monkeypatch.setattr(readmission, "_issue", lambda *args: issue())
+        assert admit_next("test")["receipt_id"] == received["receipt_id"]
+
+
+def test_admission_bounds_reads_across_candidates_and_repeated_calls(
+    engine, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    for number in (7777, 8888):
+        seed(engine, number)
+        apply(preview(number, str(number)), number, str(number))
+    other = queue_allowlisted(engine)
+    reads = []
+
+    def unavailable(repo, number):
+        reads.append(number)
+        raise httpx.ConnectError("unavailable")
+
+    monkeypatch.setattr(readmission, "_issue", unavailable)
+    assert admit_next("test")["receipt_id"] == other
+    assert reads == [7777]
+    assert not admit_next("test")["ok"]
+    assert reads == [7777, 8888]
+    assert not admit_next("test")["ok"]
+    assert reads == [7777, 8888]
+
+
+def test_admission_releases_lock_for_read_and_rechecks_changed_hold(
+    engine, monkeypatch
+):
+    prior = seed(engine)
+    received = apply(preview())
+
+    def concurrent_hold(repo, number):
+        # This write would block if admission still held factory_control during I/O.
+        with controls._locked_session() as (db, control):
+            db.get(FactoryReceipt, prior).direction_json = json.dumps(
+                {"landing_hold": {"actor": "operator"}}
+            )
+        return issue(number)
+
+    monkeypatch.setattr(readmission, "_issue", concurrent_hold)
+    assert not admit_next("test")["ok"]
+    with Session(engine) as db:
+        assert db.get(FactoryReceipt, received["receipt_id"]).state == "cancelled"
+        assert controls.landing_held(db.get(FactoryReceipt, prior))
 
 
 def test_exact_replay_after_quota_or_evidence_changes_creates_no_work(

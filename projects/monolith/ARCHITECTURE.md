@@ -361,7 +361,10 @@ applications per rolling 24 hours. Preview and refusal consume none.
 **Why.** Extending `issue_numbers` would preserve selection permission beyond the
 specific recurrence. The audit instead authorizes one exact receipt, checked by
 SQL candidates and Python queue/rebrief eligibility. Apply and final admission
-recheck fresh issue state, history and holds under the existing control lock.
+recheck fresh issue state, history and holds. Final admission reads the issue
+outside its owned control transaction, then rechecks local authority and holds
+under the control lock. A per-receipt read interval bounds retries; refused
+eligibility cancels the queued recurrence and releases its intake room.
 Cancelled and failed-refinement history remain excluded from natural discovery.
 Landing holds, human ownership, unsettled execution and recovery restrictions
 remain binding across canonical, alias and legacy identities.

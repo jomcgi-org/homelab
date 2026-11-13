@@ -604,6 +604,52 @@ def stored_receipts(db):
         return session.exec(select(FactoryReceipt)).all()
 
 
+@pytest.mark.parametrize("authorized", [True, False])
+def test_operator_view_counts_only_audited_queued_recurrences(db, authorized):
+    from factory.orchestration import operator_readmission
+    from factory.orchestration.factory_intake_loop import _slot_holders
+
+    policy = {"issue_numbers": [7250], "generation": 7, "max_tasks": 2}
+    with Session(db) as session:
+        session.get(FactoryControl, "factory").policy_json = json.dumps(policy)
+        row = FactoryReceipt(
+            repo="owner/repo",
+            issue_number=7777,
+            generation=7,
+            actor=operator_readmission.ACTOR,
+            recurrence_key="operator:test",
+            title="recurrence",
+            body="accepted",
+            url="https://github.com/owner/repo/issues/7777",
+            state="queued",
+        )
+        session.add(row)
+        session.flush()
+        if authorized:
+            controls._audit(
+                session,
+                "operator",
+                operator_readmission.ACTION,
+                receipt_id=row.id,
+                recurrence_key=row.recurrence_key,
+            )
+        session.commit()
+        receipt_id = row.id
+        assert len(_slot_holders([row], policy)) == int(authorized)
+    view = mcp._operator_view(False, 0, 1)
+    assert [r["id"] for r in view["queued"]] == [receipt_id]
+    assert view["lanes"]["delivery"]["queued"] == int(authorized)
+    assert controls.status()["lanes"]["delivery"]["queued"] == int(authorized)
+    # The capacity projection must also include off-page receipts.
+    assert mcp._operator_view(False, 1, 1)["lanes"]["delivery"]["queued"] == int(
+        authorized
+    )
+    with Session(db) as session:
+        controls._cancel_queued_receipt(session, receipt_id, "operator")
+        session.commit()
+    assert mcp._operator_view(False, 0, 1)["lanes"]["delivery"]["queued"] == 0
+
+
 def _principal(
     *,
     authority: Authority = Authority.STANDING,

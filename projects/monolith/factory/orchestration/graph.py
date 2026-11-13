@@ -209,15 +209,12 @@ def load_graph(
         from factory.orchestration.evidence_continuation import project
 
         if version is not None and version < _current_version(db, task_id):
-            return project(
-                db,
-                task_id,
-                _historical_nodes(db, task_id, selected_version),
-                selected_version,
-            )
-        nodes = [
-            _node_fields(node) for node in _visible_nodes(db, task_id, selected_version)
-        ]
+            nodes = _historical_nodes(db, task_id, selected_version)
+        else:
+            nodes = [
+                _node_fields(node)
+                for node in _visible_nodes(db, task_id, selected_version)
+            ]
         # An exact operator recurrence retains a conservative prior-attempt debt.
         # Keep the immutable admission cap in both readiness and physical dispatch,
         # including fixed review nodes and renamed nodes in later plan revisions.
