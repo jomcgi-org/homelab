@@ -71,7 +71,9 @@ durable lessons. Factory prompts choose the work and its sequence.
 
 ## Boundaries
 
-- GitOps: cluster access is read-only; manifests change through PRs.
+- GitOps: cluster access is read-only; manifests change through PRs. While
+  ArgoCD does not yet own the factory home cluster, Claude may write to it
+  when a command names it (`KUBECONFIG=~/.kube/factory.yaml`).
 - Preserve required CI, independent review, merge queue, admission controls,
   ownership and task limits. Never bypass gates or clear explicit holds.
 - CI owns chart version increases, deployment pin advances and image pushes;
