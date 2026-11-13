@@ -9,4 +9,4 @@ resources:
   - kube-system.yaml
   - onepassword.yaml
   - argocd.yaml
-  - cloudflare-operator.yaml
+  - cfgate.yaml

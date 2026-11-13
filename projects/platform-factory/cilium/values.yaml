@@ -6,6 +6,11 @@
 # else, because no pod can start without a CNI; the cilium Application then
 # adopts the release. Both render the same upstream chart version with this
 # file, so they converge.
+
+# Restart the agents when their configuration changes, so a values change
+# takes effect on sync rather than at the next node restart.
+rollOutCiliumPods: true
+
 kubeProxyReplacement: true
 # On a k3s server 127.0.0.1:6444 is the apiserver's own port, so the agent can
 # reach it before any Service routing exists.
@@ -36,6 +41,9 @@ operator:
 
 hubble:
   enabled: true
+  # The default 4095-flow ring fills within seconds on a busy node, so flow
+  # lookups (and the connectivity test's flow checks) miss events.
+  eventBufferCapacity: "32767"
   relay:
     enabled: true
   tls:

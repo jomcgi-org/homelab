@@ -32,6 +32,12 @@ join)
 esac
 
 install -m 0644 "${HERE}/99-factory.conf" /etc/sysctl.d/99-factory.conf
+# Tailscale (node-1) sets src_valid_mark=1 whenever it manages iptables, which
+# breaks Cilium's proxies (see 99-factory.conf). With netfilter mode off it
+# leaves both alone; the tailnet itself still works.
+if command -v tailscale >/dev/null && systemctl is-active --quiet tailscaled; then
+	tailscale set --netfilter-mode=off
+fi
 sysctl --system >/dev/null
 
 # gVisor, at the release Agent Substrate's SandboxConfig pins.
