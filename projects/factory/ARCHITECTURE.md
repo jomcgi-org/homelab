@@ -35,11 +35,12 @@ records how they relate and routes results and feedback between them.
    `ate.dev/api-access=true` on the kagent namespace. The first Substrate
    install (#7829) is upstream v1.0.0; aligning it with the fork is its own
    change.
-2. **The Codex harness takes an OpenAI API key, not a ChatGPT login.** [V]
-   It accepts only `baseUrl` and `apiFormat: responses`. The Substrate
-   gateway replaces a header the client sends and never adds one, while the
-   ChatGPT backend also expects `chatgpt-account-id`. The broker therefore
-   relays model calls (below).
+2. **The Codex harness speaks the OpenAI Responses API.** [V] Its OpenAI
+   provider accepts only `baseUrl` and `apiFormat: responses`, authenticated
+   by an API key or an `actorJwt` that Substrate mints per actor and injects
+   at the egress gateway. The Substrate gateway replaces a header the client
+   sends and never adds one, while the ChatGPT backend also expects
+   `chatgpt-account-id`. The broker therefore relays model calls (below).
 3. **OpenAI advises against ChatGPT-account auth for public repositories**
    and against sharing one `auth.json` across streams. [V] Using the
    subscription for `jomcgi-org/homelab` is Joe's decision.
@@ -47,16 +48,19 @@ records how they relate and routes results and feedback between them.
    conflicts with 1Password delivery, so the factory chart carries its own
    itsaplan templates against the upstream images.
 5. **kagent's trusted-proxy mode decodes bearer JWTs without verifying
-   them.** [V] Network policy must leave the edge and the kagent UI as the
-   only bearer paths into the controller.
+   them.** [V] Network policy must leave the edge, the kagent UI and the
+   connector as the only bearer paths into the controller.
 6. **A kagent service-account principal includes the ServiceAccount UID.**
    [V] Recreating the connector's ServiceAccount changes its identity and
    loses access to its sessions, so that ServiceAccount is never pruned and a
    restore includes an ownership transfer.
 7. **itsaplan run semantics.** [V] An external run's lease defaults to 300 s
    and fails after 3 handouts without a result. A reported failure is never
-   retried. Cancel flips the status at once, and a heartbeat then gets 404,
-   the same answer as a reclaimed attempt.
+   retried. Heartbeats and results check `attempt` only when it is sent, so
+   the connector always sends it. Once a run leaves `pending`, a heartbeat
+   gets 404, the same answer as a reclaimed attempt. [I] At v1.10.0 the only
+   path that cancels a started run is moving its issue to another project;
+   the itsaplan PR confirms the operator's cancel action.
 
 ## Umbrella chart
 
@@ -113,12 +117,21 @@ state), review events (unique GitHub node ID, commit SHA, disposition),
 cancellations and an outbox. Full transcripts and CI logs go to the
 `factory-evidence` bucket.
 
-**Dispatch.** Claim runs per agent key. A claimed run with an open attempt
+**Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
+none of these is a Pro feature (status-triggered schedules are Pro and are
+not used). Claim runs per agent key. A claimed run with an open attempt
 is a transport redelivery: find the kagent task by message ID and attach,
 never send again. A new send uses message ID
-`itsaplan-run/<runId>/<decisionId>`; for continuation sends, look the ID up
+`itsaplan-run/<runId>/<decisionId>`, where the decision ID is the connector's
+record of why it sends (initial, revision or engineering retry); for continuation sends, look the ID up
 in the session history after an ambiguous response before any resend. The
-repository and branch come from configuration, never from issue text.
+repository and branch come only from configuration.
+
+A work item keeps one kagent session whichever agent key delivers its run.
+When a run for an existing work item arrives under a different agent, the
+connector bumps the writer epoch, confirms the mapped session has no running
+task (cancelling it first if needed), and continues in that session; a new
+session is created only by the replacement path below.
 
 **Heartbeat** every 60 s. On 404, read the run: canceled starts cancellation;
 a higher attempt means this attempt is stale and stops writing. Progress is
@@ -133,13 +146,15 @@ block with the reason instead of retrying.
 **Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
 if its commit is the current head and its author is a trusted identity;
 duplicates and stale heads are recorded. Requested changes start a
-mention-run in the mapped session. A crashed session is reverted; an expired
-or deleted one is replaced with context from the issue, PR and review threads,
+mention-run in the mapped session. A session whose runtime crashed is
+restored with kagent `RevertSession` to its last checkpoint; an expired or
+deleted one is replaced with context from the issue, PR and review threads,
 and the replacement is announced.
 
 **Merge.** When the required checks and the trusted reviewer succeed on the
-current head, enqueue with GraphQL `enqueuePullRequest`, then mark the
-itsaplan issue Done with the issue, run, session, PR and merge links.
+current head, enqueue with GraphQL `enqueuePullRequest`. When the merge is
+observed, mark the itsaplan issue Done with the issue, run, session, PR and
+merge links; a merge-queue failure returns the work item to review.
 Deployment health is a separate record.
 
 **Cancellation** sends A2A `tasks/cancel` and stays pending until kagent
@@ -150,9 +165,11 @@ reports the task canceled or failed.
 `projects/factory/broker`, one replica holding a Lease. It reuses the Codex
 OAuth code in `projects/embervm/tokenbroker`, moved out of `internal/` first.
 
-- **Codex relay (preferred).** The ModelConfig points at the broker's relay.
-  Codex in the actor holds a placeholder; the Substrate gateway swaps in a
-  relay key; the broker checks it and forwards to
+- **Codex relay (preferred).** The ModelConfig points at the broker's relay
+  with `actorJwt`. Codex in the actor holds a placeholder; the Substrate
+  gateway swaps in a short-lived JWT minted for that actor; the broker
+  verifies it against Substrate's issuer, attributes the call to the actor,
+  and forwards to
   `chatgpt.com/backend-api/codex/responses` with the access token and
   `chatgpt-account-id`. Provider credentials exist only in the broker.
   Direct injection is the fallback if the backend accepts a request with
@@ -160,8 +177,7 @@ OAuth code in `projects/embervm/tokenbroker`, moved out of `internal/` first.
 - **Refresh.** One grant from the broker's own device login. Refresh when
   under 24 h from expiry or 7 days old, single-flight, written before use. A
   dead grant answers `codex_login_required`, which the connector treats as a
-  credential failure. Relay keys rotate with an overlap longer than the
-  gateway's five-minute credential cache.
+  credential failure. ActorJWT leaves no relay key to rotate.
 - **GitHub.** Installation tokens from the factory GitHub App, minted every
   30 minutes and downscoped per repository binding (`contents: write` for the
   agent, PR and check access for the connector). The agent's git uses a
@@ -172,7 +188,7 @@ OAuth code in `projects/embervm/tokenbroker`, moved out of `internal/` first.
 | Who | How |
 | --- | --- |
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client in Authentik; invite-only registration; a break-glass admin |
-| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode |
+| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
 | Connector to itsaplan | A coordinator external agent for comments and issue state; the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding |
@@ -205,7 +221,8 @@ Each step is its own PR with live evidence recorded on #7817.
   own login, the model, and acceptance of OpenAI's public-repository
   guidance (or an API key instead).
 - **GitHub App** `jomcgi-factory` in jomcgi-org: Contents and Pull requests
-  read/write, Checks, Commit statuses and Metadata read; installed on
+  read/write, Merge queues read/write [I], Checks, Commit statuses and
+  Metadata read; installed on
   `jomcgi-org/homelab`; 1Password item `k8s-homelab/factory-github-app`
   (`app-id`, `installation-id`, `private-key`).
 - **Semgrep reviewer.** App ID, check name, triggers, and adding it to the
@@ -213,8 +230,9 @@ Each step is its own PR with live evidence recorded on #7817.
 - **1Password.** `k8s-homelab/factory-itsaplan` (`BETTER_AUTH_SECRET`,
   `APP_ENCRYPTION_KEY`) and `k8s-homelab/factory-itsaplan-admin`
   (`email`, `password`).
-- **Hostnames.** `factory-plan.jomcgi.dev` (itsaplan) and
-  `factory-agents.jomcgi.dev` (kagent).
+- **Hostnames.** `factory.jomcgi.dev` stays the private entry point and links
+  to `factory-plan.jomcgi.dev` (itsaplan) and `factory-agents.jomcgi.dev`
+  (kagent).
 
 Everything except live Codex runs, agent pushes and required review can be
 built and trialled before these arrive.
