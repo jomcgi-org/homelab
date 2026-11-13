@@ -11,7 +11,6 @@ go_library(
 go_test(
     name = "roadworks_test",
     srcs = ["roadworks_test.go"],
-    data = glob(["testdata/**"]),
     deps = [
         ":roadworks",
         "//projects/scotland-connector/internal/fixture",
