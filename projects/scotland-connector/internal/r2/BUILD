@@ -5,6 +5,7 @@ go_library(
     srcs = ["client.go"],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/r2",
     visibility = ["//projects/scotland-connector:__subpackages__"],
+    deps = ["//projects/shared/s3sigv4"],
 )
 
 go_test(

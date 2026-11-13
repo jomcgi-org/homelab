@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//projects/embervm/noded/snapshotmeta",
         "//projects/embervm/noded/sparse",
+        "//projects/shared/s3sigv4",
         "@com_github_klauspost_compress//zstd",
     ],
 )
@@ -26,4 +27,5 @@ go_test(
         "store_test.go",
     ],
     embed = [":store"],
+    deps = ["//projects/shared/s3sigv4"],
 )

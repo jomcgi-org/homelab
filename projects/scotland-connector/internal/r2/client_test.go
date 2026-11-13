@@ -3,6 +3,7 @@ package r2
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,12 +31,6 @@ func TestAuthorizationMatchesAWSExample(t *testing.T) {
 		"Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
 	if got != want {
 		t.Fatalf("authorization mismatch\n got: %s\nwant: %s", got, want)
-	}
-}
-
-func TestCanonicalURIEncodesReservedBytes(t *testing.T) {
-	if got := canonicalURI("/stars/a b+c.json"); got != "/stars/a%20b%2Bc.json" {
-		t.Fatalf("canonicalURI = %q", got)
 	}
 }
 
@@ -93,5 +88,70 @@ func TestNewRejectsBadConfig(t *testing.T) {
 	}
 	if _, err := New("https://r2.example.com", "auto", Credentials{}, nil); err == nil {
 		t.Error("New accepted empty credentials")
+	}
+}
+
+type captureTransport func(*http.Request) (*http.Response, error)
+
+func (f captureTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestGetPreservesObjectBytesAndSigningPolicy(t *testing.T) {
+	for _, tc := range []struct{ region, wantRegion, signature string }{
+		{"", "auto", "1fad693176cccca815ae896d564da8416bf17f22e94eae72bef8cad6bfc9886d"},
+		{"eu-west-2", "eu-west-2", "d57c63f9278a7be8e84a7f8a1849aff7b1761f9f06d6dfc9234bceab3e3af0fb"},
+	} {
+		t.Run(tc.wantRegion, func(t *testing.T) {
+			called := false
+			client := &http.Client{Transport: captureTransport(func(req *http.Request) (*http.Response, error) {
+				called = true
+				const path = "/bucket/a%20b%2Bc/%E9%9B%AA%3F%23%3A%40%26%3D/%252F//./../"
+				if req.URL.EscapedPath() != path || req.URL.RawQuery != "" {
+					t.Fatalf("URL = %s", req.URL)
+				}
+				if req.Header.Get("If-None-Match") != `"etag"` {
+					t.Fatal("missing conditional header")
+				}
+				// Fixed signatures independently derived using Python hashlib/hmac.
+				want := "AWS4-HMAC-SHA256 Credential=id/20260821/" + tc.wantRegion + "/s3/aws4_request,SignedHeaders=host;x-amz-content-sha256;x-amz-date,Signature=" + tc.signature
+				if got := req.Header.Get("Authorization"); got != want {
+					t.Fatalf("Authorization = %q, want %q", got, want)
+				}
+				return &http.Response{StatusCode: http.StatusNotModified, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})}
+			c, err := New("https://objects.test", tc.region, Credentials{AccessKeyID: "id", SecretAccessKey: "secret"}, client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.now = func() time.Time { return time.Date(2026, 8, 21, 12, 34, 56, 0, time.UTC) }
+			obj, err := c.Get(context.Background(), "bucket", "a b+c/雪?#:@&=/%2F//./../", `"etag"`, 10)
+			if err != nil || !obj.NotModified || !called {
+				t.Fatalf("Get = %+v, %v, called %v", obj, err, called)
+			}
+		})
+	}
+}
+
+func TestSignRangeAndHostOverride(t *testing.T) {
+	c, err := New("https://url.test", "us-east-1", Credentials{AccessKeyID: "AKIAIOSFODNN7EXAMPLE", SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://url.test/test.txt", nil)
+	req.Host = "examplebucket.s3.amazonaws.com"
+	req.Header.Set("Range", "  bytes=0-9  ")
+	req.Header.Set("If-None-Match", `"unsigned"`)
+	req.Header.Set("X-Other", "unsigned")
+	c.sign(req, time.Date(2013, 5, 24, 0, 0, 0, 0, time.UTC))
+	const want = "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
+	if got := req.Header.Get("Authorization"); got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestNewRequiresBothCredentials(t *testing.T) {
+	for _, creds := range []Credentials{{AccessKeyID: "id"}, {SecretAccessKey: "secret"}} {
+		if _, err := New("https://objects.test", "", creds, nil); err == nil {
+			t.Fatalf("accepted incomplete credentials: %+v", creds)
+		}
 	}
 }

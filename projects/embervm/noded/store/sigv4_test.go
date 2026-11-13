@@ -5,9 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/shared/s3sigv4"
 )
 
 func TestSigV4AWSKnownAnswer(t *testing.T) {
@@ -19,16 +22,15 @@ func TestSigV4AWSKnownAnswer(t *testing.T) {
 	req.Header.Set("x-amz-content-sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 	req.Header.Set("x-amz-date", "20130524T000000Z")
 	signedHeaders := []string{"host", "range", "x-amz-content-sha256", "x-amz-date"}
-	canonical := canonicalRequest(req, signedHeaders, req.Header.Get("x-amz-content-sha256"))
-	scope := "20130524/us-east-1/s3/aws4_request"
-	stringToSign := "AWS4-HMAC-SHA256\n20130524T000000Z\n" + scope + "\n" + sha256Hex(canonical)
-	got := calculateSignature(
-		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"20130524", "us-east-1", "s3", stringToSign,
-	)
+	timestamp, _ := time.Parse("20060102T150405Z", "20130524T000000Z")
+	result := s3sigv4.Sign(req, s3sigv4.Input{
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", Region: "us-east-1",
+		Timestamp: timestamp, PayloadHash: req.Header.Get("x-amz-content-sha256"), SignedHeaders: signedHeaders,
+	})
+	got := result.Signature
 	const want = "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
 	if got != want {
-		t.Fatalf("signature = %s, want %s\ncanonical request:\n%s", got, want, canonical)
+		t.Fatalf("signature = %s, want %s", got, want)
 	}
 }
 
@@ -169,5 +171,45 @@ func TestPutIfAbsentSignsBackendPrecondition(t *testing.T) {
 				t.Fatalf("stored marker = %q, want winner", stored)
 			}
 		})
+	}
+}
+
+func TestSignRequestIncompleteCredentialsIsStrictNoop(t *testing.T) {
+	for _, s := range []*Store{nil, New("https://example.test", "bucket", false), New("https://example.test", "bucket", false, WithCredentials("id", "")), New("https://example.test", "bucket", false, WithCredentials("", "secret"))} {
+		req, _ := http.NewRequest(http.MethodGet, "https://example.test/bucket/key", nil)
+		req.Header.Set("Authorization", "existing")
+		req.Header.Set("X-Amz-Date", "existing-date")
+		before := req.Header.Clone()
+		if err := s.SignRequest(req); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(before, req.Header) {
+			t.Fatalf("headers changed: %v", req.Header)
+		}
+	}
+}
+
+// Expected signature was derived with Python hashlib/hmac over literal
+// canonical bytes, independently of the production signer.
+func TestSignRequestPolicyAndPathBytes(t *testing.T) {
+	s := New("https://url.test", "bucket", false, WithCredentials("id", "secret"))
+	s.now = func() time.Time { return time.Date(2026, 8, 21, 12, 34, 56, 0, time.UTC) }
+	req, _ := http.NewRequest(http.MethodPut, "https://url.test/bucket/a%2Fb//./../%25?z=1&%C3%A9=1", nil)
+	req.Host = "override.test"
+	req.Header.Set("If-Match", `"etag"`)
+	req.Header.Set("X-Custom", " one\t two ")
+	req.Header.Set("Authorization", "old")
+	if err := s.SignRequest(req); err != nil {
+		t.Fatal(err)
+	}
+	const want = "AWS4-HMAC-SHA256 Credential=id/20260821/us-east-1/s3/aws4_request, SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date;x-custom, Signature=1c6b2ecbf6c17c5b3990e357d3e8b60c0a853b4dbf0f89fc2bdec1cb67119009"
+	if got := req.Header.Get("Authorization"); got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+	if got := req.Header.Get("X-Amz-Content-Sha256"); got != "UNSIGNED-PAYLOAD" {
+		t.Fatalf("payload hash = %q", got)
+	}
+	if got := req.URL.EscapedPath(); got != "/bucket/a%2Fb//./../%25" {
+		t.Fatalf("path = %q", got)
 	}
 }

@@ -5,17 +5,15 @@ package r2
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/shared/s3sigv4"
 )
 
 // emptyPayloadHash is the SHA-256 of an empty body, which is what a GET signs.
@@ -78,7 +76,7 @@ type Object struct {
 func (c *Client) Get(ctx context.Context, bucket, key, ifNoneMatch string, maxBytes int64) (Object, error) {
 	u := *c.endpoint
 	u.Path = "/" + bucket + "/" + strings.TrimPrefix(key, "/")
-	u.RawPath = canonicalURI(u.Path)
+	u.RawPath = s3sigv4.EscapePath(u.Path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return Object{}, fmt.Errorf("r2: build request: %w", err)
@@ -133,104 +131,11 @@ func (c *Client) sign(req *http.Request, now time.Time) {
 }
 
 func authorization(req *http.Request, signed []string, amzDate, region string, creds Credentials) string {
-	sort.Strings(signed)
-	var headers strings.Builder
-	for _, name := range signed {
-		value := req.Header.Get(name)
-		if name == "host" {
-			value = req.URL.Host
-		}
-		headers.WriteString(name)
-		headers.WriteByte(':')
-		headers.WriteString(strings.TrimSpace(value))
-		headers.WriteByte('\n')
-	}
-	signedHeaders := strings.Join(signed, ";")
-	canonicalRequest := strings.Join([]string{
-		req.Method,
-		canonicalURI(req.URL.Path),
-		canonicalQuery(req.URL.Query()),
-		headers.String(),
-		signedHeaders,
-		emptyPayloadHash,
-	}, "\n")
-
-	date := amzDate[:8]
-	scope := date + "/" + region + "/s3/aws4_request"
-	stringToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		scope,
-		hexSHA256(canonicalRequest),
-	}, "\n")
-
-	key := hmacSHA256([]byte("AWS4"+creds.SecretAccessKey), date)
-	key = hmacSHA256(key, region)
-	key = hmacSHA256(key, "s3")
-	key = hmacSHA256(key, "aws4_request")
-	signature := hex.EncodeToString(hmacSHA256(key, stringToSign))
-
+	timestamp, _ := time.Parse("20060102T150405Z", amzDate)
+	result := s3sigv4.Sign(req, s3sigv4.Input{
+		SecretAccessKey: creds.SecretAccessKey, Region: region,
+		Timestamp: timestamp, PayloadHash: emptyPayloadHash, SignedHeaders: signed,
+	})
 	return fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s,SignedHeaders=%s,Signature=%s",
-		creds.AccessKeyID, scope, signedHeaders, signature)
-}
-
-// canonicalURI percent-encodes every byte outside the SigV4 unreserved set,
-// segment by segment, keeping the slashes.
-func canonicalURI(path string) string {
-	if path == "" {
-		return "/"
-	}
-	segments := strings.Split(path, "/")
-	for i, s := range segments {
-		segments[i] = uriEncode(s)
-	}
-	return strings.Join(segments, "/")
-}
-
-func canonicalQuery(values url.Values) string {
-	if len(values) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var parts []string
-	for _, k := range keys {
-		vs := append([]string(nil), values[k]...)
-		sort.Strings(vs)
-		for _, v := range vs {
-			parts = append(parts, uriEncode(k)+"="+uriEncode(v))
-		}
-	}
-	return strings.Join(parts, "&")
-}
-
-func uriEncode(s string) string {
-	const hexDigits = "0123456789ABCDEF"
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z') || ('0' <= c && c <= '9') ||
-			c == '-' || c == '_' || c == '.' || c == '~' {
-			b.WriteByte(c)
-			continue
-		}
-		b.WriteByte('%')
-		b.WriteByte(hexDigits[c>>4])
-		b.WriteByte(hexDigits[c&0x0f])
-	}
-	return b.String()
-}
-
-func hexSHA256(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-func hmacSHA256(key []byte, data string) []byte {
-	h := hmac.New(sha256.New, key)
-	h.Write([]byte(data))
-	return h.Sum(nil)
+		creds.AccessKeyID, result.Scope, result.SignedHeaders, result.Signature)
 }

@@ -36,6 +36,18 @@ parameters, apply the caps, query the dataset and wrap the answer in the
 provenance envelope. `internal/httpapi` and `internal/mcp` only translate
 transport.
 
+## S3 request signing
+
+The connector and EmberVM noded use the stdlib-only Go core in
+`projects/shared/s3sigv4` for canonical requests and S3 signature derivation
+(#7769). Each caller retains its credentials, region, payload hash, signed
+header selection and Authorization formatting.
+
+**Why.** The two clients had separate protocol implementations with different
+query ordering and header whitespace rules. One core sorts encoded query bytes
+and preserves escaped object paths. Caller policy stays in the wrappers;
+live storage acceptance remains separately owned under #5772.
+
 ## Light
 
 `light` and `GET /v1/light` answer the astronomical part without a snapshot.
