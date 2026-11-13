@@ -4,12 +4,12 @@ WITH before AS (
     FROM swarm.factory_control
     WHERE id = 'factory'
       AND policy_json::jsonb ->> 'repo' = 'jomcgi-org/homelab'
-      AND policy_json::jsonb -> 'max_tasks' = '{"delivery":10,"advisory":2}'::jsonb
+      AND policy_json::jsonb -> 'max_tasks' = jsonb_build_object('delivery', 10, 'advisory', 2)
     FOR UPDATE
 ),
 updated AS (
     UPDATE swarm.factory_control AS control
-    SET policy_json = jsonb_set(before.policy, '{max_tasks}', '{"delivery":40,"advisory":4}'::jsonb, false)::text,
+    SET policy_json = jsonb_set(before.policy, '{max_tasks}', jsonb_build_object('delivery', 40, 'advisory', 4), false)::text,
         version = control.version + 1,
         actor = 'migration:20261113000000_factory_concurrency_staged',
         updated_at = now()
