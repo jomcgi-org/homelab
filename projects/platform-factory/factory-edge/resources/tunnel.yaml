@@ -1,0 +1,31 @@
+# The factory cluster's Cloudflare Tunnel. The operator creates the tunnel in
+# the account, stores its credentials in cloudflare-operator-system and runs
+# the cloudflared Deployment; nothing about it is configured in the dashboard.
+#
+# The account ID is not a secret. The API token it acts with is
+# cloudflare-api-credentials (projects/platform-factory/cloudflare-operator).
+apiVersion: networking.cloudflare-operator.io/v1alpha2
+kind: ClusterTunnel
+metadata:
+  name: factory
+spec:
+  newTunnel:
+    name: factory-home
+  cloudflare:
+    accountId: "7c56b458cd657d96b095c63d181c051f"
+    domain: jomcgi.dev
+    secret: cloudflare-api-credentials
+  # Every hostname not bound by a TunnelBinding answers 404 at the origin.
+  fallbackTarget: http_status:404
+  deployPatch: |
+    spec:
+      replicas: 3
+      template:
+        spec:
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  cloudflare-operator.io/tunnel: factory

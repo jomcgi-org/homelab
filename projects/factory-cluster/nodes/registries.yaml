@@ -1,0 +1,6 @@
+# Installed to /etc/rancher/k3s/registries.yaml by install-node.sh.
+# With embedded-registry enabled, a listed registry is first looked up on the
+# other nodes (Spegel) before it is pulled from the internet. "*" covers every
+# registry.
+mirrors:
+  "*":
