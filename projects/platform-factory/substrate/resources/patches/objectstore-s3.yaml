@@ -1,0 +1,26 @@
+# The objectstore-plugin sidecar of ate-api-server and atelet: S3 against the
+# rustfs in snapshot-store.yaml (kind/ate-api-server and kind/atelet upstream
+# set the same variables, with a fixed key).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: objectstore-plugin-sidecar
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: objectstore-plugin
+          env:
+            - name: ATE_STORAGE_BACKEND
+              value: s3
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT_URL
+              value: http://rustfs.ate-system.svc:9000
+            - name: AWS_S3_USE_PATH_STYLE
+              value: "true"
+          envFrom:
+            - configMapRef:
+                name: ate-otel-config
+            - secretRef:
+                name: snapshot-store-credentials

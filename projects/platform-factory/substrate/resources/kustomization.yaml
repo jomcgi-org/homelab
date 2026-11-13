@@ -1,0 +1,94 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Agent Substrate v1.0.0 (ate.dev): the control plane `ate-setup deploy
+# ate-system --sandbox-classes=gvisor --credential-provider='{"enabled":false}'`
+# installs, rendered by ../render-upstream.sh into upstream/ with every image
+# pinned by digest. The patches below are what this cluster sets differently
+# from ate-setup's two profiles (kind and GKE); the generated CA and JWT pools
+# and the snapshot store's key come from
+# projects/factory-cluster/bootstrap-substrate.sh.
+resources:
+  - upstream/ate.dev_csidriverconfigs.yaml
+  - upstream/ate.dev_sandboxconfigs.yaml
+  - upstream/ate.dev_workerpools.yaml
+  - upstream/role.yaml
+  - upstream/sandboxconfig-validation.yaml
+  - upstream/sandboxconfig-gvisor.yaml
+  - upstream/pod-certificate-controller.yaml
+  - upstream/postgres.yaml
+  - upstream/ate-api-server.yaml
+  - upstream/ate-idp-server.yaml
+  - upstream/ate-controller.yaml
+  - upstream/atelet.yaml
+  - upstream/atenet-router.yaml
+  - upstream/atenet-egress.yaml
+  # Ingress-only NetworkPolicies; network-policy.yaml adds egress under the
+  # cluster-wide default-deny.
+  - upstream/ate-system-networkpolicies.yaml
+  - otel-config.yaml
+  - api-server-config.yaml
+  - snapshot-store.yaml
+  - network-policy.yaml
+
+configMapGenerator:
+  # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
+  - name: postgres-setup
+    namespace: ate-system
+    files:
+      - setup.sql=upstream/postgres-setup.sql
+
+patches:
+  # Snapshots and sandbox assets go to the in-cluster S3 store, as on kind,
+  # instead of GCS. atelet still reads public gs:// assets, such as the gVisor
+  # release its SandboxConfig names, anonymously over HTTPS.
+  - path: patches/objectstore-s3.yaml
+    target:
+      kind: (Deployment|DaemonSet)
+      name: (ate-api-server|atelet)
+  # No GKE image credential provider on these nodes; the kind overlay drops
+  # the same flags and host mounts.
+  - path: patches/atelet.yaml
+  # The bundled PostgreSQL, sized for this cluster, with its role setup run on
+  # every start rather than by ate-setup over kubectl exec.
+  - path: patches/postgres.yaml
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 20Gi
+  # Flags ate-setup appends at install time (steps/apienv.go, idpserver.go,
+  # overlay.go), with its defaults.
+  - target:
+      kind: Deployment
+      name: ate-api-server
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: ate-api-server
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --authz-bootstrap-owners=system:serviceaccount:ate-system:ate-client
+  - target:
+      kind: Deployment
+      name: ate-idp-server
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: ate-idp-server
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --issuer=https://idp.ate-system.svc
+  # kubectl-ate's `proxy actor` reaches actors as this identity.
+  - target:
+      kind: Deployment
+      name: atenet-router
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/name
+        value: atenet-router
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/ate-system/sa/atenet-client

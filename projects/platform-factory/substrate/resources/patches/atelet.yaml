@@ -1,0 +1,31 @@
+# atelet without the GKE image credential provider: the args below are
+# upstream's less the two --image-credential-provider-* flags, and the host
+# mounts that served them are removed, as kind/atelet does upstream. atelet
+# then pulls actor images anonymously.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: atelet
+  namespace: ate-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: atelet
+          args:
+            - --grpc-server-cred-bundle=/run/podidentity.podcert.ate.dev/credential-bundle.pem
+            - --client-ca-certs=/run/podidentity.podcert.ate.dev/trust-bundle.pem
+            - --ateapi-ca-file=/run/servicedns.podcert.ate.dev/trust-bundle.pem
+            - --drain-delay=0s
+            - --drain-timeout=5m
+            - --objectstore-plugin-socket=/run/objectstore-plugin/node.sock
+          volumeMounts:
+            - mountPath: /run/image-credential-provider/bin
+              $patch: delete
+            - mountPath: /run/image-credential-provider/config.yaml
+              $patch: delete
+      volumes:
+        - name: image-credential-provider-bin
+          $patch: delete
+        - name: image-credential-provider-config
+          $patch: delete

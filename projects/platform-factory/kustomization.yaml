@@ -11,3 +11,4 @@ resources:
   - ./runtimeclasses # gvisor RuntimeClass for the runsc handler install-node.sh installs
   - ./cfgate # Cloudflare tunnel and DNS lifecycle from Gateway API resources
   - ./factory-edge # The factory cluster's Cloudflare Tunnel; no hostname is published yet
+  - ./substrate # Agent Substrate control plane; bootstrap-substrate.sh creates its key material

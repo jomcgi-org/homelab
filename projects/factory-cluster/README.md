@@ -37,6 +37,7 @@ router must reserve these three leases.
 | Distribution | k3s `v1.37.2+k3s1`, three servers, embedded etcd | In-place on the existing Ubuntu installs; tolerates one node loss. Agent Substrate needs Kubernetes 1.37+ |
 | Certificates API | `certificates.k8s.io/v1beta1` served | Substrate's podcertificate controller uses the v1beta1 ClusterTrustBundle and PodCertificateRequest clients |
 | Sandboxing | gVisor `release-20261102.0` (`runsc`), RuntimeClass `gvisor` | The same release Substrate's SandboxConfig pins. Substrate stages its own runsc inside worker pods; the RuntimeClass serves other sandboxed pods |
+| Agent Substrate | `v1.0.0` (commit `b34fbee`), images pinned by digest; gVisor class only | Latest release. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run. Installed by ArgoCD from rendered manifests, not `ate-setup` ([Agent Substrate](#agent-substrate)) |
 | Node sysctls | proxy ARP/NDP, larger neighbour table, inotify | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
 | Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 was validated here with `cilium connectivity test` before default-deny; rerunning it now needs a temporary policy exempting the `cilium-test-*` namespaces |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
@@ -66,6 +67,9 @@ projects/factory-cluster/nodes/bootstrap-nodes.sh
 OP_CREDENTIALS_FILE=~/factory-1password-credentials.json \
 OP_CONNECT_TOKEN=... \
   projects/factory-cluster/bootstrap-gitops.sh
+
+# 4. Generate Agent Substrate's CAs, JWT keys and snapshot-store key (once).
+projects/factory-cluster/bootstrap-substrate.sh
 ```
 
 Nodes register after step 2 but stay NotReady: there is no CNI yet. Step 3
@@ -139,12 +143,64 @@ port-forward and sign in as `admin` with the password in the
 kubectl --kubeconfig ~/.kube/factory.yaml -n argocd port-forward svc/argocd-server 8080:80
 ```
 
+## Agent Substrate
+
+The combination in use is Kubernetes `v1.37.2+k3s1`, Agent Substrate `v1.0.0`
+and gVisor `release-20261102.0`. Substrate needs Kubernetes 1.37 or later with
+`certificates.k8s.io/v1beta1` served. Its atelet downloads the gVisor release
+named in the `gvisor-default` SandboxConfig (version `v7`, sha256-pinned) and
+runs it inside each worker pod; the nodes' own runsc is not used by Substrate.
+
+`ate-setup` supports only kind and GKE: GKE means GCS snapshots and Google
+service accounts, kind means a local registry. The factory therefore takes the
+kind profile's shape with release images:
+
+- `projects/platform-factory/substrate/render-upstream.sh` copies the
+  release's install manifests into `resources/upstream/`, with each image
+  pinned to its digest. Rerun it to upgrade, then review the diff.
+- `resources/` patches them for this cluster: S3 snapshots in an in-cluster
+  rustfs (`snapshot-store.yaml`), the bundled PostgreSQL with its role setup
+  in a postStart hook, ate-api-server's configuration, OpenTelemetry push off
+  (Prometheus `/metrics` stays on), and Cilium egress allowlists.
+- `bootstrap-substrate.sh` creates the generated Secrets: the podcertificate
+  signer CAs, the actor identity CA and JWT keys, the egress MITM CA and the
+  snapshot store's key. They exist only in the cluster. The CAs expire after
+  one year.
+
+Control plane: `ate-system` (ate-api-server, ate-controller, ate-idp-server,
+atenet-router, atenet-egress, the atelet DaemonSet, postgres and rustfs) and
+`podcertificate-controller-system`. WorkerPools may live in any namespace.
+The `substrate-workers` cluster-wide policy lets their pods reach atelet and
+the egress gateway. ate-controller limits their ingress to atenet-router.
+The egress credential provider is off. Actors have no internet egress: the
+gateway's policy allows only ate-api-server.
+
+Verify an install:
+
+```bash
+export KUBECONFIG=~/.kube/factory.yaml
+kubectl -n ate-system get pods          # all Running and Ready
+kubectl get sandboxconfig gvisor-default # DEFAULT v7
+kubectl get clustertrustbundles | grep podcert.ate.dev
+# kubectl-ate from the same release, then a throwaway actor:
+kubectl ate create atespace substrate-smoke
+kubectl apply -f <WorkerPool in namespace substrate-smoke, workerImage ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0@sha256:...>
+kubectl ate create actor-template -f <template>   # wait for GOLDEN TAG
+kubectl ate create actor smoke-1 -a substrate-smoke --template smoke
+kubectl ate proxy actor smoke-1 -a substrate-smoke # then send it a request
+```
+
+Check Hubble for drops while it runs (see Network policy). Then delete the
+actor, the template, the atespace, the WorkerPool and the namespace.
+
 ## Not yet done
 
 These come from the #7817 step 1 checklist:
 
-- Agent Substrate install (`ate-setup`) and a recorded Actor start, write,
-  suspend and resume. It also needs Postgres and S3-compatible snapshot storage.
+- Durable Agent Substrate state: its PostgreSQL and snapshot store are on
+  local-path volumes on one node each, with no backup.
+- Actor internet egress and the egress credential provider, with the
+  credential broker.
 - Replicated storage, and backup and restore: off-node etcd snapshots with a
   copy of the cluster token, once the cluster holds state Git cannot recreate.
 - Authentik for the factory cluster, the Envoy Gateway edge with forward-auth,
