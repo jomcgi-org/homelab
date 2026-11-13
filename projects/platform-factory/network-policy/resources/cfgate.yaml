@@ -2,7 +2,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: controller
-  namespace: cloudflare-operator-system
+  namespace: cfgate-system
 spec:
   endpointSelector:
     matchLabels:
@@ -16,19 +16,22 @@ spec:
             - port: "443"
               protocol: TCP
 ---
-# cloudflared: outbound to Cloudflare's tunnel edge, and to the origins its
-# TunnelBindings name. Each published origin adds an egress rule here, which
-# makes every public path a reviewed change to this file.
+# cloudflared: outbound to Cloudflare's tunnel edge only. Routing to an origin
+# adds an egress rule here, so every public path is a reviewed change to this
+# file as well as to the edge Gateway.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: cloudflared
-  namespace: cloudflare-operator-system
+  namespace: cfgate-system
 spec:
   endpointSelector:
     matchLabels:
-      cloudflare-operator.io/app: cloudflared
+      app.kubernetes.io/name: cloudflared
+      app.kubernetes.io/managed-by: cfgate
   egress:
+    # Edge discovery uses SRV records under argotunnel.com; connections go to
+    # region1/region2.v2.argotunnel.com on 7844 over QUIC (UDP) or HTTP/2.
     - toFQDNs:
         - matchPattern: "*.v2.argotunnel.com"
         - matchPattern: "*.argotunnel.com"
@@ -38,7 +41,6 @@ spec:
               protocol: ANY
     - toFQDNs:
         - matchName: api.cloudflare.com
-        - matchName: update.argotunnel.com
       toPorts:
         - ports:
             - port: "443"
