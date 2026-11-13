@@ -3,6 +3,8 @@ from io import BytesIO
 from struct import pack
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from core.clock import (
     as_utc,
     aware,
@@ -21,15 +23,31 @@ def test_as_utc_none_stays_none():
     assert as_utc(None) is None
 
 
-def test_as_utc_naive_is_labelled_utc():
-    naive = datetime(2026, 10, 11, 2, 0, 0)
-    assert as_utc(naive) == naive.replace(tzinfo=timezone.utc)
-
-
-def test_as_utc_converts_other_zones():
-    assert as_utc(datetime(2026, 10, 11, 3, 0, tzinfo=_BST)) == datetime(
-        2026, 10, 11, 2, 0, tzinfo=timezone.utc
-    )
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(datetime(2026, 10, 11, 2, 4, 5, 123456), id="naive"),
+        pytest.param(
+            datetime(2026, 10, 11, 2, 4, 5, 123456, tzinfo=timezone.utc), id="utc"
+        ),
+        pytest.param(
+            datetime(2026, 10, 11, 3, 4, 5, 123456, tzinfo=_BST), id="non-utc"
+        ),
+    ],
+)
+def test_as_utc_normalizes_datetime(value):
+    result = as_utc(value)
+    assert isinstance(result, datetime)
+    assert result.tzinfo is timezone.utc
+    assert (
+        result.year,
+        result.month,
+        result.day,
+        result.hour,
+        result.minute,
+        result.second,
+        result.microsecond,
+    ) == (2026, 10, 11, 2, 4, 5, 123456)
 
 
 def test_iso_formats_in_utc():

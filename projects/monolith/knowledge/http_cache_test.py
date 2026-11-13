@@ -1,59 +1,10 @@
-"""Unit tests for knowledge.http_cache -- as_utc and _graph_etag helpers.
-
-Both functions are pure (no I/O, no DB), so no fixtures are needed.
-These helpers back the Cache-Control / ETag / Last-Modified behaviour for both
-the private and public knowledge graph endpoints.
-"""
+"""Unit tests for knowledge.http_cache ETag and Cache-Control helpers."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from core.clock import as_utc
 from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _graph_etag
-
-
-# ---------------------------------------------------------------------------
-# as_utc
-# ---------------------------------------------------------------------------
-
-
-class TestAsUtc:
-    def test_none_returns_none(self):
-        assert as_utc(None) is None
-
-    def test_naive_datetime_treated_as_utc(self):
-        naive = datetime(2024, 6, 1, 12, 0, 0)
-        result = as_utc(naive)
-        assert result is not None
-        assert result.tzinfo is not None
-        assert result.tzinfo == timezone.utc
-        # Year/month/day/hour preserved
-        assert result.year == 2024
-        assert result.month == 6
-        assert result.hour == 12
-
-    def test_aware_datetime_converted_to_utc(self):
-        from datetime import timedelta
-
-        plus2 = timezone(timedelta(hours=2))
-        aware = datetime(2024, 6, 1, 14, 0, 0, tzinfo=plus2)
-        result = as_utc(aware)
-        assert result is not None
-        assert result.tzinfo == timezone.utc
-        # 14:00 +02:00 == 12:00 UTC
-        assert result.hour == 12
-
-    def test_already_utc_passthrough(self):
-        utc_dt = datetime(2024, 3, 15, 9, 30, 0, tzinfo=timezone.utc)
-        result = as_utc(utc_dt)
-        assert result == utc_dt
-        assert result.tzinfo == timezone.utc
-
-    def test_returns_datetime_instance(self):
-        naive = datetime(2025, 1, 1, 0, 0, 0)
-        result = as_utc(naive)
-        assert isinstance(result, datetime)
 
 
 # ---------------------------------------------------------------------------
