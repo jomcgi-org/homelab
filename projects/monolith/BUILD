@@ -7073,6 +7073,15 @@ bdd_test(
     ],
 )
 
+bdd_test(
+    name = "grimoire_feedback_upgrade_postgres_test",
+    srcs = ["grimoire/feedback_upgrade_postgres_test.py"],
+    deps = [
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "grimoire_feedback_test",
     srcs = ["grimoire/feedback_test.py"],
