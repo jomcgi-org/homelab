@@ -93,6 +93,9 @@ expect 2 "KUBECONFIG=~/.kube/factory.yaml kubectl apply -f x.yaml --field-manage
 expect 2 "HELM_KUBEAPISERVER=https://hub KUBECONFIG=~/.kube/factory.yaml helm upgrade x ./c"
 expect 2 "KUBECONFIG=/tmp/evil/.kube/factory.yaml kubectl apply -f x"
 expect 2 "KUBECONFIG=/home/u/.kube/factory.yaml kubectl apply -f x"
+expect 2 "KUBECONFIG=~/.kube/factory.yaml kubectl -shttps://hub.example apply -f x"
+expect 2 "export HELM_KUBEAPISERVER=https://hub; KUBECONFIG=~/.kube/factory.yaml helm upgrade x ./c"
+expect 2 "KUBECONFIG=~/.kube/factory.yaml sudo kubectl apply -f x"
 
 # Allowed.
 expect 0 "cat x.md  # mentions kubectl delete"
