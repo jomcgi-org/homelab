@@ -375,7 +375,13 @@ class TestSnapshot:
 
 
 @pytest.mark.parametrize("path", ["/api/campsites/snapshot"])
-def test_conditional_response_preserves_payload_and_cache_headers(client, path):
+def test_conditional_response_preserves_payload_and_cache_headers(
+    client, session, path
+):
+    session.add_all(
+        [_campground(1, "Alpha Lake"), _availability(1, _TODAY), _weather(1, _TODAY)]
+    )
+    session.commit()
     first = client.get(path)
     assert first.status_code == 200
     etag = first.headers["ETag"]
