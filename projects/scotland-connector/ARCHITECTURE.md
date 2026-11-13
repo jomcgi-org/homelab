@@ -562,13 +562,11 @@ single JSON object:
 Tool argument errors come back as `isError` results so the model can
 correct itself; unknown argument names are rejected rather than ignored.
 Every tool has a title and `readOnlyHint: true`. `tools/list` and the
-instructions leave `aurora` out while its store is disabled
-(`AURORA_ENABLED`); a call naming it still answers, for clients holding an
-older list.
+instructions always advertise `aurora`. Missing or invalid snapshot data
+returns `unknown` through both public surfaces.
 
-**Why.** A disabled aurora store answers every call `unknown`. Listing it
-spent assistants' calls on the most-asked winter question and invited them
-to relay `unknown` as if it were evidence.
+**Why.** Declared production values enabled the consumer in #7256. The consumer store now
+refreshes unconditionally, independently of readiness and producer activation.
 
 **Why.** The tool surface is a few read-only functions. An SDK would add a
 dependency, version churn and session machinery to a server whose whole
@@ -670,11 +668,18 @@ file keeps it in the monorepo without users cloning the monorepo to add it.
 
 `internal/aurora` is a bounded near-term heuristic shared by MCP `aurora`
 and REST `GET /v1/aurora`. The independent `AuroraStore` reads the existing
-stars bucket's `aurora.json` only when `config.auroraEnabled` is true. The
-default is false. Failed parsing or replacement retains the last good object
-without changing its source clocks. Aurora never gates readiness or reads
+stars bucket's `aurora.json` unconditionally. Failed parsing or replacement
+retains the last good object without changing its source clocks. Aurora never gates readiness or reads
 upstream providers during a caller request. No new destination or account is
-introduced. Collection, publication and activation remain staged.
+introduced. Producer collection, publication and source/terrain acceptance
+remain separate from consumer discovery.
+
+The current chart has no consumer activation key or environment variable.
+Deployment values retain `config.auroraEnabled: true` for older supported
+charts: HEAD values and Kargo chart revisions advance independently. Rollback
+uses the previous chart or a revert. Normal landing, CI chart writeback,
+verified rollout and public discovery in both MCP eras remain operational
+acceptance for #7819. Discovery does not complete source/terrain acceptance.
 
 **Why.** The existing stars `sites.json` drops brighter hours and caps returned
 hours. Those omissions cannot establish weather or darkness for an aurora

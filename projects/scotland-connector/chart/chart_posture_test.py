@@ -31,18 +31,23 @@ _GATEWAY_VALUES = (
 _ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
 
 
-def test_aurora_is_enabled_in_deploy_and_has_explicit_enabled_wiring() -> None:
-    for overrides, expected in (
-        ([], "true"),
-        (["config.auroraEnabled=false"], "false"),
-    ):
+def test_aurora_has_no_activation_env_and_keeps_snapshot_wiring() -> None:
+    for overrides in ([], ["config.auroraEnabled=false"]):
         docs = _render(overrides)
         deployment = _one(docs, "Deployment")
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         env = {item["name"]: item.get("value") for item in container["env"]}
-        assert env["AURORA_ENABLED"] == expected
+        assert "AURORA_ENABLED" not in env
         assert env["STARS_AURORA_KEY"] == "aurora.json"
         assert env["STARS_BUCKET"] == "stars"
+
+
+def test_deploy_keeps_older_chart_compatibility_enabled() -> None:
+    assert yaml.safe_load(_DEPLOY_VALUES.read_text())["config"]["auroraEnabled"] is True
+    assert (
+        "auroraEnabled"
+        not in yaml.safe_load((_CHART_DIR / "values.yaml").read_text())["config"]
+    )
 
 
 def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:

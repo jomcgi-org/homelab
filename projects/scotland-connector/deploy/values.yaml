@@ -8,7 +8,9 @@ config:
   # Where the route below serves the API; method_url and the OpenAPI servers
   # entry are built from it.
   publicBaseURL: https://jomcgi.dev/scotland
-  # Snapshot-only aurora tool (#7256). Rollback is this flag.
+  # Older supported charts still read this key. HEAD deployment values and
+  # Kargo chart revisions advance independently; keep those consumers enabled.
+  # Current runtime is unconditional. Rollback uses a previous chart/revert.
   auroraEnabled: true
 
 r2Credentials:

@@ -108,9 +108,10 @@ func TestEnabledProducerStoreTransportParityAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mcp.New(svc, metrics, log, mcp.ServerInfo{Name: "fixture"}, nil)
+	at := "2026-12-01T23:00:00Z"
 	assert := func(want string) {
 		t.Helper()
-		q := url.Values{"lat": {"58"}, "lon": {"-4"}, "at": {"2026-12-01T23:00:00Z"}}
+		q := url.Values{"lat": {"58"}, "lon": {"-4"}, "at": {at}}
 		r := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/v1/aurora?"+q.Encode(), nil)
 		req.Header.Set("If-None-Match", "*")
@@ -122,7 +123,7 @@ func TestEnabledProducerStoreTransportParityAndExpiry(t *testing.T) {
 		if err := json.Unmarshal(r.Body.Bytes(), &rest); err != nil {
 			t.Fatal(err)
 		}
-		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aurora","arguments":{"lat":58,"lon":-4,"at":"2026-12-01T23:00:00Z"}}}`
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"aurora","arguments":{"lat":58,"lon":-4,"at":"` + at + `"}}}`
 		r = httptest.NewRecorder()
 		m.ServeHTTP(r, httptest.NewRequest("POST", "/mcp", strings.NewReader(body)))
 		var rpc struct {
@@ -148,6 +149,10 @@ func TestEnabledProducerStoreTransportParityAndExpiry(t *testing.T) {
 		}
 	}
 	assert("go")
+	// Fresh source clocks cannot support another forecast instant.
+	at = "2026-12-01T23:01:00Z"
+	assert("unknown")
+	at = "2026-12-01T23:00:00Z"
 	// Both parse failure and fetch failure retain the same source timestamps.
 	g.body = []byte(`{"schema":1}`)
 	g.tag = "broken"
@@ -184,7 +189,7 @@ func TestEnabledProducerStoreTransportParityAndExpiry(t *testing.T) {
 				for _, l := range metric.Label {
 					labels[l.GetName()] = l.GetValue()
 				}
-				if labels["tool"] == "aurora" && labels["surface"] == surface && metric.Counter.GetValue() == 3 {
+				if labels["tool"] == "aurora" && labels["surface"] == surface && metric.Counter.GetValue() == 4 {
 					found = true
 				}
 			}
@@ -195,7 +200,7 @@ func TestEnabledProducerStoreTransportParityAndExpiry(t *testing.T) {
 	}
 }
 
-func TestDefaultOffAndParameterParity(t *testing.T) {
+func TestMissingStoreAndParameterParity(t *testing.T) {
 	svc := &connector.Service{Now: func() time.Time { return fixture.AuroraNow }}
 	lat, lon := 58.0, -4.0
 	e, err := svc.Aurora(connector.AuroraParams{Lat: &lat, Lon: &lon, At: "2026-12-01T23:00:00Z"})

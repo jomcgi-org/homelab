@@ -9,7 +9,11 @@ credential. No bucket, account, access policy or archival retention is created.
 Go materializer in the existing jobs image, with a 240-second deadline, Forbid
 concurrency, disposable scheduling priority and a 512 MiB ceiling. The producer
 has a three-minute collection deadline and no HTTP retries or redirects.
-Production activation and `config.auroraEnabled` remain separate explicit steps.
+Producer activation remains an explicit step. The connector consumer refreshes
+unconditionally; its deployment values retain `config.auroraEnabled: true` only
+for older supported charts because HEAD values and Kargo chart revisions advance
+independently. Consumer rollback uses the previous chart or a revert. Consumer
+discovery does not complete producer, source or terrain acceptance.
 
 The initial inventory is at most 64 real stars grid sites, selected consistently
 across occupied half-degree cells. Coordinates sent to MET have four decimal

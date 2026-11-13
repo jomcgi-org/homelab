@@ -7,64 +7,172 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/aurora"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/mcp"
 )
 
-func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
-	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", `"fixture"`)
-		switch r.URL.Path {
-		case "/stars/sites.json":
-			io.WriteString(w, fixture.Sites)
-		case "/stars/history-map.json":
-			io.WriteString(w, fixture.History)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer r2srv.Close()
-	t.Setenv("R2_ENDPOINT", r2srv.URL)
-	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
-	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	for _, enabled := range []string{"false", "true"} {
-		t.Setenv("AURORA_ENABLED", enabled)
-		cfg, err := loadConfig()
-		if err != nil {
-			t.Fatal(err)
-		}
-		a, err := newApp(cfg, log, r2srv.Client())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if (a.aurora != nil) != (enabled == "true") {
-			t.Fatal("activation flag")
-		}
-		if err = a.store.Refresh(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if a.aurora != nil && a.aurora.Refresh(context.Background()) == nil {
-			t.Fatal("missing aurora snapshot accepted")
-		}
-		r := httptest.NewRecorder()
-		a.admin.ServeHTTP(r, httptest.NewRequest("GET", "/readyz", nil))
-		if r.Code != 200 {
-			t.Fatal("aurora broke readiness", r.Body)
-		}
-		r = httptest.NewRecorder()
-		a.public.ServeHTTP(r, httptest.NewRequest("GET", "/v1/aurora?lat=58&lon=-4&at=2026-12-01T23:00:00Z", nil))
-		if r.Code != 200 || !strings.Contains(r.Body.String(), `"verdict":"unknown"`) {
-			t.Fatal(r.Code, r.Body)
+// Use the production constructors and startup path with the activation variable
+// absent. No test attaches an AuroraStore to the service by hand.
+func TestAuroraWiringWithoutActivationEnvironment(t *testing.T) {
+	t.Setenv("AURORA_ENABLED", "")
+	if err := os.Unsetenv("AURORA_ENABLED"); err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := fixture.AuroraInputs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := aurora.Materialize(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		body   []byte
+		loaded bool
+	}{
+		{"missing", nil, false},
+		{"malformed", []byte(`{"schema":1}`), false},
+		{"snapshot", snapshot, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reads atomic.Int32
+			r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("ETag", `"fixture"`)
+				switch r.URL.Path {
+				case "/stars/sites.json":
+					io.WriteString(w, fixture.Sites)
+				case "/stars/history-map.json":
+					io.WriteString(w, fixture.History)
+				case "/stars/selected-aurora.json":
+					defer reads.Add(1)
+					if tc.body == nil {
+						w.WriteHeader(http.StatusNotFound)
+					} else {
+						w.Write(tc.body)
+					}
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer r2srv.Close()
+			t.Setenv("R2_ENDPOINT", r2srv.URL)
+			t.Setenv("STARS_AURORA_KEY", "selected-aurora.json")
+			t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+			t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Shorten only the polling interval after config validation so the test
+			// proves repeated background refresh as well as the initial fetch.
+			cfg.refreshInterval = 10 * time.Millisecond
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			a, err := newApp(cfg, log, r2srv.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.aurora == nil {
+				t.Fatal("aurora store missing")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			a.startStores(ctx, log)
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) && (reads.Load() < 2 || a.store.Current() == nil || tc.loaded && a.aurora.Current() == nil) {
+				time.Sleep(time.Millisecond)
+			}
+			if reads.Load() < 2 || (a.aurora.Current() != nil) != tc.loaded {
+				t.Fatal("background refresh", reads.Load(), a.aurora.Current())
+			}
+			rec := httptest.NewRecorder()
+			a.admin.ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("aurora broke readiness: %d %s", rec.Code, rec.Body)
+			}
+			a.draining.Store(true)
+			rec = httptest.NewRecorder()
+			a.admin.ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatal("draining stayed ready")
+			}
+			versions := append([]string{mcp.ModernVersion}, mcp.LegacyVersions...)
+			for _, version := range versions {
+				discovery := "initialize"
+				if version == mcp.ModernVersion {
+					discovery = "server/discover"
+				}
+				r := appMCP(t, a, version, discovery, "", nil)
+				if r["instructions"] != mcp.Instructions {
+					t.Fatalf("%s instructions: %v", version, r)
+				}
+				r = appMCP(t, a, version, "tools/list", "", nil)
+				var names []string
+				for _, tool := range r["tools"].([]any) {
+					names = append(names, tool.(map[string]any)["name"].(string))
+				}
+				if strings.Join(names, ",") != "light,aurora,plan,check" {
+					t.Fatal(version, names)
+				}
+				// Missing, malformed or out-of-date source clocks remain unknown.
+				for _, at := range []string{"2026-12-01T23:00:00Z", "2026-12-01T23:01:00Z"} {
+					rec = httptest.NewRecorder()
+					a.public.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/aurora?lat=58&lon=-4&at="+at, nil))
+					if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"verdict":"unknown"`) {
+						t.Fatal(rec.Code, rec.Body)
+					}
+					r = appMCP(t, a, version, "tools/call", "aurora", map[string]any{"lat": 58, "lon": -4, "at": at})
+					if r["isError"] != false || r["structuredContent"].(map[string]any)["data"].(map[string]any)["verdict"] != "unknown" {
+						t.Fatal(version, r)
+					}
+				}
+			}
+		})
+	}
+}
+
+func appMCP(t *testing.T, a *app, version, method, name string, args map[string]any) map[string]any {
+	t.Helper()
+	params := map[string]any{}
+	if method == "initialize" {
+		params["protocolVersion"], params["capabilities"] = version, map[string]any{}
+	}
+	if name != "" {
+		params["name"], params["arguments"] = name, args
+	}
+	if version == mcp.ModernVersion {
+		params["_meta"] = map[string]any{"io.modelcontextprotocol/protocolVersion": version, "io.modelcontextprotocol/clientCapabilities": map[string]any{}}
+	}
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", version)
+	if version == mcp.ModernVersion {
+		req.Header.Set("Mcp-Method", method)
+		if name != "" {
+			req.Header.Set("Mcp-Name", name)
 		}
 	}
-	t.Setenv("AURORA_ENABLED", "maybe")
-	if _, err := loadConfig(); err == nil {
-		t.Fatal("invalid activation value")
+	rec := httptest.NewRecorder()
+	a.public.ServeHTTP(rec, req)
+	var r struct {
+		Result map[string]any
+		Error  any
 	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &r) != nil || r.Error != nil || r.Result == nil {
+		t.Fatalf("%s %s: %d %s", version, method, rec.Code, rec.Body)
+	}
+	return r.Result
 }
 
 // End to end through the real wiring: a fake R2 serves the fixture

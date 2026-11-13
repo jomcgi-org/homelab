@@ -22,7 +22,7 @@ func handler() *Handler {
 		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
 }
 
-// auroraStore is an enabled aurora store whose snapshot has not loaded.
+// auroraStore is a store whose snapshot has not loaded.
 type auroraStore struct{}
 
 func (auroraStore) Current() *aurora.Snapshot { return nil }
@@ -34,30 +34,21 @@ func auroraHandler() *Handler {
 		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
 }
 
-// aurora is listed, and named in the instructions, only when its store is
-// enabled: a disabled one answers every call unknown. A client holding an
-// older list can still call it.
-func TestAuroraListedOnlyWhenEnabled(t *testing.T) {
-	names := func(h *Handler) (out []string, instructions string) {
-		t.Helper()
+// Discovery stays available even when the snapshot store has no data.
+func TestAuroraAlwaysListed(t *testing.T) {
+	for _, h := range []*Handler{handler(), auroraHandler()} {
 		_, _, r := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
+		var names []string
 		for _, tool := range r.Result["tools"].([]any) {
-			out = append(out, tool.(map[string]any)["name"].(string))
+			names = append(names, tool.(map[string]any)["name"].(string))
 		}
-		_, _, r = post(t, h, `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil)
-		return out, r.Result["instructions"].(string)
-	}
-	off, offText := names(handler())
-	if strings.Join(off, ",") != "light,plan,check" || strings.Contains(offText, "aurora") {
-		t.Errorf("disabled: tools %v, instructions %q", off, offText)
-	}
-	on, onText := names(auroraHandler())
-	if strings.Join(on, ",") != "light,aurora,plan,check" || onText != Instructions {
-		t.Errorf("enabled: tools %v, instructions %q", on, onText)
-	}
-	code, _, r := post(t, handler(), `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"aurora","arguments":{"lat":58.44,"lon":-3.09,"at":"2026-06-15T22:00:00Z"}}}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
-	if code != http.StatusOK || r.Result["isError"] != false {
-		t.Fatalf("aurora call while unlisted: status %d result %v", code, r.Result)
+		if strings.Join(names, ",") != "light,aurora,plan,check" {
+			t.Fatal(names)
+		}
+		code, _, r := post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"aurora","arguments":{"lat":58.44,"lon":-3.09,"at":"2026-06-15T22:00:00Z"}}}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
+		if code != http.StatusOK || r.Result["isError"] != false || r.Result["structuredContent"].(map[string]any)["data"].(map[string]any)["verdict"] != "unknown" {
+			t.Fatalf("aurora without data: status %d result %v", code, r.Result)
+		}
 	}
 }
 
@@ -410,7 +401,7 @@ func TestLegacyClient(t *testing.T) {
 		t.Fatalf("notification status %d", code)
 	}
 	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
-	if code != http.StatusOK || len(r.Result["tools"].([]any)) != len(h.tools()) || r.Result["resultType"] != nil {
+	if code != http.StatusOK || len(r.Result["tools"].([]any)) != len(Tools) || r.Result["resultType"] != nil {
 		t.Fatalf("legacy tools/list: status %d result %v", code, r.Result)
 	}
 	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"plan","arguments":{"lat":56.41,"lon":-5.47}}}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"})

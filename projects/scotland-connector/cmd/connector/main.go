@@ -35,7 +35,6 @@ type config struct {
 	r2Creds                        r2.Credentials
 	bucket, sitesKey, historyKey   string
 	walksKey                       string
-	auroraEnabled                  bool
 	auroraKey                      string
 	refreshInterval, shutdownGrace time.Duration
 	publicBaseURL, version         string
@@ -66,13 +65,6 @@ func loadConfig() (config, error) {
 		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
 	}
 	var err error
-	switch env("AURORA_ENABLED", "false") {
-	case "false":
-	case "true":
-		c.auroraEnabled = true
-	default:
-		return c, errors.New("AURORA_ENABLED must be true or false")
-	}
 	if c.refreshInterval, err = time.ParseDuration(env("REFRESH_INTERVAL", "60s")); err != nil || c.refreshInterval < 5*time.Second {
 		return c, fmt.Errorf("REFRESH_INTERVAL must be a duration of at least 5s")
 	}
@@ -94,7 +86,7 @@ func main() {
 }
 
 // app is the wired service: the public and admin handlers over the stars
-// store (which gates readiness) and the optional walk store.
+// store (which gates readiness), walk store and independent aurora store.
 type app struct {
 	public, admin http.Handler
 	store         *store.Store
@@ -134,11 +126,8 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		return -1
 	}))
 	svc := &connector.Service{Data: st, Walks: ws, MethodURL: cfg.publicBaseURL + "/v1/method", Now: time.Now}
-	var as *store.AuroraStore
-	if cfg.auroraEnabled {
-		as = store.NewAurora(cfg.bucket, cfg.auroraKey, cfg.refreshInterval, client, log)
-		svc.AuroraData = as
-	}
+	as := store.NewAurora(cfg.bucket, cfg.auroraKey, cfg.refreshInterval, client, log)
+	svc.AuroraData = as
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
 	api, err := httpapi.New(svc, m, log, cfg.publicBaseURL)
@@ -204,6 +193,13 @@ func (a *app) loadUntilReady(ctx context.Context, log *slog.Logger) {
 	a.store.Run(ctx)
 }
 
+// startStores starts independent background refresh loops. Only stars gate readiness.
+func (a *app) startStores(ctx context.Context, log *slog.Logger) {
+	go a.loadUntilReady(ctx, log)
+	go a.walks.Run(ctx)
+	go a.aurora.Run(ctx)
+}
+
 func run(log *slog.Logger) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -236,11 +232,7 @@ func run(log *slog.Logger) error {
 		}()
 	}
 
-	go a.loadUntilReady(ctx, log)
-	go a.walks.Run(ctx)
-	if a.aurora != nil {
-		go a.aurora.Run(ctx)
-	}
+	a.startStores(ctx, log)
 	log.Info("connector listening", "public", cfg.listenAddr, "admin", cfg.adminAddr, "version", cfg.version)
 
 	select {
