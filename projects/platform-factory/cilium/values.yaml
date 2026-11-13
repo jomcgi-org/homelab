@@ -12,11 +12,8 @@ kubeProxyReplacement: true
 k8sServiceHost: "127.0.0.1"
 k8sServicePort: 6444
 
-# k3s reads CNI config and binaries from its own directories.
-cni:
-  exclusive: false
-  confPath: /var/lib/rancher/k3s/agent/etc/cni/net.d
-  binPath: /var/lib/rancher/k3s/data/cni
+# With flannel disabled, k3s 1.37 leaves containerd on the standard CNI
+# directories (/etc/cni/net.d, /opt/cni/bin), which are Cilium's defaults.
 
 ipam:
   mode: cluster-pool

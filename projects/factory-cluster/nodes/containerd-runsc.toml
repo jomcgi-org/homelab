@@ -1,8 +1,7 @@
-{{ template "base" . }}
-
 # gVisor runtime handler for the `gvisor` RuntimeClass
-# (projects/platform-factory/runtimeclasses). install-node.sh installs the
-# pinned runsc and containerd-shim-runsc-v1 to /usr/local/bin.
+# (projects/platform-factory/runtimeclasses), installed as a drop-in that k3s's
+# generated containerd config imports. install-node.sh installs the pinned
+# runsc and containerd-shim-runsc-v1 to /usr/local/bin.
 #
 # Agent Substrate does not use this handler: its atelet downloads the gVisor
 # release named in its own SandboxConfig and runs it inside worker pods.

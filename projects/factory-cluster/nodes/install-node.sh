@@ -50,11 +50,13 @@ if [[ "$(/usr/local/bin/runsc --version 2>/dev/null | head -1)" != *"release-${G
 	install -m 0755 "${tmp}/x/runsc" "${tmp}/x/containerd-shim-runsc-v1" /usr/local/bin/
 fi
 
-install -d -m 0755 /etc/rancher/k3s /var/lib/rancher/k3s/agent/etc/containerd
+install -d -m 0755 /etc/rancher/k3s /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
 install -m 0600 "${HERE}/k3s-config.yaml" /etc/rancher/k3s/config.yaml
 install -m 0644 "${HERE}/registries.yaml" /etc/rancher/k3s/registries.yaml
-install -m 0644 "${HERE}/containerd-config-v3.toml.tmpl" \
-	/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+# A drop-in, not a config-v3.toml.tmpl, so k3s's generated config stays whole.
+rm -f /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
+install -m 0644 "${HERE}/containerd-runsc.toml" \
+	/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/runsc.toml
 
 # The install script is taken from the pinned release tag, not get.k3s.io.
 installer="https://raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh"
