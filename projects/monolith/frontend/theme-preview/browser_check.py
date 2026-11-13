@@ -1,15 +1,20 @@
 """Read-only Chromium checks of the isolated, server-rendered theme fixture."""
 
 import argparse
-import functools
-import hashlib
-import http.server
 import importlib.metadata
 import importlib.util
 import itertools
 import json
-import threading
 from pathlib import Path
+
+# Runners are also loaded by file path, without a frontend sys.path entry.
+_support_spec = importlib.util.spec_from_file_location(
+    "preview_support", Path(__file__).resolve().parent.parent / "preview_support.py"
+)
+_support = importlib.util.module_from_spec(_support_spec)
+_support_spec.loader.exec_module(_support)
+digest_tree = _support.digest_tree
+static_server = _support.static_server
 
 try:
     from playwright.sync_api import Error as PlaywrightError
@@ -18,14 +23,6 @@ except ModuleNotFoundError as error:
     raise RuntimeError(
         "Playwright is required; browser acceptance cannot be skipped"
     ) from error
-
-
-def digest_tree(root):
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 def resize_text(page, selector=".fixture"):
@@ -327,12 +324,6 @@ def check(root, output, expected_sha):
     assert (
         'data-ds-theme="technical-drawing-light"' in (root / "index.html").read_text()
     ), "static artifact has no server-rendered light boundary"
-    server = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0),
-        functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root)),
-    )
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_port}/"
     evidence = {
         "commit": expected_sha,
         "playwright": importlib.metadata.version("playwright"),
@@ -340,7 +331,7 @@ def check(root, output, expected_sha):
         "gallery_cases": [],
     }
     try:
-        with sync_playwright() as playwright:
+        with static_server(root) as base, sync_playwright() as playwright:
             try:
                 browser = playwright.chromium.launch()
             except PlaywrightError as error:
@@ -371,7 +362,8 @@ def check(root, output, expected_sha):
                 page.set_default_timeout(10000)
                 errors = []
                 page.on(
-                    "pageerror", lambda error, errors=errors: errors.append(str(error))
+                    "pageerror",
+                    lambda error, errors=errors: errors.append(str(error)),
                 )
                 page.on(
                     "console",
@@ -439,8 +431,6 @@ def check(root, output, expected_sha):
             )
             browser.close()
     finally:
-        server.shutdown()
-        server.server_close()
         evidence["screenshots"] = {
             name: digest
             for name, digest in digest_tree(output).items()

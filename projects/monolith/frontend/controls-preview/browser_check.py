@@ -1,16 +1,24 @@
 """Chromium acceptance for synthetic shared controls, never a live service."""
 
 import argparse
-import functools
-import http.server
 import importlib.metadata
 import importlib.util
 import itertools
 import json
-import threading
 from pathlib import Path
 
+
 from playwright.sync_api import expect, sync_playwright
+
+
+# Runners are also loaded by file path, without a frontend sys.path entry.
+_support_spec = importlib.util.spec_from_file_location(
+    "preview_support", Path(__file__).resolve().parent.parent / "preview_support.py"
+)
+_support = importlib.util.module_from_spec(_support_spec)
+_support_spec.loader.exec_module(_support)
+digest_tree = _support.digest_tree
+static_server = _support.static_server
 
 
 def helper(directory):
@@ -24,7 +32,6 @@ def helper(directory):
 # Share the existing preview platform, colour compositing, real text resize and
 # clipping checks rather than duplicating their definitions in another runner.
 theme = helper("theme-preview")
-factory = helper("factory-preview")
 SAMPLES = ("light", "nested", "sibling", "dark")
 INTERACTIVE = "a[href], button, summary, input, select, textarea, [role=tabpanel]"
 
@@ -446,8 +453,7 @@ def check(root, output, expected_sha):
         "cases": [],
         "issues": [],
     }
-    server = None
-    before = factory.digest_tree(root)
+    before = digest_tree(root)
     try:
         assert (
             json.loads((root / "build.json").read_text())["commit"] == expected_sha
@@ -459,15 +465,7 @@ def check(root, output, expected_sha):
             and 'data-sample="nested"' in html
         ), "missing SSR markup"
         evidence["ssr_artifact"] = "passed"
-        server = http.server.ThreadingHTTPServer(
-            ("127.0.0.1", 0),
-            functools.partial(
-                http.server.SimpleHTTPRequestHandler, directory=str(root)
-            ),
-        )
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        base = f"http://127.0.0.1:{server.server_port}/"
-        with sync_playwright() as playwright:
+        with static_server(root) as base, sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             evidence["chromium"] = browser.version
             static = browser.new_context(java_script_enabled=False)
@@ -581,7 +579,7 @@ def check(root, output, expected_sha):
                         print(issue, flush=True)
                     context.close()
             browser.close()
-        assert before == factory.digest_tree(root), "browser mutated built artifact"
+        assert before == digest_tree(root), "browser mutated built artifact"
         assert len(evidence["cases"]) == 8, "browser matrix incomplete"
         assert all(case["status"] == "passed" for case in evidence["cases"]), (
             "controls browser acceptance failed"
@@ -589,9 +587,6 @@ def check(root, output, expected_sha):
     except Exception as error:
         evidence["issues"].append(f"{type(error).__name__}: {error}")
     finally:
-        if server:
-            server.shutdown()
-            server.server_close()
         evidence["status"] = "failed" if evidence["issues"] else "passed"
         (output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
         (output / "tested-files.json").write_text(json.dumps(before, indent=2) + "\n")

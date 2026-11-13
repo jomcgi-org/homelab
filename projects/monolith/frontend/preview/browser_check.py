@@ -1,40 +1,26 @@
 """Exercise the exact static artifact at a Pages-style nested URL, offline."""
 
 import argparse
-import functools
-import hashlib
-import http.server
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
-import threading
 from pathlib import Path
-from urllib.parse import urlsplit
+
+
+# Runners are also loaded by file path, without a frontend sys.path entry.
+_support_spec = importlib.util.spec_from_file_location(
+    "preview_support", Path(__file__).resolve().parent.parent / "preview_support.py"
+)
+_support = importlib.util.module_from_spec(_support_spec)
+_support_spec.loader.exec_module(_support)
+digest_tree = _support.digest_tree
+static_server = _support.static_server
+
 
 PREFIX = "/homelab/pr/42/" + "a" * 40 + "/"
 VIEWPORTS = [(360, 640), (390, 844), (1440, 1000)]
-
-
-def digest_tree(root):
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        path = urlsplit(self.path).path
-        if not path.startswith(PREFIX):
-            self.send_error(403)
-            return
-        self.path = "/" + path.removeprefix(PREFIX)
-        super().do_GET()
-
-    def log_message(self, *_args):
-        pass
 
 
 def check_blog(root, output):
@@ -42,14 +28,12 @@ def check_blog(root, output):
 
     before = digest_tree(root)
     output.mkdir(parents=True, exist_ok=True)
-    server = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
-    )
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_port}{PREFIX}"
     evidence = []
     try:
-        with sync_playwright() as playwright:
+        with (
+            static_server(root, prefix=PREFIX) as base,
+            sync_playwright() as playwright,
+        ):
             browser = playwright.chromium.launch()
             for width, height in VIEWPORTS:
                 context = browser.new_context(
@@ -78,7 +62,8 @@ def check_blog(root, output):
 
                 context.route("**/*", route_request)
                 page.on(
-                    "pageerror", lambda error, errors=errors: errors.append(str(error))
+                    "pageerror",
+                    lambda error, errors=errors: errors.append(str(error)),
                 )
                 page.on(
                     "requestfailed",
@@ -169,8 +154,6 @@ def check_blog(root, output):
                     context.close()
             browser.close()
     finally:
-        server.shutdown()
-        server.server_close()
         (output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     assert before == digest_tree(root), "browser check changed the publish artifact"
     (output / "tested-files.json").write_text(json.dumps(before, indent=2) + "\n")

@@ -474,6 +474,7 @@ py_test(
     srcs = [
         "preview/browser_check.py",
         "preview/browser_check_test.py",
+        "preview_support.py",
     ],
     imports = ["preview"],
     main = "preview/browser_check_test.py",
@@ -1123,4 +1124,13 @@ js_run_binary(
 build_test(
     name = "theme_fixture_preview_build_test",
     targets = [":theme_fixture_preview"],
+)
+
+py_test(
+    name = "preview_support_test",
+    srcs = [
+        "preview_support.py",
+        "preview_support_test.py",
+    ],
+    main = "preview_support_test.py",
 )

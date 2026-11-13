@@ -1,9 +1,6 @@
 """Chromium-only synthetic QA. Run in CI, never against a live service."""
 
 import argparse
-import functools
-import hashlib
-import http.server
 import importlib.metadata
 import importlib.util
 import itertools
@@ -11,12 +8,22 @@ import json
 import re
 import subprocess
 import sys
-import threading
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+
+from urllib.parse import urlencode
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
+
+# Runners are also loaded by file path, without a frontend sys.path entry.
+_support_spec = importlib.util.spec_from_file_location(
+    "preview_support", Path(__file__).resolve().parent.parent / "preview_support.py"
+)
+_support = importlib.util.module_from_spec(_support_spec)
+_support_spec.loader.exec_module(_support)
+digest_tree = _support.digest_tree
+static_server = _support.static_server
+
 
 # The comparison suite loads this owner by file path, without adding its
 # directory to sys.path. Resolve the sibling explicitly for both entry points.
@@ -31,27 +38,6 @@ PREFIX = "/synthetic/factory/"
 NOW = "2026-10-03T12:00:00.000Z"
 VIEWPORTS = [(320, 740), (360, 800), (390, 844), (430, 932), (1440, 1000)]
 VIEWS = ("overview", "activity", "context", "chapter", "search")
-
-
-def digest_tree(root):
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        path = urlsplit(self.path).path
-        if not path.startswith(PREFIX):
-            self.send_error(403)
-            return
-        self.path = "/" + path.removeprefix(PREFIX)
-        super().do_GET()
-
-    def log_message(self, *_args):
-        pass
 
 
 def matrix():
@@ -514,18 +500,16 @@ def check(root, output, expected_sha):
     before = digest_tree(root)
     build = json.loads((root / "build.json").read_text())
     assert build["commit"] == expected_sha, "artifact is not from the requested commit"
-    server = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
-    )
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_port}{PREFIX}"
     evidence = {
         "commit": expected_sha,
         "playwright": importlib.metadata.version("playwright"),
         "cases": [],
     }
     try:
-        with sync_playwright() as playwright:
+        with (
+            static_server(root, prefix=PREFIX) as base,
+            sync_playwright() as playwright,
+        ):
             browser = playwright.chromium.launch()
             evidence["chromium"] = browser.version
             for width, height, scheme, scenario, view, scale in matrix():
@@ -564,7 +548,8 @@ def check(root, output, expected_sha):
 
                 context.route("**/*", guard)
                 page.on(
-                    "pageerror", lambda error, errors=errors: errors.append(str(error))
+                    "pageerror",
+                    lambda error, errors=errors: errors.append(str(error)),
                 )
                 page.on(
                     "requestfailed",
@@ -611,7 +596,8 @@ def check(root, output, expected_sha):
                         or (view == "overview" and width == 320 and scale == 2)
                     ):
                         page.screenshot(
-                            path=str(output / f"{name}-opening.png"), full_page=False
+                            path=str(output / f"{name}-opening.png"),
+                            full_page=False,
                         )
                     if view == "overview" and width <= 900:
                         check_mobile_totals(
@@ -665,8 +651,6 @@ def check(root, output, expected_sha):
             check_execution(browser, base, output, evidence)
             browser.close()
     finally:
-        server.shutdown()
-        server.server_close()
         (output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
         (output / "tested-files.json").write_text(json.dumps(before, indent=2) + "\n")
     assert before == digest_tree(root), "browser check changed the static artifact"
