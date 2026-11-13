@@ -713,9 +713,11 @@ use_repo(
     "http_fixture_arm64",
     "http_fixture_arm64_metadata",
     "http_fixture_assets",
+    "http_fixture_assets_metadata",
     "http_fixture_dual",
     "http_fixture_dual_metadata",
     "http_fixture_raw",
+    "http_fixture_raw_metadata",
     "http_goose_source_amd64",
     "http_goose_source_arm64",
 )

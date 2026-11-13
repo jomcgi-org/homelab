@@ -20,12 +20,24 @@ def _metadata_impl(ctx):
         for expected in ['actual = ":%s"' % preferred, 'actual = ":tar_%s"' % preferred, 'tags = ["multiarch_tar"]']:
             if expected not in content:
                 fail("Missing %s in %s" % (expected, build))
+    for binary, arch in ctx.attr.binaries.items():
+        result = ctx.execute([str(ctx.path(binary))])
+        if ctx.attr.executable:
+            if result.return_code != 0 or result.stdout != "fixture-" + arch + "\n":
+                fail("Repository binary execution failed: %s %s" % (binary, result.stderr))
+        elif result.return_code == 0:
+            fail("Expected the pre-migration non-executable archive binary")
     ctx.file("checked.txt", "Generated public labels, aliases, visibility and multiarch_tar tag verified.\n")
     ctx.file("BUILD.bazel", 'exports_files(["checked.txt"], visibility = ["//visibility:public"])')
 
 _metadata = repository_rule(
     implementation = _metadata_impl,
-    attrs = {"builds": attr.label_list(), "arches": attr.string_list()},
+    attrs = {
+        "builds": attr.label_list(),
+        "arches": attr.string_list(),
+        "binaries": attr.label_keyed_string_dict(allow_files = True),
+        "executable": attr.bool(default = True),
+    },
 )
 
 def _fixtures_impl(ctx):
@@ -54,6 +66,7 @@ def _fixtures_impl(ctx):
             name = name + "_metadata",
             builds = ["@" + name + "//:BUILD.bazel"],
             arches = arches,
+            binaries = {"@" + name + "//:" + arch + "_binary": arch for arch in arches},
         )
 
     multiarch_http_file(
@@ -72,6 +85,15 @@ def _fixtures_impl(ctx):
         binary_name = "fixture",
         package_dir = "/opt/fixture/bin",
     )
+
+    for name, arch in [("http_fixture_assets", "amd64"), ("http_fixture_raw", "arm64")]:
+        _metadata(
+            name = name + "_metadata",
+            builds = ["@" + name + "//:BUILD.bazel"],
+            arches = [arch],
+            binaries = {"@" + name + "//:" + arch + "_binary": arch},
+            executable = name != "http_fixture_assets",
+        )
 
     # Independent archive inputs allow comparison with both exposed and packaged
     # goose bytes. These remain pinned identically to the production declaration.

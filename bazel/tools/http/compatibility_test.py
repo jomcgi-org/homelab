@@ -19,7 +19,6 @@ class CompatibilityTest(unittest.TestCase):
         arches = os.environ["HTTP_ARCHES"].split(",")
         goose = os.environ["HTTP_GOOSE"] == "True"
         archive = os.environ["HTTP_ARCHIVE"] == "True"
-        executable = os.environ["HTTP_EXECUTABLE"] == "True"
         assets = os.environ["HTTP_ASSETS"] == "True"
         package = "usr/local/bin/goose" if goose else "opt/fixture/bin/fixture"
         expected = {}
@@ -65,11 +64,11 @@ class CompatibilityTest(unittest.TestCase):
                 )
         preferred = "amd64" if "amd64" in arches else "arm64"
         self.assertEqual(paths["binary"].read_bytes(), expected[preferred])
-        self.assertEqual(os.access(paths["binary"], os.X_OK), executable)
+        self.assertTrue(os.access(paths["binary"], os.X_OK))
         self.assertEqual(
             paths["tar"].read_bytes(), paths["tar_" + preferred].read_bytes()
         )
-        if not goose and executable:
+        if not goose:
             result = subprocess.run(
                 [str(paths["binary"])], check=True, capture_output=True, text=True
             )

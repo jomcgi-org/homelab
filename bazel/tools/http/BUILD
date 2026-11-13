@@ -69,6 +69,7 @@ compatibility_test(
     name = "raw_compatibility_test",
     arches = ["arm64"],
     archive = False,
+    metadata = True,
     repo = "http_fixture_raw",
 )
 
@@ -78,7 +79,7 @@ compatibility_test(
     name = "assets_compatibility_test",
     arches = ["amd64"],
     assets = True,
-    executable = False,
+    metadata = True,
     repo = "http_fixture_assets",
 )
 

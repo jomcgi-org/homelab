@@ -20,7 +20,7 @@ _manifest = rule(
     attrs = {"inputs": attr.label_keyed_string_dict(allow_files = True)},
 )
 
-def compatibility_test(name, repo, arches, archive = True, assets = False, metadata = False, goose = False, executable = True):
+def compatibility_test(name, repo, arches, archive = True, assets = False, metadata = False, goose = False):
     """Build every public label and compare the resulting files in Linux."""
     inputs = {
         "@%s//:binary" % repo: "binary",
@@ -47,7 +47,6 @@ def compatibility_test(name, repo, arches, archive = True, assets = False, metad
             "HTTP_ARCHIVE": str(archive),
             "HTTP_ASSETS": str(assets),
             "HTTP_GOOSE": str(goose),
-            "HTTP_EXECUTABLE": str(executable),
         },
         target_compatible_with = ["@platforms//os:linux"],
     )
