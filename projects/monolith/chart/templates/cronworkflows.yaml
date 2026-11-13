@@ -21,10 +21,19 @@ image guard elsewhere.
 {{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
 {{- fail "sharedS3.enabled must be a boolean" }}
 {{- end }}
+{{- if not (kindIs "bool" .Values.sepa.enabled) }}
+{{- fail "sepa.enabled must be a boolean" }}
+{{- end }}
+{{- if and .Values.sepa.enabled (not .Values.sharedS3.enabled) }}
+{{- fail "sepa.enabled requires existing sharedS3 configuration" }}
+{{- end }}
 {{- if .Values.jobs.image }}
 {{- $cronWorkflows := append .Values.jobs.cronWorkflows .Values.jobs.snapshotMergedPrs }}
+{{- $cronWorkflows = append $cronWorkflows .Values.jobs.sepa }}
 {{- range $cronWorkflows }}
-{{- if and .grimoire (not $.Values.grimoire.enabled) }}
+{{- if and .sepa (not $.Values.sepa.enabled) }}
+{{- /* Omit the workflow, its storage credentials and its schedule by default. */ -}}
+{{- else if and .grimoire (not $.Values.grimoire.enabled) }}
 {{- /* grimoire jobs are private-tier only: skip them entirely unless the
        grimoire module is enabled, so an unrelated (public) deploy never
        renders a CronWorkflow referencing the openrouter secret. */ -}}
@@ -127,11 +136,20 @@ spec:
           args:
             {{- toYaml .args | nindent 12 }}
           env:
+            {{- if .sepa }}
+            - name: SEPA_ENABLED
+              value: {{ $.Values.sepa.enabled | quote }}
+            - name: SEPA_STATION_NUMBERS
+              value: {{ $.Values.sepa.stationNumbers | quote }}
+            - name: SEPA_PREFIX
+              value: {{ $.Values.sepa.prefix | quote }}
+            {{- else }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ $.Values.jobs.dbSecretName }}
                   key: {{ $.Values.jobs.dbSecretKey }}
+            {{- end }}
             {{- if $.Values.backend.otelEndpoint }}
             - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
               value: {{ $.Values.backend.otelEndpoint | quote }}

@@ -1,0 +1,35 @@
+[
+  [
+    "station_id",
+    "station_no",
+    "station_name",
+    "ts_id",
+    "ts_path",
+    "ts_name",
+    "stationparameter_no",
+    "stationparameter_name",
+    "ts_unitsymbol"
+  ],
+  [
+    "36354",
+    "133171",
+    "Newton Stewart",
+    "54076010",
+    "1/133171/SG/15m.Cmd",
+    "15minute",
+    "SG",
+    "Level",
+    "m"
+  ],
+  [
+    "38496",
+    "9514",
+    "Norham",
+    "61557010",
+    "1/9514/SG/15m.Cmd",
+    "15minute",
+    "SG",
+    "Level",
+    "m"
+  ]
+]

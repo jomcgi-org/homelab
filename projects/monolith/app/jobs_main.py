@@ -24,6 +24,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -248,6 +249,23 @@ def _setup_otel():
 def _shutdown_otel(provider) -> None:
     """Flush job spans without allowing telemetry to change the exit status."""
     job_tracing.shutdown(provider, logger)
+
+
+@app.command("sepa-collect")
+def sepa_collect() -> None:
+    """Archive SEPA levels only after explicit opt-in; disabled calls are inert."""
+    if os.environ.get("SEPA_ENABLED", "false") != "true":
+        typer.echo("SEPA disabled; requests=0 objects=0")
+        return
+    configure_logging()
+    from sepa.collector import run
+
+    try:
+        run()
+    except Exception as exc:
+        # SDK errors can include request URLs/credentials: report type only.
+        logger.error("SEPA failed error_type=%s", type(exc).__name__)
+        raise typer.Exit(1) from None
 
 
 @app.command("ember-codex-synthetic-trigger")
@@ -1133,7 +1151,11 @@ def safeguards_train() -> None:
 
 
 if __name__ == "__main__":
-    _otel_provider = _setup_otel()
+    _sepa_disabled = (
+        "sepa-collect" in sys.argv[1:]
+        and os.environ.get("SEPA_ENABLED", "false") != "true"
+    )
+    _otel_provider = None if _sepa_disabled else _setup_otel()
     try:
         app()
     finally:

@@ -1,0 +1,19 @@
+[
+  {
+    "ts_id": "61557010",
+    "ts_path": "1/9514/SG/15m.Cmd",
+    "station_id": "38496",
+    "station_no": "9514",
+    "station_name": "Norham",
+    "stationparameter_no": "SG",
+    "stationparameter_name": "Level",
+    "ts_unitsymbol": "m",
+    "rows": "3",
+    "columns": "Timestamp,Value,Quality Code",
+    "data": [
+      ["2021-10-22T23:45:00.000Z", 1.403, 50],
+      ["2021-10-23T00:00:00.000Z", 1.396, 50],
+      ["2021-10-23T00:15:00.000Z", 1.392, 50]
+    ]
+  }
+]

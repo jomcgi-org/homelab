@@ -2218,6 +2218,142 @@ the conflict; the cost is a filegroup in every doc-owning package, held
 complete by the coverage check. One pretty-printed committed file per doc was
 the fallback: mergeable, but still generated state in git.
 
+### Staged SEPA river-level archive (#7251)
+
+**Why.** The receipt for #7251 still accepts both CalMac route status and SEPA
+river levels. The recorded factory gate stages only SEPA repository work while
+source permissions and live acceptance remain separate. Argo owns the schedule;
+immutable objects retain revisions without replacing historical partitions.
+CalMac is unimplemented: its permitted source and evidence for sailed events
+remain unresolved. Normal route status and ferry timetables cannot establish
+sailed events. This implementation does not satisfy the full issue.
+
+`sepa.enabled` is false by default and no checked-in overlay enables it. The
+CronWorkflow is absent when disabled, even with a populated `jobs.image`.
+`jobs_main.py sepa-collect` and the handler both require `SEPA_ENABLED=true`
+before clients, storage configuration or credentials are used; the disabled
+executable also skips telemetry setup. This is a synchronous batch command,
+with no scheduler, database, public route or connector registration.
+
+Sources reviewed **2026-11-13**:
+
+- API and attribution: <https://timeseriesdoc.sepa.org.uk/>;
+  licence: <https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/>.
+  Attribute output as “Contains SEPA data, licensed under the Open Government
+  Licence v3.0.” The API landing page permits use without registration and
+  warns that data may be revised. No account was created.
+- Access controls:
+  <https://timeseriesdoc.sepa.org.uk/api-documentation/before-you-start/what-controls-there-are-on-access/>.
+  Published anonymous allowance: 5,000 credits/day, currently subject to early
+  exhaustion; metadata costs nominally 1–2 credits, values 1 credit per 1,000
+  predicted points rounded up, last values 1 per 20 series; maximum 300,000
+  predicted points/request. No undocumented request-per-second quota is assumed.
+  The documentation recommends registration for web products; none is added.
+- Request examples and format definitions:
+  <https://timeseriesdoc.sepa.org.uk/api-documentation/api-endpoint-examples/time-series-list-queries/>,
+  <https://timeseriesdoc.sepa.org.uk/api-documentation/api-endpoint-examples/time-series-data-queries/>,
+  <https://timeseriesdoc.sepa.org.uk/api-documentation/api-function-reference/return-formats/>,
+  <https://timeseriesdoc.sepa.org.uk/api-documentation/api-function-reference/optioned-return-fields/>.
+
+Every request uses `https://timeseries.sepa.org.uk/KiWIS/KiWIS` with
+`service=kisters&type=queryServices&datasource=0&format=json`. The two-station
+catalog below was verified using `getTimeseriesList` with
+`station_no=133171,9514&stationparameter_no=SG&ts_shortname=15m.Cmd` and
+`returnfields=station_id,station_no,station_name,ts_id,ts_path,ts_name,stationparameter_no,stationparameter_name,ts_unitsymbol`;
+`getStationList` with the same station numbers and
+`returnfields=station_id,station_no,station_name,river_name` verifies river identity.
+The station number and internal station ID are distinct and both are retained.
+
+| River | Station | station_no | station_id | ts_id | ts_path | Parameter / units |
+| --- | --- | --- | --- | --- | --- | --- |
+| Cree | Newton Stewart | 133171 | 36354 | 54076010 | 1/133171/SG/15m.Cmd | SG / Level / m |
+| Tweed | Norham | 9514 | 38496 | 61557010 | 1/9514/SG/15m.Cmd | SG / Level / m |
+
+`SEPA_STATION_NUMBERS` / `sepa.stationNumbers` selects a unique nonempty subset
+of that verified allowlist. Adding a station requires a reviewed catalog and
+fixture change. Neither rainfall nor flow nor another aggregation is accepted.
+Public metadata fixtures and the small historical `getTimeseriesValues` sample
+(`ts_id=54076010&from=2021-10-22T23:45:00Z&to=2021-10-23T00:15:00Z`)
+are captured in `sepa/fixtures/`. Values specify
+`returnfields=Timestamp,Value,Quality Code&metadata=true&timezone=UTC` and
+`md_returnfields=ts_id,ts_path,station_id,station_no,station_name,stationparameter_no,stationparameter_name,ts_unitsymbol`.
+`getQualityCodes&format=json` verifies codes 50 good, 100 estimated, 140
+provisional, 150 suspect, 200 unknown and 254 unspecified. Metadata JSON is a
+header array plus row arrays; values JSON is a list of series objects containing
+`columns`, `rows` and `data` arrays. These actual shapes drive the fixture tests.
+Only these public samples were read; no scheduled collection or storage write
+was performed for this task.
+
+The proposed cadence is once every three hours at minute 17. Each invocation
+reads two metadata tables, then one values request per selected station for the
+preceding 24 hours ending on a UTC quarter hour. At most 97 points/series and
+four logical requests are allowed. Requests are serial, with ten-second client
+timeouts, a 1 MiB decoded response cap and eight HTTP attempts total. Only
+transport failures, 429 and 5xx get one retry; numeric Retry-After up to five
+seconds is respected, longer/date-form delays fail immediately. KiWIS error
+objects fail without retry. The conservative policy is at most eight scheduled
+invocations/day, 64 HTTP attempts, at most 194 values per invocation before
+retries, comfortably below published credits; it is our bound, not a SEPA quota.
+Anonymous exhaustion is a visible failure, never a reason to register or spoof
+Referer. Argo uses Forbid, a 30-second start deadline, a 300-second active deadline,
+256 MiB memory request and 512 MiB limit. Storage requests have 5-second connect,
+10-second read timeouts and two total SDK attempts. There is no Workflow retry
+strategy or unbounded backfill. Manual invocations need the same enable flag;
+operators must preserve the cadence when enabling or manually retrying.
+
+Schema v1 preserves source, station ID/number/name, river, series ID/path,
+parameter SG, metres, UTC observation and ingestion timestamps, nullable double
+value, integer quality code, nullable provisional flag, missing flag,
+`revision_possible=true`, schema version and revision ID. Code 140 marks
+provisional; unknown/unspecified codes retain a null provisional flag. All values
+remain revisable, including code 50. Null values persist as missing; absent
+quarter hours are counted as gaps, never interpolated. Empty series, missing
+metadata, duplicate/out-of-window timestamps and malformed/partial rows fail
+before writes. Completion logs report stations, readings, missing values, absent
+slots, requests and created/duplicate objects. Failure logs report exception
+type only, excluding request URLs and secrets. There is no partial-success claim.
+
+Storage reuses the configured `STARS_GRID_S3_BUCKET` (currently `stars`), shared
+R2 HTTPS endpoint and existing monolith-r2-s3 Secret. No bucket, credentials,
+policy, access grant or public reader is added. `SEPA_PREFIX` / `sepa.prefix`
+defaults to `collectors/sepa` and must remain within that dedicated namespace.
+Objects are `collectors/sepa[/suffix]/v1/date=YYYY-MM-DD/station=<station_no>/<digest>.parquet`.
+The date is the observation's UTC date, not ingestion date. A batch groups one
+station's readings for one observation date; timestamps and ingestion times use
+Parquet UTC timestamp types, with explicit types even for all-null values.
+
+A row's revision ID hashes its canonical source fields, including value, quality,
+metadata and observation time, excluding ingestion time. The object digest
+hashes its ordered row revision IDs, excluding ingestion time as well. Retrying
+the same batch reuses its identity and retains the first successful ingestion
+time. Overlapping poll windows can duplicate rows across objects: readers
+must deduplicate by revision ID. Changed source values or quality append new
+revisions and objects; retain every revision and use ingestion time when choosing
+the latest known version of a station/series/observation. Identical revisions
+that later recur deduplicate to the original revision; this is revision-content
+history, not a complete source-change event log. There is no partition replacement,
+object deletion, listing-based lock or latest pointer.
+
+Pinned boto3/botocore 1.42.61 model and Stubber tests exercise `PutObject` with
+`IfNoneMatch="*"`; a missing model field fails. R2 documents atomic create-only
+PutObject at <https://developers.cloudflare.com/r2/api/s3/conditional-operations/>.
+Only that established backend is accepted. A 412 requires HeadObject metadata
+matching the digest and schema before it counts as a duplicate; 409, differing
+metadata and unsupported operations fail visibly. The code never falls back to
+an unconditional write. Tests use faked atomic storage and real pinned request
+validation, never production credentials. PyArrow 23.0.1 writes and reads the
+Parquet fixtures. Serialization and storage stay off async loops because the
+whole job is synchronous.
+
+Enabling needs separately authorized collection, confirmed existing bucket and
+credential scope, source allowance review, and live idempotence/retention and
+failure-signal checks. Nothing here activates collection. The recorded gate's
+remaining checks are: after authorized landing, verify monolith's delivered
+revision including its CI-published jobs image; then read deployed configuration
+and CronWorkflow status to confirm SEPA remains disabled and its workflow absent
+or suspended. Those checks accept only this disabled revision. Operational
+collection acceptance for both sources remains on #7251, which stays open.
+
 ## 11. Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
@@ -2226,6 +2362,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Stage a disabled SEPA archive while retaining both source requirements | Staged SEPA river-level archive above; recorded factory gate | #7251 | repository subset only; CalMac unimplemented, SEPA disabled, operational collection acceptance outstanding |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |

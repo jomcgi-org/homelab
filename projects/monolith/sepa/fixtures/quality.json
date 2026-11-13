@@ -1,0 +1,38 @@
+[
+  {
+    "key": 50,
+    "code": "G",
+    "description": "Good",
+    "color": "rgba(0, 255, 0, 1.0)"
+  },
+  {
+    "key": 100,
+    "code": "E",
+    "description": "Estimated",
+    "color": "rgba(0, 0, 255, 1.0)"
+  },
+  {
+    "key": 140,
+    "code": "Prov",
+    "description": "Provisional",
+    "color": "rgba(255, 255, 0, 1.0)"
+  },
+  {
+    "key": 150,
+    "code": "S",
+    "description": "Suspect",
+    "color": "rgba(255, 255, 0, 1.0)"
+  },
+  {
+    "key": 200,
+    "code": "Unknown",
+    "description": "Quality control data (Unknown)",
+    "color": "rgba(255, 255, 255, 1.0)"
+  },
+  {
+    "key": 254,
+    "code": "-",
+    "description": "-",
+    "color": "rgba(128, 128, 128, 1.0)"
+  }
+]

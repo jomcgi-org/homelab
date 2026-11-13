@@ -1,0 +1,19 @@
+[
+  {
+    "ts_id": "54076010",
+    "ts_path": "1/133171/SG/15m.Cmd",
+    "station_id": "36354",
+    "station_no": "133171",
+    "station_name": "Newton Stewart",
+    "stationparameter_no": "SG",
+    "stationparameter_name": "Level",
+    "ts_unitsymbol": "m",
+    "rows": "3",
+    "columns": "Timestamp,Value,Quality Code",
+    "data": [
+      ["2021-10-22T23:45:00.000Z", 0.971, 50],
+      ["2021-10-23T00:00:00.000Z", 0.969, 50],
+      ["2021-10-23T00:15:00.000Z", 0.967, 50]
+    ]
+  }
+]

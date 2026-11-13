@@ -23,6 +23,7 @@
 # gazelle:exclude ships
 # gazelle:exclude hikes
 # gazelle:exclude moving
+# gazelle:exclude sepa
 # gazelle:exclude stars
 # gazelle:exclude trips
 # gazelle:exclude dr_jobs
@@ -131,6 +132,7 @@ _BACKEND_SRCS = glob(
         "hikes/**/*.py",
         "moving/**/*.py",
         "stars/**/*.py",
+        "sepa/**/*.py",
         "trips/**/*.py",
         "dr_jobs/**/*.py",
         "worldcup/**/*.py",
@@ -1660,6 +1662,7 @@ py_library(
             "hikes/**/*.py",
             "moving/**/*.py",
             "stars/**/*.py",
+            "sepa/**/*.py",
             "trips/**/*.py",
             "dr_jobs/**/*.py",
             "worldcup/**/*.py",
@@ -1710,6 +1713,8 @@ py_library(
         "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//boto3",
+        "@pip//botocore",
+        "@pip//pyarrow",
         "@pip//certifi",
         "@pip//curl_cffi",  # campsites/client.py (browser-TLS impersonation vs BC Parks WAF)
         "@pip//defusedxml",  # trips/transform.py (KML parsing)
@@ -1882,6 +1887,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "shared/testing/**/*.py",
     "stars/grid_gen/**",
     "trips/backfill/**",
+    "sepa/**",
     # Whole private domains.
     "agent/**",
     "chat/**",
@@ -10023,5 +10029,22 @@ py_test(
     deps = [
         ":pkg_stars",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "sepa_collector_test",
+    srcs = ["sepa/collector_test.py"],
+    data = glob(["sepa/fixtures/*.json"]),
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//boto3",
+        "@pip//botocore",
+        "@pip//httpx",
+        "@pip//pyarrow",
+        "@pip//pytest",
+        "@pip//typer",
+        "@pip//tzdata",
     ],
 )

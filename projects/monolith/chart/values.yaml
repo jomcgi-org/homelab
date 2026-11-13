@@ -212,7 +212,28 @@ agents:
 #
 # jobs.image is injected (digest-pinned) at build time by helm_images_values
 # (see chart/BUILD images "jobs.image"); do not set it here.
+# #7251 staged archive. No deployed overlay enables it.
+sepa:
+  enabled: false
+  stationNumbers: "133171,9514"
+  prefix: "collectors/sepa"
+
 jobs:
+  sepa:
+    name: sepa-collect
+    args: ["sepa-collect"]
+    sepa: true
+    s3: true
+    schedule: "17 */3 * * *"
+    concurrencyPolicy: Forbid
+    startingDeadlineSeconds: 30
+    activeDeadlineSeconds: 300
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
   workflowNamespace: monolith-workflows
   # Secret in workflowNamespace (Kyverno-cloned from monolith-pg-app) supplying
   # DATABASE_URL to job pods via secretKeyRef.
