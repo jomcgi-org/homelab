@@ -436,5 +436,12 @@ deploymentObservations:
 
 # Base deployment stays opt-in; the hub enables the #7002 advisory reader.
 healthAlerts:
+  operationalSignals:
+    kargoPromotions:
+      enabled: false
+    embervmControlErrors:
+      enabled: false
+    egressDenials:
+      enabled: false
   cnpgBackups:
     enabled: false

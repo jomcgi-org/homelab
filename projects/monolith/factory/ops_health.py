@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 
 from core.clock import aware
 from core.clock import utc_now as _now
+from factory import advisory_signals
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class _CachedCheck:
     compute: Callable[[], Awaitable[dict]]
     ttl_s: float = CACHE_TTL_S
     timeout_s: float = CHECK_TIMEOUT_S
+    enabled_env: str | None = None
     _value: tuple[float, dict] | None = None
     _lock: asyncio.Lock | None = field(default=None, repr=False)
 
@@ -106,6 +108,8 @@ class _CachedCheck:
         self._lock = None
 
     async def __call__(self) -> dict:
+        if self.enabled_env and os.environ.get(self.enabled_env, "").lower() != "true":
+            return _unknown("disabled")
         now = time.monotonic()
         if self._value is not None and now - self._value[0] < self.ttl_s:
             return self._value[1]
@@ -771,6 +775,21 @@ CHECKS: dict[str, _CachedCheck] = {
         factory_stuck_health,
         kg_dispute_resolution_health,
         cnpg_backups_health,
+        _CachedCheck(
+            "kargo_promotions",
+            advisory_signals.kargo_promotions,
+            enabled_env="KARGO_PROMOTIONS_ENABLED",
+        ),
+        _CachedCheck(
+            "embervm_control_errors",
+            advisory_signals.embervm_control_errors,
+            enabled_env="EMBERVM_CONTROL_ERRORS_ENABLED",
+        ),
+        _CachedCheck(
+            "egress_denials",
+            advisory_signals.egress_denials,
+            enabled_env="EGRESS_DENIALS_ENABLED",
+        ),
     )
 }
 

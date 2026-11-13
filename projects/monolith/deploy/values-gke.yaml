@@ -172,5 +172,12 @@ deploymentObservations:
 # Read the shared hub backup observations and notify on stale base backups
 # through private advisory health (#7002). Unknown observations never recover.
 healthAlerts:
+  operationalSignals:
+    kargoPromotions:
+      enabled: false
+    embervmControlErrors:
+      enabled: false
+    egressDenials:
+      enabled: false
   cnpgBackups:
     enabled: true

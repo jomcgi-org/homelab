@@ -158,3 +158,13 @@ networkPolicy:
     # The inactive recovery profile has its own separately reviewed policy
     # input. Do not activate the chart policy by inheritance.
     enabled: false
+
+# New operational advisories remain staged in every deployment.
+healthAlerts:
+  operationalSignals:
+    kargoPromotions:
+      enabled: false
+    embervmControlErrors:
+      enabled: false
+    egressDenials:
+      enabled: false

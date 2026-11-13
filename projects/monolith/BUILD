@@ -10025,3 +10025,35 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+py_test(
+    name = "factory_advisory_signals_test",
+    srcs = ["factory/advisory_signals_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        ":pkg_shared",
+        "@pip//httpx",
+        "@pip//kubernetes_asyncio",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "factory_advisory_chart_test",
+    srcs = ["factory/advisory_chart_test.py"],
+    data = [
+        "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith/chart:docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:recovery_support_manifests",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

@@ -475,6 +475,25 @@ spec:
             # (embervm_capacity, agent_turns, codex_quota_fresh, factory_stuck),
             # posted by the leader only. Replaces the Honeycomb triggers the
             # free plan cannot hold. See docs/observability.md (Alerting).
+            {{- $signals := .Values.healthAlerts.operationalSignals }}
+            {{- range $key := list "kargoPromotions" "embervmControlErrors" "egressDenials" }}
+            {{- if not (kindIs "bool" (index $signals $key "enabled")) }}
+            {{- fail (printf "healthAlerts.operationalSignals.%s.enabled must be a boolean" $key) }}
+            {{- end }}
+            {{- if and (index $signals $key "enabled") (not $.Values.rbac.clusterAccess.enabled) }}
+            {{- fail "operationalSignals requires rbac.clusterAccess" }}
+            {{- end }}
+            {{- end }}
+            - name: KARGO_PROMOTIONS_ENABLED
+              value: {{ $signals.kargoPromotions.enabled | quote }}
+            - name: EMBERVM_CONTROL_ERRORS_ENABLED
+              value: {{ $signals.embervmControlErrors.enabled | quote }}
+            - name: EGRESS_DENIALS_ENABLED
+              value: {{ $signals.egressDenials.enabled | quote }}
+            - name: EMBERVM_CONTROL_ERRORS_TARGETS
+              value: {{ toJson $signals.controlTargets | quote }}
+            - name: EGRESS_DENIALS_TARGETS
+              value: {{ toJson $signals.egressTargets | quote }}
             - name: HEALTH_ALERTS_ENABLED
               value: {{ .Values.healthAlerts.enabled | quote }}
             - name: HEALTH_ALERTS_INTERVAL_S

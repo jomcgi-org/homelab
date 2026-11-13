@@ -172,17 +172,135 @@ Settings are the chart's `healthAlerts` values.
 | `agent_turns` | For Codex (luna, terra, sol, astra) or Claude (opus, sonnet, fable, and sessions with no model): at least 2 turns attempted in the last 60 minutes and none delivered | `agent_sessions.agent_turns` joined to `agent_sessions.agent_sessions`. Delivered means a clean terminal reason (`completed`, `end_turn`, `stop`, `user_interrupt`). Interrupted turns and turns cancelled before dispatch are not attempts. Spark and pi are not covered |
 | `codex_quota_fresh` | The token broker's latest Codex quota observation is older than 60 minutes (or missing, or the broker is unreachable) **and** at least one Codex turn was attempted in the last 60 minutes | Broker `GET /quota` (the monolith's existing 30-second cached poll) and the same turn counts. The demand condition keeps idle nights quiet; the cost is that a fault that stops Codex work from being attempted at all is left to `agent_turns` and `embervm_capacity` |
 | `factory_stuck` | A factory receipt has been `uncertain` for more than 2 hours, or a `queued` receipt at the live policy's repo and generation is not `admission_eligible` (the #6483 trap). Intake receipts while intake is off and older-generation receipts are not flagged | `swarm.factory_receipt` and the `swarm.factory_control` policy. Uncertain age is measured from the receipt's `updated_at` |
+| `kargo_promotions` (default off) | At least one stage's latest terminal attempt is Failed or Errored. Unresolved failure, with no age expiry; recovery requires a later Succeeded attempt in that same namespace/stage | Bounded Kubernetes Stage and Promotion lists across all namespaces, including embervm dev and every current pipeline. Creation time orders attempts; Pending, Running and Aborted do not clear a failure. Equal-time conflicting phases cannot recover |
+| `embervm_control_errors` (default off) | At least 3 error-or-higher records in the last 900 seconds, summed across selected control-plane pods | Kubernetes logs of container `control-plane`, namespaces `embervm` and `embervm-dev`, selector `app.kubernetes.io/name=embervm`. `Embervm.LogFormatter` JSON `level`, `time`, `message`; includes OTP crashes and explicit manager/router errors, without treating every session-create failure as an error |
+| `egress_denials` (default off) | At least 1 explicit egress refusal in the last 900 seconds across selected pods | Kubernetes logs of `egress-proxy` in `embervm` and `embervm-dev`, selector `app.kubernetes.io/component in (noded,noded-brick)`. Go slog JSON `time`, `level`, `msg`; exact `egress denied` or prefix `egress denied:` includes policy refusal, unresolved credentials and unsafe plaintext upstream refusal. Generic 4xx and upstream dial failures do not count |
 | `cnpg_backups` (hub enabled) | A fresh checker observation reports no successful backup, even for a newly created cluster, or a successful backup strictly older than 129600 seconds (36 hours). Exactly 36 hours passes | `otel-collector/cnpg-backup-status`, key `observation.json`, written by the same checker that emits the age metric. Required targets: `monolith/monolith-pg`, `authentik/authentik-pg`, `mcp/context-forge-pg`; optional `loom/loom-pg` only when the producer's Loom gate includes it. This checks base-backup status, not WAL archival |
 
 Each check is cached for 60 seconds per process, bounded to 10 seconds with a
 5-second Postgres statement timeout, and never raises.
 
-Not covered: Kubernetes health, ArgoCD state, network-policy denials, and the
-log-based conditions (egress-proxy request denied, EmberVM control-plane
-errors, Kargo promotion failed). #6511 drafted those as disabled trigger specs,
-which were removed under the one-trigger policy; #7003 tracks alerting on them.
+Kubernetes health, ArgoCD state and native network-policy denials remain
+uncovered. The three #7003 components replace the disabled #6511 trigger
+specifications in repository code only. They are off in the chart defaults,
+shared deployment, GKE, dev and recovery overlays. Activation and the live
+failure/recovery trial remain on #7003. No Honeycomb keys or triggers are added.
 Container restarts in `monolith-public` are posted by the monolith's pod
 restart watcher, and chart lag is the advisory `cd` component.
+
+### Staged operational advisories (#7003)
+
+`healthAlerts.operationalSignals.{kargoPromotions,embervmControlErrors,egressDenials}.enabled`
+controls each new component independently. The Deployment renders
+`KARGO_PROMOTIONS_ENABLED`, `EMBERVM_CONTROL_ERRORS_ENABLED` and
+`EGRESS_DENIALS_ENABLED`; the two log target lists become the corresponding
+`*_TARGETS` JSON environment values. Runtime consumers are
+`factory/advisory_signals.py`, registered through `ops_health.CHECKS`.
+A disabled probe reports unknown before consulting its cache, performs no
+source reads, sends no notifications and leaves a stored unhealthy alert alone.
+The existing `healthAlerts.enabled` still controls the leader-only notifier.
+The private module composes these as advisory; the separate public chart and
+profile have neither these probes nor Kubernetes grants. `/healthz` is unchanged.
+
+Kargo discovery reads up to 64 Stages and 500 Promotions cluster-wide, each
+with a 2 MiB response cap and one page, using the existing get/list ClusterRole
+and its binding to the private monolith ServiceAccount. This covers the current
+`kargo-monolith`, `kargo-embervm` (dev and prod), `kargo-monolith-agents`,
+`kargo-monolith-public` and `kargo-scotland-connector` pipelines without a copied
+app list. Ordering uses creationTimestamp, so an old failure completing late
+cannot override a newer successful attempt. A queued/running retry leaves the
+previous terminal failure unresolved. A stage with no terminal history, invalid
+or future timestamps, unknown phases, ambiguous ordering, or a continued list
+cannot establish health. A later success clears only its own stage. No age-out
+of unresolved failures occurs; deleting a stage removes it from this scope.
+Kargo history retention can remove evidence, so this is the unresolved state
+visible in retained history, rather than a durable Promotion audit. On a partial
+list, observed latest failures remain unhealthy with incomplete coverage; they
+may have a superseding success outside the returned page. Recovery requires
+complete lists and unambiguous successful terminal evidence for every stage.
+
+Log probes read at most four configured targets and 12 pods total per component,
+with three concurrent log requests. Every HTTP read has a 0.8-second wall-clock
+deadline, below the enclosing 10-second cached-check deadline. Lists request
+12 pods, return at most 2 MiB and never follow continuation tokens. Each log
+request asks for 960 seconds of lookback, 2000 lines and 262144 bytes, with
+Kubernetes timestamps; the client also caps streamed bytes. The extra 60 seconds
+provides a record before the 900-second evaluation boundary. A known window
+requires that anchor, a running container started before the lookback, zero
+restarts, valid ordered producer JSON with clocks within 60 seconds of the
+Kubernetes timestamp, and no line/byte cap or continuation. Missing pods/logs,
+malformed or truncated data, restarts, young containers, clock skew, timeout and
+403 reads report unknown. A quiet pod without an anchor remains unknown;
+rotated logs and historical/deleted pods are not reconstructed. These are
+bounded current-pod observations, with no claim of complete fleet audit or
+sampling correction. The selected producers emit directly to stdout, without
+the collector's warning filter or Honeycomb sampling.
+
+Control-plane errors count at 3 per 15 minutes to tolerate isolated request
+errors while detecting repeated infrastructure faults. One egress refusal
+counts because even a single rejected guest dependency deserves investigation;
+expected deny tests can therefore alert when enabled. Recovery for either log
+component requires a complete fresh window below its threshold on all selected
+pods. Positive failure counts survive another pod/target's unreadable data;
+unknown coverage never sends failure or recovery notices. Health and Discord
+include aggregate counts only. Source exceptions log only class and HTTP status,
+never API bodies, log text, destinations, tokens or request payloads.
+Existing pod list and pods/log get grants suffice; this delivery adds no RBAC,
+write permission, secret access or persistence.
+
+**ArgoCD decision.** Neither a broad OutOfSync sweep nor a separate Degraded
+component is added. `cluster/cd_health.py` records permanent OutOfSync false
+alarms from expected Kargo revision ownership and server-default differences.
+A time threshold alone cannot distinguish those from drift. The Kargo
+`argocd-wait` step already fails a Promotion on Degraded or its bounded wait
+expiry, so the new unresolved-Promotion signal covers that delivery path.
+Degradation after a successful Promotion and non-Kargo Applications remain
+blind spots. A separate ArgoCD advisory would need explicit resource-diff
+exclusions and an application-specific convergence contract before activation.
+The existing `cd` chart-lag advisory remains independent.
+
+### Authorized dev trial procedure (not executed)
+
+The landing/validation owner performs this through reviewed GitOps PRs after
+repository delivery. Allow up to one working day, and collect all evidence
+within 72 hours. Do not mutate live workloads, fake telemetry or bypass
+admission. Keep the issue open throughout.
+
+1. Activate the three private `operationalSignals` flags in the intended
+   monolith deployment overlay. Verify the delivered revision with
+   `verify_deployment`, read private `/api/health` and `/healthz`, and read
+   monolith logs for HTTP 403 or source-read warnings. Quiet log sources may
+   remain unknown until their coverage anchors exist; record that limitation
+   rather than claiming healthy acceptance from missing logs.
+2. Prepare a separate reviewed trial chart change that renders a deliberately
+   invalid control-plane readiness path only when the release namespace is
+   `embervm-dev`. Render both dev and prod before landing: prod must have no
+   changed workload manifests. The current readiness path is hardcoded in
+   `projects/embervm/chart/templates/deployment.yaml`, so changing an arbitrary
+   values key cannot induce this fault. CI must publish a real version of the
+   trial chart and Kargo's Warehouse must discover its Freight. Record that
+   Freight and version before requesting or observing its dev Promotion.
+   `kargo_promote` refuses undiscovered Freight; an invented version is not a
+   feasible trial. The failed dev Promotion must never verify that Freight for
+   prod; do not use Freight approval to bypass the dev gate.
+3. Observe `kargo-embervm/dev` Promotion terminal status by read-only status
+   reads, including name, creation and finish timestamps. EmberVM's current
+   argocd-wait bound is 1h30m0s, with Degraded able to fail earlier. Stop and
+   revert the trial through GitOps if no terminal failure appears within two
+   hours. Read the private component after its next 60-second cache refresh
+   and capture the delivered unhealthy Discord message ID and timestamp.
+4. Revert the dev-only trial template through another reviewed PR. Wait for
+   CI publication and discovery of the fixed chart Freight, then observe its
+   successful dev Promotion and verified dev rollout. A new running Promotion
+   alone cannot recover the advisory. Capture its name/timestamps and the
+   delivered recovery Discord message ID/timestamp; confirm unrelated stages
+   remain unchanged and the public endpoint stays healthy.
+5. Record the five acceptance checklist results on #7003, including the
+   delivered monolith revision, fresh known private observations and absence
+   of Forbidden reads during the validation interval. If a log component
+   remains unknown, report its coverage limitation and leave acceptance open.
+   Disable the new flags through GitOps to roll back activation; disabling
+   preserves existing unhealthy alert state and emits no synthetic recovery.
 
 ## Staged Loom monitoring
 

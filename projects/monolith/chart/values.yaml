@@ -1519,6 +1519,23 @@ podRestartWatch:
 # embervm_capacity. Every replica records EmberVM
 # session-create outcomes in platform_probe for the create-failure half.
 healthAlerts:
+  operationalSignals:
+    kargoPromotions:
+      enabled: false
+    embervmControlErrors:
+      enabled: false
+    egressDenials:
+      enabled: false
+    controlTargets:
+      - namespace: embervm
+        selector: app.kubernetes.io/name=embervm
+      - namespace: embervm-dev
+        selector: app.kubernetes.io/name=embervm
+    egressTargets:
+      - namespace: embervm
+        selector: app.kubernetes.io/component in (noded,noded-brick)
+      - namespace: embervm-dev
+        selector: app.kubernetes.io/component in (noded,noded-brick)
   enabled: true
   intervalSeconds: 60
   renotifySeconds: 21600

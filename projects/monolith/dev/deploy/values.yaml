@@ -280,3 +280,13 @@ platformAuth:
   enrollmentEnabled: false
   enforcementEnabled: false
   enrollmentFlowUrl: ""
+
+# New operational advisories remain staged in every deployment.
+healthAlerts:
+  operationalSignals:
+    kargoPromotions:
+      enabled: false
+    embervmControlErrors:
+      enabled: false
+    egressDenials:
+      enabled: false

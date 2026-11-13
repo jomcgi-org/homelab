@@ -2061,6 +2061,20 @@ root error page.
 
 ## 9. Observability and health
 
+**Why.** #7003 stages private Kargo, EmberVM control-plane error and egress
+refusal advisories behind separate default-off chart settings. Kubernetes
+read paths reuse the existing monolith identity; bounded pod logs avoid a
+Honeycomb query credential. Incomplete coverage is unknown and cannot recover
+stored alerts. Per-stage terminal Promotion ordering prevents a running retry
+or an unrelated stage success from clearing an unresolved failure. Broad
+ArgoCD OutOfSync and standalone Degraded remain deferred: expected diffs need
+resource-specific exclusions, and Promotion argocd-wait already covers delivery
+failures. Post-promotion degradation remains a documented blind spot.
+Thresholds, bounds, recovery and the pending GitOps dev trial are in
+[observability](../../docs/observability.md#staged-operational-advisories-7003).
+Repository delivery does not satisfy #7003's rollout and Discord acceptance.
+
+
 `/healthz` is process liveness. `/api/health` executes a database query and all
 registered module checks concurrently, returns 503 for fatal failures, and
 reports advisory degradation without changing the 200 response. The public
@@ -2087,16 +2101,12 @@ allowance, and changes to either value must keep the pair consistent.
 
 Each Codex or Spark probe run has an independent `ember.probe.<demo>` root
 span with final `ember.probe.demo`, `ember.probe.ok` and bounded
-`ember.probe.detail` attributes (ERROR status on failure). The retrying demo
-probes (Bazel, pages, Postgres) and their `ember.probe.attempt.*` child spans
-left with the public exhibits (#6913). The Honeycomb
-`ember-demo-probe-failed.yaml` trigger counts failed root outcomes in
-`monolith-backend`, grouped by demo and trace ID, over an hour every 15
-minutes. The trigger uses `on_change`, so it notifies once while open and a
-second component failing in the same window sends no new notification. Probe
-outcomes use spans; no OTLP probe metric is emitted.
-(see: /projects/monolith/ember_public/synthetic_probe.py)
-(see: /projects/platform/honeycomb/triggers/ember-demo-probe-failed.yaml)
+`ember.probe.detail` attributes (ERROR status on failure). Probe outcomes use
+spans; no OTLP probe metric is emitted. The former demo Honeycomb trigger was
+removed under the one-trigger policy; only the public health composite trigger
+remains. Private operational advisories notify through the existing leader-only
+Discord transition loop.
+(see: /projects/monolith/factory/health_alerts.py)
 
 The private profile instruments FastAPI and outbound HTTP calls and exports
 spans over HTTP/protobuf to the platform's OpenTelemetry collector, which

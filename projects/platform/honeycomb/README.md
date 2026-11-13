@@ -96,9 +96,9 @@ Full definitions: [`docs/observability.md`](../../../docs/observability.md#alert
 | `agent-turns-none-successful-{codex,claude,muse}.yaml` | `agent_turns`: per family (Codex, Claude), at least 2 turns attempted in the last 60 minutes and none delivered. Muse/Spark is not covered |
 | `codex-quota-observation-stale.yaml` | `codex_quota_fresh`: broker Codex observation older than 60 minutes while Codex turns were attempted |
 | (no spec, #6510) factory tasks stuck uncertain | `factory_stuck`: a receipt uncertain for more than 2 hours, or a queued receipt that is not admission-eligible |
-| `egress-proxy-request-denied.yaml` | Not replaced. Needs pod logs; it was disabled and never live |
-| `embervm-control-plane-errors.yaml` | Not replaced. Needs pod logs; it was disabled and never live |
-| `kargo-promotion-failed.yaml` | Not replaced. Needs pod logs; it was disabled and never live. The advisory `cd` health component reports chart lag |
+| `egress-proxy-request-denied.yaml` | `egress_denials`, default-off bounded Kubernetes pod-log refusal counts (#7003); live acceptance pending |
+| `embervm-control-plane-errors.yaml` | `embervm_control_errors`, default-off bounded control-plane JSON error counts (#7003); live acceptance pending |
+| `kargo-promotion-failed.yaml` | `kargo_promotions`, default-off Kubernetes Promotion status per namespace/stage (#7003); live acceptance pending. The independent `cd` component reports chart lag |
 
 The span attributes these specs relied on stay useful for investigation in
 Honeycomb: `agent.model`, `agent.model_family` and `agent.terminal_reason` on
