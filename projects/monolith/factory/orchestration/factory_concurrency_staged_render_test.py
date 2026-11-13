@@ -125,12 +125,12 @@ def test_node_packing_bound():
     cpu8, mem8 = requests("8gi")
     cpu2, mem2 = requests("2gi")
     cpu4, mem4 = requests("4gi")
-    # Four of sixteen nodes carrying paired 8gi pods also host one 2gi.
-    assert 2 * cpu8 + cpu2 <= 7900
-    assert 2 * mem8 + mem2 <= 27.5 * 1024
-    # Two additional nodes each carry two 4gi; shared clients get another node.
-    assert 2 * cpu4 <= 7900
-    assert 2 * mem4 <= 27.5 * 1024
+    # Reserve 1000m/1Gi for DaemonSets below planning allocatable.
+    assert 2 * cpu8 <= 7900 - 1000
+    assert 2 * mem8 <= (27.5 - 1) * 1024
+    # Two additional nodes each carry two 4gi and two 2gi.
+    assert 2 * cpu4 + 2 * cpu2 <= 7900 - 1000
+    assert 2 * mem4 + 2 * mem2 <= (27.5 - 1) * 1024
     assert 32 * cpu8 + 4 * cpu4 + 4 * cpu2 == 112400
     assert 32 * mem8 + 4 * mem4 + 4 * mem2 == 294400
     assert 16 + 2 + 1 + 2 == 21  # capacity, shared clients, replacement/rollout

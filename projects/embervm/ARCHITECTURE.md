@@ -1371,13 +1371,14 @@ authoritative. The 32 retained-session headroom uses disk, not these seats.
 Plan a node maximum of **21 n2-standard-8** in `europe-west2`: 18 for this
 brick vector, one for shared clients/dev/embeddings and two for rollout or
 Spot replacement. The selected production overlay records ~27.5 GiB allocatable;
-use 7900m CPU as a conservative planning ceiling before DaemonSets. Validate
-actual allocatable, DaemonSet use and shared demand before activation.
+use 7900m CPU as a conservative planning ceiling, then reserve 1000m and
+1 GiB per node for DaemonSets. Validate actual allocatable, DaemonSet use and
+shared demand against those allowances before activation.
 Each rendered brick includes rootfs-baker (100m/128Mi request, 512Mi limit)
 and egress-proxy (10m/64Mi request/limit). Two 8gi pods request 6220m CPU and
-16768Mi; four of those sixteen nodes can also host a 2gi pod, totaling
-7330m/19008Mi each. The other two nodes each carry two 4gi pods at
-4220m/8576Mi. Total production requests are 112400m and 294400Mi.
+16768Mi on each of sixteen nodes. The other two nodes each carry two 4gi
+and two 2gi pods at 6440m/13056Mi. Both shapes fit the remaining
+6900m/26.5 GiB after the DaemonSet allowance. Total production requests are 112400m and 294400Mi.
 The inactive 1gi class has desired/min/max zero and adds no pods. Shared
 clients must fit the dedicated spare plus residual space after DaemonSets;
 otherwise recompute the target before activation. Guest vcpus=2 are host
