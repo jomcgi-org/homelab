@@ -18,3 +18,10 @@ go_test(
     embed = [":warnings"],
     deps = ["//projects/scotland-connector/internal/verdict"],
 )
+
+# Fixture provenance participates in the repository documentation manifest.
+filegroup(
+    name = "repo_docs",
+    srcs = ["testdata/README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
