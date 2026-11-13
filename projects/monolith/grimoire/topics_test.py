@@ -95,6 +95,16 @@ def filtered_knn(session, vector, kinds, limit, model=None, where=None):
         ("Getting Players Invested", ADVICE, "dm_guidance"),
         ("Setting > The Glass Coast", SETTING_ADVICE, "dm_guidance"),
         (
+            "DMG > Pacing",
+            "Consider alternating quiet scenes with tense encounters for your players.",
+            "dm_guidance",
+        ),
+        (
+            "DMG > Building Conflict",
+            "You can introduce conflicts around goals your players choose.",
+            "dm_guidance",
+        ),
+        (
             "Creating Encounters",
             "Consider varying encounters to give players several approaches.",
             "dm_guidance",

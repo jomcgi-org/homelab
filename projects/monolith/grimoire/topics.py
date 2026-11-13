@@ -27,6 +27,11 @@ _HEADING = re.compile(
     r"(?:managing|adjusting) (?:pacing|players)|bringing .{1,60} to life)\b",
     re.I,
 )
+# Short practice names count only as complete heading segments. Their words
+# appearing in arbitrary ancestry or prose do not supply heading evidence.
+_PRACTICE_HEADING = re.compile(
+    r"(?:^|>)\s*(?:pacing|building conflicts?|conflict building)\s*(?=>|$)", re.I
+)
 _ADVICE = re.compile(
     r"\b(?:you (?:can|should|might)|consider|avoid|try to|ask (?:your|the) players)\b",
     re.I,
@@ -58,7 +63,11 @@ def classify_topic(
     if (
         _ADVICE.search(content)
         and _GUIDANCE_ACTION.search(content)
-        and (_HEADING.search(headings) or _DM.search(content))
+        and (
+            _HEADING.search(headings)
+            or _PRACTICE_HEADING.search(headings)
+            or _DM.search(content)
+        )
     ):
         return "dm_guidance"
     return None
