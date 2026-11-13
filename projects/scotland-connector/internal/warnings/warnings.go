@@ -10,21 +10,30 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	_ "time/tzdata" // standalone producer images have no system zoneinfo
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 )
 
 const (
-	MaxBytes     = 2 << 20
-	MaxFeedBytes = 256 << 10
-	MaxItems     = 100
-	MaxAge       = 5 * time.Minute
-	OfficialURL  = "https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings"
-	TermsURL     = "https://www.metoffice.gov.uk/policies/tandc"
-	FeedBase     = "https://weather.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/"
+	MaxBytes            = 2 << 20
+	MaxFeedBytes        = 256 << 10
+	MaxItems            = 100
+	MaxExplanationBytes = 64 << 10
+	MaxAge              = 5 * time.Minute
+	OfficialURL         = "https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings"
+	TermsURL            = "https://www.metoffice.gov.uk/policies/tandc"
+	FeedBase            = "https://weather.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/"
 )
 
 var (
+	london = func() *time.Location {
+		loc, err := time.LoadLocation("Europe/London")
+		if err != nil {
+			panic(err)
+		}
+		return loc
+	}()
 	Regions     = []string{"os", "he", "gr", "st", "ta", "dg"}
 	regionNames = map[string]string{
 		"os": "Orkney & Shetland", "he": "Highlands & Eilean Siar", "gr": "Grampian",
@@ -163,7 +172,7 @@ func derive(i Item, regionName string) (Metadata, bool) {
 	if !until.After(from) || until.Sub(from) > 8*24*time.Hour {
 		return m, false
 	}
-	loc, _ := time.LoadLocation("Europe/London")
+	loc := london
 	lf, ok := londonClock(from, loc)
 	if !ok {
 		return m, false
@@ -268,7 +277,16 @@ func Apply(s *Snapshot, now, from, until time.Time, v verdict.Verdict, why strin
 		v = verdict.Marginal
 	}
 	why += " " + CoverageNote
-	if len(words) > 0 {
+	size := 0
+	for _, w := range words {
+		size += len(w) + 1
+	}
+	if size > MaxExplanationBytes {
+		if v == verdict.Go || v == verdict.Marginal {
+			v = verdict.Unknown
+		}
+		why += " Warning text exceeds the response bound; consult " + OfficialURL + "."
+	} else if len(words) > 0 {
 		why += "\n" + strings.Join(words, "\n")
 	}
 	return v, why

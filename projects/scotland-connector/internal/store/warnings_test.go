@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,5 +98,45 @@ func TestWarningsStoreRevalidationAndRestart(t *testing.T) {
 	get.object = r2.Object{Body: body(), ETag: "future"}
 	if e := s.Refresh(ctx); e == nil {
 		t.Fatal("future accepted")
+	}
+}
+
+func TestWarningsReplacementAndWithdrawal(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	snap := warnings.Snapshot{Version: 1, CreatedAt: now}
+	for _, code := range warnings.Regions {
+		snap.Regions = append(snap.Regions, warnings.Region{Code: code, Complete: true, CheckedAt: now, Items: []warnings.Item{}})
+	}
+	item := func(severity string) warnings.Item {
+		title := severity + " warning of wind affecting Grampian"
+		return warnings.Item{Title: title, Description: title + ": Moray valid from 1200 Sat 24 Oct to 2100 Sat 24 Oct", Link: warnings.OfficialURL + "#?date=2026-10-24&id=synthetic"}
+	}
+	get := &warningGetter{}
+	s := NewWarnings("stars", "warnings.json", time.Minute, get, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, severity := range []string{"Yellow", "Amber", ""} {
+		snap.CreatedAt = snap.CreatedAt.Add(time.Second)
+		snap.Regions[2].Items = []warnings.Item{}
+		if severity != "" {
+			snap.Regions[2].Items = []warnings.Item{item(severity)}
+		}
+		bytes, _ := json.Marshal(snap)
+		get.object = r2.Object{Body: bytes, ETag: severity}
+		if e := s.Refresh(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+		v, why := warnings.Apply(s.Current(), snap.CreatedAt, now, now.Add(time.Hour), verdict.Go, "")
+		want := verdict.Go
+		if severity == "Yellow" {
+			want = verdict.Marginal
+		}
+		if severity == "Amber" {
+			want = verdict.No
+		}
+		if v != want {
+			t.Fatal(severity, v, why)
+		}
+		if severity != "Yellow" && strings.Contains(why, item("Yellow").Description) {
+			t.Fatal("obsolete replacement words", why)
+		}
 	}
 }

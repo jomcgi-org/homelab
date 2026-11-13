@@ -299,7 +299,9 @@ Readiness does not depend on warnings.
 Yellow caps go at marginal. Amber or Red yields no. Existing no verdicts stay
 no. Warning title and description are returned verbatim with their direct Met
 Office link; machine-derived severity, area and validity remain separate.
-Expired text is removed from current assertions. Every region's warnings are
+Expired text is removed from current assertions. If verbatim warning text
+exceeds 64 KiB per assessment, the text is withheld and a non-reassuring
+verdict links to the official warnings page. Every region's warnings are
 treated as potentially relevant anywhere in the supported Scottish inventory.
 The whole Europe/London walking date (extended for offered walks past midnight)
 or noon-to-noon night is screened, including

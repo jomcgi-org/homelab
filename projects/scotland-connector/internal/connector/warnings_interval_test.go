@@ -34,7 +34,7 @@ func TestWarningIntervalsIncludeDSTAndLongWalks(t *testing.T) {
 	}
 	title := "Amber warning of wind affecting Grampian"
 	snap.Regions[2].Items = []warnings.Item{{Title: title, Description: title + ": Moray valid from 0300 Sun 25 Oct to 0400 Sun 25 Oct", Link: warnings.OfficialURL + "#?date=2026-10-25&id=synthetic"}}
-	screen := &warningScreen{snap, now}
+	screen := &warningScreen{snapshot: snap, now: now}
 	day := int32(now.Unix() / 86400)
 	v, _ := screen.apply(day, false, verdict.Go, "")
 	if v != verdict.Go {

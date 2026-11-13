@@ -250,3 +250,19 @@ func TestSnapshotBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestWarningExplanationBoundFailsClosedWithoutTruncatingWords(t *testing.T) {
+	now := stamp("2026-10-24T12:00:00Z")
+	s := empty(now)
+	i := synthetic("Yellow", "1200 Sat 24 Oct", "2100 Sat 24 Oct")
+	i.Description = strings.Replace(i.Description, ": Moray", ": "+strings.Repeat("Moray, ", 1000)+"Moray", 1)
+	for n := 0; n < 20; n++ {
+		next := i
+		next.Link += fmt.Sprintf("&duplicate=%d", n)
+		s.Regions[2].Items = append(s.Regions[2].Items, next)
+	}
+	v, why := Apply(s, now, now, now.Add(time.Hour), verdict.Go, "")
+	if v != verdict.Unknown || len(why) > MaxExplanationBytes || !strings.Contains(why, OfficialURL) || strings.Contains(why, i.Title) {
+		t.Fatal(v, len(why), why)
+	}
+}

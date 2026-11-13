@@ -843,7 +843,10 @@ Bodies are capped at 256 KiB per RSS and 2 MiB per snapshot, with 100 items per
 region, bounded strings, XML depth 12 and 20,000 tokens. XML directives and
 unknown nesting are refused. HTTP uses fixed HTTPS destinations, no redirects,
 no provider credentials, a ten-second per-read timeout and 75-second overall
-collection deadline. No enclosure or item link is fetched.
+collection deadline. No enclosure or item link is fetched. Explanation text is
+bounded at 64 KiB per assessment; overflow withholds the words, prevents go or
+marginal and links to the official page. Each request caches warning results
+by activity interval before applying individual weather verdicts.
 
 Operational work remains on #7524: validate current active-item grammar and
 representative regional coverage; authorize the separate atomic publisher and

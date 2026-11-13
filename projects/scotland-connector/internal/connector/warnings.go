@@ -13,13 +13,14 @@ var sourceWarnings = Source{Name: "Met Office", Attribution: "Met Office weather
 type warningScreen struct {
 	snapshot *warnings.Snapshot
 	now      time.Time
+	cache    map[warningInterval]warningResult
 }
 
 func (s *Service) warningScreen(now time.Time) *warningScreen {
 	if s.WarningsData == nil {
 		return nil
 	}
-	return &warningScreen{s.WarningsData.Current(), now}
+	return &warningScreen{snapshot: s.WarningsData.Current(), now: now}
 }
 
 func firstScreen(s []*warningScreen) *warningScreen {
@@ -36,11 +37,11 @@ func (s *warningScreen) apply(day int32, night bool, v verdict.Verdict, why stri
 		return v, why
 	}
 	from, until := warningBounds(day, night)
-	return warnings.Apply(s.snapshot, s.now, from, until, v, why)
+	return s.assess(from, until, v, why)
 }
 
 func warningBounds(day int32, night bool) (time.Time, time.Time) {
-	loc, _ := time.LoadLocation("Europe/London")
+	loc := lightLondon
 	date := time.Unix(int64(day)*86400, 0).UTC()
 	hour := 0
 	if night {
@@ -78,5 +79,41 @@ func (s *warningScreen) walk(day int32, w *walks.Walk, a walks.Assessment) (verd
 			until = end
 		}
 	}
-	return warnings.Apply(s.snapshot, s.now, from, until, a.Verdict, a.Why)
+	return s.assess(from, until, a.Verdict, a.Why)
+}
+
+// Every region is screened conservatively for every candidate. Cache each
+// interval's warning result within the request, before applying its weather
+// verdict, to avoid parsing the same feed text for every nearby walk/site.
+type (
+	warningInterval struct{ from, until time.Time }
+	warningResult   struct {
+		verdict verdict.Verdict
+		why     string
+	}
+)
+
+func (s *warningScreen) assess(from, until time.Time, v verdict.Verdict, why string) (verdict.Verdict, string) {
+	if s.cache == nil {
+		s.cache = map[warningInterval]warningResult{}
+	}
+	key := warningInterval{from, until}
+	r, ok := s.cache[key]
+	if !ok {
+		r.verdict, r.why = warnings.Apply(s.snapshot, s.now, from, until, verdict.Go, "")
+		s.cache[key] = r
+	}
+	switch r.verdict {
+	case verdict.No:
+		v = verdict.No
+	case verdict.Unknown:
+		if v == verdict.Go || v == verdict.Marginal {
+			v = verdict.Unknown
+		}
+	case verdict.Marginal:
+		if v == verdict.Go {
+			v = verdict.Marginal
+		}
+	}
+	return v, why + r.why
 }
