@@ -2623,6 +2623,24 @@ scratch, and an external durable store as the minimum deployment contract.
 
 ---
 
+### Native noded ingress is staged off
+
+`noded.ingressNetworkPolicy.enabled` defaults false and stays false in both
+checked-in GKE overlays. The native ingress policy selects legacy noded,
+brick classes and floors without changing workload selectors. Release-local
+control-plane pods reach configured gRPC listeners and warm DNAT endpoints;
+serving Envoy pods reach HTTP/TCP activators and warm DNAT endpoints. Bearer
+and SPIFFE authentication are unchanged. There is no new egress isolation.
+
+**Why.** Cold wakes and warm serving use different pod ports. Restricting only
+gRPC and 5400-5419 would omit warm DNAT endpoints and production bricks.
+The [caller matrix and bounded probe procedure](deploy/network-policy-validation/README.md)
+record source evidence, port derivation and native-policy limitations. The
+validation owner enables embervm-dev through GitOps first, then production
+only after dev passes. Disabling the flag through GitOps rolls back isolation.
+#7007 remains open until both environments record enforcement probes and the
+authored STPA network-isolation row reaches `enforced-prod`.
+
 ## 12. Direction
 
 - #7210: durable existing-session residency demand and factory capacity waits,
@@ -2635,6 +2653,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Native noded ingress isolation | section 11 | #7007 | repository support shipped off; dev then production activation and enforcement evidence pending |
 | Factory guests share credential-free bounded CI log reads | section 4 | #6442 | helper packaged; guest uptake and next-window repeated-call evidence pending |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |

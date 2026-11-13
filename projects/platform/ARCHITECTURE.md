@@ -362,6 +362,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Native noded ingress isolation | section 3; EmberVM caller matrix | #7007 | repository support shipped off in chart and GKE overlays; dev then production probes and enforced-prod STPA acceptance pending |
 | Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
 | Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |

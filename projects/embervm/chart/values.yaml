@@ -1304,6 +1304,9 @@ noded:
     pullPolicy: IfNotPresent
 
   # gRPC port the control plane dials; health port for kubelet probes.
+  # Repository-only stage for #7007. Activate dev, then prod after probe acceptance.
+  ingressNetworkPolicy:
+    enabled: false
   grpcPort: 9090
   # Compatibility listener for the bearer-authenticated transport. Phase 2b
   # keeps this on; a later, independently staged rollout may turn it off.

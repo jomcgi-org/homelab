@@ -38,6 +38,8 @@ claudeRuntimeWorkload:
 # Production uses the GCS store below. Normal dev has its own hub overlay
 # with an empty endpoint and disabled store credentials.
 noded:
+  ingressNetworkPolicy:
+    enabled: false
   enforceBundleRootfsIdentity: false
   # Phase 2b of #5706 (#5757): serve the SPIFFE mTLS NodeService listener on
   # 9443 beside the plaintext one, which stays on for the dual window. The

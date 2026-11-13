@@ -1,0 +1,67 @@
+{{- if .Values.noded.ingressNetworkPolicy.enabled }}
+{{/* PortForIP uses base + host offset. Serving uses the daemon's /24;
+composite entries use compositeSupernet. Only valid TCP projections can exist. */}}
+{{- $prefix := int (last (splitList "/" .Values.noded.compositeSupernet)) }}
+{{- if or (lt $prefix 16) (gt $prefix 24) }}
+{{- fail "noded ingress policy supports IPv4 compositeSupernet prefixes /16 through /24" }}
+{{- end }}
+{{- $size := 1 }}
+{{- range until (int (sub 32 $prefix)) }}
+{{- $size = mul $size 2 }}
+{{- end }}
+{{- $base := int .Values.noded.servingPortBase }}
+{{- if or (lt $base 1) (gt $base 65281) }}
+{{- fail "noded.servingPortBase must leave room for the serving /24" }}
+{{- end }}
+{{- $warmStart := add $base 2 }}
+{{- $warmEnd := min 65535 (add $base (sub $size 2)) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "embervm.noded.fullname" . }}-ingress
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "embervm.noded.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [noded, noded-brick]
+  policyTypes: [Ingress]
+  ingress:
+    # The CP also proxies cold stateful/composite requests to warm endpoints.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "embervm.selectorLabels" . | nindent 14 }}
+      ports:
+        {{- if .Values.noded.plaintextGrpc.enabled }}
+        - protocol: TCP
+          port: {{ .Values.noded.grpcPort }}
+        {{- end }}
+        {{- if .Values.noded.spiffe.enabled }}
+        - protocol: TCP
+          port: {{ .Values.noded.spiffe.grpcTlsPort }}
+        {{- end }}
+        - protocol: TCP
+          port: {{ $warmStart }}
+          endPort: {{ $warmEnd }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "embervm.servingEnvoy.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.noded.activatorPort }}
+        {{- range list .Values.servingEnvoy.statefulTcpPortRange .Values.servingEnvoy.compositeTcpPortRange }}
+        - protocol: TCP
+          port: {{ .start }}
+          endPort: {{ .end }}
+        {{- end }}
+        - protocol: TCP
+          port: {{ $warmStart }}
+          endPort: {{ $warmEnd }}
+{{- end }}

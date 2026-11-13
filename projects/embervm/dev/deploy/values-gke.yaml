@@ -83,6 +83,8 @@ bricks:
       16gi: 0
 
 noded:
+  ingressNetworkPolicy:
+    enabled: false
   # Node-local state only. The empty endpoint is the chart's store-disabled
   # mode: banks stay node-resident and relight on the same brick, which is what
   # S2 and S3 exercise with one brick. The home SeaweedFS bucket does not exist

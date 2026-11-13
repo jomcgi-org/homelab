@@ -131,6 +131,17 @@
         "L.liveness-loss"
       ],
       "maturity": "built"
+    },
+    {
+      "key": "noded-ingress-unisolated",
+      "view": "logical",
+      "statement": "Unlisted pod-network callers can reach noded while native ingress isolation remains disabled pending dev and production probes.",
+      "losses": [
+        "L.unauthorized-access"
+      ],
+      "maturity": "built",
+      "status": "shipped-off",
+      "issue": "#7007"
     }
   ],
   "ucas": [
@@ -278,7 +289,7 @@
     }
   ],
   "open_questions": [
-    "How should a native-policy successor cover every noded listener, including the stateful/composite activator ranges (5400-5419), after #5816 removed the inert Cilium template? The historical 2026-08-22 omission dropped a cold wake to noded:5401 for 14 minutes; deleting that template supplies no replacement enforcement.",
+    "Native ingress support for #7007 is shipped-off in chart and GKE overlays; do dev then production paired active-listener probes establish cold/warm isolation before the authored noded-ingress-unisolated row becomes enforced-prod? The historical 2026-08-22 omission dropped a cold wake to noded:5401 for 14 minutes; deleting that template supplies no replacement enforcement.",
     "Whether egress.internal.allowlist should become scoped per egress-enabled workload rather than global to the sidecar (ADR embervm/035 open question 1); shared-egress-allowlist-widening tracks the safety consequence of leaving it global.",
     "The former anonymous-store-access non-UCA relied on a deleted SeaweedFS policy. GCS endpoint selection and SigV4 client signing do not prove rejection of anonymous requests or the live IAM scope. Those properties require authorized provider-policy and negative-access observations; no such probe was run for #7061.",
     "Whether the shared production store credential should be scoped more narrowly per principal or brick, after its actual external IAM reach is established. Normal hub dev has no store credential; the inactive validation preset names a separate dev credential.",
