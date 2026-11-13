@@ -82,6 +82,9 @@ adminPort: 9090
 podSecurity: restricted
 
 config:
+  # Repository-only warnings delivery (#7524). Independent 60-second poll.
+  warningsEnabled: false
+  warningsKey: warnings.json
   # Repository-only delivery, pending #7256 operational acceptance.
   auroraEnabled: false
   auroraKey: aurora.json
@@ -190,3 +193,9 @@ route:
     pattern: '^(?:160\.79\.10[45]\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|(?i:2607:6bc0:(?:0{1,4})?:[0-9a-f:]*))$'
     requests: 12000
     unit: Minute
+
+# Collection only: stdout is a warnings.json document. Publication and writer
+# credentials require a separate authorized publisher outside the connector.
+warningsProducer:
+  enabled: false
+  schedule: "*/2 * * * *"

@@ -279,3 +279,42 @@ absent terrain remain unknown. Synthetic test terrain proves computation only.
 Sources: [NOAA product and fallback description](https://www.spaceweather.gov/products/aurora-30-minute-forecast),
 [MET instant-variable contract](https://api.met.no/doc/locationforecast/datamodel),
 [GMTED2010 metadata and terms](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_fgdc_metadata.html).
+
+## Met Office warnings (staged, disabled)
+
+The warnings consumer and dedicated producer schedule remain disabled pending
+#7524 operational acceptance. No active warning protection is claimed. When
+enabled, the shared plan/check path and light's separate night suitability
+assessments use a conservative screen across all six Scottish regional RSS
+feeds. No polygon or whole-route match is inferred from a start point.
+
+The producer polls every two minutes; the independent object store polls every
+60 seconds. Every region needs a complete source check less than five minutes
+old at request time, with no future clocks. Exactly five minutes is unknown.
+Object revalidation, restarts and packaging timestamps do not renew source age.
+Missing, partial or unresolved warning coverage prevents go or marginal and
+links to the [official warnings](https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings).
+Readiness does not depend on warnings.
+
+Yellow caps go at marginal. Amber or Red yields no. Existing no verdicts stay
+no. Warning title and description are returned verbatim with their direct Met
+Office link; machine-derived severity, area and validity remain separate.
+Expired text is removed from current assertions. Every region's warnings are
+treated as potentially relevant anywhere in the supported Scottish inventory.
+The whole Europe/London walking date (extended for offered walks past midnight)
+or noon-to-noon night is screened, including
+DST changes. This can exclude a slot that avoids the warning.
+
+The observed RSS description grammar carries no year or timezone. Year comes
+from the item's dated link. Validity conservatively spans both UTC and London
+interpretations; ambiguous or nonexistent London wall times remain unknown.
+Unsupported grammar or area names remain unknown. Astronomical light windows
+and per-window cloud support retain their own meaning and calculations.
+
+Enabled responses send `no-store` on both `Cache-Control` and
+`Cloudflare-CDN-Cache-Control`, return no HTTP ETag and ignore `If-None-Match`.
+They cannot reuse the ordinary hourly plan/light cache or stale fallback.
+Five minutes is this application's conservative bound, not a source licence
+rule. RSS use follows the [Met Office website terms](https://www.metoffice.gov.uk/policies/tandc)
+and [RSS guidance](https://weather.metoffice.gov.uk/guides/rss), checked
+2026-11-13, including unchanged words, attribution and direct links.

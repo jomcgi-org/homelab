@@ -782,6 +782,77 @@ representative terrain and nodata coverage; separately authorized producer and
 existing-storage publication with refresh/replacement/expiry checks; separately
 authorized rollout and public MCP/REST smoke tests, plan/check and accounting.
 
+## Met Office warnings: staged repository delivery (#7524)
+
+`cmd/warnings-producer --collect` performs six sequential, keyless regional RSS
+reads and emits one version-1 `warnings.json` document on stdout. The image
+contains this executable. `warningsProducer.enabled` renders a dedicated
+`*/2 * * * *` CronJob with a 90-second deadline, no retries, no overlapping
+runs and no secret mounts. Both that flag and `config.warningsEnabled` are
+false in chart defaults and deployment values. Enabling collection alone does
+not publish an object or grant the connector writer credentials. A separately
+authorized publisher must atomically replace `stars/warnings.json`; publication
+and its credential wiring remain staged outside the public connector.
+
+With `WARNINGS_ENABLED=true`, `cmd/connector` starts `WarningsStore` with the
+existing R2 Getter, `STARS_WARNINGS_KEY` and an independent fixed 60-second
+poll. It attaches that store to the shared Service. The request captures the
+snapshot and current request clock for assessment before plan/check ranking,
+nearby alternatives, other dates and light's separate night assessments.
+Warnings do not gate readiness, change light geometry or alter cloud support.
+Off creates neither the store nor the screen. Enabled plan/light responses
+bypass ETags/304s and send both cache headers as `no-store`.
+
+The bounded contract carries exactly six region records, each with complete
+coverage, its successful HTTP check clock and original title, description and
+Met Office link. A failed source has no clock or items and complete=false.
+Incomplete collection still emits that explicit state and exits nonzero.
+Malformed objects keep the previous snapshot and conditional tag. Object 304s,
+new packaging times and process restarts cannot refresh source clocks.
+Regressive successful source observations are rejected, including after a
+partial replacement in the same process. At exactly five minutes, a future
+clock or unusable coverage, go/marginal becomes unknown with the official link.
+The five-minute bound is application policy; the verified RSS terms contain no
+stricter numerical polling rule.
+
+**Why.** The source decision uses the six regional feeds at
+`https://weather.metoffice.gov.uk/public/data/PWSCache/WarningsRSS/Region/{os,he,gr,st,ta,dg}`.
+The website [RSS guidance](https://weather.metoffice.gov.uk/guides/rss) and
+[terms](https://www.metoffice.gov.uk/policies/tandc), checked 2026-11-13,
+permit RSS use for any purpose with unchanged content and direct links,
+attribution and possible withdrawal. They are distinct from the NSWWS Open
+Licence. Two-minute collection and five-minute rejection bound exposure to a
+missed update without live upstream calls from public requests.
+[The source decision](https://github.com/jomcgi-org/homelab/issues/7524#issuecomment-6846897135)
+records the repository-only rescope before implementation.
+
+**Why.** Feed membership and start coordinates cannot establish route polygons.
+The screen treats warnings in any of the six Scottish regions as potentially
+relevant throughout the supported inventory, over the whole civil walking date
+or noon-to-noon night, extending the walking interval for offered starts that
+run past midnight. Yellow caps go at marginal; Amber/Red yields no. The
+original words and link accompany that separate regional explanation. Unsupported
+area/severity/time grammar is unknown. The dated item link anchors the year;
+the validity range spans UTC and London interpretations, with DST folds/gaps
+unknown. This overstates relevance rather than claiming precise area matching.
+All six current primary feeds were empty when checked. Saved unchanged empty
+feeds and a provenance-labelled historical item capture establish the parser
+shape; generated Scottish warnings are explicitly synthetic.
+
+Bodies are capped at 256 KiB per RSS and 2 MiB per snapshot, with 100 items per
+region, bounded strings, XML depth 12 and 20,000 tokens. XML directives and
+unknown nesting are refused. HTTP uses fixed HTTPS destinations, no redirects,
+no provider credentials, a ten-second per-read timeout and 75-second overall
+collection deadline. No enclosure or item link is fetched.
+
+Operational work remains on #7524: validate current active-item grammar and
+representative regional coverage; authorize the separate atomic publisher and
+credential wiring; activate collection/consumer; verify refresh, withdrawal,
+expiry and effective walk/night protection. The staged rollout gate first
+requires the landing owner's verified Synced/Healthy revision, a disabled-flags
+and no-job-execution audit, and anonymous REST/MCP smoke results. This repository
+delivery makes no publication, activation or warning-coverage claim.
+
 ## Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
@@ -789,6 +860,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction                                         | Tracks | State       |
 | ------------------------------------------------- | ------ | ----------- |
+| Met Office regional RSS producer and warning screen | #7524 | staged off, publication and live acceptance pending |
 | Meter export to Honeycomb, unit price table       | #7245  | not started |
 | Uncapped connector snapshot from the materializer | #7246  | staged off, live acceptance pending |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |

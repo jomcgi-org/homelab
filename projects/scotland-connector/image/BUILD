@@ -27,6 +27,7 @@ apko_image(
     repository = "ghcr.io/jomcgi/homelab/projects/scotland-connector",
     tars = [
         ":connector_tar_amd64",
+        ":warnings_tar_amd64",
     ],
 )
 
@@ -42,4 +43,16 @@ tar(
     srcs = [":aurora_amd64_bin"],
     mtree = ["./usr/local/bin/stars-aurora type=file content=$(execpath :aurora_amd64_bin) mode=0755 uid=0 gid=0"],
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+platform_transition_filegroup(
+    name = "warnings_amd64_bin",
+    srcs = ["//projects/scotland-connector/cmd/warnings-producer"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
+tar(
+    name = "warnings_tar_amd64",
+    srcs = [":warnings_amd64_bin"],
+    mtree = ["./usr/local/bin/warnings-producer type=file content=$(execpath :warnings_amd64_bin) mode=0755 uid=0 gid=0"],
 )

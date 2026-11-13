@@ -288,3 +288,39 @@ def test_rate_limit_rules_cannot_mix_units() -> None:
     # when its rules use different units; the template must refuse that.
     with pytest.raises(RuntimeError, match="must equal route.rateLimit.unit"):
         _render(["route.enabled=true", "route.assistantBucket.unit=Second"])
+
+
+def test_warnings_staged_and_runnable_without_writer_credentials() -> None:
+    defaults = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    deployed = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    for values in (defaults, deployed):
+        assert values["config"]["warningsEnabled"] is False
+        assert values["warningsProducer"]["enabled"] is False
+    for enabled in (False, True):
+        docs = _render(
+            [
+                f"config.warningsEnabled={str(enabled).lower()}",
+                f"warningsProducer.enabled={str(enabled).lower()}",
+            ]
+        )
+        deployment = _one(docs, "Deployment")
+        env = {
+            item["name"]: item.get("value")
+            for item in deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        assert env["WARNINGS_ENABLED"] == str(enabled).lower()
+        assert env["STARS_WARNINGS_KEY"] == "warnings.json"
+        jobs = [d for d in docs if d["kind"] == "CronJob"]
+        assert len(jobs) == int(enabled)
+        if enabled:
+            job = jobs[0]["spec"]
+            assert job["schedule"] == "*/2 * * * *"
+            assert job["concurrencyPolicy"] == "Forbid"
+            pod = job["jobTemplate"]["spec"]["template"]["spec"]
+            assert pod["automountServiceAccountToken"] is False
+            producer = pod["containers"][0]
+            assert producer["command"] == ["/usr/local/bin/warnings-producer"]
+            assert producer["args"] == ["--collect"]
+            assert not producer.get("envFrom")
+            assert not producer.get("env")
+            assert not pod.get("volumes")

@@ -274,7 +274,7 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		switch {
 		case errors.As(err, &pe):
 			body.Error.Code, body.Error.Param, body.Error.Message = "invalid_parameter", pe.Param, pe.Message
-			if r.Method == http.MethodPost || tool == "aurora" {
+			if r.Method == http.MethodPost || tool == "aurora" || h.svc.WarningsData != nil {
 				noStore.set(w.Header())
 			} else {
 				cacheControlError.set(w.Header())
@@ -295,7 +295,7 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request, tool string, s
 		return
 	}
 
-	if r.Method == http.MethodPost || tool == "aurora" {
+	if r.Method == http.MethodPost || tool == "aurora" || env.NoStore {
 		// A POST answer is not cacheable by URL, so it is not cached at all.
 		noStore.set(w.Header())
 		writeJSON(w, http.StatusOK, env)

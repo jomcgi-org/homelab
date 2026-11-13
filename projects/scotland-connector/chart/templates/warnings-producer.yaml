@@ -1,0 +1,43 @@
+{{- if .Values.warningsProducer.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "scotland-connector.fullname" . }}-warnings
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scotland-connector.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.warningsProducer.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 90
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: warnings-producer
+        spec:
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: warnings-producer
+              image: {{ include "scotland-connector.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: [/usr/local/bin/warnings-producer]
+              args: [--collect]
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 32Mi
+{{- end }}

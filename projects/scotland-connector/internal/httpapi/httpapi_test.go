@@ -10,11 +10,13 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/warnings"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -552,5 +554,59 @@ func TestLightOpenAPIResponse(t *testing.T) {
 				t.Fatal(p)
 			}
 		}
+	}
+}
+
+type warningData struct{ snapshot *warnings.Snapshot }
+
+func (w warningData) Current() *warnings.Snapshot { return w.snapshot }
+func TestWarningsNoStoreAcrossTransitionsAndConditionalRequests(t *testing.T) {
+	svc := fixture.Service(true)
+	now := fixture.Now
+	svc.Now = func() time.Time { return now }
+	snap := &warnings.Snapshot{Version: 1, CreatedAt: now}
+	for _, code := range warnings.Regions {
+		snap.Regions = append(snap.Regions, warnings.Region{Code: code, Complete: true, CheckedAt: now, Items: []warnings.Item{}})
+	}
+	svc.WarningsData = warningData{snap}
+	h, e := New(svc, meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	title := "Yellow warning of wind affecting Grampian"
+	item := warnings.Item{Title: title, Description: title + ": Moray valid from 1521 Mon 19 Oct to 1523 Mon 19 Oct", Link: warnings.OfficialURL + "#?date=2026-10-19&id=synthetic"}
+	path := "/v1/plan?lat=57.3&lon=-3.7&activities=stargaze&from=2026-10-19&to=2026-10-19"
+	for _, step := range []string{"empty", "warning", "expiry", "withdrawn", "stale", "missing"} {
+		switch step {
+		case "warning":
+			snap.Regions[2].Items = []warnings.Item{item}
+		case "expiry":
+			now = now.Add(3 * time.Minute)
+			snap.CreatedAt = now
+			for j := range snap.Regions {
+				snap.Regions[j].CheckedAt = now
+			}
+		case "withdrawn":
+			snap.Regions[2].Items = []warnings.Item{}
+		case "stale":
+			now = now.Add(5 * time.Minute)
+		case "missing":
+			svc.WarningsData = warningData{}
+		}
+		for _, url := range []string{path, "/v1/light?lat=57.3&lon=-3.7&from=2026-10-19&to=2026-10-19"} {
+			rec, _ := get(t, h, url, "If-None-Match", "*")
+			if rec.Code != 200 || rec.Header().Get("ETag") != "" || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" {
+				t.Fatal(step, rec.Code, rec.Header())
+			}
+			if (step == "expiry" || step == "withdrawn") && strings.Contains(rec.Body.String(), item.Description) {
+				t.Fatal("obsolete warning words", rec.Body)
+			}
+		}
+	}
+	// Invalid queries use the same enabled cache policy and cannot dereference a
+	// missing success envelope while handling errors.
+	rec, _ := get(t, h, "/v1/plan")
+	if rec.Code != 400 || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal(rec.Code, rec.Header())
 	}
 }

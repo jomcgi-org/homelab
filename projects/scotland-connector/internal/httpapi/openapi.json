@@ -16,7 +16,7 @@
         "operationId": "light",
         "security": [],
         "summary": "Light and night-sky windows at a Scottish point",
-        "description": "Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching.",
+        "description": "Astronomy is computed without upstream calls and remains available without a snapshot. Europe/London civil dates, today by default, three-day default span, seven-day maximum and no later than 13 days ahead. Windows are clipped to each civil date. Cloud verdicts describe supporting nearby-site clear twilight-dark hourly samples only. Missing observations, including golden/blue light, stay unknown. Night suitability is reported separately. Anonymous, cookie-free responses use plan's bounded browser and Cloudflare cache policies, including ETag validation; forecasts prevent permanent caching. When the staged Met Office RSS consumer is enabled, walk and night suitability includes a conservative screen across all six Scottish regions. Warning words and links are verbatim; this does not establish polygon or whole-route coverage. Missing, unresolved or five-minute-old source observations prevent go or marginal. Yellow caps go at marginal; Amber/Red yields no. Warning assessment uses request time. Enabled responses use no-store on browser and Cloudflare caches, ignore conditional validators and always return a full body.",
         "parameters": [
           {
             "name": "lat",
@@ -63,13 +63,19 @@
               "Cache-Control": {
                 "schema": {
                   "type": "string",
-                  "const": "public, max-age=60, s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400"
+                  "enum": [
+                    "public, max-age=60, s-maxage=600, stale-while-revalidate=3600, stale-if-error=86400",
+                    "no-store"
+                  ]
                 }
               },
               "Cloudflare-CDN-Cache-Control": {
                 "schema": {
                   "type": "string",
-                  "const": "public, max-age=600, stale-while-revalidate=3600, stale-if-error=86400"
+                  "enum": [
+                    "public, max-age=600, stale-while-revalidate=3600, stale-if-error=86400",
+                    "no-store"
+                  ]
                 }
               },
               "ETag": { "schema": { "type": "string" } }
@@ -80,7 +86,9 @@
               }
             }
           },
-          "304": { "description": "Not modified (If-None-Match matched)." },
+          "304": {
+            "description": "Only when warnings consumer is disabled and If-None-Match matches."
+          },
           "400": { "$ref": "#/components/responses/BadRequest" }
         }
       }
@@ -141,7 +149,7 @@
       "get": {
         "operationId": "plan",
         "summary": "What to do near a place over the next few days",
-        "description": "For each day from `from` to `to`: sunrise, sunset and the moon at the point, then the walks that fit the weather and the night's best stargazing within radius_km, each with a go or marginal verdict and a one-line why; when none suit, walk_note or stargazing_note says why. Walks are Walkhighlands routes whose start is within the radius and whose best good-weather slot fits their estimated time (80% of it in good hours, two hours of credit for walks over seven hours); go before marginal, then the longest slot, then the nearest. Stargazing sites are road-accessible points in the darkest light-pollution zones, ranked by clear dark hours weighted by the moon. Walk weather is forecast at each walk's start, not on summits.",
+        "description": "For each day from `from` to `to`: sunrise, sunset and the moon at the point, then the walks that fit the weather and the night's best stargazing within radius_km, each with a go or marginal verdict and a one-line why; when none suit, walk_note or stargazing_note says why. Walks are Walkhighlands routes whose start is within the radius and whose best good-weather slot fits their estimated time (80% of it in good hours, two hours of credit for walks over seven hours); go before marginal, then the longest slot, then the nearest. Stargazing sites are road-accessible points in the darkest light-pollution zones, ranked by clear dark hours weighted by the moon. Walk weather is forecast at each walk's start, not on summits. When the staged Met Office RSS consumer is enabled, walk and night suitability includes a conservative screen across all six Scottish regions. Warning words and links are verbatim; this does not establish polygon or whole-route coverage. Missing, unresolved or five-minute-old source observations prevent go or marginal. Yellow caps go at marginal; Amber/Red yields no. Warning assessment uses request time. Enabled responses use no-store on browser and Cloudflare caches, ignore conditional validators and always return a full body.",
         "parameters": [
           {
             "name": "lat",
@@ -269,7 +277,7 @@
       "post": {
         "operationId": "check",
         "summary": "Whether a plan is on",
-        "description": "For each item (a walk on a date, or stargazing at a point on a night) a verdict and a one-line why, the timing (the walk's slot and start window, or the clear window at the best dark-sky site within 10 km, widening to 30 km), sunrise, sunset and the moon, the other forecast days that suit it, and better options nearby the same day. A walk is found by walk_id, or by walk_name (every word must start a word of the Walkhighlands name). An item that cannot be resolved carries error and no verdict; the others still answer. Answers are not cached; for a cacheable question use plan.",
+        "description": "For each item (a walk on a date, or stargazing at a point on a night) a verdict and a one-line why, the timing (the walk's slot and start window, or the clear window at the best dark-sky site within 10 km, widening to 30 km), sunrise, sunset and the moon, the other forecast days that suit it, and better options nearby the same day. A walk is found by walk_id, or by walk_name (every word must start a word of the Walkhighlands name). An item that cannot be resolved carries error and no verdict; the others still answer. Answers are not cached; for a cacheable question use plan. When the staged Met Office RSS consumer is enabled, walk and night suitability includes a conservative screen across all six Scottish regions. Warning words and links are verbatim; this does not establish polygon or whole-route coverage. Missing, unresolved or five-minute-old source observations prevent go or marginal. Yellow caps go at marginal; Amber/Red yields no. Warning assessment uses request time. Enabled responses use no-store on browser and Cloudflare caches, ignore conditional validators and always return a full body.",
         "requestBody": {
           "required": true,
           "content": {

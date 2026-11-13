@@ -204,14 +204,16 @@ func slotOut(d *walks.Day, withHours bool) *SlotOut {
 // walkAsk is how a walk is assessed: the caller's weather limits, and
 // whether the slot comes back hour by hour.
 type walkAsk struct {
-	lim   walks.Limits
-	hours bool
+	lim      walks.Limits
+	hours    bool
+	warnings *warningScreen
 }
 
 // walkOption assesses one walk on one day.
 func walkOption(ds *walks.Dataset, w *walks.Walk, day int32, now time.Time, ask walkAsk) (WalkOption, float64) {
 	d := ds.DayWithin(w, day, now, ask.lim)
 	a := w.Assess(d, ds.HourlyUntil)
+	a.Verdict, a.Why = ask.warnings.walk(day, w, a)
 	o := WalkOption{WalkFacts: walkFacts(w), Verdict: a.Verdict, Why: a.Why}
 	good := 0.0
 	if a.Verdict == verdict.Go || a.Verdict == verdict.Marginal {
@@ -301,9 +303,10 @@ func siteFacts(site *stars.Site, c *stars.Climate) SiteFacts {
 }
 
 // nightOption assesses one window (a site on one night).
-func nightOption(ds *stars.Dataset, w *stars.Window, night int32, now time.Time) (NightOption, float64) {
+func nightOption(ds *stars.Dataset, w *stars.Window, night int32, now time.Time, screens ...*warningScreen) (NightOption, float64) {
 	n := &w.Nights[0]
 	a := ds.AssessNight(w.Site, n, night, now, w.Climate)
+	a.Verdict, a.Why = firstScreen(screens).apply(night, true, a.Verdict, a.Why)
 	o := NightOption{
 		SiteFacts: siteFacts(w.Site, w.Climate), FromPointKm: round(w.DistanceKm, 1),
 		Verdict: a.Verdict, Why: a.Why, ClearDark: n.ClearDark, MoonlessDark: n.MoonlessDark,
@@ -318,12 +321,12 @@ func nightOption(ds *stars.Dataset, w *stars.Window, night int32, now time.Time)
 }
 
 // siteNight assesses one site on one night, with its distance from a point.
-func siteNight(ds *stars.Dataset, site *stars.Site, lat, lon float64, night int32, now time.Time) (NightOption, bool) {
+func siteNight(ds *stars.Dataset, site *stars.Site, lat, lon float64, night int32, now time.Time, screens ...*warningScreen) (NightOption, bool) {
 	ws := ds.Windows(stars.WindowsQuery{Lat: site.Lat, Lon: site.Lon, RadiusKm: 0.01, Nights: 1, Night: night, Limit: 1, Now: now})
 	if len(ws) == 0 || ws[0].Site != site {
 		return NightOption{}, false
 	}
-	o, _ := nightOption(ds, &ws[0], night, now)
+	o, _ := nightOption(ds, &ws[0], night, now, screens...)
 	o.FromPointKm = round(stars.DistanceKm(lat, lon, site.Lat, site.Lon), 1)
 	return o, true
 }

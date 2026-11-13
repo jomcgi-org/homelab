@@ -241,14 +241,18 @@ func walksInRange(ds *walks.Dataset, q PlanQuery) []walkCandidate {
 
 // planWalks is the day's best walks near the point that fit: go first, then
 // marginal, longest good slot, then conservative variety among nearby peers.
-func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int32, now time.Time) ([]WalkOption, string) {
+func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int32, now time.Time, screens ...*warningScreen) ([]WalkOption, string) {
 	var top []walkCandidate // the best q.Limit that fit, best first
 	var unknown *walks.Walk
-	ask := walkAsk{lim: q.WeatherLimits.walks()}
+	screen := firstScreen(screens)
+	ask := walkAsk{lim: q.WeatherLimits.walks(), warnings: screen}
 	for _, c := range inRange {
 		w := c.w
 		d := ds.DayWithin(w, day, now, ask.lim)
 		v := w.Verdict(d)
+		if screen != nil {
+			v, _ = screen.walk(day, w, w.Assess(d, ds.HourlyUntil))
+		}
 		if v != verdict.Go && v != verdict.Marginal {
 			if v == verdict.Unknown && unknown == nil {
 				unknown = w
@@ -263,7 +267,11 @@ func planWalks(ds *walks.Dataset, q PlanQuery, inRange []walkCandidate, day int3
 		return nil, fmt.Sprintf("No walk starts within %.0f km that matches the filters.", q.RadiusKm)
 	case len(top) == 0 && unknown != nil:
 		// An unknown day may yet be good, so it outranks "none fits".
-		return nil, unknown.Assess(ds.DayWithin(unknown, day, now, ask.lim), ds.HourlyUntil).Why
+		o, _ := walkOption(ds, unknown, day, now, ask)
+		return nil, o.Why
+	case len(top) == 0 && screen != nil:
+		_, why := screen.apply(day, false, verdict.No, "No walk fits the weather and warning screen.")
+		return nil, why
 	case len(top) == 0 && ask.lim.Active():
 		return nil, fmt.Sprintf("None of the %d walks starting within %.0f km fits the weather within the limits.", len(inRange), q.RadiusKm)
 	case len(top) == 0:
@@ -345,14 +353,14 @@ type rankedNight struct {
 
 // planNights is the night's best dark-sky sites near the point, kept at least
 // siteSpacingKm apart so the options are different places.
-func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]NightOption, string) {
+func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time, screens ...*warningScreen) ([]NightOption, string) {
 	windows := ds.Windows(stars.WindowsQuery{Lat: q.Lat, Lon: q.Lon, RadiusKm: q.RadiusKm, Nights: 1, Night: night, Limit: 50, Now: now})
 	if len(windows) == 0 {
 		return nil, fmt.Sprintf("No dark-sky site within %.0f km.", q.RadiusKm)
 	}
 	ranked := make([]rankedNight, len(windows))
 	for i := range windows {
-		o, score := nightOption(ds, &windows[i], night, now)
+		o, score := nightOption(ds, &windows[i], night, now, screens...)
 		ranked[i] = rankedNight{o, score}
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
@@ -390,10 +398,13 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 	if ranked[0].o.Verdict == verdict.Unknown {
 		return nil, ranked[0].o.Why
 	}
+	if screen := firstScreen(screens); screen != nil {
+		return nil, ranked[0].o.Why
+	}
 	// The shortlist can omit sites with incomplete entity coverage or capped
 	// clear-hour lists. Neither is evidence that every site is cloudy.
 	if site := ds.UncertainNear(q.Lat, q.Lon, q.RadiusKm, night); site != nil {
-		if o, ok := siteNight(ds, site, q.Lat, q.Lon, night, now); ok {
+		if o, ok := siteNight(ds, site, q.Lat, q.Lon, night, now, screens...); ok {
 			return nil, fmt.Sprintf("At site %s, %.1f km away: %s", o.SiteID, o.FromPointKm, o.Why)
 		}
 	}
@@ -404,6 +415,7 @@ func planNights(ds *stars.Dataset, q PlanQuery, night int32, now time.Time) ([]N
 // the walks that fit and the night's best stargazing near a point.
 func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	now := s.Now()
+	screen := s.warningScreen(now)
 	today := walks.LocalDay(now)
 	q, from, to, err := planQuery(p, today, stars.FirstNight(now))
 	if err != nil {
@@ -442,21 +454,22 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 		if day < today && (wk != nil || walksMissing) {
 			pd.WalkNote = "This day is over; its night is still under way."
 		} else if wk != nil {
-			pd.Walks, pd.WalkNote = planWalks(wk, q, inRange, day, now)
+			pd.Walks, pd.WalkNote = planWalks(wk, q, inRange, day, now, screen)
 			results += len(pd.Walks)
 		} else if walksMissing {
 			pd.WalkNote = noteWalksLoading
 		}
 		if sky != nil {
-			pd.Stargazing, pd.StarNote = planNights(sky, q, day, now)
+			pd.Stargazing, pd.StarNote = planNights(sky, q, day, now, screen)
 			results += len(pd.Stargazing)
 		}
 		res.Days = append(res.Days, pd)
 	}
 	meta := s.meta(sky, wk, now, sources)
+	screen.annotate(&meta)
 	meta.Notes = []string{noteVerdicts}
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
+	return &Envelope{NoStore: screen != nil, Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
 }

@@ -334,6 +334,7 @@ func minTime(a, b, c time.Time) time.Time {
 // civil day [midnight, next midnight); NightDay labels each separate window.
 func (s *Service) Light(p LightParams) (*Envelope, error) {
 	now := s.Now()
+	screen := s.warningScreen(now)
 	q, from, to, err := planQuery(PlanParams{Lat: p.Lat, Lon: p.Lon, RadiusKm: p.RadiusKm, From: p.From, To: p.To, Activities: []string{ActivityWalk}}, walks.LocalDay(now), stars.FirstNight(now))
 	if err != nil {
 		return nil, err
@@ -434,6 +435,7 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 				n.Verdict, n.Coverage, n.Why = verdict.Unknown, stars.CoverageNone, "Missing, future-dated or expired site forecast."
 			}
 		}
+		n.Verdict, n.Why = screen.apply(night, true, n.Verdict, n.Why)
 		res.Nights = append(res.Nights, n)
 	}
 	sources := []Source{{Name: "Local astronomical calculation", Attribution: "Truncated Meeus lunar/solar series; NOAA sunrise equation", License: "MPL 2.0", URL: "https://github.com/jomcgi-org/homelab/tree/main/projects/scotland-connector/internal/astro", Use: "geometric light windows and moon phase; fixed galactic centre RA 17h45m, declination -29 degrees"}}
@@ -441,6 +443,7 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 		sources = append(sources, sourceMET, sourceCERRA, sourceOSM, sourceNaturalEarth)
 	}
 	meta := s.meta(ds, nil, now, sources)
+	screen.annotate(&meta)
 	meta.Notes = []string{"UTC RFC3339 events, clipped to Europe/London civil dates; null means no crossing on that date. Moon sampled at local noon, phase 0=new, .25=first quarter, .5=full, .75=last quarter.", "Sunrise/set and moonrise/set use centre altitude -0.833 degrees. Twilight -6/-12/-18; golden -4 to +6; blue -6 to -4. Milky Way requires core >0 and sun <-12 (nautical darkness), with twilight and moonlight still limiting visibility. No terrain or visibility guarantee.", "Cloud is nearby-site hourly sample support below sun -10, not a continuous point forecast. Unknown covers unsupported portions. Nights are separate AssessNight suitability verdicts, never interval cloud verdicts. Site forecast ends at the earlier entity/dataset 48-hour horizon; neither truncated lists nor missing rows prove cloud or clear sky.", "Hourly altitude brackets include extrema and crossings converge to one-second numerical resolution. This is solver resolution, not ephemeris accuracy; truncated series and simplified horizon physics limit accuracy."}
 	// Exact freshness boundaries can fall inside an as-of hour. Include that
 	// state so within-hour expiry never revalidates a changed cloud answer.
@@ -448,5 +451,5 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 	if site != nil && !site.ForecastFetchedAt.IsZero() && !site.ForecastFetchedAt.After(now) && site.Horizon(ds.HourlyUntil).After(now) {
 		freshness = "fresh"
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("light-v2", meta.DataVersion, meta.AsOf, freshness, canonical(query)), Results: len(res.Days)}, nil
+	return &Envelope{NoStore: screen != nil, Data: res, Meta: meta, ETag: etag("light-v2", meta.DataVersion, meta.AsOf, freshness, canonical(query)), Results: len(res.Days)}, nil
 }

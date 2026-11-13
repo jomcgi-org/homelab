@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/warnings"
 )
 
 func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
@@ -194,5 +195,96 @@ func TestSitesKeyDefaultAndSelection(t *testing.T) {
 	cfg, err = loadConfig()
 	if err != nil || cfg.sitesKey != "connector-sites.json" {
 		t.Fatalf("selected: %+v, %v", cfg, err)
+	}
+}
+
+func TestWarningsAppDefaultOffAndEnabledThroughRealGetter(t *testing.T) {
+	now := time.Now().UTC().Add(-time.Second)
+	snapshot := warnings.Snapshot{Version: 1, CreatedAt: now}
+	for _, code := range warnings.Regions {
+		snapshot.Regions = append(snapshot.Regions, warnings.Region{Code: code, Complete: true, CheckedAt: now, Items: []warnings.Item{}})
+	}
+	bytes, _ := json.Marshal(snapshot)
+	requests := 0
+	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") {
+			t.Error("real R2 signing path missing")
+		}
+		w.Header().Set("ETag", `"fixture"`)
+		switch r.URL.Path {
+		case "/stars/sites.json":
+			io.WriteString(w, fixture.Sites)
+		case "/stars/history-map.json":
+			io.WriteString(w, fixture.History)
+		case "/stars/warnings.json":
+			requests++
+			w.Write(bytes)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer r2srv.Close()
+	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	t.Setenv("WARNINGS_ENABLED", "")
+	cfg, e := loadConfig()
+	if e != nil || cfg.warningsEnabled {
+		t.Fatal(cfg, e)
+	}
+	for _, enabled := range []string{"false", "true"} {
+		t.Setenv("WARNINGS_ENABLED", enabled)
+		cfg, e = loadConfig()
+		if e != nil {
+			t.Fatal(e)
+		}
+		a, e := newApp(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), r2srv.Client())
+		if e != nil {
+			t.Fatal(e)
+		}
+		if (a.warnings != nil) != (enabled == "true") {
+			t.Fatal("activation wiring")
+		}
+		if e = a.store.Refresh(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+		// Readiness succeeds before a warnings snapshot exists.
+		rec := httptest.NewRecorder()
+		a.admin.ServeHTTP(rec, httptest.NewRequest("GET", "/readyz", nil))
+		if rec.Code != 200 {
+			t.Fatal(rec.Body)
+		}
+		if a.warnings != nil {
+			if e = a.warnings.Refresh(context.Background()); e != nil {
+				t.Fatal(e)
+			}
+		}
+		for _, path := range []string{"/v1/plan?lat=57.3&lon=-3.7&activities=stargaze", "/v1/light?lat=57.3&lon=-3.7"} {
+			req := httptest.NewRequest("GET", path, nil)
+			req.Header.Set("If-None-Match", "*")
+			rec = httptest.NewRecorder()
+			a.public.ServeHTTP(rec, req)
+			if enabled == "true" {
+				if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" || rec.Header().Get("ETag") != "" || !strings.Contains(rec.Body.String(), "Met Office") {
+					t.Fatal(rec.Code, rec.Header(), rec.Body)
+				}
+			} else if rec.Code != 304 {
+				t.Fatal("default cache changed", rec.Code, rec.Body)
+			}
+		}
+		req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"light","arguments":{"lat":57.3,"lon":-3.7}}}`))
+		req.Header.Set("MCP-Protocol-Version", "2025-06-18")
+		rec = httptest.NewRecorder()
+		a.public.ServeHTTP(rec, req)
+		if rec.Code != 200 || (enabled == "true" && !strings.Contains(rec.Body.String(), "Met Office")) {
+			t.Fatal(rec.Code, rec.Body)
+		}
+	}
+	if requests != 1 {
+		t.Fatal("default-off requested warnings", requests)
+	}
+	t.Setenv("WARNINGS_ENABLED", "maybe")
+	if _, e = loadConfig(); e == nil {
+		t.Fatal("invalid flag")
 	}
 }

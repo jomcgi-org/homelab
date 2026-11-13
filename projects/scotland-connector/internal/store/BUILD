@@ -13,6 +13,7 @@ go_library(
         "aurora.go",
         "store.go",
         "walks.go",
+        "warnings.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/store",
     visibility = ["//projects/scotland-connector:__subpackages__"],
@@ -21,6 +22,7 @@ go_library(
         "//projects/scotland-connector/internal/r2",
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/walks",
+        "//projects/scotland-connector/internal/warnings",
     ],
 )
 
@@ -30,6 +32,7 @@ go_test(
         "refresh_bench_test.go",
         "store_test.go",
         "walks_test.go",
+        "warnings_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":store"],
@@ -38,5 +41,6 @@ go_test(
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/r2",
         "//projects/scotland-connector/internal/verdict",
+        "//projects/scotland-connector/internal/warnings",
     ],
 )

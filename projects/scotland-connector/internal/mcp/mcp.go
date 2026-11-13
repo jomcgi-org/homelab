@@ -82,7 +82,7 @@ const (
 		"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
 		"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
 		"Its nights are separate night suitability assessments, never interval cloud forecasts. "
-	instructionsSources = "Every result carries meta.sources: credit them when you present the data."
+	instructionsSources = "Every result carries meta.sources: credit them when you present the data. When Met Office warnings are credited, preserve their original title, description and direct link verbatim, separately from the conservative regional assessment. Unknown warning coverage requires the official warnings link; there is no whole-route guarantee."
 
 	Instructions              = instructionsHead + instructionsAurora + instructionsLight + "For plan, check and aurora, lead with the verdict and why. " + instructionsSources
 	InstructionsWithoutAurora = instructionsHead + instructionsLight + "For plan and check, lead with the verdict and why. " + instructionsSources

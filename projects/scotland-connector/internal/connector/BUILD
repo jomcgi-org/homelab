@@ -9,6 +9,7 @@ go_library(
         "light.go",
         "plan.go",
         "trip.go",
+        "warnings.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/connector",
     visibility = ["//projects/scotland-connector:__subpackages__"],
@@ -18,6 +19,7 @@ go_library(
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/verdict",
         "//projects/scotland-connector/internal/walks",
+        "//projects/scotland-connector/internal/warnings",
     ],
 )
 
@@ -29,6 +31,8 @@ go_test(
         "diversity_test.go",
         "light_solver_test.go",
         "light_test.go",
+        "warnings_interval_test.go",
+        "warnings_test.go",
     ],
     embed = [":connector"],
     deps = [
@@ -37,5 +41,6 @@ go_test(
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/verdict",
         "//projects/scotland-connector/internal/walks",
+        "//projects/scotland-connector/internal/warnings",
     ],
 )

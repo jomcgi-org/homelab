@@ -27,6 +27,7 @@ go_test(
         "//projects/scotland-connector/internal/fixture",
         "//projects/scotland-connector/internal/meter",
         "//projects/scotland-connector/internal/verdict",
+        "//projects/scotland-connector/internal/warnings",
         "@com_github_prometheus_client_golang//prometheus",
     ],
 )

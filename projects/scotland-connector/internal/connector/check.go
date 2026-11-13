@@ -148,7 +148,7 @@ func otherDays(today, asked, last int32, assess func(day int32) (verdict.Verdict
 	return out
 }
 
-func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim walks.Limits) CheckResultItem {
+func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim walks.Limits, screen *warningScreen) CheckResultItem {
 	r := CheckResultItem{Activity: ActivityWalk, Date: cp.item.Date}
 	var w *walks.Walk
 	var also []string
@@ -188,7 +188,7 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 		}
 	}
 	// A check is the close look, so its slot comes back hour by hour.
-	o, _ := walkOption(ds, w, cp.day, now, walkAsk{lim: lim, hours: true})
+	o, _ := walkOption(ds, w, cp.day, now, walkAsk{lim: lim, hours: true, warnings: screen})
 	r.Verdict, r.Why = o.Verdict, o.Why
 	r.Walk = &CheckWalk{WalkOption: o, AlsoMatched: also, MatchNote: note}
 	sky := skyAt(cp.day, w.Lat, w.Lon)
@@ -196,11 +196,11 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 	today := walks.LocalDay(now)
 	last := walks.LocalDay(ds.HourlyUntil)
 	r.OtherDays = otherDays(today, cp.day, last, func(day int32) (verdict.Verdict, string) {
-		a := w.Assess(ds.DayWithin(w, day, now, lim), ds.HourlyUntil)
-		return a.Verdict, a.Why
+		o, _ := walkOption(ds, w, day, now, walkAsk{lim: lim, warnings: screen})
+		return o.Verdict, o.Why
 	})
 	if o.Verdict != verdict.Go {
-		r.NearbyWalks = nearbyWalks(ds, w, o.Verdict, cp.day, now, lim)
+		r.NearbyWalks = nearbyWalks(ds, w, o.Verdict, cp.day, now, lim, screen)
 	}
 	return r
 }
@@ -209,7 +209,7 @@ func (s *Service) checkWalk(ds *walks.Dataset, cp checkPlan, now time.Time, lim 
 // within nearbyWalkKm of it and of a similar length (half to one and a half
 // times its time), so they are a substitute for it rather than any walk at
 // all. Nearest first within a verdict.
-func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32, now time.Time, lim walks.Limits) []WalkOption {
+func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32, now time.Time, lim walks.Limits, screen *warningScreen) []WalkOption {
 	var near []walkCandidate
 	for i := range ds.Walks {
 		n := &ds.Walks[i]
@@ -220,7 +220,11 @@ func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32,
 		if dist > nearbyWalkKm {
 			continue
 		}
-		nv := n.Verdict(ds.DayWithin(n, day, now, lim))
+		d := ds.DayWithin(n, day, now, lim)
+		nv := n.Verdict(d)
+		if screen != nil {
+			nv, _ = screen.walk(day, n, n.Assess(d, ds.HourlyUntil))
+		}
 		if nv != verdict.Go && nv != verdict.Marginal || nv.Rank() >= v.Rank() {
 			continue
 		}
@@ -229,7 +233,7 @@ func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32,
 	sort.Slice(near, func(i, j int) bool { return near[i].better(near[j]) })
 	var out []WalkOption
 	for _, c := range near[:min(len(near), 2)] {
-		o, _ := walkOption(ds, c.w, day, now, walkAsk{lim: lim})
+		o, _ := walkOption(ds, c.w, day, now, walkAsk{lim: lim, warnings: screen})
 		km := round(c.dist, 1)
 		o.FromPointKm = &km
 		out = append(out, o)
@@ -237,7 +241,7 @@ func nearbyWalks(ds *walks.Dataset, w *walks.Walk, v verdict.Verdict, day int32,
 	return out
 }
 
-func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) CheckResultItem {
+func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time, screen *warningScreen) CheckResultItem {
 	r := CheckResultItem{Activity: ActivityStargaze, Date: cp.item.Date}
 	sky := skyAt(cp.day, cp.lat, cp.lon)
 	r.Sky = &sky
@@ -257,9 +261,9 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 	if note != "" {
 		radius = siteFarKm
 	}
-	best, bestScore := nightOption(ds, &windows[0], cp.day, now)
+	best, bestScore := nightOption(ds, &windows[0], cp.day, now, screen)
 	for i := 1; i < len(windows); i++ {
-		o, score := nightOption(ds, &windows[i], cp.day, now)
+		o, score := nightOption(ds, &windows[i], cp.day, now, screen)
 		if o.Verdict.Rank() < best.Verdict.Rank() || (o.Verdict == best.Verdict && score > bestScore) {
 			best, bestScore = o, score
 		}
@@ -268,7 +272,7 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 	// clear-hour lists. Neither is evidence that every site is cloudy.
 	if best.Verdict == verdict.No {
 		if site := ds.UncertainNear(cp.lat, cp.lon, radius, cp.day); site != nil {
-			if o, ok := siteNight(ds, site, cp.lat, cp.lon, cp.day, now); ok {
+			if o, ok := siteNight(ds, site, cp.lat, cp.lon, cp.day, now, screen); ok {
 				best = o
 			}
 		}
@@ -283,12 +287,12 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 			return verdict.Unknown, ""
 		}
 		a := ds.AssessNight(ws[0].Site, &ws[0].Nights[0], night, now, ws[0].Climate)
-		return a.Verdict, a.Why
+		return screen.apply(night, true, a.Verdict, a.Why)
 	})
 	if best.Verdict != verdict.Go {
 		var near []rankedNight
 		for i := range windows {
-			o, score := nightOption(ds, &windows[i], cp.day, now)
+			o, score := nightOption(ds, &windows[i], cp.day, now, screen)
 			if o.Verdict.Rank() < best.Verdict.Rank() && o.Verdict != verdict.Unknown {
 				near = append(near, rankedNight{o, score})
 			}
@@ -298,7 +302,7 @@ func (s *Service) checkNight(ds *stars.Dataset, cp checkPlan, now time.Time) Che
 				if w.DistanceKm <= siteKm {
 					continue
 				}
-				o, score := nightOption(ds, &w, cp.day, now)
+				o, score := nightOption(ds, &w, cp.day, now, screen)
 				if o.Verdict.Rank() < best.Verdict.Rank() && o.Verdict != verdict.Unknown {
 					near = append(near, rankedNight{o, score})
 				}
@@ -342,6 +346,7 @@ func distinctNearbyNights(ranked []rankedNight) []NightOption {
 // nearby the same day.
 func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	now := s.Now()
+	screen := s.warningScreen(now)
 	plans, err := checkItems(p, walks.LocalDay(now), stars.FirstNight(now))
 	if err != nil {
 		return nil, err
@@ -384,17 +389,18 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	for i, cp := range plans {
 		switch {
 		case cp.item.Activity == ActivityStargaze:
-			res.Items[i] = s.checkNight(sky, cp, now)
+			res.Items[i] = s.checkNight(sky, cp, now, screen)
 		case wk == nil:
 			res.Items[i] = CheckResultItem{Activity: ActivityWalk, Date: cp.item.Date, Error: noteWalksLoading}
 		default:
-			res.Items[i] = s.checkWalk(wk, cp, now, limits.walks())
+			res.Items[i] = s.checkWalk(wk, cp, now, limits.walks(), screen)
 		}
 		if res.Items[i].Error == "" {
 			results++
 		}
 	}
 	meta := s.meta(sky, wk, now, sources)
+	screen.annotate(&meta)
 	meta.Notes = []string{noteVerdicts}
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)

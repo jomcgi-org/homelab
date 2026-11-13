@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Met Office warnings for London &amp; South East England</title>
+        <link>https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings</link>
+        <description>Weather warnings of severe and extreme weather from the Met Office</description>
+        <language>en-gb</language>
+        <copyright>(c) Crown copyright</copyright>
+        <pubDate>Wed, 10 May 2023 10:04:53 GMT</pubDate>
+        <dc:creator>[email protected]</dc:creator>
+        <item>
+            <title>Yellow warning of thunderstorm affecting London &amp; South East England</title>
+            <link>https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings#?date=2023-05-10&amp;id=83993be1-fbe2-4a1c-9f3d-c371a454e169&amp;referrer=rss</link>
+            <description>Yellow warning of thunderstorm affecting London &amp; South East England: Bracknell Forest, Buckinghamshire, East Sussex, Greater London, Hampshire, Kent, Medway, Milton Keynes, Oxfordshire, Reading, Slough, Surrey, West Berkshire, West Sussex, Windsor and Maidenhead, Wokingham valid from 1200 Wed 10 May to 1900 Wed 10 May</description>
+            <guid isPermaLink="false">https://www.metoffice.gov.uk/weather/warnings-and-advice/uk-warnings#?date=2023-05-10&amp;id=83993be1-fbe2-4a1c-9f3d-c371a454e169&amp;referrer=rss&amp;region=London &amp; South East England</guid>
+            <enclosure length="109337" type="image/png" url="https://cdn.prod.weathercloud.metoffice.gov.uk/warnings/rss/image/yellow-thunderstorm.png"/>
+        </item>
+    </channel>
+</rss>

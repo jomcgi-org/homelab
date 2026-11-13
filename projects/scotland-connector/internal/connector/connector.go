@@ -17,6 +17,7 @@ import (
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/aurora"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/warnings"
 )
 
 // APIVersion is the path prefix and the envelope's api_version.
@@ -121,9 +122,10 @@ type WalksSource interface {
 
 // Service answers queries.
 type Service struct {
-	Data       DatasetSource
-	Walks      WalksSource
-	AuroraData interface{ Current() *aurora.Snapshot }
+	Data         DatasetSource
+	Walks        WalksSource
+	AuroraData   interface{ Current() *aurora.Snapshot }
+	WarningsData interface{ Current() *warnings.Snapshot }
 	// MethodURL is published in every envelope.
 	MethodURL string
 	Now       func() time.Time
@@ -162,7 +164,8 @@ type Envelope struct {
 	// as-of hour and the canonical parameters. Not serialized.
 	ETag string `json:"-"`
 	// Results counts returned items, for the meter.
-	Results int `json:"-"`
+	Results int  `json:"-"`
+	NoStore bool `json:"-"`
 }
 
 var (

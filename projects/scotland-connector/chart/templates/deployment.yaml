@@ -51,6 +51,10 @@ spec:
               containerPort: {{ .Values.adminPort }}
               protocol: TCP
           env:
+            - name: WARNINGS_ENABLED
+              value: {{ .Values.config.warningsEnabled | quote }}
+            - name: STARS_WARNINGS_KEY
+              value: {{ .Values.config.warningsKey | quote }}
             - name: LISTEN_ADDR
               value: ":{{ .Values.service.targetPort }}"
             - name: ADMIN_ADDR

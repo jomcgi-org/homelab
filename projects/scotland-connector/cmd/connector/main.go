@@ -37,6 +37,8 @@ type config struct {
 	walksKey                       string
 	auroraEnabled                  bool
 	auroraKey                      string
+	warningsEnabled                bool
+	warningsKey                    string
 	refreshInterval, shutdownGrace time.Duration
 	publicBaseURL, version         string
 	allowedOrigins                 []string
@@ -61,11 +63,19 @@ func loadConfig() (config, error) {
 		historyKey:     env("STARS_HISTORY_KEY", "history-map.json"),
 		walksKey:       env("STARS_WALKS_KEY", "walks.json"),
 		auroraKey:      env("STARS_AURORA_KEY", "aurora.json"),
+		warningsKey:    env("STARS_WARNINGS_KEY", "warnings.json"),
 		publicBaseURL:  strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 		version:        env("SERVICE_VERSION", "dev"),
 		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
 	}
 	var err error
+	switch env("WARNINGS_ENABLED", "false") {
+	case "false":
+	case "true":
+		c.warningsEnabled = true
+	default:
+		return c, errors.New("WARNINGS_ENABLED must be true or false")
+	}
 	switch env("AURORA_ENABLED", "false") {
 	case "false":
 	case "true":
@@ -100,6 +110,7 @@ type app struct {
 	store         *store.Store
 	walks         *store.WalkStore
 	aurora        *store.AuroraStore
+	warnings      *store.WarningsStore
 	draining      *atomic.Bool
 }
 
@@ -138,6 +149,11 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	if cfg.auroraEnabled {
 		as = store.NewAurora(cfg.bucket, cfg.auroraKey, cfg.refreshInterval, client, log)
 		svc.AuroraData = as
+	}
+	var warningsStore *store.WarningsStore
+	if cfg.warningsEnabled {
+		warningsStore = store.NewWarnings(cfg.bucket, cfg.warningsKey, 60*time.Second, client, log)
+		svc.WarningsData = warningsStore
 	}
 	info := mcp.ServerInfo{Name: "scotland-connector", Title: "Scotland outdoors", Version: cfg.version}
 
@@ -182,7 +198,7 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		_ = json.NewEncoder(w).Encode(body)
 	})
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	return &app{public: public, admin: admin, store: st, walks: ws, aurora: as, draining: draining}, nil
+	return &app{public: public, admin: admin, store: st, walks: ws, aurora: as, warnings: warningsStore, draining: draining}, nil
 }
 
 // loadUntilReady retries the first load with backoff, then polls forever.
@@ -238,6 +254,9 @@ func run(log *slog.Logger) error {
 
 	go a.loadUntilReady(ctx, log)
 	go a.walks.Run(ctx)
+	if a.warnings != nil {
+		go a.warnings.Run(ctx)
+	}
 	if a.aurora != nil {
 		go a.aurora.Run(ctx)
 	}
