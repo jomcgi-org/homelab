@@ -18,7 +18,7 @@ run_install() {
 	local node="$1"
 	shift
 	ssh -n "${node}" 'rm -rf /tmp/factory-node && mkdir -p /tmp/factory-node'
-	scp -q "${HERE}"/{install-node.sh,k3s-config.yaml,registries.yaml,containerd-config-v3.toml.tmpl,99-factory.conf} \
+	scp -q "${HERE}"/{install-node.sh,k3s-config.yaml,registries.yaml,containerd-runsc.toml,99-factory.conf} \
 		"${node}:/tmp/factory-node/"
 	ssh "${node}" "$@"
 	ssh -n "${node}" 'rm -rf /tmp/factory-node'
