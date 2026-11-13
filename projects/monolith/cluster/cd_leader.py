@@ -22,6 +22,7 @@ import os
 from cluster.cd_health import cd_health_cycle, run_deployment_observation_cycle
 from core.platform_probe import write_probe
 from framework import log_task_exception, register_leader_tasks
+from framework.periodic import run_periodic
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +48,9 @@ async def _cycle() -> None:
 
 async def _loop() -> None:
     interval = _interval_s()
-    while True:
-        try:  # nosemgrep: no-broad-except-swallow - a dead loop is worse, logged here
-            await _cycle()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Never let one bad cycle kill the writer: a dead writer makes the
-            # latch go stale, which the reader reports as a fault, which pages
-            # for a broken probe rather than a broken platform.
-            logger.exception("cd probe cycle failed")
-        await asyncio.sleep(interval)
+    await run_periodic(
+        _cycle, interval, lambda: logger.exception("cd probe cycle failed")
+    )
 
 
 async def leader_start(app) -> list[asyncio.Task]:

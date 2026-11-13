@@ -227,3 +227,78 @@ def test_backup_failure_unknown_handover_reminder_and_recovery(sent, monkeypatch
     check.reset()
     assert _cycle(None, T0 + timedelta(hours=7, minutes=5)) == []
     assert [level for _, level, _ in sent] == ["warn", "warn", "info"]
+
+
+def test_periodic_delegation_resolves_interval_once(monkeypatch):
+    import asyncio
+    import sys
+    from unittest.mock import Mock
+    from factory import health_alerts as owner
+
+    interval = Mock(return_value=23.5)
+    failure = RuntimeError("original failure")
+    report = Mock()
+    delegated = []
+
+    async def periodic(cycle, delay, report_failure):
+        delegated.append((cycle, delay))
+        assert interval.call_count == 1
+        try:
+            raise failure
+        except RuntimeError:
+            report_failure()
+            assert sys.exception() is failure
+        raise asyncio.CancelledError
+
+    def log_failure(message):
+        report(message, sys.exception())
+
+    monkeypatch.setattr(owner, "_float_env", interval)
+    monkeypatch.setattr(owner, "run_periodic", periodic)
+    monkeypatch.setattr(owner.logger, "exception", log_failure)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(owner._loop())
+    assert delegated == [(owner.run_cycle, 23.5)]
+    interval.assert_called_once_with(owner.INTERVAL_ENV, owner.DEFAULT_INTERVAL_S)
+    report.assert_called_once_with("health alert cycle failed", failure)
+
+
+def test_periodic_task_keeps_name_supervision_and_ownership(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from factory import health_alerts as owner
+    import framework
+
+    async def scenario():
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def periodic(*args):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        done = Mock()
+        monkeypatch.setattr(owner, "run_periodic", periodic)
+        monkeypatch.setattr(framework, "log_task_exception", done)
+        monkeypatch.setenv(owner.ENABLED_ENV, "true")
+        tasks = owner.start_health_alert_loop()
+        assert len(tasks) == 1
+        task = tasks[0]
+        try:
+            assert task.get_name() == "factory-health-alerts"
+
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            assert stopped.is_set()
+            done.assert_called_once_with(task)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())

@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 from core.clock import aware
 from factory import ops_health
+from framework.periodic import run_periodic
 
 logger = logging.getLogger(__name__)
 
@@ -175,14 +176,9 @@ async def run_cycle(checks=None, *, now: datetime | None = None) -> list[str]:
 
 async def _loop() -> None:
     interval = _float_env(INTERVAL_ENV, DEFAULT_INTERVAL_S)
-    while True:
-        try:  # nosemgrep: no-broad-except-swallow - a dead loop is worse, logged here
-            await run_cycle()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("health alert cycle failed")
-        await asyncio.sleep(interval)
+    await run_periodic(
+        run_cycle, interval, lambda: logger.exception("health alert cycle failed")
+    )
 
 
 def start_health_alert_loop() -> list[asyncio.Task]:

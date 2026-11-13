@@ -2910,6 +2910,16 @@ py_test(
 )
 
 py_test(
+    name = "framework_periodic_test",
+    srcs = ["framework/periodic_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_framework",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "framework_core_test",
     srcs = ["framework/core_test.py"],
     imports = ["."],

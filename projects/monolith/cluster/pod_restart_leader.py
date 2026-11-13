@@ -19,6 +19,7 @@ from cluster.kubernetes import KubernetesClient
 from cluster.pod_restart_models import PodRestartWatch
 from core.db import get_engine
 from framework import log_task_exception, register_leader_tasks
+from framework.periodic import run_periodic
 from shared.notify import notify
 
 logger = logging.getLogger(__name__)
@@ -172,16 +173,9 @@ async def _cycle() -> None:
 
 async def _loop() -> None:
     interval = _interval_s()
-    while True:
-        try:  # nosemgrep: no-broad-except-swallow - a dead loop is worse, logged here
-            await _cycle()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Never let one failed API read, database write, or notification
-            # kill the watcher and leave future restarts invisible.
-            logger.exception("pod restart watch cycle failed")
-        await asyncio.sleep(interval)
+    await run_periodic(
+        _cycle, interval, lambda: logger.exception("pod restart watch cycle failed")
+    )
 
 
 async def leader_start(app) -> list[asyncio.Task]:

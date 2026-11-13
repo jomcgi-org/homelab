@@ -235,3 +235,78 @@ def test_message_without_termination_details_is_well_formed():
         )
         == "monolith-public/web-abc container web restarted (0 -> 1)"
     )
+
+
+def test_periodic_delegation_resolves_interval_once(monkeypatch):
+    import asyncio
+    import sys
+    from unittest.mock import Mock
+    from cluster import pod_restart_leader as owner
+
+    interval = Mock(return_value=23.5)
+    failure = RuntimeError("original failure")
+    report = Mock()
+    delegated = []
+
+    async def periodic(cycle, delay, report_failure):
+        delegated.append((cycle, delay))
+        assert interval.call_count == 1
+        try:
+            raise failure
+        except RuntimeError:
+            report_failure()
+            assert sys.exception() is failure
+        raise asyncio.CancelledError
+
+    def log_failure(message):
+        report(message, sys.exception())
+
+    monkeypatch.setattr(owner, "_interval_s", interval)
+    monkeypatch.setattr(owner, "run_periodic", periodic)
+    monkeypatch.setattr(owner.logger, "exception", log_failure)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(owner._loop())
+    assert delegated == [(owner._cycle, 23.5)]
+    interval.assert_called_once_with()
+    report.assert_called_once_with("pod restart watch cycle failed", failure)
+
+
+def test_periodic_task_keeps_name_supervision_and_ownership(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from cluster import pod_restart_leader as owner
+    import framework
+
+    async def scenario():
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def periodic(*args):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        done = Mock()
+        monkeypatch.setattr(owner, "run_periodic", periodic)
+        monkeypatch.setattr(owner, "log_task_exception", done)
+        app = SimpleNamespace(state=SimpleNamespace())
+        tasks = await owner.leader_start(app)
+        assert len(tasks) == 1
+        task = tasks[0]
+        try:
+            assert task.get_name() == "pod-restart-watch"
+            assert app.state.singleton_tasks == tasks
+            await asyncio.wait_for(started.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            assert stopped.is_set()
+            done.assert_called_once_with(task)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
