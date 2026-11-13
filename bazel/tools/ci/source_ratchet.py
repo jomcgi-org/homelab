@@ -284,27 +284,60 @@ def command_writes(command: str) -> list[str]:
 # The factory home cluster (#7817) is bootstrapped by hand before ArgoCD owns
 # it, so the Claude hook lets writes through when the command names it
 # explicitly. The hub stays read-only, and the CI ratchet is unchanged.
-_FACTORY_KUBECONFIG = "factory.yaml"
+_FACTORY_KUBECONFIG = "/.kube/factory.yaml"
 _FACTORY_CONTEXT = "factory"
+# Flags that point a command at another API server whatever the context says.
+_REDIRECT_FLAGS = {
+    "-s", "--server", "--cluster", "--user", "--token", "--kube-apiserver",
+    "--kube-token", "--as", "--as-group",
+}  # fmt: skip
+
+
+def _flag(arg: str, names: set[str], nxt: str) -> tuple[bool, str | None]:
+    """(matched, value) for `--name value` or `--name=value`."""
+    for name in names:
+        if arg == name:
+            return True, nxt
+        if arg.startswith(name + "="):
+            return True, arg.split("=", 1)[1]
+    return False, None
 
 
 def targets_factory(segment: list[str]) -> bool:
-    """True when this simple command explicitly targets the factory cluster."""
-    for i, arg in enumerate(segment):
-        nxt = segment[i + 1] if i + 1 < len(segment) else ""
-        if arg.startswith("KUBECONFIG="):
-            if arg.split("=", 1)[1].rsplit("/", 1)[-1] == _FACTORY_KUBECONFIG:
-                return True
-        elif arg == "--kubeconfig" or arg.startswith("--kubeconfig="):
-            path = arg.split("=", 1)[1] if "=" in arg else nxt
-            if path.rsplit("/", 1)[-1] == _FACTORY_KUBECONFIG:
-                return True
-        elif arg in {"--context", "--kube-context"}:
-            if nxt == _FACTORY_CONTEXT:
-                return True
-        elif arg in {f"--context={_FACTORY_CONTEXT}", f"--kube-context={_FACTORY_CONTEXT}"}:
-            return True
-    return False
+    """True when this simple command can only reach the factory cluster.
+
+    Reads `KUBECONFIG` from the env prefix only, takes the last value of each
+    repeated flag (as kubectl and helm do), stops at `--`, and refuses any
+    flag that redirects the server or credentials.
+    """
+    kubeconfig = None
+    i = 0
+    while i < len(segment) and (
+        "=" in segment[i] and segment[i].split("=", 1)[0].isidentifier()
+        or segment[i] in {"sudo", "env", "command", "exec", "time"}
+    ):
+        if segment[i].startswith("KUBECONFIG="):
+            kubeconfig = segment[i].split("=", 1)[1]
+        i += 1
+    context = None
+    args = segment[i + 1 :]
+    for j, arg in enumerate(args):
+        if arg == "--":
+            break
+        nxt = args[j + 1] if j + 1 < len(args) else ""
+        if _flag(arg, _REDIRECT_FLAGS, nxt)[0]:
+            return False
+        hit, value = _flag(arg, {"--kubeconfig"}, nxt)
+        if hit:
+            kubeconfig = value
+        hit, value = _flag(arg, {"--context", "--kube-context"}, nxt)
+        if hit:
+            context = value
+    if context not in (None, _FACTORY_CONTEXT):
+        return False
+    if kubeconfig is not None:
+        return ":" not in kubeconfig and kubeconfig.endswith(_FACTORY_KUBECONFIG)
+    return context == _FACTORY_CONTEXT
 
 
 def hook_writes(command: str) -> list[str]:
