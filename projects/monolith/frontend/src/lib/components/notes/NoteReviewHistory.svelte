@@ -1,5 +1,5 @@
 <script>
-  let { history } = $props();
+  let { history, reviewAfter } = $props();
 
   function date(value) {
     if (!value) return "unrecorded";
@@ -16,7 +16,11 @@
 {#if history}
   <details class="review-history">
     <summary>Review history ({history.entries.length})</summary>
-    <p>Stored attempts. Current freshness is shown above.</p>
+    <p>
+      Stored attempts. A success for another revision does not confirm the
+      current claim.
+    </p>
+    <p>Next review deadline: {date(reviewAfter)}.</p>
     {#if history.entries.length === 0}
       <p>No review attempts recorded.</p>
     {:else}
@@ -33,11 +37,15 @@
                 : "other claim revision"}. Reviewer/lane: {entry.reviewer_lane ??
                 "unrecorded"}.
             </p>
-            <p>{entry.reason}{entry.reason_truncated ? "… (truncated)" : ""}</p>
-            <p>
-              Evidence observed: {date(entry.evidence_observed_at)}. Next
-              attempt recorded: {date(entry.next_attempt_at)}.
-            </p>
+            {#if "reason" in entry}
+              <p>
+                {entry.reason}{entry.reason_truncated ? "… (truncated)" : ""}
+              </p>
+              <p>
+                Evidence observed: {date(entry.evidence_observed_at)}. Next
+                attempt recorded: {date(entry.next_attempt_at)}.
+              </p>
+            {/if}
           </li>
         {/each}
       </ol>

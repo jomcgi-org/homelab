@@ -17,7 +17,7 @@ over the view row shape is also covered (SQLite) in knowledge/router_test.py.
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlmodel import Session, create_engine, text
 
 _INSERT_NOTE = text(
@@ -631,3 +631,122 @@ def test_scope_shape_constraint_accepts_known_prefix_and_rejects_invalid(session
         session.flush()
     session.rollback()
     assert "notes_scope_shape_chk" in str(exc.value)
+
+
+def test_review_history_public_reader_projection_and_denials(session, monkeypatch):
+    from core.db import get_session
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from knowledge.public_router import router
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_session] = lambda: session
+    client = TestClient(app)
+    _seed(session)
+    monkeypatch.setattr("knowledge.public_router._now", lambda: _NOW)
+    session.execute(
+        text("UPDATE knowledge.notes SET revision = 2 WHERE note_id = 'note-a'")
+    )
+    session.commit()
+    path = "/api/knowledge/public/notes/note-a"
+    session.execute(text("SET ROLE public_reader"))
+    empty = client.get(path)
+    assert empty.status_code == 200 and empty.json()["review_history"]["entries"] == []
+    columns = (
+        session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public_api' AND table_name = 'knowledge_review_history' ORDER BY ordinal_position"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert columns == [
+        "id",
+        "note_id",
+        "status",
+        "attempted_at",
+        "reviewer_lane",
+        "note_revision",
+        "is_current_revision",
+    ]
+    session.execute(text("RESET ROLE"))
+    insert = text("""
+        INSERT INTO knowledge.review_outcomes
+            (note_id, status, reason, note_revision, evidence, attempted_at, next_attempt_at, reviewer_lane)
+        VALUES (:nid, :status, 'private reason', :revision, '["private evidence"]', :now, :retry, :lane)
+        RETURNING id
+    """)
+    for nid in ("note-a", "note-c", "note-d"):
+        for i in range(12):
+            session.execute(
+                insert,
+                {
+                    "nid": nid,
+                    "status": ("success", "failed", "unavailable", "unsupported")[
+                        i % 4
+                    ],
+                    "revision": 1 if i % 2 == 0 else 2,
+                    "now": _NOW,
+                    "retry": _NOW + timedelta(days=3),
+                    "lane": "source-review" if i % 2 else None,
+                },
+            )
+    session.commit()
+    session.execute(text("SET ROLE public_reader"))
+    assert set(
+        session.execute(
+            text("SELECT DISTINCT note_id FROM public_api.knowledge_review_history")
+        ).scalars()
+    ) == {"note-a"}
+    response = client.get(path, headers={"If-None-Match": empty.headers["etag"]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert (
+        "private reason" not in response.text
+        and "private evidence" not in response.text
+    )
+    assert payload["review_after"] == "2024-06-02T12:00:00Z"
+    history = payload["review_history"]
+    assert history["has_more"] and len(history["entries"]) == 10
+    assert [r["id"] for r in history["entries"]] == sorted(
+        [r["id"] for r in history["entries"]], reverse=True
+    )
+    old_success = next(r for r in history["entries"] if r["status"] == "success")
+    assert (
+        old_success["note_revision"] == 1
+        and old_success["is_current_revision"] is False
+    )
+    assert old_success["reviewer_lane"] is None
+    assert history["entries"][0]["reviewer_lane"] == "source-review"
+    assert all(r["attempted_at"] == "2024-06-01T12:00:00Z" for r in history["entries"])
+    assert "stale-" not in response.headers["cache-control"]
+    assert (
+        client.get(
+            path, headers={"If-None-Match": response.headers["etag"]}
+        ).status_code
+        == 304
+    )
+    for nid in ("note-c", "note-d", "missing"):
+        assert client.get(f"/api/knowledge/public/notes/{nid}").status_code == 404
+    assert (
+        session.execute(
+            text(
+                "SELECT has_table_privilege(current_user, 'public_api.knowledge_review_history', 'UPDATE')"
+            )
+        ).scalar_one()
+        is False
+    )
+    for sql in (
+        "SELECT * FROM knowledge.notes",
+        "SELECT * FROM knowledge.review_outcomes",
+        "UPDATE public_api.knowledge_review_history SET status = 'success'",
+        "INSERT INTO public_api.knowledge_review_history (id) VALUES (999)",
+    ):
+        with pytest.raises(
+            DBAPIError, match="permission denied|cannot (update|insert into) view"
+        ):
+            with session.connection().begin_nested():
+                session.execute(text(sql))
+    session.execute(text("RESET ROLE"))

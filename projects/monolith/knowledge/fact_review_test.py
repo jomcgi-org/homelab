@@ -138,6 +138,7 @@ def test_renewal_preserves_original_observation_and_labels(db):
     assert utc(row.review_after) == NOW + timedelta(days=90)
     assert (row.revision, row.verification_state, row.confidence) == before
     outcome = db.exec(select(ReviewOutcome)).one()
+    assert outcome.reviewer_lane == "source-review"
     assert outcome.status == "success" and SOURCE["url"] in outcome.evidence[1]
 
 

@@ -361,6 +361,7 @@ def test_admission_renews_only_what_github_confirms_and_records_every_outcome(se
     ) == (1, 2, 1, 1)
     status = {o.note_id: (o.status, o.reason) for o in outcomes(session)}
     assert status["confirmed"] == ("success", "verified")
+    assert all(o.reviewer_lane == "deterministic-verifier" for o in outcomes(session))
     assert status["changed"][0] == "failed"
     assert "is closed, not open" in status["changed"][1]
     assert status["gone"][0] == "failed" and status["gone"][1].startswith("not found")

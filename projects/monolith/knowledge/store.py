@@ -922,6 +922,7 @@ class KnowledgeStore:
             select(
                 ReviewOutcome.id,
                 ReviewOutcome.status,
+                ReviewOutcome.reviewer_lane,
                 func.substr(
                     ReviewOutcome.reason, 1, _REVIEW_HISTORY_REASON_LIMIT + 1
                 ).label("reason"),
@@ -950,8 +951,7 @@ class KnowledgeStore:
                     "attempted_at": utc_iso(row.attempted_at),
                     "evidence_observed_at": utc_iso(row.evidence_observed_at),
                     "next_attempt_at": utc_iso(row.next_attempt_at),
-                    # ReviewOutcome has no durable reviewer/lane linkage.
-                    "reviewer_lane": None,
+                    "reviewer_lane": row.reviewer_lane,
                 }
                 for row in rows[:limit]
             ],

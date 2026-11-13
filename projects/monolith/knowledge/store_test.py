@@ -944,6 +944,7 @@ class TestPrivateReviewHistory:
                 note_id="a-id",
                 status=statuses[i % 4],
                 reason="r" * 1200,
+                reviewer_lane="source-review" if i % 2 else None,
                 note_revision=0 if i % 2 else 1,
                 attempted_at=stamp + timedelta(minutes=i // 2),
                 evidence_observed_at=stamp,
@@ -1008,7 +1009,7 @@ class TestPrivateReviewHistory:
             assert entry["is_current_revision"] == (row.note_revision == 1)
             assert entry["reason"] == "r" * 1000
             assert entry["reason_truncated"] is True
-            assert entry["reviewer_lane"] is None
+            assert entry["reviewer_lane"] == row.reviewer_lane
             assert entry["evidence_observed_at"] == stamp.isoformat()
             assert entry["next_attempt_at"] == (stamp + timedelta(days=1)).isoformat()
             assert entry["attempted_at"].endswith("+00:00")

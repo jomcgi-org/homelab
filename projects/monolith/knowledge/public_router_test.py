@@ -39,6 +39,7 @@ from knowledge.public_models import (
     PublicNote,
     PublicNoteEntity,
     PublicNoteLink,
+    PublicReviewOutcome,
 )
 from knowledge.public_router import router
 
@@ -1569,3 +1570,73 @@ class TestSearchPublicChunksOrphans:
         sql = str(captured["stmt"]).upper()
         assert "LEFT OUTER JOIN" not in sql
         assert "JOIN" in sql
+
+
+def test_public_history_bounded_safe_projection_and_conditional_cache(client, session):
+    note = _make_note("history", "History")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    path = "/api/knowledge/public/notes/history"
+    empty = client.get(path)
+    assert empty.status_code == 200
+    assert empty.json()["review_history"]["entries"] == []
+    assert empty.json()["review_after"] == "2024-06-01T12:00:13Z"
+    assert empty.json()["last_reviewed_at"] is None
+    rows = [
+        PublicReviewOutcome(
+            id=i + 1,
+            note_id="history",
+            status=("success", "failed", "unavailable", "unsupported")[i % 4],
+            attempted_at=_NOW,
+            reviewer_lane="source-review" if i % 2 else None,
+            note_revision=i % 2,
+            is_current_revision=bool(i % 2),
+        )
+        for i in range(12)
+    ]
+    session.add(rows[0])
+    session.commit()
+    one = client.get(path, headers={"If-None-Match": empty.headers["etag"]})
+    assert one.status_code == 200
+    assert len(one.json()["review_history"]["entries"]) == 1
+    session.add_all(rows[1:])
+    session.commit()
+    many = client.get(path, headers={"If-None-Match": one.headers["etag"]})
+    assert many.status_code == 200
+    history = many.json()["review_history"]
+    assert history["has_more"] and history["limit"] == 10
+    assert [r["id"] for r in history["entries"]] == list(range(12, 2, -1))
+    assert {r["status"] for r in history["entries"]} == {
+        "success",
+        "failed",
+        "unavailable",
+        "unsupported",
+    }
+    assert history["entries"][0]["reviewer_lane"] == "source-review"
+    assert history["entries"][1]["reviewer_lane"] is None
+    assert history["entries"][3]["status"] == "success"
+    assert history["entries"][3]["is_current_revision"] is False
+    assert all(
+        set(r)
+        == {
+            "id",
+            "status",
+            "attempted_at",
+            "reviewer_lane",
+            "note_revision",
+            "is_current_revision",
+        }
+        for r in history["entries"]
+    )
+    assert all(r["attempted_at"].endswith("Z") for r in history["entries"])
+    assert (
+        many.headers["cache-control"]
+        == empty.headers["cache-control"]
+        == "public, max-age=13, s-maxage=13, must-revalidate"
+    )
+    assert (
+        client.get(path, headers={"If-None-Match": many.headers["etag"]}).status_code
+        == 304
+    )
+    assert not session.new and not session.dirty

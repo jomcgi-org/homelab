@@ -290,6 +290,7 @@ def record_outcome(
     now: datetime,
     evidence: list[str] | None = None,
     evidence_observed_at: datetime | None = None,
+    reviewer_lane: str | None = None,
 ):
     """Add a durable outcome row to the caller's transaction (no commit).
 
@@ -299,6 +300,8 @@ def record_outcome(
     """
     from knowledge.models import ReviewOutcome
 
+    if reviewer_lane not in {None, "deterministic-verifier", "source-review"}:
+        raise ValueError("unknown reviewer lane")
     previous = latest_outcome(session, note_id)
     attempts = (
         previous.attempts + 1
@@ -316,6 +319,7 @@ def record_outcome(
         note_id=note_id,
         status=status,
         reason=reason[:500],
+        reviewer_lane=reviewer_lane,
         note_revision=revision,
         attempts=attempts,
         evidence=list(evidence or []),
@@ -336,6 +340,7 @@ def commit_successful_review(
     evidence: list[str],
     evidence_observed_at: datetime,
     now: datetime,
+    reviewer_lane: str | None = None,
 ) -> ReviewCommit:
     """The only operation permitted to renew a lease, inside the caller's transaction.
 
@@ -368,6 +373,7 @@ def commit_successful_review(
             now=clock,
             evidence=evidence,
             evidence_observed_at=observed,
+            reviewer_lane=reviewer_lane,
         )
         return ReviewCommit(False, reason)
 
@@ -420,5 +426,6 @@ def commit_successful_review(
         now=clock,
         evidence=evidence,
         evidence_observed_at=observed,
+        reviewer_lane=reviewer_lane,
     )
     return ReviewCommit(True, "verified")

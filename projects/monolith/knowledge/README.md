@@ -228,9 +228,27 @@ forwarding upstream Date/Age as a new lease basis. Cloudflare and browsers
 start the TTL at receipt, so the origin lease is measured from serve time.
 Public chat hashes current notes and their deadlines, caps its watermark
 memo at the first deadline and rechecks touched notes on every cache hit.
-Migration rollout and operational acceptance remain on #6823. Publication
-policy and stored history are unchanged; dated-history presentation is follow-up
-work.
+#6823's final operational backfill checks remain with #6812. Publication and
+retention policy are unchanged.
+
+Private note detail opts into the newest ten stored review attempts (maximum
+25), ordered by attempt date then ID descending. Eligible public detail includes
+ten attempts through the allowlisted `public_api.knowledge_review_history` view,
+with one extra row establishing truncation. Public history exposes only attempt
+date, verdict, lane and revision metadata, never reasons, evidence or old claim
+text. Both views show the stored `review_after` as the next review deadline;
+`next_attempt_at` remains a private retry time. Historical success for another
+revision does not confirm the current claim. Existing agents-tier note and
+search results retain `last_reviewed_at` and `review_after` in one call.
+
+`reviewer_lane` records the trusted execution path prospectively:
+`deterministic-verifier` for verifier/admission attempts and `source-review`
+for source-review execution, including admission failures. It identifies neither
+a model nor a person. Execution code supplies the bounded value at outcome
+creation; reviewer output cannot set it. Legacy rows stay NULL and render as
+"unrecorded", with no attribution backfill. History-only changes alter public
+detail ETags; existing deadlines still bound cache lifetimes. Repository delivery
+is staged under #7009; rollout and public-origin acceptance remain outstanding.
 
 The existing jobs image provides `knowledge-review-backfill --apply --pending-only`
 as an Argo CronWorkflow that is **suspended by default**, including with the

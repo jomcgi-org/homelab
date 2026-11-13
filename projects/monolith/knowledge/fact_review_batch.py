@@ -109,6 +109,7 @@ def _failure(session, key, status, reason, now, *, commit=True, identity=None):
     if run.status != "complete":
         outcome = record_outcome(
             session,
+            reviewer_lane="source-review",
             note_id=run.note_id,
             revision=run.revision,
             status=status,

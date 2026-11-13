@@ -50,6 +50,7 @@ from knowledge.public_models import (
     PublicNote,
     PublicNoteEntity,
     PublicNoteLink,
+    PublicReviewOutcome,
 )
 from knowledge.store import GRAPH_NOTE_TYPES
 from knowledge.visibility import strip_private_wikilinks
@@ -884,6 +885,29 @@ def get_public_note(
     )
     sanitized = strip_private_wikilinks(body, public_ids)
 
+    rows = session.exec(
+        select(PublicReviewOutcome)
+        .where(PublicReviewOutcome.note_id == note_id)
+        .order_by(
+            PublicReviewOutcome.attempted_at.desc(), PublicReviewOutcome.id.desc()
+        )
+        .limit(11)
+    ).all()
+    history = {
+        "limit": 10,
+        "has_more": len(rows) > 10,
+        "entries": [
+            {
+                "id": row.id,
+                "status": row.status,
+                "attempted_at": iso_z(row.attempted_at),
+                "reviewer_lane": row.reviewer_lane,
+                "note_revision": row.note_revision,
+                "is_current_revision": row.is_current_revision,
+            }
+            for row in rows[:10]
+        ],
+    }
     indexed_at = as_utc(note.indexed_at)
     logger.info("public.note.served note_id=%s", note_id)
     payload = {
@@ -901,6 +925,9 @@ def get_public_note(
         "published_at": note.published_at,
         "disputed": note.disputed,
         "body": sanitized,
+        "last_reviewed_at": iso_z(note.last_reviewed_at),
+        "review_after": iso_z(note.review_after),
+        "review_history": history,
     }
     cached = _cache_response(
         request,

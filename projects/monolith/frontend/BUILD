@@ -350,6 +350,7 @@ js_library(
         "test/trips-fixtures.js",
         "test/trips-map-stub.js",
         "test/MovingRoute.svelte",
+        "test/NotesGraph.svelte",
         "test/moving-fixtures.js",
         "test/profile-page.svelte.js",
         "test/profile-stores.js",

@@ -124,3 +124,18 @@ class PublicChunk(SQLModel, table=True):
     section_header: str = ""
     chunk_text: str
     embedding: list[float] = Field(sa_column=Column(Vector(1024)))
+
+
+class PublicReviewOutcome(SQLModel, table=True):
+    """Allowlisted historical metadata joined to the eligible public note view."""
+
+    __tablename__ = "knowledge_review_history"
+    __table_args__ = {"schema": "public_api", "extend_existing": True}
+
+    id: int = Field(primary_key=True)
+    note_id: str
+    status: str
+    attempted_at: datetime
+    reviewer_lane: str | None = None
+    note_revision: int
+    is_current_revision: bool

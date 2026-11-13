@@ -1317,6 +1317,9 @@ class TestPublicNoteEndpoint:
         assert expanded.content == res.content
         body = res.json()
         assert set(body.keys()) == {
+            "last_reviewed_at",
+            "review_after",
+            "review_history",
             "note_id",
             "title",
             "tags",
@@ -1399,3 +1402,70 @@ def test_note_history_limits_rejected_before_reads(note_client, limit):
         assert "between 1 and 25" in result["error"]
         store.assert_not_called()
         session.assert_not_called()
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_real_private_http_and_mcp_history_freshness_one_call(
+    real_session, monkeypatch, count
+):
+    import asyncio
+    from knowledge.mcp import get_note
+    from knowledge.models import Note, ReviewOutcome
+
+    now = datetime.now(timezone.utc)
+    note = Note(
+        note_id="stored-history",
+        path="stored-history.md",
+        title="Stored history",
+        content_hash="hash",
+        content="Current claim",
+        type="fact",
+        revision=2,
+        observed_at=now - timedelta(days=2),
+        last_reviewed_at=now - timedelta(days=1),
+        review_after=now + timedelta(days=5),
+        review_policy="standard-90d/v1",
+    )
+    real_session.add(note)
+    real_session.add_all(
+        [
+            ReviewOutcome(
+                note_id=note.note_id,
+                status="success" if i != 2 else "unavailable",
+                reason="stored reason",
+                note_revision=2 if i == 0 else 1,
+                reviewer_lane="source-review" if i == 0 else None,
+                attempted_at=now - timedelta(hours=i),
+                next_attempt_at=now + timedelta(days=1),
+            )
+            for i in range(count)
+        ]
+    )
+    real_session.commit()
+    monkeypatch.setattr("knowledge.mcp.get_engine", lambda: real_session.get_bind())
+    app.dependency_overrides[get_session] = lambda: real_session
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/knowledge/notes/stored-history?include_review_history=true"
+            )
+        assert response.status_code == 200
+        mcp = asyncio.run(get_note("stored-history", include_review_history=True))
+        assert response.json() == mcp
+        assert datetime.fromisoformat(mcp["last_reviewed_at"]) == now - timedelta(
+            days=1
+        )
+        assert datetime.fromisoformat(mcp["review_after"]) == now + timedelta(days=5)
+        entries = mcp["review_history"]["entries"]
+        assert len(entries) == count
+        if count:
+            assert entries[0]["reviewer_lane"] == "source-review"
+        if count > 1:
+            assert (
+                entries[1]["status"] == "success"
+                and not entries[1]["is_current_revision"]
+            )
+            assert entries[1]["reviewer_lane"] is None
+        assert not real_session.new and not real_session.dirty
+    finally:
+        app.dependency_overrides.clear()

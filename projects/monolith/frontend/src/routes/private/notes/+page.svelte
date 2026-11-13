@@ -89,7 +89,10 @@
       detailQuery="?include_review_history=true"
     >
       {#snippet detailExtra(detail)}
-        <NoteReviewHistory history={detail?.review_history} />
+        <NoteReviewHistory
+          history={detail?.review_history}
+          reviewAfter={detail?.review_after}
+        />
       {/snippet}
     </NotePanel>
   </div>

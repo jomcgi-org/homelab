@@ -16,6 +16,7 @@
   import { Button } from "@homelab/design-system/components";
   import "./sheet.css";
   import KnowledgeGraph from "$lib/components/notes/KnowledgeGraph.svelte";
+  import NoteReviewHistory from "$lib/components/notes/NoteReviewHistory.svelte";
   import NotePanel from "$lib/components/notes/NotePanel.svelte";
   import GraphLegend from "$lib/components/notes/GraphLegend.svelte";
   import GraphSearch from "$lib/components/notes/GraphSearch.svelte";
@@ -195,7 +196,14 @@
         onSelect={(id) => (selectedId = id)}
         onClose={() => (selectedId = null)}
         apiBase="/app/notes/body"
-      />
+      >
+        {#snippet detailExtra(detail)}
+          <NoteReviewHistory
+            history={detail?.review_history}
+            reviewAfter={detail?.review_after}
+          />
+        {/snippet}
+      </NotePanel>
       <!-- No empty-state box on the default view: the toolbar already shows the
            "hover a node" hint, and NotePanel overlays only once a node is
            clicked, so the default view is just the graph canvas + search +

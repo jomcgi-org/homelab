@@ -761,6 +761,10 @@ class ReviewOutcome(
             "status IN ('success', 'failed', 'unavailable', 'unsupported')",
             name="review_outcomes_status_chk",
         ),
+        CheckConstraint(
+            "reviewer_lane IS NULL OR reviewer_lane IN ('deterministic-verifier', 'source-review')",
+            name="review_outcomes_lane_chk",
+        ),
         {"schema": "knowledge", "extend_existing": True},
     )
 
@@ -768,6 +772,9 @@ class ReviewOutcome(
     note_id: str = Field(sa_column=Column(String, nullable=False, index=True))
     status: str = Field(sa_column=Column(String, nullable=False))
     reason: str = Field(sa_column=Column(String, nullable=False))
+    reviewer_lane: str | None = Field(
+        default=None, sa_column=Column(String(32), nullable=True)
+    )
     note_revision: int = Field(sa_column=Column(BigInteger, nullable=False))
     attempts: int = Field(
         default=1, sa_column=Column(Integer, nullable=False, server_default="1")

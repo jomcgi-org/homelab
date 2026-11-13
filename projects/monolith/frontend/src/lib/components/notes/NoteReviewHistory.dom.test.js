@@ -77,7 +77,7 @@ it("labels stored status and revision without inventing reviewer attribution", (
     "Next attempt recorded: 2026-10-21 12:00:00 UTC",
   );
   expect(root.textContent.replace(/\s+/g, " ")).toContain(
-    "Stored attempts. Current freshness is shown above.",
+    "Stored attempts. A success for another revision does not confirm the current claim.",
   );
   expect(root.textContent.replace(/\s+/g, " ")).toContain(
     "Showing the newest 4 attempts",

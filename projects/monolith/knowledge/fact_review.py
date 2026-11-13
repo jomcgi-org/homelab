@@ -578,6 +578,7 @@ def prepare(
     if failure:
         outcome = record_outcome(
             session,
+            reviewer_lane="source-review",
             note_id=run.note_id,
             revision=run.revision,
             status=status,
@@ -669,6 +670,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
     except (ValueError, TypeError) as exc:
         record_outcome(
             session,
+            reviewer_lane="source-review",
             note_id=run.note_id,
             revision=run.revision,
             status="unavailable",
@@ -705,6 +707,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         reason = "claim changed" if stale else "evidence is stale or missing"
         record_outcome(
             session,
+            reviewer_lane="source-review",
             note_id=run.note_id,
             revision=run.revision,
             status=outcome,
@@ -714,6 +717,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
     elif verdict.verdict == "holds":
         committed = commit_successful_review(
             session,
+            reviewer_lane="source-review",
             note_id=run.note_id,
             expected_revision=run.revision,
             expected_content_hash=run.content_hash,
@@ -726,6 +730,7 @@ def apply(session: Session, invocation_key: str, result_text: str, *, now=None) 
         outcome = "failed" if verdict.verdict == "changed" else "unsupported"
         recorded = record_outcome(
             session,
+            reviewer_lane="source-review",
             note_id=run.note_id,
             revision=run.revision,
             status=outcome,

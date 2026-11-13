@@ -179,6 +179,7 @@ def run_admission(
             if verdict.status == "success":
                 result = commit_successful_review(
                     session,
+                    reviewer_lane="deterministic-verifier",
                     note_id=candidate.note_id,
                     expected_revision=candidate.revision,
                     expected_content_hash=candidate.content_hash,
@@ -190,6 +191,7 @@ def run_admission(
             else:
                 record_outcome(
                     session,
+                    reviewer_lane="deterministic-verifier",
                     note_id=candidate.note_id,
                     revision=candidate.revision,
                     status=verdict.status,

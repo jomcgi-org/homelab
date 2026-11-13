@@ -1692,6 +1692,21 @@ job (ADR agents/063). Guests never write the graph because identity and
 provenance are server-stamped: the guest that produced a candidate fact must
 not be the party that asserts its provenance.
 
+### Stored review history (#7009)
+
+Note detail presents dated outcomes separately from current freshness. The
+public definer-rights history view joins the existing eligible public note view
+and projects only dates, verdicts, fixed execution lanes and revision metadata.
+The public role gains no access to knowledge tables or private reasons/evidence.
+Private history preserves its bounded opt-in projection. Both surfaces label
+success against an older revision as historical and show the stored deadline.
+
+Lane attribution is written prospectively by deterministic admission and source
+review code. It describes the execution path, without asserting a reviewer
+identity or model. Historical NULL lanes remain unrecorded. Publication,
+retention, review selection and scheduling are unchanged. #7009 retains live
+acceptance after the authorized owner verifies rollout of all serving tiers.
+
 ## 7. MCP surface
 
 `monolith_agent_schema_retirement_inventory` is a parameterless private-tier
