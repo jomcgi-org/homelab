@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   STATS_AGE_TICK_INTERVAL_MS,
   STATS_REFRESH_INTERVAL_MS,
-  buildMarquee,
   deployReadout,
   formatAgo,
   isStatsSnapshot,
@@ -45,25 +44,15 @@ const cachedStats = {
 
 describe("GPU-free stats contract", () => {
   it.each([freshStats, cachedStats])(
-    "validates and renders non-GPU statistics from fresh or transitional snapshots",
+    "validates non-GPU statistics from fresh or transitional snapshots",
     async (stats) => {
       expect(isStatsSnapshot(stats)).toBe(true);
-      expect(buildMarquee(stats)).toEqual([
-        "~/homelab",
-        "2 nodes · 135 pods",
-        "cpu: 4.99 / 32 cores",
-        "mem: 62.5 / 108 gb",
-        "argocd: 28 apps",
-        `kg: ${(1309).toLocaleString()} notes`,
-        "last commit: abc1234",
-      ]);
     },
   );
 
   it("ignores a GPU-only legacy payload as an unusable snapshot", () => {
     const stats = { gpu: cachedStats.gpu };
     expect(isStatsSnapshot(stats)).toBe(false);
-    expect(buildMarquee(stats)).toEqual(["~/homelab"]);
   });
 });
 
@@ -128,22 +117,18 @@ describe("homepage stats polling", () => {
       ok: true,
       json: async () => refreshedStats,
     });
-    const render = vi.fn(buildMarquee);
+    const render = vi.fn(deployReadout);
     const stop = startHomepageStatsPolling(initialStats, render, { fetchFn });
 
     await vi.advanceTimersByTimeAsync(STATS_REFRESH_INTERVAL_MS);
-    expect(render).toHaveLastReturnedWith(
-      expect.arrayContaining(["last commit: new", "deployed 10m ago"]),
-    );
+    expect(render).toHaveLastReturnedWith({ ago: "10m", sha: "new" });
 
     render.mockClear();
     await vi.advanceTimersByTimeAsync(STATS_AGE_TICK_INTERVAL_MS);
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(render).toHaveBeenCalledOnce();
     expect(render).toHaveBeenCalledWith(refreshedStats);
-    expect(render).toHaveLastReturnedWith(
-      expect.arrayContaining(["last commit: new", "deployed 11m ago"]),
-    );
+    expect(render).toHaveLastReturnedWith({ ago: "11m", sha: "new" });
 
     stop();
   });
