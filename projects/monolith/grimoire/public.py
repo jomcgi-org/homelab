@@ -41,6 +41,7 @@ from grimoire.models import (
     KnowledgeChunk,
     Relationship,
 )
+from grimoire.topics import validate_topic
 from grimoire.visibility import _flatten_detail, _SPINE_FIELDS
 
 # Default and max page size for the paged entity list, matching the private
@@ -396,7 +397,9 @@ def list_relationships_public(session: Session, entity_id: str) -> list[dict[str
     return items
 
 
-def search_public(session: Session, q: str) -> dict[str, Any]:
+def search_public(
+    session: Session, q: str, *, topic: str | None = None
+) -> dict[str, Any]:
     """Name + lore search over the whole corpus, no grants.
 
     Public search is name-only, not the private tier's vector/kNN search
@@ -410,6 +413,7 @@ def search_public(session: Session, q: str) -> dict[str, Any]:
     this: promoting to real semantic search is a follow-up once the public
     tier's reachability to the embedding service is verified.
     """
+    validate_topic(topic)
     _MAX_HITS = 20
     needle = q.lower()
 
@@ -419,15 +423,24 @@ def search_public(session: Session, q: str) -> dict[str, Any]:
         .order_by(Entity.name)
         .limit(_MAX_HITS)
     ).all()
-    entities = [
-        {"id": e.id, "name": e.name, "entity_type": e.entity_type} for e in entity_rows
-    ]
+    entities = (
+        [
+            {"id": e.id, "name": e.name, "entity_type": e.entity_type}
+            for e in entity_rows
+        ]
+        if topic is None
+        else []
+    )
 
+    chunk_query = select(KnowledgeChunk).where(
+        func.lower(KnowledgeChunk.content).contains(needle)
+    )
+    if topic is not None:
+        chunk_query = chunk_query.where(KnowledgeChunk.topic == topic)
     chunk_rows = session.exec(
-        select(KnowledgeChunk)
-        .where(func.lower(KnowledgeChunk.content).contains(needle))
-        .order_by(KnowledgeChunk.book_id, KnowledgeChunk.seq)
+        chunk_query.order_by(KnowledgeChunk.book_id, KnowledgeChunk.seq)
         .limit(_MAX_HITS)
+        .execution_options(populate_existing=True)
     ).all()
     book_ids = {c.book_id for c in chunk_rows}
     books_by_id = (
@@ -445,6 +458,15 @@ def search_public(session: Session, q: str) -> dict[str, Any]:
                 else c.book_id
             ),
             "section_path": c.section_path,
+            "section_hierarchy": c.section_hierarchy,
+            "topic": c.topic,
+            "source": {
+                "book_id": c.book_id,
+                "chunk_id": c.id,
+                "chunk_ref": c.chunk_ref,
+                "section_path": c.section_path,
+                "section_hierarchy": c.section_hierarchy,
+            },
             "preview": c.content[:_PREVIEW_LEN],
         }
         for c in chunk_rows

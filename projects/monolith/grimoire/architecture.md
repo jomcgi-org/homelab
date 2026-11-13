@@ -40,6 +40,66 @@ author's knowledge, with DM access requiring `dm_readable`.
 
 ## Data model
 
+### Staged DM guidance (#7015)
+
+**Why.** Advice needs chunk retrieval with source citations. Option 3 keeps
+identity at `(book_id, chunk_ref)` and permits repeated headings in different
+books without new graph entities or an extraction-prompt version change.
+
+The v1 topic taxonomy has one optional value, `dm_guidance`. NULL means
+unclassified, including mundane rules and lore; it does not assert that a chunk
+has been reviewed. A nullable text column and CHECK constraint are additive.
+Search inputs reject unknown topics. Manifest topic fields are not authoritative:
+the loader computes topics from content and section metadata.
+
+`topics.classify_topic` requires advice in the current chunk plus a meaningful
+action heading or explicit DM-directed prose. Book names, generic topic words
+and broad book ancestry alone never classify a chunk. Setting guides use the
+same rule as DMGs. Conservative false negatives remain possible. Tests contain
+original synthetic prose and source metadata, with no copied book text.
+
+Ingest recomputes topics on new and refreshed chunks, retains stored hierarchy
+when an older manifest omits it, and preserves chunk ids and provenance. Topic
+and hierarchy updates do not trigger embeddings or extraction. Content changes
+reclassify advice and use the existing re-embedding path.
+
+Both existing search endpoints accept optional `topic=dm_guidance`. Campaign
+search retains membership and play gating; corpus advice remains visible to
+campaign players like other corpus chunks. Its live chunk predicate runs before
+vector ranking/limit and its resolver rechecks topic and deletion from storage.
+Public `/search` filters corpus text before its limit, returns no campaign state,
+and imports no private context reader. Omitted topic preserves existing search
+eligibility. Results add topic and book/chunk/section citation metadata.
+
+`guidance_context.guidance_context` is a private, staged library helper with no
+route or active consumer. The future caller must authenticate its principal and
+supply that principal's authorized `DMGuidanceContext` campaign/member identity.
+The helper reads live DM membership before embedding and again before assembly,
+using fresh thread-owned sessions. It uses the campaign filtered retrieval core,
+rechecks live chunks, orders by score then chunk id and returns at most 10 cited
+excerpts. Defaults are five results, 1,500 characters per chunk and 6,000 total
+content characters; hard caps are 3,000 per chunk and 12,000 total. Structured
+citation metadata is outside the content budget. No inference transport,
+conversation persistence or assistant endpoint is introduced.
+
+Existing-chunk classification is staged and has **not been executed**. An
+authorized operator can open a fresh Session and call
+`topics.classify_stored_chunks(session, book_id=BOOK, after_ref=CURSOR, limit=100)`.
+Review the returned counts, then commit to apply or roll back to preview. Carry
+`next_ref` to the next explicitly requested page; stop at NULL. Each page is
+limited to 500 chunks, scoped to one named book, and uses immutable `chunk_ref`
+keyset order. Replaying a page is idempotent. Restart from NULL after changing
+classifier rules. Only topic metadata changes; there is no bulk seed SQL,
+scheduled sweep, provider call or embedding/extraction work.
+
+The taxonomy decision is resolved; #7015 stays open. `grimoire/assistant.py` is
+absent, so real #6630 context integration and the assistant prep-response test
+remain outstanding, alongside authorized live corpus tagging and final backlog
+completion. The helper's tests validate only repository context assembly.
+After the landing owner rolls out this staged revision, obtain a successful
+`verify_deployment` result for monolith identifying the delivered revision within
+72 hours. That rollout check does not satisfy the remaining original requirements.
+
 ### Character facts
 
 `character_fact` stores viewer-owned campaign facts and their evidence event ids.

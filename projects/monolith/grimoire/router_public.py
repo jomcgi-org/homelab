@@ -26,6 +26,7 @@ from sqlmodel import Session
 from core.db import get_session
 from grimoire import explore, images, library, public
 from grimoire.models import EntityType, KnowledgeChunk
+from grimoire.topics import Topic
 
 router = APIRouter(prefix="/api/grimoire", tags=["grimoire-public"])
 
@@ -223,7 +224,9 @@ def list_entity_relationships(
 
 @router.get("/search")
 def search(
-    q: str = Query(min_length=1), session: Session = Depends(get_session)
+    q: str = Query(min_length=1),
+    session: Session = Depends(get_session),
+    topic: Topic | None = Query(default=None),
 ) -> dict[str, Any]:
     """Name + lore search over the whole corpus, no grants.
 
@@ -231,7 +234,7 @@ def search(
     public.search_public's docstring for why (the embedding inference
     service is not reachable from the public tier's network path today).
     """
-    return public.search_public(session, q)
+    return public.search_public(session, q, topic=topic)
 
 
 # --- EXPLORE (corpus-graph canvas: subgraph, ego expansion, pathfinding) --

@@ -42,7 +42,7 @@ per PHB class).
 class and samples empty class-chapter chunks; tune only if recall is materially
 low so the version churn stays evidence-driven.
 
-## Design gap: DM advice is invisible to the graph
+## DM advice: topic decision resolved, delivery remains staged
 
 **Observed:** DMG-2024 advice prose (for example "Getting Players Invested",
 pacing and conflict-building guidance, the DM's Toolbox chapters) returns empty
@@ -50,7 +50,7 @@ by design: it names no entity, so the current taxonomy has nowhere to put it.
 Joe's call (2026-07-06): this content is exactly what you want surfaced while
 RUNNING a campaign, so treating it as pure suppression is a miss, not a win.
 
-**Options considered (no decision yet; needs its own design pass):**
+**Options considered:**
 
 1. **Do nothing at the entity layer.** Advice chunks are already embedded and
    retrievable by chunk search; the gap is only that the GRAPH cannot point at
@@ -67,9 +67,29 @@ RUNNING a campaign, so treating it as pure suppression is a miss, not a win.
    guidance" search facet. No graph nodes, no name-dedup problem, and the
    consumer (live-play prep) mostly wants retrieval anyway.
 
-Leaning 3 for the consumer fit and because it sidesteps generic-title dedup,
-but this should be decided alongside the live-play prep UX, not inside a prompt
-bump.
+**Decision (#7015): option 3.** Use the nullable chunk topic `dm_guidance`.
+An absent topic means unclassified, including ordinary rules and lore. Classification
+uses local heading and advice evidence; it does not change the extraction prompt,
+create entities or deduplicate repeated advice headings across books.
+
+Only the taxonomy design decision is resolved. The repository slice is staged:
+new/refreshed ingest classifies chunks, filtered search exposes corpus citations,
+and a bounded private guidance-context helper is available for the future #6630
+consumer. `grimoire/assistant.py` is absent. The helper is not that consumer and
+its fixtures do not satisfy the assistant prep-response regression requirement.
+The existing public corpus chat is unrelated to #6630.
+
+Outstanding original requirements remain on #7015:
+
+- Wire guidance into the real #6630 campaign assistant context builder.
+- Test the real assistant's prep response with cited advice and campaign privacy.
+- Run authorized live corpus tagging and verify retrieval from stored book chunks.
+- Complete the backlog item after those requirements pass.
+
+After authorized rollout, obtain a successful `verify_deployment` for monolith
+identifying the delivered revision within 72 hours. This check validates only the
+staged repository slice. No production backfill, provider call or feature
+activation is part of this delivery.
 
 ## Smaller carried items
 

@@ -35,6 +35,7 @@ from sqlmodel import Session, select
 
 from core.s3 import shared_client
 from grimoire.models import Book, Embedding, KnowledgeChunk
+from grimoire.topics import classify_topic
 
 logger = logging.getLogger("monolith.grimoire.ingest")
 
@@ -164,7 +165,7 @@ def parse_manifest_lines(book_id: str, lines: Iterable[str]) -> tuple[list[dict]
             section_path = None
 
         section_hierarchy = obj.get("section_hierarchy")
-        if not isinstance(section_hierarchy, str):
+        if not isinstance(section_hierarchy, str) or not section_hierarchy.strip():
             section_hierarchy = None
 
         image_ref = obj.get("image_ref")
@@ -314,6 +315,9 @@ def _upsert_book_chunks(
                     book_id=book_id,
                     chunk_ref=item["chunk_ref"],
                     content=item["content"],
+                    topic=classify_topic(
+                        item["content"], item["section_path"], item["section_hierarchy"]
+                    ),
                     section_path=item["section_path"],
                     section_hierarchy=item["section_hierarchy"],
                     image_ref=item["image_ref"],
@@ -339,8 +343,12 @@ def _upsert_book_chunks(
                 incoming_hierarchy = item["section_hierarchy"]
                 if incoming_hierarchy is None:
                     incoming_hierarchy = existing.section_hierarchy
+                topic = classify_topic(
+                    item["content"], item["section_path"], incoming_hierarchy
+                )
                 meta_changed = (
-                    existing.section_path != item["section_path"]
+                    existing.topic != topic
+                    or existing.section_path != item["section_path"]
                     or existing.section_hierarchy != incoming_hierarchy
                     or existing.image_ref != item["image_ref"]
                 )
@@ -350,6 +358,7 @@ def _upsert_book_chunks(
                 if existing.seq != seq:
                     existing.seq = seq
                 if content_changed or meta_changed:
+                    existing.topic = topic
                     existing.content = item["content"]
                     existing.section_path = item["section_path"]
                     existing.section_hierarchy = incoming_hierarchy

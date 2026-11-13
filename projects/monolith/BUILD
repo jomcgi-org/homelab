@@ -10025,3 +10025,27 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+py_test(
+    name = "grimoire_topics_test",
+    srcs = ["grimoire/topics_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_topics_postgres_test",
+    srcs = ["grimoire/topics_postgres_test.py"],
+    deps = [
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)

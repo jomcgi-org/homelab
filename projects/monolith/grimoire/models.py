@@ -270,6 +270,9 @@ class EntityNpc(SQLModel, table=True):
 class KnowledgeChunk(SQLModel, table=True):
     __tablename__ = "knowledge_chunk"
     __table_args__ = (
+        CheckConstraint(
+            "topic IS NULL OR topic = 'dm_guidance'", name="knowledge_chunk_topic_chk"
+        ),
         UniqueConstraint(
             "book_id", "chunk_ref", name="knowledge_chunk_book_id_chunk_ref_key"
         ),
@@ -286,6 +289,9 @@ class KnowledgeChunk(SQLModel, table=True):
     book_id: str
     chunk_ref: str
     content: str
+    topic: Literal["dm_guidance"] | None = Field(
+        default=None, sa_column=Column(String, nullable=True)
+    )
     section_path: str | None = None
     # Full section-ancestry breadcrumb (e.g. "Chapter 3: Magic Items > Armor >
     # Armor of Vulnerability"), joined by " > ", shallowest ancestor first. Used

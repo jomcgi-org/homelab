@@ -34,6 +34,7 @@ from grimoire.play_embeddings import (
     event_text,
     play_embedding_predicate,
 )
+from grimoire.topics import topic_embedding_predicate, validate_topic
 from grimoire.visibility import Viewer, project_entity, visible_entities_query
 from grimoire.voices import speaker_ref
 
@@ -89,11 +90,11 @@ def knn_embeddings(
 
 
 def _resolve_chunk_hit(
-    session: Session, chunk_id: str, distance: float
+    session: Session, chunk_id: str, distance: float, topic: str | None = None
 ) -> dict[str, Any] | None:
     """Sync: shape a chunk hit. Chunks are always visible in v1 (global corpus)."""
-    chunk = session.get(KnowledgeChunk, chunk_id)
-    if chunk is None:
+    chunk = session.get(KnowledgeChunk, chunk_id, populate_existing=True)
+    if chunk is None or (topic is not None and chunk.topic != topic):
         return None
     # Resolve the book's display name so the omnibox can title chunk hits with a
     # human name (and link into the reader) instead of showing the raw book_id.
@@ -104,6 +105,9 @@ def _resolve_chunk_hit(
         "book_id": chunk.book_id,
         "display_name": book.display_name if book else chunk.book_id,
         "section_path": chunk.section_path,
+        "section_hierarchy": chunk.section_hierarchy,
+        "chunk_ref": chunk.chunk_ref,
+        "topic": chunk.topic,
         "preview": chunk.content[:_CHUNK_PREVIEW_LEN],
         "score": 1.0 - distance,
     }
@@ -168,12 +172,15 @@ def _resolve_knowledge_hits(
     hits: list[tuple[Embedding, float]],
     *,
     for_context: bool = False,
+    topic: str | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve every candidate from live sources, ignoring cached audience copies."""
     results = []
     seen = set()
     for embedding, distance in hits:
         kind, source_id = embedding.embeddable_kind, embedding.embeddable_id
+        if topic is not None and kind != "chunk":
+            continue
         identity = ("event" if kind == "transcript" else kind, source_id)
         if identity in seen:
             continue
@@ -186,12 +193,15 @@ def _resolve_knowledge_hits(
                 resolved["type"] = "entity"
                 resolved["source"] = {"entity_id": source_id}
         elif kind == "chunk":
-            resolved = _resolve_chunk_hit(session, source_id, distance)
+            resolved = _resolve_chunk_hit(session, source_id, distance, topic)
             if resolved is not None:
                 resolved["type"] = "chunk"
                 resolved["source"] = {
                     "book_id": resolved["book_id"],
                     "chunk_id": source_id,
+                    "section_path": resolved["section_path"],
+                    "section_hierarchy": resolved["section_hierarchy"],
+                    "chunk_ref": resolved["chunk_ref"],
                 }
         elif kind == "note":
             note = session.get(Note, source_id)
@@ -277,6 +287,38 @@ def _resolve_knowledge_hits(
     return results
 
 
+def search_knowledge_vector(
+    session: Session,
+    query_vector: list[float],
+    campaign_id: str,
+    viewer: Viewer,
+    member: Member,
+    k: int = 10,
+    *,
+    for_context: bool = False,
+    topic: str | None = None,
+) -> list[dict[str, Any]]:
+    """Sync retrieval core shared by campaign search and staged DM context."""
+    validate_topic(topic)
+    predicate = play_embedding_predicate(campaign_id, viewer, member)
+    if topic is not None:
+        predicate = predicate & topic_embedding_predicate(topic)
+    hits = knn_embeddings(
+        session,
+        query_vector,
+        ("chunk",)
+        if topic is not None
+        else ("entity", "chunk", "note", "event", "transcript", "fact"),
+        k * OVERFETCH_FACTOR,
+        where=predicate,
+    )
+    results = _resolve_knowledge_hits(
+        session, campaign_id, viewer, member, hits, for_context=for_context, topic=topic
+    )
+    results.sort(key=lambda item: (-item["score"], item["id"]))
+    return results[:k]
+
+
 async def search_knowledge(
     session: Session,
     embed_client: _Embedder,
@@ -287,18 +329,18 @@ async def search_knowledge(
     k: int = 10,
     *,
     for_context: bool = False,
+    topic: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search visible corpus and play knowledge, with a live-source re-check."""
+    validate_topic(topic)
     query_vector = await embed_client.embed(q)
-    hits = knn_embeddings(
+    return search_knowledge_vector(
         session,
         query_vector,
-        ("entity", "chunk", "note", "event", "transcript", "fact"),
-        k * OVERFETCH_FACTOR,
-        where=play_embedding_predicate(campaign_id, viewer, member),
+        campaign_id,
+        viewer,
+        member,
+        k,
+        for_context=for_context,
+        topic=topic,
     )
-    results = _resolve_knowledge_hits(
-        session, campaign_id, viewer, member, hits, for_context=for_context
-    )
-    results.sort(key=lambda item: item["score"], reverse=True)
-    return results[:k]

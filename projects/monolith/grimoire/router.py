@@ -121,6 +121,7 @@ from grimoire.play_embeddings import (
 )
 from grimoire.reveals import reveal_items
 from grimoire.search import search_knowledge
+from grimoire.topics import Topic
 from grimoire.session_events import (
     EventRequestConflictError,
     InvalidEventAudienceError,
@@ -2556,6 +2557,7 @@ async def search_knowledge_route(
     campaign_id: str,
     q: str = Query(min_length=1, max_length=200),
     k: int = Query(default=10, ge=1, le=50),
+    topic: Topic | None = Query(default=None),
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
@@ -2564,7 +2566,7 @@ async def search_knowledge_route(
     member = _get_member_or_404(session, campaign_id, email)
     viewer = _viewer_for_member(session, campaign_id, member)
     return await search_knowledge(
-        session, embed_client, campaign_id, viewer, member, q, k
+        session, embed_client, campaign_id, viewer, member, q, k, topic=topic
     )
 
 

@@ -270,7 +270,13 @@ def test_types_sources_sorting_limit_and_live_note_preview(harness, monkeypatch)
         if row["type"] == "event":
             assert row["source"] == {"session_id": row["session_id"], "seq": row["seq"]}
         elif row["type"] == "chunk":
-            assert row["source"] == {"book_id": row["book_id"], "chunk_id": row["id"]}
+            assert row["source"] == {
+                "book_id": row["book_id"],
+                "chunk_id": row["id"],
+                "chunk_ref": row["chunk_ref"],
+                "section_path": row["section_path"],
+                "section_hierarchy": row["section_hierarchy"],
+            }
         elif row["type"] == "fact":
             assert row["source"] == {
                 "fact_id": row["id"],
