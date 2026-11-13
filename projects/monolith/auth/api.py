@@ -1,5 +1,6 @@
 """Public authentication API for monolith domains."""
 
+from auth.agent_binding import AgentWriteBinding, current_write_binding, producer_extra
 from auth.dependencies import (
     auth_error_handler,
     current_principal,
@@ -41,6 +42,9 @@ def find_application_user_by_username(session, application, username):
 
 
 __all__ = [
+    "AgentWriteBinding",
+    "current_write_binding",
+    "producer_extra",
     "AuthError",
     "AuthErrorReason",
     "AuthSettings",

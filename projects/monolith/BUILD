@@ -2811,6 +2811,22 @@ py_test(
 )
 
 py_test(
+    name = "agents_main_test",
+    srcs = ["app/agents_main_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_agents_backend",
+        "@pip//cryptography",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//starlette",
+    ],
+)
+
+py_test(
     name = "main_agents_imports_test",
     srcs = ["app/main_agents_imports_test.py"],
     imports = ["."],

@@ -22,6 +22,7 @@ from auth.api import (
     current_principal,
     get_default_resolver,
 )
+from app.agents_policy import AgentWritePolicy
 from knowledge.board import ack_message, post_message, read_board
 from knowledge.mcp import (
     dispute_fact,
@@ -94,7 +95,7 @@ async def _healthz(request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def build_agent_mcp_app(resolver=None) -> Starlette:
+def build_agent_mcp_app(resolver=None, *, binding_resolver=None) -> Starlette:
     """Build the health endpoint and authenticated, stateless MCP mount."""
 
     raw_mcp_http_app = agent_mcp.http_app(
@@ -103,7 +104,9 @@ def build_agent_mcp_app(resolver=None) -> Starlette:
         stateless_http=True,
     )
     authenticated_mcp_app = PrincipalMiddleware(
-        _AuthenticatedPrincipalGate(raw_mcp_http_app),
+        _AuthenticatedPrincipalGate(
+            AgentWritePolicy(raw_mcp_http_app, binding_resolver)
+        ),
         resolver or get_default_resolver(),
     )
 

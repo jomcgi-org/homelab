@@ -7,7 +7,7 @@ from uuid import uuid4
 import yaml
 from sqlmodel import Session, select
 
-from knowledge.models import Dispute
+from knowledge.models import Dispute, RawInput
 from knowledge.raw_write import persist_raw_with_status
 from knowledge.store import KnowledgeStore
 
@@ -30,14 +30,22 @@ def create_dispute(
     note = store_factory(session).get_note_by_id(fact_id)
     if note is None:
         return {"error": "unknown fact"}
-    existing = session.exec(
-        select(Dispute).where(
-            Dispute.note_id == fact_id,
-            Dispute.reporter_subject == reporter["reporter_subject"],
-            Dispute.reason == reason,
-            Dispute.state == "open",
+    statement = select(Dispute).where(
+        Dispute.note_id == fact_id,
+        Dispute.reporter_subject == reporter["reporter_subject"],
+        Dispute.reason == reason,
+        Dispute.state == "open",
+    )
+    if "producer_id" in reporter:
+        # The shared bearer subject must not collapse distinct live producers
+        # or sessions into a previous producer's attributed dispute.
+        statement = statement.join(RawInput, RawInput.raw_id == Dispute.raw_id).where(
+            RawInput.extra["producer_id"].as_string() == reporter["producer_id"],
+            RawInput.extra["producer_class"].as_string() == reporter["producer_class"],
+            RawInput.extra["producer_session_id"].as_string()
+            == reporter.get("producer_session_id"),
         )
-    ).first()
+    existing = session.exec(statement).first()
     if existing is not None:
         return {
             "dispute_id": existing.id,
@@ -54,6 +62,11 @@ def create_dispute(
             "title": f"Dispute: {title[:80]}",
             "note_id": fact_id,
             "reporter": reporter["reporter_subject"],
+            **{
+                key: value
+                for key, value in reporter.items()
+                if key.startswith("producer_")
+            },
             "dispute_nonce": str(uuid4()),
         },
         sort_keys=False,

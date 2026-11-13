@@ -1,6 +1,6 @@
 # STPA Control Analysis: monolith
 
-_logic @ cbe0525ff · security @ 5f9363262_
+_logic @ cbe0525ff · security @ 13f14ce0a_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -500,6 +500,7 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
+| `agents-unlisted-writes` | logical | A valid unlisted principal reaches agents-tier knowledge or board writes while AGENTS_WRITE_POLICY_ENFORCED defaults off; staged middleware admits verified standing operators or server-bound live guests and drainers, with production bindings absent | L.integrity-loss | built | shipped-off | #7012 |
 | `no-egress-policy` | physical | The private monolith pod has no enforced default-deny egress policy on the hub; the native policy is staged off, so a compromised pod has open-ended cluster and internet reach | L.unauthorized-access, L.secret-exposure | designed | none | #5277 |
 | `operator-grant-spans-prod-levers` | logical | The operators group is the only MCP authorization tier, so every operators principal (including an agent holding a forwarded operators token) reaches both production cluster levers, ArgoCD sync with prune and kargo_promote with rollback, and Kargo authorizes the Promotion against the monolith ServiceAccount rather than the caller | L.integrity-loss, L.unauthorized-access | built | none | #6475 |
 | `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |  |  |
@@ -552,9 +553,9 @@ flowchart TD
 
 ### Open questions
 
+- Activating the staged agents-tier write policy requires an authenticated live guest/session binding and a distinct drainer binding; the production resolver is None (#7012, projects/monolith/auth/agent_binding.py).
 - Does Kargo's admission webhook itself refuse a Promotion for Freight not yet available to the Stage, so a holder of the monolith ServiceAccount token (bypassing cluster/kargo.py plan_promotion) cannot promote unverified Freight into production?
 - Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?
-- The monolith-agents MCP surface (projects/monolith/app/agents_main.py) rejects anonymous callers but applies no operators gate; should any authenticated token reach its board and knowledge write tools?
 - When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?
 - Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?
 - structure gap: k8s.mutate is labelled ArgoCD sync only, and there is no control action for kargo_promote (private-binary to a Kargo Promotion) or node for the GroupPolicyMiddleware operators gate; this lens folds kargo_promote into k8s.mutate.providing until the logic lens models them.

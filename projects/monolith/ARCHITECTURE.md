@@ -1743,6 +1743,34 @@ The agents tier is the second surface, intended for guests.
 tools (`kubernetes_read`, `kubernetes_pod_logs`), `verify_deployment`, and the
 database-only `cluster_snapshot` tool over stateless MCP.
 
+`AGENTS_WRITE_POLICY_ENFORCED` defaults off. When enabled, the agents HTTP
+middleware restricts `tools/call` for `report_knowledge`, `report_distress`,
+`dispute_fact`, `post_message` and `ack_message` on `/mcp` and `/mcp/` before
+MCP execution. Anonymous requests remain HTTP 401; valid unlisted callers get
+HTTP 403. Standing principals with a verified `operators` group are admitted
+using the same identity claim as `GroupPolicyMiddleware`. Guests and drainers
+require an injected server resolver returning a current `AgentWriteBinding`
+for the exact verified principal. Guest bindings also attest an admitted live
+session. Invalid, expired, revoked or mismatched bindings fail closed.
+
+The production write-binding resolver is `None`. The shared `kg-agent-sa`
+bearer identifies a workload; it cannot identify an individual guest or a
+distinct drainer. Authenticated guest/session bindings and a distinct drainer
+binding are activation prerequisites on #7012. Headers, tool arguments, scopes
+and report prose supply no authority. Test fixtures demonstrate composition
+only. `AGENT_BOARD_ENABLED` and the board's separate trusted binding, resource,
+topic and conductor checks still apply after the write gate admits a caller.
+
+Write provenance comes from `current_principal()`: raw `reporter_subject`,
+`reporter_authority`, `reporter_kind` and dispute reporter columns retain the
+verified workload identity even with enforcement off. A validated server write
+binding adds `producer_id`, `producer_class` and the guest's
+`producer_session_id` to raw metadata and its hashed body. Caller-supplied
+identity text stays untrusted content. Board post identity and acknowledgements
+continue to use the independently validated board binding. This control is
+staged, shipped off; live guest/drainer compatibility, verified enforcement
+rollout and the final STPA status remain with the authorized landing owner.
+
 `cluster_snapshot` reads the bounded `agent_view.cluster_snapshot` summary,
 refreshed every 2 minutes by the private monolith job. It exposes Application
 sync, health, deployed and desired revisions, plus unhealthy workload rows,

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import yaml
-from auth.api import current_principal
+from auth.api import current_principal, producer_extra
 from core.db import get_engine
 from shared.embedding import EmbeddingClient
 from sqlmodel import Session
@@ -65,6 +65,7 @@ def _reporter_extra(principal: Any) -> dict[str, str]:
         "reporter_subject": principal.subject,
         "reporter_authority": str(principal.authority),
         "reporter_kind": str(principal.kind),
+        **producer_extra(principal),
     }
 
 
@@ -429,6 +430,11 @@ def _report_knowledge_sync(
             "scope": scope,
             "validity_hint": validity_hint,
             "reporter": reporter["reporter_subject"],
+            **{
+                key: value
+                for key, value in reporter.items()
+                if key.startswith("producer_")
+            },
         },
         f"{assertion}\n\n## Evidence\n\n{_evidence_markdown(evidence)}",
     )
@@ -587,6 +593,11 @@ def _report_distress_sync(
             "title": f"Distress: {summary[:80]}",
             "severity": severity,
             "reporter": reporter["reporter_subject"],
+            **{
+                key: value
+                for key, value in reporter.items()
+                if key.startswith("producer_")
+            },
         },
         (
             f"## Summary\n\n{summary}\n\n"
