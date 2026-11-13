@@ -24,22 +24,28 @@ run_install() {
 	ssh -n "${node}" 'rm -rf /tmp/factory-node'
 }
 
-# Nodes register without a CNI and stay NotReady until bootstrap-gitops.sh
-# installs Cilium, so wait for registration only.
-wait_registered() {
-	local node="$1"
+# On a first install nodes register without a CNI and stay NotReady until
+# bootstrap-gitops.sh installs Cilium, so wait for registration only. Once
+# Cilium runs, a rerun restarts one server at a time and waits for each to be
+# Ready again before touching the next.
+wait_node() {
+	local node="$1" kubectl="sudo k3s kubectl"
 	for _ in $(seq 60); do
-		if ssh "${FIRST}" "sudo k3s kubectl get node ${node} --no-headers 2>/dev/null" | grep -q .; then
+		if ssh -n "${FIRST}" "${kubectl} -n kube-system get ds/cilium" >/dev/null 2>&1; then
+			if ssh -n "${FIRST}" "${kubectl} wait --for=condition=Ready node/${node} --timeout=5s" >/dev/null 2>&1; then
+				return 0
+			fi
+		elif ssh -n "${FIRST}" "${kubectl} get node ${node} --no-headers 2>/dev/null" | grep -q .; then
 			return 0
 		fi
 		sleep 5
 	done
-	echo "${node} did not register" >&2
+	echo "${node} did not come back" >&2
 	return 1
 }
 
 run_install "${FIRST}" 'sudo bash /tmp/factory-node/install-node.sh init'
-wait_registered "${FIRST}"
+wait_node "${FIRST}"
 
 token="$(ssh "${FIRST}" 'sudo cat /var/lib/rancher/k3s/server/token')"
 for node in "${JOINERS[@]}"; do
@@ -48,7 +54,7 @@ for node in "${JOINERS[@]}"; do
 	run_install "${node}" \
 		"sudo bash -c 'read -r K3S_TOKEN && export K3S_TOKEN && bash /tmp/factory-node/install-node.sh join https://${FIRST_IP}:6443'" \
 		<<<"${token}"
-	wait_registered "${node}"
+	wait_node "${node}"
 done
 
 mkdir -p "$(dirname "${KUBECONFIG_OUT}")"

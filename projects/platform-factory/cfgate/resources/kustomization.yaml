@@ -7,3 +7,5 @@ kind: Kustomization
 resources:
   - https://github.com/cfgate/cfgate/releases/download/v0.2.0-alpha.11/install.yaml
   - api-token.yaml
+  # Its allowlist under the cluster-wide default-deny (network-policy/).
+  - network-policy.yaml

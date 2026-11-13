@@ -38,7 +38,7 @@ router must reserve these three leases.
 | Certificates API | `certificates.k8s.io/v1beta1` served | Substrate's podcertificate controller uses the v1beta1 ClusterTrustBundle and PodCertificateRequest clients |
 | Sandboxing | gVisor `release-20261102.0` (`runsc`), RuntimeClass `gvisor` | The same release Substrate's SandboxConfig pins. Substrate stages its own runsc inside worker pods; the RuntimeClass serves other sandboxed pods |
 | Node sysctls | proxy ARP/NDP, larger neighbour table, inotify | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
-| Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 is validated here with `cilium connectivity test` |
+| Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 was validated here with `cilium connectivity test` before default-deny; rerunning it now needs a temporary policy exempting the `cilium-test-*` namespaces |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
 | Images | embedded Spegel mirror for every registry | Each image crosses the home uplink once |
 | Cilium devices | `enp+` (the wired NICs) | Auto-detection also took `tailscale0` on node-1, set every pod there to its 1280 MTU and silently dropped full-size QUIC replies from the Cloudflare edge; it also served KPR services on the tailnet |
@@ -98,20 +98,26 @@ These are the only things set up outside Git, plus the reason for each:
 
 ## Network policy
 
-Every pod is default-deny in both directions
-(`projects/platform-factory/network-policy/resources/baseline.yaml`). The only
+Every pod-network pod is default-deny in both directions
+(`projects/platform-factory/network-policy/resources/baseline.yaml`);
+host-network pods (the Cilium agent, Envoy and operator) and the hosts
+themselves are outside it. The only
 flow the baseline allows is DNS to CoreDNS, through Cilium's DNS proxy so that
 egress rules can name domains. Each namespace then has one file allowing
 exactly its own traffic, with internet egress listed by domain name. A
-component with no file can reach nothing, so a new component needs one in the
-same change that deploys it.
+namespace created by an Application rather than bootstrap keeps its policy in
+that Application (cfgate does), so the policy lands with the namespace. A
+component with no policy can reach nothing, so a new component needs one in
+the same change that deploys it.
 
 To see what a policy drops:
 
 ```bash
-cilium hubble port-forward &
-hubble observe --verdict DROPPED -f
+KUBECONFIG=~/.kube/factory.yaml kubectl -n kube-system exec ds/cilium -c cilium-agent -- \
+  hubble observe --verdict DROPPED -f
 ```
+
+That shows one node; run it against each agent pod for the whole cluster.
 
 ## factory.jomcgi.dev
 

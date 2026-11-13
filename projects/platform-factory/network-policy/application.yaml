@@ -4,6 +4,9 @@ metadata:
   name: network-policy
   namespace: argocd
   annotations:
+    # Removing this Application must not delete default-deny: the cluster would
+    # fail open.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     argocd.argoproj.io/sync-wave: "0"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -23,8 +26,6 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
-      # Policies for namespaces created by later Applications apply as they come.
-      - SkipDryRunOnMissingResource=true
     retry:
       limit: 5
       backoff:
