@@ -174,7 +174,7 @@ Settings are the chart's `healthAlerts` values.
 | `factory_stuck` | A factory receipt has been `uncertain` for more than 2 hours, or a `queued` receipt at the live policy's repo and generation is not `admission_eligible` (the #6483 trap). Intake receipts while intake is off and older-generation receipts are not flagged | `swarm.factory_receipt` and the `swarm.factory_control` policy. Uncertain age is measured from the receipt's `updated_at` |
 | `kargo_promotions` (default off) | At least one stage's latest terminal attempt is Failed or Errored. Unresolved failure, with no age expiry; recovery requires a later Succeeded attempt in that same namespace/stage | Bounded Kubernetes Stage and Promotion lists across all namespaces, including embervm dev and every current pipeline. Creation time orders attempts; Pending, Running and Aborted do not clear a failure. Equal-time conflicting phases cannot recover |
 | `embervm_control_errors` (default off) | At least 3 error-or-higher records in the last 900 seconds, summed across selected control-plane pods | Kubernetes logs of container `control-plane`, namespaces `embervm` and `embervm-dev`, selector `app.kubernetes.io/name=embervm`. `Embervm.LogFormatter` JSON `level`, `time`, `message`; includes OTP crashes and explicit manager/router errors, without treating every session-create failure as an error |
-| `egress_denials` (default off) | At least 1 explicit egress refusal in the last 900 seconds across selected pods | Kubernetes logs of `egress-proxy` in `embervm` and `embervm-dev`, selector `app.kubernetes.io/component in (noded,noded-brick)`. Go slog JSON `time`, `level`, `msg`; exact `egress denied` or prefix `egress denied:` includes policy refusal, unresolved credentials and unsafe plaintext upstream refusal. Generic 4xx and upstream dial failures do not count |
+| `egress_denials` (default off) | At least 1 explicit egress refusal in the last 900 seconds across selected pods | Kubernetes logs of `egress-proxy` in `embervm` and `embervm-dev`, selector `app.kubernetes.io/component in (noded,noded-brick)`. Go slog JSON `time`, `level`, `msg`; exact `egress denied` or prefix `egress denied:` includes policy refusal, unresolved credentials and unsafe plaintext upstream refusal. Also counts the exact swap refusals `egress swap: authority mismatch; request denied`, `egress swap: claim injection failed; request denied` and `egress swap: credential trailer denied`. Generic 4xx and upstream dial failures do not count |
 | `cnpg_backups` (hub enabled) | A fresh checker observation reports no successful backup, even for a newly created cluster, or a successful backup strictly older than 129600 seconds (36 hours). Exactly 36 hours passes | `otel-collector/cnpg-backup-status`, key `observation.json`, written by the same checker that emits the age metric. Required targets: `monolith/monolith-pg`, `authentik/authentik-pg`, `mcp/context-forge-pg`; optional `loom/loom-pg` only when the producer's Loom gate includes it. This checks base-backup status, not WAL archival |
 
 Each check is cached for 60 seconds per process, bounded to 10 seconds with a
@@ -226,11 +226,14 @@ deadline, below the enclosing 10-second cached-check deadline. Lists request
 request asks for 960 seconds of lookback, 2000 lines and 262144 bytes, with
 Kubernetes timestamps; the client also caps streamed bytes. The extra 60 seconds
 provides a record before the 900-second evaluation boundary. A known window
-requires that anchor, a running container started before the lookback, zero
-restarts, valid ordered producer JSON with clocks within 60 seconds of the
+requires that anchor, a running container started at or before the lookback,
+valid ordered producer JSON with clocks within 60 seconds of the
 Kubernetes timestamp, and no line/byte cap or continuation. Missing pods/logs,
-malformed or truncated data, restarts, young containers, clock skew, timeout and
-403 reads report unknown. A quiet pod without an anchor remains unknown;
+malformed or truncated data, young containers, clock skew, timeout and
+403 reads report unknown. Historical restarts do not prevent recovery when the
+current container covers the lookback. Records timestamped after the observation
+started are outside its window and ignored until the next observation.
+A quiet pod without an anchor remains unknown;
 rotated logs and historical/deleted pods are not reconstructed. These are
 bounded current-pod observations, with no claim of complete fleet audit or
 sampling correction. The selected producers emit directly to stdout, without

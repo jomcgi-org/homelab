@@ -100,7 +100,7 @@ async def client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=cfg.host,
         verify=ssl.create_default_context(cafile=cfg.ssl_ca_cert),
-        headers={"Authorization": await cfg.get_api_key_with_prefix("authorization")},
+        headers={"Authorization": await cfg.get_api_key_with_prefix("BearerToken")},
         timeout=httpx.Timeout(3.0),
         limits=httpx.Limits(max_connections=3),
         trust_env=False,
@@ -187,11 +187,13 @@ def evaluate_log(
         try:
             prefix, payload = line.decode("utf-8").split(" ", 1)
             observed = stamp(prefix)
+            # Reads may include records emitted after the observation started.
+            if observed > now:
+                continue
             record = json.loads(payload)
             produced = stamp(record["time"])
             if (
-                observed > now
-                or observed < now - timedelta(seconds=LOOKBACK_S)
+                observed < now - timedelta(seconds=LOOKBACK_S)
                 or abs((observed - produced).total_seconds()) > 60
             ):
                 raise ValueError("invalid clock")
@@ -224,9 +226,12 @@ def evaluate_log(
             if kind == "control":
                 count += level in {"error", "critical", "alert", "emergency"}
             else:
-                count += message == "egress denied" or message.startswith(
-                    "egress denied:"
-                )
+                count += message in {
+                    "egress denied",
+                    "egress swap: authority mismatch; request denied",
+                    "egress swap: claim injection failed; request denied",
+                    "egress swap: credential trailer denied",
+                } or message.startswith("egress denied:")
         except (ValueError, KeyError, TypeError, UnicodeError):
             uncertain = True
     return count, uncertain or not anchor
@@ -245,9 +250,7 @@ async def collect_logs(reader: Reader, targets: list, kind: str, now: datetime) 
                 statuses = pod["status"]["containerStatuses"]
                 status = next(s for s in statuses if s["name"] == container)
                 started = stamp(status["state"]["running"]["startedAt"])
-                partial = status["restartCount"] != 0 or started > now - timedelta(
-                    seconds=LOOKBACK_S
-                )
+                partial = started > now - timedelta(seconds=LOOKBACK_S)
                 path = f"/api/v1/namespaces/{quote(namespace, safe='')}/pods/{quote(pod['metadata']['name'], safe='')}/log"
                 raw, capped = await reader.read(
                     path,

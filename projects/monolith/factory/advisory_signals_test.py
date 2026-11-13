@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import ssl
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -175,6 +176,50 @@ def test_log_uncertainty_and_specific_denial_messages():
     ) == (0, False)
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "egress denied",
+        "egress denied: credential unresolved",
+        "egress denied: credential unresolved for host",
+        "egress denied: plaintextUpstream entry resolved to a public address; refusing to send a credential in cleartext",
+        "egress swap: authority mismatch; request denied",
+        "egress swap: claim injection failed; request denied",
+        "egress swap: credential trailer denied",
+    ],
+)
+def test_egress_producer_refusals_each_cross_threshold(message):
+    # Literal messages from egress-proxy/cmd/main.go and cmd/swap.go.
+    def handler(request):
+        if request.url.path.endswith("/pods"):
+            return httpx.Response(200, json={"items": [pod(container="egress-proxy")]})
+        return httpx.Response(
+            200, content=log(930, "egress") + log(1, "egress", "WARN", message)
+        )
+
+    result = run(transport_collect(handler, kind="egress"))
+    assert not result["ok"] and "1 egress denial" in result["detail"]
+
+
+@pytest.mark.parametrize("kind", ["control", "egress"])
+def test_records_emitted_during_read_do_not_count_or_make_window_unknown(kind):
+    raw = log(930, kind) + log(1, kind)
+    raw += log(-0.2, kind, "error", "egress denied")
+    assert signals.evaluate_log(raw, False, kind, NOW) == (0, False)
+    # The same record belongs to the next observation's window.
+    assert signals.evaluate_log(raw, False, kind, NOW + timedelta(seconds=1)) == (
+        1,
+        False,
+    )
+
+
+def test_kubelet_nanosecond_timestamp():
+    raw = log(930, "egress") + log(1, "egress", "WARN", "egress denied").replace(
+        b"2026-11-13T11:59:59+00:00 ", b"2026-11-13T11:59:59.123456789Z ", 1
+    )
+    assert signals.evaluate_log(raw, False, "egress", NOW) == (1, False)
+
+
 async def transport_collect(handler, kind="control", targets=None):
     async with httpx.AsyncClient(
         base_url="https://kubernetes", transport=httpx.MockTransport(handler)
@@ -216,7 +261,6 @@ def test_transport_multiple_pods_and_bounded_parameters():
         "timeout",
         "malformed",
         "pagination",
-        "restarted",
         "young",
         "absent",
         "byte_cap",
@@ -233,14 +277,7 @@ def test_transport_uncertainty_cannot_prove_recovery(fault):
             if fault == "malformed":
                 return httpx.Response(200, text="broken")
             pods = (
-                []
-                if fault == "absent"
-                else [
-                    pod(
-                        restarted=int(fault == "restarted"),
-                        age=10 if fault == "young" else 2000,
-                    )
-                ]
+                [] if fault == "absent" else [pod(age=10 if fault == "young" else 2000)]
             )
             return httpx.Response(
                 200,
@@ -259,6 +296,23 @@ def test_transport_uncertainty_cannot_prove_recovery(fault):
     result = run(transport_collect(handler))
     assert result["status"] == "unknown"
     assert "SECRET" not in str(result)
+
+
+@pytest.mark.parametrize("restarts", [0, 1])
+@pytest.mark.parametrize("age,known", [(2000, True), (960, True), (959, False)])
+def test_current_container_window_determines_recovery_after_restart(
+    restarts, age, known
+):
+    def handler(request):
+        if request.url.path.endswith("/pods"):
+            return httpx.Response(
+                200, json={"items": [pod(restarted=restarts, age=age)]}
+            )
+        return httpx.Response(200, content=log(930) + log(1))
+
+    result = run(transport_collect(handler))
+    assert result["ok"]
+    assert (result.get("status") != "unknown") is known
 
 
 def test_known_failure_survives_forbidden_pod():
@@ -378,23 +432,41 @@ def test_existing_notification_path_unknown_dedup_and_recovery(monkeypatch):
     assert len(messages) == 2 and "recovered" in messages[-1]
 
 
-def test_incluster_client_awaits_rotating_token(monkeypatch):
+@pytest.mark.parametrize("rotate", [False, True])
+def test_incluster_client_awaits_rotating_token(monkeypatch, tmp_path, rotate):
     from kubernetes_asyncio import client as kube, config
+    from kubernetes_asyncio.config.incluster_config import InClusterConfigLoader
 
-    class Configuration:
-        host = "https://kubernetes.invalid"
-        ssl_ca_cert = None
+    token = tmp_path / "token"
+    token.write_text("fixture-only")
+    ca = tmp_path / "ca.crt"
+    certificate = httpx.create_ssl_context(trust_env=False).get_ca_certs(
+        binary_form=True
+    )[0]
+    ca.write_text(ssl.DER_cert_to_PEM_cert(certificate))
+    loader = InClusterConfigLoader(
+        token_filename=str(token),
+        cert_filename=str(ca),
+        environ={
+            "KUBERNETES_SERVICE_HOST": "kubernetes.invalid",
+            "KUBERNETES_SERVICE_PORT": "443",
+        },
+    )
 
-        async def get_api_key_with_prefix(self, name):
-            assert name == "authorization"
-            return "Bearer fixture-only"
+    def load():
+        loader.load_and_set()
+        if rotate:
+            token.write_text("rotated-fixture")
+            loader.token_expires_at = datetime.min
 
-    monkeypatch.setattr(config, "load_incluster_config", lambda: None)
-    monkeypatch.setattr(kube.Configuration, "get_default_copy", lambda: Configuration())
+    monkeypatch.setattr(kube.Configuration, "_default", None)
+    monkeypatch.setattr(config, "load_incluster_config", load)
 
     async def exercise():
         async with await signals.client() as http:
-            assert http.headers["Authorization"] == "Bearer fixture-only"
+            request = http.build_request("GET", "/api/v1/pods")
+            expected = "rotated-fixture" if rotate else "fixture-only"
+            assert request.headers["Authorization"] == "Bearer " + expected
             assert str(http.base_url) == "https://kubernetes.invalid"
 
     run(exercise())
