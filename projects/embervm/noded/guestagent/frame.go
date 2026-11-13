@@ -1,5 +1,5 @@
 // Package guestagent is the EmberVM composite guest control agent: a tiny
-// server baked into composite (k3s) guest images that listens on a dedicated
+// server for composite guest images that listens on a dedicated
 // vsock port and answers the frozen R5 group-guest-agent contract. The original
 // command is `sync_clock`, which the node issues immediately after a member's
 // snapshot resume (standing decision 7): the node sends the host epoch, the
