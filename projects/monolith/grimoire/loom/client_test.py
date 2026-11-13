@@ -115,6 +115,11 @@ class PinnedLoom:
                 "paths": {
                     f"/actions/{name}": {
                         "post": {
+                            "summary": {
+                                "insert": f"Insert a {action['target']}",
+                                "update": f"Update a {action['target']} (identity-targeted PATCH)",
+                                "delete": f"Delete a {action['target']} by identity",
+                            }[action["kind"]],
                             "description": action["description"],
                             "tags": [action["target"]],
                             "responses": {
@@ -125,7 +130,25 @@ class PinnedLoom:
                                     "application/json": {
                                         "schema": {
                                             "properties": {
-                                                p["name"]: {"type": p["ty"]}
+                                                p["name"]: {
+                                                    "type": (
+                                                        "string"
+                                                        if p["ty"] == "long"
+                                                        else p["ty"]
+                                                    )
+                                                    if p["required"]
+                                                    else [
+                                                        "string"
+                                                        if p["ty"] == "long"
+                                                        else p["ty"],
+                                                        "null",
+                                                    ],
+                                                    **(
+                                                        {"format": "int32"}
+                                                        if p["ty"] == "integer"
+                                                        else {}
+                                                    ),
+                                                }
                                                 for p in action["parameters"]
                                             },
                                             "required": [

@@ -74,7 +74,7 @@ def properties(kind: str) -> tuple[Property, ...]:
 
 
 def uuid_key(value: str) -> str:
-    return UUID(value).hex
+    return UUID(str(value)).hex
 
 
 @dataclass(frozen=True)
@@ -84,9 +84,13 @@ class Partition:
     dm: bool = False
 
     def __post_init__(self) -> None:
-        uuid_key(self.campaign_id)
-        if self.player_character_id:
-            uuid_key(self.player_character_id)
+        if type(self.dm) is not bool:
+            raise ValueError("dm must be a boolean")
+        object.__setattr__(self, "campaign_id", str(UUID(str(self.campaign_id))))
+        if self.player_character_id is not None:
+            object.__setattr__(
+                self, "player_character_id", str(UUID(str(self.player_character_id)))
+            )
         if self.dm and self.player_character_id:
             raise ValueError("DM and PC partitions are mutually exclusive")
 
@@ -150,6 +154,12 @@ class Partition:
         SessionEvent/SessionSummary are DM-only until an audience-safe export is
         separately implemented. No exporter is installed by this support package.
         """
+        row = dict(row)
+        for name in ("id", "campaign_id", "player_character_id"):
+            if name in row and row[name] is not None:
+                row[name] = str(UUID(str(row[name])))
+        if "viewer_key" in row and row["viewer_key"] != "party":
+            row["viewer_key"] = str(UUID(str(row["viewer_key"])))
         allowed = {p.name for p in properties(kind)}
         if set(row) != allowed:
             raise ValueError("payload must contain exactly the declared columns")
@@ -260,7 +270,11 @@ async def upsert(
 ) -> Any:
     """Composite upsert_* contract; Loom has no native upsert action kind.
 
-    Caller must serialize writers for this partition. One latest-state read and
+    Caller must serialize writers for this partition AND establish read-after-write
+    visibility before another call. An acknowledged action alone is not a proven
+    mirror-visibility barrier. Enablement must establish that contract or supply
+    an explicit barrier in the future writer; no exporter calls this today.
+    One latest-state read and
     one insert/update, with at most one deterministic reconciliation on a 409 or
     update-target 404. Never retry timeouts, 5xx or uncertain writes. Loom does
     not promise unique insert identities, so this is NOT concurrent-safe without

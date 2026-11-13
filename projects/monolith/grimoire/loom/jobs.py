@@ -31,6 +31,8 @@ async def grimoire_loom_ontology() -> None:
     raw = json.loads(os.environ.get("GRIMOIRE_LOOM_PARTITIONS", "[]"))
     if not isinstance(raw, list) or not raw:
         raise ValueError("explicit campaign/PC partition configuration required")
+    if any(not isinstance(entry, dict) for entry in raw):
+        raise ValueError("each partition must be a campaign/PC configuration object")
     partitions = tuple(Partition(**entry) for entry in raw)
     if len({p.schema for p in partitions}) != len(partitions):
         raise ValueError("duplicate partitions")

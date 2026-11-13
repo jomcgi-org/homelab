@@ -1952,9 +1952,12 @@ def test_recovery_gke_keeps_real_failover_and_bounded_drainer(recovery_gke_rende
     assert "SWARM_ENABLED" not in env
     default_jobs = yaml.safe_load((_chart_dir() / "values.yaml").read_text())["jobs"]
     replaced = {
-        j["replaces"] for j in default_jobs["cronWorkflows"] if j.get("replaces")
+        j["replaces"]
+        for j in default_jobs["cronWorkflows"]
+        if j.get("replaces") and not j.get("loomOntology")
     }
     assert replaced
+    assert "grimoire.loom_ontology" not in replaced
     assert set(filter(None, env["ARGO_JOBS"]["value"].split(","))) == replaced
 
 

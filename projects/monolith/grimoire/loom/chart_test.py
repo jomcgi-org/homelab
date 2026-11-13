@@ -1,4 +1,4 @@
-"""Repository values guards; actual Helm rendering is tested by the chart target."""
+"""Values and actual Helm render guards for dormant Loom wiring."""
 
 from pathlib import Path
 

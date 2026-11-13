@@ -165,3 +165,26 @@ def test_fact_global_and_pc_isolation_and_long_wire_shape():
     event["seq"] = True
     with pytest.raises(ValueError, match="integer"):
         Partition(CAMPAIGN, dm=True).payload("SessionEvent", event)
+
+
+def test_partition_configuration_is_typed_and_uuid_comparisons_are_canonical():
+    with pytest.raises(ValueError, match="boolean"):
+        Partition(CAMPAIGN, dm="false")
+    with pytest.raises(ValueError):
+        Partition(CAMPAIGN, player_character_id="")
+    campaign = str(uuid4())
+    pc = uuid4()
+    partition = Partition(campaign.upper(), str(pc).upper())
+    assert partition.campaign_id == campaign
+    assert partition.player_character_id == str(pc)
+    grant = row("KnowledgeGrantSlice")
+    grant.update(
+        campaign_id=campaign.upper(),
+        player_character_id=pc,
+        entity_id=str(uuid4()),
+        grant_scope="partial",
+        revealed_details={},
+    )
+    assert partition.payload("KnowledgeGrantSlice", grant)[
+        "player_character_id"
+    ] == str(pc)

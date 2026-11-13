@@ -1134,7 +1134,11 @@ read the identity with `_ids`, insert when missing, update when present. One
 409 or missing update target permits one fresh read and one opposite-branch
 write. A second failure escapes. Caller-owned single-writer serialization is
 required because Loom inserts do not establish unique identities. This package
-does not claim concurrent atomic upsert. Retraction physically deletes the Loom
+does not claim concurrent atomic upsert. Before calling it twice, a future writer
+must also establish read-after-write visibility: an action acknowledgment alone
+has not been verified as a mirror-read barrier. Without that barrier even
+serialized calls could insert duplicates. There is no exporter calling upsert
+in this release. Retraction physically deletes the Loom
 projection only; Postgres rows and their soft-deletion semantics remain intact.
 
 Definition application reads before POST, skips equal definitions and refuses
@@ -1147,7 +1151,9 @@ detect an out-of-band edit that changes hidden fields while preserving the old
 description. The future owner must serialize definition administrators and
 prohibit such edits, or upgrade to an upstream full-definition read API before
 requiring complete drift detection. Existing names are never overwritten.
-Only GET retries, with finite timeouts, bounded attempts and jitter. Definition
+Changes to projected Postgres columns require an explicit Loom definition
+migration plan: the create-only policy deliberately rejects schema drift under
+an existing name. Only GET retries, with finite timeouts, bounded attempts and jitter. Definition
 creation sequences and uncertain action writes are never blindly retried.
 
 The `grimoire-loom-ontology` CLI command runs only as an explicitly submitted,
@@ -1167,6 +1173,8 @@ never falls back to the dataset-scoped runtime token.
 
 Enablement remains on #6634: a separate owner must approve the administrative
 subject, provision datasets with these codecs and partition grants, review
-network policy, enable GitOps values and authorize manual job execution. The
+network policy and identifier-length support, establish action-to-mirror read
+visibility, review shared Campaign/PlayerCharacter fields for the intended
+audience, enable GitOps values and authorize manual job execution. The
 five operational checks in the PR remain unchecked. Local ASGI and Helm tests
 establish repository behavior only; no live request or deployment is claimed.

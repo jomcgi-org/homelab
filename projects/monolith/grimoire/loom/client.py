@@ -136,6 +136,24 @@ def receipt(body: JsonObject) -> str:
     return "grimoire-loom-v1:" + json.dumps(body, sort_keys=True, separators=(",", ":"))
 
 
+def parameter_schema_matches(parameter: Property, schema: JsonObject) -> bool:
+    # Pinned openapi_gen.rs: schema_type_of and base_type_to_schema, OpenAPI 3.1.
+    types = {
+        "string": ("string", None),
+        "long": ("string", None),
+        "integer": ("integer", "int32"),
+        "boolean": ("boolean", None),
+        "double": ("number", "double"),
+        "date": ("string", "date"),
+        "timestamp": ("string", "date-time"),
+    }
+    if parameter.ty not in types:
+        raise ValueError("unsupported action parameter logical type")
+    wire_type, format_ = types[parameter.ty]
+    expected = wire_type if parameter.required else [wire_type, "null"]
+    return schema.get("type") == expected and schema.get("format") == format_
+
+
 def segment(value: str) -> str:
     if not value or value in {".", ".."}:
         raise ValueError("empty or relative Loom identifier")
@@ -252,12 +270,24 @@ class LoomClient:
         if current is not None:
             status = "201" if action.kind == "insert" else "200"
             schema = current["requestBody"]["content"]["application/json"]["schema"]
+            summary = {
+                "insert": f"Insert a {action.target}",
+                "update": f"Update a {action.target} (identity-targeted PATCH)",
+                "delete": f"Delete a {action.target} by identity",
+            }[action.kind]
             if (
-                current.get("description") != receipt(body)
+                current.get("summary") != summary
+                or current.get("description") != receipt(body)
                 or current.get("tags") != [action.target]
                 or status not in current["responses"]
                 or set(schema.get("properties", {}))
                 != {p.name for p in action.parameters}
+                or any(
+                    not parameter_schema_matches(
+                        p, schema["properties"].get(p.name, {})
+                    )
+                    for p in action.parameters
+                )
                 or set(schema.get("required", []))
                 != {p.name for p in action.parameters if p.required}
             ):
