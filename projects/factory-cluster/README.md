@@ -287,5 +287,7 @@ These come from the #7817 step 1 checklist:
   ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
 - Authentik for the factory cluster, the Envoy Gateway edge with forward-auth,
   and factory.jomcgi.dev.
+- Prometheus and Grafana as the operators' metrics view (#7817 names them);
+  Honeycomb carries the baseline telemetry until then.
 - Alerting on the factory telemetry. Honeycomb's single free trigger is taken
   (`projects/platform/honeycomb/README.md`).
