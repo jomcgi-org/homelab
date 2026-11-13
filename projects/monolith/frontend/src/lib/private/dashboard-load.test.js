@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createBackendCache,
-  readBoard,
   readFactorySummary,
   BOARD_STALE_MS,
 } from "./backend-cache.js";
@@ -33,13 +32,11 @@ function cacheWith(routes) {
 }
 
 describe("loadDashboard", () => {
-  it("keeps stale summaries on failure, expires them, and cannot poison full boards", async () => {
+  it("keeps stale summaries on failure and expires them", async () => {
     let clock = 1_000,
       fail = false;
     const fetchImpl = vi.fn(async (url) => {
       if (url.endsWith("/summary")) return jsonResponse(board, !fail);
-      if (url.endsWith("/api/agents/factory"))
-        return jsonResponse({ full: true, nodes: [1] });
       return jsonResponse(home);
     });
     const cache = createBackendCache({ fetchImpl, now: () => clock });
@@ -48,10 +45,6 @@ describe("loadDashboard", () => {
     expect(
       fetchImpl.mock.calls.some(([url]) => url.endsWith("/api/agents/factory")),
     ).toBe(false);
-    expect(await readBoard("http://b", { cache, coldWaitMs: 100 })).toEqual({
-      full: true,
-      nodes: [1],
-    });
     expect(await readFactorySummary("http://b", { cache })).toEqual(board);
     fail = true;
     clock += 60_000;

@@ -1,13 +1,13 @@
 // Stale-while-revalidate reads of the private backend, held by this server
 // process. The backend can stall for tens of seconds (requests queue before
-// a handler runs), and the factory board takes 20-35s even when it does not.
+// a handler runs).
 // Pages read from here instead of waiting on the backend: a read returns the
 // last good value at once and refreshes it in the background, one read per
 // key at a time and at most once per `freshMs`. Only a cold key (nothing held
 // yet) waits, and only up to `coldWaitMs`, so a page always answers inside
 // the gateway's 15s request timeout.
 //
-// Values are server-wide views (the board, the home aggregate, the task
+// Values are server-wide views (the factory summary, the home aggregate, the task
 // lists), never per-user data: every operator sees the same thing.
 
 const MISSING = Symbol("missing");
@@ -118,36 +118,15 @@ export function createBackendCache({
 export const backendCache = createBackendCache();
 
 /**
- * The full factory board (`/api/agents/factory`, task-less). Fresh for a
- * minute: the backend does one board read a minute per process. A reading
- * is kept for half an hour, so a page opened after a quiet spell shows the
- * last board (with its age) rather than none; the page says how old it is.
+ * The factory summary is fresh for a minute and kept for half an hour, so a
+ * page opened after a quiet spell shows the last reading with its age.
  */
 export const BOARD_STALE_MS = 30 * 60_000;
 
-export function readBoard(
-  apiBase,
-  { coldWaitMs = 0, cache = backendCache } = {},
-) {
-  return cache.read("board", `${apiBase}/api/agents/factory`, {
-    freshMs: 60000,
-    staleMs: BOARD_STALE_MS,
-    timeoutMs: 90000,
-    coldWaitMs,
-  });
-}
-
-/** `{ ageMs, pending, failed }` for the held board (see `status`). */
-export function boardStatus(cache = backendCache) {
-  return cache.status("board");
-}
-
 export function invalidateBoard(cache = backendCache) {
-  cache.invalidate("board");
   cache.invalidate("factory-summary");
 }
 
-// Kept separate from board: a summary can never satisfy a full-board read.
 export function readFactorySummary(apiBase, { cache = backendCache } = {}) {
   return cache.read(
     "factory-summary",
@@ -208,8 +187,8 @@ export function invalidateTasks(cache = backendCache) {
 export function startPrivatePrewarm({
   apiBase = process.env.API_BASE,
   enabled = process.env.PRIVATE_DASHBOARD_PREWARM === "true",
-  // The board build is uncached on the backend (20-35s); every five
-  // minutes keeps a reading well inside its half-hour window.
+  // Refresh the summary every five minutes to keep a reading inside its
+  // half-hour stale window.
   everyMs = 300_000,
   cache = backendCache,
 } = {}) {
