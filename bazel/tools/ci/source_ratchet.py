@@ -307,6 +307,8 @@ def targets_factory(segment: list[str]) -> bool:
         or segment[i] in {"sudo", "env", "command", "exec", "time"}
     ):
         name, _, value = segment[i].partition("=")
+        if name == "sudo":  # sudo drops KUBECONFIG and uses root's.
+            return False
         if name == "KUBECONFIG":
             kubeconfig = value
         elif name.startswith("HELM_KUBE"):
@@ -315,17 +317,22 @@ def targets_factory(segment: list[str]) -> bool:
     if kubeconfig not in _FACTORY_KUBECONFIGS:
         return False
     return not any(
-        arg == flag or arg.startswith(flag + "=")
+        arg == flag
+        or arg.startswith(flag + "=")
+        # -s takes its value attached: -shttps://host.
+        or (flag == "-s" and arg.startswith("-s") and not arg.startswith("--"))
         for arg in segment[i:]
         for flag in _TARGET_FLAGS
     )
 
 
 def hook_writes(command: str) -> list[str]:
+    # HELM_KUBE* exported anywhere in the command can redirect helm.
+    exempt = "HELM_KUBE" not in command
     return [
         w
         for seg in _segments(command)
-        if (w := cluster_write(seg)) and not targets_factory(seg)
+        if (w := cluster_write(seg)) and not (exempt and targets_factory(seg))
     ]
 
 
