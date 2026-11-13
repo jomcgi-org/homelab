@@ -6,10 +6,10 @@ go_library(
         "quota_configmap.go",
         "secret.go",
     ],
-    importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store",
-    visibility = ["//projects/embervm/tokenbroker:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store",
+    visibility = ["//visibility:public"],
     deps = [
-        "//projects/embervm/tokenbroker/internal/quota",
+        "//projects/shared/go/tokenbroker/quota",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_client_go//kubernetes",
@@ -24,7 +24,7 @@ go_test(
     ],
     embed = [":store"],
     deps = [
-        "//projects/embervm/tokenbroker/internal/quota",
+        "//projects/shared/go/tokenbroker/quota",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",

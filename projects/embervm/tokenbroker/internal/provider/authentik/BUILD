@@ -5,7 +5,7 @@ go_library(
     srcs = ["adapter.go"],
     importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider/authentik",
     visibility = ["//projects/embervm/tokenbroker:__subpackages__"],
-    deps = ["//projects/embervm/tokenbroker/internal/provider"],
+    deps = ["//projects/shared/go/tokenbroker/provider"],
 )
 
 go_test(

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/quota"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"

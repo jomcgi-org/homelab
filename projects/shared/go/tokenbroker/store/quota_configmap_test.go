@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/quota"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

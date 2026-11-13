@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/metrics"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/metrics"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 )
 
 type (

@@ -1,7 +1,26 @@
 # shared
 
-Shared assets used across multiple projects in this repo. Currently contains
-one thing: the `homelab-library` Helm library chart.
+Shared assets used across multiple projects in this repo: the
+`homelab-library` Helm library chart and the `go/tokenbroker` Go packages.
+
+## go/tokenbroker
+
+OAuth grant brokering, extracted from EmberVM's token broker
+(`projects/embervm/tokenbroker`) so the factory credential broker (#7817) can
+reuse it. EmberVM's binary, HTTP server and authentik adapter stay in EmberVM.
+
+| Package                  | Provides                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------- |
+| `provider`               | Device-flow `Adapter` and `Minter` interfaces, token types, `ErrInvalidGrant`, `ErrRefreshTokenReused` |
+| `provider/codexchatgpt`  | Codex ChatGPT device login, code exchange, refresh, and `/wham/usage` parsing            |
+| `broker`                 | Single-flight refresh, reused-token retry, `invalid_grant` login state, durable rotation |
+| `store`                  | Kubernetes Secret grant store with newer-only writes, ConfigMap quota persistence        |
+| `quota`                  | Quota observation store and read-time pacing                                             |
+| `metrics`                | `tokenbroker_*` refresh and quota metrics                                                |
+
+The grant Secret name prefix (`embervm-oauth-grant-`) and metric names are
+unchanged from EmberVM; a second consumer that needs different names should
+make them configurable without changing EmberVM's defaults.
 
 ## homelab-library
 

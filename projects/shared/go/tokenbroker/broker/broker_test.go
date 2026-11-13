@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 )
 
 type testStore struct {
