@@ -1,0 +1,259 @@
+# Agent Substrate's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/resources/baseline.yaml).
+#
+# Ingress inside ate-system follows upstream's NetworkPolicies
+# (upstream/ate-system-networkpolicies.yaml), which Cilium enforces alongside
+# these, and ate-controller gives each WorkerPool a NetworkPolicy admitting
+# only atenet-router. This file adds the egress each component needs, and
+# ingress for the pieces upstream's policies do not cover.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # Worker control on each node's atelet.
+    - toEndpoints:
+        - matchLabels:
+            app: atelet
+      toPorts:
+        - ports:
+            - port: "21998"
+              protocol: TCP
+    # The objectstore-plugin sidecar: snapshots, and the actor JWT issuer's
+    # OIDC discovery for its credential exchange.
+    - toEndpoints:
+        - matchLabels:
+            app: rustfs
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-controller
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-controller
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: atelet
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: atelet
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            # The snapshot credential exchange.
+            - port: "8445"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: rustfs
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+    # atelet itself fetches the gVisor release its SandboxConfig names
+    # (gs://gvisor, read anonymously) and pulls actor images, anonymously,
+    # from GHCR and Docker Hub. An actor image from another registry adds it
+    # here.
+    - toFQDNs:
+        - matchName: storage.googleapis.com
+        - matchName: ghcr.io
+        - matchName: pkg-containers.githubusercontent.com
+        # atelet names Docker Hub index.docker.io, as go-containerregistry does.
+        - matchName: index.docker.io
+        - matchName: registry-1.docker.io
+        - matchName: auth.docker.io
+        - matchName: production.cloudflare.docker.com
+        - matchName: production.cloudfront.docker.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: atenet-router
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: atenet-router
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Actors, inside worker pods in any namespace, on any port.
+    - toEndpoints:
+        - matchExpressions:
+            - key: ate.dev/worker-pool
+              operator: Exists
+            - key: k8s:io.kubernetes.pod.namespace
+              operator: Exists
+---
+# The egress gateway checks each actor with ate-api-server. Actor traffic to
+# the internet is not allowed yet: opening it is a reviewed change here, with
+# the actors' own egress policy (EgressPolicy) as the finer control.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: atenet-egress
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: atenet-egress
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-idp-server
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-idp-server
+  egress:
+    - toEntities: [kube-apiserver]
+---
+# The snapshot store: reached by the objectstore-plugin sidecars and the
+# bucket Job; it reaches nothing.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: rustfs
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: rustfs
+  ingress:
+    - fromEndpoints:
+        - matchExpressions:
+            - key: app
+              operator: In
+              values: [ate-api-server, atelet, rustfs-bucket-init]
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: rustfs-bucket-init
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: rustfs-bucket-init
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app: rustfs
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: podcertificate-controller
+  namespace: podcertificate-controller-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: podcertificate-controller
+  egress:
+    - toEntities: [kube-apiserver]
+---
+# Worker pods, in whichever namespace their WorkerPool lives: actor traffic
+# leaves only through the egress gateway, and the worker talks to its node's
+# atelet.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: substrate-workers
+spec:
+  description: Agent Substrate worker pods reach the egress gateway and atelet.
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atelet
+      toPorts:
+        - ports:
+            - port: "21998"
+              protocol: TCP

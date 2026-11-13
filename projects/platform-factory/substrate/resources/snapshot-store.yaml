@@ -1,0 +1,164 @@
+# S3-compatible actor snapshot storage: one rustfs server and the
+# ate-snapshots bucket, as Substrate's kind profile installs them
+# (manifests/ate-install/kind/rustfs.yaml, same pinned images). The access key
+# is the Secret snapshot-store-credentials that
+# projects/factory-cluster/bootstrap-substrate.sh generates.
+#
+# The volume is local-path, on whichever node first runs the pod. Losing that
+# node loses every suspended actor's snapshot; replicated storage and backups
+# come with the factory's storage work (projects/factory-cluster/README.md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rustfs-data
+  namespace: ate-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: ate-system
+spec:
+  selector:
+    app: rustfs
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: ate-system
+  labels:
+    app: rustfs
+spec:
+  replicas: 1
+  # One writer on a ReadWriteOnce volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
+          ports:
+            - name: api
+              containerPort: 9000
+          env:
+            - name: RUSTFS_ADDRESS
+              value: ":9000"
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "false"
+            # It otherwise asks version.rustfs.com for updates at start.
+            - name: RUSTFS_CHECK_UPDATE
+              value: "false"
+            - name: RUSTFS_VOLUMES
+              value: /data
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: snapshot-store-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: snapshot-store-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+          readinessProbe:
+            tcpSocket:
+              port: api
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rustfs-data
+---
+# Creates the bucket once rustfs answers; a no-op when it exists.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-bucket-init
+  namespace: ate-system
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: rustfs-bucket-init
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: create-bucket
+          image: amazon/aws-cli:2.38.5@sha256:c8156a0e74e13929a42d7e60f0d4e14e7d28d980cd21822505d4bff80e5460c1
+          env:
+            - name: HOME
+              value: /tmp
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT_URL
+              value: http://rustfs.ate-system.svc:9000
+          envFrom:
+            - secretRef:
+                name: snapshot-store-credentials
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              for i in $(seq 1 60); do
+                if aws s3api head-bucket --bucket ate-snapshots 2>/dev/null; then
+                  echo "bucket ate-snapshots already exists"
+                  exit 0
+                fi
+                if aws s3api create-bucket --bucket ate-snapshots 2>/dev/null; then
+                  echo "bucket ate-snapshots created"
+                  exit 0
+                fi
+                echo "waiting for rustfs ($i/60)"
+                sleep 2
+              done
+              echo "timed out waiting for rustfs"
+              exit 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]

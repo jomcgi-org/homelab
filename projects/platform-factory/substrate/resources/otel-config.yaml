@@ -1,0 +1,13 @@
+# Every Substrate component loads this ConfigMap with envFrom. Upstream's
+# points at GKE's managed collector; the factory has no collector yet, so
+# nothing is pushed and each component serves its own Prometheus /metrics for
+# the observability work in projects/factory-cluster/README.md to scrape.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-otel-config
+  namespace: ate-system
+data:
+  OTEL_METRICS_EXPORTER: prometheus
+  OTEL_TRACES_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none
