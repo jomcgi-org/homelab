@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Create the Agent Substrate key material that Git must not hold. Run once from
-# an operator machine after bootstrap-gitops.sh, and again only to rebuild a
-# lost cluster; it keeps every Secret that already exists, so a rerun changes
-# nothing.
+# an operator machine after bootstrap-gitops.sh, and again to rebuild a lost
+# cluster. It keeps every generated Secret that already exists; a rerun only
+# rewrites actor-id-ca-certs from the current pool.
 #
 # `ate-setup deploy ate-system` generates these on first install
 # (cmd/ate-setup/internal/steps/create.go); the rest of what it installs is
@@ -11,26 +11,36 @@
 #
 #   podcertificate-controller-system/{service-dns,pod-identity,postgres}-ca-pool
 #       the podcertificate controller's three signing CAs
-#   ate-system/actor-id-ca-pool, actor-id-ca-certs (its root alone)
+#   ate-system/actor-id-ca-pool, actor-id-ca-certs (every root in it, no keys)
 #       the actor identity CA, and the trust bundle the egress gateway reads
 #   ate-system/actor-id-jwt-pool    the actor JWT signing keys
 #   ate-system/egress-mitm-ca-pool  the egress gateway's interception CA
 #   ate-system/snapshot-store-credentials
 #       the access key of the in-cluster S3 snapshot store
 #
-# The CAs are valid for one year, as ate-setup makes them; rotating them is
-# `kubectl ate admin` work (docs/guides/actor-jwt-key-rotation.md upstream).
+# The CAs are valid for one year, as ate-setup makes them. Substrate v1.0.0 has
+# no CA rotation command (`kubectl ate admin` rotates only JWT keys), so the
+# rotation is tracked in https://github.com/jomcgi-org/homelab/issues/7831.
 #
 # Inputs:
 #   KUBECONFIG   the factory cluster (default ~/.kube/factory.yaml)
+# Needs kubectl, curl, jq and openssl on a linux-x86_64 host.
 set -euo pipefail
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/factory.yaml}"
 
-# kubectl-ate from the Substrate release that
-# projects/platform-factory/substrate/render-upstream.sh pins.
+# kubectl-ate from the Substrate release this cluster runs. Keep the version in
+# step with VERSION in projects/platform-factory/substrate/render-upstream.sh
+# and the Agent Substrate row of projects/factory-cluster/README.md.
 SUBSTRATE_VERSION="v1.0.0"
 KUBECTL_ATE_SHA256="9f2444d8c9327cf3efa13d46468f6d83b856c5080017a29747249e1220605569"
+# Release assets are published for linux and darwin on amd64 and arm64; only
+# linux-amd64's checksum is pinned here.
+platform="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+if [[ "${platform}" != "linux-x86_64" ]]; then
+	echo "kubectl-ate is pinned for linux-x86_64 only; run this from such a host (this is ${platform})" >&2
+	exit 1
+fi
 
 PODCERT_NS="podcertificate-controller-system"
 ATE_NS="ate-system"
@@ -51,7 +61,7 @@ exists() { kubectl -n "$1" get secret "$2" >/dev/null 2>&1; }
 # The substrate Application creates both namespaces too; whichever runs first
 # makes them, and ArgoCD adopts them.
 for ns in "${PODCERT_NS}" "${ATE_NS}"; do
-	kubectl create namespace "${ns}" --dry-run=client -o yaml | kubectl apply --server-side -f - # ratchet-allow: kubectl-mutate (one-time bootstrap of generated keys Git must not hold)
+	kubectl create namespace "${ns}" --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f - # ratchet-allow: kubectl-mutate (one-time bootstrap of generated keys Git must not hold)
 done
 
 ca_pool() { # namespace name key-type
@@ -74,22 +84,31 @@ else
 	ate admin make-jwt-pool --secret-namespace "${ATE_NS}" --name actor-id-jwt-pool --alg ES256
 fi
 
-# The actor identity root without its key. The pool holds one CA, whose
-# certificate chain is that root.
-if exists "${ATE_NS}" actor-id-ca-certs; then
-	echo "kept ${ATE_NS}/actor-id-ca-certs"
-else
-	kubectl -n "${ATE_NS}" get secret actor-id-ca-pool -o jsonpath='{.data.tls\.crt}' |
-		base64 -d >"${tmp}/ca.crt"
-	kubectl -n "${ATE_NS}" create secret generic actor-id-ca-certs --from-file=ca.crt="${tmp}/ca.crt" # ratchet-allow: kubectl-mutate (one-time bootstrap of generated keys Git must not hold)
+# The actor identity roots without their keys: every CA in the pool, as
+# ate-setup's CreateActorIDCACertsSecret writes them (kube/capool.go), so a pool
+# mid-rotation publishes both roots. Rewritten on every run.
+kubectl -n "${ATE_NS}" get secret actor-id-ca-pool -o jsonpath='{.data.pool}' | base64 -d >"${tmp}/pool.json"
+: >"${tmp}/ca.crt"
+while read -r der; do
+	base64 -d <<<"${der}" | openssl x509 -inform DER -outform PEM >>"${tmp}/ca.crt"
+done < <(jq -r '.CAs[].RootCertificateDER' "${tmp}/pool.json")
+if [[ ! -s "${tmp}/ca.crt" ]]; then
+	echo "${ATE_NS}/actor-id-ca-pool holds no root certificate" >&2
+	exit 1
 fi
+kubectl -n "${ATE_NS}" create secret generic actor-id-ca-certs --from-file=ca.crt="${tmp}/ca.crt" --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f - # ratchet-allow: kubectl-mutate (one-time bootstrap of generated keys Git must not hold)
 
 if exists "${ATE_NS}" snapshot-store-credentials; then
 	echo "kept ${ATE_NS}/snapshot-store-credentials"
 else
-	key_id="substrate-$(openssl rand -hex 8)"
-	secret_key="$(openssl rand -hex 32)"
-	kubectl -n "${ATE_NS}" create secret generic snapshot-store-credentials --from-literal=AWS_ACCESS_KEY_ID="${key_id}" --from-literal=AWS_SECRET_ACCESS_KEY="${secret_key}" # ratchet-allow: kubectl-mutate (one-time bootstrap of generated keys Git must not hold)
+	# Through a file in the private temp directory, so the key never appears in
+	# a process's arguments.
+	(
+		umask 077
+		printf 'AWS_ACCESS_KEY_ID=substrate-%s\nAWS_SECRET_ACCESS_KEY=%s\n' \
+			"$(openssl rand -hex 8)" "$(openssl rand -hex 32)" >"${tmp}/snapshot-store.env"
+	)
+	kubectl -n "${ATE_NS}" create secret generic snapshot-store-credentials --from-env-file="${tmp}/snapshot-store.env" # ratchet-allow: kubectl-mutate (one-time bootstrap of generated keys Git must not hold)
 fi
 
 echo "Agent Substrate secrets are in place; ArgoCD's substrate Application can start."

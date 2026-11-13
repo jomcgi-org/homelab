@@ -110,6 +110,8 @@ spec:
         - matchName: auth.docker.io
         - matchName: production.cloudflare.docker.com
         - matchName: production.cloudfront.docker.com
+        # Docker's documented anonymous-pull blob host.
+        - matchName: docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
       toPorts:
         - ports:
             - port: "443"
@@ -228,14 +230,18 @@ spec:
     - toEntities: [kube-apiserver]
 ---
 # Worker pods, in whichever namespace their WorkerPool lives: actor traffic
-# leaves only through the egress gateway, and the worker talks to its node's
-# atelet.
+# leaves only through the egress gateway. atelet reaches its workers over a
+# unix socket on the node, not the network. The selector is any pod with the
+# ate.dev/worker-pool label in any namespace, which is acceptable while only
+# admins can create pods; revisit before actors get internet egress or agents
+# get cluster credentials. Workers probe a cloud metadata server
+# (169.254.169.254:80) at start; Hubble shows that drop, and it stays denied.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:
   name: substrate-workers
 spec:
-  description: Agent Substrate worker pods reach the egress gateway and atelet.
+  description: Agent Substrate worker pods reach only the egress gateway.
   endpointSelector:
     matchExpressions:
       - key: ate.dev/worker-pool
@@ -248,12 +254,4 @@ spec:
       toPorts:
         - ports:
             - port: "443"
-              protocol: TCP
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: ate-system
-            app: atelet
-      toPorts:
-        - ports:
-            - port: "21998"
               protocol: TCP
