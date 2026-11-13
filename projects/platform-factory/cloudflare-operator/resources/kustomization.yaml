@@ -7,3 +7,26 @@ kind: Kustomization
 resources:
   - https://github.com/StringKe/cloudflare-operator/releases/download/v0.51.0/cloudflare-operator-full-no-webhook.yaml
   - api-token.yaml
+
+# The "no-webhook" v0.51.0 manifest still runs the webhook server unless
+# ENABLE_WEBHOOKS=false, and then exits for lack of a serving certificate. Its
+# ClusterTunnel CRD also routes v1alpha1/v1alpha2 conversion to that missing
+# webhook; this cluster uses v1alpha2 only, so conversion is turned off.
+patches:
+  - target:
+      kind: Deployment
+      name: cloudflare-operator-controller-manager
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ENABLE_WEBHOOKS
+          value: "false"
+  - target:
+      kind: CustomResourceDefinition
+      name: clustertunnels.networking.cloudflare-operator.io
+    patch: |-
+      - op: replace
+        path: /spec/conversion
+        value:
+          strategy: None
