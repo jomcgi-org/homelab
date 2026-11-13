@@ -660,6 +660,9 @@ marketplace validation, source evidence and proposed wording corrections.
 It stays outside the distributed `plugin/` package. The operational child
 #7688, split from closed #7255, retains publication and live acceptance under
 its explicit publisher-authorization hold. Joe owns final public wording.
+The [staged submission packet](SUBMISSIONS.md) records current target contracts,
+identity decisions still held, public preflight evidence and the not-submitted
+ledger for #7688. It grants no target account or publication authority.
 
 **Why.** The plugin carries no tools of its own, only the URL, so tool
 changes ship by deploying the connector; a plugin release is needed only
