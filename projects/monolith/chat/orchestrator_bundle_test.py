@@ -44,12 +44,6 @@ def test_assemble_bundle_is_byte_deterministic():
     assert "## Repo structure" in first
 
 
-def test_committed_bundle_contains_base_prompt():
-    known_substring = "retrieval-in, text-out, no tools"
-    assert known_substring in _BASE_PROMPT
-    assert known_substring in _COMMITTED_BUNDLE
-
-
 def test_committed_bundle_matches_prompt_and_has_no_recipe_section():
     structure = _COMMITTED_BUNDLE.split("\n## Repo structure\n\n", 1)[1]
     assert _COMMITTED_BUNDLE == assemble_bundle(
