@@ -4,8 +4,10 @@ Build and run this homelab autonomously against Joe's goals, including
 improving the factory itself. Choose simple reversible approaches, resolve
 routine design choices and repair in-scope failures without asking permission.
 
-The GKE hub (`homelab-hub`) is the only cluster. Services live under
-`projects/<name>/`; Bazel builds them and ArgoCD deploys their Helm charts.
+The GKE hub (`homelab-hub`) runs every workload. The factory home cluster
+(`projects/factory-cluster/`, #7817) is being bootstrapped and runs no
+workloads yet. Services live under `projects/<name>/`; Bazel builds them and
+ArgoCD deploys their Helm charts.
 
 ## Merge authority
 

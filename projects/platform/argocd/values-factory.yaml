@@ -1,0 +1,45 @@
+# Factory home cluster overlay (projects/platform-factory/argocd).
+#
+# The UI is reached at factory.jomcgi.dev through the Cloudflare Tunnel
+# (projects/platform-factory/factory-edge), which terminates TLS at the edge and
+# forwards plain HTTP, so argocd-server serves HTTP. Cloudflare Access gates the
+# hostname before any request reaches it.
+argo-cd:
+  global:
+    priorityClassName: system-cluster-critical
+  server:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  repoServer:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  controller:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1536Mi
+  redis:
+    resources:
+      requests:
+        cpu: 15m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+  configs:
+    cm:
+      url: https://factory.jomcgi.dev
+      timeout.reconciliation: "180s"
+    params:
+      server.insecure: "true"

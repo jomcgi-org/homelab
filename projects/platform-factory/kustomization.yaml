@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# One Application per shared component on the factory home cluster
+# (projects/factory-cluster/README.md).
+resources:
+  - ./argocd # In-cluster ArgoCD adopts the installation bootstrap-gitops.sh made
+  - ./onepassword # 1Password Connect and operator; bootstrap secrets are created out of band
+  - ./runtimeclasses # gvisor RuntimeClass for the runsc handler install-node.sh installs
+  - ./cloudflare-operator # Cloudflare tunnel, DNS and Access lifecycle from CRs
+  - ./factory-edge # factory.jomcgi.dev: tunnel, DNS record and Access application

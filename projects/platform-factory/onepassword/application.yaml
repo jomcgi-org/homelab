@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: onepassword
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    # Wave 0: every OnePasswordItem in the cluster is reconciled through Connect
+    # and the operator, so they come up first.
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform/onepassword
+    helm:
+      releaseName: connect
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    # bootstrap-gitops.sh installs this release here first, with the
+    # op-credentials and onepassword-token Secrets it needs, then this
+    # Application adopts it. Release name and namespace must match.
+    namespace: onepassword
+  syncPolicy:
+    automated:
+      # Never prune the secret broker on a render that has not caught up with
+      # the bootstrap install.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

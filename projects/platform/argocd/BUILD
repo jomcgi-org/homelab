@@ -6,6 +6,11 @@ exports_files(
     visibility = ["//projects/platform-gke/argocd:__pkg__"],
 )
 
+exports_files(
+    ["values-factory.yaml"],
+    visibility = ["//projects/platform-factory/argocd:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     lint = False,

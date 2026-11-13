@@ -1,0 +1,31 @@
+# The factory cluster's root Application, synced by factory-root
+# (../factory-root-application.yaml). It syncs projects/factory-cluster, whose
+# kustomization lists the factory platform tree.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: factory
+  namespace: argocd
+  annotations:
+    # factory-root syncs this with prune off; this also stops a prune of
+    # factory-root from cascading to every Application on the cluster.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/factory-cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

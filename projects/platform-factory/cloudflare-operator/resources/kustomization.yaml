@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# StringKe/cloudflare-operator: Cloudflare Tunnel, DNS and Zero Trust Access
+# lifecycle from CRs. The release manifest is signed (.sig/.pem beside it on the
+# release) and pinned by tag; upgrade by changing the tag.
+resources:
+  - https://github.com/StringKe/cloudflare-operator/releases/download/v0.51.0/cloudflare-operator-full-no-webhook.yaml
+  - api-token.yaml

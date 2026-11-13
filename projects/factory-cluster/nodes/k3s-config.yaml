@@ -1,0 +1,47 @@
+# k3s server configuration shared by every factory home node.
+#
+# Installed to /etc/rancher/k3s/config.yaml by install-node.sh. Per-node join
+# settings (cluster-init on the first server, server URL and token on the rest)
+# are passed on the install command line, not here, so this file is identical
+# on all three nodes.
+
+# Every node is a server: three embedded-etcd members tolerate one node loss.
+# Workloads schedule on servers too; there are no dedicated agents.
+tls-san:
+  - node-1
+  - node-2
+  - node-3
+  - 192.168.4.80
+  - 192.168.4.81
+  - 192.168.4.76
+
+# Ingress is a Cloudflare Tunnel (cloudflared Deployment) and there is no
+# LoadBalancer IP to hand out on the LAN, so the bundled Traefik and ServiceLB
+# are not installed. local-path stays as the default StorageClass.
+disable:
+  - traefik
+  - servicelb
+
+secrets-encryption: true
+
+# Spegel peer-to-peer registry mirror: each image is pulled over the home
+# uplink once and then served between nodes. The retired home cluster saturated
+# the shared uplink with simultaneous image pulls (cloudflare-gateway values).
+embedded-registry: true
+
+etcd-snapshot-schedule-cron: "0 */6 * * *"
+etcd-snapshot-retention: 20
+
+kube-apiserver-arg:
+  # Agent Substrate's podcertificate controller and ate-api use the
+  # certificates.k8s.io/v1beta1 ClusterTrustBundle and PodCertificateRequest
+  # clients. Kubernetes 1.37 enables both features by default (GA) but serves
+  # beta API versions only when asked.
+  - "runtime-config=certificates.k8s.io/v1beta1=true"
+
+kubelet-arg:
+  - "system-reserved=cpu=500m,memory=1Gi"
+  - "kube-reserved=cpu=500m,memory=1Gi"
+  - "eviction-hard=memory.available<500Mi,nodefs.available<10%"
+  - "image-gc-high-threshold=85"
+  - "image-gc-low-threshold=80"
