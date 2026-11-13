@@ -1115,7 +1115,7 @@ Both POST `/campaigns/{campaign_id}/tts` and GET
 identity dependency and current campaign DM membership. Only unretracted table
 narration in a session belonging to that campaign qualifies. The server derives
 text and speaker from that stored event before accessing inference or a cache.
-GET rechecks those conditions on every request, including cache hits, and checks
+Both operations check access on cache hits. GET also checks
 the current synthesis identity before reading audio. Responses are private and
 no-store. Bucket objects remain private; no public or presigned URLs exist.
 Opaque SHA-256 clip names contain no NPC identifiers. A revoked membership,
@@ -1126,10 +1126,11 @@ including retrievals; its identity table is capped at 1,024 active members.
 The GKE overlay has two replicas, so the aggregate bound is twelve requests
 per member per minute and two simultaneous syntheses. This assumes the existing
 single API process per pod. Scale/worker changes require revisiting these limits.
-The optional private R2 cache shares clips between replicas. With caching off,
-a retrieval routed to a different replica may miss its local cache; the browser
-falls back. A cache outage has the same behavior. This is a future enablement
-tradeoff to validate with the deployed routing and replica count.
+The optional private R2 cache shares clips between replicas. POST returns the
+audio in the same authorized response as its clip identity, so fresh playback
+does not depend on routing a second request to the same replica. An explicit
+GET replay can miss on another replica while caching is off and returns 404.
+Cache outages permit synthesis; inference failures fall back to browser speech.
 
 Speaker keys use the existing campaign map. `narrator` selects `en-gb`; an
 available NPC UUID or free label with a saved preset deterministically hashes

@@ -32,6 +32,7 @@ interface Settings {
 interface Speaker {
   available: boolean;
   stop: () => void;
+  reconcile: (events: SessionEvent[]) => void;
   deliver: (items: unknown[], presets: VoicePreset[]) => void;
   dispose: () => void;
 }
@@ -87,6 +88,7 @@ export function ReadAloud({
   // so only events that arrive afterwards are spoken.
   useEffect(() => {
     if (!speaker) return;
+    speaker.reconcile(events);
     speaker.deliver(
       reader.select(events, { role, pcId: characterId, ...settings }),
       voices,

@@ -11,17 +11,9 @@ export async function loadEventAudio(
     body: { event_id: eventId },
     signal,
   });
-  const audio = await api(
-    "GET /campaigns/{campaign_id}/tts/{event_id}/{clip_id}",
-    {
-      params: {
-        campaign_id: campaignId,
-        event_id: eventId,
-        clip_id: clip.clip_id,
-      },
-      signal,
-    },
-  );
+  // Fresh bytes come from the same authorized request as synthesis. A second
+  // request could reach another API replica while shared caching remains off.
+  const audio = clip;
   // 2 MiB decoded. Data never becomes a public object-store URL.
   if (
     audio.audio_base64.length > 2_796_204 ||

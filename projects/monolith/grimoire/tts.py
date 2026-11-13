@@ -31,6 +31,7 @@ class TtsRequest(BaseModel):
 
 class ClipView(BaseModel):
     clip_id: str
+    audio_base64: str
 
 
 class AudioView(BaseModel):
@@ -273,7 +274,9 @@ class SpeechService:
                 except (httpx.HTTPError, ValueError) as error:
                     raise HTTPException(503, "speech unavailable") from error
                 self.put(key, audio)
-            return ClipView(clip_id=key)
+            return ClipView(
+                clip_id=key, audio_base64=base64.b64encode(audio).decode("ascii")
+            )
         finally:
             self.slot.release()
 

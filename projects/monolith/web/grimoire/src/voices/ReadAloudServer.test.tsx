@@ -29,7 +29,10 @@ it("uses the API for fresh DM table events and cancels on campaign switch", asyn
       removeAttribute() {}
     },
   );
-  let answer: (value: { clip_id: string }) => void = () => {};
+  let answer: (value: {
+    clip_id: string;
+    audio_base64: string;
+  }) => void = () => {};
   backend = installBackend({
     "POST /campaigns/{campaign_id}/tts": () =>
       new Promise((resolve) => {
@@ -83,7 +86,9 @@ it("uses the API for fresh DM table events and cancels on campaign switch", asyn
     { event_id: "fresh" },
   );
   rerender(view("second", [history, fresh, privateEvent]));
-  await act(async () => answer({ clip_id: "opaque" }));
+  await act(async () =>
+    answer({ clip_id: "opaque", audio_base64: "UklGRg==" }),
+  );
   expect(audioPlay).not.toHaveBeenCalled();
   expect(speak).not.toHaveBeenCalled();
   unmount();

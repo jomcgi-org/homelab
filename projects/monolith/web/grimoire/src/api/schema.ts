@@ -104,6 +104,7 @@ export interface CharacterView {
 
 export interface ClipView {
   clip_id: string;
+  audio_base64: string;
 }
 
 export interface DismissRequest {

@@ -4242,12 +4242,15 @@ def _tts_selection(session, campaign_id, event_id):
 def create_event_audio(
     campaign_id: str,
     body: tts.TtsRequest,
+    response: Response,
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ):
     member = _require_dm(session, campaign_id, email)
     selection = _tts_selection(session, campaign_id, str(body.event_id))
     tts.service.admit(member.id)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return tts.service.create(selection.identity(campaign_id), selection)
 
 

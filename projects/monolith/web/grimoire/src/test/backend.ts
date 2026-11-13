@@ -93,10 +93,11 @@ export function installBackend(
           typeof init?.body === "string" ? JSON.parse(init.body) : init?.body,
       };
       calls.push(call);
-      const result =
+      let result =
         typeof reply === "function"
-          ? await (reply as (call: Call) => unknown)(call)
+          ? (reply as (call: Call) => unknown)(call)
           : reply;
+      if (result instanceof Promise) result = await result;
       if (isStatus(result)) {
         return new Response(
           result.status === 204

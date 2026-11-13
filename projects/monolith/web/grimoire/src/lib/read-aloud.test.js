@@ -488,3 +488,31 @@ describe("server narration queue", () => {
     d.speaker.dispose();
   });
 });
+
+it("cancels an in-flight server delivery when the feed retracts its event", async () => {
+  let resolve;
+  const audio = vi.fn();
+  const synth = { getVoices: () => [], cancel: vi.fn(), speak: vi.fn() };
+  const speaker = createSpeaker({
+    synth,
+    Utterance: class {},
+    Audio: audio,
+    serverAudio: () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  });
+  speaker.speak(narration("retracted", 1));
+  await Promise.resolve();
+  speaker.reconcile([
+    narration("retracted", 1, {
+      retracted_at: "2026-11-13T00:00:00Z",
+      body: null,
+    }),
+  ]);
+  resolve("late audio");
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+  expect(audio).not.toHaveBeenCalled();
+  expect(synth.speak).not.toHaveBeenCalled();
+  speaker.dispose();
+});

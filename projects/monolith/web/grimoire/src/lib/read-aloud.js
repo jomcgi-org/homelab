@@ -207,7 +207,7 @@ export function createSpeaker({
       micPauser.pause();
       onSpeakingChange(true);
     }
-    const token = { controller: new AbortController() };
+    const token = { controller: new AbortController(), event: next.event };
     current = token;
     const run = generation;
     const active = () => run === generation && current === token;
@@ -309,6 +309,15 @@ export function createSpeaker({
   return {
     available,
     stop,
+    reconcile(events) {
+      const invalid = new Set(
+        events
+          .filter((event) => event.retracted_at || !event.body)
+          .map((event) => event.id),
+      );
+      if (current && invalid.has(current.event.id)) stop();
+      else queue = queue.filter(({ event }) => !invalid.has(event.id));
+    },
     deliver,
     speak(event, presets = []) {
       deliver([{ event, text: event.body?.text || "" }], presets);
