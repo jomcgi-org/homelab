@@ -422,6 +422,9 @@ clusterAgent:
   # namespace. Service discovery restricted to named namespaces needs only
   # these.
   namespacedRules: {}
+  # Go soft memory limit (GOMEMLIMIT), for example "400MiB". Set it below the
+  # container limit when scrape bodies are large. Empty renders nothing.
+  goMemLimit: ""
   resources:
     requests:
       cpu: 10m
