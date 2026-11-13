@@ -4,9 +4,8 @@
 # cluster. It keeps every generated Secret that already exists; a rerun only
 # rewrites actor-id-ca-certs from the current pool.
 #
-# `ate-setup deploy ate-system` generates these on first install
-# (cmd/ate-setup/internal/steps/create.go); the rest of what it installs is
-# declared in projects/platform-factory/substrate/. Until this runs, that
+# `kubectl ate install` generates these on first install; the rest of what it
+# installs is declared in projects/platform-factory/substrate/. Until this runs, that
 # Application's pods wait in ContainerCreating for the Secrets they mount.
 #
 #   podcertificate-controller-system/{service-dns,pod-identity,postgres}-ca-pool
@@ -18,7 +17,13 @@
 #   ate-system/snapshot-store-credentials
 #       the access key of the in-cluster S3 snapshot store
 #
-# The CAs are valid for one year, as ate-setup makes them. Substrate v1.0.0 has
+# The Secret names and formats are the ones the kagent-dev fork's charts mount
+# and its `kubectl ate install` creates (cmd/kubectl-ate/internal/install/
+# bootstrap.go); the egress gateway mounts egress-mitm-ca-pool's tls.crt and
+# tls.key, and ate-controller publishes its root as the egress-mitm.ate.dev
+# trust bundle that actors project.
+#
+# The CAs are valid for one year, as ate-setup makes them. Substrate 1.0 has
 # no CA rotation command (`kubectl ate admin` rotates only JWT keys), so the
 # rotation is tracked in https://github.com/jomcgi-org/homelab/issues/7831.
 #
@@ -29,11 +34,12 @@ set -euo pipefail
 
 export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/factory.yaml}"
 
-# kubectl-ate from the Substrate release this cluster runs. Keep the version in
-# step with VERSION in projects/platform-factory/substrate/render-upstream.sh
-# and the Agent Substrate row of projects/factory-cluster/README.md.
-SUBSTRATE_VERSION="v1.0.0"
-KUBECTL_ATE_SHA256="9f2444d8c9327cf3efa13d46468f6d83b856c5080017a29747249e1220605569"
+# kubectl-ate from the Substrate release this cluster runs, the kagent-dev
+# fork. Keep the version in step with VERSION in
+# projects/platform-factory/substrate/render-upstream.sh and the Agent
+# Substrate row of projects/factory-cluster/README.md.
+SUBSTRATE_VERSION="v1.0.1"
+KUBECTL_ATE_SHA256="455a3c465e9473575083cb54d5646eac0ba6f299f8e1b7e42077a3997c17afaa"
 # Release assets are published for linux and darwin on amd64 and arm64; only
 # linux-amd64's checksum is pinned here.
 platform="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
@@ -51,7 +57,7 @@ echo "Bootstrapping Agent Substrate secrets on context ${context}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 curl -fsSL -o "${tmp}/kubectl-ate" \
-	"https://github.com/agent-substrate/substrate/releases/download/${SUBSTRATE_VERSION}/kubectl-ate-linux-amd64"
+	"https://github.com/kagent-dev/substrate/releases/download/${SUBSTRATE_VERSION}/kubectl-ate-linux-amd64"
 echo "${KUBECTL_ATE_SHA256}  ${tmp}/kubectl-ate" | sha256sum -c --quiet
 chmod +x "${tmp}/kubectl-ate"
 ate() { "${tmp}/kubectl-ate" "$@"; }

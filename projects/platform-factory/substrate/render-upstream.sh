@@ -1,98 +1,109 @@
 #!/usr/bin/env bash
 # Render Agent Substrate's install manifests at the pinned release into
-# resources/upstream/, the files `ate-setup deploy ate-system` would apply.
+# resources/upstream/.
 #
-# ate-setup has two install profiles, kind and GKE, and no render-only mode.
-# This script does the deterministic part of its work for the factory cluster:
-# it copies the release's manifests and resolves what ate-setup resolves at
-# install time, namely each ko:// and ${ENVOY_DATAPLANE_IMAGE} reference
-# pinned to the release image's digest, and the #ATE_EGRESS_INJECT_FLAGS
-# marker. Factory-specific settings (S3 snapshot storage, the bundled
-# PostgreSQL's roles, ate-api-server's configuration) are kustomize patches and
-# files in resources/, reviewed separately. Generated key material is created
-# by projects/factory-cluster/bootstrap-substrate.sh.
+# The factory runs the kagent-dev fork of Agent Substrate, the build kagent
+# v1.0.1 compiles against. The fork publishes four Helm charts. This script
+# pulls each at its pinned version, checks the chart's OCI digest, renders it
+# with values/, and pins every image the charts name by tag to that tag's
+# digest. The charts take one image tag for all components, so a digest pin
+# cannot be set through values, and ArgoCD here cannot post-render a Helm
+# source; rendering into Git keeps every image pinned and the diff reviewable.
 #
-# Rerun after changing VERSION and COMMIT; review the diff of upstream/.
-# Needs git and crane.
+# The substrate chart leaves out PostgreSQL. The fork's own development
+# install (hack/install-postgres.sh) applies manifests/ate-install/postgres/
+# and pkg/postgressetup/setup.sql from the same release, which are copied here.
+# Factory-specific settings are values/ and kustomize patches in resources/.
+# Generated key material comes from projects/factory-cluster/bootstrap-substrate.sh.
+#
+# Rerun after changing VERSION, COMMIT or a chart digest; review the diff of
+# upstream/. Needs git, helm and crane.
 set -euo pipefail
 
 # Keep VERSION in step with SUBSTRATE_VERSION in
 # projects/factory-cluster/bootstrap-substrate.sh and the Agent Substrate row of
 # projects/factory-cluster/README.md.
-VERSION="v1.0.0"
-COMMIT="b34fbee742906494b5eb4f1f36987176bf8770a4"
-REPO="ghcr.io/agent-substrate/substrate"
+VERSION="1.0.1"
+COMMIT="7ce6f439239c568285f6d897aaa4afd47752c775"
+CHARTS="oci://ghcr.io/kagent-dev/substrate/helm"
+IMAGES="ghcr.io/kagent-dev/substrate"
+declare -A CHART_DIGEST=(
+	["substrate-crds"]="sha256:3ed670bacd5680ecbcafc9d4a6c95ef90a20f96568b1ba621d0c9c7e411eb084"
+	["substrate-podcert"]="sha256:366b0431ed99cd4ff74f49cb7746329a722c9f8ec9ce0ab4d0670817b34deb80"
+	["substrate-atelet"]="sha256:233e1ed8f74a202abca851c43adee88849482d8ce37760b8be65f4d96fbc8ca3"
+	["substrate"]="sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86"
+)
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${HERE}/resources/upstream"
+VALUES="${HERE}/values"
 
-src="$(mktemp -d)"
-trap 'rm -rf "${src}"' EXIT
-git -c advice.detachedHead=false clone --quiet --depth 1 --branch "${VERSION}" \
-	https://github.com/agent-substrate/substrate.git "${src}"
-if [[ "$(git -C "${src}" rev-parse HEAD)" != "${COMMIT}" ]]; then
-	echo "tag ${VERSION} is not commit ${COMMIT}" >&2
-	exit 1
-fi
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
 
-# The objects deploy ate-system applies with --sandbox-classes=gvisor and
-# --credential-provider='{"enabled":false}'. Left out: ate-system-namespace.yaml
-# (ate-controller.yaml declares the same Namespace), atenet-router-monitoring.yaml
-# (a GKE Managed Prometheus PodMonitoring), ate-otel-config.yaml (it points at
-# GKE's collector; resources/otel-config.yaml replaces it), the microVM
-# SandboxConfig and the bundled credential provider.
-manifests=(
-	generated/ate.dev_csidriverconfigs.yaml
-	generated/ate.dev_sandboxconfigs.yaml
-	generated/ate.dev_workerpools.yaml
-	generated/role.yaml
-	sandboxconfig-validation.yaml
-	sandboxconfig-gvisor.yaml
-	pod-certificate-controller.yaml
-	postgres/postgres.yaml
-	ate-api-server.yaml
-	ate-idp-server.yaml
-	ate-controller.yaml
-	atelet.yaml
-	atenet-router.yaml
-	atenet-egress.yaml
-	ate-system-networkpolicies.yaml
-)
-
-# ko://go.ate.dev/substrate/cmd/<path> is published as <last path element>.
-images=(ate-idp-server ateapi atecontroller atelet atenet objectstore-plugin podcertcontroller envoy-dataplane)
-declare -A pinned
-for image in "${images[@]}"; do
-	pinned[${image}]="${REPO}/${image}:${VERSION}@$(crane digest "${REPO}/${image}:${VERSION}")"
-done
+render() { # chart namespace values-file...
+	local chart="$1" namespace="$2"
+	shift 2
+	local pulled
+	pulled="$(helm pull "${CHARTS}/${chart}" --version "${VERSION}" --untar --untardir "${tmp}/charts" 2>&1)"
+	if ! grep -qx "Digest: ${CHART_DIGEST[${chart}]}" <<<"${pulled}"; then
+		echo "${chart} ${VERSION} is not ${CHART_DIGEST[${chart}]}:" >&2
+		echo "${pulled}" >&2
+		exit 1
+	fi
+	local args=()
+	for f in "$@"; do args+=(-f "${f}"); done
+	# The release names are the ones the charts expect: "substrate" renders
+	# unprefixed object names, and substrate-atelet names its objects after
+	# that release.
+	helm template "${chart}" "${tmp}/charts/${chart}" --namespace "${namespace}" \
+		"${args[@]}" --output-dir "${tmp}/rendered" >/dev/null
+	mkdir -p "${OUT}/${chart}"
+	for f in "${tmp}/rendered/${chart}/templates/"*.yaml; do
+		{
+			echo "# Rendered by render-upstream.sh from ${CHARTS}/${chart}:${VERSION}"
+			echo "# (${CHART_DIGEST[${chart}]}) templates/$(basename "${f}"). Do not edit."
+			grep -v '^# Source: ' "${f}"
+		} >"${OUT}/${chart}/$(basename "${f}")"
+	done
+}
 
 rm -rf "${OUT}"
 mkdir -p "${OUT}"
-for manifest in "${manifests[@]}"; do
-	dest="${OUT}/$(basename "${manifest}")"
-	{
-		echo "# Rendered by render-upstream.sh from agent-substrate/substrate ${VERSION}"
-		echo "# (${COMMIT}) manifests/ate-install/${manifest}. Do not edit."
-		cat "${src}/manifests/ate-install/${manifest}"
-	} >"${dest}"
-	for image in "${images[@]}"; do
-		sed -i -E "s#ko://go\.ate\.dev/substrate/cmd/([a-z0-9/-]+/)?${image}\$#${pinned[${image}]}#" "${dest}"
-	done
-	sed -i "s#\${ENVOY_DATAPLANE_IMAGE}#${pinned["envoy-dataplane"]}#" "${dest}"
-	# {"enabled":false}: no credential provider flags.
-	sed -i '/#ATE_EGRESS_INJECT_FLAGS/d' "${dest}"
-	if grep -nE "ko://|[$]\{ENVOY_DATAPLANE_IMAGE\}|#ATE_EGRESS_INJECT_FLAGS" "${dest}"; then
-		echo "unresolved reference in ${dest}" >&2
-		exit 1
-	fi
-done
+render substrate-crds ate-system
+render substrate-podcert podcertificate-controller-system "${VALUES}/podcert.yaml"
+render substrate-atelet ate-system "${VALUES}/common.yaml" "${VALUES}/atelet.yaml"
+render substrate ate-system "${VALUES}/common.yaml" "${VALUES}/substrate.yaml"
 
-# The bundled PostgreSQL's role and schema setup, which ate-setup runs with
-# psql in the postgres pod (pkg/postgressetup); resources/ runs it from the
-# StatefulSet's postStart hook instead.
+# Pin each component image, which the charts name by the appVersion tag, to
+# its digest. Third-party images (agentgateway) arrive digest-pinned.
+declare -A pinned
+while read -r ref; do
+	pinned[${ref}]="${ref}@$(crane digest "${ref}")"
+done < <(grep -rhoE "${IMAGES}/[a-z0-9-]+:v${VERSION}\$" "${OUT}" | sort -u)
+for ref in "${!pinned[@]}"; do
+	grep -rlE "${ref}\$" "${OUT}" | xargs sed -i -E "s#${ref}\$#${pinned[${ref}]}#"
+done
+if grep -rnE "image: [^@]+\$" "${OUT}"; then
+	echo "an image above is not pinned by digest" >&2
+	exit 1
+fi
+
+# The bundled PostgreSQL and its role and schema setup, from the same release.
+git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v${VERSION}" \
+	https://github.com/kagent-dev/substrate.git "${tmp}/src"
+if [[ "$(git -C "${tmp}/src" rev-parse HEAD)" != "${COMMIT}" ]]; then
+	echo "tag v${VERSION} is not commit ${COMMIT}" >&2
+	exit 1
+fi
 {
-	echo "-- Rendered by render-upstream.sh from agent-substrate/substrate ${VERSION}"
+	echo "# Rendered by render-upstream.sh from kagent-dev/substrate v${VERSION}"
+	echo "# (${COMMIT}) manifests/ate-install/postgres/postgres.yaml. Do not edit."
+	cat "${tmp}/src/manifests/ate-install/postgres/postgres.yaml"
+} >"${OUT}/postgres.yaml"
+{
+	echo "-- Rendered by render-upstream.sh from kagent-dev/substrate v${VERSION}"
 	echo "-- (${COMMIT}) pkg/postgressetup/setup.sql. Do not edit."
-	cat "${src}/pkg/postgressetup/setup.sql"
+	cat "${tmp}/src/pkg/postgressetup/setup.sql"
 } >"${OUT}/postgres-setup.sql"
-echo "rendered ${#manifests[@]} manifests and postgres-setup.sql into ${OUT}"
+echo "rendered $(find "${OUT}" -name '*.yaml' | wc -l) manifests and postgres-setup.sql into ${OUT}"

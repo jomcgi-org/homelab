@@ -127,7 +127,6 @@ spec:
     matchLabels:
       app: atenet-router
   egress:
-    - toEntities: [kube-apiserver]
     - toEndpoints:
         - matchLabels:
             app: ate-api-server
@@ -143,7 +142,8 @@ spec:
             - key: k8s:io.kubernetes.pod.namespace
               operator: Exists
 ---
-# The egress gateway checks each actor with ate-api-server. Actor traffic to
+# The egress gateway (agentgateway) checks each actor with ate-api-server and
+# fetches injected credentials from the credential provider. Actor traffic to
 # the internet is not allowed yet: opening it is a reviewed change here, with
 # the actors' own egress policy (EgressPolicy) as the finer control.
 apiVersion: cilium.io/v2
@@ -156,7 +156,6 @@ spec:
     matchLabels:
       app: atenet-egress
   egress:
-    - toEntities: [kube-apiserver]
     - toEndpoints:
         - matchLabels:
             app: ate-api-server
@@ -164,6 +163,28 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: k8s-credential-provider
+      toPorts:
+        - ports:
+            - port: "50051"
+              protocol: TCP
+---
+# The k8s.io credential provider reads the Secrets each actor's atespace is
+# granted (credentialProvider.namespacePolicies in ../values/substrate.yaml).
+# Upstream's NetworkPolicy admits only the egress gateway.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: k8s-credential-provider
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: k8s-credential-provider
+  egress:
+    - toEntities: [kube-apiserver]
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -247,11 +268,12 @@ spec:
       - key: ate.dev/worker-pool
         operator: Exists
   egress:
+    # The atenet-egress Service's port 443, which agentgateway serves on 8443.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: ate-system
             app: atenet-egress
       toPorts:
         - ports:
-            - port: "443"
+            - port: "8443"
               protocol: TCP

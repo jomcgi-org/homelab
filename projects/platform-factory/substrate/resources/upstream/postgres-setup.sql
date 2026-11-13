@@ -1,5 +1,5 @@
--- Rendered by render-upstream.sh from agent-substrate/substrate v1.0.0
--- (b34fbee742906494b5eb4f1f36987176bf8770a4) pkg/postgressetup/setup.sql. Do not edit.
+-- Rendered by render-upstream.sh from kagent-dev/substrate v1.0.1
+-- (7ce6f439239c568285f6d897aaa4afd47752c775) pkg/postgressetup/setup.sql. Do not edit.
 -- Copyright 2026 The Agent Substrate Authors
 --
 -- Licensed under the Apache License, Version 2.0 (the "License");
