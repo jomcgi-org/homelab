@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"

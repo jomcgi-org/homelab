@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/quota"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

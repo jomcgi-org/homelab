@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/broker"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/metrics"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/quota"
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/broker"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/metrics"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
