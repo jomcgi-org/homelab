@@ -56,6 +56,7 @@
 # gazelle:exclude ember_synthetic_probe_grants_test.py
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
@@ -10060,4 +10061,9 @@ py_test(
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
+)
+
+build_test(
+    name = "grimoire_tts_image_build_test",
+    targets = [":grimoire_tts_image"],
 )

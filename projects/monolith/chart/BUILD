@@ -553,11 +553,16 @@ py_test(
     name = "grimoire_tts_test",
     srcs = ["grimoire_tts_test.py"],
     data = [
-        ":chart",
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
         "@multitool//tools/helm",
-    ],
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
