@@ -155,7 +155,7 @@ _BACKEND_SRCS = glob(
         # Run-by-hand S3->Postgres backfill, not part of the runtime image.
         "trips/backfill/**",
     ],
-)
+) + ["//projects/monolith/grimoire/loom:sources"]
 
 py_venv_binary(
     name = "main",
@@ -1226,7 +1226,7 @@ py_library(
             "**/test_*.py",
             "*/tests/**/*.py",
         ],
-    ),
+    ) + ["//projects/monolith/grimoire/loom:sources"],
     # join_landing.py reads this inline landing script at import time; the
     # "grimoire/**/*.py" glob does not capture it.
     data = ["//projects/monolith/web/grimoire:join_landing_script"],
@@ -1688,7 +1688,7 @@ py_library(
             # SSR read paths.
             "trips/backfill/**",
         ],
-    ),  # keep
+    ) + ["//projects/monolith/grimoire/loom:sources"],  # keep
     # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
     # the multi-megabyte ndjson manifest isolated in its own image layer.
     data = [
@@ -1950,7 +1950,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # public binary; the read path (public/router_public/library/models/
     # visibility plus the extract/ingest helpers it calls) ships.
     "grimoire/jobs.py",
-    "grimoire/loom/**/*.py",
     # FaaS: only the public invocation path ships. The ingestion API (router.py)
     # is the authenticated private-tier author surface (no /api on public); the
     # write path (storage.py = S3, workload.py = K8s CR CRUD) is private-only; the
@@ -10029,7 +10028,7 @@ py_test(
 
 py_test(
     name = "grimoire_loom_client_test",
-    srcs = ["grimoire/loom/client_test.py"],
+    srcs = ["//projects/monolith/grimoire/loom:client_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -10040,7 +10039,7 @@ py_test(
 
 py_test(
     name = "grimoire_loom_ontology_test",
-    srcs = ["grimoire/loom/ontology_test.py"],
+    srcs = ["//projects/monolith/grimoire/loom:ontology_test.py"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -10051,7 +10050,7 @@ py_test(
 
 py_test(
     name = "grimoire_loom_chart_test",
-    srcs = ["grimoire/loom/chart_test.py"],
+    srcs = ["//projects/monolith/grimoire/loom:chart_test.py"],
     data = [
         "//projects/monolith/chart:docfix_review_test_data",
         "//projects/monolith/deploy:deploy_values",
