@@ -1132,5 +1132,6 @@ py_test(
         "preview_support.py",
         "preview_support_test.py",
     ],
+    imports = ["."],
     main = "preview_support_test.py",
 )
