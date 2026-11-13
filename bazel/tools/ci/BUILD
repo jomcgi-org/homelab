@@ -148,3 +148,10 @@ sh_test(
         "//:buildbuddy.yaml",
     ],
 )
+
+# Markdown consumed by the monolith doc-manifest genrules.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(["*.md"]),
+    visibility = ["//projects/monolith:__pkg__"],
+)

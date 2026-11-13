@@ -215,6 +215,7 @@ filegroup(
         "//bazel/requirements:repo_docs",
         "//bazel/tools:repo_docs",
         "//bazel/tools/buildbuddy:repo_docs",
+        "//bazel/tools/ci:repo_docs",
         "//bazel/tools/hf2oci:repo_docs",
         "//bazel/tools/image:repo_docs",
         "//bazel/tools/js:repo_docs",
