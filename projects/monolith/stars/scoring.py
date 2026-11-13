@@ -40,9 +40,3 @@ def is_twilight_hour(sun_elevation_deg: float) -> bool:
     Used only as the live summer fallback; the dark (-12) metric still drives
     ranking and the historical climatology."""
     return sun_elevation_deg < TWILIGHT_FLOOR_DEG
-
-
-def is_clear_dark_hour(sun_elevation_deg: float, cloud_area_fraction: float) -> bool:
-    """The stars v2 unit of value: a dark hour (sun < -12 deg) that is also clear
-    (cloud < 10%). Counted per site per month-of-year (live + ERA5 climatology)."""
-    return is_dark_hour(sun_elevation_deg) and cloud_area_fraction < CLEAR_CLOUD_MAX_PCT
