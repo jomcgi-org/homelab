@@ -703,3 +703,19 @@ use_repo(
 # EmberVM conformance runner image also layers both for S6 (issue #6415).
 tla = use_extension("//bazel/tla:repositories.bzl", "tla")
 use_repo(tla, "temurin21_jre_linux_amd64", "tla2tools")
+
+# Hermetic repository-rule compatibility inputs and independent pinned goose archives.
+http_fixtures = use_extension("//bazel/tools/http:fixtures.bzl", "fixtures")
+use_repo(
+    http_fixtures,
+    "http_fixture_amd64",
+    "http_fixture_amd64_metadata",
+    "http_fixture_arm64",
+    "http_fixture_arm64_metadata",
+    "http_fixture_assets",
+    "http_fixture_dual",
+    "http_fixture_dual_metadata",
+    "http_fixture_raw",
+    "http_goose_source_amd64",
+    "http_goose_source_arm64",
+)
