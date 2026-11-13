@@ -109,8 +109,16 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config=/conf/collector.yaml
-          {{- if .Values.onepassword.enabled }}
+          {{- if or .Values.onepassword.enabled $ca.goMemLimit }}
           env:
+            {{- with $ca.goMemLimit }}
+            # Makes the Go runtime collect before the container limit rather
+            # than after: parsing large scrape bodies leaves freed heap in RSS.
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          {{- if .Values.onepassword.enabled }}
             # Same Secret and keys as the gateway Deployment.
             - name: HONEYCOMB_API_KEY
               valueFrom:

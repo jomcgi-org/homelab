@@ -1492,6 +1492,11 @@ def test_factory_cluster_agent():
     container = deployment["spec"]["template"]["spec"]["containers"][0]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    # Room to parse three ~11 MB API server /metrics bodies, with the Go
+    # runtime told to collect below the container limit.
+    assert container["resources"]["limits"]["memory"] == "512Mi"
+    env = {e["name"]: e for e in container["env"]}
+    assert env["GOMEMLIMIT"]["value"] == "400MiB"
 
     # Repeating Events ship on threshold bumps only; expiries never.
     conditions = config["processors"]["filter/events"]["logs"]["log_record"]

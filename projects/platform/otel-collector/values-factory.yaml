@@ -10,9 +10,13 @@
 # Volume. The team shares one monthly event budget with the hub, so every
 # source is cut to an allowlist and scraped every 120s. Measured on
 # 2026-11-13 with 55 pods: about 120 metric datapoints a minute (kubelet and
-# host about 90, Hubble about 27, API servers and operators about 17) and
-# about 13 warning log lines a minute, so at most about 6M events a month.
-# Halve an interval only after checking headroom in Honeycomb's usage view.
+# host about 90, Hubble about 27, API servers and operators about 17), about
+# 5.3M a month at most. Logs ran at 45-60 lines a minute (about 2-2.6M a
+# month), most of them Cilium's "Skipping named port" warnings about
+# ate-system policies; Warning events add a few a minute. That is about 8M a
+# month beside the hub's 4M. The collector has no hard log rate cap: dedup
+# (below) absorbs repeats, and a noisy component needs its own fix or an
+# exclusion. Halve an interval only after checking Honeycomb's usage view.
 
 # The hub's ingest key (vault k8s-homelab, fields honeycomb-key-secret and
 # honeycomb-key-id). It writes to the homelab environment.
@@ -104,7 +108,10 @@ clusterAgent:
   # Each k3s API server's /metrics is about 11 MB and is parsed in full
   # before the keep rule drops all but three series, three servers at once.
   # 192Mi left the memory_limiter refusing data (and dropping Warning events)
-  # at about 110 MiB; 512Mi gives the parse room.
+  # at about 110 MiB; 512Mi gives the parse room. Measured 2026-11-13 at
+  # 512Mi: process RSS peaked at 348 MiB with the heap at 124 MiB, so
+  # GOMEMLIMIT makes the runtime return freed memory before the limit.
+  goMemLimit: 400MiB
   resources:
     requests:
       cpu: 20m
