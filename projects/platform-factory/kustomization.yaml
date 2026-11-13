@@ -10,6 +10,11 @@ resources:
   - ./onepassword # 1Password Connect and operator; bootstrap secrets are created out of band
   - ./runtimeclasses # gvisor RuntimeClass for the runsc handler install-node.sh installs
   - ./cfgate # Cloudflare tunnel and DNS lifecycle from Gateway API resources
-  - ./factory-edge # The factory cluster's Cloudflare Tunnel; no hostname is published yet
+  - ./factory-edge # The factory cluster's Cloudflare Tunnel, its Gateway and DNS
   - ./substrate # Agent Substrate control plane; bootstrap-substrate.sh creates its key material
   - ./otel-collector # Node, Cilium, API server metrics, warning logs and events to Honeycomb
+  - ./edge-admission # Admission policies guarding the edge, in every namespace
+  - ./cloudnative-pg # Postgres operator; Authentik's database
+  - ./edge # Envoy Gateway: every published route signs in through Authentik
+  - ./authentik # Identity provider at factory-auth.jomcgi.dev
+  - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

@@ -88,6 +88,7 @@ SKIPPED_MANIFEST_SETS = {
     "projects/platform/authentik": "Hub-only chart; rendered with its hub overlay by :manifests_gke.",
     "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
     "projects/platform/cloudnative-pg/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
+    "projects/platform-factory/edge/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by its own :template_test and trialled on the factory cluster.",
     "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
 }
 

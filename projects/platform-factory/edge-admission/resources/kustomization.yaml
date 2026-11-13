@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Native admission policies guarding the factory edge
+# (projects/factory-cluster/README.md, "factory.jomcgi.dev"). They run in the
+# API server for every namespace, kube-system included.
+resources:
+  - policies.yaml

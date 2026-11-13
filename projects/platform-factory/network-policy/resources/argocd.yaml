@@ -26,12 +26,44 @@ spec:
       app.kubernetes.io/name: argocd-repo-server
   egress:
     - toFQDNs:
-        # This repository, and release assets kustomize fetches by URL.
+        # This repository, and GitHub release assets (the CloudNativePG
+        # chart archive downloads redirect there).
         - matchName: github.com
         - matchPattern: "*.githubusercontent.com"
-        # The Helm chart repository in use. Add a source in the change that
+        # The Helm chart repositories in use. Add a source in the change that
         # first syncs from it.
         - matchName: helm.cilium.io
+        - matchName: cloudnative-pg.github.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# The UI and API, through the edge Gateway only (projects/platform-factory/edge/).
+# argocd-server reaches Authentik at its public URL, as a browser does, because
+# the OIDC issuer must match.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: server-edge
+  namespace: argocd
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toFQDNs:
+        - matchName: factory-auth.jomcgi.dev
       toPorts:
         - ports:
             - port: "443"

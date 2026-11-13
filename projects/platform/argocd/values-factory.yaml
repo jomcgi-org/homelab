@@ -1,14 +1,25 @@
 # Factory home cluster overlay (projects/platform-factory/argocd).
 #
-# The UI will be published at factory.jomcgi.dev through the Cloudflare Tunnel
-# once it signs users in through Authentik OIDC. The tunnel terminates TLS at
-# the edge and forwards plain HTTP, so argocd-server serves HTTP. Until then
-# it is reached with kubectl port-forward.
+# The UI is published at factory.jomcgi.dev through the edge Gateway
+# (projects/platform-factory/edge/), which signs every request in through
+# Authentik before it reaches ArgoCD; ArgoCD then runs its own Authentik OIDC
+# login. The tunnel terminates TLS at Cloudflare and forwards plain HTTP, so
+# argocd-server serves HTTP.
 argo-cd:
   global:
     priorityClassName: system-cluster-critical
   server:
     replicas: 1
+    # Behind the edge Gateway's Authentik sign-in.
+    httproute:
+      enabled: true
+      parentRefs:
+        - group: gateway.networking.k8s.io
+          kind: Gateway
+          name: edge
+          namespace: edge
+      hostnames:
+        - factory.jomcgi.dev
     resources:
       requests:
         cpu: 25m
@@ -40,6 +51,28 @@ argo-cd:
   configs:
     cm:
       url: https://factory.jomcgi.dev
+      # Sign-in is Authentik only. Break-glass is kubectl, or the argocd CLI
+      # in --core mode, with the cluster kubeconfig
+      # (projects/factory-cluster/README.md).
+      admin.enabled: "false"
       timeout.reconciliation: "180s"
+      # The client secret is generated in the cluster and copied here by the
+      # authentik-secret-init Job (projects/platform-factory/authentik/).
+      oidc.config: |
+        name: Authentik
+        issuer: https://factory-auth.jomcgi.dev/application/o/factory-argocd/
+        clientID: factory-argocd
+        clientSecret: $argocd-authentik-oidc:client-secret
+        requestedScopes:
+          - openid
+          - profile
+          - email
+    rbac:
+      # Authentik's groups claim; the provider admits only authentik Admins
+      # (projects/platform/authentik/factory-blueprints/).
+      scopes: "[groups]"
+      policy.default: ""
+      policy.csv: |
+        g, authentik Admins, role:admin
     params:
       server.insecure: "true"

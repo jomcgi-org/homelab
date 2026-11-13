@@ -1,0 +1,39 @@
+# The only route on the cfgate tunnel Gateway: every published hostname goes
+# to the Envoy proxy in edge, which authenticates it. The publish annotation
+# makes cfgate create the proxied DNS record
+# (projects/platform-factory/factory-edge/).
+#
+# It is its own Application so that publishing is the last step of a rollout
+# and unpublishing the first step of a teardown. edge-admission rejects any
+# other route on the tunnel, and any backend or filter here other than the
+# edge-proxy Service.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: tunnel
+  namespace: edge
+  annotations:
+    factory.jomcgi.dev/publish: "true"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: cloudflare-tunnel
+      namespace: cfgate-system
+  # One entry per hostname with a route on the edge Gateway.
+  hostnames:
+    - factory.jomcgi.dev
+    - factory-auth.jomcgi.dev
+  # matches and weight are the schema defaults, stated so ArgoCD's diff owns
+  # them.
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: edge-proxy
+          port: 80
+          weight: 1

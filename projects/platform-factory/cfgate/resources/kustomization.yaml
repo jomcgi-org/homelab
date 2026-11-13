@@ -2,10 +2,19 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # cfgate: Cloudflare Tunnel and DNS lifecycle from Gateway API resources. The
-# release manifest carries the controller and its CRDs, pinned by tag. Gateway
-# API itself comes from k3s (v1.6.3 standard channel).
+# release manifest carries the controller and its CRDs. It is vendored
+# byte-for-byte so a re-uploaded release asset cannot change what syncs:
+#   https://github.com/cfgate/cfgate/releases/download/v0.2.0-alpha.11/install.yaml
+#   sha256 009404f7cddf5836c2e8bd9742adf6763f9e59cf2e28aa2a6b493872604b1a9c
+# To upgrade, replace the file, update both lines above and the image digest
+# below. Gateway API itself comes from k3s (v1.6.3 standard channel).
 resources:
-  - https://github.com/cfgate/cfgate/releases/download/v0.2.0-alpha.11/install.yaml
+  - upstream/cfgate-v0.2.0-alpha.11-install.yaml
   - api-token.yaml
   # Its allowlist under the cluster-wide default-deny (network-policy/).
   - network-policy.yaml
+
+images:
+  - name: ghcr.io/cfgate/cfgate
+    newTag: 0.2.0-alpha.11
+    digest: sha256:6cd934b258ee245eadf4fc46704897410be008f0b88296ff77e74f06fc8b4c1a

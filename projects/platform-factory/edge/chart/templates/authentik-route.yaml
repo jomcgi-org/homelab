@@ -1,0 +1,110 @@
+{{- /*
+Authentik's own hostname. It cannot sit behind the gateway-wide OIDC policy,
+since that policy redirects to it, so a route-level SecurityPolicy replaces the
+gateway one here and allows every request through to Authentik's login flows.
+
+The route lives in `edge`, not `authentik`, so that this exemption is the only
+SecurityPolicy outside the gateway-wide one; a ReferenceGrant in `authentik`
+lets it name the Authentik Service.
+
+From the internet Authentik serves only what sign-in needs: its flow pages,
+static files, the OAuth2 endpoints under /application/o/ and the API prefixes
+in authentik.publicAPIPrefixes. Everything else under /api/v3/, the admin and
+user interfaces, and the initial-setup flow (which sets the akadmin password
+while it has none) answer 403 at Envoy. Administration and first-run setup go
+through a port-forward (projects/factory-cluster/README.md).
+*/}}
+{{- /* Longest prefix wins, so each allowed path below is reachable even
+under a blocked prefix, and each blocked one wins over a shorter allowed one. */}}
+{{- $blocked := list
+  "/if/admin/"
+  "/if/user/"
+  "/api/v3/"
+  "/if/flow/initial-setup/"
+  "/api/v3/flows/executor/initial-setup/"
+}}
+{{- $allowedAPI := .Values.authentik.publicAPIPrefixes }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: authentik-forbidden
+  namespace: {{ .Release.Namespace }}
+spec:
+  directResponse:
+    statusCode: 403
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: "Forbidden\n"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: authentik
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - {{ .Values.authentik.hostname }}
+  rules:
+    - matches:
+        {{- range $blocked }}
+        - path:
+            type: PathPrefix
+            value: {{ trimSuffix "/" . }}
+        {{- end }}
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: authentik-forbidden
+    - matches:
+        {{- range $allowedAPI }}
+        - path:
+            type: PathPrefix
+            value: {{ trimSuffix "/" . }}
+        {{- end }}
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              # Cloudflare terminates TLS. Without this Authentik builds
+              # http:// URLs and the browser blocks its API calls as mixed
+              # content (projects/platform/authentik/values.yaml).
+              - name: X-Forwarded-Proto
+                value: https
+              # Authentik takes the client address from X-Forwarded-For, which
+              # a client can send. Replace it with Cloudflare's address for
+              # the client.
+              - name: X-Forwarded-For
+                value: "%REQ(CF-Connecting-IP)%"
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ .Values.authentik.service.name }}
+          namespace: {{ .Values.authentik.service.namespace }}
+          port: {{ .Values.authentik.service.port }}
+          # The schema default, stated so ArgoCD's diff owns it.
+          weight: 1
+---
+# Replaces the gateway-wide OIDC policy for this route only. Authentik does
+# its own sign-in and MFA.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: authentik-no-gateway-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: authentik
+  authorization:
+    defaultAction: Allow

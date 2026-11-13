@@ -7,7 +7,8 @@ bootstrap and its ArgoCD root; `projects/platform-factory/` holds one
 Application per shared component.
 
 Status (2026-11-13): nodes rebuilt as three k3s servers on Cilium; 1Password
-Connect and ArgoCD run and sync `factory-root`. No hostname is published.
+Connect and ArgoCD run and sync `factory-root`. ArgoCD is published at
+factory.jomcgi.dev behind Authentik (factory-auth.jomcgi.dev).
 
 ## Nodes
 
@@ -45,8 +46,11 @@ router must reserve these three leases.
 | Cilium devices | `enp+` (the wired NICs) | Auto-detection also took `tailscale0` on node-1, set every pod there to its 1280 MTU and silently dropped full-size QUIC replies from the Cloudflare edge; it also served KPR services on the tailnet |
 | Tailscale (node-1) | netfilter mode off; `src_valid_mark=0` | With Tailscale managing iptables it sets `src_valid_mark=1`, and the kernel then drops every pod packet Cilium redirects to its DNS or L7 proxy, which breaks `toFQDNs` policies |
 | Ingress | Cloudflare Tunnel managed by cfgate (Gateway API) | No inbound ports; the tunnel, its routes and DNS records are Kubernetes resources. cfgate replaced StringKe/cloudflare-operator, whose last release (v0.51.0) watches Gateway API `v1alpha2` UDPRoute, which current Gateway API no longer serves |
-| Human sign-in | Authentik OIDC at each application, no Cloudflare Access | One identity layer, as #7817 specifies; nothing is published until it signs users in |
-| Secrets | 1Password Connect + operator, `k8s-homelab` vault | Repository convention |
+| Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
+| Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
+| Admission policy | ValidatingAdmissionPolicy (`projects/platform-factory/edge-admission/`) | Keeps Gateways, routes, the edge label and Envoy's proxy and auth objects inside `edge`. The API server evaluates it in every namespace; Kyverno skips kube-system, kube-public, kube-node-lease and its own namespace |
+| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's database; one instance on local-path, no backups yet |
+| Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Repository convention. Authentik's secrets cannot outlive its database until Postgres has off-node backups, so a copy in 1Password would protect nothing yet |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 | Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
 
@@ -117,9 +121,19 @@ flow the baseline allows is DNS to CoreDNS, through Cilium's DNS proxy so that
 egress rules can name domains. Each namespace then has one file allowing
 exactly its own traffic, with internet egress listed by domain name. A
 namespace created by an Application rather than bootstrap keeps its policy in
-that Application (cfgate does), so the policy lands with the namespace. A
-component with no policy can reach nothing, so a new component needs one in
-the same change that deploys it.
+that Application (cfgate, cloudnative-pg, edge and authentik do), so
+the policy lands with the namespace. A component with no policy can reach
+nothing, so a new component needs one in the same change that deploys it.
+
+Ordering matters inside an Application. A pod that starts before its policy
+exists is dropped until the policy lands; for a Job that can mean failing
+outright. Envoy Gateway's certgen Job is a Helm pre-install hook, which ArgoCD
+runs before any ordinary resource, so its policy is a PreSync hook as well.
+Authentik's policies carry an earlier sync wave than its secret Job.
+
+A backend behind the edge Gateway needs an egress rule on the Envoy proxy
+(`projects/platform-factory/edge/chart/templates/network-policy.yaml`) and an
+ingress rule from the proxy in its own namespace.
 
 To see what a policy drops:
 
@@ -132,22 +146,124 @@ That shows one node; run it against each agent pod for the whole cluster.
 
 ## factory.jomcgi.dev
 
-`projects/platform-factory/factory-edge/` declares the only path in from the
-internet: the `factory` CloudflareTunnel, the `cloudflare-tunnel` Gateway that
-accepts HTTPRoutes only from namespaces labelled `factory.jomcgi.dev/edge=true`,
-and a CloudflareDNS that creates records only for routes annotated
-`factory.jomcgi.dev/publish=true`. No namespace has the label yet, so nothing
-is published and every request answers 404.
+The only path in from the internet:
 
-The authenticated ingress (Envoy Gateway with Authentik forward-auth) will be
-the one edge namespace, so an application cannot publish itself by writing an
-HTTPRoute. factory.jomcgi.dev is published with it. Cloudflare Access is not
-used. Until then, reach ArgoCD through a
-port-forward and sign in as `admin` with the password in the
-`argocd-initial-admin-secret` Secret:
+1. Cloudflare terminates TLS and sends the request down the `factory`
+   CloudflareTunnel (`projects/platform-factory/factory-edge/`).
+2. The tunnel's `cloudflare-tunnel` Gateway accepts routes only from the
+   namespace named `edge` that also carries `factory.jomcgi.dev/edge=true`. Its
+   one route, `edge/tunnel` (`projects/platform-factory/edge-tunnel/`), sends
+   every published hostname to the Envoy proxy Service `edge/edge-proxy`. The
+   route's `factory.jomcgi.dev/publish=true` annotation makes cfgate create
+   the DNS records.
+3. Envoy Gateway's `edge` Gateway (`projects/platform-factory/edge/`) signs
+   every request in through Authentik with a gateway-wide OIDC
+   SecurityPolicy, then routes it. Routes attach only from the namespaces
+   listed in the chart's `routeNamespaces` (`edge`, `argocd`), matched by
+   name.
+4. The application can run its own Authentik login too; ArgoCD does.
+
+| Hostname | Route | Sign-in |
+| --- | --- | --- |
+| factory.jomcgi.dev | `argocd/argocd-server` | Envoy OIDC (client `factory-edge`), then ArgoCD's OIDC (client `factory-argocd`); both admit only `authentik Admins` |
+| factory-auth.jomcgi.dev | `edge/authentik` | Authentik itself, with MFA required |
+
+Envoy's OIDC session lasts as long as the access token, ten minutes, with no
+refresh. Envoy then sends the browser back to Authentik, which checks the
+group binding again, so removing someone from `authentik Admins` ends their
+access within ten minutes. The cookies are `SameSite=Lax`.
+
+Authentik's own route is the one exemption from the gateway-wide policy:
+a route-level SecurityPolicy replaces it there, since the gateway policy
+redirects to Authentik. From the internet that route serves the flow pages,
+static files, the OAuth2 endpoints under `/application/o/` and three API
+prefixes the flow interface needs (`/api/v3/flows/executor/`,
+`/api/v3/root/config/`, `/api/v3/core/brands/current/`). The rest of
+`/api/v3/`, the admin and user interfaces (`/if/admin/`, `/if/user/`) and the
+initial-setup flow answer 403. Authentik sees the client address from
+Cloudflare's `CF-Connecting-IP`, which the route copies into
+`X-Forwarded-For`.
+
+The policies in `projects/platform-factory/edge-admission/` enforce the rest,
+in every namespace: only `edge` may carry the edge label; the only
+GatewayClasses are `edge` and `cfgate`, each with one Gateway in its own
+namespace and no per-Gateway EnvoyProxy; EnvoyProxy, SecurityPolicy,
+EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
+objects live only in `edge`; any route with a parent in `cfgate-system` must
+be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
+only `edge` may route factory-auth.jomcgi.dev; and CloudflareDNS and
+CloudflareTunnel objects live only in `cfgate-system`. Envoy Gateway runs each
+proxy in its Gateway's namespace, so no other Gateway's proxy could run
+under the edge proxy's namespace and network identity.
+
+If `edge/edge-oidc-client` is missing or empty, the gateway-wide policy is
+invalid and Envoy answers every route with 500. Going from invalid back to
+valid is not safe: on the trial cluster one request in that switch reached
+ArgoCD without OIDC, because Envoy took the new route before the new
+listener. So the Secret is created by the edge chart with a placeholder
+value, before the policy, and the edge Application syncs with
+`ApplyOutOfSyncOnly` and ignores its data, so a sync never resets the real
+value. Changing the value (valid to valid) showed no gap.
+
+Envoy Gateway also adds the OAuth2 filter to the listener only while at least
+one route uses the gateway policy, so the first route after none would open
+the same gap. A permanent route in `edge`
+(`factory.jomcgi.dev/oauth2-sentinel`, 404 once signed in) keeps that count
+above zero.
+
+The proxy's egress to factory-auth.jomcgi.dev (the OIDC token endpoint) and
+argocd-server's (discovery and keys) name a hostname that resolves to
+Cloudflare's anycast addresses, so the rule admits any site Cloudflare serves
+on those addresses.
+
+To publish another hostname, change these together in one PR: the hostname
+list in `projects/platform-factory/edge-tunnel/resources/route.yaml`, the
+`factory-edge` provider's `redirect_uris` in
+`projects/platform/authentik/factory-blueprints/factory-auth.yaml`, the app's
+HTTPRoute on `edge/edge` and its namespace in `routeNamespaces`, and the
+network policies above.
+
+To take the edge down, delete the `edge-tunnel` Application first, so
+nothing is published while the rest goes, then `authentik`,
+`cloudnative-pg` and `edge`, and `edge-admission` last. If Envoy Gateway's
+controller goes before its Gateway, the `edge` GatewayClass keeps its
+finalizer; clear it by name. The admission policies and bindings, and
+`authentik/authentik-secrets` (which holds `AUTHENTIK_SECRET_KEY`), carry
+`Delete=false`, so deleting their Applications leaves them; delete them by
+name once the edge is gone and the key is no longer wanted. The namespaces
+and CRDs stay behind.
+
+### Authentik first run
+
+Authentik starts with no admin password, and the internet cannot reach the
+setup flow. Set it up through a port-forward:
 
 ```bash
-kubectl --kubeconfig ~/.kube/factory.yaml -n argocd port-forward svc/argocd-server 8080:80
+KUBECONFIG=~/.kube/factory.yaml kubectl -n authentik port-forward svc/authentik-server 9000:80
+# open http://localhost:9000/if/flow/initial-setup/ and set akadmin's email and password
+```
+
+Then sign in at https://factory.jomcgi.dev. The first sign-in enrols a
+second factor; choose TOTP. A WebAuthn key enrolled over the port-forward is
+bound to `localhost` and fails on factory-auth.jomcgi.dev. The admin and user
+interfaces are reachable only through the port-forward.
+
+`authentik-secret-init` (`projects/platform-factory/authentik/resources/`)
+fills `AUTHENTIK_SECRET_KEY` and both OIDC client secrets into
+`authentik/authentik-secrets` once, and copies the client secrets to
+`edge/edge-oidc-client` and `argocd/argocd-authentik-oidc`. ArgoCD creates
+the three Secrets empty and ignores their data, so the Job can only read and
+update those names. CloudNativePG generates `authentik-pg-app`. Move the
+secret key to 1Password once Postgres has off-node backups.
+
+### Break-glass
+
+ArgoCD's local `admin` account is disabled. With the cluster kubeconfig,
+use kubectl directly, or the ArgoCD CLI without its API server:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl config set-context --current --namespace argocd
+KUBECONFIG=~/.kube/factory.yaml argocd app list --core
 ```
 
 ## Agent Substrate
@@ -349,8 +465,10 @@ These come from the #7817 step 1 checklist:
   first state here that Git cannot recreate.
 - Agent Substrate CA rotation before 2027-11-13
   ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
-- Authentik for the factory cluster, the Envoy Gateway edge with forward-auth,
-  and factory.jomcgi.dev.
+- Postgres backups for Authentik, then its secret key in 1Password.
+- Spreading the cloudflared replicas across nodes: cfgate v0.2.0-alpha.11's
+  CloudflareTunnel has no topologySpreadConstraints or affinity field, so
+  placement is the scheduler's default spreading.
 - Prometheus and Grafana as the operators' metrics view (#7817 names them);
   Honeycomb carries the baseline telemetry until then.
 - Alerting on the factory telemetry. Honeycomb's single free trigger is taken
