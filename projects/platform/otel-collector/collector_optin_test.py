@@ -1378,3 +1378,122 @@ def test_gke_container_metrics_pipeline():
     assert {"apiGroups": [""], "resources": ["nodes/stats"], "verbs": ["get"]} in role[
         "rules"
     ]
+
+
+# ---------------------------------------------------------------------------
+# Factory home cluster: node and cluster agents, no gateway.
+# ---------------------------------------------------------------------------
+CLUSTER = f"{RELEASE}-cluster"
+
+
+def test_gateway_is_on_by_default_in_hub_overlays():
+    for name in ("values", "values-prod", "values-gke"):
+        kinds = {(d["kind"], d["metadata"]["name"]) for d in _render_overlay(name)}
+        assert ("Deployment", RELEASE) in kinds
+        assert ("Service", RELEASE) in kinds
+        assert ("Deployment", CLUSTER) not in kinds
+
+
+def test_factory_renders_no_gateway():
+    kinds = {
+        (d["kind"], d["metadata"]["name"]) for d in _render_overlay("values-factory")
+    }
+    for kind in ("Deployment", "Service", "ConfigMap", "ServiceAccount"):
+        assert (kind, RELEASE) not in kinds
+    assert ("DaemonSet", LOGS) in kinds
+    assert ("Deployment", CLUSTER) in kinds
+
+
+def test_factory_node_agent_pipelines():
+    docs = _render_overlay("values-factory")
+    config = _named_collector_config(docs, LOGS)
+    _assert_pipelines_reference_defined_components(config)
+
+    pipelines = config["service"]["pipelines"]
+    assert set(pipelines) == {"logs", "metrics/node"}
+    node = pipelines["metrics/node"]
+    assert node["receivers"] == [
+        "kubelet_stats/node",
+        "host_metrics",
+        "prometheus/node",
+    ]
+    processors = node["processors"]
+    assert processors[0] == "memory_limiter"
+    assert processors[-1] == "batch"
+    assert processors.index("filter/node-metrics") < processors.index("k8s_attributes")
+    for pipeline in pipelines.values():
+        assert "resource/cluster" in pipeline["processors"]
+    assert config["processors"]["resource/cluster"]["attributes"] == [
+        {"key": "k8s.cluster.name", "value": "factory", "action": "upsert"}
+    ]
+
+    kubelet = config["receivers"]["kubelet_stats/node"]
+    assert kubelet["metric_groups"] == ["node", "pod"]
+    # The agent's own namespace is excluded so its export errors are not exported.
+    assert config["receivers"]["file_log"]["exclude"] == [
+        "/var/log/pods/otel-collector_*/*/*.log"
+    ]
+    jobs = {
+        c["job_name"]: c
+        for c in config["receivers"]["prometheus/node"]["config"]["scrape_configs"]
+    }
+    assert set(jobs) == {"cilium-agent", "hubble"}
+    for job in jobs.values():
+        (target,) = job["static_configs"][0]["targets"]
+        assert target.startswith("${env:K8S_NODE_IP}:")
+        assert job["metric_relabel_configs"][0]["action"] == "keep"
+
+    ds = next(d for d in docs if d["kind"] == "DaemonSet")
+    pod = ds["spec"]["template"]["spec"]
+    # Host metrics read the container's /proc; no host filesystem beyond the
+    # pod logs and the agent's own state directory is mounted.
+    host_paths = {v["hostPath"]["path"] for v in pod["volumes"] if "hostPath" in v}
+    assert host_paths == {"/var/log/pods", "/var/lib/otel-collector-logs"}
+    assert "hostNetwork" not in pod
+
+
+def test_factory_cluster_agent():
+    docs = _render_overlay("values-factory")
+    config = _named_collector_config(docs, CLUSTER)
+    _assert_pipelines_reference_defined_components(config)
+    assert set(config["service"]["pipelines"]) == {"logs/events", "metrics/cluster"}
+    events = config["receivers"]["k8s_objects"]["objects"]
+    assert events == [
+        {"name": "events", "mode": "watch", "field_selector": "type=Warning"}
+    ]
+
+    deployment = next(
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == CLUSTER
+    )
+    # One watcher, never two: a surge replica would ship every event twice.
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+    role = next(
+        d
+        for d in docs
+        if d["kind"] == "ClusterRole" and d["metadata"]["name"] == CLUSTER
+    )
+    for rule in role["rules"]:
+        assert set(rule["verbs"]) <= {"get", "list", "watch"}
+
+
+def test_cluster_agent_requires_a_source():
+    result = _run_render(
+        ["values"],
+        [
+            "--set",
+            "gateway.enabled=false",
+            "--set",
+            "clusterAgent.enabled=true",
+            "--set",
+            "clusterAgent.events.enabled=false",
+        ],
+    )
+    assert result.returncode != 0
+    assert "clusterAgent" in result.stderr

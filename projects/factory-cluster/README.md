@@ -48,6 +48,7 @@ router must reserve these three leases.
 | Human sign-in | Authentik OIDC at each application, no Cloudflare Access | One identity layer, as #7817 specifies; nothing is published until it signs users in |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault | Repository convention |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
+| Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs; one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
 
 Traefik and ServiceLB are disabled.
 
@@ -213,6 +214,44 @@ kubectl ate proxy actor smoke-1 -a substrate-smoke # then send it a request
 Check Hubble for drops while it runs (see Network policy). Then delete the
 actor, the template, the atespace, the WorkerPool and the namespace.
 
+## Observability
+
+`projects/platform-factory/otel-collector/` deploys
+`projects/platform/otel-collector` with `values.yaml` and
+`values-factory.yaml`, plus its network policy. There is no trace gateway: nothing
+on the cluster emits traces yet.
+
+Everything goes to the Honeycomb environment `homelab`, the hub's, with the
+hub's `honeycomb-ingest` key. The environment routes by its own rules, not by
+the chart's dataset names:
+
+| Data | Honeycomb dataset | Filter |
+| --- | --- | --- |
+| Node, pod, host, Cilium, Hubble and API server metrics | `metrics` (the environment's metrics dataset, shared with the hub) | `k8s.cluster.name = factory` |
+| Pod logs, warning and above | one dataset per `service.name` (for example `coredns`), shared with the hub when names match | `k8s.cluster.name = factory` |
+| Kubernetes Warning events | `k8s-events` | `k8s.cluster.name = factory` |
+
+Useful starting points in the `metrics` dataset, all filtered on
+`k8s.cluster.name = factory`:
+
+- Node headroom: `MAX(k8s.node.memory.working_set)`, `MAX(k8s.node.cpu.usage)`
+  and `MAX(system.memory.usage)` grouped by `k8s.node.name`.
+- Busiest pods: `MAX(k8s.pod.memory.working_set)` grouped by
+  `k8s.namespace.name` and `k8s.pod.name`.
+- Policy drops: `SUM(hubble_drop_total)` grouped by `reason`,
+  `source_namespace` and `traffic_direction`.
+- Scrape health: `MIN(up)` grouped by `service.name` and
+  `service.instance.id`; a target at 0 is unreachable.
+- etcd: `MIN(kubernetes_healthcheck)` grouped by `name` and
+  `service.instance.id` (etcd and etcd-readiness, per API server), and
+  `MAX(apiserver_storage_size_bytes)`.
+
+For logs, run an environment-wide query filtered on
+`k8s.cluster.name = factory` and group by `service.name` and
+`k8s.namespace.name`. etcd's own metrics listen on 127.0.0.1:2381 on each node,
+out of a pod's reach, so etcd health comes from the API servers' readiness
+checks instead.
+
 ## Not yet done
 
 These come from the #7817 step 1 checklist:
@@ -228,4 +267,5 @@ These come from the #7817 step 1 checklist:
   ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
 - Authentik for the factory cluster, the Envoy Gateway edge with forward-auth,
   and factory.jomcgi.dev.
-- Observability (OpenTelemetry, Prometheus/Grafana).
+- Alerting on the factory telemetry. Honeycomb's single free trigger is taken
+  (`projects/platform/honeycomb/README.md`).
