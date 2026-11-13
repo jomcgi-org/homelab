@@ -22,8 +22,8 @@ const (
 )
 
 var (
-	aRoad     = regexp.MustCompile(`(?i)^A[0-9]{1,4}t?\b`)
-	trunkRoad = regexp.MustCompile(`(?i)\btrunk road\b`)
+	aOrMotorway = regexp.MustCompile(`(?i)^[AM][0-9]{1,4}t?\b`)
+	trunkRoad   = regexp.MustCompile(`(?i)\btrunk road\b`)
 )
 
 var london = func() *time.Location {
@@ -74,7 +74,7 @@ func Parse(raw []byte) (*Snapshot, error) {
 	}
 	prev := ""
 	for _, a := range s.Activities {
-		if a.ID <= prev || a.Reference == "" || len(a.Reference) > 100 || len(a.ID) > 250 || len(a.Phase) > 3 || a.Phase == "" || (!aRoad.MatchString(a.Road) && !trunkRoad.MatchString(a.Road)) || len(a.Road) > 2000 || len(a.Timing) > 16000 || len(a.Location) > 2000 || (a.Control != "Road Closure" && a.Control != "Convoy Working") || !active(a.Status) || a.Lat < 54.5 || a.Lat > 61 || a.Lon < -9 || a.Lon > -0.5 || a.Start.IsZero() || a.End.IsZero() || a.Start.In(london).Format("2006-01-02") > a.End.In(london).Format("2006-01-02") || a.UpdatedAt.IsZero() || a.UpdatedAt.After(s.CollectedAt) {
+		if a.ID <= prev || a.Reference == "" || len(a.Reference) > 100 || len(a.ID) > 250 || len(a.Phase) > 3 || a.Phase == "" || (!aOrMotorway.MatchString(a.Road) && !trunkRoad.MatchString(a.Road)) || len(a.Road) > 2000 || len(a.Timing) > 16000 || len(a.Location) > 2000 || (a.Control != "Road Closure" && a.Control != "Convoy Working") || !active(a.Status) || a.Lat < 54.5 || a.Lat > 61 || a.Lon < -9 || a.Lon > -0.5 || a.Start.IsZero() || a.End.IsZero() || a.Start.In(london).Format("2006-01-02") > a.End.In(london).Format("2006-01-02") || a.UpdatedAt.IsZero() || a.UpdatedAt.After(s.CollectedAt) {
 			return nil, fmt.Errorf("roadworks: invalid activity")
 		}
 		prev = a.ID

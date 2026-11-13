@@ -1,6 +1,6 @@
 # SRWR representative records
 
-`srwr-2026-11-13.csv` contains seven complete, unmodified records from
+`srwr-2026-11-13.csv` contains nine complete, unmodified records from
 `CurrentActivities.csv` in the public daily ZIP downloaded on 2026-11-13.
 Source: https://downloads.srwr.scot/disruptions-export/daily/
 ZIP Last-Modified: `2026-11-13T01:08:05Z`.
@@ -25,9 +25,13 @@ header order:
 - `XQ001-NW/2023/24801`: proposed A82 night closure.
 - `BT067-1463228`: equal start/end timestamps for a single-day window.
 - `PK001-S24936`: 09:00 start and 00:00 end on the same civil date.
-- First row whose Street starts with `A83` and whose TrafficManagement is
-  `Portable Traffic Lights (TTLS)`, excluded from the snapshot.
+- `SS002-S561`: A832 `Portable Traffic Lights (TTLS)`, excluded from the snapshot.
 - First `Road Closure` on Street `Clifton Road`, excluded from the snapshot.
+- `XR001-SW/2026/72124`: M77 northbound closure near Pollok Country Park.
+- `XS001-SEU/2025/22090`: M9 eastbound closure near Linlithgow Loch.
+
+Both motorway records have `RoadAuthorityName` starting with `Transport Scotland`.
+Their `Street` fields identify the M-road number without the words `trunk road`.
 
 `stars_roadworks_job_test` zips the CSV in memory and compares the
 Python output as JSON to `scotland-connector/internal/fixture/testdata/roadworks.json`

@@ -804,11 +804,14 @@ this table when the work ships or the issue closes without it.
 Refs #7529. The optional independent `RoadworksStore` conditionally reads
 `stars/roadworks.json`, schema version 1, without gating readiness. Both REST
 and MCP use the same post-selection annotation of plan walks, checked walks,
-nearby alternatives and other dates. A/trunk-road closures and explicit convoys
-match within 5 km of each walk start, using provider plotted coordinates and
+nearby alternatives and other dates. A/trunk-road closures, including motorways,
+and explicit convoys match within 5 km of each walk start, using provider plotted
+coordinates and
 inclusive expected-window Europe/London civil dates. No route graph is used.
 Weather verdicts, ranking and eligibility are unchanged. The public method
 records source lag, overnight free text, exclusions and OGL v3 attribution.
+Both producer and consumer identify roads by an initial A or M number with an
+optional `t` suffix, or the words `trunk road` in the provider's street name.
 
 The consumer accepts at most 4 MiB and 5,000 activities, validates replacements
 before atomic publication, and preserves last-good data and clocks across

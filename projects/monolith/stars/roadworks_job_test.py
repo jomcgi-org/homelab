@@ -45,10 +45,10 @@ def test_provider_sample_and_python_to_go_contract():
     actual = job.materialize(archive(), MODIFIED, NOW)
     assert json.loads(actual) == json.loads(CONTRACT.read_bytes())
     d = json.loads(actual)
-    assert len(d["activities"]) == 5
+    assert len(d["activities"]) == 7
     assert {a["control"] for a in d["activities"]} == {"Road Closure", "Convoy Working"}
     assert any("amnesties at 2000" in a["timing"] for a in d["activities"])
-    assert not any(a["road"].startswith("A83 ") for a in d["activities"])
+    assert "SS002-S561" not in {a["reference"] for a in d["activities"]}
     assert build(bom=True) == d
     assert build(rows() + rows()) == d
 
@@ -79,10 +79,33 @@ def test_filters_produce_valid_empty_feed(field, value):
     assert build([])["activities"] == []
 
 
-def test_explicit_trunk_road_counts():
+@pytest.mark.parametrize("reference", ["XR001-SW/2026/72124", "XS001-SEU/2025/22090"])
+def test_provider_motorway_trunk_road_counts(reference):
+    r = next(r for r in rows() if r["ActivityReference"] == reference)
+    assert r["RoadAuthorityName"].startswith("Transport Scotland")
+    assert r["Street"].startswith("M")
+    assert "trunk road" not in r["Street"].lower()
+    activity = build([r])["activities"][0]
+    assert activity["reference"] == reference
+    assert activity["road"] == r["Street"]
+
+
+@pytest.mark.parametrize(
+    "street,expected",
+    [
+        ("M8 Westbound Junction 16 To Junction 17", True),
+        ("M90t Northbound", True),
+        ("m90T Northbound", True),
+        ("M898 Eastbound", True),
+        ("M8side Road", False),
+        ("M12345 Northbound", False),
+        ("Road To M8", False),
+    ],
+)
+def test_motorway_number_boundaries(street, expected):
     r = rows()[0]
-    r["Street"] = "M8 Trunk Road"
-    assert len(build([r])["activities"]) == 1
+    r["Street"] = street
+    assert bool(build([r])["activities"]) == expected
 
 
 @pytest.mark.parametrize(
@@ -170,7 +193,7 @@ def test_redirects_status_and_tokens_never_escape(caplog):
     with httpx.Client(transport=httpx.MockTransport(ok)) as client:
         raw, modified = job.download(client, lambda: NOW)
     assert modified == MODIFIED
-    assert len(json.loads(job.materialize(raw, modified, NOW))["activities"]) == 5
+    assert len(json.loads(job.materialize(raw, modified, NOW))["activities"]) == 7
     assert secret not in caplog.text
 
 

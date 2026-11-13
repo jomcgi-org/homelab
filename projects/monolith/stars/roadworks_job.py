@@ -102,7 +102,7 @@ def materialize(raw: bytes, source_modified: datetime, collected: datetime) -> b
         if row["ActivityStatus"] not in ACTIVE or row["Category"] in EXCLUDED:
             continue
         if not (
-            re.match(r"^A\d{1,4}(?:[tT])?\b", street, re.I)
+            re.match(r"^[AM][0-9]{1,4}t?\b", street, re.I)
             or re.search(r"\btrunk road\b", street, re.I)
         ):
             continue

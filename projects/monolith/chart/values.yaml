@@ -645,8 +645,6 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
-    # Separate from three-hour weather refresh: preserve cached MET bodies
-    # while NOAA updates. No live job until the bounded activation is reviewed.
     - name: stars-roadworks
       replaces: stars.roadworks
       args: ["stars-roadworks"]
@@ -664,6 +662,8 @@ jobs:
         limits:
           cpu: 500m
           memory: 512Mi
+    # Separate from three-hour weather refresh: preserve cached MET bodies
+    # while NOAA updates. No live job until the bounded activation is reviewed.
     - name: stars-aurora
       replaces: stars.aurora
       args: ["stars-aurora"]

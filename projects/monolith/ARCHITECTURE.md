@@ -3129,9 +3129,11 @@ publish a valid empty activities array. There is no database storage.
 Schema v1 retains source URL, ZIP Last-Modified, collection time and stable
 activity/phase/street/point identities. Filters use `TrafficManagement`,
 `ActivityStatus`, `Category`, `Street`, plotted latitude/longitude and the
-British National Grid centroid checked against easting/northing. Planned A-road
-or explicit trunk-road closures and convoys qualify; lights alone, potential,
-completed, emergency and urgent work do not. Expected windows include both
+British National Grid centroid checked against easting/northing. Planned A-road,
+motorway or explicit trunk-road closures and convoys qualify. Street names
+starting with an A or M number (including a trailing `t`) identify numbered roads;
+the producer and consumer also accept the words `trunk road`. Lights alone,
+potential, completed, emergency and urgent work do not. Expected windows include both
 Europe/London civil dates, including same-day reversed clock times; UTC
 source timestamps and overnight free text remain intact. Conflicting duplicate
 identities reject the feed. Fixture provenance and Python-to-Go snapshot

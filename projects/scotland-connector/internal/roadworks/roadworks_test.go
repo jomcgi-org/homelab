@@ -75,6 +75,51 @@ func TestDistanceBoundaryOrderingAndCap(t *testing.T) {
 	}
 }
 
+func TestProviderMotorwaysNearWalkStarts(t *testing.T) {
+	s := sample(t)
+	for _, tc := range []struct {
+		name, reference, date string
+		lat, lon              float64
+	}{
+		{"Pollok Country Park", "XR001-SW/2026/72124", "2026-11-15", 55.830, -4.304},
+		{"Linlithgow Loch", "XS001-SEU/2025/22090", "2027-01-25", 55.979, -3.602},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := s.Match(tc.lat, tc.lon, tc.date, s.CollectedAt)
+			if n == nil || len(n.Activities) != 1 || n.Activities[0].Reference != tc.reference {
+				t.Fatalf("missing provider motorway closure: %+v", n)
+			}
+		})
+	}
+}
+
+func TestMotorwayNumberBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		road string
+		want bool
+	}{
+		{"M8 Westbound Junction 16 To Junction 17", true},
+		{"M90t Northbound", true},
+		{"m90T Northbound", true},
+		{"M898 Eastbound", true},
+		{"M8side Road", false},
+		{"M12345 Northbound", false},
+		{"Road To M8", false},
+	} {
+		t.Run(tc.road, func(t *testing.T) {
+			s := sample(t)
+			s.Activities[0].Road = tc.road
+			b, err := json.Marshal(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := roadworks.Parse(b); (err == nil) != tc.want {
+				t.Fatalf("accepted = %t, want %t: %v", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
 func TestLondonDSTCivilDays(t *testing.T) {
 	for _, tc := range []struct {
 		date, start, end string

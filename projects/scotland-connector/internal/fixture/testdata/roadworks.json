@@ -78,6 +78,36 @@
       "updated_at": "2026-11-09T08:18:04.485000Z",
       "timing": "Resurfacing (night time road closure with amnesties at 2000, 2100 - 2130, 2230, 2330, 0100, 0300 & 0500)",
       "location": "A82 North of Inchree"
+    },
+    {
+      "id": "XR001-SW/2026/72124:1:8032752:55.84677:-4.29889",
+      "reference": "XR001-SW/2026/72124",
+      "phase": "1",
+      "road": "M77 Northbound Junction 1 To M8 Eastbound Junction 22",
+      "control": "Road Closure",
+      "status": "Proposed",
+      "lat": 55.84677,
+      "lon": -4.29889,
+      "start": "2026-11-14T00:00:00Z",
+      "end": "2026-11-22T00:00:00Z",
+      "updated_at": "2026-10-13T10:50:58.984000Z",
+      "timing": "Footbridge Refurbishments and VRS Upgrades - Road Closures (1800-1300)",
+      "location": "M77 Jct 1 NB to the M8"
+    },
+    {
+      "id": "XS001-SEU/2025/22090:1:14308500:55.98116:-3.61688",
+      "reference": "XS001-SEU/2025/22090",
+      "phase": "1",
+      "road": "M9 Eastbound From Junction 4 To Council Boundary",
+      "control": "Road Closure",
+      "status": "Advance Planning",
+      "lat": 55.98116,
+      "lon": -3.61688,
+      "start": "2027-01-25T00:00:00Z",
+      "end": "2027-06-18T23:00:00Z",
+      "updated_at": "2026-08-25T15:41:55.825000Z",
+      "timing": "Nightworks - Bridge/OB's Pier Protection repairs - Road closures when required - Estimated Dates TBC (1) 25/01/2027 19:30 to 30/01/2027 06:00 - (2) 15/03/2027 19:30 to 20/03/2027 06:00 (3) 14/06/2027 19:30 to 19/06/2027 06:00 - no weekends",
+      "location": "M9 EB/WB Jct 4 - Jct 3"
     }
   ]
 }

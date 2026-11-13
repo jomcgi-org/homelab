@@ -282,10 +282,12 @@ Sources: [NOAA product and fallback description](https://www.spaceweather.gov/pr
 
 ## Planned roadworks near walk starts
 
-When enabled, plan and check add `road_note` for Scottish A-road or explicitly
-identified trunk-road closures and explicit `Convoy Working` activities listed
-in the Scottish Road Works Register. Portable traffic lights alone do not
-qualify. A match is within 5 km straight-line distance of the walk start to the
+When enabled, plan and check add `road_note` for Scottish A/trunk-road closures,
+including motorways, and explicit `Convoy Working` activities listed in the
+Scottish Road Works Register. Roads qualify when the street name starts with
+an A or M number (with an optional `t` suffix), or contains `trunk road`.
+Portable traffic lights alone do not qualify. A match is within 5 km straight-line
+distance of the walk start to the
 provider's plotted location. There is no approach-route or last-road routing
 and no route graph. Notes never affect weather verdicts, ranking or eligibility.
 Check applies the same rule to nearby alternatives and each listed other date.
