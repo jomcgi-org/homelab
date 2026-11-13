@@ -216,21 +216,6 @@ var _ = Describe("State Validate methods", func() {
 			s := ModelCachePending{resource: mc}
 			Expect(s.Validate()).To(Succeed())
 		})
-
-		It("should return PhasePending from Phase()", func() {
-			s := ModelCachePending{resource: mc}
-			Expect(s.Phase()).To(Equal(PhasePending))
-		})
-
-		It("should return 0 from RequeueAfter()", func() {
-			s := ModelCachePending{resource: mc}
-			Expect(s.RequeueAfter()).To(Equal(time.Duration(0)))
-		})
-
-		It("should return the underlying resource", func() {
-			s := ModelCachePending{resource: mc}
-			Expect(s.Resource()).To(Equal(mc))
-		})
 	})
 
 	Describe("ModelCacheResolving", func() {
@@ -391,16 +376,6 @@ var _ = Describe("State Validate methods", func() {
 			err := s.Validate()
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("observedPhase"))
-		})
-
-		It("should return PhaseUnknown from Phase()", func() {
-			s := ModelCacheUnknown{resource: mc, ObservedPhase: "x"}
-			Expect(s.Phase()).To(Equal(PhaseUnknown))
-		})
-
-		It("should return 0 from RequeueAfter()", func() {
-			s := ModelCacheUnknown{resource: mc, ObservedPhase: "x"}
-			Expect(s.RequeueAfter()).To(Equal(time.Duration(0)))
 		})
 	})
 })

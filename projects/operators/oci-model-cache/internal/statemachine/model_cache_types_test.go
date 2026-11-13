@@ -22,7 +22,8 @@ limitations under the License.
 //   - ErrorInfo.Validate() – error ordering and exact messages
 //   - ModelCacheReady.Validate() – Digest-required check (two-level validation)
 //   - ModelCacheUnknown.Validate() – ObservedPhase required check
-//   - All states: Phase(), RequeueAfter(), Resource() identity
+//   - Failed Resource() identity with empty ErrorInfo
+//   - All-state RequeueAfter() values with nil resources
 //   - Validate() pass/fail for every concrete state
 
 package statemachine
@@ -185,18 +186,6 @@ var _ = Describe("ModelCachePending", func() {
 
 	BeforeEach(func() { mc = newMCForTypes() })
 
-	It("Phase returns Pending", func() {
-		Expect(ModelCachePending{resource: mc}.Phase()).To(Equal(PhasePending))
-	})
-
-	It("RequeueAfter returns 0", func() {
-		Expect(ModelCachePending{resource: mc}.RequeueAfter()).To(Equal(time.Duration(0)))
-	})
-
-	It("Resource returns the same pointer", func() {
-		Expect(ModelCachePending{resource: mc}.Resource()).To(BeIdenticalTo(mc))
-	})
-
 	It("Validate always succeeds", func() {
 		Expect(ModelCachePending{resource: mc}.Validate()).To(Succeed())
 	})
@@ -210,21 +199,6 @@ var _ = Describe("ModelCacheResolving", func() {
 	var mc *v1alpha1.ModelCache
 
 	BeforeEach(func() { mc = newMCForTypes() })
-
-	It("Phase returns Resolving", func() {
-		s := ModelCacheResolving{resource: mc, ResolveResult: validRR()}
-		Expect(s.Phase()).To(Equal(PhaseResolving))
-	})
-
-	It("RequeueAfter returns 10s", func() {
-		s := ModelCacheResolving{resource: mc, ResolveResult: validRR()}
-		Expect(s.RequeueAfter()).To(Equal(10 * time.Second))
-	})
-
-	It("Resource returns the same pointer", func() {
-		s := ModelCacheResolving{resource: mc, ResolveResult: validRR()}
-		Expect(s.Resource()).To(BeIdenticalTo(mc))
-	})
 
 	It("Validate succeeds with a complete ResolveResult", func() {
 		s := ModelCacheResolving{resource: mc, ResolveResult: validRR()}
@@ -245,33 +219,6 @@ var _ = Describe("ModelCacheSyncing", func() {
 	var mc *v1alpha1.ModelCache
 
 	BeforeEach(func() { mc = newMCForTypes() })
-
-	It("Phase returns Syncing", func() {
-		s := ModelCacheSyncing{
-			resource:      mc,
-			ResolveResult: validRR(),
-			SyncJob:       SyncJob{SyncJobName: "job-1"},
-		}
-		Expect(s.Phase()).To(Equal(PhaseSyncing))
-	})
-
-	It("RequeueAfter returns 30s", func() {
-		s := ModelCacheSyncing{
-			resource:      mc,
-			ResolveResult: validRR(),
-			SyncJob:       SyncJob{SyncJobName: "job-1"},
-		}
-		Expect(s.RequeueAfter()).To(Equal(30 * time.Second))
-	})
-
-	It("Resource returns the same pointer", func() {
-		s := ModelCacheSyncing{
-			resource:      mc,
-			ResolveResult: validRR(),
-			SyncJob:       SyncJob{SyncJobName: "job-1"},
-		}
-		Expect(s.Resource()).To(BeIdenticalTo(mc))
-	})
 
 	It("Validate succeeds with complete ResolveResult and SyncJob", func() {
 		s := ModelCacheSyncing{
@@ -311,21 +258,6 @@ var _ = Describe("ModelCacheReady Validate", func() {
 	var mc *v1alpha1.ModelCache
 
 	BeforeEach(func() { mc = newMCForTypes() })
-
-	It("Phase returns Ready", func() {
-		s := ModelCacheReady{resource: mc, ResolveResult: validRR()}
-		Expect(s.Phase()).To(Equal(PhaseReady))
-	})
-
-	It("RequeueAfter returns 6h (21600s)", func() {
-		s := ModelCacheReady{resource: mc, ResolveResult: validRR()}
-		Expect(s.RequeueAfter()).To(Equal(6 * time.Hour))
-	})
-
-	It("Resource returns the same pointer", func() {
-		s := ModelCacheReady{resource: mc, ResolveResult: validRR()}
-		Expect(s.Resource()).To(BeIdenticalTo(mc))
-	})
 
 	It("Validate succeeds when all ResolveResult fields and Digest are set", func() {
 		s := ModelCacheReady{resource: mc, ResolveResult: validRR()}
@@ -377,22 +309,6 @@ var _ = Describe("ModelCacheFailed", func() {
 
 	BeforeEach(func() { mc = newMCForTypes() })
 
-	It("Phase returns Failed", func() {
-		s := ModelCacheFailed{
-			resource:  mc,
-			ErrorInfo: ErrorInfo{LastState: "x", ErrorMessage: "y"},
-		}
-		Expect(s.Phase()).To(Equal(PhaseFailed))
-	})
-
-	It("RequeueAfter returns 300s", func() {
-		s := ModelCacheFailed{
-			resource:  mc,
-			ErrorInfo: ErrorInfo{LastState: "x", ErrorMessage: "y"},
-		}
-		Expect(s.RequeueAfter()).To(Equal(300 * time.Second))
-	})
-
 	It("Resource returns the same pointer", func() {
 		s := ModelCacheFailed{resource: mc}
 		Expect(s.Resource()).To(BeIdenticalTo(mc))
@@ -420,21 +336,6 @@ var _ = Describe("ModelCacheUnknown", func() {
 	var mc *v1alpha1.ModelCache
 
 	BeforeEach(func() { mc = newMCForTypes() })
-
-	It("Phase returns Unknown", func() {
-		s := ModelCacheUnknown{resource: mc, ObservedPhase: "x"}
-		Expect(s.Phase()).To(Equal(PhaseUnknown))
-	})
-
-	It("RequeueAfter returns 0", func() {
-		s := ModelCacheUnknown{resource: mc, ObservedPhase: "x"}
-		Expect(s.RequeueAfter()).To(Equal(time.Duration(0)))
-	})
-
-	It("Resource returns the same pointer", func() {
-		s := ModelCacheUnknown{resource: mc, ObservedPhase: "x"}
-		Expect(s.Resource()).To(BeIdenticalTo(mc))
-	})
 
 	It("Validate fails when ObservedPhase is empty", func() {
 		s := ModelCacheUnknown{resource: mc}

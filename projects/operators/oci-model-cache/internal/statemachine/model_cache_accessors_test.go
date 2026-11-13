@@ -3,10 +3,10 @@ package statemachine
 // model_cache_accessors_test.go directly asserts the Phase(), RequeueAfter(),
 // and Resource() accessor methods on every concrete ModelCacheState type.
 //
-// These methods are auto-generated (see model_cache_types.go) but are called
-// from production code (status writer, controller reconcile loop) without
-// being the direct assertion target in any existing test. This file closes
-// that gap with table-driven tests for all six states.
+// These table-driven tests cover all six states with populated payloads,
+// exact requeue durations, resource pointer identity, and nil resources.
+// Other suites retain accessor checks with distinct inputs and after
+// validation, construction, or transitions.
 
 import (
 	"testing"
