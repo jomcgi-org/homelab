@@ -497,7 +497,7 @@
       "hazards": [
         "unrestricted-tool-visibility"
       ],
-      "evidence": "projects/monolith/shotter/mcp.py:123; projects/monolith/core/mcp_policy.py:81; projects/monolith/core/mcp_policy.py:138"
+      "evidence": "projects/monolith/shotter/mcp.py:123; projects/monolith/core/mcp_policy.py:86; projects/monolith/core/mcp_policy.py:138"
     },
     {
       "key": "shotter.store.wrong-duration",
@@ -509,7 +509,7 @@
       "hazards": [
         "private-capture-retained"
       ],
-      "evidence": "projects/monolith/shotter/s3.py:59; projects/monolith/shotter/s3.py:93; projects/monolith/core/s3.py:26"
+      "evidence": "projects/monolith/shotter/s3.py:57; projects/monolith/shotter/s3.py:93; projects/monolith/core/s3.py:26"
     },
     {
       "key": "shotter.validate.not-providing",
@@ -1379,7 +1379,7 @@
     "Does any workload other than shotter and the six sandbox languages share the same EmberVM Idempotency-Key-from-request-parameters pattern, and if so does its key cover every parameter that affects the result?",
     "In production, can a chat message handler (LLM summarizer) exceed the 30s message-lock TTL under load and trip lock.reclaim.wrong-timing, or is processing reliably shorter?",
     "Is the X-Auth-Email header ever going to gate an authorization decision, or does #4940's delegation model deliberately avoid keying on inbound headers at all? If the latter, header-authz-drift can be downgraded once that is documented somewhere durable.",
-    "What are the effective R2 shotter bucket read grants and lifecycle rules? The chart configures an HTTPS S3 endpoint and secret-backed signed client; shotter emits an unsigned endpoint URL with no read proxy or presigning. Network reachability and a content hash alone do not establish read authorization, and the repository proves no object retention duration (projects/monolith/shotter/s3.py:59; projects/monolith/core/s3.py:26; projects/monolith/chart/templates/deployment.yaml:595).",
+    "What are the effective R2 shotter bucket read grants and lifecycle rules? The chart configures an HTTPS S3 endpoint and secret-backed signed client; shotter emits an unsigned endpoint URL with no read proxy or presigning. Network reachability and a content hash alone do not establish read authorization, and the repository proves no object retention duration (projects/monolith/shotter/s3.py:57; projects/monolith/core/s3.py:26; projects/monolith/chart/templates/deployment.yaml:595).",
     "How should finer tool-specific entitlements constrain shotter.capture, sandbox.run and cluster mutations within the current shared operators gate (#6475)?",
     "The framework is now built, but strict per-domain schema isolation and the cross-domain contract are still conventions. Re-run this analysis when those controls become enforceable rather than merely compositional.",
     "The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.",

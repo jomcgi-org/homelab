@@ -641,7 +641,7 @@
       "from": "kg-feed",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith/factory/execution/kg_feed.py:298"
+      "evidence": "projects/monolith/factory/execution/kg_feed.py:312"
     },
     {
       "key": "kg-drainer.dispatch",

@@ -219,7 +219,7 @@
       ],
       "status": "enforced-prod",
       "issue": "#4569",
-      "evidence": "projects/monolith/shotter/mcp.py:123; projects/monolith/shotter/mcp.py:168; projects/monolith/core/mcp_policy.py:81; projects/monolith/shotter/s3.py:59"
+      "evidence": "projects/monolith/shotter/mcp.py:123; projects/monolith/shotter/mcp.py:168; projects/monolith/core/mcp_policy.py:86; projects/monolith/shotter/s3.py:57"
     },
     {
       "key": "sandbox.run.providing",
@@ -380,7 +380,7 @@
     "When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?",
     "Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?",
     "Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?",
-    "What R2 shotter bucket grants and lifecycle govern private captures after upload? core/s3.py supplies credentials for signed S3 operations; shotter has no read route or presigning and sets no application TTL or delete path. Establish effective authenticated read access and retention before claiming either anonymous exposure or indefinite URL durability (projects/monolith/core/s3.py:26; projects/monolith/shotter/s3.py:59; projects/monolith/chart/templates/onepassworditem-r2-s3.yaml:1)."
+    "What R2 shotter bucket grants and lifecycle govern private captures after upload? core/s3.py supplies credentials for signed S3 operations; shotter has no read route or presigning and sets no application TTL or delete path. Establish effective authenticated read access and retention before claiming either anonymous exposure or indefinite URL durability (projects/monolith/core/s3.py:26; projects/monolith/shotter/s3.py:57; projects/monolith/chart/templates/onepassworditem-r2-s3.yaml:1)."
   ],
   "system_dir": "projects/monolith"
 }
