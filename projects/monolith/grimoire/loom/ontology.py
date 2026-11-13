@@ -166,6 +166,19 @@ class Partition:
         campaign = row["id"] if kind == "Campaign" else row["campaign_id"]
         if uuid_key(str(campaign)) != uuid_key(self.campaign_id):
             raise ValueError("foreign campaign")
+        if (
+            self.dm
+            and kind == "Note"
+            and row["kind"] == "character"
+            and row["dm_readable"] is not True
+        ):
+            raise ValueError("private character note is not DM-readable")
+        if kind == "Note" and row["deleted_at"] is not None:
+            raise ValueError("deleted note requires retraction")
+        if kind == "SessionEvent" and row["retracted_at"] is not None:
+            raise ValueError("retracted event cannot be exported")
+        if kind == "CharacterFact" and row["status"] == "retracted":
+            raise ValueError("retracted fact cannot be exported")
         if not self.dm:
             pc = self.player_character_id
             if kind in {"SessionEvent", "SessionSummary"}:
@@ -245,6 +258,8 @@ class Partition:
             elif prop.ty in {"integer", "long"}:
                 if type(value) is not int or not -(2**63) <= value < 2**63:
                     raise ValueError(f"invalid integer: {prop.name}")
+                if prop.ty == "integer" and not -(2**31) <= value < 2**31:
+                    raise ValueError(f"integer exceeds int32: {prop.name}")
                 if prop.ty == "long":
                     value = str(value)
             result[prop.name] = value

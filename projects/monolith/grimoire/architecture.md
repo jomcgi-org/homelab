@@ -1099,7 +1099,9 @@ links to Campaign; SessionEvent, CharacterFact and SessionSummary also link to
 GameSession. A future exporter must materialize the required parent rows into
 each partition before using these links. Grant slices, character notes and
 facts reject another campaign or PC. Party notes and facts use facts_global;
-raw session events and summaries are restricted to DM partitions until an
+DM partitions reject private character notes unless `dm_readable` is true.
+Deleted notes, retracted events and retracted facts require projection retraction,
+rather than export. Raw session events and summaries are restricted to DM partitions until an
 audience-safe exporter exists. Dataset Read grants must keep DM and other-PC
 schemas inaccessible. This package does not create grants or export rows.
 
@@ -1158,7 +1160,8 @@ creation sequences and uncertain action writes are never blindly retried.
 
 The `grimoire-loom-ontology` CLI command runs only as an explicitly submitted,
 suspended Argo CronWorkflow. It has a deadline, resource limits and Forbid
-concurrency. Flag-off chart renders include neither its job nor its runtime
+concurrency. Forbid covers scheduled runs; the enablement owner must also
+serialize manual submissions and other definition administrators. Flag-off chart renders include neither its job nor its runtime
 OnePasswordItem. Flag-on private renders reference
 `k8s-homelab/loom-grimoire-token`; that dataset-scoped runtime token is never
 mounted into this job or a play path. The job needs an explicit future existing

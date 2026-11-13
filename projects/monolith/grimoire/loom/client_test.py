@@ -103,7 +103,12 @@ class PinnedLoom:
             return 200, {
                 **self.models[name],
                 "links": [
-                    {k: v for k, v in link.items() if k != "backing"}
+                    {
+                        **{k: v for k, v in link.items() if k != "backing"},
+                        # http.rs:190-198 calls Cardinality.as_str();
+                        # core/src/ontology.rs:256-264 emits lowercase read tokens.
+                        "cardinality": link["cardinality"].lower(),
+                    }
                     for (source, _), link in self.links.items()
                     if source == name
                 ],

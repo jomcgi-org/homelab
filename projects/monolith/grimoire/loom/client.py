@@ -137,7 +137,8 @@ def receipt(body: JsonObject) -> str:
 
 
 def parameter_schema_matches(parameter: Property, schema: JsonObject) -> bool:
-    # Pinned openapi_gen.rs: schema_type_of and base_type_to_schema, OpenAPI 3.1.
+    # Pinned openapi_gen.rs:25-114: schema_type_of, base_type_to_schema,
+    # and property_schema produce OpenAPI 3.1 nullable type arrays.
     types = {
         "string": ("string", None),
         "long": ("string", None),
@@ -248,6 +249,9 @@ class LoomClient:
         description = receipt(body)
         if matches:
             visible = {k: v for k, v in body.items() if k != "backing"}
+            # core/src/ontology.rs:256-264: read token is lower-case, while
+            # admin.rs:814-819 accepts PascalCase serde enum variants.
+            visible["cardinality"] = body["cardinality"].lower()
             if (
                 len(matches) != 1
                 or any(matches[0].get(k) != v for k, v in visible.items())

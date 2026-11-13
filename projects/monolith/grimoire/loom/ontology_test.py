@@ -188,3 +188,33 @@ def test_partition_configuration_is_typed_and_uuid_comparisons_are_canonical():
     assert partition.payload("KnowledgeGrantSlice", grant)[
         "player_character_id"
     ] == str(pc)
+
+
+def test_dm_partition_preserves_private_note_choice():
+    data = row("Note")
+    data.update(
+        kind="character",
+        player_character_id=PC,
+        dm_readable=False,
+        title="Private",
+        markdown="Only my PC",
+        links={},
+        pinned=False,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    partition = Partition(CAMPAIGN, dm=True)
+    with pytest.raises(ValueError, match="DM-readable"):
+        partition.payload("Note", data)
+    data["dm_readable"] = True
+    assert partition.payload("Note", data)["markdown"] == "Only my PC"
+    data["deleted_at"] = datetime.now(timezone.utc)
+    with pytest.raises(ValueError, match="deleted note"):
+        partition.payload("Note", data)
+
+
+def test_integer_codec_rejects_out_of_range_int32():
+    data = row("PlayerCharacter")
+    data.update(id=PC, level=2**31)
+    with pytest.raises(ValueError, match="int32"):
+        Partition(CAMPAIGN, PC).payload("PlayerCharacter", data)
