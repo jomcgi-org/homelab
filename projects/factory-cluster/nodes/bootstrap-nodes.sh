@@ -17,11 +17,11 @@ KUBECONFIG_OUT="${KUBECONFIG_OUT:-$HOME/.kube/factory.yaml}"
 run_install() {
 	local node="$1"
 	shift
-	ssh "${node}" 'rm -rf /tmp/factory-node && mkdir -p /tmp/factory-node'
+	ssh -n "${node}" 'rm -rf /tmp/factory-node && mkdir -p /tmp/factory-node'
 	scp -q "${HERE}"/{install-node.sh,k3s-config.yaml,registries.yaml,containerd-config-v3.toml.tmpl,99-factory.conf} \
 		"${node}:/tmp/factory-node/"
 	ssh "${node}" "$@"
-	ssh "${node}" 'rm -rf /tmp/factory-node'
+	ssh -n "${node}" 'rm -rf /tmp/factory-node'
 }
 
 # Nodes register without a CNI and stay NotReady until bootstrap-gitops.sh
@@ -43,8 +43,11 @@ wait_registered "${FIRST}"
 
 token="$(ssh "${FIRST}" 'sudo cat /var/lib/rancher/k3s/server/token')"
 for node in "${JOINERS[@]}"; do
+	# The token goes over stdin: on the command line it would reach sudo's log
+	# and the node's process list.
 	run_install "${node}" \
-		"sudo K3S_TOKEN='${token}' bash /tmp/factory-node/install-node.sh join https://${FIRST_IP}:6443"
+		"sudo bash -c 'read -r K3S_TOKEN && export K3S_TOKEN && bash /tmp/factory-node/install-node.sh join https://${FIRST_IP}:6443'" \
+		<<<"${token}"
 	wait_registered "${node}"
 done
 
