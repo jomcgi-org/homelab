@@ -1167,6 +1167,7 @@ py_library(
         "@pip//psycopg",
         "@pip//psycopg_binary",
         "@pip//pydantic",
+        "@pip//pyproj",
         "@pip//python_multipart",
         "@pip//pyyaml",
         "@pip//sqlalchemy",
@@ -1735,6 +1736,7 @@ py_library(
         "@pip//psycopg",
         "@pip//psycopg_binary",
         "@pip//pydantic",
+        "@pip//pyproj",
         "@pip//pydantic_ai_slim",
         "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
@@ -7715,8 +7717,15 @@ py_test(
 py_test(
     name = "stars_router_test",
     srcs = ["stars/router_test.py"],
-    data = ["//projects/scotland-connector/internal/store:snapshot_fixture"],
-    env = {"CONNECTOR_SNAPSHOT_FIXTURE": "$(rootpath //projects/scotland-connector/internal/store:snapshot_fixture)"},
+    data = [
+        "//projects/monolith/stars/tests:open_names_sample.csv",
+        "//projects/scotland-connector/internal/fixture:named_snapshot_fixture",
+        "//projects/scotland-connector/internal/store:snapshot_fixture",
+    ],
+    env = {
+        "CONNECTOR_SNAPSHOT_FIXTURE": "$(rootpath //projects/scotland-connector/internal/store:snapshot_fixture)",
+        "NAMED_SNAPSHOT_FIXTURE": "$(rootpath //projects/scotland-connector/internal/fixture:named_snapshot_fixture)",
+    },
     imports = ["."],
     deps = [
         ":pkg_core",
@@ -7727,6 +7736,7 @@ py_test(
         "@pip//botocore",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//pyproj",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",

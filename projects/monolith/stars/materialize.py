@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from core.db import get_engine
 from stars.grid import _s3_client
+from stars.open_names import configured_names, enrich
 from stars.router import _DISPLAY_HOURS, _build_sites_from_db, get_history
 
 logger = logging.getLogger("monolith.stars.materialize")
@@ -37,6 +38,9 @@ def _materialize_sync() -> int:
     }
     if connector_key and connector_key in reserved:
         raise ValueError("STARS_CONNECTOR_SITES_S3_KEY must name a separate object")
+    # Configured input failures abort before any publication; last-good objects
+    # stay available. Disabled input deliberately emits nullable associations.
+    names = configured_names()
     request = SimpleNamespace(headers={})
     response = Response()
     with Session(get_engine()) as session:
@@ -49,6 +53,7 @@ def _materialize_sync() -> int:
         history_payload = get_history(request, response, session)
     if not isinstance(payload, dict):
         raise RuntimeError("stars site builder returned a conditional response")
+    enrich(payload, names)
     connector_error = None
     if connector_key:
         # Serialize and release the uncapped bytes before constructing public

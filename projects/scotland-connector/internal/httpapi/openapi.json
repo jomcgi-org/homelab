@@ -664,10 +664,58 @@
           }
         }
       },
+      "NearbyPlace": {
+        "type": ["object", "null"],
+        "description": "Optional offline nearest named populated-place association within 20 km. Null for disabled or unmatched enrichment and old snapshots. Coordinates and site identity remain the original grid point. Equal distances use OS feature ID. OGL v3.0.",
+        "required": [
+          "label",
+          "name",
+          "feature_id",
+          "source",
+          "source_version",
+          "distance_km",
+          "distance_method",
+          "attribution"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Near NAME1 (or NAME2 when NAME1 is blank). Proximity only; no parking, access, permission or observing suitability claim."
+          },
+          "name": {
+            "type": "string"
+          },
+          "feature_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "const": "OS Open Names"
+          },
+          "source_version": {
+            "type": "string",
+            "description": "OS dataset release, YYYY-MM."
+          },
+          "distance_km": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Straight-line British National Grid distance to the populated-place representative point, rounded to 0.001 km. Offline Helmert conversion has metre-scale uncertainty."
+          },
+          "distance_method": {
+            "type": "string",
+            "const": "British National Grid straight-line to populated-place point"
+          },
+          "attribution": {
+            "type": "string"
+          }
+        }
+      },
       "Site": {
         "type": "object",
         "description": "One road-accessible dark-sky site on one night.",
         "required": [
+          "nearby_place",
           "site_id",
           "lat",
           "lon",
@@ -682,6 +730,7 @@
           "moonless_clear_dark_hours"
         ],
         "properties": {
+          "nearby_place": { "$ref": "#/components/schemas/NearbyPlace" },
           "site_id": { "type": "string" },
           "lat": { "type": "number" },
           "lon": { "type": "number" },
@@ -843,6 +892,7 @@
         "type": ["object", "null"],
         "description": "Nearest snapshot site within min(radius_km,30) km. Null when absent; astronomy still answers.",
         "required": [
+          "nearby_place",
           "site_id",
           "lat",
           "lon",
@@ -852,6 +902,7 @@
           "truncated"
         ],
         "properties": {
+          "nearby_place": { "$ref": "#/components/schemas/NearbyPlace" },
           "site_id": { "type": "string" },
           "lat": { "type": "number" },
           "lon": { "type": "number" },

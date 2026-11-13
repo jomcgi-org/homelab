@@ -2286,3 +2286,24 @@ def test_disabled_friends_app_has_no_asset_dispatch(tmp_path, moving, grimoire):
         redirect["path"]["replacePrefixMatch"]
         == f"/{'moving' if moving else 'grimoire'}/_app"
     )
+
+
+def test_open_names_setting_reaches_scheduled_producer_and_defaults_off(tmp_path):
+    for path, release in (
+        (None, None),
+        ("", ""),
+        ("/prepared/os-names.csv", "2026-10"),
+    ):
+        overlay = _write_values(
+            tmp_path,
+            "names.yaml",
+            {"stars": {"openNames": {"csvPath": path, "release": release}}},
+        )
+        job = _cron_docs(_render("production", [] if path is None else [overlay]))[
+            "stars-refresh"
+        ]
+        container = job["spec"]["workflowSpec"]["templates"][0]["container"]
+        env = _env_by_name(container["env"])
+        assert container["args"] == ["stars-refresh"]
+        assert env["STARS_OPEN_NAMES_CSV"]["value"] == (path or "")
+        assert env["STARS_OPEN_NAMES_RELEASE"]["value"] == (release or "")

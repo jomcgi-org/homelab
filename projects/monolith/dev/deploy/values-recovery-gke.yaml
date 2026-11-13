@@ -132,6 +132,9 @@ scratchPostgres:
 sharedS3:
   enabled: false
 stars:
+  openNames:
+    csvPath: ""
+    release: ""
   onepassword:
     itemPath: ""
 faas:

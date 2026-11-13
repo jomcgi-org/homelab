@@ -2,6 +2,7 @@
 package fixture
 
 import (
+	_ "embed"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
@@ -96,4 +97,20 @@ func Service(loaded bool) *connector.Service {
 		src.DS, ws.DS = Dataset(), WalkDataset()
 	}
 	return &connector.Service{Data: src, Walks: ws, MethodURL: "https://example.test/v1/method", Now: func() time.Time { return Now }}
+}
+
+// NamedSites is produced by the real default-capped materializer with the
+// two-record OS sample; Python verifies the canonical bytes in CI.
+//
+//go:embed testdata/named-sites.json
+var NamedSites []byte
+
+func NamedService() *connector.Service {
+	ds, err := stars.Parse(NamedSites, []byte(`{"sites":[]}`), "named-snapshot")
+	if err != nil {
+		panic(err)
+	}
+	svc := Service(true)
+	svc.Data = Source{DS: ds}
+	return svc
 }

@@ -63,6 +63,9 @@ jobs:
     suspend: false
 
 stars:
+  openNames:
+    csvPath: ""
+    release: ""
   gridGenerator:
     # The object locations remain intentionally unset in chart values. Keep the
     # production object present but suspended until an operator configures the

@@ -1979,6 +1979,11 @@ stars:
   sitesKey: "sites.json"
   # Empty keeps scheduled publication disabled until separately authorized.
   connectorSitesKey: ""
+  # Optional prepared local CSV. Provisioning/mounting requires separate authority.
+  # Empty path disables naming; a configured unreadable/invalid input fails closed.
+  openNames:
+    csvPath: ""
+    release: ""
   mapKey: "map.json"
   historyMapKey: "history-map.json"
   # Written by hikes-refresh-forecasts for the Scotland connector, which reads

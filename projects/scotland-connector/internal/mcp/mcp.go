@@ -82,7 +82,7 @@ const (
 		"Light has no top-level verdict; present the requested events and windows with their coverage and why. " +
 		"Its per-window cloud is nearby-site hourly sample support; unsupported portions, including golden/blue light, stay unknown and missing rows never prove cloud. " +
 		"Its nights are separate night suitability assessments, never interval cloud forecasts. "
-	instructionsSources = "Every result carries meta.sources: credit them when you present the data."
+	instructionsSources = "Site nearby_place is nullable offline OS Open Names (OGL v3.0) proximity within 20 km, with source release, attribution and straight-line British National Grid distance to a populated-place point. Near labels never establish parking, access, permission or observing suitability. Every result carries meta.sources: credit them when you present the data."
 
 	Instructions              = instructionsHead + instructionsAurora + instructionsLight + "For plan, check and aurora, lead with the verdict and why. " + instructionsSources
 	InstructionsWithoutAurora = instructionsHead + instructionsLight + "For plan and check, lead with the verdict and why. " + instructionsSources

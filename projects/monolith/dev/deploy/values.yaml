@@ -203,6 +203,9 @@ jobs:
 
 # Never inherit the production database-writing geospatial job into dev.
 stars:
+  openNames:
+    csvPath: ""
+    release: ""
   gridGenerator:
     enabled: false
 

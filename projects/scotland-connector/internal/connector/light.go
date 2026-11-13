@@ -30,13 +30,14 @@ type LightQuery struct {
 }
 
 type LightSite struct {
-	ID          string  `json:"site_id"`
-	Lat         float64 `json:"lat"`
-	Lon         float64 `json:"lon"`
-	DistanceKm  float64 `json:"distance_km"`
-	FetchedAt   *string `json:"forecast_fetched_at"`
-	HourlyUntil *string `json:"hourly_until"`
-	Truncated   bool    `json:"truncated"`
+	NearbyPlace *stars.NearbyPlace `json:"nearby_place"`
+	ID          string             `json:"site_id"`
+	Lat         float64            `json:"lat"`
+	Lon         float64            `json:"lon"`
+	DistanceKm  float64            `json:"distance_km"`
+	FetchedAt   *string            `json:"forecast_fetched_at"`
+	HourlyUntil *string            `json:"hourly_until"`
+	Truncated   bool               `json:"truncated"`
 }
 
 // LightCloud describes positive sample support only. Missing rows never prove
@@ -349,7 +350,7 @@ func (s *Service) Light(p LightParams) (*Envelope, error) {
 		var km float64
 		site, km = ds.Nearest(q.Lat, q.Lon, min(q.RadiusKm, float64(siteFarKm)))
 		if site != nil {
-			res.Site = &LightSite{site.ID, site.Lat, site.Lon, round(km, 2), timep(site.ForecastFetchedAt), timep(site.Horizon(ds.HourlyUntil)), site.Truncated()}
+			res.Site = &LightSite{site.NearbyPlace, site.ID, site.Lat, site.Lon, round(km, 2), timep(site.ForecastFetchedAt), timep(site.Horizon(ds.HourlyUntil)), site.Truncated()}
 		}
 	}
 	nights := map[int32]bool{}

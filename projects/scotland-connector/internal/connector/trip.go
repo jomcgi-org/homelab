@@ -97,10 +97,11 @@ type WalkOption struct {
 // SiteFacts identify a dark-sky site: a road-accessible point in the darkest
 // light-pollution zones.
 type SiteFacts struct {
-	SiteID         string  `json:"site_id"`
-	Lat            float64 `json:"lat"`
-	Lon            float64 `json:"lon"`
-	LightPollution string  `json:"light_pollution_zone"`
+	NearbyPlace    *stars.NearbyPlace `json:"nearby_place"`
+	SiteID         string             `json:"site_id"`
+	Lat            float64            `json:"lat"`
+	Lon            float64            `json:"lon"`
+	LightPollution string             `json:"light_pollution_zone"`
 	// ClearSkyOdds is the historical share of dark hours that were clear in
 	// this calendar month; null when not known.
 	ClearSkyOdds *float64 `json:"clear_sky_odds"`
@@ -292,7 +293,7 @@ func (l WeatherLimits) walks() walks.Limits {
 }
 
 func siteFacts(site *stars.Site, c *stars.Climate) SiteFacts {
-	f := SiteFacts{SiteID: site.ID, Lat: site.Lat, Lon: site.Lon, LightPollution: site.LPZone}
+	f := SiteFacts{NearbyPlace: site.NearbyPlace, SiteID: site.ID, Lat: site.Lat, Lon: site.Lon, LightPollution: site.LPZone}
 	if c != nil && c.Dark > 0 {
 		odds := round(float64(c.ClearDark)/float64(c.Dark), 3)
 		f.ClearSkyOdds = &odds

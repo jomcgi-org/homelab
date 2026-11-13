@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -31,8 +32,30 @@ type Hour struct {
 	Dark  bool
 }
 
+// NearbyPlace is a producer-side proximity association, never an access claim.
+type NearbyPlace struct {
+	Label          string   `json:"label"`
+	Name           string   `json:"name"`
+	FeatureID      string   `json:"feature_id"`
+	Source         string   `json:"source"`
+	SourceVersion  string   `json:"source_version"`
+	DistanceKm     *float64 `json:"distance_km"`
+	DistanceMethod string   `json:"distance_method"`
+	Attribution    string   `json:"attribution"`
+}
+
+func (p *NearbyPlace) valid() bool {
+	release, err := time.Parse("2006-01", p.SourceVersion)
+	return err == nil && (int(release.Month())-1)%3 == 0 &&
+		strings.TrimSpace(p.Name) != "" && p.Label == "Near "+p.Name && p.FeatureID != "" &&
+		p.Source == "OS Open Names" && p.Attribution == "Contains OS data © Crown Copyright and database rights "+p.SourceVersion[:4]+"." &&
+		p.DistanceKm != nil && !math.IsNaN(*p.DistanceKm) && !math.IsInf(*p.DistanceKm, 0) && *p.DistanceKm >= 0 && *p.DistanceKm <= 20 &&
+		p.DistanceMethod == "British National Grid straight-line to populated-place point"
+}
+
 // Site is one dark-sky grid point.
 type Site struct {
+	NearbyPlace       *NearbyPlace
 	ForecastFetchedAt time.Time
 	ID                string
 	Lat, Lon          float64
@@ -62,7 +85,8 @@ const hourlyHorizon = 48 * time.Hour
 
 // Dataset is one consistent pair of snapshots plus its spatial index.
 type Dataset struct {
-	Sites []Site
+	NamingAttributions []string
+	Sites              []Site
 	// FetchedAt is the newest MET Norway fetch time across the snapshot.
 	FetchedAt time.Time
 	// HourlyUntil is how far the hourly forecast is known to reach: FetchedAt
@@ -83,14 +107,15 @@ type sitesDoc struct {
 	FetchedAt *string `json:"fetched_at"`
 	Darkness  string  `json:"darkness"`
 	Sites     []struct {
-		ForecastFetchedAt *string `json:"forecast_fetched_at"`
-		ID                string  `json:"id"`
-		Lat               float64 `json:"lat"`
-		Lon               float64 `json:"lon"`
-		AltitudeM         float64 `json:"altitude_m"`
-		LPZone            string  `json:"lp_zone"`
-		ClearDark         int     `json:"clear_dark_hours"`
-		ClearTwilight     int     `json:"clear_twilight_hours"`
+		ForecastFetchedAt *string      `json:"forecast_fetched_at"`
+		NearbyPlace       *NearbyPlace `json:"nearby_place"`
+		ID                string       `json:"id"`
+		Lat               float64      `json:"lat"`
+		Lon               float64      `json:"lon"`
+		AltitudeM         float64      `json:"altitude_m"`
+		LPZone            string       `json:"lp_zone"`
+		ClearDark         int          `json:"clear_dark_hours"`
+		ClearTwilight     int          `json:"clear_twilight_hours"`
 		BestHours         []struct {
 			Time  string  `json:"time"`
 			Cloud float64 `json:"cloud_area_fraction"`
@@ -147,7 +172,22 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 		if raw.Lat < -90 || raw.Lat > 90 || raw.Lon < -180 || raw.Lon > 180 {
 			return nil, fmt.Errorf("stars: site %q has invalid coordinates", raw.ID)
 		}
+		if raw.NearbyPlace != nil {
+			if !raw.NearbyPlace.valid() {
+				return nil, fmt.Errorf("stars: site %q has invalid nearby_place", raw.ID)
+			}
+			found := false
+			for _, attribution := range ds.NamingAttributions {
+				if attribution == raw.NearbyPlace.Attribution {
+					found = true
+				}
+			}
+			if !found {
+				ds.NamingAttributions = append(ds.NamingAttributions, raw.NearbyPlace.Attribution)
+			}
+		}
 		site := Site{
+			NearbyPlace:   raw.NearbyPlace,
 			ID:            raw.ID,
 			Lat:           raw.Lat,
 			Lon:           raw.Lon,
@@ -180,6 +220,7 @@ func Parse(sitesJSON, historyJSON []byte, version string) (*Dataset, error) {
 		}
 		ds.Sites = append(ds.Sites, site)
 	}
+	sort.Strings(ds.NamingAttributions)
 	ds.index = newGrid(ds.Sites)
 	if !ds.FetchedAt.IsZero() {
 		ds.HourlyUntil = ds.FetchedAt.Add(hourlyHorizon)

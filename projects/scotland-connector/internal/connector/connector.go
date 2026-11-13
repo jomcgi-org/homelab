@@ -226,6 +226,13 @@ func (s *Service) meta(sky *stars.Dataset, wk *walks.Dataset, now time.Time, sou
 		}
 	}
 	if sky != nil {
+		for _, attribution := range sky.NamingAttributions {
+			m.Sources = append(m.Sources, Source{
+				Name: "OS Open Names", Attribution: attribution,
+				License: "Open Government Licence v3.0", URL: "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+				Use: "offline nearest populated-place proximity labels, within 20 km; no parking, access, permission or observing suitability claim",
+			})
+		}
 		versions = append(versions, sky.Version)
 		older(sky.FetchedAt)
 	}

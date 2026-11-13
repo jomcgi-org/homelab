@@ -485,6 +485,7 @@ and the documented 72-hour measure and stop-condition verdict.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Nearby OS Open Names associations in existing stars snapshots | section 9, public data products | #7265 | staged off; provisioning, activation and named-site operational acceptance remain |
 | Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
@@ -2028,6 +2029,16 @@ exposure. Technical copyability grants no permission to redistribute and no
 new licence. Independent source licensing and attribution obligations remain.
 The [connector's capped answers](../scotland-connector/ARCHITECTURE.md#contract)
 bound its answer size and scope and provide no protection for web-published data.
+
+**Why.** OS Open Names is Joe's selected OGL source for human-readable stars
+locations (#7265, 2026-11-12). Optional local CSV enrichment runs in the existing
+snapshot materializer, avoiding grid replacement and changes to forecast rows.
+Names describe proximity to a populated-place point within 20 km and remain
+nullable. [The producer contract](stars/open_names.md) records source evidence,
+offline coordinate conversion, deterministic ties, attribution and failure
+semantics. Empty chart and deployment settings keep it disabled. Separate source
+provisioning/activation and full named-site operational acceptance remain on
+#7265; successful default-off rollout cannot prove populated names in production.
 
 **Why.** These data products share the monolith's typed data, composition,
 frontend, and operational controls, so splitting each into a service would add

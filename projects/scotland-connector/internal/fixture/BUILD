@@ -7,6 +7,7 @@ go_library(
         "aurora.go",
         "fixture.go",
     ],
+    embedsrcs = ["testdata/named-sites.json"],
     importpath = "github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture",
     visibility = ["//projects/scotland-connector:__subpackages__"],
     deps = [
@@ -15,4 +16,10 @@ go_library(
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/walks",
     ],
+)
+
+filegroup(
+    name = "named_snapshot_fixture",
+    srcs = ["testdata/named-sites.json"],
+    visibility = ["//projects/monolith:__pkg__"],
 )

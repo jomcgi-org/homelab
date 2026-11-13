@@ -382,3 +382,36 @@ func TestMoonlessHoursFollowTheMoon(t *testing.T) {
 		t.Fatalf("night = %s", got[0].Nights[0].Night)
 	}
 }
+
+func TestOptionalNamingSnapshotValidation(t *testing.T) {
+	const place = `{"label":"Near Aviemore","name":"Aviemore","feature_id":"osgb4000000074554515","source":"OS Open Names","source_version":"2026-10","distance_km":14.354,"distance_method":"British National Grid straight-line to populated-place point","attribution":"Contains OS data © Crown Copyright and database rights 2026."}`
+	parse := func(field string) (*Dataset, error) {
+		return Parse([]byte(`{"sites":[{"id":"same","lat":57.3,"lon":-3.7`+field+`}]}`), []byte(`{"sites":[]}`), "v")
+	}
+	for _, field := range []string{"", `,"nearby_place":null`} {
+		ds, err := parse(field)
+		if err != nil || ds.Sites[0].NearbyPlace != nil || len(ds.NamingAttributions) != 0 {
+			t.Fatal("old/disabled snapshot", ds, err)
+		}
+	}
+	ds, err := parse(`,"nearby_place":` + place)
+	if err != nil || ds.Sites[0].NearbyPlace.Name != "Aviemore" || len(ds.NamingAttributions) != 1 {
+		t.Fatal(ds, err)
+	}
+	for _, pair := range [][2]string{
+		{`"distance_km":14.354`, `"distance_km":null`},
+		{`"distance_km":14.354,`, ``},
+		{`"distance_km":14.354`, `"distance_km":20.001`},
+		{`"distance_km":14.354`, `"distance_km":-1`},
+		{`"source_version":"2026-10"`, `"source_version":"2026-11"`},
+		{`"source":"OS Open Names"`, `"source":"guessed"`},
+		{`"name":"Aviemore"`, `"name":""`},
+		{`"label":"Near Aviemore"`, `"label":"Aviemore parking"`},
+		{`"feature_id":"osgb4000000074554515"`, `"feature_id":""`},
+		{`"attribution":"Contains OS data © Crown Copyright and database rights 2026."`, `"attribution":""`},
+	} {
+		if _, err := parse(`,"nearby_place":` + strings.Replace(place, pair[0], pair[1], 1)); err == nil {
+			t.Fatal("accepted malformed naming metadata", pair)
+		}
+	}
+}

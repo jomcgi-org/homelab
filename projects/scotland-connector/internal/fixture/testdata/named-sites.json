@@ -1,0 +1,222 @@
+{
+  "sites": [
+    {
+      "id": "site-00000",
+      "forecast_fetched_at": "2026-10-19T08:00:00+00:00",
+      "name": null,
+      "lat": 57.3,
+      "lon": -3.7,
+      "altitude_m": 420,
+      "lp_zone": "pristine",
+      "clear_dark_hours": 49,
+      "clear_twilight_hours": 55,
+      "best_hours": [
+        {
+          "time": "2026-10-19T16:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": false
+        },
+        {
+          "time": "2026-10-19T17:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-19T19:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-19T20:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-19T21:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-19T22:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-19T23:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T00:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T01:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T02:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T03:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T04:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T05:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T06:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T07:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": false
+        },
+        {
+          "time": "2026-10-20T16:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": false
+        },
+        {
+          "time": "2026-10-20T17:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T18:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T19:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T20:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T21:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T22:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-20T23:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-21T00:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        },
+        {
+          "time": "2026-10-21T01:00:00+00:00",
+          "cloud_area_fraction": 5.0,
+          "dark": true
+        }
+      ],
+      "nearby_place": {
+        "label": "Near Aviemore",
+        "name": "Aviemore",
+        "feature_id": "osgb4000000074554515",
+        "source": "OS Open Names",
+        "source_version": "2026-10",
+        "distance_km": 14.354,
+        "distance_method": "British National Grid straight-line to populated-place point",
+        "attribution": "Contains OS data \u00a9 Crown Copyright and database rights 2026."
+      }
+    },
+    {
+      "id": "empty",
+      "forecast_fetched_at": "2026-10-19T08:00:00+00:00",
+      "name": null,
+      "lat": 57.3,
+      "lon": -3.7,
+      "altitude_m": 420,
+      "lp_zone": "pristine",
+      "clear_dark_hours": 0,
+      "clear_twilight_hours": 0,
+      "best_hours": [],
+      "nearby_place": {
+        "label": "Near Aviemore",
+        "name": "Aviemore",
+        "feature_id": "osgb4000000074554515",
+        "source": "OS Open Names",
+        "source_version": "2026-10",
+        "distance_km": 14.354,
+        "distance_method": "British National Grid straight-line to populated-place point",
+        "attribution": "Contains OS data \u00a9 Crown Copyright and database rights 2026."
+      }
+    },
+    {
+      "id": "stale",
+      "forecast_fetched_at": "2026-10-16T08:00:00+00:00",
+      "name": null,
+      "lat": 57.3,
+      "lon": -3.7,
+      "altitude_m": 420,
+      "lp_zone": "pristine",
+      "clear_dark_hours": 0,
+      "clear_twilight_hours": 0,
+      "best_hours": [],
+      "nearby_place": {
+        "label": "Near Aviemore",
+        "name": "Aviemore",
+        "feature_id": "osgb4000000074554515",
+        "source": "OS Open Names",
+        "source_version": "2026-10",
+        "distance_km": 14.354,
+        "distance_method": "British National Grid straight-line to populated-place point",
+        "attribution": "Contains OS data \u00a9 Crown Copyright and database rights 2026."
+      }
+    },
+    {
+      "id": "missing",
+      "forecast_fetched_at": null,
+      "name": null,
+      "lat": 57.3,
+      "lon": -3.7,
+      "altitude_m": 420,
+      "lp_zone": "pristine",
+      "clear_dark_hours": 0,
+      "clear_twilight_hours": 0,
+      "best_hours": [],
+      "nearby_place": {
+        "label": "Near Aviemore",
+        "name": "Aviemore",
+        "feature_id": "osgb4000000074554515",
+        "source": "OS Open Names",
+        "source_version": "2026-10",
+        "distance_km": 14.354,
+        "distance_method": "British National Grid straight-line to populated-place point",
+        "attribution": "Contains OS data \u00a9 Crown Copyright and database rights 2026."
+      }
+    }
+  ],
+  "count": 4,
+  "total_sites": 4,
+  "darkness": "astronomical",
+  "fetched_at": "2026-10-19T08:00:00+00:00"
+}

@@ -782,6 +782,23 @@ representative terrain and nodata coverage; separately authorized producer and
 existing-storage publication with refresh/replacement/expiry checks; separately
 authorized rollout and public MCP/REST smoke tests, plan/check and accounting.
 
+### Nearby place labels are staged off
+
+**Why.** Joe selected OS Open Names (OGL) on 2026-11-12 for #7265. Nearby
+populated-place labels make grid coordinates easier to describe without changing
+site identity or ranking. The scheduled materializer can associate existing
+sites within 20 km from prepared local OS CSV input. `nearby_place` is nullable
+and carries source release, feature ID, distance semantics and attribution through
+plan/check/light and HTTP/MCP. Labels describe proximity and promise no parking,
+access, permission or observing suitability. Older snapshots remain accepted.
+See [source and producer contract](../monolith/stars/open_names.md).
+
+Both naming configuration values remain empty in the chart and deployment
+overlays. Full named-site acceptance remains on #7265 after separate provisioning
+and activation. Default-off deployment checks do not prove populated production
+names. Hourly uncertainty, omitted unsupported altitude and 5 km option spacing
+remain unchanged. The suspended grid workflow and #7246 remain outside this work.
+
 ## Direction
 
 Decided and not yet built, each with the issue that tracks it. A row leaves
@@ -789,6 +806,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction                                         | Tracks | State       |
 | ------------------------------------------------- | ------ | ----------- |
+| Nearby populated-place labels from OS Open Names | #7265 | staged off; source provisioning, activation and full named-site acceptance outstanding |
 | Meter export to Honeycomb, unit price table       | #7245  | not started |
 | Uncapped connector snapshot from the materializer | #7246  | staged off, live acceptance pending |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |

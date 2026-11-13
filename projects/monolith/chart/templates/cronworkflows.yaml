@@ -205,6 +205,10 @@ spec:
             - name: STARS_CONNECTOR_SITES_S3_KEY
               value: {{ $.Values.stars.connectorSitesKey | quote }}
             {{- end }}
+            - name: STARS_OPEN_NAMES_CSV
+              value: {{ $.Values.stars.openNames.csvPath | quote }}
+            - name: STARS_OPEN_NAMES_RELEASE
+              value: {{ $.Values.stars.openNames.release | quote }}
             - name: STARS_MAP_S3_KEY
               value: {{ $.Values.stars.mapKey | quote }}
             - name: STARS_HISTORY_MAP_S3_KEY

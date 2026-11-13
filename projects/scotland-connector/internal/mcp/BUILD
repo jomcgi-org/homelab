@@ -22,7 +22,9 @@ go_test(
         "//projects/scotland-connector/internal/aurora",
         "//projects/scotland-connector/internal/connector",
         "//projects/scotland-connector/internal/fixture",
+        "//projects/scotland-connector/internal/httpapi",
         "//projects/scotland-connector/internal/meter",
+        "//projects/scotland-connector/internal/stars",
         "@com_github_prometheus_client_golang//prometheus",
     ],
 )

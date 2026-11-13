@@ -738,3 +738,171 @@ class TestHistory:
         r = client.get("/api/stars/history")
         assert r.status_code == 200
         assert r.json() == {"sites": [], "count": 0}
+
+
+def _names_sample():
+    from pathlib import Path
+
+    return Path(__file__).with_name("tests") / "open_names_sample.csv"
+
+
+def test_real_os_rows_conversion_and_nearest_place():
+    from stars.open_names import OpenNames
+
+    names = OpenNames(str(_names_sample()), "2026-10")
+    # Independent WGS84 point beside Aviemore. Actual PROJ pipeline, no mocks.
+    x, y = names.project.transform(-3.83, 57.2)
+    assert x == pytest.approx(289532, abs=2)
+    assert y == pytest.approx(813620, abs=2)
+    near = names.nearby(57.2, -3.83)
+    assert near["name"] == "Aviemore"
+    assert near["feature_id"] == "osgb4000000074554515"
+    assert near["distance_km"] == 0.927
+    assert names.nearby(57.166, -3.69)["name"] == "Glenmore"
+    assert names.nearby(60.3, -1.3) is None
+
+
+def test_os_names_ties_bounds_and_blank_names(tmp_path):
+    import csv
+    import math
+    from stars.open_names import MAX_DISTANCE_M, OpenNames
+
+    with _names_sample().open() as source:
+        reader = csv.DictReader(source)
+        fields, rows = reader.fieldnames, list(reader)
+    # Synthetic adversarial cases retain the real OS field layout.
+    first = rows[0]
+    blank = dict(first, ID="blank", NAME1=" ", NAME2="")
+    fallback = dict(first, ID="a", NAME1=" ", NAME2="Gaelic name")
+    tie = dict(first, ID="b", NAME1="Other")
+    road = dict(first, ID="road", TYPE="transportNetwork", NAME1="Not a place")
+    path = tmp_path / "names.csv"
+    for ordered in ([tie, blank, fallback, road], [road, fallback, blank, tie]):
+        with path.open("w") as target:
+            writer = csv.DictWriter(target, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(ordered)
+        names = OpenNames(str(path), "2026-10")
+        # Real inverse of the same pinned projection; no coordinate stub.
+        from pyproj.enums import TransformDirection
+
+        x, y = float(first["GEOMETRY_X"]), float(first["GEOMETRY_Y"])
+        for offset, matched in (
+            (0, True),
+            (MAX_DISTANCE_M - 1, True),
+            (MAX_DISTANCE_M + 1, False),
+        ):
+            lon, lat = names.project.transform(
+                x + offset, y, direction=TransformDirection.INVERSE
+            )
+            near = names.nearby(lat, lon)
+            assert (near is not None) == matched
+            if matched:
+                assert near["feature_id"] == "a"
+                assert near["label"] == "Near Gaelic name"
+                assert near["distance_km"] == pytest.approx(offset / 1000, abs=0.001)
+        assert math.isfinite(x)
+
+
+@pytest.mark.parametrize("path", [None, "", "   "])
+def test_names_disabled_input(monkeypatch, path):
+    from stars.open_names import configured_names
+
+    if path is None:
+        monkeypatch.delenv("STARS_OPEN_NAMES_CSV", raising=False)
+    else:
+        monkeypatch.setenv("STARS_OPEN_NAMES_CSV", path)
+    monkeypatch.setenv("STARS_OPEN_NAMES_RELEASE", "invalid ignored when disabled")
+    assert configured_names() is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "bad_header",
+        "no_places",
+        "bad_coordinate",
+        "truncated",
+        "bad_release",
+    ],
+)
+def test_bad_configured_names_preserve_last_good_objects(monkeypatch, tmp_path, case):
+    import csv
+    from stars import materialize
+
+    path = tmp_path / "names.csv"
+    with _names_sample().open() as source:
+        reader = csv.DictReader(source)
+        fields, rows = reader.fieldnames, list(reader)
+    if case == "bad_coordinate":
+        rows[0]["GEOMETRY_X"] = "nan"
+    if case == "no_places":
+        rows = []
+    if case != "missing":
+        with path.open("w") as target:
+            writer = csv.DictWriter(target, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+    if case == "bad_header":
+        path.write_text("guessed,name,lat,lon\n")
+    if case == "truncated":
+        path.write_text(path.read_text() + "bad,row\n")
+    monkeypatch.setenv("STARS_OPEN_NAMES_CSV", str(path))
+    monkeypatch.setenv(
+        "STARS_OPEN_NAMES_RELEASE", "unknown" if case == "bad_release" else "2026-10"
+    )
+    monkeypatch.setattr(
+        materialize, "get_engine", lambda: pytest.fail("opened database")
+    )
+    monkeypatch.setattr(
+        materialize, "_s3_client", lambda: pytest.fail("touched last-good storage")
+    )
+    with pytest.raises((ValueError, FileNotFoundError)):
+        materialize._materialize_sync()
+
+
+def test_named_default_snapshot_real_pipeline_contract(monkeypatch):
+    import os
+    from pathlib import Path
+    from stars.tests.snapshot_fixture import run
+
+    monkeypatch.setenv("STARS_OPEN_NAMES_CSV", str(_names_sample()))
+    monkeypatch.setenv("STARS_OPEN_NAMES_RELEASE", "2026-10")
+    writes = {}
+    run(edge_cases=True, sink=lambda kw: writes.update({kw["Key"]: kw["Body"]}))
+    assert "connector-sites.json" not in writes  # #7246 remains off
+    payload = json.loads(writes["sites.json"])
+    site = payload["sites"][0]
+    assert (site["id"], site["lat"], site["lon"], site["name"]) == (
+        "site-00000",
+        57.3,
+        -3.7,
+        None,
+    )
+    assert len(site["best_hours"]) == 25
+    assert site["nearby_place"] == {
+        "label": "Near Aviemore",
+        "name": "Aviemore",
+        "feature_id": "osgb4000000074554515",
+        "source": "OS Open Names",
+        "source_version": "2026-10",
+        "distance_km": 14.354,
+        "distance_method": "British National Grid straight-line to populated-place point",
+        "attribution": "Contains OS data © Crown Copyright and database rights 2026.",
+    }
+    fixture = Path(
+        os.environ.get(
+            "NAMED_SNAPSHOT_FIXTURE",
+            Path(__file__).resolve().parents[2]
+            / "scotland-connector/internal/fixture/testdata/named-sites.json",
+        )
+    )
+    assert payload == json.loads(fixture.read_bytes())
+    monkeypatch.setenv("STARS_OPEN_NAMES_CSV", "")
+    disabled = {}
+    run(edge_cases=True, sink=lambda kw: disabled.update({kw["Key"]: kw["Body"]}))
+    old = json.loads(disabled["sites.json"])
+    for row in payload["sites"]:
+        row["nearby_place"] = None
+    assert payload == old

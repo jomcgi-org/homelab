@@ -1,19 +1,23 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/aurora"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/httpapi"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -486,5 +490,123 @@ func TestTransportGuards(t *testing.T) {
 	}
 	if code, _, _ := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"x","params":{"pad":"`+strings.Repeat("a", maxBody)+`"}}`, nil); code != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversized: status %d", code)
+	}
+}
+
+func TestNamedProducerBytesAcrossBothTransports(t *testing.T) {
+	svc := fixture.NamedService()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	met := meter.New(prometheus.NewRegistry())
+	rest, err := httpapi.New(svc, met, logger, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp := New(svc, met, logger, ServerInfo{Name: "test", Version: "test"}, nil)
+	tests := []struct{ name, args, url string }{
+		{"plan", `{"lat":57.3,"lon":-3.7,"from":"2026-10-19","to":"2026-10-19","activities":["stargaze"]}`, "/v1/plan?lat=57.3&lon=-3.7&from=2026-10-19&to=2026-10-19&activities=stargaze"},
+		{"check", `{"items":[{"activity":"stargaze","date":"2026-10-19","lat":57.3,"lon":-3.7}]}`, "/v1/check"},
+		{"light", `{"lat":57.3,"lon":-3.7,"from":"2026-10-19","to":"2026-10-19"}`, "/v1/light?lat=57.3&lon=-3.7&from=2026-10-19&to=2026-10-19"},
+	}
+	ds := svc.Data.Current()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			if tc.name == "check" {
+				req = httptest.NewRequest(http.MethodPost, tc.url, strings.NewReader(tc.args))
+				req.Header.Set("Content-Type", "application/json")
+			}
+			rec := httptest.NewRecorder()
+			rest.ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatal(rec.Code, rec.Body.String())
+			}
+			var httpBody map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &httpBody); err != nil {
+				t.Fatal(err)
+			}
+			result := callTool(t, mcp, tc.name, tc.args)
+			if result.Result["isError"] != false {
+				t.Fatal(result)
+			}
+			structured := result.Result["structuredContent"]
+			if !reflect.DeepEqual(httpBody, structured) {
+				t.Fatal("HTTP/MCP envelope mismatch", httpBody, structured)
+			}
+			text := result.Result["content"].([]any)[0].(map[string]any)["text"].(string)
+			var decoded any
+			if err := json.Unmarshal([]byte(text), &decoded); err != nil || !reflect.DeepEqual(decoded, structured) {
+				t.Fatal("MCP text differs", text)
+			}
+			var sites []map[string]any
+			data := httpBody["data"].(map[string]any)
+			switch tc.name {
+			case "plan":
+				for _, day := range data["days"].([]any) {
+					for _, site := range day.(map[string]any)["stargazing"].([]any) {
+						sites = append(sites, site.(map[string]any))
+					}
+				}
+			case "check":
+				sites = append(sites, data["items"].([]any)[0].(map[string]any)["night"].(map[string]any))
+			case "light":
+				sites = append(sites, data["site"].(map[string]any))
+			}
+			if len(sites) == 0 {
+				t.Fatal("no public sites")
+			}
+			for _, site := range sites {
+				near := site["nearby_place"].(map[string]any)
+				expectedID := "site-00000"
+				if tc.name == "light" {
+					expectedID = "empty"
+				} // existing nearest-ID tie-break
+				if site["site_id"] != expectedID || site["lat"] != 57.3 || site["lon"] != -3.7 || near["label"] != "Near Aviemore" || near["distance_km"] != 14.354 || near["source_version"] != "2026-10" {
+					t.Fatal(site)
+				}
+				if _, ok := site["altitude_m"]; ok {
+					t.Fatal("unsupported altitude", site)
+				}
+			}
+			sources := httpBody["meta"].(map[string]any)["sources"].([]any)
+			found := false
+			for _, src := range sources {
+				v := src.(map[string]any)
+				if v["name"] == "OS Open Names" {
+					found = true
+					if v["license"] != "Open Government Licence v3.0" || v["attribution"] != "Contains OS data © Crown Copyright and database rights 2026." {
+						t.Fatal(v)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing attribution")
+			}
+			// Remove only naming and use a different snapshot version. Every data byte
+			// besides nullable associations must remain identical, including uncertainty.
+			var raw map[string]any
+			_ = json.Unmarshal(fixture.NamedSites, &raw)
+			for _, site := range raw["sites"].([]any) {
+				delete(site.(map[string]any), "nearby_place")
+			}
+			oldBytes, _ := json.Marshal(raw)
+			old, err := stars.Parse(oldBytes, []byte(`{"sites":[]}`), "old-snapshot")
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc.Data = fixture.Source{DS: old}
+			plain := callTool(t, mcp, tc.name, tc.args).Result["structuredContent"].(map[string]any)
+			for _, site := range sites {
+				site["nearby_place"] = nil
+			}
+			a, _ := json.Marshal(httpBody["data"])
+			b, _ := json.Marshal(plain["data"])
+			if !bytes.Equal(a, b) {
+				t.Fatal("naming changed answer data", string(a), string(b))
+			}
+			if plain["meta"].(map[string]any)["data_version"] == httpBody["meta"].(map[string]any)["data_version"] {
+				t.Fatal("snapshot cache identity lost")
+			}
+			svc.Data = fixture.Source{DS: ds}
+		})
 	}
 }

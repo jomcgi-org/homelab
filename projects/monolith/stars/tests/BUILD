@@ -8,3 +8,5 @@ py_library(
     visibility = ["//projects/monolith:__pkg__"],
     deps = ["//projects/monolith:pkg_stars"],
 )
+
+exports_files(["open_names_sample.csv"])
