@@ -1,7 +1,10 @@
 {{- if .Values.noded.ingressNetworkPolicy.enabled }}
 {{/* PortForIP uses base + host offset. Serving uses the daemon's /24;
 composite entries use compositeSupernet. Only valid TCP projections can exist. */}}
-{{- $prefix := int (last (splitList "/" .Values.noded.compositeSupernet)) }}
+{{- $prefix := 24 }}
+{{- if .Values.noded.compositeSupernet }}
+{{- $prefix = int (last (splitList "/" .Values.noded.compositeSupernet)) }}
+{{- end }}
 {{- if or (lt $prefix 16) (gt $prefix 24) }}
 {{- fail "noded ingress policy supports IPv4 compositeSupernet prefixes /16 through /24" }}
 {{- end }}
@@ -15,6 +18,27 @@ composite entries use compositeSupernet. Only valid TCP projections can exist. *
 {{- end }}
 {{- $warmStart := add $base 2 }}
 {{- $warmEnd := min 65535 (add $base (sub $size 2)) }}
+{{- $listeners := dict "healthPort" .Values.noded.healthPort "activatorPort" .Values.noded.activatorPort }}
+{{- if .Values.noded.plaintextGrpc.enabled }}
+{{- $_ := set $listeners "grpcPort" .Values.noded.grpcPort }}
+{{- end }}
+{{- if .Values.noded.spiffe.enabled }}
+{{- $_ := set $listeners "spiffe.grpcTlsPort" .Values.noded.spiffe.grpcTlsPort }}
+{{- end }}
+{{- range $name, $port := $listeners }}
+{{- if and (ge (int $port) $warmStart) (le (int $port) $warmEnd) }}
+{{- fail (printf "noded.%s overlaps the warm DNAT range %d-%d" $name $warmStart $warmEnd) }}
+{{- end }}
+{{- end }}
+{{- $ranges := dict "statefulTcpPortRange" .Values.servingEnvoy.statefulTcpPortRange }}
+{{- if .Values.noded.compositeSupernet }}
+{{- $_ := set $ranges "compositeTcpPortRange" .Values.servingEnvoy.compositeTcpPortRange }}
+{{- end }}
+{{- range $name, $ports := $ranges }}
+{{- if and (le (int $ports.start) $warmEnd) (ge (int $ports.end) $warmStart) }}
+{{- fail (printf "servingEnvoy.%s overlaps the warm DNAT range %d-%d" $name $warmStart $warmEnd) }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

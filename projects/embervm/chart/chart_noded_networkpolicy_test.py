@@ -75,9 +75,18 @@ def test_default_and_checked_in_compositions_are_off(environment):
 
 @pytest.mark.parametrize("environment", [None, "dev", "prod"])
 def test_real_pods_and_callers(environment):
-    docs = render(
-        environment=environment, settings=["noded.ingressNetworkPolicy.enabled=true"]
-    )
+    settings = ["noded.ingressNetworkPolicy.enabled=true"]
+    if environment == "dev":
+        # The checked-in dev lane has no Envoy or serving workloads. Render
+        # the documented validation composition so caller checks are exercised.
+        settings += [
+            "servingEnvoy.enabled=true",
+            "pingWorkload.enabled=true",
+            "demoPostgres.enabled=true",
+            "scratchPostgres.enabled=true",
+            "scratchPostgres.guestImage.repository=ghcr.io/jomcgi/homelab/projects/embervm/runtimes/postgres",
+        ]
+    docs = render(environment=environment, settings=settings)
     policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
     # Helm leaves namespaced resources' namespace implicit; install scopes them.
     policy["metadata"]["namespace"] = {"dev": "embervm-dev", "prod": "embervm"}.get(
@@ -94,6 +103,18 @@ def test_real_pods_and_callers(environment):
         )
 
     pods = workloads(docs)
+    assert any(
+        p["metadata"]["labels"].get("app.kubernetes.io/component") == "serving-envoy"
+        for p in pods
+    )
+    if environment == "dev":
+        definitions = {
+            d["metadata"]["name"]: d["spec"] for d in docs if d["kind"] == "Workload"
+        }
+        assert definitions["ping"]["class"] == "serving"
+        assert definitions["demo-postgres"]["class"] == "stateful"
+        assert definitions["demo-postgres"]["stateful"]["listenPort"] == 5401
+        assert definitions["scratch-postgres"]["stateful"]["listenPort"] == 5400
     targets = [
         p for p in pods if any(c["name"] == "noded" for c in p["spec"]["containers"])
     ]
@@ -220,3 +241,55 @@ def test_overridden_plaintext_without_tls():
     assert allows(policy, cp, 19090)
     assert not allows(policy, cp, 9090)
     assert not allows(policy, cp, 9443)
+
+
+def test_empty_composite_supernet_uses_serving_subnet():
+    docs = render(
+        settings=[
+            "noded.ingressNetworkPolicy.enabled=true",
+            "noded.compositeSupernet=",
+        ]
+    )
+    policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    policy["metadata"]["namespace"] = "policy"
+    for rule in policy["spec"]["ingress"]:
+        caller = rule["from"][0]["podSelector"]["matchLabels"]
+        for port in (30002, 30254):
+            assert allows(policy, caller, port)
+        for port in (30001, 30255, 65535):
+            assert not allows(policy, caller, port)
+
+
+@pytest.mark.parametrize(
+    "settings, listener",
+    [
+        (["noded.servingPortBase=9000"], "grpcPort"),
+        (["noded.grpcPort=30002"], "grpcPort"),
+        (["noded.grpcPort=65535"], "grpcPort"),
+        (
+            ["noded.spiffe.enabled=true", "noded.spiffe.grpcTlsPort=30002"],
+            "spiffe.grpcTlsPort",
+        ),
+        (["noded.healthPort=30002"], "healthPort"),
+        (["noded.activatorPort=65535"], "activatorPort"),
+        (["servingEnvoy.statefulTcpPortRange.end=30002"], "statefulTcpPortRange"),
+        (["servingEnvoy.compositeTcpPortRange.end=30002"], "compositeTcpPortRange"),
+    ],
+)
+def test_warm_range_cannot_overlap_listeners(settings, listener):
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        render(settings=["noded.ingressNetworkPolicy.enabled=true", *settings])
+    assert f"{listener} overlaps the warm DNAT range" in error.value.stderr
+
+
+def test_ports_outside_warm_range_and_disabled_listeners_are_accepted():
+    render(
+        settings=[
+            "noded.ingressNetworkPolicy.enabled=true",
+            "noded.compositeSupernet=",
+            "noded.healthPort=30001",
+            "noded.grpcPort=30255",
+            "noded.spiffe.enabled=false",
+            "noded.spiffe.grpcTlsPort=30002",
+        ]
+    )

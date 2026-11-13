@@ -2636,8 +2636,14 @@ and SPIFFE authentication are unchanged. There is no new egress isolation.
 gRPC and 5400-5419 would omit warm DNAT endpoints and production bricks.
 The [caller matrix and bounded probe procedure](deploy/network-policy-validation/README.md)
 record source evidence, port derivation and native-policy limitations. The
-validation owner enables embervm-dev through GitOps first, then production
-only after dev passes. Disabling the flag through GitOps rolls back isolation.
+checked-in dev composition has serving Envoy off and no serving, stateful or
+composite Workloads; production supplies only ping. The validation owner first
+activates the documented temporary GitOps composition: real serving Envoy,
+ping, Postgres on 5400 and 5401, and a composite ping group on 5410. Functional
+cold/warm baselines precede policy activation in dev, then production only
+after dev passes. Synthetic labelled sources establish L4 controls only.
+Disabling the flag through GitOps rolls back isolation; the temporary
+composition has a separate rollback that preserves state and secrets.
 #7007 remains open until both environments record enforcement probes and the
 authored STPA network-isolation row reaches `enforced-prod`.
 

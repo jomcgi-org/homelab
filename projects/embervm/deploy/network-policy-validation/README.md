@@ -38,30 +38,104 @@ this conclusion against live collector configuration before activation.
 
 Warm ports are `servingPortBase + hostOffset`, rather than the guest service
 port. Serving uses the daemon's fixed default `172.31.0.0/24`; composite uses
-`noded.compositeSupernet`. The policy covers base+2 through the smaller of
-base+subnet-size-2 and 65535, including serving's /24. With the default /16
+`noded.compositeSupernet`. An empty composite supernet disables composite
+allocation and uses the serving /24 size for this calculation. The policy
+covers base+2 through the smaller of base+subnet-size-2 and 65535, including
+serving's /24. With the default /16
 composite supernet and base 30000 this is 30002-65535. Offsets beyond TCP's limit
 are already rejected by `PortForIP`; the policy does not make them usable.
 Supported composite prefixes are /16 through /24, matching the allocator's /24
 groups. Changing the serving subnet outside chart configuration is unsupported
 and requires revisiting this derivation. The configured activator ranges are
-separate allowances, including 5401.
+separate allowances, including 5401. Rendering fails if the warm range overlaps
+a noded listener, so changing the base cannot expose gRPC or health to Envoy.
 
-GKE Dataplane V2 must enforce pod ingress before the pod namespace's nftables
+GKE Dataplane V2 supports NetworkPolicy `endPort` on GKE 1.32 and later.
+Earlier versions drop the field, reducing each range to its first port.
+Before activation, record `kubectl version -o yaml` and
+`kubectl get nodes -o wide`; require GKE 1.32 or later on the control plane
+and every node hosting the tested pods. Record the hub's Dataplane V2 status.
+After sync, read each installed policy with
+`kubectl get networkpolicy -n <namespace> <name>-noded-ingress -o yaml` and
+compare every ingress `port`/`endPort` pair with the rendered manifest,
+including both warm-range grants. A missing or changed `endPort` fails the
+precondition even if ArgoCD reports Synced. Record 5401 and warm ports above
+the range start as positive controls.
+
+GKE Dataplane V2 must also enforce pod ingress before the pod namespace's nftables
 DNAT changes the destination to a guest tap. Service translation, pod DNAT,
 forwarding and established-connection handling must be checked live. Rendering
 cannot establish these packet semantics. Do not compensate with all-port or
 all-namespace grants if probes fail.
 
+## Activate the validation composition first
+
+Checked-in embervm-dev has `servingEnvoy.enabled=false` and
+`pingWorkload.enabled=false`. It renders no serving Service and no serving,
+stateful or composite Workload: only the session and task lanes are present.
+Checked-in production has ping, but both Postgres Workloads are disabled and
+there is no composite Workload. Neither composition supplies the full probe
+matrix without a reviewed activation change.
+
+The validation owner prepares the following temporary GitOps composition for
+the existing embervm-dev release and namespace, then repeats it for embervm
+only after dev acceptance. Keep the environment's values and GKE overlay;
+never layer production values into dev. These are activation instructions,
+with no Application or checked-in overlay changed by this PR.
+
+| Path | Activation values or Workload |
+| --- | --- |
+| Real Envoy and HTTP serving | Set `servingEnvoy.enabled=true` and `pingWorkload.enabled=true`. Use the chart's ping Workload and serving Service. Keep ping's dev scratch path and CI-pinned image. |
+| Stateful 5401 regression | Set `demoPostgres.enabled=true`, `demoPostgres.listenPort=5401` and `demoPostgres.nodeLocalWake=true`. In dev restore `scratchPostgres.guestImage.repository=ghcr.io/jomcgi/homelab/projects/embervm/runtimes/postgres`, which the dev overlay empties. Retain its CI-pinned digest and dev scratch path. |
+| Stateful 5400 control | Set `scratchPostgres.enabled=true`, `scratchPostgres.listenPort=5400` and `scratchPostgres.nodeLocalWake=true`. It shares the Postgres builder and secret with demo-postgres. |
+| Composite 5410 | Add a namespace-local `network-policy-ping-group` Workload using `crd/samples/workload-composite.yaml` as the schema example and the ping substitutions below. Keep `noded.compositeSupernet` populated. |
+
+The two Postgres Workloads require the namespace's
+`<release>-scratch-postgres` Secret. The activation PR must use an already
+authorized 1Password Operator item via `scratchPostgres.onepassword.itemPath`
+and include that exact Secret name in `rbac.secretNames`. Dev currently has
+neither binding. Verify Secret presence and the CP's named read permission
+without exporting its contents. Credential creation or reuse needs the
+validation owner's authorization; absence blocks functional acceptance.
+Do not use an existing tenant database as a disposable test fixture.
+
+For the composite Workload, copy the rendered ping Workload's entire
+`spec.source` and `spec.resources` into the top-level seed and each member.
+Replace the sample's placeholder images and members with one member named
+`ping`, `replicas: 1`, `startOrder: 0` and `healthPort: 8080`. Set
+`group.entry` to `{member: ping, port: 8080, listenPort: 5410}` and
+`group.nodeLocalWake=true`. Retain the sample's bounded lifecycle settings;
+omit `secretRef`. Use the target release's namespace. This runs the built
+ping server through the composite wake and DNAT paths without new images or
+an external endpoint. Commit the fully resolved Workload in the activation
+PR; never deploy the sample's illustrative image names.
+
+First sync this composition with ingress policy still off. Require ready
+Envoy, ready bases, and successful functional cold and warm requests through
+the serving Service for ping, both Postgres ports and the composite entry.
+Record real warm pod-IP DNAT destinations for all three classes. Then enable
+`noded.ingressNetworkPolicy.enabled=true` through GitOps and run the paired
+probes below. Production follows the same baseline and activation sequence.
+
+Rollback isolation by setting the policy flag false through GitOps. Roll back
+the temporary composition's values and Workload registration in a separate
+reviewed GitOps change after recording evidence, restoring each environment's
+previous values. Preserve Postgres volumes, snapshots and Secret objects;
+data deletion is outside this procedure. Remove only validation-owned
+registrations after their instances have been quiesced by the authorized
+owner, and keep any pre-existing production resources.
+
 ## Record bounded evidence
 
 Retain the existing conformance runner's `/verdict` and exact chart version as
 the deployment baseline (`conformance/main.go`). Its sandbox/session scenarios
-do not cover serving isolation. The validation owner uses the existing Workload
-CRs and serving APIs for the additional cold/warm operations below and records
-their responses. A successful TCP handshake below establishes L4 reachability
-only. It does not establish a successful wake, application response, bearer
-check or SPIFFE handshake.
+do not cover serving isolation. The validation owner uses the activated
+validation Workloads and serving APIs for the cold/warm operations below and
+records their responses. A successful TCP handshake below establishes L4 reachability
+only. Synthetic Envoy-labelled sources supply L4 controls only; functional
+acceptance requires the real Envoy and active Workloads above. A handshake
+does not establish a successful wake, application response, bearer check or
+SPIFFE handshake.
 
 1. Record environment, delivered chart/revision, policy manifest, matching pod
    names/UIDs/IPs and labels, namespace labels, other policies, and listener
@@ -76,7 +150,7 @@ check or SPIFFE handshake.
    namespace and node. Supply an unlisted namespace source with no allowed
    namespace membership. Avoid hostNetwork and the destination node for the
    negative source so the node exception cannot masquerade as a pod grant.
-3. Prepare known-active workloads using the existing Workload/serving APIs.
+3. Prepare the validation Workloads using the Workload/serving APIs.
    List exact pod IP/port pairs for configured plaintext/TLS listeners, HTTP
    activator, stateful 5400 and 5401, composite 5410, and one warm serving endpoint
    for each serving kind. For overridden ranges use their active equivalents;
