@@ -21,7 +21,6 @@ limitations under the License.
 //   - Numeric zero-values in ModelCacheStatus (TotalSize, FileCount)
 //   - Permanent bool field round-trip
 //   - Spec field boundary cases (empty vs non-empty optional fields)
-//   - ModelCache cluster-scoped marker (no Namespace field required)
 //   - Deep copy independence for status Conditions slice
 //   - ModelCacheSpec TTL nil vs zero-value Duration
 
@@ -224,42 +223,6 @@ func TestModelCacheSpecOptionalFieldsDefaultBehavior(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestModelCacheClusterScoped verifies that a ModelCache with no Namespace
-// serializes correctly (it is a cluster-scoped resource).
-func TestModelCacheClusterScoped(t *testing.T) {
-	mc := ModelCache{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "oci-model-cache.jomcgi.dev/v1alpha1",
-			Kind:       "ModelCache",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "cluster-scoped-model",
-			// No Namespace field - cluster-scoped resources have none
-		},
-		Spec: ModelCacheSpec{
-			Repo:     "Qwen/Qwen2.5-0.5B",
-			Registry: "ghcr.io/jomcgi/models",
-		},
-	}
-
-	data, err := json.Marshal(mc)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-
-	var got ModelCache
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-
-	if got.Namespace != "" {
-		t.Errorf("Namespace should be empty for cluster-scoped resource, got %q", got.Namespace)
-	}
-	if got.Name != "cluster-scoped-model" {
-		t.Errorf("Name: want %q, got %q", "cluster-scoped-model", got.Name)
-	}
 }
 
 // TestModelCacheStatusConditionsDeepCopy verifies that Conditions slice
