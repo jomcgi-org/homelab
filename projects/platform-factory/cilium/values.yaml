@@ -1,0 +1,56 @@
+# Cilium on the factory home cluster: the CNI, kube-proxy replacement and the
+# enforcement point for the cluster-wide default-deny policy
+# (projects/platform-factory/network-policy).
+#
+# bootstrap-gitops.sh installs this chart and these values before anything
+# else, because no pod can start without a CNI; the cilium Application then
+# adopts the release. Both render the same upstream chart version with this
+# file, so they converge.
+kubeProxyReplacement: true
+# On a k3s server 127.0.0.1:6444 is the apiserver's own port, so the agent can
+# reach it before any Service routing exists.
+k8sServiceHost: "127.0.0.1"
+k8sServicePort: 6444
+
+# k3s reads CNI config and binaries from its own directories.
+cni:
+  exclusive: false
+  confPath: /var/lib/rancher/k3s/agent/etc/cni/net.d
+  binPath: /var/lib/rancher/k3s/data/cni
+
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList: ["10.42.0.0/16"]
+
+# Pod-to-pod traffic between nodes is encrypted with WireGuard.
+encryption:
+  enabled: true
+  type: wireguard
+
+# Endpoints are unrestricted until a policy selects them. The cluster-wide
+# baseline in network-policy selects every pod, so in practice every pod is
+# default-deny; "default" mode keeps Cilium's own host-network agents and the
+# host itself out of scope, which "always" would not.
+policyEnforcementMode: default
+
+operator:
+  replicas: 2
+
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  tls:
+    auto:
+      enabled: true
+      # Certificates are issued in-cluster by a CronJob. The default ("helm")
+      # generates them at render time, which ArgoCD would see as drift on
+      # every refresh.
+      method: cronJob
+  metrics:
+    enabled:
+      - dns
+      - "drop:labelsContext=source_namespace,destination_namespace,destination_workload,traffic_direction"
+      - tcp
+      - flow

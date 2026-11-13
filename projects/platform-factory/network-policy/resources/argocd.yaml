@@ -1,0 +1,44 @@
+# ArgoCD components talk freely among themselves; outside the namespace they
+# reach only the API server and the Git and chart sources this cluster syncs.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: argocd
+  namespace: argocd
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEndpoints:
+        - {}
+  egress:
+    - toEndpoints:
+        - {}
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: repo-server-sources
+  namespace: argocd
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+  egress:
+    - toFQDNs:
+        # This repository, and release assets kustomize fetches by URL.
+        - matchName: github.com
+        - matchPattern: "*.githubusercontent.com"
+        # Helm chart repositories and OCI chart registries in use.
+        - matchName: helm.cilium.io
+        - matchPattern: "*.github.io"
+        - matchName: charts.goauthentik.io
+        - matchName: ghcr.io
+        - matchName: pkg-containers.githubusercontent.com
+        - matchName: registry-1.docker.io
+        - matchName: production.cloudflare.docker.com
+        - matchName: auth.docker.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

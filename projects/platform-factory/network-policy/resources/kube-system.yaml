@@ -1,0 +1,97 @@
+# k3s add-ons and Cilium's in-cluster components in kube-system.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: coredns
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s-app: kube-dns
+  ingress:
+    - fromEntities: [cluster]
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+  egress:
+    # Upstream resolvers (the LAN router) and the API for Service discovery.
+    - toEntities: [world]
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s-app: metrics-server
+  ingress:
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+    # Each node's kubelet summary API.
+    - toEntities: [host, remote-node]
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: local-path-provisioner
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: local-path-provisioner
+  egress:
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hubble-relay
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s-app: hubble-relay
+  ingress:
+    # `cilium hubble port-forward` arrives through the node.
+    - fromEntities: [host, remote-node]
+      toPorts:
+        - ports:
+            - port: "4245"
+              protocol: TCP
+  egress:
+    # The Hubble server in each node's Cilium agent.
+    - toEntities: [host, remote-node]
+      toPorts:
+        - ports:
+            - port: "4244"
+              protocol: TCP
+---
+# The CronJob that issues Hubble's TLS certificates writes them as Secrets.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hubble-generate-certs
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s-app: hubble-generate-certs
+  egress:
+    - toEntities: [kube-apiserver]

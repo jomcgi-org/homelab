@@ -2,9 +2,9 @@
 # Hand the factory cluster to ArgoCD. Run once from an operator machine after
 # nodes/bootstrap-nodes.sh, and again only to rebuild a lost cluster.
 #
-# The only imperative steps on the cluster are here: the two 1Password
+# The only imperative steps on the cluster are here: the Cilium CNI, the two 1Password
 # bootstrap Secrets that nothing in Git may hold, a first install of Connect
-# and ArgoCD from this repository's charts, and the factory-root Application.
+# and ArgoCD from this repository's charts and values, and the factory-root Application.
 # Every later change, including to those two charts, goes through a PR and is
 # synced by ArgoCD, which adopts what this script installed.
 #
@@ -24,7 +24,15 @@ export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/factory.yaml}"
 context="$(kubectl config current-context)"
 echo "Bootstrapping GitOps on context ${context} ($(kubectl get nodes --no-headers | wc -l) nodes)"
 
+CILIUM_VERSION="1.20.4" # keep in step with projects/platform-factory/cilium/application.yaml
+
 apply() { kubectl apply --server-side --force-conflicts -f -; }
+
+# 0. Cilium, the CNI. Nothing else can schedule until it runs.
+helm template cilium cilium --repo https://helm.cilium.io --version "${CILIUM_VERSION}" \
+	-n kube-system -f "${ROOT}/projects/platform-factory/cilium/values.yaml" | apply
+kubectl -n kube-system rollout status ds/cilium --timeout=10m
+kubectl wait --for=condition=Ready nodes --all --timeout=5m
 
 # 1. 1Password Connect and operator, with the bootstrap Secrets they read.
 kubectl create namespace onepassword --dry-run=client -o yaml | apply

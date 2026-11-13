@@ -38,7 +38,7 @@ router must reserve these three leases.
 | Certificates API | `certificates.k8s.io/v1beta1` served | Substrate's podcertificate controller uses the v1beta1 ClusterTrustBundle and PodCertificateRequest clients |
 | Sandboxing | gVisor `release-20261102.0` (`runsc`), RuntimeClass `gvisor` | The same release Substrate's SandboxConfig pins. Substrate stages its own runsc inside worker pods; the RuntimeClass serves other sandboxed pods |
 | Node sysctls | proxy ARP/NDP, larger neighbour table, inotify | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
-| Network | flannel VXLAN, k3s network-policy controller | k3s defaults; Substrate's default-deny namespace policy needs NetworkPolicy enforcement |
+| Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 is validated here with `cilium connectivity test` |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
 | Images | embedded Spegel mirror for every registry | Each image crosses the home uplink once |
 | Ingress | Cloudflare Tunnel managed by cfgate (Gateway API) | No inbound ports; the tunnel, its routes and DNS records are Kubernetes resources. cfgate replaced StringKe/cloudflare-operator, whose last release (v0.51.0) watches Gateway API `v1alpha2` UDPRoute, which current Gateway API no longer serves |
@@ -50,7 +50,7 @@ Traefik and ServiceLB are disabled.
 
 ## Bootstrap and rebuild
 
-Both scripts run from an operator machine with SSH and passwordless sudo on
+The scripts run from an operator machine with SSH and passwordless sudo on
 the nodes. They are idempotent.
 
 ```bash
@@ -66,10 +66,12 @@ OP_CONNECT_TOKEN=... \
   projects/factory-cluster/bootstrap-gitops.sh
 ```
 
-Step 3 creates the two 1Password bootstrap Secrets, installs Connect and ArgoCD
-from this repository's charts, and applies `factory-root-application.yaml`.
-From then on, merged changes under `projects/platform-factory/` deploy
-automatically, and ArgoCD adopts the Connect and ArgoCD installs.
+Nodes register after step 2 but stay NotReady: there is no CNI yet. Step 3
+installs Cilium first, then creates the two 1Password bootstrap Secrets,
+installs Connect and ArgoCD from this repository's charts, and applies
+`factory-root-application.yaml`. From then on, merged changes under
+`projects/platform-factory/` deploy automatically, and ArgoCD adopts the
+Cilium, Connect and ArgoCD installs.
 
 To upgrade k3s or gVisor, change the pins in `nodes/install-node.sh` and rerun
 step 2. It restarts one node at a time.
@@ -91,6 +93,23 @@ These are the only things set up outside Git, plus the reason for each:
    `CLOUDFLARE_API_TOKEN` holding a Cloudflare API token that has:
    Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
 3. **DHCP reservations** for the three node addresses above.
+
+## Network policy
+
+Every pod is default-deny in both directions
+(`projects/platform-factory/network-policy/resources/baseline.yaml`). The only
+flow the baseline allows is DNS to CoreDNS, through Cilium's DNS proxy so that
+egress rules can name domains. Each namespace then has one file allowing
+exactly its own traffic, with internet egress listed by domain name. A
+component with no file can reach nothing, so a new component needs one in the
+same change that deploys it.
+
+To see what a policy drops:
+
+```bash
+cilium hubble port-forward &
+hubble observe --verdict DROPPED -f
+```
 
 ## factory.jomcgi.dev
 
