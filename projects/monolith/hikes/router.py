@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
 from core.db import get_session
+from core.http_cache import conditional_response
 from hikes.forecast import MAX_PRECIPITATION_MM, MAX_WIND_KMH, is_viable
 from hikes.models import Walk, WalkHour
 from shared.forecast_freshness import top_of_hour
@@ -257,11 +258,9 @@ def get_walks(
     etag = _walks_etag(len(walks), cutoff, max_fetched)
     headers = {"Cache-Control": _WALKS_CACHE_CONTROL, "ETag": etag}
 
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return {
         "count": len(walks),
         "generated_at": iso(max_fetched),

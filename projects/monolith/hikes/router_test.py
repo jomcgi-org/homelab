@@ -432,3 +432,21 @@ def test_doable_day_excludes_partial_sunset_hour(duration, doable):
     hours = [datetime.fromtimestamp(row[0], timezone.utc) for row in rows]
     assert [hour.hour for hour in hours] == [13, 14, 15, 16]
     assert _doable_days(hours, duration) == (["2026-10-22"] if doable else [])
+
+
+@pytest.mark.parametrize("path", ["/api/hikes/walks"])
+def test_conditional_response_preserves_payload_and_cache_headers(client, path):
+    first = client.get(path)
+    assert first.status_code == 200
+    etag = first.headers["ETag"]
+    for validator in ['"different"', f"W/{etag}", f'{etag}, "other"', "*"]:
+        response = client.get(path, headers={"If-None-Match": validator})
+        assert response.status_code == 200
+        assert response.content == first.content
+        for header in ["ETag", "Cache-Control", "Last-Modified"]:
+            assert response.headers.get(header) == first.headers.get(header)
+    cached = client.get(path, headers={"If-None-Match": etag})
+    assert cached.status_code == 304
+    assert cached.content == b""
+    for header in ["ETag", "Cache-Control", "Last-Modified"]:
+        assert cached.headers.get(header) == first.headers.get(header)

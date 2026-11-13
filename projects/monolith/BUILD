@@ -10025,3 +10025,15 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+# Shared conditional GET protocol, including raw validator equality.
+py_test(
+    name = "core_http_cache_test",
+    srcs = ["core/http_cache_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//fastapi",
+        "@pip//pytest",
+    ],
+)

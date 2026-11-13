@@ -30,6 +30,7 @@ from email.utils import format_datetime
 from core.clock import as_utc, iso_z
 from core.clock import utc_now as _now
 from core.db import get_session
+from core.http_cache import conditional_response
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from shared.embedding import EmbeddingClient
 from sqlalchemy import case, func, or_
@@ -126,11 +127,7 @@ def _cache_response(
     latest = as_utc(last_modified)
     if latest is not None:
         headers["Last-Modified"] = format_datetime(latest, usegmt=True)
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    for key, value in headers.items():
-        response.headers[key] = value
-    return None
+    return conditional_response(request, response, headers)
 
 
 def _parse_states(value: str) -> tuple[str, ...]:

@@ -24,6 +24,7 @@ from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
 from core.db import get_session
+from core.http_cache import conditional_response
 from ships.heat import LAT_STEP as HEAT_LAT_STEP
 from ships.heat import LON_STEP as HEAT_LON_STEP
 from ships.models import HeatCell, HeatCellHistorical, LatestPosition, Position, Vessel
@@ -184,11 +185,9 @@ def get_snapshot(
     etag = _snapshot_etag(len(vessels), max_updated)
     headers = {"Cache-Control": _SNAPSHOT_CACHE_CONTROL, "ETag": etag}
 
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return {"count": len(vessels), "vessels": vessels}
 
 

@@ -191,3 +191,21 @@ class TestListings:
         assert body["live_count"] == 1
         assert body["jobs"][0]["is_live"] is True
         assert body["jobs"][0]["closing_date"] is None
+
+
+@pytest.mark.parametrize("path", ["/api/dr-jobs/listings"])
+def test_conditional_response_preserves_payload_and_cache_headers(client, path):
+    first = client.get(path)
+    assert first.status_code == 200
+    etag = first.headers["ETag"]
+    for validator in ['"different"', f"W/{etag}", f'{etag}, "other"', "*"]:
+        response = client.get(path, headers={"If-None-Match": validator})
+        assert response.status_code == 200
+        assert response.content == first.content
+        for header in ["ETag", "Cache-Control", "Last-Modified"]:
+            assert response.headers.get(header) == first.headers.get(header)
+    cached = client.get(path, headers={"If-None-Match": etag})
+    assert cached.status_code == 304
+    assert cached.content == b""
+    for header in ["ETag", "Cache-Control", "Last-Modified"]:
+        assert cached.headers.get(header) == first.headers.get(header)

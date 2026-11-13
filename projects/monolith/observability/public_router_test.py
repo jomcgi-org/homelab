@@ -260,3 +260,23 @@ def test_public_factory_goals_supports_conditional_get(client):
 
     assert second.status_code == 304
     assert second.headers["ETag"] == first.headers["ETag"]
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/agents/public/merges", "/api/agents/public/factory/goals"]
+)
+def test_conditional_response_preserves_payload_and_cache_headers(client, path):
+    first = client.get(path)
+    assert first.status_code == 200
+    etag = first.headers["ETag"]
+    for validator in ['"different"', f"W/{etag}", f'{etag}, "other"', "*"]:
+        response = client.get(path, headers={"If-None-Match": validator})
+        assert response.status_code == 200
+        assert response.content == first.content
+        for header in ["ETag", "Cache-Control", "Last-Modified"]:
+            assert response.headers.get(header) == first.headers.get(header)
+    cached = client.get(path, headers={"If-None-Match": etag})
+    assert cached.status_code == 304
+    assert cached.content == b""
+    for header in ["ETag", "Cache-Control", "Last-Modified"]:
+        assert cached.headers.get(header) == first.headers.get(header)

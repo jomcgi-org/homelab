@@ -43,6 +43,7 @@ from knowledge.gaps import (
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from core.clock import as_utc
+from core.http_cache import conditional_response
 from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _graph_etag
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.models import AtomRawProvenance, Dispute, RawInput
@@ -163,11 +164,9 @@ def get_graph(
     if indexed_at is not None:
         headers["Last-Modified"] = format_datetime(indexed_at, usegmt=True)
 
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return graph
 
 

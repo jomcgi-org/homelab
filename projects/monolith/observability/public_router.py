@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from core.clock import as_utc, iso_z, utc_now as _now_utc
 from core.db import get_session
+from core.http_cache import conditional_response
 from observability.factory_goals import (
     goals_payload,
     list_active_goals,
@@ -125,10 +126,9 @@ def get_public_merges(
     headers = {"Cache-Control": _CACHE_CONTROL, "ETag": etag}
     if snapshotted_at is not None:
         headers["Last-Modified"] = format_datetime(snapshotted_at, usegmt=True)
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return payload
 
 
@@ -162,8 +162,7 @@ def get_public_factory_goals(
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     etag = f'"factory-goals-v1-{hashlib.sha256(encoded).hexdigest()}"'
     headers = {"Cache-Control": _GOALS_CACHE_CONTROL, "ETag": etag}
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return payload

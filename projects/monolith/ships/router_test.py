@@ -287,3 +287,21 @@ def test_log_stops_spreads_skewed_traffic_and_ignores_outlier():
 def test_log_stops_all_ones_single_bucket():
     # Every occupied cell seen exactly once: p99 anchor is 1, so a single bucket.
     assert _log_stops([1, 1, 1, 1]) == [1]
+
+
+@pytest.mark.parametrize("path", ["/api/ships/snapshot"])
+def test_conditional_response_preserves_payload_and_cache_headers(client, path):
+    first = client.get(path)
+    assert first.status_code == 200
+    etag = first.headers["ETag"]
+    for validator in ['"different"', f"W/{etag}", f'{etag}, "other"', "*"]:
+        response = client.get(path, headers={"If-None-Match": validator})
+        assert response.status_code == 200
+        assert response.content == first.content
+        for header in ["ETag", "Cache-Control", "Last-Modified"]:
+            assert response.headers.get(header) == first.headers.get(header)
+    cached = client.get(path, headers={"If-None-Match": etag})
+    assert cached.status_code == 304
+    assert cached.content == b""
+    for header in ["ETag", "Cache-Control", "Last-Modified"]:
+        assert cached.headers.get(header) == first.headers.get(header)

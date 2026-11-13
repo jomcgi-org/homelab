@@ -46,6 +46,7 @@ from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
 from core.db import get_session
+from core.http_cache import conditional_response
 from shared.forecast_freshness import top_of_hour
 from stars.models import Site, SiteHour, SiteMonthClimatology
 from stars.scoring import CLEAR_CLOUD_MAX_PCT, is_dark_hour, is_twilight_hour
@@ -320,11 +321,9 @@ def _build_sites_from_db(
     )
     headers = {"Cache-Control": _SITES_CACHE_CONTROL, "ETag": etag}
 
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return {
         "sites": sites,
         "count": len(sites),
@@ -424,11 +423,9 @@ def get_history(
     etag = f'"v3-{len(sites)}-{total_clear}-{total_dark}"'
     headers = {"Cache-Control": _HISTORY_CACHE_CONTROL, "ETag": etag}
 
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = conditional_response(request, response, headers)
+    if cached is not None:
+        return cached
     return {
         "sites": sites,
         "count": len(sites),
