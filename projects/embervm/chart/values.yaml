@@ -65,6 +65,10 @@ hypervisorEpoch: "fc-v1.16.1-r2"
 # The brick generation-marker gate and noded adoption guard are active when this
 # actuator is enabled. Disabled environments trust their external boot actuator.
 scratchPrep:
+  # Repository-only profile for #6562. No GitOps overlay enables this.
+  isolatedDevTrial:
+    enabled: false
+    nodeName: ""
   enabled: true
   # Safe repository defaults preserve the deployed ext4 behavior. Selecting
   # xfs opts in only newly created managed images. It never reformats an

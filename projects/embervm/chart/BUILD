@@ -366,6 +366,10 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "files/**/*",

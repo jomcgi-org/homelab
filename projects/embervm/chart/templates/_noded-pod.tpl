@@ -110,7 +110,10 @@ imagePullSecrets:
 priorityClassName: {{ $ctx.Values.noded.priorityClassName }}
 nodeSelector:
   {{- toYaml $nodeSelector | nindent 2 }}
-{{- if and $ctx.Values.bricks.enabled $ctx.Values.bricks.autoscale.archiveAckGate.enabled }}
+{{- if $ctx.Values.scratchPrep.isolatedDevTrial.enabled }}
+affinity:
+  {{- include "embervm.scratchTrial.affinity" $ctx | nindent 2 }}
+{{- else if and $ctx.Values.bricks.enabled $ctx.Values.bricks.autoscale.archiveAckGate.enabled }}
 # Both pod shapes share host scratch. Keep the interim DaemonSet in the
 # selector too; class and floor labels must not narrow this node-wide rule.
 affinity:

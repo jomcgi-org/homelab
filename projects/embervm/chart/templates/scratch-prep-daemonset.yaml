@@ -1,3 +1,5 @@
+{{- include "embervm.scratchTrial.validate" . }}
+{{- $trial := .Values.scratchPrep.isolatedDevTrial }}
 {{- if .Values.scratchPrep.enabled }}
 # Node-provisioning contract actuator (ADR embervm/012 storage-tiers amendment;
 # warmth cache-cap retention decisions 2026-07-22 "Uniform storage cap"): noded's
@@ -44,6 +46,11 @@ spec:
         {{- include "embervm.scratchPrep.labels" . | nindent 8 }}
     spec:
       hostPID: true
+      {{- if $trial.enabled }}
+      automountServiceAccountToken: false
+      affinity:
+        {{- include "embervm.scratchTrial.affinity" . | nindent 8 }}
+      {{- end }}
       {{- if .Values.imagePullSecret.enabled }}
       imagePullSecrets:
         - name: {{ .Values.imagePullSecret.name }}
@@ -63,6 +70,18 @@ spec:
           securityContext:
             privileged: true
           env:
+            {{- if $trial.enabled }}
+            - name: SCRATCH_TRIAL_NODE
+              value: {{ $trial.nodeName | quote }}
+            - name: SCRATCH_PATH
+              value: /var/lib/embervm-xfs-trial/scratch
+            - name: HOST_SCRATCH_IMAGE_PATH
+              value: /var/lib/embervm-xfs-trial/scratch.img
+            - name: CONTAINER_SCRATCH_PATH
+              value: /host/scratch
+            - name: SCRATCH_IMAGE_PATH
+              value: /host/scratch.img
+            {{- end }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -89,7 +108,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - nsenter -t 1 -m -- sh -c 'mountpoint -q /var/lib/embervm/scratch && test -s {{ printf "%s/.scratch-generation" .Values.noded.firecracker.nvmeRoot | quote }}'
+                - nsenter -t 1 -m -- sh -c 'mountpoint -q {{ if $trial.enabled }}/var/lib/embervm-xfs-trial/scratch{{ else }}/var/lib/embervm/scratch{{ end }} && test -s {{ printf "%s/.scratch-generation" .Values.noded.firecracker.nvmeRoot | quote }}'
             initialDelaySeconds: 2
             periodSeconds: 10
           resources:
@@ -113,7 +132,7 @@ spec:
       volumes:
         - name: host-embervm
           hostPath:
-            path: /var/lib/embervm
+            path: {{ if $trial.enabled }}/var/lib/embervm-xfs-trial{{ else }}/var/lib/embervm{{ end }}
             type: DirectoryOrCreate
         - name: prep-script
           configMap:

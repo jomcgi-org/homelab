@@ -38,6 +38,29 @@ if [ "$MIGRATE_EXT4" = true ] && [ "$FILESYSTEM" != xfs ]; then
 	fail "ext4 migration requires SCRATCH_FILESYSTEM=xfs"
 fi
 
+# The chart supplies this only for the isolated dev profile. Refuse drift before
+# mount inspection, marker writes, image creation or any destructive operation.
+if [ "${SCRATCH_TRIAL_NODE+x}" = x ]; then
+	[ -n "$SCRATCH_TRIAL_NODE" ] && [ "$NODE" = "$SCRATCH_TRIAL_NODE" ] ||
+		fail "isolated trial requires its exact named node"
+	[ "$FILESYSTEM" = xfs ] &&
+		[ "$SCRATCH" = /var/lib/embervm-xfs-trial/scratch ] &&
+		[ "$HOST_IMG" = /var/lib/embervm-xfs-trial/scratch.img ] &&
+		[ "$IMG" = /host/scratch.img ] &&
+		[ "$CONTAINER_SCRATCH" = /host/scratch ] &&
+		[ "$MARKER" = /var/lib/embervm-xfs-trial/scratch/.scratch-generation ] &&
+		[ "$FSTAB" = /etc/fstab ] || fail "inconsistent isolated trial paths or filesystem"
+	# A symlinked host root or mountpoint must not redirect the trial into prod.
+	root=$(host readlink -f /var/lib/embervm-xfs-trial) || fail "cannot resolve trial root"
+	[ "$root" = /var/lib/embervm-xfs-trial ] || fail "aliased trial root"
+	if host mountpoint -q "$root"; then
+		fail "trial root must not be a mount or bind alias"
+	fi
+	[ ! -L /host/scratch ] || fail "symlinked trial mountpoint"
+	host_identity=$(host stat -c '%d:%i' /var/lib/embervm-xfs-trial)
+	[ "$(stat -c '%d:%i' /host)" = "$host_identity" ] || fail "trial hostPath identity mismatch"
+fi
+
 filesystem_type() {
 	type=$(blkid -p -s TYPE -o value "$IMG" 2>/dev/null) ||
 		fail "cannot identify the filesystem on existing managed image $HOST_IMG"
@@ -219,6 +242,29 @@ write_marker() {
 mounted=false
 if host mountpoint -q "$SCRATCH"; then
 	mounted=true
+fi
+
+if [ "${SCRATCH_TRIAL_NODE+x}" = x ] && { [ -e "$IMG" ] || [ -L "$IMG" ]; }; then
+	managed_image_identity >/dev/null
+	if [ "$(filesystem_type)" = ext4 ] && [ "$MIGRATE_EXT4" != true ]; then
+		fail "isolated XFS trial has ext4; migration requires separate explicit opt-in"
+	fi
+	if [ "$mounted" = false ]; then
+		trial_aliases=$(host losetup -j "$HOST_IMG") || fail "cannot inspect trial aliases"
+		[ -z "$trial_aliases" ] || fail "unmounted trial image still has a loop alias"
+	fi
+fi
+
+if [ "${SCRATCH_TRIAL_NODE+x}" = x ] && [ "$mounted" = true ]; then
+	managed_image_identity >/dev/null
+	trial_source=$(host findmnt -n -o SOURCE --target "$SCRATCH") || fail "cannot inspect trial mount"
+	trial_loops=$(host losetup -j "$HOST_IMG") || fail "cannot inspect trial loops"
+	[ "$(printf '%s\n' "$trial_loops" | wc -l | tr -d ' ')" -eq 1 ] &&
+		[ "${trial_loops%%:*}" = "$trial_source" ] || fail "foreign or aliased trial mount"
+	[ "$(host losetup -n -O BACK-FILE "$trial_source")" = "$HOST_IMG" ] || fail "foreign trial backing image"
+	[ "$(host findmnt -rn -S "$trial_source" -o TARGET)" = "$SCRATCH" ] || fail "aliased trial loop"
+	fstab_identity_is_safe || fail "foreign trial fstab identity"
+	fstab_has_managed_entry "$(filesystem_type)" || fail "missing trial fstab entry"
 fi
 
 if [ "$mounted" = true ]; then

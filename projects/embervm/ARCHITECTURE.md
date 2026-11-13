@@ -2623,6 +2623,87 @@ scratch, and an external durable store as the minimum deployment contract.
 
 ---
 
+### Isolated dev XFS trial (#6562)
+
+`scratchPrep.isolatedDevTrial.enabled` defaults to false. No Application or
+values overlay enables it. Normal hub dev still uses production's
+`/var/lib/embervm/scratch/dev`; that namespace split cannot validate a separate
+filesystem. Production remains ext4 with migration disabled.
+
+**Why.** The trial reuses `chart/files/scratch-prep.sh` and its managed-image
+migration checks. A fixed sibling root `/var/lib/embervm-xfs-trial` keeps both
+`scratch.img` and the `scratch` mount outside production's `/var/lib/embervm`.
+Scratch-prep binds only that root at `/host`. Its host mount, fstab identity,
+generation marker and brick `nvmeRoot` all use the isolated paths. Required
+node affinity matches the one explicit Kubernetes `metadata.name` on
+scratch-prep and every brick, in addition to the `ember-bricks` pool selector.
+An absent or invalid name fails rendering; there is no fleet fallback.
+
+A separately authorized activation must select the `embervm-dev` release and
+namespace and supply all of these settings together. Start from dev's values
+and hub overlay, never production's overlay:
+
+- Set `scratchPrep.isolatedDevTrial.enabled=true` and `nodeName` to the actual
+  selected node's name. Enable `scratchPrep.enabled`, select `filesystem=xfs`
+  and retain `migrateExt4ToXfs=false` for new-image provisioning.
+- Set `noded.firecracker.nvmeRoot=/var/lib/embervm-xfs-trial/scratch`,
+  `nvmeRootHostPathType=Directory`, and `sharedScratch.enabled=false`.
+  Keep the noded DaemonSet disabled and bricks enabled, with empty `nodeFloors`.
+  Move every `workloads.<name>.rootfsPath` under the isolated scratch root,
+  preserving its `embervm-noded/<workload>/rootfs.ext4` suffix. These paths feed
+  both rootfs builders and the daemon image table; `nvmeRoot` alone is insufficient.
+  Select `cloud.google.com/gke-nodepool: ember-bricks` and
+  `homelab.io/firecracker: "true"`. Keep `archiveAckGate.enabled=false`.
+- Use namespace RBAC. Disable the store credentials, bearer-token Secret, KEK,
+  token broker, egress and Postgres op-log; empty the store endpoint and bucket.
+  Disable `conformance.codex.enabled`, whose broker prerequisite is absent.
+  This profile uses the release's dev ServiceAccounts. It cannot borrow
+  production's durable store or identity. Existing dev image-pull credentials
+  remain a prerequisite for pulling private images.
+
+Render that proposed activation with `helm template embervm-dev
+projects/embervm/chart --namespace embervm-dev` and the proposed values files.
+Inspect the scratch-prep DaemonSet and all brick Deployments before applying
+through the authorized GitOps owner. The render rejects inconsistent paths,
+shared scratch, missing node selection and credential-bearing store settings.
+At execution, the script checks the node, fixed paths, hostPath inode identity,
+root aliases, managed image and mounted-loop identity before writing a marker
+or provisioning. Existing migration consumer, inode and loop-alias checks
+remain in force. Changing the flag back does not restore an ext4 image already
+reformatted as XFS.
+
+Repository tests in `//projects/embervm/chart:scratch_prep_test` exercise Helm
+output and the rendered script with temporary paths and command doubles. They
+cover inactive-profile equivalence, node affinity, consumer/readiness paths,
+refusals, idempotence and simulated reformat generations. They do not prove
+kernel support, real reflink, remount survival or cold-boot recovery.
+
+Validate dev before any separately authorized production activation. Read
+`verify_deployment` for the authorized revision and confirm only the selected
+node runs the trial. Read node image and kernel evidence for current XFS
+support; the September COS observation is insufficient. Read bounded trial
+logs for real FICLONE, independent writes to both copies and retained contents
+after remount. Scratch-prep logs report the capped filesystem mount, migration
+and generation-marker path. Its DaemonSet readiness checks the isolated host
+mount and `/var/lib/embervm-xfs-trial/scratch/.scratch-generation`; the brick's
+`wait-for-scratch-generation` init reads the same marker. Read activation and filesystem audits
+for one node, no active consumers, untouched production scratch and foreign
+mounts, exactly one managed `/etc/fstab` entry, an idempotent rerun with a stable
+marker, and a new marker after an actual authorized reformat.
+
+Read readiness and recovery logs from the bounded cold-boot trial. A durable
+session must restore previously recorded contents through the supported durable
+recovery path. The hub dev overlay currently has no object store; this local-only
+profile cannot satisfy that acceptance item. A separately authorized dev durable
+store and recovery configuration are prerequisites. A local restart is not
+proof of durability. After dev acceptance, production still requires separate
+authorization and equivalent one-node evidence for kernel support, real reflink
+independence across remount, consumer and mount isolation, fstab uniqueness,
+idempotence, marker change after actual reformat, readiness, cold boot and
+durable session restoration. All operational acceptance stays open on #6562;
+this repository delivery executes none of those host trials and does not reopen
+#6563's diff-banking scope.
+
 ## 12. Direction
 
 - #7210: durable existing-session residency demand and factory capacity waits,
@@ -2635,6 +2716,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Isolated dev XFS scratch on one explicitly named node precedes production validation | section 11 | #6562 | repository profile default-off; all host trials and durable restoration pending |
 | Factory guests share credential-free bounded CI log reads | section 4 | #6442 | helper packaged; guest uptake and next-window repeated-call evidence pending |
 | Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
