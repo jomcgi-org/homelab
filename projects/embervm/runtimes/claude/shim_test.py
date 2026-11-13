@@ -7288,7 +7288,10 @@ def test_muse_activity_uses_arguments_from_authoritative_item_revision(
         }
     )
 
-    assert shim._muse_activities_from_view_events(events, session_id, command_id) == [
+    retained_events = shim._muse_tool_events_from_view_events(
+        events, session_id, command_id
+    )
+    assert shim._muse_reconciled_activities([], retained_events) == [
         {"type": "bash", "command": "printf 'spark command content\\n'"},
         {"type": "tool_use", "name": "read", "input": {"path": "README.md"}},
     ]

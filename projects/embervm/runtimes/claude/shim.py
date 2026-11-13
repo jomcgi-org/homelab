@@ -4747,12 +4747,6 @@ def _muse_reconciled_activities(live_events, retained_events):
     return activity_from_events(reconciled)
 
 
-def _muse_activities_from_view_events(events, session_id, command_id):
-    return _muse_reconciled_activities(
-        [], _muse_tool_events_from_view_events(events, session_id, command_id)
-    )
-
-
 def _muse_live_tool_events(tasks_by_id):
     events = []
     for task_id, task in tasks_by_id.items():
