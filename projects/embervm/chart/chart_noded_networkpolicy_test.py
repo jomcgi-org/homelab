@@ -11,7 +11,10 @@ import yaml
 CHART = Path(__file__).resolve().parent
 
 
-def render(release="policy", environment=None, settings=()):
+def render(release=None, environment=None, settings=()):
+    release = release or {"dev": "embervm-dev", "prod": "embervm"}.get(
+        environment, "policy"
+    )
     args = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -39,7 +42,8 @@ def matches(selector, labels):
     )
 
 
-def allows(policy, labels, port, namespace="policy", protocol="TCP"):
+def allows(policy, labels, port, namespace=None, protocol="TCP"):
+    namespace = namespace or policy["metadata"]["namespace"]
     for rule in policy["spec"]["ingress"]:
         for peer in rule["from"]:
             # Native podSelector-only peers are scoped to the policy namespace.
@@ -76,9 +80,19 @@ def test_real_pods_and_callers(environment):
     )
     policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
     # Helm leaves namespaced resources' namespace implicit; install scopes them.
-    policy["metadata"]["namespace"] = "policy"
+    policy["metadata"]["namespace"] = {"dev": "embervm-dev", "prod": "embervm"}.get(
+        environment, "policy"
+    )
     assert policy["apiVersion"] == "networking.k8s.io/v1"
     assert policy["spec"]["policyTypes"] == ["Ingress"]
+    for rule in policy["spec"]["ingress"]:
+        assert rule["ports"]
+        assert all("port" in p and p["protocol"] == "TCP" for p in rule["ports"])
+        assert all(
+            set(peer) == {"podSelector"} and peer["podSelector"]["matchLabels"]
+            for peer in rule["from"]
+        )
+
     pods = workloads(docs)
     targets = [
         p for p in pods if any(c["name"] == "noded" for c in p["spec"]["containers"])
@@ -105,10 +119,7 @@ def test_real_pods_and_callers(environment):
         warm_end = min(65535, base + subnet.num_addresses - 2)
         for pod in pods:
             caller = pod["metadata"]["labels"]
-            names = {c["name"] for c in pod["spec"]["containers"]}
-            cp = "control-plane" in names
-            # Control-plane container is named embervm in this chart.
-            cp = cp or caller.get("app.kubernetes.io/name") == "embervm"
+            cp = caller.get("app.kubernetes.io/name") == "embervm"
             envoy = caller.get("app.kubernetes.io/component") == "serving-envoy"
             for name in ("grpc", "grpc-tls"):
                 if name in ports:
