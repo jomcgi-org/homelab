@@ -1,0 +1,220 @@
+# Factory architecture
+
+The reusable software factory that runs on the factory home cluster
+(`projects/factory-cluster/`). This file records the design for steps 2
+and 3 of #7817: installing the foundation and delivering the first reviewed
+change. Labels: **[V]** verified in upstream source, docs or live state;
+**[I]** inferred, to confirm in the PR that depends on it.
+
+## Components and ownership
+
+| Responsibility | Component | Pin |
+| --- | --- | --- |
+| Work requests, assignment, work feed, run queue | itsaplan Community | v1.10.0 (`ghcr.io/croffasia/itsaplan-{api,web,worker}`), by digest |
+| Agent definitions, execution, sessions | kagent | v1.0.1 charts `oci://ghcr.io/kagent-dev/kagent/helm/{kagent-crds,kagent}` |
+| Isolated workspaces (actors) | Agent Substrate, kagent-dev fork | v1.0.1 |
+| Coding harness | Codex CLI | 0.161.0, as the kagent harness image pins it |
+| Repository, PR, CI, merge queue | GitHub | |
+| Provider and GitHub credentials | `projects/factory/broker` | this repo |
+| Relationships between itsaplan, kagent and GitHub | `projects/factory/connector` | this repo |
+
+itsaplan owns the request and its run history, kagent owns execution and
+session state, GitHub owns PR, check, review and merge state. The connector
+records how they relate and routes results and feedback between them.
+
+## Findings that shape the design
+
+1. **kagent builds against the kagent-dev Substrate fork.** [V] kagent
+   v1.0.1 `go.mod` replaces `go.ate.dev/substrate` with
+   `github.com/kagent-dev/substrate v1.0.0`, a fork 82 commits ahead of
+   upstream that adds Helm charts, the Kubernetes-Secret credential provider
+   and the egress gateway kagent uses. kagent needs ate-api-server preview
+   gates `PerTemplateSnapshotLocation` and `GoldenEgressPolicy`, the `k8s.io`
+   credential provider with namespace policies, the egress MITM CA, the
+   kagent controller in the router SPIFFE allowlist and bootstrap owners, and
+   `ate.dev/api-access=true` on the kagent namespace. The first Substrate
+   install (#7829) is upstream v1.0.0; aligning it with the fork is its own
+   change.
+2. **The Codex harness takes an OpenAI API key, not a ChatGPT login.** [V]
+   It accepts only `baseUrl` and `apiFormat: responses`. The Substrate
+   gateway replaces a header the client sends and never adds one, while the
+   ChatGPT backend also expects `chatgpt-account-id`. The broker therefore
+   relays model calls (below).
+3. **OpenAI advises against ChatGPT-account auth for public repositories**
+   and against sharing one `auth.json` across streams. [V] Using the
+   subscription for `jomcgi-org/homelab` is Joe's decision.
+4. **The itsaplan chart renders its secrets from values.** [V] That
+   conflicts with 1Password delivery, so the factory chart carries its own
+   itsaplan templates against the upstream images.
+5. **kagent's trusted-proxy mode decodes bearer JWTs without verifying
+   them.** [V] Network policy must leave the edge and the kagent UI as the
+   only bearer paths into the controller.
+6. **A kagent service-account principal includes the ServiceAccount UID.**
+   [V] Recreating the connector's ServiceAccount changes its identity and
+   loses access to its sessions, so that ServiceAccount is never pruned and a
+   restore includes an ownership transfer.
+7. **itsaplan run semantics.** [V] An external run's lease defaults to 300 s
+   and fails after 3 handouts without a result. A reported failure is never
+   retried. Cancel flips the status at once, and a heartbeat then gets 404,
+   the same answer as a reclaimed attempt.
+
+## Umbrella chart
+
+`projects/factory/chart` is a published `helm_chart` (OCI
+`ghcr.io/jomcgi/homelab/charts/factory`) with the connector and broker
+images pinned at build time. `projects/factory/deploy` holds the homelab
+Application and values. It installs:
+
+- kagent (subchart, `kagent.mode: install|existing`).
+- itsaplan (own templates), the broker, the connector.
+- A secret-init Job that creates rotatable keys only when absent.
+- A CNPG `Cluster` (`postgres.mode: install`; `existing` takes Secret
+  references only).
+- kagent CRs per repository binding: ModelConfig, Harness, Agent,
+  EgressPolicy, and the binding's namespace.
+- HTTPRoutes and Cilium policies.
+
+Substrate, Authentik, the Envoy edge, the OTel collectors and Garage stay
+separate installations that the chart references.
+
+**Ordering.** kagent CRDs are vendored in `crds/`; a PreSync/pre-upgrade
+Job server-side-applies them so upgrades update CRDs. Waves: namespaces,
+ServiceAccounts, 1Password items and the database (-2); secret-init and a
+database-ready gate (-1); kagent, itsaplan api, broker (0); itsaplan web and
+worker, connector (1); kagent CRs and the itsaplan bootstrap Job (2).
+
+**State kept across upgrades.** itsaplan `APP_ENCRYPTION_KEY` and
+`BETTER_AUTH_SECRET` come from 1Password and never change. Generated keys,
+the Codex grant and GitHub tokens are ignored by ArgoCD diffs. The CNPG
+Cluster, PVCs and the kagent and connector ServiceAccounts carry
+`Prune=false,Delete=false` and `helm.sh/resource-policy: keep`. Acceptance:
+two resyncs leave Secret `resourceVersion`s and database row counts unchanged.
+
+**Configuration** covers repositories (owner, repo, base branch, itsaplan
+project, agent, namespace, branch prefix, concurrency, required and trusted
+checks, merge policy, retention), agents (harness, provider, resources,
+concurrency, egress grants, permitted tools), providers, and each external
+service in install or existing mode. A repository binding is the access
+boundary: one Agent and namespace per repository, with credentials scoped to
+it.
+
+## Connector
+
+Go, built with rules_go and apko, one replica with `Recreate` and a Postgres
+advisory lock. Each takeover increments a writer epoch, and every external
+side effect checks it first. kagent guarantees one non-quiescent task per
+session and one execution per actor, which keeps one writer per worktree.
+
+**Data**, in its own database: repository bindings, work items (issue,
+binding, branch `factory/<KEY>`, kagent session and generation, state),
+runs, delivery attempts (unique per run and attempt, A2A message ID, kagent
+task, error class, evidence URI), pull requests (head SHA, merge-queue
+state), review events (unique GitHub node ID, commit SHA, disposition),
+cancellations and an outbox. Full transcripts and CI logs go to the
+`factory-evidence` bucket.
+
+**Dispatch.** Claim runs per agent key. A claimed run with an open attempt
+is a transport redelivery: find the kagent task by message ID and attach,
+never send again. A new send uses message ID
+`itsaplan-run/<runId>/<decisionId>`; for continuation sends, look the ID up
+in the session history after an ambiguous response before any resend. The
+repository and branch come from configuration, never from issue text.
+
+**Heartbeat** every 60 s. On 404, read the run: canceled starts cancellation;
+a higher attempt means this attempt is stale and stops writing. Progress is
+posted as itsaplan run events with a persisted offset.
+
+**Completion.** The connector opens or updates the one PR for the work
+item from the pushed branch. A run result means the turn finished; the
+issue becomes Done only from the observed merge. Engineering retries are
+connector decisions bounded per work item; credential and quota failures
+block with the reason instead of retrying.
+
+**Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
+if its commit is the current head and its author is a trusted identity;
+duplicates and stale heads are recorded. Requested changes start a
+mention-run in the mapped session. A crashed session is reverted; an expired
+or deleted one is replaced with context from the issue, PR and review threads,
+and the replacement is announced.
+
+**Merge.** When the required checks and the trusted reviewer succeed on the
+current head, enqueue with GraphQL `enqueuePullRequest`, then mark the
+itsaplan issue Done with the issue, run, session, PR and merge links.
+Deployment health is a separate record.
+
+**Cancellation** sends A2A `tasks/cancel` and stays pending until kagent
+reports the task canceled or failed.
+
+## Credential broker
+
+`projects/factory/broker`, one replica holding a Lease. It reuses the Codex
+OAuth code in `projects/embervm/tokenbroker`, moved out of `internal/` first.
+
+- **Codex relay (preferred).** The ModelConfig points at the broker's relay.
+  Codex in the actor holds a placeholder; the Substrate gateway swaps in a
+  relay key; the broker checks it and forwards to
+  `chatgpt.com/backend-api/codex/responses` with the access token and
+  `chatgpt-account-id`. Provider credentials exist only in the broker.
+  Direct injection is the fallback if the backend accepts a request with
+  only `Authorization`.
+- **Refresh.** One grant from the broker's own device login. Refresh when
+  under 24 h from expiry or 7 days old, single-flight, written before use. A
+  dead grant answers `codex_login_required`, which the connector treats as a
+  credential failure. Relay keys rotate with an overlap longer than the
+  gateway's five-minute credential cache.
+- **GitHub.** Installation tokens from the factory GitHub App, minted every
+  30 minutes and downscoped per repository binding (`contents: write` for the
+  agent, PR and check access for the connector). The agent's git uses a
+  placeholder header that the gateway replaces for `https://github.com`.
+
+## Identities
+
+| Who | How |
+| --- | --- |
+| Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client in Authentik; invite-only registration; a break-glass admin |
+| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode |
+| Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
+| Connector to itsaplan | A coordinator external agent for comments and issue state; the coding agent's key claims runs |
+| Connector and agents to GitHub | Broker-minted App tokens, one repository per binding |
+| Independent review | The Semgrep reviewer as a required check bound to its App ID in the ruleset |
+| Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
+
+## Delivery plan
+
+Each step is its own PR with live evidence recorded on #7817.
+
+1. This document.
+2. Align Substrate with kagent: fork charts and images, preview gates,
+   credential provider, egress CA, router and owner entries.
+3. Garage (three replicas) and the factory CNPG cluster.
+4. Move the Codex OAuth provider out of EmberVM's `internal/`.
+5. Chart scaffold with kagent.
+6. itsaplan.
+7. Credential broker.
+8. The homelab repository binding; proves credentials never reach the
+   workspace.
+9. Connector dispatch.
+10. Connector delivery: PRs, review, revision, merge.
+11. Reviewer and ruleset.
+12. Telemetry for delivery metrics.
+13. Install, upgrade and restore runbook.
+
+## Inputs from Joe
+
+- **Codex.** Which ChatGPT account, device-code login enabled, the broker's
+  own login, the model, and acceptance of OpenAI's public-repository
+  guidance (or an API key instead).
+- **GitHub App** `jomcgi-factory` in jomcgi-org: Contents and Pull requests
+  read/write, Checks, Commit statuses and Metadata read; installed on
+  `jomcgi-org/homelab`; 1Password item `k8s-homelab/factory-github-app`
+  (`app-id`, `installation-id`, `private-key`).
+- **Semgrep reviewer.** App ID, check name, triggers, and adding it to the
+  ruleset.
+- **1Password.** `k8s-homelab/factory-itsaplan` (`BETTER_AUTH_SECRET`,
+  `APP_ENCRYPTION_KEY`) and `k8s-homelab/factory-itsaplan-admin`
+  (`email`, `password`).
+- **Hostnames.** `factory-plan.jomcgi.dev` (itsaplan) and
+  `factory-agents.jomcgi.dev` (kagent).
+
+Everything except live Codex runs, agent pushes and required review can be
+built and trialled before these arrive.
