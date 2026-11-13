@@ -1,0 +1,65 @@
+# The substrate chart (control plane, router, egress gateway, credential
+# provider). See render-upstream.sh; values/common.yaml is applied first.
+
+# The chart owns the ate-system Namespace, as upstream's ate-controller.yaml
+# did before.
+createNamespace: true
+
+# The bundled PostgreSQL (upstream/postgres.yaml) authenticates both logins
+# with pod certificates; ../resources/kustomization.yaml declares the two
+# connection-string Secrets the chart reads.
+postgres:
+  clientCertificates:
+    enabled: true
+
+# atelet is its own release (values/atelet.yaml), as the chart recommends.
+atelet:
+  enabled: false
+
+# Snapshots stay in the rustfs that resources/snapshot-store.yaml runs. The
+# chart's bundled rustfs would put its access key in plain values; this one
+# reads the key bootstrap-substrate.sh generates.
+rustfs:
+  enabled: false
+ateApi:
+  snapshotLocation: s3://ate-snapshots/
+  authorization:
+    # Global owners. ate-client is what `kubectl ate` uses by default; the
+    # kagent controller (kagent namespace, kagent-controller ServiceAccount,
+    # authenticated by its pod certificate) creates atespaces for agents.
+    bootstrapOwners:
+      - system:serviceaccount:ate-system:ate-client
+      - spiffe://cluster.local/ns/kagent/sa/kagent-controller
+objectStorePlugin:
+  extraEnv:
+    - name: AWS_REGION
+      value: us-east-1
+    - name: AWS_ENDPOINT_URL
+      value: http://rustfs.ate-system.svc:9000
+    - name: AWS_S3_USE_PATH_STYLE
+      value: "true"
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: snapshot-store-credentials
+          key: AWS_ACCESS_KEY_ID
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: snapshot-store-credentials
+          key: AWS_SECRET_ACCESS_KEY
+
+atenetRouter:
+  # mTLS client identities allowed to reach actors: `kubectl ate proxy actor`
+  # and the kagent controller.
+  ingressAllowedSPIFFEIDs:
+    - spiffe://cluster.local/ns/ate-system/sa/atenet-client
+    - spiffe://cluster.local/ns/kagent/sa/kagent-controller
+
+# Which namespaces' Secrets each atespace may inject at the egress gateway.
+# kagent runs its agents in the kagent atespace with credentials in the kagent
+# namespace.
+credentialProvider:
+  namespacePolicies:
+    - atespace: kagent
+      allowedNamespaces: [kagent]

@@ -1,5 +1,6 @@
-# Rendered by render-upstream.sh from agent-substrate/substrate v1.0.0
-# (b34fbee742906494b5eb4f1f36987176bf8770a4) manifests/ate-install/generated/ate.dev_sandboxconfigs.yaml. Do not edit.
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate-crds:1.0.1
+# (sha256:3ed670bacd5680ecbcafc9d4a6c95ef90a20f96568b1ba621d0c9c7e411eb084) templates/ate.dev_sandboxconfigs.yaml. Do not edit.
+---
 # Copyright 2026 The Agent Substrate Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +15,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:

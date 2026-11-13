@@ -1,19 +1,6 @@
-# Rendered by render-upstream.sh from agent-substrate/substrate v1.0.0
-# (b34fbee742906494b5eb4f1f36987176bf8770a4) manifests/ate-install/sandboxconfig-gvisor.yaml. Do not edit.
-# Copyright 2026 The Agent Substrate Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
+# (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/sandboxconfig-gvisor.yaml. Do not edit.
+---
 # Cluster-wide SandboxConfig for the gVisor (runsc) sandbox class, shipped with
 # the platform as the class default so gVisor WorkerPools resolve it unless
 # they pin a specific configRef. atelet fetches the gVisor release tarball

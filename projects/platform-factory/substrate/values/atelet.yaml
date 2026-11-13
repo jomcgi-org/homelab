@@ -1,0 +1,7 @@
+# The substrate-atelet chart. values/common.yaml is applied first.
+objectStore:
+  backend: s3
+  endpoint: http://rustfs.ate-system.svc:9000
+  region: us-east-1
+  pathStyle: true
+  credentialsSecret: snapshot-store-credentials

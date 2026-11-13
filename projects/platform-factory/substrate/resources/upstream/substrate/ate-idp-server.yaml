@@ -1,5 +1,17 @@
-# Rendered by render-upstream.sh from agent-substrate/substrate v1.0.0
-# (b34fbee742906494b5eb4f1f36987176bf8770a4) manifests/ate-install/ate-idp-server.yaml. Do not edit.
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
+# (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/ate-idp-server.yaml. Do not edit.
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ate-idp-server
+  namespace: ate-system
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: ate-idp-server
+---
 # Copyright 2026 The Agent Substrate Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +35,20 @@ metadata:
   namespace: ate-system
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: idp
+  namespace: ate-system
+spec:
+  selector:
+    app: ate-idp-server
+  ports:
+  - name: https
+    port: 443
+    targetPort: https
+    appProtocol: https
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,8 +71,11 @@ spec:
       serviceAccountName: ate-idp-server
       containers:
       - name: ate-idp-server
-        image: ghcr.io/agent-substrate/substrate/ate-idp-server:v1.0.0@sha256:9553c0e60a8ad8bbb1c54c59e59cf0d33a338bf4f883b6f806610dc407f49f7c
+        image: ghcr.io/kagent-dev/substrate/ate-idp-server:v1.0.1@sha256:f27e38b0616c22caf067612105f569bd8ec54860bb6a6bb36862fd1d6130060a
+        resources:
+          {}
         args:
+        - "--issuer=https://idp.ate-system.svc"
         - --actor-id-jwt-pool=/run/actor-id-jwt-pool/pool.json
         - --server-cred-bundle=/run/servicedns.podcert.ate.dev/credential-bundle.pem
         ports:
@@ -72,7 +101,7 @@ spec:
             - ALL
         volumeMounts:
         # The serving certificate, with a DNS SAN for each Service that
-        # selects the pod: idp.ate-system.svc.
+        # selects the pod.
         - name: servicedns
           mountPath: /run/servicedns.podcert.ate.dev
         - name: actor-id-jwt-pool
@@ -94,28 +123,3 @@ spec:
               items:
               - key: pool
                 path: pool.json
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: ate-idp-server
-  namespace: ate-system
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app: ate-idp-server
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: idp
-  namespace: ate-system
-spec:
-  selector:
-    app: ate-idp-server
-  ports:
-  - name: https
-    port: 443
-    targetPort: https
-    appProtocol: https

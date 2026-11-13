@@ -1,5 +1,6 @@
-# Rendered by render-upstream.sh from agent-substrate/substrate v1.0.0
-# (b34fbee742906494b5eb4f1f36987176bf8770a4) manifests/ate-install/ate-system-networkpolicies.yaml. Do not edit.
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
+# (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/ate-system-networkpolicies.yaml. Do not edit.
+---
 # Copyright 2026 The Agent Substrate Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,8 +35,7 @@
 # policy whose pods do not exist selects nothing.
 #
 # Ports are named rather than numbered where the workloads name them, so the
-# same policy covers both atenet dataplanes (envoy serves the egress gateway on
-# 443, agentgateway on 8443, both as "https").
+# policy follows the ports exposed by the chart workloads.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -82,15 +82,13 @@ spec:
     ports:
     - protocol: TCP
       port: 443
-  # The objectstore-plugin sidecar's credential exchange is for the node
-  # plugins beside atelet and nothing else.
   - from:
     - podSelector:
         matchLabels:
           app: atelet
     ports:
     - protocol: TCP
-      port: 8445
+      port: exchange
 ---
 # The bundled postgres is reached only by ate-api-server. The installer runs
 # psql through `kubectl exec`, and the probes are exec probes, so neither needs
@@ -117,7 +115,7 @@ spec:
 ---
 # atelet's gRPC port is called only by ate-api-server, which dials the atelet
 # pod IP. Worker pods talk to atelet over its node-local Unix socket, not this
-# port. The hostPort mapping lands on the pod, so this policy covers it too.
+# port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -158,29 +156,13 @@ spec:
   ingress:
   - ports:
     - protocol: TCP
+      port: http
+    - protocol: TCP
       port: https
+    - protocol: TCP
+      port: connect
     - protocol: TCP
       port: connect-tls
----
-# ate-idp-server serves the actor JWT discovery document and key set. Relying
-# parties fetch them from pods in any namespace and, through an Ingress or a
-# load balancer, from outside the cluster. Both documents are public, so the
-# port admits any source.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: ate-idp-server
-  namespace: ate-system
-spec:
-  podSelector:
-    matchLabels:
-      app: ate-idp-server
-  policyTypes:
-  - Ingress
-  ingress:
-  - ports:
-    - protocol: TCP
-      port: https
 ---
 # The egress gateway is reached by atunnel in worker pods, which the
 # WorkerPool controller labels ate.dev/worker-pool, in whatever namespace the
@@ -236,7 +218,7 @@ spec:
     - protocol: TCP
       port: prometheus
     - protocol: TCP
-      port: envoy-metrics
+      port: gw-metrics
     - protocol: TCP
       port: health
     - protocol: TCP
@@ -245,3 +227,23 @@ spec:
       port: stats
     - protocol: TCP
       port: readiness
+---
+# ate-idp-server serves the actor JWT discovery document and key set. Relying
+# parties fetch them from pods in any namespace and, through an Ingress or a
+# load balancer, from outside the cluster. Both documents are public, so the
+# port admits any source.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ate-idp-server
+  namespace: ate-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ate-idp-server
+  policyTypes:
+  - Ingress
+  ingress:
+  - ports:
+    - protocol: TCP
+      port: https

@@ -1,47 +1,7 @@
-# ate-api-server's configuration, as `ate-setup deploy ate-system` writes it
-# (cmd/ate-setup/internal/steps/create.go and apienv.go) for this cluster:
-# the bundled PostgreSQL, S3 snapshot storage and the in-cluster OIDC issuer.
-#
-# ate-setup writes the connection strings to the Secret
-# ate-api-server-secret-envvars. The bundled PostgreSQL authenticates each
-# login with a pod certificate, so the strings hold no password and live here;
-# ate-api-server reads this ConfigMap and that optional Secret the same way.
-#
-# ate-setup also stamps a hash of these values on ate-api-server's pod
-# template so that a change rolls it. Here a change needs
-# `kubectl -n ate-system rollout restart deploy/ate-api-server`.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ate-api-server-envvars
-  namespace: ate-system
-data:
-  ATE_API_POSTGRES_READ_WRITE_CONNECTION_STRING: postgresql://substrate_readwrite_user@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/run/servicedns.podcert.ate.dev/trust-bundle.pem&sslcert=/run/postgres.podcert.ate.dev/substrate_readwrite_user.pem&sslkey=/run/postgres.podcert.ate.dev/substrate_readwrite_user.pem
-  ATE_API_POSTGRES_OWNER_CONNECTION_STRING: postgresql://substrate_owner_user@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/run/servicedns.podcert.ate.dev/trust-bundle.pem&sslcert=/run/postgres.podcert.ate.dev/substrate_owner_user.pem&sslkey=/run/postgres.podcert.ate.dev/substrate_owner_user.pem
-  ATE_API_POSTGRES_SCHEMA: substrate
-  ATE_API_POSTGRES_READ_WRITE_ROLE: substrate_readwrite
-  ATE_API_POSTGRES_OWNER_ROLE: substrate_owner
-  # installdefaults.ActorJWTIssuer: the install's ate-idp-server.
-  ATE_API_ACTOR_JWT_ISSUER: https://idp.ate-system.svc
-  # GCS only; empty on S3, as on kind.
-  ATE_API_SNAPSHOT_TRANSFER_SERVICE_ACCOUNT: ""
-  # The bucket in snapshot-store.yaml.
-  ATE_API_SNAPSHOT_LOCATION: s3://ate-snapshots/
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ate-api-config
-  namespace: ate-system
-data:
-  apiconfig.textproto: |
-    logging: {
-      level: "info"
-    }
----
 # Callers authenticate to ate-api-server with Kubernetes ServiceAccount
-# tokens. The issuer is this cluster's
-# (/.well-known/openid-configuration on the apiserver).
+# tokens. The substrate chart mounts this ConfigMap but leaves creating it to
+# the installer (kubectl-ate's install writes the same shape). The issuer is
+# this cluster's (/.well-known/openid-configuration on the apiserver).
 apiVersion: v1
 kind: ConfigMap
 metadata:

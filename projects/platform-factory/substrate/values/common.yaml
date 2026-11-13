@@ -1,0 +1,19 @@
+# Settings the substrate and substrate-atelet charts share. Both read the same
+# value paths for these keys; render-upstream.sh passes this file to both.
+
+# The preview gates kagent v1.0.1 needs: per-Harness snapshot locations and
+# the golden egress policy its runtime bootstrap depends on. Set here so
+# ate-api-server, ate-controller (and its workers) and atelet agree.
+preview:
+  - PerTemplateSnapshotLocation
+  - GoldenEgressPolicy
+
+# No collector yet: no OTLP push. Each component still serves Prometheus
+# /metrics for the observability work in projects/factory-cluster/README.md.
+otel:
+  traces:
+    enabled: false
+  metrics:
+    enabled: false
+  logs:
+    enabled: false
