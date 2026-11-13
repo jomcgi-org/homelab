@@ -15,7 +15,7 @@ spec:
     path: projects/platform-factory/factory-edge/resources
   destination:
     server: https://kubernetes.default.svc
-    namespace: cloudflare-operator-system
+    namespace: cfgate-system
   syncPolicy:
     automated:
       prune: true
@@ -23,7 +23,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
-      # The CRDs arrive with the cloudflare-operator Application.
+      # The CRDs arrive with the cfgate Application.
       - SkipDryRunOnMissingResource=true
     retry:
       limit: 5

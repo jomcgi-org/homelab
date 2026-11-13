@@ -1,0 +1,22 @@
+# Proxied CNAMEs to the tunnel for each attached route that is also annotated
+# factory.jomcgi.dev/publish=true. cfgate marks every record it writes with
+# an owner TXT and comment and refuses to touch records it does not own, so
+# the hub's records in the same zone are left alone.
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareDNS
+metadata:
+  name: factory
+  namespace: cfgate-system
+spec:
+  tunnelRef:
+    name: factory
+  zones:
+    - name: jomcgi.dev
+  policy: sync
+  source:
+    gatewayRoutes:
+      enabled: true
+      annotationFilter: "factory.jomcgi.dev/publish=true"
+  defaults:
+    proxied: true
+    ttl: 1

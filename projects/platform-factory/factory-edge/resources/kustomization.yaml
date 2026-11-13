@@ -1,8 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# The factory cluster's only path from the internet: one Cloudflare Tunnel, a
+# Gateway that accepts routes only from namespaces labelled
+# factory.jomcgi.dev/edge=true, and DNS only for routes annotated
+# factory.jomcgi.dev/publish=true. No namespace carries the label yet, so
+# nothing is published and the tunnel answers 404.
 resources:
   - tunnel.yaml
-# factory.jomcgi.dev gets its TunnelBinding (route plus DNS record) only once
-# its backend signs users in through Authentik OIDC (#7817). Until then the
-# tunnel publishes no hostname; reach the UI with kubectl port-forward.
+  - gateway.yaml
+  - dns.yaml
