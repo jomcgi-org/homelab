@@ -9,6 +9,9 @@
 {{- if or (not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" $trial.nodeName)) (gt (len $trial.nodeName) 253) -}}
 {{- fail "isolatedDevTrial requires one explicit nodeName, without wildcards" -}}
 {{- end -}}
+{{- if not (regexMatch "^[1-8]$" (toString $v.scratchSizeGi)) -}}
+{{- fail "isolatedDevTrial requires explicit scratchSizeGi of 1 through 8 GiB after the named-node capacity audit" -}}
+{{- end -}}
 {{- if or (not $v.scratchPrep.enabled) (ne $v.scratchPrep.filesystem "xfs") $v.noded.enabled (not $v.bricks.enabled) -}}
 {{- fail "isolatedDevTrial requires XFS scratchPrep and bricks, with the noded DaemonSet disabled" -}}
 {{- end -}}

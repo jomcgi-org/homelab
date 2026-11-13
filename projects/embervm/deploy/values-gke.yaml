@@ -297,8 +297,10 @@ scratchPrep:
 # (94 GiB boot disk, 44 GiB free on the host) ran its 34 GiB loop to 93% and
 # then out of space: three brick classes, embervm-dev's nested scratch
 # (~11 GiB), the warm bases and one workspace volume per live session all
-# share it, and session volumes provisioning failed with ENOSPC. The loop is
-# sparse, so the cap costs only what is written. scratch-prep never grows an
+# share it, and session volumes provisioning failed with ENOSPC. The ext4 loop
+# is sparse after formatting. Fresh XFS provisioning reserves the full 70 GiB;
+# it requires a new host-capacity audit including kubelet eviction headroom
+# before activation (ARCHITECTURE.md, "Isolated dev XFS trial"). scratch-prep never grows an
 # existing image: this applies when a node is created (Spot replacement or a
 # pool roll), not to the node already running.
 scratchSizeGi: 70

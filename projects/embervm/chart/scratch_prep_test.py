@@ -665,6 +665,7 @@ def test_rendered_gate_combinations(
 # Application references these settings; activation needs a separate delivery.
 def _trial_values() -> dict:
     return {
+        "scratchSizeGi": 4,
         "workloads": {
             name: {
                 "rootfsPath": workload["rootfsPath"].replace(
@@ -758,6 +759,7 @@ def test_trial_rendered_paths_and_node_boundary(tmp_path):
     assert env["SCRATCH_IMAGE_PATH"] == "/host/scratch.img"
     assert env["CONTAINER_SCRATCH_PATH"] == "/host/scratch"
     assert env["SCRATCH_MARKER_PATH"] == root + "/.scratch-generation"
+    assert env["SCRATCH_SIZE_GI"] == "4"
     assert (
         f'mountpoint -q {root} && test -s "{root}/.scratch-generation"'
         in container["readinessProbe"]["exec"]["command"][-1]
@@ -822,6 +824,32 @@ def test_trial_rejects_incomplete_configuration(tmp_path, path, value):
     target[parts[-1]] = value
     result = _render_trial(tmp_path, values)
     assert result.returncode != 0
+
+
+@pytest.mark.parametrize("size", [None, 0, -1, 9, 35, 70, 1.5, "1G", True])
+def test_trial_rejects_implicit_or_unbounded_size(tmp_path, size):
+    values = _trial_values()
+    if size is None:
+        del values["scratchSizeGi"]  # Chart default must not activate the trial.
+    else:
+        values["scratchSizeGi"] = size
+    result = _render_trial(tmp_path, values)
+    assert result.returncode != 0
+    assert "isolatedDevTrial requires explicit scratchSizeGi of 1 through 8 GiB" in (
+        result.stderr
+    )
+
+
+@pytest.mark.parametrize("size", [1, 8])
+def test_trial_accepts_bounded_size(tmp_path, size):
+    values = _trial_values()
+    values["scratchSizeGi"] = size
+    result = _render_trial(tmp_path, values)
+    assert result.returncode == 0, result.stderr
+    docs = list(yaml.safe_load_all(result.stdout))
+    prep = next(d for d in docs if d and d["kind"] == "DaemonSet")
+    env = prep["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert next(v["value"] for v in env if v["name"] == "SCRATCH_SIZE_GI") == str(size)
 
 
 def test_trial_rejects_production_namespace(tmp_path):

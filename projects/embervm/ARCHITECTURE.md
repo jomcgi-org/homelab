@@ -2639,6 +2639,66 @@ node affinity matches the one explicit Kubernetes `metadata.name` on
 scratch-prep and every brick, in addition to the `ember-bricks` pool selector.
 An absent or invalid name fails rendering; there is no fleet fallback.
 
+The sibling paths still share the host boot disk with production. In
+`format_new_image`, `fallocate` reserves the entire image before formatting.
+ext4's formatter punches holes; XFS keeps the full reservation. Even a failed
+allocation can consume the remaining free space before cleanup. The chart's
+35 GiB default must not be used for this trial. On the historical 94 GiB disk
+with 44 GiB free, it would leave about 9 GiB, below the default 15% imagefs
+eviction threshold (about 14 GiB), before production grows further.
+
+Before proposing activation, collect a fresh capacity audit on the exact
+`nodeName` using the hub's supported read-only Kubernetes surfaces. With the
+hub kubectl context, read the node, kubelet filesystem statistics and effective
+eviction configuration:
+
+```sh
+TRIAL_NODE='exact-selected-node-name'
+kubectl get node "$TRIAL_NODE" -o json
+kubectl get --raw "/api/v1/nodes/$TRIAL_NODE/proxy/stats/summary"
+kubectl get --raw "/api/v1/nodes/$TRIAL_NODE/proxy/configz"
+kubectl -n embervm get pods --field-selector "spec.nodeName=$TRIAL_NODE" \
+  -l app.kubernetes.io/component=scratch-prep -o wide
+```
+
+Select the existing production scratch-prep pod from that node and use its
+read-only filesystem commands. Its `/host` bind is `/var/lib/embervm`; do not
+measure free space inside the mounted loop or in the container rootfs:
+
+```sh
+PREP_POD='production-scratch-prep-pod-from-that-node'
+kubectl -n embervm exec "$PREP_POD" -c scratch-prep -- df -Pk /host
+kubectl -n embervm exec "$PREP_POD" -c scratch-prep -- \
+  stat -c 'size_bytes=%s allocated_blocks=%b block_bytes=%B' /host/scratch.img
+kubectl -n embervm exec "$PREP_POD" -c scratch-prep -- \
+  nsenter -t 1 -m -- findmnt -T /var/lib/embervm
+```
+
+Record the node name and timestamp with the output. Confirm the backing boot
+filesystem and the kubelet nodefs/imagefs accounting refer to the same disk;
+evaluate any separate filesystem against its own thresholds. In bytes, require
+`free >= trial_size + production_growth + eviction_headroom + margin`:
+
+- `free` is the available space from `df` on `/host` (convert KiB to bytes).
+- `trial_size` is the full proposed `scratchSizeGi * 2^30` reservation.
+- `production_growth` is `max(0, production_cap - allocated_bytes)`.
+  Use `%b * %B` for allocated bytes, not the sparse file's apparent size or
+  free space inside its loop. `production_cap` is the larger of the current
+  image size and the configured production cap (currently 70 GiB), so a future
+  replacement is also covered.
+- `eviction_headroom` is at least 15% of boot-filesystem capacity and must cover
+  any stricter effective nodefs/imagefs hard or soft eviction threshold plus
+  minimum reclaim from `configz`.
+- `margin` covers other expected host/image/log growth between audit and
+  provisioning, with at least 1 GiB beyond eviction headroom.
+
+If a read is unavailable, the filesystem mapping is unproven, or the inequality
+fails, leave the trial disabled. Do not use an allocation attempt as the check.
+Retain this audit in the activation PR and repeat it immediately before its
+authorized rollout; old free-space observations are insufficient. The 1–8 GiB
+trial bound limits the experiment, but does not establish capacity. A disk
+expansion or change to production's cap requires its own authorized delivery.
+
 A separately authorized activation must select the `embervm-dev` release and
 namespace and supply all of these settings together. Start from dev's values
 and hub overlay, never production's overlay:
@@ -2646,6 +2706,10 @@ and hub overlay, never production's overlay:
 - Set `scratchPrep.isolatedDevTrial.enabled=true` and `nodeName` to the actual
   selected node's name. Enable `scratchPrep.enabled`, select `filesystem=xfs`
   and retain `migrateExt4ToXfs=false` for new-image provisioning.
+- Explicitly set top-level `scratchSizeGi` to an integer from 1 through 8,
+  sized for the selected trial workloads and no larger than the audited budget.
+  For example, `scratchSizeGi: 4` reserves 4 GiB immediately and is usable only
+  if the named-node audit passes. Rendering rejects the inherited 35 GiB size.
 - Set `noded.firecracker.nvmeRoot=/var/lib/embervm-xfs-trial/scratch`,
   `nvmeRootHostPathType=Directory`, and `sharedScratch.enabled=false`.
   Keep the noded DaemonSet disabled and bricks enabled, with empty `nodeFloors`.
@@ -2665,7 +2729,8 @@ Render that proposed activation with `helm template embervm-dev
 projects/embervm/chart --namespace embervm-dev` and the proposed values files.
 Inspect the scratch-prep DaemonSet and all brick Deployments before applying
 through the authorized GitOps owner. The render rejects inconsistent paths,
-shared scratch, missing node selection and credential-bearing store settings.
+shared scratch, missing node selection, an unbounded scratch size and
+credential-bearing store settings. Helm cannot verify current host capacity.
 At execution, the script checks the node, fixed paths, hostPath inode identity,
 root aliases, managed image and mounted-loop identity before writing a marker
 or provisioning. Existing migration consumer, inode and loop-alias checks
@@ -2678,7 +2743,8 @@ cover inactive-profile equivalence, node affinity, consumer/readiness paths,
 refusals, idempotence and simulated reformat generations. They do not prove
 kernel support, real reflink, remount survival or cold-boot recovery.
 
-Validate dev before any separately authorized production activation. Read
+Validate dev before any separately authorized production activation. First read
+the passing capacity audit for the selected node and proposed size. Read
 `verify_deployment` for the authorized revision and confirm only the selected
 node runs the trial. Read node image and kernel evidence for current XFS
 support; the September COS observation is insufficient. Read bounded trial
@@ -2697,7 +2763,14 @@ recovery path. The hub dev overlay currently has no object store; this local-onl
 profile cannot satisfy that acceptance item. A separately authorized dev durable
 store and recovery configuration are prerequisites. A local restart is not
 proof of durability. After dev acceptance, production still requires separate
-authorization and equivalent one-node evidence for kernel support, real reflink
+authorization and a fresh capacity audit before any allocation or migration.
+Fresh production XFS provisioning fully reserves its 70 GiB image on the
+historical 94 GiB boot disk. Budget the whole 70 GiB alongside non-scratch host
+use, any retained trial reservation, eviction headroom and growth margin;
+ext4's sparse usage cannot justify that allocation. An in-place migration also
+needs capacity for growth to the full cap. If the budget fails, keep ext4 and
+migration disabled pending separately authorized capacity work. Production
+then requires equivalent one-node evidence for kernel support, real reflink
 independence across remount, consumer and mount isolation, fstab uniqueness,
 idempotence, marker change after actual reformat, readiness, cold boot and
 durable session restoration. All operational acceptance stays open on #6562;

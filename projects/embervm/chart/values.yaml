@@ -26,7 +26,9 @@ image:
 # /var/lib/embervm/scratch on every FC node that does NOT already have a mount
 # there; the mountpoint guard leaves an existing dedicated-device bind alone.
 # The cap bounds scratch growth on the host disk. Deployment overlays choose
-# the size for their working set; the sparse file consumes only written space.
+# the size for their working set. ext4 formatting punches holes in the initial
+# fallocate reservation; XFS retains the full reservation. Budget XFS's entire
+# size on the host disk, plus other scratch growth and kubelet eviction headroom.
 scratchSizeGi: 35
 
 # Warmth generation of the vendored Firecracker binary (MODULE.bazel
@@ -69,6 +71,9 @@ scratchPrep:
   isolatedDevTrial:
     enabled: false
     nodeName: ""
+    # Enabling also requires an explicit top-level scratchSizeGi of 1 through 8
+    # and the named-node capacity audit in ARCHITECTURE.md. The 35 GiB default
+    # is rejected; the trial size bound alone does not prove host capacity.
   enabled: true
   # Safe repository defaults preserve the deployed ext4 behavior. Selecting
   # xfs opts in only newly created managed images. It never reformats an
