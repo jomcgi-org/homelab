@@ -132,7 +132,6 @@ def test_hub_dev_uses_its_published_guest_and_bounded_native_workload() -> None:
         "S9_CODEX_GUEST_DIGEST": _CANDIDATE,
         "S9_CODEX_CLI_VERSION": "0.167.0",
         "S9_BUDGET": "5m",
-        "S9_CODEX_RESUME_REPORT_ONLY": "true",
     }
     assert pod["serviceAccountName"] == _RUNNER
     assert (
@@ -373,13 +372,13 @@ def test_stamped_flag_preserves_the_generic_b2_transition_contract() -> None:
     assert "requires bakeFormatVersion b2 for old-chart compatibility" in result.stderr
 
 
-def test_resume_stays_blocking_when_report_only_is_off() -> None:
+def test_report_only_resume_renders_only_when_enabled() -> None:
     docs = _render(
         settings=[
             f"runtimeClaude.guestImage.digest={_CANDIDATE}",
-            "conformance.codex.resumeReportOnly=false",
+            "conformance.codex.resumeReportOnly=true",
         ]
     )
     env = _env(_container(_pod(docs, _RUNNER), "conformance"))
     assert env["S9_CODEX_PROBE"] == "true"
-    assert "S9_CODEX_RESUME_REPORT_ONLY" not in env
+    assert env["S9_CODEX_RESUME_REPORT_ONLY"] == "true"
