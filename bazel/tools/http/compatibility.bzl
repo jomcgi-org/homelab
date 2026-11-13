@@ -17,7 +17,7 @@ def _manifest_impl(ctx):
 
 _manifest = rule(
     implementation = _manifest_impl,
-    attrs = {"inputs": attr.label_keyed_string_dict()},
+    attrs = {"inputs": attr.label_keyed_string_dict(allow_files = True)},
 )
 
 def compatibility_test(name, repo, arches, archive = True, assets = False, metadata = False, goose = False, executable = True):
