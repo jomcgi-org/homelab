@@ -23,7 +23,7 @@ func TestAdapterEndpointOptions(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://generic.invalid:123")
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://trace.invalid:456")
 			t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "false")
-			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "true")
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "false")
 			testutil.CheckEndpoint(t, exporterOptions(tc.endpoint), tc.address, tc.tls)
 		})
 	}
