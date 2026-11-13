@@ -1,7 +1,6 @@
 """Small local downloads exercising the real HTTP repository rules."""
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
-load(":multiarch_http_archive.bzl", "multiarch_http_archive")
 load(":multiarch_http_file.bzl", "multiarch_http_file")
 
 def _metadata_impl(ctx):
@@ -22,11 +21,14 @@ def _metadata_impl(ctx):
                 fail("Missing %s in %s" % (expected, build))
     for binary, arch in ctx.attr.binaries.items():
         result = ctx.execute([str(ctx.path(binary))])
-        if ctx.attr.executable:
-            if result.return_code != 0 or result.stdout != "fixture-" + arch + "\n":
-                fail("Repository binary execution failed: %s %s" % (binary, result.stderr))
-        elif result.return_code == 0:
-            fail("Expected the pre-migration non-executable archive binary")
+        if result.return_code != 0 or result.stdout != "fixture-" + arch + "\n":
+            fail("Repository binary execution failed: %s %s" % (binary, result.stderr))
+
+    # Check both goose ELF files on the repository host without executing them.
+    for binary in ctx.attr.executable_files:
+        result = ctx.execute(["test", "-x", str(ctx.path(binary))])
+        if result.return_code:
+            fail("Repository binary lacks executable access: %s" % binary)
     ctx.file("checked.txt", "Generated public labels, aliases, visibility and multiarch_tar tag verified.\n")
     ctx.file("BUILD.bazel", 'exports_files(["checked.txt"], visibility = ["//visibility:public"])')
 
@@ -36,7 +38,7 @@ _metadata = repository_rule(
         "builds": attr.label_list(),
         "arches": attr.string_list(),
         "binaries": attr.label_keyed_string_dict(allow_files = True),
-        "executable": attr.bool(default = True),
+        "executable_files": attr.label_list(allow_files = True),
     },
 )
 
@@ -55,10 +57,10 @@ def _fixtures_impl(ctx):
         for arch in arches:
             kwargs[arch + "_url"] = urls[arch + ".tar"]
             kwargs[arch + "_sha256"] = _HASHES[arch + ".tar"]
-        multiarch_http_archive(
+        multiarch_http_file(
             name = name,
             binary_name = "fixture",
-            extracted_binary_name = "nested/renamed",
+            extract_path = "nested/renamed",
             package_dir = "/opt/fixture/bin",
             **kwargs
         )
@@ -92,8 +94,14 @@ def _fixtures_impl(ctx):
             builds = ["@" + name + "//:BUILD.bazel"],
             arches = [arch],
             binaries = {"@" + name + "//:" + arch + "_binary": arch},
-            executable = name != "http_fixture_assets",
         )
+
+    _metadata(
+        name = "goose_metadata",
+        builds = ["@goose//:BUILD.bazel"],
+        arches = ["amd64", "arm64"],
+        executable_files = ["@goose//:amd64_binary", "@goose//:arm64_binary"],
+    )
 
     # Independent archive inputs allow comparison with both exposed and packaged
     # goose bytes. These remain pinned identically to the production declaration.

@@ -30,12 +30,6 @@ bzl_library(
     visibility = ["//visibility:public"],
 )
 
-bzl_library(
-    name = "multiarch_http_archive",
-    srcs = ["multiarch_http_archive.bzl"],
-    visibility = ["//visibility:public"],
-)
-
 exports_files(
     glob(["fixtures/*"]),
     visibility = ["//visibility:public"],
@@ -73,8 +67,7 @@ compatibility_test(
     repo = "http_fixture_raw",
 )
 
-# The shared rule currently leaves non-executable archive entries non-executable.
-# Exercise sibling packaging now; executable access is enabled with the migration.
+# Protect directory and file assets beside a non-executable archive entry.
 compatibility_test(
     name = "assets_compatibility_test",
     arches = ["amd64"],
@@ -90,5 +83,6 @@ compatibility_test(
         "arm64",
     ],
     goose = True,
+    metadata = True,
     repo = "goose",
 )

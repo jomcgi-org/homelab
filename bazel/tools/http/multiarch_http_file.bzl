@@ -130,6 +130,12 @@ alias(
                 sha256 = repository_ctx.attr.amd64_sha256,
             )
             repository_ctx.symlink("amd64_extract/" + extract_path, "amd64_binary")
+
+            # Archive entries may lack executable bits. Preserve direct binary
+            # access as well as the executable copy made by the tar action.
+            result = repository_ctx.execute(["chmod", "0755", "amd64_binary"])
+            if result.return_code:
+                fail("Unable to make amd64 archive binary executable: " + result.stderr)
             for i, extra in enumerate(repository_ctx.attr.extract_extra_paths):
                 repository_ctx.symlink("amd64_extract/" + extra.rstrip("/"), "amd64_extra_%d" % i)
         else:
@@ -148,6 +154,12 @@ alias(
                 sha256 = repository_ctx.attr.arm64_sha256,
             )
             repository_ctx.symlink("arm64_extract/" + extract_path, "arm64_binary")
+
+            # Archive entries may lack executable bits. Preserve direct binary
+            # access as well as the executable copy made by the tar action.
+            result = repository_ctx.execute(["chmod", "0755", "arm64_binary"])
+            if result.return_code:
+                fail("Unable to make arm64 archive binary executable: " + result.stderr)
             for i, extra in enumerate(repository_ctx.attr.extract_extra_paths):
                 repository_ctx.symlink("arm64_extract/" + extra.rstrip("/"), "arm64_extra_%d" % i)
         else:

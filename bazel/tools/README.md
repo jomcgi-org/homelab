@@ -12,7 +12,7 @@ Shared Bazel build tooling: rules, wrappers, and helper binaries used across the
 | [git](git/) | Git hook scripts: commit-message ASCII check, stale-PR guard, post-rewrite format trigger, and main-branch protection | Shell scripts; no `.bzl` files |
 | [hf2oci](hf2oci/README.md) | Go binary that streams HuggingFace model weights directly into OCI layers without writing temporary files to disk | See linked README |
 | [hooks](hooks/) | Minimal Claude PreToolUse hooks (prefer `ci`/`bb remote`, read-only kubectl, em-dash, public_reader grants, plans-retired, architecture-doc reminder) | Shell scripts + `sh_test` |
-| [http](http/) | `multiarch_http_archive` and `multiarch_http_file` repository rules for downloading dual-arch binaries from HTTP archives and packaging them as platform-specific tars for apko images | `//bazel/tools/http:multiarch_http_archive.bzl` |
+| [http](http/) | `multiarch_http_file` downloads raw binaries or extracts archives with sibling assets and packages per-arch tars. One rule preserves executable access and architecture aliases (#7790). | `//bazel/tools/http:multiarch_http_file.bzl` |
 | [image](image/README.md) | Builds the developer tools OCI image (vendored CLI tools, Node.js, Python, pnpm, prettier, homelab CLI) and exposes `multitool_tar`, `node_tar`, and `python_tar` macros | See linked README |
 | [js](js/README.md) | Bazel helpers for frontend builds: `exec_filegroup` and `node_modules_tar` | See linked README |
 | [lint](lint/) | Go analyzers registered by `MODULE.bazel` | `//bazel/tools/lint:nogo` |

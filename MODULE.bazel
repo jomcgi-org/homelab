@@ -472,10 +472,8 @@ apko.translate_lock(
 )
 use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
 
-# Download multiarch archives (binaries from zip files)
-multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
-
-multiarch_http_archive(
+# Download goose binaries from the pinned release archives.
+multiarch_http_file(
     name = "goose",
     amd64_sha256 = "cf0100d2f4e085e4ec537e8399950d4695661bff83d12dc45a9a6d357cd33c41",
     amd64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-x86_64-unknown-linux-gnu.tar.bz2",
@@ -483,6 +481,7 @@ multiarch_http_archive(
     arm64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-aarch64-unknown-linux-gnu.tar.bz2",
     binary_name = "goose",
     package_dir = "/usr/local/bin",
+    extract_path = "goose",
 )
 
 # firecracker binary + guest kernel for the fc-invoke daemon, extracted from the
@@ -708,6 +707,7 @@ use_repo(tla, "temurin21_jre_linux_amd64", "tla2tools")
 http_fixtures = use_extension("//bazel/tools/http:fixtures.bzl", "fixtures")
 use_repo(
     http_fixtures,
+    "goose_metadata",
     "http_fixture_amd64",
     "http_fixture_amd64_metadata",
     "http_fixture_arm64",
