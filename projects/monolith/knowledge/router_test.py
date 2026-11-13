@@ -1445,10 +1445,10 @@ def test_real_private_http_and_mcp_history_freshness_one_call(
     monkeypatch.setattr("knowledge.mcp.get_engine", lambda: real_session.get_bind())
     app.dependency_overrides[get_session] = lambda: real_session
     try:
-        with TestClient(app) as client:
-            response = client.get(
-                "/api/knowledge/notes/stored-history?include_review_history=true"
-            )
+        client = TestClient(app)
+        response = client.get(
+            "/api/knowledge/notes/stored-history?include_review_history=true"
+        )
         assert response.status_code == 200
         mcp = asyncio.run(get_note("stored-history", include_review_history=True))
         assert response.json() == mcp
