@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, create_engine, select
 
 from grimoire import feedback
-from grimoire.models import Feedback
+from grimoire.models import Feedback, FeedbackVote
 
 
 @pytest.fixture
@@ -323,6 +323,115 @@ def test_one_request_refreshes_issue_states_while_others_serve_stored(
         row = session.get(Feedback, row_id)
         assert row.issue_state == "completed"
         assert row.issue_checked_at.tzinfo is not None
+
+
+def test_simultaneous_duplicate_votes_recover_the_losing_session(database):
+    engine, email = database
+    with Session(engine) as session:
+        row = Feedback(author_email=email, page="/", text="Fixture", shared=True)
+        session.add(row)
+        session.commit()
+        row_id = row.id
+    voter = email + "-voter"
+    inserted, release, crossed = Event(), Event(), Event()
+    pids, conflicts = Queue(), Queue()
+
+    def bound_transaction(connection):
+        # Apply again after commit/rollback, including the recovery read.
+        connection.exec_driver_sql("SET LOCAL statement_timeout = '10s'")
+
+    def after_insert(connection, _cursor, statement, _parameters, _context, _many):
+        if not statement.startswith("INSERT INTO grimoire.feedback_vote "):
+            return
+        worker = connection.info.get("feedback_worker")
+        if worker == "first":
+            inserted.set()
+            assert release.wait(10), "winning vote was never released"
+        elif worker == "second":
+            crossed.set()
+
+    def on_error(context):
+        # Observe the actual database error without replacing or suppressing it.
+        if context.connection.info.get("feedback_worker") == "second":
+            error = context.original_exception
+            conflicts.put((error.sqlstate, error.diag.constraint_name))
+
+    def vote(label):
+        with Session(engine) as session:
+            connection = session.connection()
+            info = connection.info
+            info["feedback_worker"] = label
+            try:
+                pids.put(
+                    connection.exec_driver_sql("SELECT pg_backend_pid()").scalar_one()
+                )
+                receipt = feedback.vote_for_feedback(UUID(row_id), None, voter, session)
+                # This must work in the losing request's Session after recovery.
+                assert session.exec(
+                    select(FeedbackVote.voter_email).where(
+                        FeedbackVote.feedback_id == row_id
+                    )
+                ).all() == [voter]
+                return receipt.votes, receipt.voted
+            finally:
+                info.pop("feedback_worker", None)
+
+    event.listen(engine, "begin", bound_transaction)
+    event.listen(engine, "after_cursor_execute", after_insert)
+    event.listen(engine, "handle_error", on_error)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            try:
+                first = workers.submit(vote, "first")
+                first_pid = pids.get(timeout=5)
+                assert inserted.wait(5), "winning insert did not reach its barrier"
+                # The first insert is uncommitted, so the second lookup sees no
+                # vote and its INSERT must wait on the same composite key.
+                second = workers.submit(vote, "second")
+                second_pid = pids.get(timeout=5)
+                assert first_pid != second_pid
+                deadline = monotonic() + 5
+                with engine.connect() as observer:
+                    while monotonic() < deadline:
+                        assert not crossed.is_set(), "duplicate insert did not block"
+                        if observer.execute(
+                            text("SELECT :winner = ANY(pg_blocking_pids(:loser))"),
+                            {"winner": first_pid, "loser": second_pid},
+                        ).scalar_one():
+                            break
+                        sleep(0.01)
+                    else:
+                        pytest.fail("duplicate insert never blocked on the winner")
+            finally:
+                # Release before executor shutdown, including failed assertions.
+                release.set()
+            assert first.result(timeout=5) == (1, True)
+            assert second.result(timeout=5) == (1, True)
+            assert conflicts.get(timeout=5) == ("23505", "feedback_vote_pkey")
+            assert conflicts.empty()
+            assert not crossed.is_set()
+
+        with Session(engine) as session:
+            assert session.exec(
+                select(FeedbackVote.voter_email).where(
+                    FeedbackVote.feedback_id == row_id
+                )
+            ).all() == [voter]
+            other = voter + "-other"
+            receipt = feedback.vote_for_feedback(UUID(row_id), None, other, session)
+            assert (receipt.votes, receipt.voted) == (2, True)
+            receipt = feedback.withdraw_vote(UUID(row_id), None, voter, session)
+            assert (receipt.votes, receipt.voted) == (1, False)
+            assert session.exec(
+                select(FeedbackVote.voter_email).where(
+                    FeedbackVote.feedback_id == row_id
+                )
+            ).all() == [other]
+    finally:
+        release.set()
+        event.remove(engine, "handle_error", on_error)
+        event.remove(engine, "after_cursor_execute", after_insert)
+        event.remove(engine, "begin", bound_transaction)
 
 
 def test_votes_and_dismiss_reasons_satisfy_the_migrated_schema(database, monkeypatch):
