@@ -7124,6 +7124,7 @@ py_test(
 py_test(
     name = "grimoire_web_test",
     srcs = ["grimoire/web_test.py"],
+    data = ["//projects/monolith/web/grimoire:tts_media_fixture"],
     imports = ["."],
     deps = [
         ":pkg_grimoire",
@@ -10061,6 +10062,11 @@ py_test(
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
+)
+
+bdd_test(
+    name = "grimoire_tts_postgres_test",
+    srcs = ["grimoire/tts_postgres_test.py"],
 )
 
 build_test(

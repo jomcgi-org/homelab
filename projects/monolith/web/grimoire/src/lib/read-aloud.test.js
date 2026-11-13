@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import media from "./fixtures/tts-media.json";
 import {
   FREE_LABEL,
   createEventReader,
@@ -381,10 +382,15 @@ describe("received event selection", () => {
 });
 
 describe("server narration queue", () => {
+  const clip = (text = "audio") => new Blob([text], { type: "audio/wav" });
   function serverDevice(serverAudio) {
     const synth = { getVoices: () => [], cancel: vi.fn(), speak: vi.fn() };
     const micPauser = { pause: vi.fn(), resume: vi.fn() };
     const audios = [];
+    const urls = {
+      createObjectURL: vi.fn((blob) => URL.createObjectURL(blob)),
+      revokeObjectURL: vi.fn((url) => URL.revokeObjectURL(url)),
+    };
     class Audio {
       constructor(source) {
         this.source = source;
@@ -399,28 +405,35 @@ describe("server narration queue", () => {
       synth,
       Utterance: class {},
       Audio,
+      URL: urls,
       serverAudio,
       micPauser,
     });
-    return { synth, micPauser, audios, speaker };
+    return { synth, micPauser, audios, speaker, urls };
   }
   const flush = async () => {
     for (let i = 0; i < 8; i++) await Promise.resolve();
   };
   it("plays clips in order under the microphone pause", async () => {
-    const d = serverDevice(async (event) => `audio:${event.id}`);
+    const d = serverDevice(async (event) => clip(event.id));
     d.speaker.deliver([
       { event: narration("one", 1), text: "one" },
       { event: narration("two", 2), text: "two" },
     ]);
     await flush();
-    expect(d.audios.map((a) => a.source)).toEqual(["audio:one"]);
+    expect(d.audios).toHaveLength(1);
+    expect(new URL(d.audios[0].source).protocol).toBe(media.scheme);
+    expect(await d.urls.createObjectURL.mock.calls[0][0].text()).toBe("one");
     expect(d.micPauser.pause).toHaveBeenCalledTimes(1);
     d.audios[0].onplaying();
     d.audios[0].onended();
     await flush();
-    expect(d.audios.map((a) => a.source)).toEqual(["audio:one", "audio:two"]);
+    expect(d.audios).toHaveLength(2);
+    expect(await d.urls.createObjectURL.mock.calls[1][0].text()).toBe("two");
+    expect(d.urls.revokeObjectURL).toHaveBeenCalledWith(d.audios[0].source);
     d.audios[1].onended();
+    expect(d.urls.revokeObjectURL).toHaveBeenCalledWith(d.audios[1].source);
+    expect(d.urls.revokeObjectURL).toHaveBeenCalledTimes(2);
     expect(d.micPauser.resume).toHaveBeenCalledTimes(1);
     expect(d.synth.speak).not.toHaveBeenCalled();
     d.speaker.dispose();
@@ -436,20 +449,27 @@ describe("server narration queue", () => {
     d.speaker.dispose();
   });
   it("falls back once on pre-playback audio failure", async () => {
-    const d = serverDevice(async () => "audio");
+    const d = serverDevice(async () => clip());
     d.speaker.speak(narration("one", 1));
     await flush();
-    d.audios[0].onerror();
-    d.audios[0].onerror();
+    const failed = d.audios[0].onerror;
+    failed();
+    failed();
+    expect(d.urls.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(
+      d.audios[0].source,
+    );
     expect(d.synth.speak).toHaveBeenCalledTimes(1);
     d.speaker.dispose();
   });
   it("never repeats partially played audio", async () => {
-    const d = serverDevice(async () => "audio");
+    const d = serverDevice(async () => clip());
     d.speaker.speak(narration("one", 1));
     await flush();
     d.audios[0].onplaying();
     d.audios[0].onerror();
+    expect(d.urls.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(
+      d.audios[0].source,
+    );
     expect(d.synth.speak).not.toHaveBeenCalled();
     expect(d.micPauser.resume).toHaveBeenCalledTimes(1);
     d.speaker.dispose();
@@ -469,13 +489,58 @@ describe("server narration queue", () => {
       if (action === "new narration") d.speaker.speak(narration("new", 2));
       else d.speaker[action]();
       expect(signal.aborted).toBe(true);
-      resolve("stale audio");
+      resolve(clip("stale audio"));
       await flush();
+      expect(d.urls.createObjectURL).not.toHaveBeenCalled();
       expect(d.audios).toHaveLength(0);
       expect(d.synth.speak).not.toHaveBeenCalled();
       d.speaker.dispose();
     },
   );
+  it.each(["stop", "dispose", "new narration", "retraction"])(
+    "revokes the playing clip after %s",
+    async (action) => {
+      const d = serverDevice(async () => clip());
+      d.speaker.speak(narration("old", 1));
+      await flush();
+      const audio = d.audios[0];
+      audio.onplaying();
+      if (action === "new narration") d.speaker.speak(narration("new", 2));
+      else if (action === "retraction")
+        d.speaker.reconcile([
+          narration("old", 1, { retracted_at: "now", body: null }),
+        ]);
+      else d.speaker[action]();
+      expect(audio.pause).toHaveBeenCalled();
+      expect(audio.removeAttribute).toHaveBeenCalledWith("src");
+      expect(d.urls.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(
+        audio.source,
+      );
+      d.speaker.dispose();
+      await flush();
+      expect(d.urls.revokeObjectURL).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("revokes the clip if Audio construction throws", async () => {
+    const revokeObjectURL = vi.fn();
+    const synth = { getVoices: () => [], cancel: vi.fn(), speak: vi.fn() };
+    const speaker = createSpeaker({
+      synth,
+      Utterance: class {},
+      Audio: class {
+        constructor() {
+          throw new Error("unavailable");
+        }
+      },
+      URL: { createObjectURL: () => "blob:failed", revokeObjectURL },
+      serverAudio: async () => clip(),
+    });
+    speaker.speak(narration("one", 1));
+    await flush();
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:failed");
+    expect(synth.speak).toHaveBeenCalledTimes(1);
+    speaker.dispose();
+  });
   it("keeps private speech and reveals on the browser path", async () => {
     const server = vi.fn();
     const d = serverDevice(server);

@@ -39,7 +39,7 @@ interface Speaker {
 const newSpeaker = createSpeaker as unknown as (options: {
   onSpeakingChange: (speaking: boolean) => void;
   serverAudio:
-    ((event: SessionEvent, signal: AbortSignal) => Promise<string>) | null;
+    ((event: SessionEvent, signal: AbortSignal) => Promise<Blob>) | null;
 }) => Speaker;
 
 /** The choices are kept on this device. Reading it throws where storage is disabled. */

@@ -166,6 +166,13 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+# Shared by the playback test and the backend's actual shell CSP test.
+filegroup(
+    name = "tts_media_fixture",
+    srcs = ["src/lib/fixtures/tts-media.json"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(

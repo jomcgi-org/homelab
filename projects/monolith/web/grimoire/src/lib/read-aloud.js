@@ -162,6 +162,7 @@ export function createSpeaker({
   onSpeakingChange = () => {},
   serverAudio = null,
   Audio = globalThis.Audio,
+  URL = globalThis.URL,
 } = {}) {
   const available = Boolean(synth && Utterance);
   let voices = available ? synth.getVoices() : [];
@@ -181,15 +182,24 @@ export function createSpeaker({
     micPauser.resume();
     onSpeakingChange(false);
   }
+  function releaseAudio(token) {
+    if (token?.audio) {
+      token.audio.onplaying = token.audio.onended = token.audio.onerror = null;
+      token.audio.pause();
+      token.audio.removeAttribute("src");
+      token.audio.load();
+      token.audio = null;
+    }
+    if (token?.source) {
+      URL.revokeObjectURL(token.source);
+      token.source = null;
+    }
+  }
   function stop() {
     generation += 1;
     queue = [];
     current?.controller?.abort();
-    if (current?.audio) {
-      current.audio.pause();
-      current.audio.removeAttribute("src");
-      current.audio.load();
-    }
+    releaseAudio(current);
     clearTimeout(current?.timer);
     current = null;
     if (available) synth.cancel();
@@ -214,11 +224,7 @@ export function createSpeaker({
     const done = () => {
       if (!active()) return;
       clearTimeout(token.timer);
-      if (token.audio) {
-        token.audio.pause();
-        token.audio.removeAttribute("src");
-        token.audio.load();
-      }
+      releaseAudio(token);
       current = null;
       advance();
     };
@@ -256,9 +262,11 @@ export function createSpeaker({
     ]);
     Promise.resolve()
       .then(() => serverAudio(next.event, signal))
-      .then((source) => {
+      .then((blob) => {
         if (!active()) return;
-        const audio = new Audio(source);
+        // The shell CSP permits blob: media. Allocate only for a current clip.
+        token.source = URL.createObjectURL(blob);
+        const audio = new Audio(token.source);
         token.audio = audio;
         let started = false;
         let settled = false;
@@ -266,9 +274,7 @@ export function createSpeaker({
           if (settled || !active()) return;
           settled = true;
           clearTimeout(token.timer);
-          audio.pause();
-          audio.removeAttribute("src");
-          audio.load();
+          releaseAudio(token);
           if (started) done();
           else browser();
         };
@@ -288,7 +294,10 @@ export function createSpeaker({
           failed();
         }
       })
-      .catch(() => browser());
+      .catch(() => {
+        releaseAudio(token);
+        browser();
+      });
   }
 
   // Cancel older deliveries once, then enqueue this delivery in sequence order.

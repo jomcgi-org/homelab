@@ -5,7 +5,7 @@ export async function loadEventAudio(
   campaignId: string,
   eventId: string,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<Blob> {
   const clip = await api("POST /campaigns/{campaign_id}/tts", {
     params: { campaign_id: campaignId },
     body: { event_id: eventId },
@@ -20,5 +20,8 @@ export async function loadEventAudio(
     !/^[A-Za-z0-9+/]*={0,2}$/.test(audio.audio_base64)
   )
     throw new Error("Invalid audio");
-  return `data:audio/wav;base64,${audio.audio_base64}`;
+  const bytes = Uint8Array.from(atob(audio.audio_base64), (char) =>
+    char.charCodeAt(0),
+  );
+  return new Blob([bytes], { type: "audio/wav" });
 }

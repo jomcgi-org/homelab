@@ -4225,7 +4225,8 @@ def _tts_selection(session, campaign_id, event_id):
     # narration and reveals remain on their existing opt-in browser paths.
     event = session.exec(
         select(SessionEvent).where(
-            func.lower(SessionEvent.id) == event_id.lower(),
+            # PostgreSQL stores UUIDs; SQLite can retain uppercase fixture IDs.
+            SessionEvent.id.in_((event_id, event_id.upper())),
             SessionEvent.campaign_id == campaign_id,
             SessionEvent.kind == "narration",
             SessionEvent.audience == "table",

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,6 +18,22 @@ INDEX = (
     '<body><div id="root"></div></body></html>'
 )
 STYLE_HASH = "sha256-K63bSR1LetGtaTb/2K6EIsLtf78i2//qEkOoBZCNcBQ="
+
+
+def test_server_audio_scheme_is_allowed_by_shell_policy():
+    relative = Path("projects/monolith/web/grimoire/src/lib/fixtures/tts-media.json")
+    roots = (
+        Path(os.environ.get("TEST_SRCDIR", "")) / "_main",
+        Path(__file__).resolve().parents[3],
+    )
+    fixture = next(root / relative for root in roots if (root / relative).is_file())
+    scheme = json.loads(fixture.read_text())["scheme"]
+    directives = dict(
+        directive.split(" ", 1)
+        for directive in web.content_security_policy([]).split("; ")
+    )
+    assert scheme in directives["media-src"].split()
+    assert "data:" not in directives["media-src"].split()
 
 
 @pytest.fixture(name="client")
