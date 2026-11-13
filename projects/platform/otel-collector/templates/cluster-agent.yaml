@@ -1,0 +1,131 @@
+{{- if .Values.clusterAgent.enabled }}
+{{- $ca := .Values.clusterAgent }}
+# Cluster-scoped telemetry: see the clusterAgent block in values.yaml. One
+# replica, because the Event watch must not ship each event once per replica.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.cluster.labels" . | nindent 4 }}
+---
+# Read-only. Events for the watch; anything else comes from extraRules, which
+# the overlay sets next to the scrape configs that need it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" . }}
+  labels:
+    {{- include "otel-collector.cluster.labels" . | nindent 4 }}
+rules:
+  {{- if $ca.events.enabled }}
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+  {{- end }}
+  {{- with $ca.extraRules }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" . }}
+  labels:
+    {{- include "otel-collector.cluster.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "otel-collector.cluster.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "otel-collector.cluster.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "otel-collector.cluster.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.cluster.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Never two watchers at once: a surge replica would ship every event twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "otel-collector.cluster.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/cluster-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "otel-collector.cluster.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "otel-collector.cluster.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/conf/collector.yaml
+          {{- if .Values.onepassword.enabled }}
+          env:
+            # Same Secret and keys as the gateway Deployment.
+            - name: HONEYCOMB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onepassword.secretName }}
+                  key: {{ .Values.onepassword.apiKeySecretKey }}
+            - name: HONEYCOMB_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.onepassword.secretName }}
+                  key: {{ .Values.onepassword.apiKeyIdKey }}
+          {{- end }}
+          ports:
+            - name: health
+              containerPort: 13133
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $ca.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "otel-collector.cluster.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -3,15 +3,24 @@
 {{- fail "logs.enabled requires at least one entry in logs.namespaces" }}
 {{- end }}
 {{- $cm := .Values.logs.containerMetrics }}
+{{- if and .Values.logs.nodeMetrics.enabled (not .Values.logs.nodeMetrics.dataset) }}
+{{- fail "logs.nodeMetrics.enabled requires logs.nodeMetrics.dataset" }}
+{{- end }}
 {{- if and $cm.enabled (not $cm.namespaces) }}
 {{- fail "logs.containerMetrics.enabled requires at least one entry in logs.containerMetrics.namespaces" }}
 {{- end }}
+{{- $nm := .Values.logs.nodeMetrics }}
 {{- $hcExporter := "otlp/honeycomb-logs" }}
 {{- $hcMetricsExporter := "otlp/honeycomb-metrics" }}
+{{- $hcNodeExporter := "otlp/honeycomb-node-metrics" }}
 {{- if eq (.Values.honeycomb.protocol | default "grpc") "http" }}
 {{- $hcExporter = "otlphttp/honeycomb-logs" }}
 {{- $hcMetricsExporter = "otlphttp/honeycomb-metrics" }}
+{{- $hcNodeExporter = "otlphttp/honeycomb-node-metrics" }}
 {{- end }}
+{{- $nodeReceivers := list "kubelet_stats/node" }}
+{{- if $nm.hostMetrics.enabled }}{{ $nodeReceivers = append $nodeReceivers "host_metrics" }}{{ end -}}
+{{- if $nm.scrapeConfigs }}{{ $nodeReceivers = append $nodeReceivers "prometheus/node" }}{{ end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -40,6 +49,12 @@ data:
           {{- range .Values.logs.namespaces }}
           - /var/log/pods/{{ . }}_*/*/*.log
           {{- end }}
+        {{- with .Values.logs.excludeNamespaces }}
+        exclude:
+          {{- range . }}
+          - /var/log/pods/{{ . }}_*/*/*.log
+          {{- end }}
+        {{- end }}
         # end, not beginning: the first start must not replay every retained
         # log on the node. After that the stored offsets take over.
         start_at: end
@@ -62,6 +77,43 @@ data:
         insecure_skip_verify: true
         collection_interval: {{ $cm.interval }}
         metric_groups: [container]
+      {{- end }}
+      {{- if $nm.enabled }}
+
+      # Node and pod totals from this node's kubelet. Containers and volumes
+      # are left out: per-pod totals answer "which pod is using the node" at a
+      # fraction of the events. The k3s kubelet serves a certificate signed by
+      # its own CA, which the service account bundle does not carry, so
+      # verification is skipped as for container metrics above.
+      kubelet_stats/node:
+        auth_type: serviceAccount
+        endpoint: https://${env:K8S_NODE_IP}:10250
+        insecure_skip_verify: true
+        collection_interval: {{ $nm.interval }}
+        metric_groups: [node, pod]
+      {{- if $nm.hostMetrics.enabled }}
+
+      # Load, memory and disk read from the container's own /proc. Those three
+      # files (loadavg, meminfo, diskstats) are not namespaced, so they show
+      # the host without mounting the host's /proc or root filesystem. CPU,
+      # filesystem and network come from the kubelet above instead.
+      host_metrics:
+        collection_interval: {{ $nm.interval }}
+        scrapers:
+          load: {}
+          memory: {}
+          disk:
+            include:
+              devices: [{{ $nm.hostMetrics.diskDevices | quote }}]
+              match_type: regexp
+      {{- end }}
+      {{- if $nm.scrapeConfigs }}
+
+      prometheus/node:
+        config:
+          scrape_configs:
+            {{- toYaml $nm.scrapeConfigs | nindent 12 }}
+      {{- end }}
       {{- end }}
 
     processors:
@@ -180,6 +232,13 @@ data:
             value: {{ .Values.environment | quote }}
             action: upsert
       {{- end }}
+      {{- if .Values.clusterName }}
+      resource/cluster:
+        attributes:
+          - key: k8s.cluster.name
+            value: {{ .Values.clusterName | quote }}
+            action: upsert
+      {{- end }}
       {{- if $cm.enabled }}
 
       # Keep the listed namespaces and the three metrics that explain an
@@ -190,6 +249,30 @@ data:
           metric:
             - 'not IsMatch(resource.attributes["k8s.namespace.name"], "^({{ join "|" $cm.namespaces }})$")'
             - 'not IsMatch(metric.name, "^container\\.(memory\\.(working_set|rss)|cpu\\.usage)$")'
+      {{- end }}
+      {{- if $nm.enabled }}
+
+      # The kubelet's node and pod totals, cut to usage and headroom. Only
+      # kubelet_stats metrics are matched; scraped and host metrics pass.
+      filter/node-metrics:
+        error_mode: ignore
+        metrics:
+          metric:
+            - 'IsMatch(metric.name, "^k8s\\.(node|pod)\\.") and not IsMatch(metric.name, "^k8s\\.(node\\.(cpu\\.usage|memory\\.(working_set|available)|filesystem\\.(available|capacity))|pod\\.(cpu\\.usage|memory\\.working_set))$")'
+
+      # Names the node on host and scraped metrics, which carry no Kubernetes
+      # resource attributes of their own. insert leaves kubelet values alone.
+      resource/node:
+        attributes:
+          - key: k8s.node.name
+            value: ${env:K8S_NODE_NAME}
+            action: insert
+      {{- if $nm.transforms }}
+
+      metrics_transform/node:
+        transforms:
+          {{- toYaml $nm.transforms | nindent 10 }}
+      {{- end }}
       {{- end }}
       batch:
         timeout: 5s
@@ -223,18 +306,36 @@ data:
           x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
           x-honeycomb-dataset: {{ $cm.dataset | quote }}
       {{- end }}
+      {{- if $nm.enabled }}
+      {{- if eq $hcNodeExporter "otlphttp/honeycomb-node-metrics" }}
+      otlphttp/honeycomb-node-metrics:
+        endpoint: {{ .Values.honeycomb.httpEndpoint | default "https://api.honeycomb.io" | quote }}
+      {{- else }}
+      otlp/honeycomb-node-metrics:
+        endpoint: {{ .Values.honeycomb.endpoint | quote }}
+      {{- end }}
+        headers:
+          x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+          x-honeycomb-dataset: {{ $nm.dataset | quote }}
+      {{- end }}
 
     service:
       extensions: [health_check, file_storage/logs]
       pipelines:
         logs:
           receivers: [file_log]
-          processors: [memory_limiter, transform/parse, filter/severity, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}, batch]
+          processors: [memory_limiter, transform/parse, filter/severity, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
           exporters: [{{ $hcExporter }}]
         {{- if $cm.enabled }}
         metrics:
           receivers: [kubelet_stats]
-          processors: [memory_limiter, filter/container-metrics, k8s_attributes{{ if .Values.environment }}, resource/environment{{ end }}, batch]
+          processors: [memory_limiter, filter/container-metrics, k8s_attributes{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
           exporters: [{{ $hcMetricsExporter }}]
+        {{- end }}
+        {{- if $nm.enabled }}
+        metrics/node:
+          receivers: [{{ join ", " $nodeReceivers }}]
+          processors: [memory_limiter, filter/node-metrics{{ if $nm.transforms }}, metrics_transform/node{{ end }}, k8s_attributes, resource/node{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
+          exporters: [{{ $hcNodeExporter }}]
         {{- end }}
 {{- end }}

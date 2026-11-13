@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Its allowlist under the cluster-wide default-deny (network-policy/), synced
+# with the chart so the policy lands with the namespace.
+resources:
+  - network-policy.yaml

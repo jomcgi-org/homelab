@@ -73,3 +73,24 @@ helm.sh/chart: {{ include "otel-collector.chart" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
+
+{{/*
+Cluster agent (single-replica Deployment) naming and labels. Its name label
+differs from the gateway's for the same reason as the log agent's.
+*/}}
+{{- define "otel-collector.cluster.fullname" -}}
+{{- printf "%s-cluster" (include "otel-collector.fullname" . | trunc 55 | trimSuffix "-") }}
+{{- end }}
+
+{{- define "otel-collector.cluster.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "otel-collector.name" . | trunc 55 | trimSuffix "-" }}-cluster
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: cluster
+{{- end }}
+
+{{- define "otel-collector.cluster.labels" -}}
+helm.sh/chart: {{ include "otel-collector.chart" . }}
+{{ include "otel-collector.cluster.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
