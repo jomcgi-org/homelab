@@ -82,6 +82,7 @@ The goose route requires only `route`.
 Top-level projects/ directories:
 - design-system
 - embervm
+- factory
 - factory-cluster
 - firecracker
 - gke-apps
