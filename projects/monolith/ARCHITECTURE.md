@@ -386,7 +386,7 @@ The separate 256 KiB aggregate annotation limit affects client-side apply's
 `ServerSideApply=true` avoids that copy; it does not raise the ConfigMap data
 limit. Keep it and keep bulk seeds outside the bundle.
 
-#### Retain the ledger at a fixed cutoff
+#### Preserve history in a separate ledger
 
 Use a conventional SQL baseline at cutoff **C = 20261113090000**, the version of
 `20261113090000_grimoire_feedback_roadmap.sql` on the measured base. It includes
@@ -415,43 +415,83 @@ validates the directory, reads revisions, and skips fully applied versions up to
 the last revision. With an empty ledger it executes the directory, or records a
 baseline revision if a baseline version is explicitly supplied. That option
 only acts in the empty-ledger branch; it does not repair a managed history.
-A Linux SQLite reproduction with the lockfile-matching binary on 2026-11-13
-confirmed that replacing two applied files with a consolidated file at the same
-last version reports `No migration files to execute`, while an empty database
-executes the consolidated file. This checks version selection, not PostgreSQL
-preservation or operator compatibility.
 
 The operator chart and CRD are pinned to **0.7.28** in
 [/projects/platform-gke/atlas-operator/application.yaml](../platform-gke/atlas-operator/application.yaml)
 and `/MODULE.bazel`. The chart's values do not override its image.
-The upstream [controller](https://github.com/ariga/atlas-operator/blob/v0.7.28/internal/controller/atlasmigration_controller.go)
-uses CLI status/apply and exposes baseline configuration. Its
-[release workflow](https://github.com/ariga/atlas-operator/blob/v0.7.28/.github/workflows/cd-operator-release.yaml)
+The upstream [controller](https://github.com/ariga/atlas-operator/blob/v0.7.28/internal/controller/atlasmigration_controller.go#L289-L368)
+runs `migrate status` on each reconcile, including an unchanged hash. When
+`Pending=0`, `Applied>0` and `Available<Applied`, it returns `ProtectedFlowError`
+("migrate down is not allowed"). Atlas v1.1.0's
+[`StatusReporter`](https://github.com/ariga/atlas/blob/v1.1.0/cmd/atlas/internal/cmdlog/cmdlog.go#L210-L295)
+counts all ledger revisions as Applied and all directory files as Available.
+Keeping 287 original revisions active against one baseline plus a tail fails
+this guard once nothing is pending, even though CLI apply succeeds. It affects
+production, populated dev and original-history restores. Enabling
+`protectedFlows.migrateDown.allow` is rejected: it selects a downgrade flow,
+and a local ConfigMap directory also requires `autoApprove`. Keep both false.
+
+Choose a **separate revisions schema** for the compact lineage:
+`atlas_revisions_compact_20261113090000`. The v0.7.28
+[API](https://github.com/ariga/atlas-operator/blob/v0.7.28/api/v1alpha1/atlasmigration_types.go#L93-L96)
+exposes `spec.revisionsSchema` and `spec.baseline`; the current monolith template
+sets neither. The future
+chart must select the new schema for compact deployments and leave
+`spec.baseline` unset. Keep the original revision table unchanged in its original
+schema as frozen evidence. Do not copy its rows into the new table.
+
+For a proved populated database, record **H**, its last fully applied original
+version, with H >= C. Verify the complete original history through H, including
+any already-applied tail, against its immutable files and schema/data effects.
+H must exist in the compact directory. While reconciliation and concurrent DDL
+are quiesced, a separately reviewed, environment-scoped GitOps initializer runs
+`atlas migrate apply --revisions-schema atlas_revisions_compact_20261113090000
+--baseline H` with the compact directory and the resolved operator CLI. This
+creates a baseline-type row at H without executing SQL through H; only tail
+versions above H execute. The original ledger remains frozen at H. Record H,
+both manifests, the schema comparison and the new ledger's baseline marker as
+the transition evidence. An initializer retry must recognize that exact marker
+and validate any completed or pending tail; never reset the new ledger.
+
+The initializer is default-off and bound to the proved database identity and
+backup. Refuse it on an empty database, an unproved populated database, an
+unexpected existing target schema/table, or a changed identity/history since
+preflight. Never put `--baseline` in shared defaults, empty-install values or
+the fresh recovery preset: Atlas would skip baseline SQL even on an empty
+database. Enable operator reconciliation against the new schema only after
+initialization succeeds and its ledger is verified, then remove the initializer
+activation. Fresh databases use that schema without the initializer and execute
+baseline SQL normally. On both
+paths the active ledger has at most one row per compact file; a no-pending
+status no longer triggers the count guard. Repeated reconciliation with the
+exact operator image remains required proof before implementation approval.
+
+The operator's [release workflow](https://github.com/ariga/atlas-operator/blob/v0.7.28/.github/workflows/cd-operator-release.yaml)
 builds with `ATLAS_VERSION=extended-latest` and labels the image with the Atlas
-version. Therefore the operator chart pin does **not** establish an embedded
-CLI v1.1.0 pin. Before implementation approval, resolve and record that image's
-digest, `io.ariga.atlas.version` label and actual `atlas version`, then rehearse
-with that exact image. Refuse rollout if its status/apply behavior differs.
+version. The chart pin does **not** establish an embedded CLI v1.1.0 pin. Resolve
+and record the image digest, `io.ariga.atlas.version` label and actual
+`atlas version`, then rehearse with that exact image. Refuse rollout if it lacks
+the required revisions-schema/baseline behavior or cannot keep Atlas Ready.
 This plan needs no Atlas Pro checkpoint generator or new account.
 
 | Database state | Recognition and execution |
 | --- | --- |
-| Production fully migrated through C or later | Verify the original ledger against the archived directory, including every expected revision, hashes and complete statement counts, plus no errors or drift. Retain all ledger rows unchanged. The existing completed C (or later) version skips baseline SQL; only pending tail migrations execute. |
+| Production fully migrated through C or later | Prove the original ledger through H, including hashes, complete statement counts, no errors and no drift. Preserve it unchanged, initialize the separate compact ledger at H, then reconcile only that ledger. Only pending tail above H executes. |
 | Populated dev or historical database | Apply the same proof and transition as production. Configuration names never authorize destructive recreation or an empty-ledger assumption. |
-| Genuinely empty database | Confirm no managed objects or previous ledger. Apply baseline SQL normally, without a baseline flag, then the tail. Atlas records an executed revision for C with the new baseline hash. |
-| Restore before C | Restore into isolation with matching archived history and its original checksum manifest. Complete missing historical migrations through C, including their data effects and #7040 refusal checks, before switching to the compact bundle. Never apply baseline CREATE statements over restored objects. |
-| Restore at/after C | Identify whether the backup contains original-history or baseline-history revisions. Validate against that lineage's manifest and schema, then use the compact bundle and required tail. Record which lineage and bundle the backup requires. |
-| Partial, dirty, missing, contradictory or unknown history | Refuse the switch, including missing ledger on a populated database, incomplete statement counts, unexplained checksum differences, skipped versions or schema drift. Recover with the matching original bundle or a separately reviewed repair. Do not use allow-dirty, baseline flags, ledger deletion or manual revision-table writes to force acceptance. |
+| Genuinely empty database | Confirm no managed objects or previous ledger. Use the compact revisions schema without a baseline flag or initializer. Execute baseline SQL and tail; C has an executed revision with the new baseline hash. |
+| Restore before C | Restore into isolation with matching archived history and its original checksum manifest. Complete missing historical migrations through C, including their data effects and #7040 refusal checks, then initialize the separate compact ledger at the proved H. Never apply baseline CREATE statements over restored objects. |
+| Restore at/after C | Identify the active revisions schema and lineage from backup evidence. An original-only ledger needs the populated transition. A compact ledger, whether initialized at H or executed from C, resumes with its recorded manifest and tail; never rerun recognition on a restored compact ledger. Preserve both ledgers when present. |
+| Partial, dirty, missing, contradictory or unknown history | Refuse the switch, including missing ledger on a populated database, incomplete statement counts, unexplained checksum differences, skipped versions, schema drift or an unexpected target ledger. Recover with the matching bundle or a separately reviewed repair. Do not use allow-dirty, an unproved baseline marker, ledger deletion or manual revision-table writes to force acceptance. |
 
 The baseline file has different bytes and a different hash from original C.
 Regenerate `atlas.sum` for the compact directory using the pinned CLI; retain
-both manifests as lineage evidence. Existing completed revision hashes remain
-historical evidence, not values to overwrite with the new baseline hash.
-Atlas's version-based skip is insufficient to establish equivalence: the
-preflight must compare the original ledger and schema **before** removing its
-history from the deployed directory. Record the accepted baseline lineage for
-fresh databases so subsequent audits use the right manifest. Revalidate any
-already-applied tail hashes against their original manifest as well.
+both manifests as lineage evidence. Original revision hashes remain unchanged.
+A baseline-type marker at H has no executed-file hash; its recognition evidence
+comes from the recorded preflight. Fresh databases instead have
+an executed C hash. Audit each against its recorded lineage. Version-based skip
+and Ready status alone cannot establish equivalence. Backups must include the
+active revisions schema, the frozen original ledger when present and the
+transition evidence; schema comparisons must account for these metadata tables.
 
 #### Keep publication and recovery boundaries
 
@@ -504,31 +544,41 @@ not activate an overlay.
    procedure while recording the switch evidence. No production access occurs
    in this planning task.
 4. Let CI publish the reviewed compact chart. The landing owner switches only
-   eligible databases, verifies Atlas Ready/current version and no pending
-   migrations, compares data/grants and repeats reconciliation. Preserve the
-   old chart, immutable history and pre-transition backup with the evidence.
+   eligible databases after the populated initializer or empty bootstrap. Verify
+   the selected revisions schema, Atlas Ready/current version and no pending
+   migrations; compare data/grants and repeat reconciliation. Preserve the
+   old chart, both ledgers, immutable history and pre-transition backup with
+   the evidence. Keep initialization separate from empty bootstrap.
 5. Resume normal migration delivery only after those checks pass. Future backup
    recovery instructions must select a lineage before enabling reconciliation.
 
 | Future PostgreSQL validation | Required evidence |
 | --- | --- |
-| Empty install | Baseline plus tail succeeds; catalog and required seed state equal original-chain replay. |
-| Populated upgrade | Representative data and sequence positions survive; original ledger is unchanged through C; pending tail executes once. |
-| Partial/dirty refusal | Missing revision, partial statement count, wrong hash, populated/no-ledger and schema drift each block the preflight before baseline execution. |
-| Repeat reconcile | Second CLI apply and operator reconcile are no-ops with stable ledger and Ready status. |
+| Empty install | Initializer and baseline flag are absent, including the recovery preset; baseline plus tail succeeds and catalog/seed state equals original-chain replay. |
+| Populated upgrade | Test H=C and H>C with already-applied tail. Data and sequence positions survive, original ledger stays frozen at H, the new baseline marker matches H, and only pending tail executes once. |
+| Partial/dirty refusal | Missing revision, partial statement count, wrong hash, populated/no-ledger, schema drift, changed database identity and unexpected target ledger block initialization. An empty database refuses the initializer. |
+| Repeat reconcile | With no tail and after tail completion, repeat CLI status/apply and operator reconcile on unchanged input. Require Pending=0, Available>=Applied, stable ledgers and Ready with migrateDown disabled. Retry the initializer only against its verified marker. |
 | Grants and data | Owners, roles, default privileges, extensions, functions/triggers and restricted public/agents access match; representative rows and required non-schema effects survive. |
-| Old-backup recovery | Pre-C restore completes archived migrations before switching; post-C restores from both ledger lineages accept the correct bundle and tail. |
-| Rollback boundary | Exercise old-chart compatibility separately for original-history and fresh-baseline ledgers; restore the matching backup when compatibility fails. |
+| Old-backup recovery | Pre-C restore completes archived migrations before separate-ledger initialization; post-C original-only, recognized compact and fresh compact restores select the right schema, manifest and tail. |
+| Rollback boundary | Test old-chart revisions-schema selection and original-ledger freshness. Also run the old full directory against a fresh compact ledger: detect the mismatched C hash even if status is OK and the operator is Ready. Refuse compatibility without lineage/schema/data proof; restore a matching backup when it fails. |
 
-Before the switch, stop and keep the original bundle if any proof fails. After
-switching an original-history database with no new migrations, restoring the
-old chart may be compatible because its ledger was retained; verify it first.
-A fresh baseline ledger lacks the old intermediate revisions, so an old chart
-can report missing/out-of-order history. Any later migration or revision-history
-repair also makes a pin reduction insufficient. Prefer a reviewed forward fix;
-otherwise restore a matched database backup, ledger and chart together under a
-separate operational procedure, accounting for writes since the backup. A chart
-rollback does not reverse SQL or recover data. Actual squash implementation and
+Before the switch, stop and keep the original bundle if any proof fails. An
+old chart selects the original revisions schema, whose ledger stopped at H.
+Returning to it is eligible only if no compact tail has executed since H and
+its directory, schema and data effects still match. Otherwise it can replay
+already-applied tail SQL. A fresh compact database has no original ledger;
+changing its revisions schema back also loses its execution history.
+
+Even if the old full directory is deliberately pointed at the fresh compact
+ledger, Atlas v1.1.0 checks skipped versions only from the first ledger version,
+C, onward. It can report `Pending=0`, `Status=OK`, and operator Ready despite
+the different C hash and missing earlier revisions. The rollback rehearsal must
+catch this silent acceptance by comparing ledger hashes and lineage. A
+missing/out-of-order error is not expected for this case. A pin reduction is insufficient after
+new migrations or a lineage mismatch. Prefer a reviewed forward fix; otherwise
+restore a matched database backup, ledgers and chart together under a separate
+operational procedure, accounting for writes since the backup. A chart rollback
+does not reverse SQL or recover data. Actual squash implementation and
 operational execution remain outside #6921's written-plan deliverable.
 
 ## 4. Agents
@@ -2415,7 +2465,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Bound the migration bundle with a fixed-cutoff baseline and retained ledger | [database plan](#bound-the-migration-bundle) | [#6921](https://github.com/jomcgi-org/homelab/issues/6921) | written plan delivered by this change; implementation and operations are future work outside the planning issue |
+| Bound the migration bundle with a fixed-cutoff baseline and separate compact ledger | [database plan](#bound-the-migration-bundle) | [#6921](https://github.com/jomcgi-org/homelab/issues/6921) | written plan delivered by this change; implementation and operations are future work outside the planning issue |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
