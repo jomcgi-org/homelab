@@ -1,19 +1,21 @@
 # Factory home cluster (projects/factory-cluster/README.md). Node and cluster
 # telemetry only: no trace gateway, since nothing on the cluster emits traces
-# yet. Everything lands in the same Honeycomb environment as the hub
-# (homelab), in its own factory-* datasets, with
-# deployment.environment=factory and k8s.cluster.name=factory on every event.
+# yet. Everything goes to the hub's Honeycomb environment (homelab) with
+# deployment.environment=factory and k8s.cluster.name=factory on every event;
+# those two attributes, not dataset names, separate the clusters. The
+# environment puts every metric in its `metrics` dataset and routes logs by
+# service.name, so the dataset values below only name the fallback for data
+# without a service.name. The README lists where each kind of data lands.
 #
-# Volume. Every distinct resource and attribute set is one Honeycomb event per
-# interval, and the team shares one monthly event budget with the hub, so
-# every source is cut to an allowlist and scraped every 120s. At about 55 pods
-# that is roughly 100 metric events a minute, about 4.5M a month, plus
-# warning-and-above log lines and Warning events. Halve the intervals only
-# with a measured headroom check in Honeycomb's usage view.
+# Volume. The team shares one monthly event budget with the hub, so every
+# source is cut to an allowlist and scraped every 120s. Measured on
+# 2026-11-13 with 55 pods: about 120 metric datapoints a minute (kubelet and
+# host about 90, Hubble about 27, API servers and operators about 17) and
+# about 13 warning log lines a minute, so at most about 6M events a month.
+# Halve an interval only after checking headroom in Honeycomb's usage view.
 
 # The hub's ingest key (vault k8s-homelab, fields honeycomb-key-secret and
-# honeycomb-key-id). It writes to the homelab environment; the datasets and
-# the two attributes above separate the clusters.
+# honeycomb-key-id). It writes to the homelab environment.
 onepassword:
   enabled: true
   itemPath: "vaults/k8s-homelab/items/honeycomb-ingest"
