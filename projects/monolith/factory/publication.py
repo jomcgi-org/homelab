@@ -80,7 +80,7 @@ POLICY_KEYS = (
 _CORRECTION_NODE = re.compile(r"^correct_[0-9]+$")
 
 # The board word for a receipt state, matching RECEIPT_STATE_WORD in
-# frontend/src/routes/private/agents/factory/factory-view.js so the public
+# frontend/src/routes/private/factory/factory-view.js so the public
 # board and the private board call the same thing by the same name.
 RECEIPT_STATE_WORD = {
     "queued": "queued",

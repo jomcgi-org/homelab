@@ -23,9 +23,8 @@ def exported_spans(monkeypatch):
     provider.shutdown()
 
 
-def test_span_detail_bound_matches_trigger_filter():
-    # The Honeycomb ember-demo-probe-failed trigger filters on the bounded
-    # ember.probe.detail attribute; the bound is asserted so it cannot drift.
+def test_span_detail_is_bounded():
+    # The retained agent-lane probes bound the ember.probe.detail attribute.
     assert probe._SPAN_DETAIL_MAX_CHARS == 512
 
 

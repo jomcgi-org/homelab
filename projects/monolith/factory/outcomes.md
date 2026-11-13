@@ -273,6 +273,7 @@ Low success rates, correction rounds, escalations, and high cost or elapsed
 time per positive can flag underpowered routing. The report cannot show
 overpowered routing: whether a cheaper model would also have succeeded is a
 counterfactual. Model-bench (#6702) covers that comparison on shared tasks.
-#6700 is later rating work. This change makes no rating or routing decisions.
+#6700's pairwise rating work closed completed on 2026-10-10. This report makes
+no rating or routing decisions.
 Policy generations and model availability still confound comparisons; choose
 cohorts that match the policy generations being compared.
