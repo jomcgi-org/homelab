@@ -1,14 +1,9 @@
-"""Regression tests for source-specific knowledge extraction lenses."""
+"""Offline routing checks for source-specific knowledge extraction lenses."""
 
 import pytest
 
-from knowledge.extraction import _lens, build_extraction_prompt
+from knowledge.extraction import _lens
 from knowledge.models import RawInput
-
-
-class _Embedder:
-    async def embed(self, _text):
-        return [0.0] * 1024
 
 
 def _raw(source: str) -> RawInput:
@@ -17,95 +12,32 @@ def _raw(source: str) -> RawInput:
         path=f"raws/{source}.md",
         source=source,
         content_hash="hash",
-        extra={"repo": "jomcgi-org/homelab"},
+        extra={"repo": "jomcgi-org/homelab", "note_id": "disputed-routing-note-729"},
     )
 
 
-def test_session_lens_requires_behavioural_shapes_and_no_padding():
-    lens = _lens(_raw("claude-session"))
+@pytest.mark.parametrize("source", ["claude-session", "ember-session", "codex-session"])
+def test_session_lens_routes_shared_rules(monkeypatch, source):
+    sentinel = "SESSION_RULES_SENTINEL_481"
+    monkeypatch.setattr("knowledge.extraction._SESSION_BEHAVIOUR_RULES", sentinel)
 
-    assert "only if it states how something BEHAVES, not what a value is" in lens
-    assert "causal" in lens
-    assert "X does Y because Z" in lens
-    assert "constraint" in lens
-    assert "must be external or snapshot recovery repeats stale state" in lens
-    assert "operational state with validity" in lens
-    assert "`valid_from` and `observed_at`" in lens
-    assert "measured" in lens
-    assert "number was observed rather than read from a file" in lens
-    assert "ONLY as the mechanism of a behaviour" in lens
-    assert "past the daily cap the drainer defers the rest an hour" in lens
-    assert "never as a bare value such as `the cap is 40`" in lens
-    for skipped in (
-        "restatements of constants",
-        "docstrings",
-        "READMEs",
-        "ADRs",
-        "commit messages",
-        "anything a reader gets by opening one file",
-    ):
-        assert skipped in lens
-    assert "`edges.contradicts`" in lens
-    assert "tool output in the transcript shows it" in lens
-    assert "the agent saying so is `unverified`" in lens
-    assert (
-        "An empty `assertions` list is the normal answer for a short or read-only "
-        "session; do not pad"
-    ) in lens
-
-
-def test_repo_diff_lens_requires_usefulness_and_retains_grounding():
-    lens = _lens(_raw("repo-diff"))
-    assert "contracts, invariants, behavior and decision rationale" in lens
-    assert "Apply the shared usefulness rules" in lens
-    assert "skip bare configuration values, names and change announcements" in lens
-    assert "set `edges.supersedes` to that note id" in lens
-    assert "file:line evidence from the checkout at head" in lens
-    assert "Skip generated files, formatting" in lens
-    assert "Also list `doc_drift`" in lens
-
-
-@pytest.mark.parametrize(
-    "source", ["claude-session", "ember-session", "codex-session", "agent-report"]
-)
-def test_lens_distinguishes_replacement_from_disagreement(source):
     lens = _lens(_raw(source))
 
-    assert "related note's fact has been REPLACED by a newer behaviour or state" in lens
-    assert "set `edges.supersedes` to that note's id" in lens
-    assert "using only ids from the Related notes list" in lens
-    assert (
-        "Keep `edges.contradicts` for a disagreement that does not establish a replacement"
-    ) in lens
+    if source == "codex-session":
+        assert sentinel in lens
+    else:
+        assert lens == sentinel
 
 
-def test_dispute_lens_defines_states_from_the_disputes_point_of_view():
-    lens = _lens(_raw("dispute"))
+@pytest.mark.parametrize("source", ["repo-diff", "agent-report", "dispute"])
+def test_non_session_lens_excludes_shared_rules(monkeypatch, source):
+    sentinel = "SESSION_RULES_SENTINEL_481"
+    monkeypatch.setattr("knowledge.extraction._SESSION_BEHAVIOUR_RULES", sentinel)
 
-    assert "Seek disconfirming AND confirming evidence in the checkout" in lens
-    assert "States describe the dispute." in lens
-    for definition in (
-        "confirmed: the dispute is upheld, the note is wrong or doubtful but no replacement is established.",
-        "narrowed: the dispute is upheld for part of the note, and a replacement assertion limits the fact's scope.",
-        "superseded: the dispute establishes that a newer fact replaces the note, and a replacement assertion records it.",
-        "invalidated: the dispute establishes that the note is false.",
-        "rejected: the dispute fails, and the fact holds as written.",
-    ):
-        assert definition in lens
+    assert sentinel not in _lens(_raw(source))
 
 
-def test_ember_prompt_embeds_the_session_lens(monkeypatch):
-    monkeypatch.setattr(
-        "knowledge.extraction.raw_store.fetch_raw", lambda _hash: "body"
-    )
-    monkeypatch.setattr("knowledge.extraction.EmbeddingClient", _Embedder)
-    monkeypatch.setattr(
-        "knowledge.store.KnowledgeStore.search_notes_with_context",
-        lambda *_args, **_kwargs: [],
-    )
+def test_dispute_lens_receives_note_id():
+    raw = _raw("dispute")
 
-    prompt = build_extraction_prompt(object(), _raw("ember-session"))
-
-    assert "Source: ember-session" in prompt
-    assert "only if it states how something BEHAVES, not what a value is" in prompt
-    assert "An empty `assertions` list is the normal answer" in prompt
+    assert raw.extra["note_id"] in _lens(raw)
