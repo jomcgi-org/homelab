@@ -1562,9 +1562,7 @@ def _ottl_literal(text: str) -> str:
 
 def _redaction_statements() -> list[str]:
     config = _named_collector_config(_render_overlay("values-factory"), LOGS)
-    return config["processors"]["transform/redact"]["log_statements"][0][
-        "statements"
-    ]
+    return config["processors"]["transform/redact"]["log_statements"][0]["statements"]
 
 
 def _redact(line: str) -> str:
@@ -1657,7 +1655,11 @@ def test_redaction_covers_nested_attributes():
     delete = next(s for s in statements if s.startswith("delete_matching_keys"))
     assert statements.index(delete) > flatten
     key_pattern = re.compile(
-        _ottl_literal(re.match(r'delete_matching_keys\(log\.attributes, "(.*)"\)', delete).group(1))
+        _ottl_literal(
+            re.match(r'delete_matching_keys\(log\.attributes, "(.*)"\)', delete).group(
+                1
+            )
+        )
     )
     for key in ("record.password", "client_secret", "token", "auth.api_key"):
         assert key_pattern.match(key), key
