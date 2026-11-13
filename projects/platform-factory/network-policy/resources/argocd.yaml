@@ -29,15 +29,9 @@ spec:
         # This repository, and release assets kustomize fetches by URL.
         - matchName: github.com
         - matchPattern: "*.githubusercontent.com"
-        # Helm chart repositories and OCI chart registries in use.
+        # The Helm chart repository in use. Add a source in the change that
+        # first syncs from it.
         - matchName: helm.cilium.io
-        - matchPattern: "*.github.io"
-        - matchName: charts.goauthentik.io
-        - matchName: ghcr.io
-        - matchName: pkg-containers.githubusercontent.com
-        - matchName: registry-1.docker.io
-        - matchName: production.cloudflare.docker.com
-        - matchName: auth.docker.io
       toPorts:
         - ports:
             - port: "443"

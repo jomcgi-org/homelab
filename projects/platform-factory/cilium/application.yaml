@@ -4,6 +4,9 @@ metadata:
   name: cilium
   namespace: argocd
   annotations:
+    # Removing this Application from the factory kustomization must not delete
+    # the CNI, which would cut every pod's networking.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     # The CNI comes first; every other pod depends on it.
     argocd.argoproj.io/sync-wave: "-1"
   finalizers:

@@ -68,13 +68,8 @@ spec:
   endpointSelector:
     matchLabels:
       k8s-app: hubble-relay
-  ingress:
-    # `cilium hubble port-forward` arrives through the node.
-    - fromEntities: [host, remote-node]
-      toPorts:
-        - ports:
-            - port: "4245"
-              protocol: TCP
+  # No ingress: `cilium hubble port-forward` enters the pod's network namespace
+  # through the kubelet, which policy does not see.
   egress:
     # The Hubble server in each node's Cilium agent.
     - toEntities: [host, remote-node]
@@ -93,5 +88,22 @@ spec:
   endpointSelector:
     matchLabels:
       k8s-app: hubble-generate-certs
+  egress:
+    - toEntities: [kube-apiserver]
+---
+# k3s's helm-controller installs bundled charts (Gateway API CRDs among them)
+# with Jobs on the pod network. Each fetches its chart from the apiserver's
+# /static path and applies it, so a k3s upgrade that changes a bundled chart
+# needs this to land.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: k3s-helm-install
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: helmcharts.helm.cattle.io/chart
+        operator: Exists
   egress:
     - toEntities: [kube-apiserver]
