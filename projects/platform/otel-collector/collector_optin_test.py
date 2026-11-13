@@ -1446,9 +1446,7 @@ def test_factory_node_agent_pipelines():
         < order.index("log_dedup")
         < order.index("k8s_attributes")
     )
-    redact = config["processors"]["transform/redact"]["log_statements"][0][
-        "statements"
-    ]
+    redact = config["processors"]["transform/redact"]["log_statements"][0]["statements"]
     # $${1}: the collector would otherwise expand ${1} as a config variable.
     assert all("$${1}[REDACTED]" in st for st in redact if "replace" in st)
     assert any("bearer" in st for st in redact)
