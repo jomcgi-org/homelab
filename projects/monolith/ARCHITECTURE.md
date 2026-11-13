@@ -485,7 +485,6 @@ and the documented 72-hour measure and stop-condition verdict.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Nearby OS Open Names associations in existing stars snapshots | section 9, public data products | #7265 | staged off; provisioning, activation and named-site operational acceptance remain |
 | Repair newly proven native refill infrastructure failures and observe useful same-node recovery | #7583 implementation contract | #7583 | original-allocation retry implemented without a paid judge; classified execution-owner repairs remain outside standing landing authority; rollout and live useful-delivery acceptance remain unproven |
 | Retire the merit runtime switch while preserving old-chart enabled behavior | section 4; proposed staged Conductor rescope | #7585, #7596 | repository correction; verified rollout remains on #7585; compatibility-key removal stays on #7596 until old charts leave rollback support |
 | Escalation cards survive the factory's own gate writes, declined landing recovery is named, and optimizer verdicts are final once the window ends and its attempts settle | section 4; evidence on the issue | #7495 | repository delivery; 72-hour before and after counts remain on the issue |
@@ -2237,6 +2236,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Nearby OS Open Names associations in existing stars snapshots | section 8, public data products | #7265 | staged off; provisioning, activation and named-site operational acceptance remain |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
