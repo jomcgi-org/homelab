@@ -46,7 +46,13 @@ def _policy():
                 "max_per_day": 50,
                 "max_closes_per_day": 10,
             },
-            "repos": {"weave-hand/loom": {"enabled": False, "max_per_day": 2}},
+            "repos": {
+                "weave-hand/loom": {
+                    "enabled": False,
+                    "max_per_day": 2,
+                    "max_tasks": {"delivery": 3, "advisory": 1},
+                }
+            },
         }
     )
 
@@ -159,6 +165,32 @@ def test_operator_changed_or_missing_caps_are_untouched(session, cap):
 def test_other_primary_repository_is_untouched(session):
     policy = _policy()
     policy["repo"] = "other/repository"
+    _seed(session, policy)
+    before, audits = _control(session), _audits(session)
+    _run(session)
+    assert _control(session) == before
+    assert _audits(session) == audits
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_inheriting_peer_repository_refuses_entire_migration(session, enabled):
+    policy = _policy()
+    peer = policy["repos"]["weave-hand/loom"]
+    del peer["max_tasks"]
+    peer["enabled"] = enabled
+    _seed(session, policy)
+    before, audits = _control(session), _audits(session)
+    _run(session)
+    assert _control(session) == before
+    assert _audits(session) == audits
+    assert repos_map(json.loads(_control(session).policy_json)) == repos_map(policy)
+
+
+def test_primary_repository_override_is_untouched(session):
+    policy = _policy()
+    policy["repos"]["jomcgi-org/homelab"] = {
+        "max_tasks": {"delivery": 8, "advisory": 1}
+    }
     _seed(session, policy)
     before, audits = _control(session), _audits(session)
     _run(session)

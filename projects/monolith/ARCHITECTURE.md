@@ -359,7 +359,12 @@ chart. It updates only the exact homelab `max_tasks` map `{delivery:10,
 advisory:2}` to `{delivery:40,advisory:4}`, increments control version and
 appends one `policy_migrated` audit. Replay is inert. Generation, control state,
 other policy fields/repositories and every pinned receipt remain unchanged.
-Customized maps require a separate decision. PostgreSQL tests exercise these
+Customized maps require a separate decision. Sparse secondary repository
+entries inherit the global cap. The SQL therefore also refuses any primary
+repository cap override or any secondary entry without an explicit cap,
+including disabled peers. Before activation, the policy owner must inspect
+these guards; pinning a peer's existing effective cap is a separate policy
+decision. The migration never materializes peer overrides itself. PostgreSQL tests exercise these
 cases against the repository's pinned PostgreSQL harness.
 
 `lane_limits()` serves delivery first under the chart ceiling; 40 + 4 = 44
