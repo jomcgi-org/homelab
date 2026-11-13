@@ -10025,3 +10025,17 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+py_test(
+    name = "stars_roadworks_job_test",
+    srcs = ["stars/roadworks_job_test.py"],
+    data = [
+        "stars/testdata/srwr-2026-11-13.csv",
+        "//projects/scotland-connector/internal/fixture:roadworks_contract",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_stars",
+        "@pip//pytest",
+    ],
+)

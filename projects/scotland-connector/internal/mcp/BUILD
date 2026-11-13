@@ -16,7 +16,10 @@ go_library(
 
 go_test(
     name = "mcp_test",
-    srcs = ["mcp_test.go"],
+    srcs = [
+        "mcp_test.go",
+        "roadworks_test.go",
+    ],
     embed = [":mcp"],
     deps = [
         "//projects/scotland-connector/internal/aurora",

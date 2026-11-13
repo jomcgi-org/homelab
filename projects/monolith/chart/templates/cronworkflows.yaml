@@ -50,6 +50,9 @@ spec:
   # schedule" and never fires. Render the single cron expression as a one-item list.
   schedules:
     - {{ .schedule | quote }}
+  {{- with .timezone }}
+  timezone: {{ . | quote }}
+  {{- end }}
   concurrencyPolicy: {{ .concurrencyPolicy | default "Forbid" }}
   {{- if .knowledgePublishFacts }}
   suspend: {{ $.Values.knowledge.publishFacts.suspend }}
@@ -127,6 +130,10 @@ spec:
           args:
             {{- toYaml .args | nindent 12 }}
           env:
+            {{- if .roadworks }}
+            - name: ROADWORKS_ENABLED
+              value: {{ $.Values.roadworks.enabled | quote }}
+            {{- end }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

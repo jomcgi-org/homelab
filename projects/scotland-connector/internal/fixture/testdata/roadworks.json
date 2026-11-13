@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "source_url": "https://downloads.srwr.scot/disruptions-export/daily/",
+  "source_modified_at": "2026-11-13T01:08:05Z",
+  "collected_at": "2026-11-13T03:00:00Z",
+  "activities": [
+    {
+      "id": "BT067-1463228:1:30007320:56.49051:-4.26723",
+      "reference": "BT067-1463228",
+      "phase": "1",
+      "road": "A827 From The Council Boundary To The West Boundary Of Bridgend House",
+      "control": "Road Closure",
+      "status": "Proposed",
+      "lat": 56.49051,
+      "lon": -4.26723,
+      "start": "2026-11-13T00:00:00Z",
+      "end": "2026-11-13T00:00:00Z",
+      "updated_at": "2026-10-07T15:19:40.668000Z",
+      "timing": "Pole Replacement",
+      "location": "KILLIN - A827, Morenish"
+    },
+    {
+      "id": "PK001-S24936:1:30007606:56.22025:-3.62397",
+      "reference": "PK001-S24936",
+      "phase": "1",
+      "road": "A823 From The South Boundary Of Old Toll House To The Council Boundary Near Mount Stuart",
+      "control": "Road Closure",
+      "status": "Advance Planning",
+      "lat": 56.22025,
+      "lon": -3.62397,
+      "start": "2026-11-24T09:00:00Z",
+      "end": "2026-11-24T00:00:00Z",
+      "updated_at": "2026-08-11T13:05:42.872000Z",
+      "timing": "VRS and TM Install",
+      "location": "Blacklinn Bridge"
+    },
+    {
+      "id": "XQ001-NW/2023/24801:1:84414834:56.72663:-5.23096",
+      "reference": "XQ001-NW/2023/24801",
+      "phase": "1",
+      "road": "A82t Achintore Road - Corran Ferry Access",
+      "control": "Road Closure",
+      "status": "Proposed",
+      "lat": 56.72663,
+      "lon": -5.23096,
+      "start": "2026-11-13T00:00:00Z",
+      "end": "2026-12-24T00:00:00Z",
+      "updated_at": "2026-09-15T08:41:23.531000Z",
+      "timing": "Resurfacing (nighttime road closure with amnesties at 2000, 2100 - 2130, 2230, 2330, 0100, 0300 & 0500)",
+      "location": "A82 North of Corran Ferry"
+    },
+    {
+      "id": "XQ001-NW/2025/43186:1:38009194:56.39391:-4.62543",
+      "reference": "XQ001-NW/2025/43186",
+      "phase": "1",
+      "road": "A82t From Roundabout At Glenfalloch Road To Roundabout At With The Junction At A82t And A85t",
+      "control": "Convoy Working",
+      "status": "Proposed",
+      "lat": 56.39391,
+      "lon": -4.62543,
+      "start": "2027-01-10T00:00:00Z",
+      "end": "2027-01-15T00:00:00Z",
+      "updated_at": "2026-11-12T10:25:58.156000Z",
+      "timing": "Resurfacing (nightshift)",
+      "location": "A82 Crianlarich"
+    },
+    {
+      "id": "XQ001-NW/2026/45556-1:1:84414834:56.7314:-5.2236",
+      "reference": "XQ001-NW/2026/45556-1",
+      "phase": "1",
+      "road": "A82t Achintore Road - Corran Ferry Access",
+      "control": "Road Closure",
+      "status": "In Progress",
+      "lat": 56.7314,
+      "lon": -5.2236,
+      "start": "2026-11-08T19:00:00Z",
+      "end": "2026-11-27T00:00:00Z",
+      "updated_at": "2026-11-09T08:18:04.485000Z",
+      "timing": "Resurfacing (night time road closure with amnesties at 2000, 2100 - 2130, 2230, 2330, 0100, 0300 & 0500)",
+      "location": "A82 North of Inchree"
+    }
+  ]
+}

@@ -20,7 +20,10 @@ go_library(
 
 go_test(
     name = "httpapi_test",
-    srcs = ["httpapi_test.go"],
+    srcs = [
+        "httpapi_test.go",
+        "roadworks_test.go",
+    ],
     embed = [":httpapi"],
     deps = [
         "//projects/scotland-connector/internal/connector",

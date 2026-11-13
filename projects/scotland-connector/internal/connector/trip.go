@@ -5,6 +5,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/roadworks"
+
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/astro"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
@@ -82,6 +84,7 @@ type WalkFacts struct {
 
 // WalkOption is one walk on one day.
 type WalkOption struct {
+	RoadNote *roadworks.Note `json:"road_note,omitempty"`
 	WalkFacts
 	FromPointKm *float64        `json:"from_point_km,omitempty"`
 	Verdict     verdict.Verdict `json:"verdict"`

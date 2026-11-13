@@ -1132,6 +1132,12 @@ def safeguards_train() -> None:
     )
 
 
+@app.command("stars-roadworks")
+def stars_roadworks() -> None:
+    """Publish the staged SRWR snapshot when explicitly enabled."""
+    _run_job("stars-roadworks", "stars.roadworks_job", "roadworks_handler")
+
+
 if __name__ == "__main__":
     _otel_provider = _setup_otel()
     try:

@@ -196,3 +196,51 @@ func TestSitesKeyDefaultAndSelection(t *testing.T) {
 		t.Fatalf("selected: %+v, %v", cfg, err)
 	}
 }
+
+func TestRoadworksActivationIsIndependentOfReadiness(t *testing.T) {
+	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"fixture"`)
+		switch r.URL.Path {
+		case "/stars/sites.json":
+			io.WriteString(w, fixture.Sites)
+		case "/stars/history-map.json":
+			io.WriteString(w, fixture.History)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer r2srv.Close()
+	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, enabled := range []string{"false", "true"} {
+		t.Setenv("ROADWORKS_ENABLED", enabled)
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := newApp(cfg, log, r2srv.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (a.roadworks != nil) != (enabled == "true") {
+			t.Fatal("activation flag")
+		}
+		if err = a.store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if a.roadworks != nil && a.roadworks.Refresh(context.Background()) == nil {
+			t.Fatal("missing roadworks snapshot accepted")
+		}
+		r := httptest.NewRecorder()
+		a.admin.ServeHTTP(r, httptest.NewRequest("GET", "/readyz", nil))
+		if r.Code != 200 {
+			t.Fatal("roadworks broke readiness", r.Body)
+		}
+	}
+	t.Setenv("ROADWORKS_ENABLED", "maybe")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid activation value")
+	}
+}

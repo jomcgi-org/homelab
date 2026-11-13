@@ -279,3 +279,37 @@ absent terrain remain unknown. Synthetic test terrain proves computation only.
 Sources: [NOAA product and fallback description](https://www.spaceweather.gov/products/aurora-30-minute-forecast),
 [MET instant-variable contract](https://api.met.no/doc/locationforecast/datamodel),
 [GMTED2010 metadata and terms](https://topotools.cr.usgs.gov/gmted_viewer/gmted2010_fgdc_metadata.html).
+
+## Planned roadworks near walk starts
+
+When enabled, plan and check add `road_note` for Scottish A-road or explicitly
+identified trunk-road closures and explicit `Convoy Working` activities listed
+in the Scottish Road Works Register. Portable traffic lights alone do not
+qualify. A match is within 5 km straight-line distance of the walk start to the
+provider's plotted location. There is no approach-route or last-road routing
+and no route graph. Notes never affect weather verdicts, ranking or eligibility.
+Check applies the same rule to nearby alternatives and each listed other date.
+
+The requested date is a Europe/London civil date, including daylight-saving
+changes. Start and end are the provider's expected window, with both civil
+dates included. Equal timestamps and a same-date midnight end before a daytime
+start occur in the export. These are single-day windows. A listed multi-week
+range does not mean a continuous closure. Notes retain source reference,
+phase, status, UTC timestamps, location and the full free-text description,
+including overnight restrictions and amnesties. Up to three activities appear
+in stable identity order; `truncated` reports additional matches.
+
+“Planned works listed; check Traffic Scotland on the day.” The daily register
+can lag reality. It excludes unplanned incidents, landslips and crashes from
+this coverage; emergency and urgent categories are filtered out. Missing
+notes never mean roads are open. The optional feed stays outside readiness.
+Invalid, missing, unsupported, future-dated or source data aged 36 hours or
+more produces no notes. Failed polls and conditional 304s preserve source
+clocks. Plan validators include the snapshot digest and freshness state.
+
+Source: [Scottish Road Works Commissioner, SRWR open data](https://roadworks.scot/opendata),
+under [OGL v3](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/).
+The nightly ingestion is staged at 02:30 UTC, assuming completion after the
+reported nightly refresh (observed at 01:08 UTC on 2026-11-13; the specification
+says around 02:00). This producer remains suspended and disabled; the consumer
+is also disabled in shipped and deployment values pending operational acceptance.

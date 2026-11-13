@@ -1,3 +1,6 @@
+roadworks:
+  enabled: false
+
 # Optional Kubernetes integrations. Disable all four for a DBOS-only recovery
 # lane; these grants are independent of leader singletons and database leases.
 rbac:
@@ -644,6 +647,23 @@ jobs:
           memory: 1Gi
     # Separate from three-hour weather refresh: preserve cached MET bodies
     # while NOAA updates. No live job until the bounded activation is reviewed.
+    - name: stars-roadworks
+      replaces: stars.roadworks
+      args: ["stars-roadworks"]
+      schedule: "30 2 * * *" # after the reported nightly refresh
+      timezone: Etc/UTC
+      concurrencyPolicy: Forbid
+      s3: true
+      roadworks: true
+      activeDeadlineSeconds: 180
+      suspend: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
     - name: stars-aurora
       replaces: stars.aurora
       args: ["stars-aurora"]

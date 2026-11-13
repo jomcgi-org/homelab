@@ -2226,6 +2226,7 @@ is tracked in [section 4](#factory-acceptance).
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Publish bounded SRWR planned-roadworks snapshots | SRWR roadworks publication is staged | #7529 | default-off repository implementation; activation and live acceptance pending |
 | Retain whole-corpus CDN snapshots and accept copying of published sites, walks and historical maps | [section 8](#8-public-apps); Joe, 2026-11-10 | [#7254](https://github.com/jomcgi-org/homelab/issues/7254) | documentation-only acceptance recorded; review and merge remain; no operational acceptance remains |
 | Retire the DCGM stats dependency and public GPU presentation together | section 9, observability | #7028 | repository retirement staged; rollout, scheduled rollup and public rendering acceptance remain |
 | Review due facts in bounded batches with independent claim evidence and renewal receipts | section 6; Joe approved batching on 2026-10-18 | #6996 | implementation staged; sustained 20,000 distinct reviews/day still requires live measurement and source-failure work |
@@ -3104,3 +3105,44 @@ green. A repeatable fixture and work baseline expose that regression without a
 pre-release performance gate. Latency, cache occupancy and process memory remain
 observations until enough comparable production evidence exists. The existing
 Kargo history and guarded promotion tool remain the deployment authority.
+
+## SRWR roadworks publication is staged
+
+Refs #7529. `stars.roadworks_job` runs through `stars-roadworks` in jobs_main.
+The CronWorkflow is suspended, `roadworks.enabled` is false in chart and deploy
+values, and the handler independently checks `ROADWORKS_ENABLED`. Its proposed
+02:30 UTC schedule assumes the nightly source refresh has finished: the public
+2026-11-13 ZIP was modified at 01:08:05 UTC and the SRWR specification says
+around 02:00. No job was activated or storage written during implementation.
+
+The bounded worker thread downloads the public daily disruptions ZIP and reads
+only `CurrentActivities.csv` in memory. Limits are 16 MiB downloaded, four
+redirects, 90 seconds download, eight archive members, 64 MiB expanded,
+4 MiB per CSV field, 100,000 rows, 5,000 filtered activities and 4 MiB output.
+The workflow forbids concurrency, has a 180-second deadline and 512 MiB memory
+limit. HTTPS redirect URLs and exceptions are never logged because they may
+contain SAS tokens. Existing stars R2 credentials publish one `roadworks.json`
+only after complete validation. Failed downloads and malformed sources leave
+last-good bytes and source/collection clocks untouched. Empty filtered feeds
+publish a valid empty activities array. There is no database storage.
+
+Schema v1 retains source URL, ZIP Last-Modified, collection time and stable
+activity/phase/street/point identities. Filters use `TrafficManagement`,
+`ActivityStatus`, `Category`, `Street`, plotted latitude/longitude and the
+British National Grid centroid checked against easting/northing. Planned A-road
+or explicit trunk-road closures and convoys qualify; lights alone, potential,
+completed, emergency and urgent work do not. Expected windows include both
+Europe/London civil dates, including same-day reversed clock times; UTC
+source timestamps and overnight free text remain intact. Conflicting duplicate
+identities reject the feed. Fixture provenance and Python-to-Go snapshot
+comparison live under `stars/testdata/` and the connector fixture package.
+
+**Why.** A small independent snapshot reuses stars publication and the
+connector's immutable conditional-GET stores without adding live provider I/O
+to public requests. Full validation before one write preserves last-good data
+without a second cache object. The public method documents proximity coverage,
+source lag and Scottish Road Works Commissioner attribution under OGL v3.
+
+Repository scope is default-off. Operational acceptance remains on #7529:
+authorized activation, successful ingestion/publication, and live REST/MCP
+annotations for current matching works with unchanged weather verdicts.

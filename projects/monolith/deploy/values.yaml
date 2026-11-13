@@ -1,3 +1,6 @@
+roadworks:
+  enabled: false
+
 backend:
   # Repointed off SigNoz onto the replacement collector (#5362). Cleared when
   # SigNoz was deleted, which left the backend with no traces destination at

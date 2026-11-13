@@ -789,6 +789,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction                                         | Tracks | State       |
 | ------------------------------------------------- | ------ | ----------- |
+| Planned SRWR road notes near walk starts | #7529 | repository staged off; activation and live acceptance pending |
 | Meter export to Honeycomb, unit price table       | #7245  | not started |
 | Uncapped connector snapshot from the materializer | #7246  | staged off, live acceptance pending |
 | Egress NetworkPolicy enabled                      | #7248  | staged off  |
@@ -797,3 +798,33 @@ this table when the work ships or the issue closes without it.
 | Directory listings                                | #7688  | staged, publisher authorization and live acceptance pending |
 | Near-term aurora, independent snapshot and terrain preprocessing | #7256 | staged off, live acceptance pending |
 | Light windows and scoped cloud sample support | #7367 | deployed, live acceptance pending |
+
+## Planned roadworks are staged
+
+Refs #7529. The optional independent `RoadworksStore` conditionally reads
+`stars/roadworks.json`, schema version 1, without gating readiness. Both REST
+and MCP use the same post-selection annotation of plan walks, checked walks,
+nearby alternatives and other dates. A/trunk-road closures and explicit convoys
+match within 5 km of each walk start, using provider plotted coordinates and
+inclusive expected-window Europe/London civil dates. No route graph is used.
+Weather verdicts, ranking and eligibility are unchanged. The public method
+records source lag, overnight free text, exclusions and OGL v3 attribution.
+
+The consumer accepts at most 4 MiB and 5,000 activities, validates replacements
+before atomic publication, and preserves last-good data and clocks across
+failed polls and 304s. Future clocks suppress notes; source age at 36 hours
+suppresses notes. Plan validators include the content digest and exact freshness
+transitions. Notes carry at most three activities in stable identity order,
+with a truncation flag. Absence never means roads are open.
+
+**Why.** Nightly data needs enough tolerance for one late refresh without
+allowing a repeatedly failing poll to renew old claims. A 36-hour source-clock
+limit provides that bound. Straight-line proximity is useful with the walk
+start points already available; routing needs a separate graph and acceptance.
+
+`ROADWORKS_ENABLED` defaults false and is explicitly false in deployed values.
+Repository delivery remains default-off. #7529 retains authorized activation,
+one successful public-source ingestion/publication and live REST/MCP notes
+consistent with a current matching activity while verdicts stay unchanged.
+The staged rollout checks only verify the delivered monolith and connector
+revisions and the suspended/disabled configuration with healthy plan/check.

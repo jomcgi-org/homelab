@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/roadworks"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/stars"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/verdict"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
@@ -33,9 +34,10 @@ type CheckParams struct {
 
 // OtherDay is the same walk or place on another forecast day.
 type OtherDay struct {
-	Date    string          `json:"date"`
-	Verdict verdict.Verdict `json:"verdict"`
-	Why     string          `json:"why"`
+	RoadNote *roadworks.Note `json:"road_note,omitempty"`
+	Date     string          `json:"date"`
+	Verdict  verdict.Verdict `json:"verdict"`
+	Why      string          `json:"why"`
 }
 
 // CheckWalk is a checked walk.
@@ -376,6 +378,10 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 	if err := limits.needsComplete(wk); err != nil {
 		return nil, err
 	}
+	roads := s.roadworks()
+	if s.RoadworksData != nil && wk != nil {
+		sources = append(sources, sourceRoadworks)
+	}
 	res := CheckResult{Items: make([]CheckResultItem, len(plans))}
 	if walk && limits.walks().Active() {
 		res.Limits = &limits
@@ -390,12 +396,27 @@ func (s *Service) Check(p CheckParams) (*Envelope, error) {
 		default:
 			res.Items[i] = s.checkWalk(wk, cp, now, limits.walks())
 		}
+		item := &res.Items[i]
+		if item.Walk != nil {
+			o := &item.Walk.WalkOption
+			o.RoadNote = roads.Match(o.StartLat, o.StartLon, item.Date, now)
+			for j := range item.OtherDays {
+				od := &item.OtherDays[j]
+				od.RoadNote = roads.Match(o.StartLat, o.StartLon, od.Date, now)
+			}
+		}
+		attachRoadworks(roads, item.NearbyWalks, item.Date, now)
 		if res.Items[i].Error == "" {
 			results++
 		}
 	}
 	meta := s.meta(sky, wk, now, sources)
 	meta.Notes = []string{noteVerdicts}
+	if wk != nil {
+		if note := roadworksNote(s.RoadworksData != nil, roads, now); note != "" {
+			meta.Notes = append(meta.Notes, note)
+		}
+	}
 	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}

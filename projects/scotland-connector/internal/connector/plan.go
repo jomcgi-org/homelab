@@ -435,6 +435,10 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	if wk != nil {
 		inRange = walksInRange(wk, q)
 	}
+	roads := s.roadworks()
+	if s.RoadworksData != nil && wk != nil {
+		sources = append(sources, sourceRoadworks)
+	}
 	res := PlanResult{Query: q, Days: []PlanDay{}}
 	results := 0
 	for day := from; day <= to; day++ {
@@ -443,6 +447,7 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 			pd.WalkNote = "This day is over; its night is still under way."
 		} else if wk != nil {
 			pd.Walks, pd.WalkNote = planWalks(wk, q, inRange, day, now)
+			attachRoadworks(roads, pd.Walks, pd.Date, now)
 			results += len(pd.Walks)
 		} else if walksMissing {
 			pd.WalkNote = noteWalksLoading
@@ -456,7 +461,12 @@ func (s *Service) Plan(p PlanParams) (*Envelope, error) {
 	meta := s.meta(sky, wk, now, sources)
 	meta.Notes = []string{noteVerdicts}
 	if wk != nil {
+		if note := roadworksNote(s.RoadworksData != nil, roads, now); note != "" {
+			meta.Notes = append(meta.Notes, note)
+		}
+	}
+	if wk != nil {
 		meta.Notes = append(meta.Notes, noteWalkStart)
 	}
-	return &Envelope{Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q)), Results: results}, nil
+	return &Envelope{Data: res, Meta: meta, ETag: etag("plan-v2", meta.DataVersion, meta.AsOf, canonical(q), roads.Validator(now)), Results: results}, nil
 }

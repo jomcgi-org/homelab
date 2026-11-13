@@ -288,3 +288,15 @@ def test_rate_limit_rules_cannot_mix_units() -> None:
     # when its rules use different units; the template must refuse that.
     with pytest.raises(RuntimeError, match="must equal route.rateLimit.unit"):
         _render(["route.enabled=true", "route.assistantBucket.unit=Second"])
+
+
+def test_roadworks_consumer_is_explicitly_disabled():
+    for overrides, expected in (
+        ([], "false"),
+        (["config.roadworksEnabled=true"], "true"),
+    ):
+        deployment = _one(_render(overrides), "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["ROADWORKS_ENABLED"] == expected
+        assert env["ROADWORKS_KEY"] == "roadworks.json"

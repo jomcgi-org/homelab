@@ -623,6 +623,7 @@
           "slot"
         ],
         "properties": {
+          "road_note": { "$ref": "#/components/schemas/RoadNote" },
           "walk_id": {
             "type": "string",
             "description": "Pass to check as walk_id."
@@ -1068,10 +1069,109 @@
         },
         "additionalProperties": false
       },
+      "RoadActivity": {
+        "type": "object",
+        "description": "SRWR plotted point and inclusive expected civil-date window, not continuous closure hours. Timing and location are provider free text.",
+        "required": [
+          "id",
+          "reference",
+          "phase",
+          "road",
+          "control",
+          "status",
+          "lat",
+          "lon",
+          "start",
+          "end",
+          "updated_at",
+          "timing",
+          "location"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "road": {
+            "type": "string"
+          },
+          "control": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lon": {
+            "type": "number"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timing": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          }
+        }
+      },
+      "RoadNote": {
+        "type": "object",
+        "description": "Optional planned A/trunk-road closures and explicit convoys within 5 km straight-line of this walk start on its Europe/London civil date. Default-off; omitted for missing, invalid, future or >=36h-old source data and when no activity matches. Absence never proves roads are open. No approach-route routing, verdict or eligibility effect.",
+        "required": [
+          "message",
+          "source",
+          "source_modified_at",
+          "activities",
+          "truncated"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "const": "Planned works listed; check Traffic Scotland on the day."
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_modified_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "activities": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/components/schemas/RoadActivity"
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
       "OtherDay": {
         "type": "object",
         "required": ["date", "verdict", "why"],
         "properties": {
+          "road_note": { "$ref": "#/components/schemas/RoadNote" },
           "date": { "type": "string", "format": "date" },
           "verdict": { "$ref": "#/components/schemas/Verdict" },
           "why": { "type": "string" }

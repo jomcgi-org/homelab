@@ -11,6 +11,7 @@ go_library(
     name = "store",
     srcs = [
         "aurora.go",
+        "roadworks.go",
         "store.go",
         "walks.go",
     ],
@@ -19,6 +20,7 @@ go_library(
     deps = [
         "//projects/scotland-connector/internal/aurora",
         "//projects/scotland-connector/internal/r2",
+        "//projects/scotland-connector/internal/roadworks",
         "//projects/scotland-connector/internal/stars",
         "//projects/scotland-connector/internal/walks",
     ],
@@ -28,6 +30,7 @@ go_test(
     name = "store_test",
     srcs = [
         "refresh_bench_test.go",
+        "roadworks_test.go",
         "store_test.go",
         "walks_test.go",
     ],
@@ -36,7 +39,9 @@ go_test(
     embedsrcs = ["testdata/connector-sites.json"],
     deps = [
         "//projects/scotland-connector/internal/connector",
+        "//projects/scotland-connector/internal/fixture",
         "//projects/scotland-connector/internal/r2",
+        "//projects/scotland-connector/internal/roadworks",
         "//projects/scotland-connector/internal/verdict",
     ],
 )
