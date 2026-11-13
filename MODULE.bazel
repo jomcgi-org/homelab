@@ -480,8 +480,8 @@ multiarch_http_file(
     arm64_sha256 = "a0a03859f0b3810863ce212b0c11a6cf3126a074db708bf39cf46af513bdd273",
     arm64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-aarch64-unknown-linux-gnu.tar.bz2",
     binary_name = "goose",
-    package_dir = "/usr/local/bin",
     extract_path = "goose",
+    package_dir = "/usr/local/bin",
 )
 
 # firecracker binary + guest kernel for the fc-invoke daemon, extracted from the
