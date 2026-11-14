@@ -68,8 +68,9 @@ records how they relate and routes results and feedback between them.
 ## Umbrella chart
 
 `projects/factory/chart` is a published `helm_chart` (OCI
-`ghcr.io/jomcgi/homelab/charts/factory`) with the connector and broker
-images pinned at build time. `projects/factory/deploy` holds the homelab
+`ghcr.io/jomcgi/homelab/charts/factory`). The broker and connector images
+join its `images` attr, pinned at build time, when their templates land.
+`projects/factory/deploy` holds the homelab
 Application and values. It installs:
 
 - kagent (subchart, `kagent.mode: install|existing`).

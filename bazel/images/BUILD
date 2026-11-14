@@ -39,6 +39,7 @@ multirun(
         "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.push",
         "//projects/factory/broker/image:image.push",
+        "//projects/factory/chart:chart.push",
         "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.push",
         "//projects/firecracker/sandbox/javascript:image.push",
@@ -78,6 +79,7 @@ multirun(
     name = "push_charts",
     commands = [
         "//projects/embervm/chart:chart.push",
+        "//projects/factory/chart:chart.push",
         "//projects/monolith-agents/chart:chart.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
