@@ -216,9 +216,18 @@ func TestSemgrep429AndSlowAPIAreBounded(t *testing.T) {
 	for _, kind := range []string{"seconds", "date", "slow", "cancel backoff"} {
 		t.Run(kind, func(t *testing.T) {
 			var calls atomic.Int32
+			// Release the handler before newSemgrepClient's server cleanup.
+			// With an unread POST body, the server may not observe the client's
+			// cancellation until the handler returns; waiting on r.Context()
+			// alone can therefore leave httptest.Server.Close blocked forever.
+			release := make(chan struct{})
+			defer close(release)
 			client := newSemgrepClient(t, func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				if kind == "slow" { <-r.Context().Done(); return }
+				if kind == "slow" {
+					<-release
+					return
+				}
 				if kind == "seconds" { w.Header().Set("Retry-After", "3600") }
 				if kind == "date" { w.Header().Set("Retry-After", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)) }
 				w.WriteHeader(429)
