@@ -477,10 +477,13 @@ connector's kagent principal (finding 15), so it never changes once set.
   connector abandons the item as it would a refused one and logs that
   itsaplan keeps refusing its key. The Done move reads the issue first and
   waits while it cannot. Coordinator lookups that hold a run's slot have a
-  30-minute bound, kept in memory per attempt: a replacement session then
+  30-minute bound, persisted per lookup and attempt: a replacement session then
   starts without its issue, and a dispatched run whose attempt itsaplan no
-  longer accepts closes. Lookups that hold no slot, the issue check before
-  PR updates, rounds and the merge queue and a stale run's lookup, retry
+  longer accepts closes. Any non-refusal resets that lookup's clock; writer
+  restarts and polling gaps preserve it. A new attempt gets a fresh clock,
+  and closing the run clears its windows. Lookups that hold no slot, the
+  issue check before PR updates, rounds and the merge queue and a stale
+  run's lookup, retry
   until the key works. `factory_connector_credential_refusals_total` counts
   itsaplan 401 and 403 answers by key role and kind. A startup probe allows
   five minutes before liveness counts. The database URL
@@ -503,6 +506,24 @@ connector's kagent principal (finding 15), so it never changes once set.
   `networkPolicy.connector`'s labels. Nothing connects to it: metrics on
   9090 have no scraper on this cluster yet. It writes no evidence to
   `factory-evidence` yet, so it has no Garage egress.
+
+**Why.** The #7882 follow-up persists the deadlines introduced by #7885.
+It keeps `factory_connector_credential_refusals_total{role,kind}`, with
+`agent` and `coordinator` roles. A replacement still starts without its
+issue after exhaustion. Issue checks keep retrying, and stale runs remain
+available for redelivery: canceling a stale run makes itsaplan ignore that
+redelivery. A polling gap cannot renew a persisted deadline; a non-refusal,
+including a transient error, still resets it as in #7885.
+
+Repository acceptance covers synthetic deadline, restart, reset and cleanup
+tests. Live acceptance remains staged for the authorized rollout owner on
+`homelab-hub`: verify the delivered connector revision and health, read the
+refusal metric to confirm bounded `role`/`kind` labels without key, issue or
+run values, and query retained metrics once for slot-hold durations and
+refusal counts over the 72-hour windows before and after rollout. The final
+query is due at the 72-hour boundary; zero refusals is inconclusive. Synthetic
+tests prove the deadline deterministically. These live checks remain
+unexecuted; they require no real-key revocation or rotation.
 
 ## Credential broker
 

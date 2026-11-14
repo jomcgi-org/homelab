@@ -1566,6 +1566,41 @@ func TestRefusedRunLookupClosesRunAfterBound(t *testing.T) {
 	}
 }
 
+// Restarts must preserve the original deadline, including a long outage.
+func TestRefusedRunLookupDeadlineSurvivesRestart(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		for _, downtime := range []time.Duration{0, 3 * 24 * time.Hour} {
+			t.Run(fmt.Sprintf("%d/%s", status, downtime), func(t *testing.T) {
+				v := newEnv(t)
+				v.its.add(1, "coder", 101, "HL-1", "Do it.")
+				v.tick(v.e)
+				v.its.holdElsewhere(1)
+				v.setRunErr(&itsaplan.HTTPError{Status: status, Body: "refused"})
+				v.clk.Advance(61 * time.Second)
+				v.tick(v.e)
+				v.e.Release()
+				v.clk.Advance(downtime)
+				v.e = v.engine("connector-b")
+				if downtime == 0 {
+					v.clk.Advance(30*time.Minute - time.Second)
+					v.tick(v.e)
+					if r := v.run(1); r.State != store.RunDispatched {
+						t.Fatalf("run = %s before original deadline", r.State)
+					}
+					v.clk.Advance(time.Second)
+				}
+				v.tick(v.e)
+				if r := v.run(1); r.State != store.RunCanceling || !strings.Contains(r.ClosedReason, "refused the coordinator key") {
+					t.Fatalf("run = %s (%s), want cancellation at original deadline", r.State, r.ClosedReason)
+				}
+				if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelRunClosed {
+					t.Fatalf("cancellations = %+v", cs)
+				}
+			})
+		}
+	}
+}
+
 // TestRefusedStaleRunLookupDoesNotCancel: a stale run holds no slot, so a
 // refused lookup waits for the key however long it takes.
 func TestRefusedStaleRunLookupDoesNotCancel(t *testing.T) {
@@ -1617,7 +1652,24 @@ func TestRefusedReplacementIssueStartsWithoutItAfterBound(t *testing.T) {
 	if n := v.refusals("coordinator", "replacement"); n == 0 {
 		t.Fatal("the refused replacement lookup was not counted")
 	}
-	v.tickUntil(time.Minute, 40, func() bool { return len(v.kg.Sends()) == 2 })
+	for range 20 {
+		v.clk.Advance(time.Minute)
+		v.tick(v.e)
+	}
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	for range 9 {
+		v.clk.Advance(time.Minute)
+		v.tick(v.e)
+	}
+	if sends := v.kg.Sends(); len(sends) != 1 {
+		t.Fatalf("sends = %d before original deadline", len(sends))
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	if sends := v.kg.Sends(); len(sends) != 2 {
+		t.Fatalf("sends = %d at original deadline after restart", len(sends))
+	}
 	text := v.kg.Sends()[1].msg.Parts[0].Text
 	for _, want := range []string{"## Replacement session", "### Issue HL-1", "unavailable", "refused the coordinator key"} {
 		if !strings.Contains(text, want) {

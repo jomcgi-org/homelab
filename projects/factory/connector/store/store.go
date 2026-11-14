@@ -290,9 +290,37 @@ func (s *Store) CountBusyRuns(ctx context.Context, agentKey string) (int, error)
 
 // SetRunState moves a run to state, recording a reason when it closes.
 func (s *Store) SetRunState(ctx context.Context, q Querier, id int64, state, reason string) error {
-	_, err := q.ExecContext(ctx, `UPDATE run SET state = $2, closed_reason = nullif($3, ''), updated_at = now() WHERE id = $1`,
+	_, err := q.ExecContext(ctx, `
+		WITH updated AS (
+			UPDATE run SET state = $2, closed_reason = nullif($3, ''), updated_at = now() WHERE id = $1
+			RETURNING id
+		)
+		DELETE FROM coordinator_auth_failure WHERE $2 = 'closed' AND (
+			(operation = 'run_check' AND owner_id IN (SELECT id FROM updated)) OR
+			(operation = 'replacement' AND owner_id IN (
+				SELECT id FROM delivery_attempt WHERE run_id IN (SELECT id FROM updated))))`,
 		id, state, reason)
 	return err
+}
+
+// RecordLookupOutcome keeps the first refusal of a bounded coordinator read.
+// run_check uses a run ID and itsaplan attempt; replacement uses a delivery
+// attempt ID and zero. Any non-refusal clears only that lookup's window.
+// The caller must hold the writer and the owning run's lock.
+func (s *Store) RecordLookupOutcome(ctx context.Context, operation string, id int64, attempt int, refused bool, at time.Time) (time.Time, error) {
+	if !refused {
+		_, err := s.DB.ExecContext(ctx, `DELETE FROM coordinator_auth_failure
+			WHERE operation = $1 AND owner_id = $2 AND attempt = $3`, operation, id, attempt)
+		return time.Time{}, err
+	}
+	var first time.Time
+	err := s.DB.QueryRowContext(ctx, `
+		INSERT INTO coordinator_auth_failure (operation, owner_id, attempt, first_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (operation, owner_id, attempt) DO UPDATE
+			SET first_at = coordinator_auth_failure.first_at
+		RETURNING first_at`, operation, id, attempt, at).Scan(&first)
+	return first, err
 }
 
 // MarkStale stops a run's writing when itsaplan reports a newer attempt than

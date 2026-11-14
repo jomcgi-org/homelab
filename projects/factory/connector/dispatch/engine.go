@@ -114,10 +114,6 @@ type Engine struct {
 	locks    sync.Map // run ID -> *sync.Mutex
 	// checked holds when each running attempt's session was last checked.
 	checked sync.Map // attempt ID -> sessionCheck
-	// refusals holds when itsaplan began refusing the coordinator key for
-	// each bounded lookup. The heartbeat goroutine and the tick share it.
-	refusalsMu sync.Mutex
-	refusals   map[refusalKey]refusal
 }
 
 // New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
@@ -250,14 +246,6 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 		}
 		return true
 	})
-	now := e.cfg.Now()
-	e.refusalsMu.Lock()
-	for k, rf := range e.refusals {
-		if now.Sub(rf.last) >= authRefusalLimit {
-			delete(e.refusals, k)
-		}
-	}
-	e.refusalsMu.Unlock()
 }
 
 func fatal(err error) bool {
@@ -396,7 +384,11 @@ func (e *Engine) runGone(ctx context.Context, r *store.Run) (gone bool, err erro
 		return false, err
 	}
 	st, err := e.its.GetRun(ctx, r.ID)
-	if why := e.lookupRefused(ctx, refusalKey{lookupRun, r.ID, r.Attempt}, err); why != "" {
+	why, recordErr := e.lookupRefused(ctx, refusalKey{lookupRun, r.ID, r.Attempt}, err)
+	if recordErr != nil {
+		return false, recordErr
+	}
+	if why != "" {
 		// The agent key's call already failed for this attempt, and the
 		// coordinator cannot say why: end the run rather than hold its slot.
 		return true, e.startCancel(ctx, r, store.CancelRunClosed, why)
@@ -1784,8 +1776,8 @@ func (e *Engine) countRefusal(role, kind string, err error) bool {
 // the lookup gives up: a replacement session starts without the issue, and
 // a dispatched run whose attempt itsaplan stopped accepting is closed.
 // Lookups that hold no slot (the issue check, a stale run) retry without a
-// bound. The clock lives in memory, as the session check's does; a restart
-// starts it again.
+// bound. The clock is persisted per lookup; a writer restart or a gap in
+// polling does not extend it.
 const authRefusalLimit = 30 * time.Minute
 
 // Coordinator lookups, each a metric kind.
@@ -1804,40 +1796,29 @@ type refusalKey struct {
 	attempt int
 }
 
-// refusal is a run of 401 and 403 answers to one lookup.
-type refusal struct{ first, last time.Time }
-
 // lookupRefused records a bounded coordinator lookup's outcome. Any answer
 // but a 401 or 403, an error included, resets its clock and returns "", as
 // does a refusal within authRefusalLimit: the caller handles err as before
 // and tries again next pass. Past the limit it returns why the lookup gave
 // up.
-func (e *Engine) lookupRefused(ctx context.Context, k refusalKey, err error) string {
+func (e *Engine) lookupRefused(ctx context.Context, k refusalKey, err error) (string, error) {
 	refused := e.countRefusal(roleCoordinator, k.lookup, err)
+	if guardErr := e.guard(ctx); guardErr != nil {
+		return "", guardErr
+	}
 	now := e.cfg.Now()
-	e.refusalsMu.Lock()
-	if !refused {
-		delete(e.refusals, k)
-		e.refusalsMu.Unlock()
-		return ""
+	first, recordErr := e.st.RecordLookupOutcome(ctx, k.lookup, k.id, k.attempt, refused, now)
+	if recordErr != nil {
+		return "", recordErr
 	}
-	if e.refusals == nil {
-		e.refusals = map[refusalKey]refusal{}
-	}
-	rf := refusal{first: now, last: now}
-	if prev, ok := e.refusals[k]; ok && now.Sub(prev.last) < authRefusalLimit {
-		rf.first = prev.first
-	}
-	e.refusals[k] = rf
-	e.refusalsMu.Unlock()
-	if now.Sub(rf.first) < authRefusalLimit {
-		return ""
+	if !refused || now.Sub(first) < authRefusalLimit {
+		return "", nil
 	}
 	e.log.ErrorContext(ctx, "itsaplan keeps refusing the coordinator key; giving up on the lookup. "+
 		"Check the itsaplan agent key Secrets and the bootstrap",
-		"lookup", k.lookup, "id", k.id, "attempt", k.attempt, "since", rf.first, "error", err)
+		"lookup", k.lookup, "id", k.id, "attempt", k.attempt, "since", first, "error", err)
 	return fmt.Sprintf("itsaplan has refused the coordinator key since %s (%s)",
-		rf.first.UTC().Format(time.RFC3339), clip(err.Error(), 200))
+		first.UTC().Format(time.RFC3339), clip(err.Error(), 200)), nil
 }
 
 // refused reports that the outbox item must be abandoned after err: a

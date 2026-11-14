@@ -1129,7 +1129,10 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 		return "", err
 	}
 	issue, err := e.its.GetIssue(ctx, wi.IssueID)
-	gaveUp := e.lookupRefused(ctx, refusalKey{lookupReplacement, a.ID, 0}, err)
+	gaveUp, recordErr := e.lookupRefused(ctx, refusalKey{lookupReplacement, a.ID, 0}, err)
+	if recordErr != nil {
+		return "", recordErr
+	}
 	switch {
 	case err == nil:
 		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
