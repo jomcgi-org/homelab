@@ -27,10 +27,12 @@ jobs:
       run:
         shell: bash
     env:
-      PERFORMANCE_OUTPUT: ${{ runner.temp }}/public-app-performance
-      PLAYWRIGHT_PREFIX: ${{ runner.temp }}/public-app-browser
       HARNESS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
+      - name: Set measurement directories on the assigned runner
+        run: |
+          echo "PERFORMANCE_OUTPUT=$RUNNER_TEMP/public-app-performance" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_PREFIX=$RUNNER_TEMP/public-app-browser" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.HARNESS_SHA }}
