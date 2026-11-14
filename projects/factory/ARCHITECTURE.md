@@ -643,11 +643,40 @@ and public previews).
   once the reviewer takes over enqueueing. The agent's token is contents
   write on its own repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
-  merge queues write, and contents, pull requests and commit statuses read. A kagent reviewer
-  agent, in its own binding, reviews the exact head against the root
-  `REVIEW.md` and every `REVIEW.md` on the changed paths, read from main. It posts the `factory review` check run and
-  enqueues when the check passes and required CI is green. It never posts a
-  PR approval, so it can never count toward an approval or code-owner rule.
+  merge queues write, and contents, pull requests and commit statuses read.
+  `projects/factory/reviewer` posts the `factory review` check run on every
+  head of every open PR into the base branch, whatever its author, and on
+  each merge group commit
+  (success when the queued PR's head passed, since GitHub checks the group
+  again). It enqueues a passing head once, with required CI green, and only
+  for `enqueueAuthors` (`jomcgi-factory[bot]`, `jomcgi`); other authors'
+  PRs get the check only. It never posts a PR approval, so it can never
+  count toward an approval or code-owner rule. Check runs are its only
+  state: the in-progress run names its kagent task, and a completed one
+  keeps its blocking findings and human gate in a hidden block for the next
+  head.
+- **Review contract.** The agent reviews the exact head against the root
+  `REVIEW.md` and every `REVIEW.md` on both sides of the diff, with their
+  `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
+  read from main and sent in the prompt. It treats its checkout of the head
+  as data and runs nothing from it. It returns findings only (`summary`,
+  `findings[{id, severity, path, line, title, detail, defer}]`,
+  `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
+  decides: success only when no critical, high or medium finding blocks.
+  Unparseable output, an unknown severity, a failed task or two timed-out
+  attempts fail the check. A later head's prompt carries the previous
+  blocking findings and the interdiff; each comes back `fixed`, `justified`
+  (a medium with a note, or any severity with a note starting `withdrawn`)
+  or `open`, and one left out stays open. A diff over budget (2500 lines or
+  150 files, generated files excluded) fails with "split this PR" and sends
+  no task.
+- **Human gate.** A PR touching `REVIEW.md`, `**/REVIEW.md`,
+  `projects/factory/reviewer/**` or `.github/CODEOWNERS`, or labelled
+  `human` or `needs-human`, gets a `human-gate` high finding from the
+  service; the agent reports the rest of `REVIEW.md` "Joe decides" under the
+  same rule. Either blocks until `jomcgi` approves that exact head, and the
+  approval posts a passing check run. A hold is logged once as `human gate`
+  and marked so the connector can skip its revision round.
 - **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
   a passing review on that head, including PRs from Joe, interactive
@@ -667,10 +696,12 @@ and public previews).
   conditional requests on the reviewer App's rate pool and needs no public
   webhook endpoint. For a new head SHA it creates the `factory review` check
   as in progress and sends the kagent `reviewer` agent an A2A task with
-  message ID `factory-review/<pr>/<sha>`, idempotent like coding runs. The
-  agent has its own binding, a read-only repository token and no push. It
-  returns a structured verdict. The service then completes the check on that
-  exact SHA and, on a pass with required CI green, enqueues. The agent never
+  message ID `factory-review/<owner>/<repo>/<pr>/<sha>`, idempotent like
+  coding runs, in a fresh session; a retry after the time limit adds
+  `/attempt-2`. A newer head cancels the older head's task and check. The
+  agent has its own binding, a read-only repository token and no push. The
+  service then completes the check on that exact SHA from the agent's
+  findings and, on a pass with required CI green, enqueues. The agent never
   holds the reviewer App's credentials, and the broker mints the author's and
   the reviewer's tokens only for their own ServiceAccounts.
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
