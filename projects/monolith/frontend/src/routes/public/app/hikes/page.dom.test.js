@@ -4,7 +4,10 @@ import { mount, tick, unmount } from "svelte";
 import Route from "../../../../../test/hikes/Route.svelte";
 import { setPage, page } from "../../../../../test/profile-page.svelte.js";
 import { data, detail, now } from "../../../../../test/hikes/fixtures.js";
-import { instances } from "../../../../../test/stars/maplibre.js";
+import {
+  instances,
+  initialization,
+} from "../../../../../test/stars/maplibre.js";
 
 vi.mock("$app/environment", () => ({ browser: true }));
 vi.mock(
@@ -44,6 +47,7 @@ let mediaChange;
 let resizeDisconnect;
 let observerDisconnect;
 beforeEach(() => {
+  initialization.error = null;
   vi.useFakeTimers({
     toFake: [
       "Date",
@@ -227,5 +231,37 @@ describe("hikes through the real page and public/root layouts", () => {
     expect(media.removeEventListener).toHaveBeenCalled();
     expect(map.remove).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the snapshot until a frame contains its data", async () => {
+    const map = await render();
+    const preview = target.querySelector(".map-snapshot");
+    expect(preview.textContent).toContain("Fixture walk 1");
+    expect(preview.querySelectorAll("li")).toHaveLength(6);
+    map.sourceLoaded = false;
+    map.fire("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBe(preview);
+    map.sourceLoaded = true;
+    map.fire("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBeNull();
+  });
+
+  it("retains snapshot data when WebGL initialization fails", async () => {
+    initialization.error = new Error("WebGL unavailable");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    setPage("https://jomcgi.dev/app/hikes", data);
+    instance = mount(Route, { target, props: { data } });
+    await vi.waitFor(() => expect(log).toHaveBeenCalled());
+    await settle();
+    expect(target.querySelector(".map-snapshot").textContent).toContain(
+      "Fixture walk 1",
+    );
+    expect(target.querySelector(".snapshot-note").textContent).toContain(
+      "map is unavailable",
+    );
+    expect(instances).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
