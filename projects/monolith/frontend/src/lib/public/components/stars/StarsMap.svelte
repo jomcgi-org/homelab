@@ -105,13 +105,7 @@
   let previewRows = $derived.by(() => {
     const rows = [];
     for (const site of previewSites) {
-      if (
-        mode === "live" &&
-        !liveWindows(site, nowMs).some((hour) =>
-          activeNights.has(nightKey(hour.time)),
-        )
-      )
-        continue;
+      if (mode === "live" && effectiveClearDark(site) === null) continue;
       rows.push({
         name:
           site.name ||
