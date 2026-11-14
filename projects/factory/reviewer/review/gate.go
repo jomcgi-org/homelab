@@ -72,6 +72,44 @@ type Gate struct {
 	// Only reviews submitted after it clear that hold. Zero preserves old
 	// states and gates present when the original review started.
 	ApprovalAfter time.Time `json:"approval_after,omitzero"`
+	// ApprovalSnapshot records all review IDs visible in the cutoff second
+	// on the first complete review read after the hold. It is persisted
+	// before an ambiguous same-second approval can clear the gate.
+	ApprovalSnapshot *ReviewSnapshot `json:"approval_snapshot,omitempty"`
+}
+
+// ReviewSnapshot distinguishes an observed empty second (IDs is empty)
+// from missing evidence (nil snapshot/IDs or Unavailable). IDs are compared
+// by membership: neither numeric order nor tie ordering is an authority.
+type ReviewSnapshot struct {
+	IDs         []int64 `json:"ids"`
+	Unavailable bool    `json:"unavailable,omitempty"`
+}
+
+const maxSnapshotReviews = 64
+
+func snapshotReviews(reviews []github.PullRequestReview, after time.Time) *ReviewSnapshot {
+	snapshot := &ReviewSnapshot{IDs: []int64{}}
+	second := after.Truncate(time.Second)
+	for _, r := range reviews {
+		if r.ID <= 0 || (r.SubmittedAt.IsZero() && r.State != "PENDING") {
+			return &ReviewSnapshot{Unavailable: true}
+		}
+		if !r.SubmittedAt.Equal(second) {
+			continue
+		}
+		if !slices.Contains(snapshot.IDs, r.ID) {
+			if len(snapshot.IDs) == maxSnapshotReviews {
+				return &ReviewSnapshot{Unavailable: true}
+			}
+			snapshot.IDs = append(snapshot.IDs, r.ID)
+		}
+	}
+	return snapshot
+}
+
+func (g *Gate) resetApproval(now time.Time) {
+	g.ApprovalAfter, g.Approver, g.ApprovalSnapshot = now.UTC(), "", nil
 }
 
 // Needed reports whether the gate applies.
@@ -90,7 +128,7 @@ func (g *Gate) observeLabels(labels []string, now time.Time) bool {
 	changed := !slices.Equal(observed, labels)
 	for _, lb := range labels {
 		if !slices.Contains(observed, lb) {
-			g.ApprovalAfter = now.UTC()
+			g.resetApproval(now)
 		}
 		if !slices.Contains(g.Labels, lb) {
 			g.Labels = append(g.Labels, lb)
@@ -144,7 +182,7 @@ func gateLabels(b *Binding, labels []string) []string {
 
 // approvedBy is the configured human whose latest decision on the PR is an
 // APPROVED review of exactly head, submitted after a nonzero cutoff, or empty.
-func approvedBy(b *Binding, reviews []github.PullRequestReview, head string, after time.Time) string {
+func approvedBy(b *Binding, reviews []github.PullRequestReview, head string, after time.Time, snapshot *ReviewSnapshot) string {
 	latest := map[string]github.PullRequestReview{}
 	for _, r := range reviews { // oldest first
 		switch r.State {
@@ -154,11 +192,24 @@ func approvedBy(b *Binding, reviews []github.PullRequestReview, head string, aft
 	}
 	for _, a := range b.HumanApprovers {
 		if r, ok := latest[strings.ToLower(a)]; ok && r.State == "APPROVED" && r.CommitSHA == head &&
-			(after.IsZero() || r.SubmittedAt.After(after)) {
+			approvalAfter(r, after, snapshot) {
 			return a
 		}
 	}
 	return ""
+}
+
+func approvalAfter(r github.PullRequestReview, after time.Time, snapshot *ReviewSnapshot) bool {
+	if after.IsZero() || r.SubmittedAt.After(after) {
+		return true
+	}
+	// GitHub exposes whole-second submitted_at values. An unseen review ID
+	// from a later complete read proves a submission after our recorded
+	// snapshot, even when its timestamp is the same second as the hold.
+	// An approval racing between hold observation and that snapshot stays
+	// excluded: its ordering cannot be established from the timestamp.
+	return r.SubmittedAt.Equal(after.Truncate(time.Second)) && r.ID > 0 &&
+		snapshot != nil && snapshot.IDs != nil && !snapshot.Unavailable && !slices.Contains(snapshot.IDs, r.ID)
 }
 
 // gateFinding is the high finding the service adds while a gated head

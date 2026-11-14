@@ -145,7 +145,7 @@ func (f *fakeGitHub) review(number int, author, state, sha, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	pr := f.prs[number]
-	pr.Reviews = append(pr.Reviews, github.PullRequestReview{Author: author, State: state, CommitSHA: sha, Body: body, SubmittedAt: time.Now().UTC()})
+	pr.Reviews = append(pr.Reviews, github.PullRequestReview{ID: int64(number*100000 + len(pr.Reviews) + 1), Author: author, State: state, CommitSHA: sha, Body: body, SubmittedAt: time.Now().UTC().Truncate(time.Second)})
 }
 
 func (f *fakeGitHub) label(number int, labels ...string) {
@@ -381,7 +381,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/pulls/"), "/reviews"))
 		out := []map[string]any{}
 		for _, rv := range f.prs[n].Reviews {
-			out = append(out, map[string]any{"user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body, "submitted_at": rv.SubmittedAt})
+			out = append(out, map[string]any{"id": rv.ID, "user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body, "submitted_at": rv.SubmittedAt})
 		}
 		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):

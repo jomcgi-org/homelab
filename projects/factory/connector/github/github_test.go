@@ -540,7 +540,7 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/example-org/homelab/pulls/7/reviews":
-			_, _ = w.Write([]byte(`[{"user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok", "submitted_at": "2026-11-14T12:00:00Z"}]`))
+			_, _ = w.Write([]byte(`[{"id": 80, "user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok", "submitted_at": "2026-11-14T12:00:00Z"}]`))
 		case "/repos/example-org/homelab/issues/7/comments":
 			_, _ = w.Write([]byte(`[{"user": {"login": "someone"}, "body": "hi"}]`))
 		case "/repos/example-org/homelab/compare/sha-0...sha-1":
@@ -553,7 +553,7 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
 	ctx := context.Background()
 	rv, err := c.PullRequestReviews(ctx, "example-org/homelab", 7)
-	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok", SubmittedAt: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}) {
+	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{ID: 80, Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok", SubmittedAt: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}) {
 		t.Fatalf("reviews = %+v, %v", rv, err)
 	}
 	cm, err := c.PullRequestComments(ctx, "example-org/homelab", 7)
@@ -643,6 +643,25 @@ func TestPullRequestReviewsReadsEveryPage(t *testing.T) {
 	c = &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
 	if _, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7); !errors.Is(err, ErrTooMany) {
 		t.Fatalf("err = %v, want ErrTooMany", err)
+	}
+}
+
+func TestPullRequestReviewsRejectsAMissingPage(t *testing.T) {
+	for _, firstPage := range []bool{true, false} {
+		t.Run(fmt.Sprint("first page ", firstPage), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if firstPage || r.URL.Query().Get("page") == "2" {
+					_, _ = w.Write([]byte("null"))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(make([]map[string]any, MaxListed))
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			if reviews, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7); err == nil || reviews != nil {
+				t.Fatalf("missing page returned a usable snapshot: %v, %v", reviews, err)
+			}
+		})
 	}
 }
 

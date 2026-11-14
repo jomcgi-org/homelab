@@ -427,6 +427,7 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 
 // PullRequestReview is a submitted PR review, from REST.
 type PullRequestReview struct {
+	ID          int64
 	Author      string
 	State       string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
 	CommitSHA   string
@@ -448,6 +449,7 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 	var reviews []PullRequestReview
 	for page := 1; page <= MaxReviewPages; page++ {
 		var out []struct {
+			ID          int64     `json:"id"`
 			User        login     `json:"user"`
 			State       string    `json:"state"`
 			CommitID    string    `json:"commit_id"`
@@ -459,8 +461,11 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 		if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 			return nil, err
 		}
+		if out == nil {
+			return nil, errors.New("github: missing review listing")
+		}
 		for _, r := range out {
-			reviews = append(reviews, PullRequestReview{Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body, SubmittedAt: r.SubmittedAt})
+			reviews = append(reviews, PullRequestReview{ID: r.ID, Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body, SubmittedAt: r.SubmittedAt})
 		}
 		if len(out) < MaxListed {
 			return reviews, nil
