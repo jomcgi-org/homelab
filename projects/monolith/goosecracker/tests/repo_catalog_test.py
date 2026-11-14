@@ -40,9 +40,41 @@ def test_no_grants_renders_none_sentinel():
     assert menu.startswith("(none")
 
 
-def test_deterministic_for_a_given_scope_set():
-    scopes = frozenset({"jomcgi-org/homelab", "weave-hand/loom", "z/z", "a/a"})
-    assert describe_repos(scopes) == describe_repos(scopes)
+def test_mixed_grants_render_once_in_catalog_then_sorted_unknown_order():
+    grants = [
+        [
+            "z/z",
+            "colincee/homelab",
+            "weave-hand/loom",
+            "a/a",
+            "jomcgi-org/homelab",
+            "weave-hand/loom",
+            "z/z",
+        ],
+        [
+            "a/a",
+            "jomcgi-org/homelab",
+            "z/z",
+            "weave-hand/loom",
+            "colincee/homelab",
+            "a/a",
+            "colincee/homelab",
+        ],
+    ]
+    for scopes in grants:
+        menu = describe_repos(scopes)
+        repo_ids = [
+            line.removeprefix("- ").split(" = ", 1)[0]
+            for line in menu.splitlines()
+            if line.startswith("- ") and " = " in line
+        ]
+        assert repo_ids == [
+            "jomcgi-org/homelab",
+            "weave-hand/loom",
+            "colincee/homelab",
+            "a/a",
+            "z/z",
+        ]
 
 
 def test_catalog_ids_are_owner_slash_repo():
