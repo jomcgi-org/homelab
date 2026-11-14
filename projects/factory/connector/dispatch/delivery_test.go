@@ -155,6 +155,21 @@ func (g *fakeGitHub) check(sha, name string, app int64, conclusion string) {
 	})
 }
 
+// humanHold is the factory-reviewer's marker for a check held only by its
+// human gate.
+const humanHold = "<!-- factory-review:human-gate-only -->"
+
+// summarize sets the summary of a commit's check run by name.
+func (g *fakeGitHub) summarize(sha, name, summary string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.checks[sha] {
+		if g.checks[sha][i].Name == name {
+			g.checks[sha][i].Summary = summary
+		}
+	}
+}
+
 // status sets the latest commit status of a context on a commit.
 func (g *fakeGitHub) status(sha, context, creator, state string) {
 	g.mu.Lock()
@@ -615,6 +630,51 @@ func TestDuplicateEventsActOnce(t *testing.T) {
 	}
 	if evs[0].RoundRunID != v.rounds()[0].ID || evs[0].Source != "semgrep-review" || evs[0].Author != "app/200" {
 		t.Fatalf("event = %+v", evs[0])
+	}
+}
+
+func TestReviewerHumanHoldStartsNoRound(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.check("sha-1", "test", 100, "success")
+	v.gh.check("sha-1", "semgrep-review", 200, "failure")
+	v.gh.summarize("sha-1", "semgrep-review", "Waiting for a human review.\n\n"+humanHold)
+	v.poll()
+	v.poll()
+	if n := len(v.rounds()); n != 0 {
+		t.Fatalf("rounds = %d, want none for the reviewer's human hold", n)
+	}
+	if len(v.gh.Enqueues()) != 0 {
+		t.Fatal("enqueued a head the reviewer holds for a person")
+	}
+	v.gh.check("sha-1", "semgrep-review", 200, "success")
+	v.poll()
+	if len(v.gh.Enqueues()) != 1 {
+		t.Fatal("did not enqueue once the hold cleared")
+	}
+}
+
+func TestHumanHoldMarkerCountsOnlyFromTheReviewer(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.check("sha-1", "test", 100, "failure")
+	v.gh.summarize("sha-1", "test", "Lint failed.\n\n"+humanHold)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want a round for a required check carrying the marker", n)
+	}
+}
+
+func TestReviewerFindingsReachTheRoundInFull(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	overview := strings.Repeat("Read the diff. ", 300) // about 4,500 characters
+	v.gh.check("sha-1", "semgrep-review", 200, "failure")
+	v.gh.summarize("sha-1", "semgrep-review", overview+"\n\n### Blocking\n\n- **medium** `a.go:3` Close the file")
+	v.poll()
+	sends := v.kg.Sends()
+	if text := sends[len(sends)-1].msg.Parts[0].Text; !strings.Contains(text, "Close the file") {
+		t.Fatalf("revision text lacks the finding after a long overview:\n%s", text)
 	}
 }
 
