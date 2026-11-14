@@ -157,17 +157,29 @@ type Run struct {
 	LastHeartbeatAt time.Time
 	SeenVisible     bool
 	ClosedReason    string
+	Origin          string // OriginItsaplan or OriginConnector
 }
+
+// Run origins. A connector run is a review round the connector started; it
+// has no itsaplan record, so nothing about it goes to the runner API.
+const (
+	OriginItsaplan  = "itsaplan"
+	OriginConnector = "connector"
+)
+
+// Connector reports whether the connector started the run itself.
+func (r *Run) Connector() bool { return r.Origin == OriginConnector }
 
 const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0), coalesce(issue_key, ''),
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
-	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, '')`
+	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, ''),
+	origin`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
 	err := row.Scan(&r.ID, &r.AgentKey, &r.WorkItemID, &r.IssueID, &r.IssueKey, &r.Trigger,
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
-		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason)
+		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin)
 	return r, err
 }
 
@@ -316,7 +328,9 @@ func (s *Store) SetEventOffset(ctx context.Context, id int64, attempt, offset in
 const (
 	WorkActive  = "active"
 	WorkBlocked = "blocked"
-	WorkReview  = "review"
+	WorkReview  = "review"  // a turn finished; the PR is reviewed
+	WorkMerging = "merging" // the PR is in the merge queue
+	WorkDone    = "done"    // the merge was observed
 )
 
 // WorkItem is one issue delivered through one kagent session.
@@ -336,17 +350,24 @@ type WorkItem struct {
 	State              string
 	BlockedClass       string
 	BlockedReason      string
+	ReviewRounds       int
+	// TurnAttemptID is the completed turn the PR must reflect, and
+	// SyncedAttemptID the last one it does.
+	TurnAttemptID   int64
+	SyncedAttemptID int64
 }
 
 const workCols = `id, binding_name, issue_id, issue_key, branch, agent_key, kagent_namespace, kagent_agent,
 	coalesce(session_id, ''), session_generation, epoch, engineering_retries, state,
-	coalesce(blocked_class, ''), coalesce(blocked_reason, '')`
+	coalesce(blocked_class, ''), coalesce(blocked_reason, ''), review_rounds,
+	coalesce(turn_attempt_id, 0), coalesce(synced_attempt_id, 0)`
 
 func scanWork(row interface{ Scan(...any) error }) (*WorkItem, error) {
 	w := &WorkItem{}
 	err := row.Scan(&w.ID, &w.BindingName, &w.IssueID, &w.IssueKey, &w.Branch, &w.AgentKey,
 		&w.KagentNamespace, &w.KagentAgent, &w.SessionID, &w.SessionGeneration, &w.Epoch,
-		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason)
+		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason, &w.ReviewRounds,
+		&w.TurnAttemptID, &w.SyncedAttemptID)
 	return w, err
 }
 
@@ -539,6 +560,8 @@ type Attempt struct {
 	Issues          int
 	FirstSentAt     time.Time
 	SentAt          time.Time
+	// Context is what a replacement session starts from, sent with the input.
+	Context string
 }
 
 // Open reports whether the attempt has not reached a final state.
@@ -549,13 +572,13 @@ func (a *Attempt) Open() bool {
 const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id, kind, message_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
 	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
-	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz)`
+	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, '')`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
-		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt)
+		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context)
 	return a, err
 }
 
@@ -592,13 +615,13 @@ func (s *Store) OpenAttemptForWork(ctx context.Context, workID int64) (*Attempt,
 func (s *Store) RecordAttempt(ctx context.Context, q Querier, a Attempt) (*Attempt, error) {
 	return scanAttempt(q.QueryRowContext(ctx, `
 		INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch, decision_id, kind, message_id,
-			kagent_namespace, kagent_agent, context_id, state, writer_epoch)
+			kagent_namespace, kagent_agent, context_id, state, writer_epoch, context)
 		VALUES ($1, coalesce((SELECT max(seq) FROM delivery_attempt WHERE run_id = $1), 0) + 1,
-			$2, $3, $4, $5, $6, $7, $8, nullif($9, ''), 'sending', $10)
+			$2, $3, $4, $5, $6, $7, $8, nullif($9, ''), 'sending', $10, nullif($11, ''))
 		ON CONFLICT (message_id) DO UPDATE SET message_id = EXCLUDED.message_id
 		RETURNING `+attemptCols,
 		a.RunID, a.RunAttempt, a.WorkItemEpoch, a.DecisionID, a.Kind, a.MessageID,
-		a.KagentNamespace, a.KagentAgent, a.ContextID, a.WriterEpoch))
+		a.KagentNamespace, a.KagentAgent, a.ContextID, a.WriterEpoch, a.Context))
 }
 
 // MarkIssued records, before the call, that the message is being sent. From
@@ -719,8 +742,9 @@ func (s *Store) ConfirmCancellation(ctx context.Context, q Querier, id int64, ou
 
 // Outbox kinds.
 const (
-	OutboxResult  = "result"
-	OutboxComment = "comment"
+	OutboxResult    = "result"
+	OutboxComment   = "comment"
+	OutboxIssueDone = "issue_done"
 )
 
 // OutboxItem is a side effect waiting for delivery.

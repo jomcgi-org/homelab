@@ -32,6 +32,9 @@ type Itsaplan interface {
 	Result(ctx context.Context, agent string, runID int64, r itsaplan.Result) error
 	GetRun(ctx context.Context, runID int64) (*itsaplan.RunStatus, error)
 	Comment(ctx context.Context, issueID int64, body string) error
+	GetIssue(ctx context.Context, issueID int64) (*itsaplan.Issue, error)
+	ProjectColumns(ctx context.Context, projectKey string) ([]itsaplan.Column, error)
+	MoveIssue(ctx context.Context, issueID, columnID int64) error
 }
 
 // Tasks is the subset of the kagent A2A client dispatch uses.
@@ -54,10 +57,12 @@ type Agent struct {
 	Concurrency int
 }
 
-// Binding is a repository binding and the agent keys that may deliver it.
+// Binding is a repository binding, the agent keys that may deliver it and
+// its review policy.
 type Binding struct {
 	store.Binding
 	Agents []string
+	Review ReviewPolicy
 }
 
 // Config holds dispatch settings.
@@ -78,7 +83,15 @@ type Config struct {
 	FinalLookups int
 	// CancelInterval spaces CancelTask requests for one task.
 	CancelInterval time.Duration
-	Now            func() time.Time
+	// ReviewPoll spaces polls of one owned PR, 60 s.
+	ReviewPoll time.Duration
+	// SessionCheck spaces checks of a running turn's session for a crash.
+	SessionCheck time.Duration
+	// MaxCrashResends bounds the resends of one run's input after its
+	// session crashed and was reverted.
+	MaxCrashResends int
+	Links           Links
+	Now             func() time.Time
 }
 
 // MinDispatchWindow is the smallest resend window that covers a send's
@@ -94,14 +107,17 @@ type Engine struct {
 	its      Itsaplan
 	tasks    Tasks
 	sessions Sessions
+	gh       GitHub
 	m        *metrics.Metrics
 	log      *slog.Logger
 	w        *store.Writer
 	locks    sync.Map // run ID -> *sync.Mutex
+	// checked holds when each running attempt's session was last checked.
+	checked sync.Map // attempt ID -> time.Time
 }
 
-// New builds an engine.
-func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessions, m *metrics.Metrics, log *slog.Logger) *Engine {
+// New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
+func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessions, gh GitHub, m *metrics.Metrics, log *slog.Logger) *Engine {
 	if cfg.Heartbeat == 0 {
 		cfg.Heartbeat = 60 * time.Second
 	}
@@ -120,6 +136,15 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	if cfg.CancelInterval == 0 {
 		cfg.CancelInterval = 30 * time.Second
 	}
+	if cfg.ReviewPoll == 0 {
+		cfg.ReviewPoll = 60 * time.Second
+	}
+	if cfg.SessionCheck == 0 {
+		cfg.SessionCheck = cfg.Heartbeat
+	}
+	if cfg.MaxCrashResends == 0 {
+		cfg.MaxCrashResends = 2
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -129,7 +154,7 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Engine{cfg: cfg, st: st, its: its, tasks: tasks, sessions: sessions, m: m, log: log}
+	return &Engine{cfg: cfg, st: st, its: its, tasks: tasks, sessions: sessions, gh: gh, m: m, log: log}
 }
 
 // Acquire tries to become the writer and records the bindings. It returns
@@ -235,6 +260,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"claims", e.claim},
 		{"runs", e.stepRuns},
 		{"cancellations", e.stepCancellations},
+		{"delivery", e.stepDelivery},
 		{"outbox", e.flushOutbox},
 	}
 	for _, p := range phases {
@@ -281,6 +307,9 @@ func (e *Engine) Heartbeats(ctx context.Context) error {
 		case store.RunClaimed, store.RunWaiting, store.RunDispatched, store.RunFinishing:
 		default:
 			continue
+		}
+		if r.Connector() {
+			continue // no itsaplan lease
 		}
 		if e.cfg.Now().Sub(r.LastHeartbeatAt) < e.cfg.Heartbeat {
 			continue
@@ -545,11 +574,34 @@ func (e *Engine) binding(name string) *Binding {
 
 // failRun queues a failed result for a run that cannot be delivered.
 func (e *Engine) failRun(ctx context.Context, q store.Querier, r *store.Run, msg string) error {
-	if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey,
-		itsaplan.Result{Status: "failed", Error: clip(msg, maxErrorText)}); err != nil {
-		return err
+	return e.finishRun(ctx, q, r, itsaplan.Result{Status: "failed", Error: clip(msg, maxErrorText)})
+}
+
+// finishRun ends a run with its result. An itsaplan run queues the result
+// for the outbox. A review round has no itsaplan record and closes; a failed
+// one returns its work item to review, where the PR waits for a person,
+// unless another run already holds the work item.
+func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, res itsaplan.Result) error {
+	if !r.Connector() {
+		if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey, res); err != nil {
+			return err
+		}
+		return e.st.SetRunState(ctx, q, r.ID, store.RunFinishing, "")
 	}
-	return e.st.SetRunState(ctx, q, r.ID, store.RunFinishing, "")
+	if res.Status != "success" && r.WorkItemID != 0 {
+		if _, err := q.ExecContext(ctx, `
+			UPDATE work_item SET state = 'review', updated_at = now()
+			WHERE id = $1 AND state = 'active' AND NOT EXISTS (
+				SELECT 1 FROM run WHERE work_item_id = $1 AND id <> $2 AND state NOT IN ('closed', 'stale'))`,
+			r.WorkItemID, r.ID); err != nil {
+			return err
+		}
+	}
+	reason := "review round " + res.Status
+	if res.Error != "" {
+		reason += ": " + res.Error
+	}
+	return e.st.SetRunState(ctx, q, r.ID, store.RunClosed, clip(reason, maxErrorText))
 }
 
 // dispatch resolves a claimed run's work item and sends it, or waits for
@@ -744,8 +796,13 @@ func (e *Engine) concurrency(agent string) int {
 	return 1
 }
 
-func messageID(runID int64, decision string) string {
-	return "itsaplan-run/" + strconv.FormatInt(runID, 10) + "/" + decision
+// messageID names a send. A review round's run has no itsaplan id, so its
+// messages are named for the connector's run.
+func messageID(r *store.Run, decision string) string {
+	if r.Connector() {
+		return "factory-review/" + strconv.FormatInt(-r.ID, 10) + "/" + decision
+	}
+	return "itsaplan-run/" + strconv.FormatInt(r.ID, 10) + "/" + decision
 }
 
 func resultKey(runID int64) string { return "result/" + strconv.FormatInt(runID, 10) }
@@ -756,8 +813,9 @@ func agentRef(wi *store.WorkItem) kagent.AgentRef {
 
 // taskText frames the run for the agent. Repository and branch come from the
 // binding, never from the prompt. It is deterministic, so a resend of the
-// same message carries the same input.
-func taskText(r *store.Run, wi *store.WorkItem, b *Binding) string {
+// same message carries the same input: a replacement's context is recorded
+// with its attempt.
+func taskText(r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) string {
 	var s strings.Builder
 	if r.SystemPrompt != "" {
 		s.WriteString(r.SystemPrompt)
@@ -766,6 +824,10 @@ func taskText(r *store.Run, wi *store.WorkItem, b *Binding) string {
 	s.WriteString(r.Prompt)
 	fmt.Fprintf(&s, "\n\n## Factory delivery\nRepository: %s/%s\nBase branch: %s\nWork branch: %s\n",
 		b.Owner, b.Repo, b.BaseBranch, wi.Branch)
+	if a.Context != "" {
+		s.WriteString("\n")
+		s.WriteString(a.Context)
+	}
 	return s.String()
 }
 
@@ -774,19 +836,29 @@ func taskText(r *store.Run, wi *store.WorkItem, b *Binding) string {
 // initial send, a revision in its session, an engineering retry (retry > 0)
 // or a replacement of a lost session.
 func (e *Engine) recordNext(ctx context.Context, q store.Querier, r *store.Run, wi *store.WorkItem, retry int) (*store.Attempt, error) {
-	kind, decision := "initial", "initial"
+	kind, decision := nextDecision(wi, retry)
+	return e.record(ctx, q, r, wi, kind, decision, "")
+}
+
+func nextDecision(wi *store.WorkItem, retry int) (kind, decision string) {
 	switch {
 	case wi.SessionID != "" && retry > 0:
-		kind, decision = "continuation", "retry-"+strconv.Itoa(retry)
+		return "continuation", "retry-" + strconv.Itoa(retry)
 	case wi.SessionID != "":
-		kind, decision = "continuation", "revision"
+		return "continuation", "revision"
 	case wi.SessionGeneration > 0 || retry > 0:
-		decision = "replacement-" + strconv.Itoa(wi.SessionGeneration) + "-" + strconv.Itoa(retry)
+		return "initial", "replacement-" + strconv.Itoa(wi.SessionGeneration) + "-" + strconv.Itoa(retry)
 	}
+	return "initial", "initial"
+}
+
+// record records an attempt in the work item's session, or in a new one when
+// it has none, and moves the run to dispatched, in q's transaction.
+func (e *Engine) record(ctx context.Context, q store.Querier, r *store.Run, wi *store.WorkItem, kind, decision, background string) (*store.Attempt, error) {
 	a, err := e.st.RecordAttempt(ctx, q, store.Attempt{
 		RunID: r.ID, RunAttempt: r.Attempt, WorkItemEpoch: wi.Epoch, DecisionID: decision, Kind: kind,
-		MessageID: messageID(r.ID, decision), KagentNamespace: wi.KagentNamespace, KagentAgent: wi.KagentAgent,
-		ContextID: wi.SessionID, WriterEpoch: e.w.Epoch,
+		MessageID: messageID(r, decision), KagentNamespace: wi.KagentNamespace, KagentAgent: wi.KagentAgent,
+		ContextID: wi.SessionID, WriterEpoch: e.w.Epoch, Context: background,
 	})
 	if err != nil {
 		return nil, err
@@ -852,7 +924,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	task, err := e.tasks.Send(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, kagent.Message{
 		MessageID: a.MessageID,
 		ContextID: a.ContextID,
-		Parts:     []kagent.Part{{Text: taskText(r, wi, b)}},
+		Parts:     []kagent.Part{{Text: taskText(r, wi, b, a)}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/run":        r.ID,
 			"factory.jomcgi.dev/issue":      wi.IssueKey,
@@ -939,7 +1011,7 @@ func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.Wor
 	}
 	s, err := e.sessions.GetSession(ctx, a.ContextID)
 	switch {
-	case errors.Is(err, kagent.ErrSessionNotFound):
+	case sessionLost(err):
 		return false, e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "expired or deleted")
 	case err != nil:
 		return false, err
@@ -952,6 +1024,9 @@ func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.Wor
 			return false, err
 		}
 		s, err = e.sessions.RevertSession(ctx, a.ContextID)
+		if sessionLost(err) {
+			return false, e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "unrecoverable after a crash")
+		}
 		if err != nil {
 			// The attempt stays recorded; the revert is retried next pass, and
 			// nothing retries it in the background.
@@ -960,8 +1035,91 @@ func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.Wor
 		if s.Crashed() {
 			return false, nil
 		}
+		e.m.SessionRecoveries.WithLabelValues("revert").Inc()
 	}
 	return true, nil
+}
+
+// sessionLost reports a session kagent no longer has (NOT_FOUND) or tells
+// the client to replace (FAILED_PRECONDITION).
+func sessionLost(err error) bool {
+	return errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable)
+}
+
+// watchSession checks a running turn's session every SessionCheck. A crashed
+// runtime does not finish its task, so the connector looks: a crashed
+// session is reverted and the turn's input sent again, and a lost one is
+// replaced.
+func (e *Engine) watchSession(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
+	if e.sessions == nil || a.ContextID == "" {
+		return nil
+	}
+	now := e.cfg.Now()
+	last, seen := e.checked.LoadOrStore(a.ID, now)
+	if !seen || now.Sub(last.(time.Time)) < e.cfg.SessionCheck {
+		return nil
+	}
+	e.checked.Store(a.ID, now)
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	s, err := e.sessions.GetSession(ctx, a.ContextID)
+	switch {
+	case sessionLost(err):
+		return e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "expired or deleted")
+	case err != nil:
+		return err
+	case s.Gone():
+		return e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "deleted")
+	case s.Crashed():
+		return e.recoverCrash(ctx, r, wi, a)
+	}
+	return nil
+}
+
+// recoverCrash reverts a session whose runtime crashed during a turn. The
+// revert restores the last checkpoint and fails the interrupted turn, so the
+// turn's input is sent again in the same session, a bounded number of times.
+// The resend and the end of the interrupted attempt commit together.
+func (e *Engine) recoverCrash(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
+	b := e.binding(wi.BindingName)
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	s, err := e.sessions.RevertSession(ctx, a.ContextID)
+	switch {
+	case sessionLost(err):
+		return e.replaceSession(ctx, r, wi, b, a, "unrecoverable after a crash")
+	case err != nil:
+		return fmt.Errorf("revert session: %w", err)
+	case s.Crashed():
+		return nil // the revert has not finished; look again next check
+	}
+	e.m.SessionRecoveries.WithLabelValues("revert").Inc()
+	if b == nil {
+		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
+	}
+	n, err := e.st.CountResends(ctx, r.ID)
+	if err != nil {
+		return err
+	}
+	if n >= e.cfg.MaxCrashResends {
+		return e.engineeringFailure(ctx, r, wi, a, fmt.Sprintf("session crashed again after %d resends", n))
+	}
+	var next *store.Attempt
+	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "session crashed; reverted to its last checkpoint"); err != nil {
+			return err
+		}
+		var err error
+		next, err = e.record(ctx, tx, r, wi, "continuation", "resend-"+strconv.Itoa(a.Seq), a.Context)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	e.checked.Delete(a.ID)
+	return e.issue(ctx, r, wi, b, next)
 }
 
 // replaceSession ends an attempt whose session kagent no longer has and, in
@@ -972,8 +1130,13 @@ func (e *Engine) replaceSession(ctx context.Context, r *store.Run, wi *store.Wor
 		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
 	}
 	old := a.ContextID
+	background, err := e.replacementContext(ctx, wi, b, old, why)
+	if err != nil {
+		return err
+	}
+	e.m.SessionRecoveries.WithLabelValues("replace").Inc()
 	var next *store.Attempt
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
 		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "session "+why); err != nil {
 			return err
 		}
@@ -983,13 +1146,15 @@ func (e *Engine) replaceSession(ctx context.Context, r *store.Run, wi *store.Wor
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment,
 			fmt.Sprintf("comment/session-replaced/%d/%d", wi.ID, wi.SessionGeneration), r.ID, "",
 			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-				"The factory replaced kagent session %s (%s) for %s. The new session starts from this issue's context.",
+				"The factory replaced kagent session %s (%s) for %s. The new session starts from the issue, "+
+					"its pull request, the branch head and the open review threads.",
 				old, why, wi.IssueKey)}); err != nil {
 			return err
 		}
 		wi.SessionID = ""
+		kind, decision := nextDecision(wi, 0)
 		var err error
-		next, err = e.recordNext(ctx, tx, r, wi, 0)
+		next, err = e.record(ctx, tx, r, wi, kind, decision, background)
 		return err
 	})
 	if err != nil {
@@ -1046,9 +1211,10 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	if kagent.Quiescent(t.Status.State) {
+		e.checked.Delete(a.ID)
 		return e.complete(ctx, r, wi, a, t)
 	}
-	return nil
+	return e.watchSession(ctx, r, wi, a)
 }
 
 // postEvents sends the task's events past the persisted offset. A 409 means
@@ -1056,6 +1222,9 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 // probing with one event finds the server's offset, since itsaplan
 // re-acknowledges events it already has.
 func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (bool, error) {
+	if r.Connector() {
+		return false, nil // a review round has no itsaplan transcript
+	}
 	events := Events(t)
 	offset, base := r.EventOffset, r.EventTaskBase
 	if r.EventAttempt != r.Attempt {
@@ -1110,14 +1279,13 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 				return err
 			}
 			if state == kagent.StateCompleted {
-				if err := e.st.SetWorkState(ctx, tx, wi.ID, store.WorkReview); err != nil {
+				// The turn finished; delivery opens or updates the PR from the
+				// pushed branch. The issue is Done only once the merge is seen.
+				if err := e.st.FinishTurn(ctx, tx, wi.ID, a.ID); err != nil {
 					return err
 				}
 			}
-			if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey, res); err != nil {
-				return err
-			}
-			return e.st.SetRunState(ctx, tx, r.ID, store.RunFinishing, "")
+			return e.finishRun(ctx, tx, r, res)
 		})
 	}
 	msg := StatusText(t)
@@ -1156,11 +1324,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, class, msg); err != nil {
 				return err
 			}
-			if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey,
-				itsaplan.Result{Status: "failed", Error: "kagent canceled the task"}); err != nil {
-				return err
-			}
-			return e.st.SetRunState(ctx, tx, r.ID, store.RunFinishing, "")
+			return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "kagent canceled the task"})
 		})
 	}
 	return e.engineeringFailure(ctx, r, wi, a, msg)
@@ -1168,11 +1332,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 
 // reportBlocked queues the failed result of the turn that hit a block.
 func (e *Engine) reportBlocked(ctx context.Context, tx *sql.Tx, r *store.Run, t *kagent.Task, reason string) error {
-	if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey,
-		itsaplan.Result{Status: "failed", Error: clip(reason, maxErrorText), Output: Output(t)}); err != nil {
-		return err
-	}
-	return e.st.SetRunState(ctx, tx, r.ID, store.RunFinishing, "")
+	return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip(reason, maxErrorText), Output: Output(t)})
 }
 
 // engineeringFailure retries in the same session within the work item's
@@ -1203,11 +1363,10 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 				wi.IssueKey, budget, clip(msg, maxErrorText))}); err != nil {
 			return err
 		}
-		if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey,
-			itsaplan.Result{Status: "failed", Error: clip(fmt.Sprintf("engineering retries exhausted (%d): %s", budget, msg), maxErrorText)}); err != nil {
-			return err
-		}
-		return e.st.SetRunState(ctx, tx, r.ID, store.RunFinishing, "")
+		return e.finishRun(ctx, tx, r, itsaplan.Result{
+			Status: "failed",
+			Error:  clip(fmt.Sprintf("engineering retries exhausted (%d): %s", budget, msg), maxErrorText),
+		})
 	})
 	if err != nil {
 		return err
@@ -1315,27 +1474,24 @@ func (e *Engine) confirmCancel(ctx context.Context, c *store.Cancellation, a *st
 				return err
 			}
 		}
-		var agent, state string
-		if err := tx.QueryRowContext(ctx, `SELECT agent_key, state FROM run WHERE id = $1`, c.RunID).Scan(&agent, &state); err != nil {
+		r := &store.Run{ID: c.RunID}
+		if err := tx.QueryRowContext(ctx, `SELECT agent_key, state, origin, coalesce(work_item_id, 0) FROM run WHERE id = $1`,
+			c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID); err != nil {
 			return err
 		}
-		if state == store.RunClosed {
+		if r.State == store.RunClosed {
 			return nil
 		}
 		// A run itsaplan ended closes whatever reason the cancellation had:
 		// it may have started as a reassignment and then gone canceling.
-		if c.Reason != store.CancelReassignment || state == store.RunCanceling {
+		if c.Reason != store.CancelReassignment || r.State == store.RunCanceling {
 			if err := abandonResult(ctx, tx, c.RunID); err != nil {
 				return err
 			}
 			return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "ended in itsaplan; kagent task "+outcome)
 		}
 		// Reassignment: the superseded run reports that another agent took over.
-		if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(c.RunID), c.RunID, agent,
-			itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"}); err != nil {
-			return err
-		}
-		return e.st.SetRunState(ctx, tx, c.RunID, store.RunFinishing, "")
+		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"})
 	})
 }
 
@@ -1545,6 +1701,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		default:
 			return err
 		}
+	}
+	if it.Kind == store.OutboxIssueDone {
+		return e.deliverIssueDone(ctx, it)
 	}
 	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "unknown kind "+it.Kind)
 }

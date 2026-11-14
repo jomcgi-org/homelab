@@ -137,3 +137,24 @@ func TestComment(t *testing.T) {
 		t.Fatalf("request = %+v", got)
 	}
 }
+
+func TestProjectColumnsAndMoveIssueUseTheCoordinator(t *testing.T) {
+	var got seen
+	c := server(t, 200, `{"id":1,"key":"HL","columns":[{"id":4,"name":"Doing","stateType":"started"},{"id":9,"name":"Done","stateType":"completed"}]}`, &got)
+	cols, err := c.ProjectColumns(context.Background(), "HL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.method != http.MethodGet || got.path != "/projects/HL" || got.key != "k-coord" {
+		t.Fatalf("request = %+v", got)
+	}
+	if len(cols) != 2 || cols[1].ID != 9 || cols[1].StateType != "completed" {
+		t.Fatalf("columns = %+v", cols)
+	}
+	if err := c.MoveIssue(context.Background(), 41, 9); err != nil {
+		t.Fatal(err)
+	}
+	if got.method != http.MethodPatch || got.path != "/issues/41" || got.key != "k-coord" || got.body["columnId"] != float64(9) {
+		t.Fatalf("request = %+v", got)
+	}
+}

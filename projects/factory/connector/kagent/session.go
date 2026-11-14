@@ -33,6 +33,12 @@ const ReasonRuntimeCrashed = "RuntimeCrashed"
 // ErrSessionNotFound is gRPC NOT_FOUND for a session.
 var ErrSessionNotFound = errors.New("kagent: session not found")
 
+// ErrSessionUnrecoverable is gRPC FAILED_PRECONDITION: kagent tells the
+// client the session's runtime cannot be recovered (its Actor is missing,
+// replaced or retemplated, or the session was deleted) and it must be
+// replaced.
+var ErrSessionUnrecoverable = errors.New("kagent: session unrecoverable")
+
 // Session is the subset of kagent.api.v1.Session the connector reads.
 type Session struct {
 	ID            string
@@ -128,8 +134,11 @@ func (s *Sessions) invoke(ctx context.Context, method, id string) (*Session, err
 	req := rawMessage(protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), id))
 	var resp rawMessage
 	if err := s.conn.Invoke(ctx, method, &req, &resp, grpc.ForceCodecV2(rawCodec{})); err != nil {
-		if status.Code(err) == codes.NotFound {
+		switch status.Code(err) {
+		case codes.NotFound:
 			return nil, fmt.Errorf("%w: %v", ErrSessionNotFound, err)
+		case codes.FailedPrecondition:
+			return nil, fmt.Errorf("%w: %v", ErrSessionUnrecoverable, err)
 		}
 		return nil, err
 	}

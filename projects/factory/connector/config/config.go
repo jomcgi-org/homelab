@@ -19,8 +19,13 @@ type Config struct {
 	KagentURL        string // FACTORY_CONNECTOR_KAGENT_URL (A2A over HTTP)
 	KagentGRPCTarget string // FACTORY_CONNECTOR_KAGENT_GRPC (host:port)
 	KagentTokenFile  string // FACTORY_CONNECTOR_KAGENT_TOKEN_FILE
-	MetricsAddr      string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
-	Holder           string // POD_NAME, default hostname
+	// BrokerURL turns delivery on: the connector's GitHub tokens come from
+	// the broker, authenticated with the projected token in BrokerTokenFile.
+	BrokerURL       string // FACTORY_CONNECTOR_BROKER_URL
+	BrokerTokenFile string // FACTORY_CONNECTOR_BROKER_TOKEN_FILE
+	GitHubURL       string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
+	MetricsAddr     string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
+	Holder          string // POD_NAME, default hostname
 
 	File File
 }
@@ -31,6 +36,14 @@ type File struct {
 	Coordinator Coordinator `yaml:"coordinator"`
 	Agents      []Agent     `yaml:"agents"`
 	Bindings    []Binding   `yaml:"bindings"`
+	Links       Links       `yaml:"links"`
+}
+
+// Links are URL templates for PR bodies and Done comments; see dispatch.Links.
+type Links struct {
+	Issue   string `yaml:"issue"`
+	Run     string `yaml:"run"`
+	Session string `yaml:"session"`
 }
 
 // Intervals are the loop timings.
@@ -40,6 +53,7 @@ type Intervals struct {
 	ReissueInterval Duration `yaml:"reissueInterval"`
 	DispatchWindow  Duration `yaml:"dispatchWindow"`
 	AcquireRetry    Duration `yaml:"acquireRetry"`
+	ReviewPoll      Duration `yaml:"reviewPoll"`
 }
 
 // MinDispatchWindow covers the 60 s A2A call timeout (kagent.DefaultTimeout),
@@ -71,6 +85,21 @@ type Binding struct {
 	KagentNamespace       string   `yaml:"kagentNamespace"`
 	KagentAgent           string   `yaml:"kagentAgent"`
 	MaxEngineeringRetries *int     `yaml:"maxEngineeringRetries"`
+
+	// Review policy: who and what the connector trusts on the binding's PRs.
+	TrustedReviewers []string `yaml:"trustedReviewers"`
+	RequiredChecks   []Check  `yaml:"requiredChecks"`
+	ReviewerCheck    *Check   `yaml:"reviewerCheck"`
+	MaxReviewRounds  *int     `yaml:"maxReviewRounds"`
+	DoneColumn       string   `yaml:"doneColumn"`
+}
+
+// Check is a trusted check: a check run from the GitHub App appId, or a
+// commit status set by the login statusCreator.
+type Check struct {
+	Name          string `yaml:"name"`
+	AppID         int64  `yaml:"appId"`
+	StatusCreator string `yaml:"statusCreator"`
 }
 
 // Duration parses Go duration strings in YAML.
@@ -94,6 +123,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		KagentURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_KAGENT_URL"), "/"),
 		KagentGRPCTarget: getenv("FACTORY_CONNECTOR_KAGENT_GRPC"),
 		KagentTokenFile:  getenv("FACTORY_CONNECTOR_KAGENT_TOKEN_FILE"),
+		BrokerURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_BROKER_URL"), "/"),
+		BrokerTokenFile:  getenv("FACTORY_CONNECTOR_BROKER_TOKEN_FILE"),
+		GitHubURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
 		MetricsAddr:      getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
 		Holder:           getenv("POD_NAME"),
 	}
@@ -102,6 +134,12 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if c.KagentTokenFile == "" {
 		c.KagentTokenFile = "/var/run/secrets/kagent/token"
+	}
+	if c.BrokerTokenFile == "" {
+		c.BrokerTokenFile = "/var/run/secrets/factory-broker/token"
+	}
+	if c.GitHubURL == "" {
+		c.GitHubURL = "https://api.github.com"
 	}
 	if c.Holder == "" {
 		c.Holder, _ = os.Hostname()
@@ -161,6 +199,9 @@ func Parse(b []byte) (*File, error) {
 	if f.Intervals.AcquireRetry == 0 {
 		f.Intervals.AcquireRetry = Duration(5 * time.Second)
 	}
+	if f.Intervals.ReviewPoll == 0 {
+		f.Intervals.ReviewPoll = Duration(60 * time.Second)
+	}
 	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {
 		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")
 	}
@@ -199,6 +240,19 @@ func Parse(b []byte) (*File, error) {
 		if b.MaxEngineeringRetries == nil {
 			two := 2
 			b.MaxEngineeringRetries = &two
+		}
+		if b.MaxReviewRounds == nil {
+			three := 3
+			b.MaxReviewRounds = &three
+		}
+		checks := append([]Check(nil), b.RequiredChecks...)
+		if b.ReviewerCheck != nil {
+			checks = append(checks, *b.ReviewerCheck)
+		}
+		for _, c := range checks {
+			if c.Name == "" || (c.AppID == 0) == (c.StatusCreator == "") {
+				return nil, fmt.Errorf("config: binding %s: a check needs a name and exactly one of appId and statusCreator", b.Name)
+			}
 		}
 		if len(b.Agents) == 0 {
 			return nil, fmt.Errorf("config: binding %s names no agents", b.Name)

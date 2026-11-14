@@ -4,12 +4,14 @@ go_library(
     name = "dispatch",
     srcs = [
         "classify.go",
+        "delivery.go",
         "engine.go",
         "transcript.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/dispatch",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/factory/connector/github",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
@@ -20,6 +22,7 @@ go_library(
 go_test(
     name = "dispatch_test",
     srcs = [
+        "delivery_test.go",
         "engine_test.go",
         "fakes_test.go",
         "transcript_test.go",
@@ -27,6 +30,7 @@ go_test(
     data = ["@postgres_test//:postgres"],
     deps = [
         ":dispatch",
+        "//projects/factory/connector/github",
         "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",

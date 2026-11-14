@@ -24,6 +24,7 @@ type env struct {
 	clk *clock
 	its *fakeItsaplan
 	kg  *fakeKagent
+	gh  *fakeGitHub
 	cfg dispatch.Config
 	e   *dispatch.Engine
 }
@@ -60,7 +61,11 @@ func (v *env) engine(holder string) *dispatch.Engine {
 	v.t.Helper()
 	cfg := v.cfg
 	cfg.Holder = holder
-	e := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, nil, nil)
+	var gh dispatch.GitHub
+	if v.gh != nil {
+		gh = v.gh
+	}
+	e := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, gh, nil, nil)
 	// Postgres releases a closed session's advisory lock asynchronously.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -428,7 +433,7 @@ func TestRestartAfterLeaseExpiryAttachesWithoutSecondExecution(t *testing.T) {
 	// A second process cannot write while the first holds the lock.
 	cfg := v.cfg
 	cfg.Holder = "connector-b"
-	waiting := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, nil, nil)
+	waiting := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, nil, nil, nil)
 	if ok, err := waiting.Acquire(v.ctx); err != nil || ok {
 		t.Fatalf("second writer acquired the lock: ok=%v err=%v", ok, err)
 	}
@@ -818,7 +823,7 @@ func TestAcquireReleasesLockWhenBindingsFail(t *testing.T) {
 	v.failOnce("repo_binding", "true")
 	cfg := v.cfg
 	cfg.Holder = "connector-b"
-	b := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, nil, nil)
+	b := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, nil, nil, nil)
 	v.e.Release()
 	ok, err := b.Acquire(v.ctx)
 	if err == nil || ok {

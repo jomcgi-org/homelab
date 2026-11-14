@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//projects/factory/connector/config",
         "//projects/factory/connector/dispatch",
+        "//projects/factory/connector/github",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",

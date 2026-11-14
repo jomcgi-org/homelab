@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type rpcSeen struct {
@@ -188,5 +190,29 @@ func TestSessionsOverGRPC(t *testing.T) {
 	}
 	if len(auth) != 2 || auth[0] != "Bearer sa-token" {
 		t.Fatalf("authorization = %v", auth)
+	}
+}
+
+func TestUnrecoverableSessionIsFailedPrecondition(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer(grpc.ForceServerCodecV2(RawCodec()), grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		var req RawMessage
+		if err := stream.RecvMsg(&req); err != nil {
+			return err
+		}
+		return status.Error(codes.FailedPrecondition, "runtime cannot be recovered: runtime Actor is missing")
+	}))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	c, err := DialSessions(lis.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.RevertSession(context.Background(), "s1"); !errors.Is(err, ErrSessionUnrecoverable) {
+		t.Fatalf("revert = %v, want ErrSessionUnrecoverable", err)
 	}
 }
