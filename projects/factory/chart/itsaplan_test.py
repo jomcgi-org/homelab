@@ -84,7 +84,7 @@ def _pods(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def test_disabled_renders_nothing_in_factory() -> None:
-    assert not _ours(_render(["itsaplan.enabled=false"]))
+    assert not _ours(_render(["itsaplan.enabled=false", "connector.enabled=false"]))
 
 
 def test_no_namespace_of_its_own() -> None:

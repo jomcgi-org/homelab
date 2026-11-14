@@ -34,6 +34,13 @@ kagent:
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
+    # kagent reviews the connector's ServiceAccount token under this
+    # authority, which is part of its principal ID: changing it loses the
+    # connector's sessions.
+    server:
+      auth:
+        serviceAccount:
+          authority: factory-home
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
@@ -63,3 +70,17 @@ itsaplan:
       - matchLabels:
           k8s:io.kubernetes.pod.namespace: garage
           app.kubernetes.io/name: garage
+
+# The connector (projects/factory/connector) as factory/factory-connector,
+# for the homelab binding. Delivery starts once broker.githubApp.enabled.
+connector:
+  enabled: true
+  bindings:
+    homelab:
+      itsaplanProject: HOME
+      agents: [homelab-codex]
+  database:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: factory-db
+          cnpg.io/cluster: factory-db
