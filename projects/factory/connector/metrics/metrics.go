@@ -97,7 +97,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_credential_refusals_total",
 			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
-				"(result, comment, issue_done), a lookup (replacement, issue_check, run_check) or a runner call " +
+				"(result, comment, issue_done), a lookup (replacement, brief, issue_check, run_check) or a runner call " +
 				"(claim, heartbeat, events).",
 		}, []string{"role", "kind"}),
 	}

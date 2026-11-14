@@ -153,6 +153,12 @@ func TestDeliversRunAndReportsLastCallUsage(t *testing.T) {
 	if !strings.Contains(msg.Parts[0].Text, "Work branch: factory/HL-7") {
 		t.Fatalf("task text lacks the configured branch:\n%s", msg.Parts[0].Text)
 	}
+	// The agent has no itsaplan tools: the first turn quotes the issue.
+	for _, want := range []string{"no itsaplan tools", "### Issue HL-7: Issue 101 title", "Issue 101 description."} {
+		if !strings.Contains(msg.Parts[0].Text, want) {
+			t.Errorf("task text lacks %q:\n%s", want, msg.Parts[0].Text)
+		}
+	}
 	task := v.kg.lastTask()
 	v.kg.say(task, "Looking at the test.")
 	v.clk.Advance(5 * time.Second)
@@ -1626,6 +1632,55 @@ func TestRefusedReplacementIssueStartsWithoutItAfterBound(t *testing.T) {
 	}
 	if strings.Contains(text, "Issue 101 description.") {
 		t.Errorf("replacement text has the issue it could not read:\n%s", text)
+	}
+}
+
+// TestIssueIsQuotedOnlyWhenASessionOpens: a send in the work item's
+// session carries no brief, since the session has the issue already.
+func TestIssueIsQuotedOnlyWhenASessionOpens(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.its.add(2, "coder", 101, "HL-1", "Address review.")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	sends := v.kg.Sends()
+	if len(sends) != 2 {
+		t.Fatalf("sends = %d, want 2", len(sends))
+	}
+	if text := sends[1].msg.Parts[0].Text; strings.Contains(text, "## Issue") || strings.Contains(text, "Issue 101 description.") {
+		t.Fatalf("a send in the existing session quotes the issue again:\n%s", text)
+	}
+}
+
+// TestRefusedBriefStartsWithoutTheIssueAfterBound: the first send reads its
+// issue with the coordinator key. While the key is refused it waits; past
+// the bound the session starts without the issue.
+func TestRefusedBriefStartsWithoutTheIssueAfterBound(t *testing.T) {
+	v := newEnv(t)
+	v.its.mu.Lock()
+	v.its.issueErr = &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}
+	v.its.mu.Unlock()
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	if sends := v.kg.Sends(); len(sends) != 0 {
+		t.Fatalf("sends = %d, want the first send to wait", len(sends))
+	}
+	if n := v.refusals("coordinator", "brief"); n == 0 {
+		t.Fatal("the refused brief lookup was not counted")
+	}
+	v.tickUntil(time.Minute, 40, func() bool { return len(v.kg.Sends()) == 1 })
+	text := v.kg.Sends()[0].msg.Parts[0].Text
+	for _, want := range []string{"## Issue", "### Issue HL-1", "unavailable", "refused the coordinator key"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("first send lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Issue 101 description.") {
+		t.Errorf("first send has the issue it could not read:\n%s", text)
 	}
 }
 
