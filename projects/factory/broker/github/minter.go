@@ -49,8 +49,11 @@ type Minter struct {
 	// ConnectorMinLife is the least remaining lifetime of a cached
 	// connector token; an older one is reminted.
 	ConnectorMinLife time.Duration
-	Metrics          *metrics.Metrics
-	Logger           *slog.Logger
+	// AgentKind and TokenKind label the mint metric; empty is "agent" and
+	// "connector".
+	AgentKind, TokenKind string
+	Metrics              *metrics.Metrics
+	Logger               *slog.Logger
 
 	mu        sync.Mutex
 	connector map[string]Token
@@ -93,7 +96,7 @@ func (m *Minter) MintAgents(ctx context.Context) error {
 		} else {
 			m.Logger.Info("GitHub agent token written", "binding", b.Name, "namespace", b.Namespace, "expires_at", tok.ExpiresAt.UTC().Format(time.RFC3339))
 		}
-		m.Metrics.GitHubMints.WithLabelValues("agent", b.Name, outcome).Inc()
+		m.Metrics.GitHubMints.WithLabelValues(orDefault(m.AgentKind, "agent"), b.Name, outcome).Inc()
 	}
 	return errors.Join(errs...)
 }
@@ -153,7 +156,7 @@ func (m *Minter) ConnectorToken(ctx context.Context, repository string) (Token, 
 	if err != nil {
 		outcome = "error"
 	}
-	m.Metrics.GitHubMints.WithLabelValues("connector", binding.Name, outcome).Inc()
+	m.Metrics.GitHubMints.WithLabelValues(orDefault(m.TokenKind, "connector"), binding.Name, outcome).Inc()
 	if err != nil {
 		return Token{}, err
 	}
@@ -193,4 +196,11 @@ func (m *Minter) ConnectorHandler() http.Handler {
 			"repository": tok.Repository, "permissions": tok.Permissions,
 		})
 	})
+}
+
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
 }

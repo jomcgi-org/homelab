@@ -79,6 +79,9 @@ func run(logger *slog.Logger) error {
 	}
 	go d.verifier.Run(ctx)
 	go d.grants.Run(ctx)
+	if d.reviewMinter != nil {
+		go d.reviewMinter.Run(ctx)
+	}
 	if d.minter != nil {
 		go d.minter.Run(ctx)
 	} else {
@@ -131,7 +134,9 @@ type deps struct {
 	grants   *grant.Manager
 	relay    *relay.Relay
 	minter   *github.Minter
-	reviewer *auth.Reviewer
+	// reviewMinter mints the reviewer App's tokens.
+	reviewMinter *github.Minter
+	reviewer     *auth.Reviewer
 }
 
 func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, quotaStore *quota.Store, m *metrics.Metrics, logger *slog.Logger) (*deps, error) {
@@ -177,6 +182,20 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 			Metrics: m, Logger: logger,
 		}
 	}
+	if cfg.GitHubReviewEnabled() {
+		r := cfg.GitHubReview
+		key, err := github.LoadPrivateKey(r.PrivateKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		d.reviewMinter = &github.Minter{
+			App:    &github.App{APIURL: r.APIURL, AppID: r.AppID, InstallationID: r.InstallationID, Key: key},
+			Client: client, Bindings: cfg.ReviewBindings, SecretName: r.AgentSecretName,
+			AgentPermissions: r.AgentPermissions, ConnectorPermissions: r.ConnectorPermissions,
+			Interval: r.MintInterval.Duration, RetryInterval: time.Minute, ConnectorMinLife: 15 * time.Minute,
+			AgentKind: "review_agent", TokenKind: "reviewer", Metrics: m, Logger: logger,
+		}
+	}
 	return d, nil
 }
 
@@ -218,6 +237,15 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 		connector = d.minter.ConnectorHandler()
 	}
 	mux.Handle("/github/connector-token", d.reviewer.Require(cfg.TokenReview.ConnectorSubjects, connector))
+	reviewer := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"factory_error":"github_review_not_configured"}` + "\n"))
+	}))
+	if d.reviewMinter != nil {
+		reviewer = d.reviewMinter.ConnectorHandler()
+	}
+	mux.Handle("/github/reviewer-token", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, reviewer))
 	return mux
 }
 

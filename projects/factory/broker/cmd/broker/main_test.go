@@ -41,6 +41,7 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 		{http.MethodGet, "/healthz", http.StatusOK, ""},
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
 		{http.MethodGet, "/v1/other", http.StatusNotFound, "not_found"},
 	})
@@ -56,6 +57,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
 		{http.MethodPost, "/admin/codex/login", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/metrics", http.StatusNotFound, "not_found"},
 	})
 	checkRoutes(t, d.adminHandler(cfg, metricsOK), []routeCase{
@@ -63,6 +65,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodGet, "/metrics", http.StatusOK, ""},
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusNotFound, ""},
 	})
 }
