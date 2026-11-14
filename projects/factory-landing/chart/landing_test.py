@@ -43,8 +43,7 @@ def test_private_static_app():
     assert pull_secret["metadata"]["name"] == "ghcr-imagepull-secret"
     assert pull_secret["metadata"]["namespace"] == "factory-landing"
     assert (
-        pull_secret["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
-        == "-2"
+        pull_secret["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-2"
     )
     assert (
         pull_secret["spec"]["itemPath"]
