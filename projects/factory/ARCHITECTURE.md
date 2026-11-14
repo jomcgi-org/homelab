@@ -644,16 +644,22 @@ and public previews).
   write on its own repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
   merge queues write, and contents, pull requests and commit statuses read. A kagent reviewer
-  agent, in its own binding, reviews the exact head against
-  `docs/agents/review.md`. It posts the `factory review` check run and
+  agent, in its own binding, reviews the exact head against the root
+  `REVIEW.md` and every `REVIEW.md` on the changed paths, read from main. It posts the `factory review` check run and
   enqueues when the check passes and required CI is green. It never posts a
   PR approval, so it can never count toward an approval or code-owner rule.
 - **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
   a passing review on that head, including PRs from Joe, interactive
   sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
-  Third-party Apps may open PRs but merge only through this gate. Joe keeps a
-  ruleset bypass for emergencies; nothing else does.
+  Third-party Apps may open PRs but merge only through this gate, and the
+  service enqueues only factory and Joe's PRs. The ruleset's only bypass
+  actor is the organization admin role: Joe, for emergencies, and today the
+  chart version write-back, which pushes to main with an identity holding
+  that bypass (`bazel/helm/write-back-versions.sh`); in-cluster CI (#7922)
+  should replace that identity with one scoped to the write-back. Changes
+  that define the gate itself need Joe's approval (`REVIEW.md` "Joe
+  decides").
 - **Trigger.** kagent v1.0.1 has no trigger resources (no webhook, cron or
   event types); agents run when sent an A2A task. A small deterministic
   `factory-reviewer` Deployment, separate from the connector, with its own
