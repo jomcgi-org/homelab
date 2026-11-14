@@ -3,17 +3,16 @@ package statemachine
 // Dedicated tests for model_cache_phases.go.
 //
 // The shared test files already verify:
-//   - IsKnownPhase returns true for all valid phases (statemachine_test.go)
-//   - IsKnownPhase rejects near-miss strings (model_cache_gaps_test.go)
-//   - AllPhases() contains the expected phases (statemachine_test.go)
-//   - AllPhases() returns them in deterministic order (model_cache_gaps_test.go)
+//   - IsKnownPhase accepts all six named phases and the empty initial state
+//     (statemachine_test.go)
+//   - IsKnownPhase rejects near-miss strings (model_cache_missing_test.go)
+//   - AllPhases() returns all six phases in order (model_cache_missing_test.go)
 //
 // This file adds:
 //   - Exact string value assertions for each phase constant (typo guard)
 //   - AllPhases() slice mutation safety (caller can mutate returned slice
 //     without affecting future AllPhases() calls)
-//   - IsKnownPhase for every edge case: empty string (initial state), all six
-//     named phases, and a distinct set of invalid strings not tested elsewhere.
+//   - IsKnownPhase rejection of a distinct set of unrelated invalid strings.
 
 import (
 	"testing"
@@ -79,43 +78,11 @@ func TestAllPhases_MutationSafe(t *testing.T) {
 	}
 }
 
-// AllPhases() must return exactly 6 phases.
-func TestAllPhases_HasExactlyFivePhases(t *testing.T) {
-	const want = 6
-	got := len(AllPhases())
-	if got != want {
-		t.Errorf("AllPhases() returned %d phases, want %d", got, want)
-	}
-}
-
 // =============================================================================
-// IsKnownPhase: comprehensive valid inputs
+// IsKnownPhase: invalid inputs distinct from those in model_cache_missing_test.go
 // =============================================================================
 
-// Every value returned by AllPhases() must be recognized by IsKnownPhase.
-func TestIsKnownPhase_AcceptsAllPhasesReturnValues(t *testing.T) {
-	for _, phase := range AllPhases() {
-		phase := phase
-		t.Run(phase, func(t *testing.T) {
-			if !IsKnownPhase(phase) {
-				t.Errorf("IsKnownPhase(%q) = false; must be true for phases returned by AllPhases()", phase)
-			}
-		})
-	}
-}
-
-// Empty string is the documented initial state and must be accepted.
-func TestIsKnownPhase_EmptyStringIsInitialState(t *testing.T) {
-	if !IsKnownPhase("") {
-		t.Error("IsKnownPhase(\"\") = false; empty string represents the initial state and must be accepted")
-	}
-}
-
-// =============================================================================
-// IsKnownPhase: invalid inputs distinct from those in model_cache_gaps_test.go
-// =============================================================================
-
-// These invalid strings are different from the near-misses in model_cache_gaps_test.go
+// These invalid strings are different from the near-misses in model_cache_missing_test.go
 // to avoid duplication while still verifying the default branch is reachable.
 func TestIsKnownPhase_RejectsUnrelatedStrings(t *testing.T) {
 	invalids := []string{
@@ -135,23 +102,5 @@ func TestIsKnownPhase_RejectsUnrelatedStrings(t *testing.T) {
 				t.Errorf("IsKnownPhase(%q) = true; want false", phase)
 			}
 		})
-	}
-}
-
-// =============================================================================
-// Phase constants: each appears exactly once in AllPhases()
-// =============================================================================
-
-// Each named phase constant must appear exactly once in AllPhases().
-// Duplicates would break code that uses the slice for display or iteration.
-func TestAllPhases_NoDuplicates(t *testing.T) {
-	seen := make(map[string]int)
-	for _, p := range AllPhases() {
-		seen[p]++
-	}
-	for phase, count := range seen {
-		if count != 1 {
-			t.Errorf("phase %q appears %d times in AllPhases(), want exactly 1", phase, count)
-		}
 	}
 }

@@ -129,14 +129,6 @@ func TestPhaseConstants(t *testing.T) {
 	}
 }
 
-func TestAllPhases_ContainsExpected(t *testing.T) {
-	phases := AllPhases()
-	expected := []string{PhasePending, PhaseResolving, PhaseSyncing, PhaseReady, PhaseFailed, PhaseUnknown}
-	if len(phases) != len(expected) {
-		t.Errorf("expected %d phases, got %d", len(expected), len(phases))
-	}
-}
-
 // --- Transition: Pending → Resolving ---
 
 func TestPending_Resolved_TransitionsToResolving(t *testing.T) {
