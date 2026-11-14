@@ -30,7 +30,7 @@ authentik:
     # (wave -1) adds a key before the pods roll, so naming every generated key
     # here rolls them onto it in the same sync.
     podAnnotations:
-      factory.jomcgi.dev/generated-secrets: AUTHENTIK_SECRET_KEY,EDGE_OIDC_CLIENT_SECRET,ARGOCD_OIDC_CLIENT_SECRET,ITSAPLAN_OIDC_CLIENT_SECRET
+      factory.jomcgi.dev/generated-secrets: AUTHENTIK_SECRET_KEY,EDGE_OIDC_CLIENT_SECRET,ARGOCD_OIDC_CLIENT_SECRET,ITSAPLAN_OIDC_CLIENT_SECRET,GRAFANA_OIDC_CLIENT_SECRET
     # Upstream image matching the chart; the hub's private fork needs a GHCR
     # pull secret this cluster does not have.
     image:

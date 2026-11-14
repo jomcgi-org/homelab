@@ -44,6 +44,8 @@ entries:
           url: https://factory.jomcgi.dev/oauth2/callback
         - matching_mode: strict
           url: https://factory-plan.jomcgi.dev/oauth2/callback
+        - matching_mode: strict
+          url: https://factory-grafana.jomcgi.dev/oauth2/callback
       authorization_flow:
         !Find [
           authentik_flows.flow,

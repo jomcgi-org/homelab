@@ -146,12 +146,17 @@ spec:
         - name: config
           configMap:
             name: prometheus-config
+  # apiVersion, kind and volumeMode are the defaults, stated so ArgoCD's diff
+  # owns them.
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: data
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: local-path
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 8Gi

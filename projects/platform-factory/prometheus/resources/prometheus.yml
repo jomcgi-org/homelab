@@ -49,9 +49,13 @@ scrape_configs:
       - source_labels: [__name__]
         regex: container_fs_(usage|limit)_bytes|container_network_(receive|transmit)_(bytes|packets_dropped)_total|container_cpu_cfs_(throttled_)?periods_total|container_oom_events_total|machine_(cpu_cores|memory_bytes)
         action: keep
-      # Filesystem series for the node's root cgroup only.
+      # Filesystem series for the node's root cgroup only, and the root's
+      # network series without the per-pod veths (pods report their own).
       - source_labels: [__name__, id]
         regex: container_fs_.+;/.+
+        action: drop
+      - source_labels: [__name__, id, interface]
+        regex: container_network_.+;/;lxc.*
         action: drop
   - job_name: kubelet
     scheme: https

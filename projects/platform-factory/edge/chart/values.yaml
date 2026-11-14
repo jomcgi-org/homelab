@@ -49,6 +49,8 @@ routeNamespaces:
   - argocd
   # itsaplan at factory-plan.jomcgi.dev (projects/factory/chart).
   - factory
+  # Grafana at factory-grafana.jomcgi.dev (projects/platform-factory/grafana).
+  - grafana
 
 # Host of the permanent route that keeps the OIDC filter on the listener
 # (templates/oidc-sentinel.yaml).
