@@ -77,6 +77,21 @@ instruction or empty checkout cannot keep campaign text out of generic knowledge
 tools. The tool-free transport choice and live acceptance remain in #6991.
 Repository delivery on PR #6958 is staged and default-off; #6627 stays open.
 
+### Character sheets
+
+Players edit a draft, submit it, then the DM approves or returns that version.
+Submitted content and decided versions are immutable. Every edit, submission
+and decision locks and refreshes the version before checking its status. A
+request overtaken by another tab returns 409 with the existing transition
+message. An edit that holds the lock completes before a waiting submission;
+the DM then reviews those saved contents. The PostgreSQL transition trigger
+also rejects invalid direct writes.
+
+**Why.** Reading status before an unlocked write let concurrent requests reach
+the database trigger and return 500. Row locking keeps the route's conflict
+response consistent with the stored state. PostgreSQL tests inspect waiting
+transactions and verify stale ORM rows cannot overwrite a decision (#7965).
+
 ### Shared corpus and play state
 
 The `grimoire` schema uses a typed entity spine rather than the standalone

@@ -1461,12 +1461,19 @@ def _get_sheet_version_or_404(
     player_character_id: str,
     sheet_version_id: str,
 ) -> CharacterSheetVersion:
-    version = session.get(CharacterSheetVersion, sheet_version_id)
-    if (
-        version is None
-        or version.campaign_id != campaign_id
-        or version.player_character_id != player_character_id
-    ):
+    # Every caller mutates this version. Re-read its status under the lock so
+    # another tab's submit or decision cannot turn a valid check into a 500.
+    version = session.exec(
+        select(CharacterSheetVersion)
+        .where(
+            CharacterSheetVersion.id == sheet_version_id,
+            CharacterSheetVersion.campaign_id == campaign_id,
+            CharacterSheetVersion.player_character_id == player_character_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if version is None:
         raise HTTPException(status_code=404, detail="character sheet version not found")
     return version
 

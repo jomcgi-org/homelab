@@ -6975,6 +6975,11 @@ bdd_test(
     srcs = ["grimoire/character_assignment_postgres_test.py"],
 )
 
+bdd_test(
+    name = "grimoire_sheet_transition_postgres_test",
+    srcs = ["grimoire/sheet_transition_postgres_test.py"],
+)
+
 # Hand-registered because grimoire is gazelle-excluded: initiative order
 # routes, player projection and turn events.
 py_test(
