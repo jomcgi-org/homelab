@@ -1,5 +1,10 @@
 load("//bazel/helm:defs.bzl", "helm_admissibility_render")
 
+exports_files(
+    ["application.yaml"],
+    visibility = ["//projects/factory/chart:__pkg__"],
+)
+
 filegroup(
     name = "deploy_values",
     srcs = ["values.yaml"],

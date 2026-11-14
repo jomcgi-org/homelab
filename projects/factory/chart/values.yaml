@@ -279,7 +279,9 @@ workers:
 # images; upstream's chart renders its secrets from values (finding 4).
 itsaplan:
   enabled: false
-  # Shared with the broker and the connector; the broker's template owns it.
+  # Shared with the broker and the connector. The broker's template declares
+  # it while the broker is on; factory-buckets and factory-db-secrets create it
+  # either way. Must equal broker.namespace.
   namespace: factory
   # The public origin. The web app is served at /, the api under apiPath on
   # the same host (upstream's path mode): the HTTPRoute removes the prefix,

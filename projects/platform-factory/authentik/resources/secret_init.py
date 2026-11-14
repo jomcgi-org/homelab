@@ -69,11 +69,34 @@ def call(method, path, body=None):
         with urllib.request.urlopen(req, context=CTX, timeout=30) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        # 403: the Role granting this name is not there yet (it comes with the
-        # Secret's Application), the same as a missing Secret.
-        if e.code in (403, 404) and method == "GET":
-            return None
         raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
+
+
+def get(namespace, name):
+    """Return (Secret, None), or (None, why) when it cannot be read yet.
+
+    404 is a missing Secret; 403 a missing Role. Both come from the Secret's
+    own Application, which may sync after this one, and are reported apart.
+    """
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                API + secret_path(namespace, name),
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            ),
+            context=CTX,
+            timeout=30,
+        ) as resp:
+            return json.load(resp), None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, "missing; its Application creates it"
+        if e.code == 403:
+            return None, (
+                "forbidden: the Role letting authentik-secret-init get and "
+                "update it is missing (it comes with the Secret's Application)"
+            )
+        raise SystemExit(f"GET {namespace}/{name}: {e.code} {e.read().decode()}")
 
 
 def secret_path(namespace, name=""):
@@ -86,9 +109,9 @@ def b64(value):
 
 def main():
     namespace, name = SOURCE
-    source = call("GET", secret_path(namespace, name))
+    source, why = get(namespace, name)
     if source is None:
-        raise SystemExit(f"{namespace}/{name} is missing; ArgoCD creates it")
+        raise SystemExit(f"{namespace}/{name} is {why}")
     data = dict(source.get("data") or {})
     missing = [key for key in GENERATED if key not in data]
     for key in missing:
@@ -103,13 +126,13 @@ def main():
     for copy_ns, copy_name, copy_key, source_key, wait in COPIES:
         want = {copy_key: data[source_key]}
         deadline = time.monotonic() + wait
-        current = call("GET", secret_path(copy_ns, copy_name))
+        current, why = get(copy_ns, copy_name)
         while current is None and time.monotonic() < deadline:
-            print(f"waiting for {copy_ns}/{copy_name}")
+            print(f"waiting for {copy_ns}/{copy_name}: {why}")
             time.sleep(10)
-            current = call("GET", secret_path(copy_ns, copy_name))
+            current, why = get(copy_ns, copy_name)
         if current is None:
-            raise SystemExit(f"{copy_ns}/{copy_name} is missing; ArgoCD creates it")
+            raise SystemExit(f"{copy_ns}/{copy_name} is {why}")
         if current.get("data") != want:
             current["data"] = want
             call("PUT", secret_path(copy_ns, copy_name), current)

@@ -4,7 +4,7 @@ itsaplan's two Jobs, both idempotent standard-library Python from files/itsaplan
 
 - secret-init (wave -1, before the workloads) generates BETTER_AUTH_SECRET,
   APP_ENCRYPTION_KEY and the break-glass admin's password, each only when
-  absent.
+  absent, and refuses to replace lost keys for a database that has data.
 - bootstrap (PostSync) signs in as that admin through the api, creating it
   on a fresh database, where the first account is the instance admin; sets
   invite-only registration and the OIDC provider; and creates the team,
@@ -109,6 +109,39 @@ spec:
       restartPolicy: OnFailure
       securityContext:
         {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      # Counts the database's accounts and settings rows, read-only, with the
+      # api image's psql; 0 before the first migration. secret-init refuses to
+      # replace lost keys for a database that has any.
+      initContainers:
+        - name: db-state
+          image: {{ $i.images.api }}
+          command:
+            - sh
+            - -c
+            - >-
+              psql "$DATABASE_URL" -XAtv ON_ERROR_STOP=1 -c "
+              select coalesce(sum(n), 0) from (
+              select case when to_regclass(t) is null then 0
+              else (xpath('/row/n/text()', query_to_xml('select count(*) as n from ' || t, false, true, '')))[1]::text::bigint
+              end as n from unnest(array['public."user"', 'public.app_setting']) as t) counts
+              " > /state/rows
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $i.database.secretName }}
+                  key: DATABASE_URL
+            - name: HOME
+              value: /tmp
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.jobs | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: tmp
+              mountPath: /tmp
       containers:
         - name: secret-init
           image: {{ $i.images.jobs }}
@@ -116,6 +149,8 @@ spec:
           env:
             - name: NAMESPACE
               value: {{ $ns }}
+            - name: DB_ROWS
+              value: /state/rows
             - name: ITSAPLAN_SECRET
               value: {{ $name }}
             - name: ADMIN_SECRET
@@ -130,10 +165,17 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
+            - name: state
+              mountPath: /state
+              readOnly: true
       volumes:
         - name: scripts
           configMap:
             name: {{ $name }}-scripts
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -159,12 +201,10 @@ rules:
     resources: [secrets]
     resourceNames: [{{ $name }}-admin, {{ $i.oidc.clientSecretName }}]
     verbs: [get]
-  {{- with $agentSecrets }}
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: {{ toJson . }}
+    resourceNames: {{ toJson (prepend $agentSecrets (printf "%s-bootstrap" $name)) }}
     verbs: [get, update]
-  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -223,6 +263,8 @@ spec:
               value: {{ $name }}-admin
             - name: OIDC_SECRET
               value: {{ $i.oidc.clientSecretName }}
+            - name: STATE_SECRET
+              value: {{ $name }}-bootstrap
             - name: AGENT_SECRET_PREFIX
               value: {{ include "factory.itsaplanAgentSecret" "" }}
             - name: CONFIG

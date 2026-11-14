@@ -69,6 +69,7 @@ py_test(
         "Chart.yaml",
         "values.schema.json",
         "values.yaml",
+        "//projects/factory/deploy:application.yaml",
         "//projects/factory/deploy:deploy_values",
         "@multitool//tools/helm",
     ] + glob([
@@ -78,6 +79,7 @@ py_test(
         "templates/**",
     ]),
     env = {
+        "APPLICATION": "$(rootpath //projects/factory/deploy:application.yaml)",
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },

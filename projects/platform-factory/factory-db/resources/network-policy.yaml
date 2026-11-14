@@ -25,6 +25,10 @@ spec:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-itsaplan
             app.kubernetes.io/component: worker
+        # itsaplan's secret-init, which counts rows before it generates keys.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan-secret-init
         # The connector (delivery plan step 9).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
