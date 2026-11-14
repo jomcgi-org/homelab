@@ -472,6 +472,20 @@ fi
 unset STUB_LAYERED_IMAGE STUB_LAYERS
 teardown
 
+# 20. The chart multirun re-checks remote outputs too. A chart without images
+#     reuses its unstamped .package output from an earlier invocation, and
+#     without the check that .tgz stays remote and rlocation returns "".
+setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa
+ghcr.io/jomcgi/homelab/beta@sha256:bbb
+ghcr.io/jomcgi/homelab/gamma@sha256:ccc"
+OUT=$(run_script)
+if grep -E -- "^run //bazel/images:push_charts .*--experimental_check_output_files" "$STUB_ARGV_LOG" >/dev/null; then
+	pass "chart push re-checks remote outputs"
+else
+	fail "chart push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
+fi
+teardown
+
 echo ""
 if [ "$FAILURES" -ne 0 ]; then
 	echo "$FAILURES test(s) failed"

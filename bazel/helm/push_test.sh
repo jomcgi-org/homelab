@@ -159,6 +159,27 @@ else
 	FAILURES=$((FAILURES + 1))
 fi
 
+# 4. A packaged chart missing from the runfiles must stop before the registry.
+# Under --remote_download_minimal a remote-only .package output leaves rlocation
+# printing "", and the factory chart's first publish then died in tar AFTER
+# announcing the release. The guard has to fire first and name the cause.
+ws=$(setup missingtgz 0.1.0 0.1.4 no yes)
+rm "$TMP/missingtgz-stubs/chart.tgz"
+set +e
+out=$(run_push "$ws" missingtgz)
+push_rc=$?
+set -e
+expect "missing chart tgz fails" "1" "$([[ $push_rc -ne 0 ]] && echo 1 || echo 0)" \
+	"CHART_TGZ does not exist on disk"
+expect "missing chart tgz records nothing" "(no record)" "$(record_version "$ws")" \
+	"publication stopped before write-back"
+if grep -q "is not in the runfiles on disk" <<<"$out" && ! grep -q "Publishing" <<<"$out"; then
+	echo "ok: reports the missing package before publishing"
+else
+	echo "FAIL: missing package not reported before publishing: ${out}" >&2
+	FAILURES=$((FAILURES + 1))
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

@@ -310,7 +310,15 @@ done <"$TO_PUSH"
 # images to completion first makes the pinned digest present by construction.
 echo ""
 echo "==> Publishing charts"
-"$BAZEL" run //bazel/images:push_charts "${BAZEL_ARGS[@]}"
+#
+# "${CHECK_OUTPUTS[@]}" for the same reason as the image pushes above. A chart
+# with no images (factory) has no stamp-dependent input, so its .package action
+# is a LOCAL action cache hit carried over from the unstamped test invocation,
+# whose output was left remote. Without the output check Bazel never notices
+# the runfile is missing, rlocation returns "" and push.sh.tpl dies in tar
+# (main deploy, 2026-11-14). Charts with images re-run their package action on
+# every stamped invocation, which is why only factory broke.
+"$BAZEL" run //bazel/images:push_charts "${BAZEL_ARGS[@]}" "${CHECK_OUTPUTS[@]}"
 
 # Pull every final chart artifact named by this run, including an
 # already-published version reused by push.sh.tpl, and join its pins to the
