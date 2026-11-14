@@ -16,3 +16,32 @@ postgres:
           k8s:io.kubernetes.pod.namespace: kagent-pg
           cnpg.io/cluster: kagent-pg
     port: 5432
+
+# The credential broker (projects/factory/broker): relays the Codex harness's
+# model calls with its own grant; GitHub minting stays off until the App's
+# 1Password item exists (broker.githubApp.enabled).
+broker:
+  enabled: true
+
+kagent:
+  # Agents and the controller's watch: kagent's own namespace plus each
+  # repository binding's.
+  rbac:
+    namespaces: [kagent, factory-r-homelab]
+  # Every agent runtime's limits, the codex agent's size (kagent 1.0.1 sets
+  # one for all Agents).
+  config:
+    runtimeDefaults:
+      cpu: "4"
+      memory: 8Gi
+
+# jomcgi-org/homelab. Its namespace is also granted in Substrate's
+# credentialProvider.namespacePolicies
+# (projects/platform-factory/substrate/values/substrate.yaml).
+repositories:
+  - name: homelab
+    owner: jomcgi-org
+    repo: homelab
+    baseBranch: main
+    namespace: factory-r-homelab
+    agent: codex

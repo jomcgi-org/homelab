@@ -28,27 +28,12 @@ _KEEP = {
 }
 
 
-# The homelab binding as an install turns it on (deploy values carry it once
-# the chart that supports it is published).
-_BINDING_VALUES = {
-    "broker": {"enabled": True},
-    "kagent": {
-        "rbac": {"namespaces": ["kagent", "factory-r-homelab"]},
-        "config": {"runtimeDefaults": {"cpu": "4", "memory": "8Gi"}},
-    },
-    "repositories": [
-        {
-            "name": "homelab",
-            "owner": "jomcgi-org",
-            "repo": "homelab",
-            "baseBranch": "main",
-            "namespace": "factory-r-homelab",
-            "agent": "codex",
-        }
-    ],
-}
-_BINDING_FILE = Path(tempfile.mkdtemp()) / "binding.yaml"
-_BINDING_FILE.write_text(yaml.safe_dump(_BINDING_VALUES))
+# The deploy values turn the homelab binding on; tests of the chart's
+# defaults render with only their storage settings.
+_DEFAULTS_FILE = Path(tempfile.mkdtemp()) / "defaults.yaml"
+_DEFAULTS_FILE.write_text(
+    yaml.safe_dump({"postgres": yaml.safe_load(_DEPLOY_VALUES.read_text())["postgres"]})
+)
 
 
 def _render(
@@ -65,8 +50,8 @@ def _render(
         "--values",
         str(_DEPLOY_VALUES),
     ]
-    if binding:
-        argv += ["--values", str(_BINDING_FILE)]
+    if not binding:
+        argv[argv.index(str(_DEPLOY_VALUES))] = str(_DEFAULTS_FILE)
     for override in overrides or []:
         argv += ["--set", override]
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
@@ -617,9 +602,8 @@ def test_binding_namespace_policy_admits_only_substrate() -> None:
 
 
 def test_deploy_values_render_no_broker_or_binding() -> None:
-    # The published chart and the deploy values move separately: this chart's
-    # defaults must render nothing beyond kagent, so main's values work with
-    # it before the binding is switched on.
+    # The chart's defaults render nothing beyond kagent, so an install turns
+    # the broker and its bindings on explicitly.
     docs = _render(binding=False)
     namespaces = {d["metadata"].get("namespace") for d in docs}
     assert namespaces <= {"kagent", None}
