@@ -378,7 +378,9 @@ Acting events start one review round with their text and the unresolved
 threads, and the start is announced on the issue. The repository is
 public, so only thread comments by trusted reviewer logins reach the
 prompt or a replacement's context; the rest are dropped and the text says
-how many. A reviewer App's comments reach the agent only if its bot login
+how many. Thread paths are replaced with a fixed label, since the change
+author chooses them, even on threads with trusted comments. A reviewer
+App's comments reach the agent only if its bot login
 is listed in `trustedReviewers`. Rounds are bounded per
 work item (`maxReviewRounds`, default 3); past the bound events are
 `round_limit` and the PR waits for a person. Events are read only while
@@ -465,6 +467,9 @@ for its human-gate marker, even when the synthetic commit was not observed,
 then refreshes the issue and PR stops. A `human` label observed while queued
 stops delivery durably; removing it does not resume the work item. Other
 human holds and the round bound leave the work item in review for a person.
+On every review poll, a hold label or the current head's reviewer human-gate
+marker blocks all revision triggers, including newly failed checks, statuses
+and change requests. Pending events stay unconsumed until the hold clears.
 Ejection reads are recorded in `delivery_read` before each external call,
 with a stable message ID, writer epoch and attempt count. Retries share the
 read ID and always fetch fresh state, including after a writer takeover.
