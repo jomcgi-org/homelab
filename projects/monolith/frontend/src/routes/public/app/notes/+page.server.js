@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { readPublicSnapshot } from "../../../../lib/server/public-snapshots.js";
 import { graphExpiresAt } from "../../../../lib/public/notes/graph-cache.js";
 
 // The first view contains a small projection of the same public snapshot that
-// the canvas fetches later. Its absolute deadline survives HTML caching and
-// hydration; the page must never grant the titles a new lease in the browser.
+// the canvas fetches later. HTML is not cacheable: the browser needs the exact
+// request's monotonic start time to consume this snapshot's remaining lease.
 export async function load({ setHeaders }) {
   try {
     const snapshot = await readPublicSnapshot("graph");
@@ -17,19 +18,22 @@ export async function load({ setHeaders }) {
       )
       .slice(0, 8)
       .map(({ id, title }) => ({ id, title }));
-    const headers = { ...snapshot.headers };
-    // A renewed lease changes the HTML's absolute deadline even when the
-    // graph is unchanged. Let Kit hash that HTML rather than revalidating an
-    // old page against the graph-only validator and retaining its old deadline.
-    delete headers.etag;
-    delete headers["last-modified"];
-    setHeaders(headers);
+    const leaseMs = expiresAt - Date.now();
+    if (leaseMs <= 0) throw new Error("graph lease expired");
+    const leaseToken = randomUUID();
+    setHeaders({
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+      "server-timing": `notes-lease;desc="${leaseToken}"`,
+    });
     return {
       overview: {
         nodeCount: nodes.length,
         edgeCount: graph.edges?.length ?? 0,
         titles,
         expiresAt,
+        leaseMs,
+        leaseToken,
       },
     };
   } catch {

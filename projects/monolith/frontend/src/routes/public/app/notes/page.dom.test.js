@@ -110,6 +110,7 @@ afterEach(async () => {
   delete document.documentElement.dataset.theme;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function render(component = Page, props = {}) {
@@ -127,13 +128,16 @@ async function loaded() {
 }
 
 describe("public notes sheet DOM", () => {
-  const overviewData = (expiresAt = Date.now() + 60_000) => ({
+  const overviewData = (leaseMs = 60_000) => ({
     overview: {
       nodeCount: 7,
       edgeCount: 6,
       titles: [{ id: "sheet-note", title: "First-paint public title" }],
-      expiresAt,
+      expiresAt: Date.now() + leaseMs,
+      leaseMs,
+      leaseToken: "test-response",
     },
+    overviewDeadline: performance.now() + leaseMs,
   });
 
   it("keeps real titles visible until the canvas has painted", async () => {
@@ -165,7 +169,7 @@ describe("public notes sheet DOM", () => {
 
   it("retains the overview on graph failure, then removes titles at their deadline", async () => {
     fetchMock.mockResolvedValue({ ok: false });
-    await render(Page, { data: overviewData(Date.now() + 1000) });
+    await render(Page, { data: overviewData(1000) });
     await vi.waitFor(() =>
       expect(target.textContent).toContain(
         "The graph is unavailable right now.",
@@ -184,7 +188,7 @@ describe("public notes sheet DOM", () => {
 
   it("rejects an expired overview on hydration and preserves a fresh one when canvas is unavailable", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    await render(Page, { data: overviewData(Date.now() - 1) });
+    await render(Page, { data: overviewData(-1) });
     expect(target.textContent).not.toContain("First-paint public title");
     await vi.waitFor(() =>
       expect(target.textContent).toContain(
@@ -201,6 +205,49 @@ describe("public notes sheet DOM", () => {
     );
     expect(target.querySelector(".graph-overview").hidden).toBe(false);
     expect(target.textContent).toContain("First-paint public title");
+  });
+
+  it.each([1_000, 9_000_000_000_000])(
+    "expires with a skewed browser clock (%s) and a backward jump",
+    async (clock) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        vi.fn(() => 1),
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      const data = overviewData(1000);
+      vi.setSystemTime(clock);
+      await render(Page, { data });
+      expect(target.textContent).toContain("First-paint public title");
+      vi.setSystemTime(clock - 60_000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await tick();
+      expect(target.textContent).not.toContain("First-paint public title");
+    },
+  );
+
+  it("removes titles before a back-forward cache freeze and does not revive them", async () => {
+    await render(Page, { data: overviewData() });
+    expect(target.textContent).toContain("First-paint public title");
+    window.dispatchEvent(new Event("pagehide"));
+    expect(target.textContent).not.toContain("First-paint public title");
+    window.dispatchEvent(new Event("pageshow"));
+    await tick();
+    expect(target.textContent).not.toContain("First-paint public title");
+  });
+
+  it("removes titles before a background tab can suspend its clock", async () => {
+    await render(Page, { data: overviewData() });
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(target.textContent).not.toContain("First-paint public title");
+  });
+
+  it("does not retain titles when hydration starts in an already hidden tab", async () => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await render(Page, { data: overviewData() });
+    expect(target.textContent).not.toContain("First-paint public title");
   });
 
   it("mounts real loaded graph data, sheet chrome, and unchanged keyboard controls", async () => {
