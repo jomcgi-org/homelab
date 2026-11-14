@@ -43,6 +43,8 @@
     onNodeClick = () => {},
     onNodeHover = () => {},
     onZoom = () => {},
+    onReady = () => {},
+    onError = () => {},
   } = $props();
 
   // Render-time tuning only. Layout (positions, spread, edge tension)
@@ -85,6 +87,7 @@
   // Pending requestAnimationFrame id for coalesced repaints (see
   // scheduleRender). 0 means no frame is queued.
   let rafId = 0;
+  let reportedReady = false;
 
   let simNodes = [];
   let simEdges = [];
@@ -366,6 +369,10 @@
     ctx.restore();
 
     drawLabels(w, h, filtering, matchSet, selectedNode);
+    if (!reportedReady) {
+      reportedReady = true;
+      onReady();
+    }
   }
 
   function drawLabels(w, h, filtering, matchSet, selectedNode) {
@@ -708,6 +715,10 @@
   onMount(() => {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     ctx = canvas.getContext("2d");
+    if (!ctx) {
+      onError();
+      return;
+    }
     palette = resolveGraphPalette(stage, sheet);
     const stopWatching = sheet
       ? watchGraphPalette(stage, (next) => {
