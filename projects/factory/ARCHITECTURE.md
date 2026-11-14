@@ -434,7 +434,7 @@ current head, enqueue with GraphQL `enqueuePullRequest` and
 check, or without one a trusted reviewer's approval of the head; a trusted
 reviewer's standing change request blocks either way. A PR already in the
 queue is recorded as enqueued, never enqueued twice. A PR against another
-base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge The reviewer App takes over enqueueing under "Merge authority" (#7919).
+base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge
 links on the issue and moves it to the project's first `completed` column
 (or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
 WIP limit, is reported on the issue and retried with backoff. A move the
@@ -443,7 +443,7 @@ canceled the issue since the merge. A PR that
 leaves the queue unmerged, after a second read confirms it did not merge,
 returns the work item to review, the ejection is announced, and that head
 is not enqueued again; a new push or review moves it on. Deployment health is a separate
-record.
+record. Under the planned handover in "Merge authority" (#7919), the reviewer App enqueues instead.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
 reports the task in a terminal state. A cancellation never sends a message.
