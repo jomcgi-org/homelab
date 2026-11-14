@@ -32,8 +32,9 @@ type BrokerTokens struct {
 	HTTP   *http.Client
 	Now    func() time.Time
 
-	mu    sync.Mutex
-	cache map[string]cachedToken
+	mu      sync.Mutex
+	cache   map[string]cachedToken
+	fetches map[string]*sync.Mutex // one fetch per repository at a time
 }
 
 type cachedToken struct {
@@ -41,28 +42,53 @@ type cachedToken struct {
 	expiresAt time.Time
 }
 
-// Token returns a token for repository (owner/name). Concurrent callers wait
-// for one fetch.
+// Token returns a token for repository (owner/name). Concurrent callers for
+// one repository wait for a single fetch; other repositories and cached
+// reads are not held up by it.
 func (b *BrokerTokens) Token(ctx context.Context, repository string) (string, error) {
-	now := time.Now
-	if b.Now != nil {
-		now = b.Now
-	}
 	key := strings.ToLower(repository)
+	if t, ok := b.cached(key); ok {
+		return t, nil
+	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if t, ok := b.cache[key]; ok && t.expiresAt.Sub(now()) > RefreshBefore {
-		return t.token, nil
+	if b.fetches == nil {
+		b.fetches = map[string]*sync.Mutex{}
+	}
+	f := b.fetches[key]
+	if f == nil {
+		f = &sync.Mutex{}
+		b.fetches[key] = f
+	}
+	b.mu.Unlock()
+	f.Lock()
+	defer f.Unlock()
+	if t, ok := b.cached(key); ok {
+		return t, nil // another caller fetched it meanwhile
 	}
 	t, err := b.fetch(ctx, repository)
 	if err != nil {
 		return "", err
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.cache == nil {
 		b.cache = map[string]cachedToken{}
 	}
 	b.cache[key] = t
 	return t.token, nil
+}
+
+func (b *BrokerTokens) cached(key string) (string, bool) {
+	now := time.Now
+	if b.Now != nil {
+		now = b.Now
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if t, ok := b.cache[key]; ok && t.expiresAt.Sub(now()) > RefreshBefore {
+		return t.token, true
+	}
+	return "", false
 }
 
 // Invalidate drops a cached token GitHub refused.

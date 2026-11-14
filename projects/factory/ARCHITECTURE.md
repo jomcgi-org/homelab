@@ -297,8 +297,12 @@ branch's PR or opens it, titled with the head commit's subject. The body
 links the issue, run, session and delivery attempt of the latest turn. The
 connector always looks the branch up before opening a PR and again after a
 failed open, and GitHub holds one open PR per head, so a restart or a lost
-response never opens a second; a closed, unmerged PR is reopened. A turn
-without commits opens nothing and says so on the issue. A run result means
+response never opens a second. The connector never reopens a PR: a
+closed, unmerged one, or one against another base branch, stops delivery
+for the work item (below). A turn without commits opens nothing and says
+so on the issue. One issue maps to one merged PR: a turn that pushes to
+the branch after the merge is not delivered, and the issue says follow-up
+work needs a new issue. A run result means
 the turn finished; the issue becomes Done only from the observed merge. Engineering retries are
 connector decisions bounded per work item; the retry and the attempt it
 sends commit together. Credential and quota failures block with the reason
@@ -325,7 +329,11 @@ Otherwise it is recorded `stale_head` or `untrusted`. A round acts once per
 head, kind and source (reviewer or check name); a later event with the same
 key, such as a re-run failing again on an unchanged head, is `duplicate`.
 Acting events start one review round with their text and the unresolved
-threads, and the start is announced on the issue. Rounds are bounded per
+threads, and the start is announced on the issue. The repository is
+public, so only thread comments by trusted reviewer logins reach the
+prompt or a replacement's context; the rest are dropped and the text says
+how many. A reviewer App's comments reach the agent only if its bot login
+is listed in `trustedReviewers`. Rounds are bounded per
 work item (`maxReviewRounds`, default 3); past the bound events are
 `round_limit` and the PR waits for a person. Events are read only while
 the work item is in review, not while a turn runs.
@@ -336,7 +344,25 @@ mention-run: itsaplan v1.10.0 starts no run for an agent's comment
 `factory-review/<n>/<decision>`) that dispatch sends like any other
 continuation in the mapped session, with no lease, transcript or result in
 itsaplan; its record lives in the connector database and on the issue. A
+round holds a slot of its agent key's concurrency and waits for one. A
 failed round returns the work item to review.
+
+**Stopping delivery.** A round has no itsaplan run to cancel, and its
+kagent session belongs to the connector, so the connector watches for the
+signals a person gives. Before a round starts, and every heartbeat interval
+while it runs, it reads the issue: if the issue left the binding's
+project, or sits in a `completed` or `canceled` column, delivery stops. A
+closed PR stops it too, whether seen by the round's check or the PR poll,
+including a PR closed while queued. `connector cancel <ISSUE>` stops it
+from the operator's shell. A stopped work item gets no PR updates or
+rounds and is not polled; its running round is canceled through the
+cancellation path above and stays canceling until kagent reports the task
+terminal. The stop is announced on the issue. A new itsaplan run on the
+issue resumes delivery; a closed PR must be reopened by a person first.
+
+So a person cancels a round by moving the issue to a canceled column (or
+another project), by closing the PR, or with `connector cancel`; it
+reaches kagent within a heartbeat interval.
 
 A session whose runtime crashed is reverted with kagent `RevertSession`.
 Before a continuation the connector checks the session; while a turn runs
@@ -354,12 +380,14 @@ current head, enqueue with GraphQL `enqueuePullRequest` and
 `expectedHeadOid` set to that head. The reviewer is the binding's reviewer
 check, or without one a trusted reviewer's approval of the head; a trusted
 reviewer's standing change request blocks either way. A PR already in the
-queue is recorded as enqueued, never enqueued twice. When the merge is
-observed, the connector comments the issue, run, session, PR and merge
+queue is recorded as enqueued, never enqueued twice. A PR against another
+base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge
 links on the issue and moves it to the project's first `completed` column
-(or `doneColumn`). A PR that leaves the queue unmerged returns the work
-item to review, the ejection is announced, and that head is not enqueued
-again; a new push or review moves it on. Deployment health is a separate
+(or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
+WIP limit, is reported on the issue and retried with backoff. A PR that
+leaves the queue unmerged, after a second read confirms it did not merge,
+returns the work item to review, the ejection is announced, and that head
+is not enqueued again; a new push or review moves it on. Deployment health is a separate
 record.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent

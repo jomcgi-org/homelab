@@ -220,3 +220,49 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 		t.Fatalf("enqueue variables = %v, want the node ID and expected head", enqueued)
 	}
 }
+
+// slowBroker holds each mint until released, counting the mints.
+type slowBroker struct {
+	fakeBroker
+	release chan struct{}
+}
+
+func (b *slowBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	<-b.release
+	b.fakeBroker.ServeHTTP(w, r)
+}
+
+func TestConcurrentCallersShareOneFetchPerRepository(t *testing.T) {
+	now := time.Now()
+	broker := &slowBroker{fakeBroker: fakeBroker{now: func() time.Time { return now }}, release: make(chan struct{})}
+	srv := httptest.NewServer(broker)
+	defer srv.Close()
+	toks := &BrokerTokens{URL: srv.URL, Bearer: staticBearer("t")}
+	var wg sync.WaitGroup
+	got := make([]string, 8)
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], _ = toks.Token(context.Background(), "example-org/homelab")
+		}(i)
+	}
+	// A second repository gets its own fetch.
+	other := make(chan string)
+	go func() {
+		tok, _ := toks.Token(context.Background(), "example-org/other")
+		other <- tok
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(broker.release)
+	wg.Wait()
+	<-other
+	if n := broker.Mints(); n != 2 {
+		t.Fatalf("mints = %d, want one per repository", n)
+	}
+	for _, tok := range got {
+		if tok != got[0] || tok == "" {
+			t.Fatalf("tokens = %v, want one shared token", got)
+		}
+	}
+}

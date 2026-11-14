@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/lib/pq"
@@ -14,7 +15,7 @@ import (
 func (s *Store) FinishTurn(ctx context.Context, q Querier, workID, attemptID int64) error {
 	_, err := q.ExecContext(ctx, `
 		UPDATE work_item SET turn_attempt_id = $2,
-			state = CASE WHEN state = 'done' THEN state ELSE 'review' END, updated_at = now()
+			state = CASE WHEN state IN ('done', 'stopped') THEN state ELSE 'review' END, updated_at = now()
 		WHERE id = $1`, workID, attemptID)
 	return err
 }
@@ -26,10 +27,13 @@ func (s *Store) MarkSynced(ctx context.Context, q Querier, workID, attemptID int
 	return err
 }
 
-// DeliveryWork lists work items whose PR the connector follows: in review or
-// in the merge queue.
+// DeliveryWork lists work items whose PR the connector follows, in review or
+// in the merge queue, and merged ones with a turn it has not looked at.
 func (s *Store) DeliveryWork(ctx context.Context) ([]*WorkItem, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+workCols+` FROM work_item WHERE state IN ('review', 'merging') ORDER BY id`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+workCols+` FROM work_item
+		WHERE state IN ('review', 'merging')
+			OR (state = 'done' AND turn_attempt_id IS DISTINCT FROM synced_attempt_id)
+		ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -210,9 +214,50 @@ func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (ins
 	return n > 0, err
 }
 
+// StopWork stops delivery for a work item and queues the announcement, in
+// one transaction. Dispatch then cancels its review rounds. stopped is false
+// when it was already stopped or is done.
+func (s *Store) StopWork(ctx context.Context, workID int64, reason string) (stopped bool, err error) {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
+		var issueID int64
+		var key string
+		var n int
+		err := tx.QueryRowContext(ctx, `
+			UPDATE work_item SET state = 'stopped', stopped_reason = $2, stops = stops + 1, updated_at = now()
+			WHERE id = $1 AND state NOT IN ('stopped', 'done')
+			RETURNING issue_id, issue_key, stops`, workID, reason).Scan(&issueID, &key, &n)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		stopped = true
+		return s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
+			map[string]any{"issueId": issueID, "body": fmt.Sprintf(
+				"The factory stopped delivering %s: %s. Its review rounds are canceled and no PR updates follow. "+
+					"A new run on the issue resumes delivery.", key, reason)})
+	})
+	return stopped, err
+}
+
+// StopIssue is the operator's `connector cancel <issue>`: it stops the
+// work item of the issue key.
+func (s *Store) StopIssue(ctx context.Context, issueKey, reason string) (bool, error) {
+	var id int64
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM work_item WHERE issue_key = $1`, issueKey).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("no work item for %s", issueKey)
+	}
+	if err != nil {
+		return false, err
+	}
+	return s.StopWork(ctx, id, reason)
+}
+
 // StartRound records a review round: a connector run in the work item's
-// session, counted against its bound. The run is claimed and dispatch sends
-// it like any other.
+// session, counted against its bound. The run waits until the work item and
+// its agent key's concurrency let dispatch send it.
 func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt string) (*Run, error) {
 	if _, err := q.ExecContext(ctx, `
 		UPDATE work_item SET review_rounds = review_rounds + 1, state = 'active', updated_at = now()
@@ -222,7 +267,7 @@ func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt s
 	return scanRun(q.QueryRowContext(ctx, `
 		INSERT INTO run (id, origin, agent_key, work_item_id, issue_id, issue_key, trigger, prompt, system_prompt,
 			attempt, state, seen_visible)
-		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'review', $5, '', 1, 'claimed', true)
+		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'review', $5, '', 1, 'waiting', true)
 		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt))
 }
 
