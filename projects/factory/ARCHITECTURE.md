@@ -591,9 +591,9 @@ and retries once, so a brief overlap during a rollout is safe.
   in each `reviewBindings` namespace, which must not be a coding binding's,
   and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
   only, with checks and merge queues write, pull requests, contents and
-  statuses read. That `merge_queues: write` lets this token enqueue is [I]:
-  no reviewer token has enqueued yet, and a live enqueue at rollout checks
-  it. With `reviewer.enabled`, the chart mounts the separate App from
+  statuses read. `merge_queues: write` alone does not let this token
+  enqueue: the first live attempt was refused with `FORBIDDEN` (2026-11-14),
+  so the reviewer enqueues nothing ("Merge authority"). With `reviewer.enabled`, the chart mounts the separate App from
   `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
   namespaces, and admits only `factory-reviewer` in `reviewerSubjects`.
   The config refuses the same App as `github`, a writable
@@ -638,13 +638,14 @@ Decided with Joe on 2026-11-14 as the target state. Writing code, reviewing
 it and merging it are separate identities, and GitHub enforces the review
 rather than the factory's own code.
 
-**Status (2026-11-14): service and chart staged, disabled by default.**
-Today local review agents approve as
-`jomcgi`, the connector enqueues with the factory App, and ruleset 9180009
-requires only `pr-checks` and the merge queue. The work is #7919 (reviewer
-App, service and required check), #7920 (connector authorship check), #7921
-(third-party Apps), #7922 (in-cluster CI and registry) and #7923 (fork PRs
-and public previews).
+**Status (2026-11-14): the reviewer is live (#7937) on gpt-6.1-terra
+(#7938).** The connector waits for its check (`reviewerCheck`). The
+reviewer enqueues nothing. Ruleset 9180009 is to require `factory review`
+from App 5758326 beside `pr-checks` once that connector change is deployed
+(Joe's [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)).
+Open work: #7920 (connector authorship check), #7921 (third-party Apps),
+#7922 (in-cluster CI and registry) and #7923 (fork PRs and public
+previews).
 
 - **Author.** `jomcgi-factory` pushes branches and opens PRs: contents and
   pull requests write, checks and statuses read, and merge queue write for
@@ -657,11 +658,13 @@ and public previews).
   `projects/factory/reviewer` posts the `factory review` check run on every
   head of every open PR into the base branch, whatever its author, and on
   each merge group commit (success when the queued PR's head passed, since
-  GitHub checks the group again). It enqueues a passing head once, with
-  required CI green, and only for `enqueueAuthors` (default `jomcgi`); the
-  connector enqueues the factory's PRs, and other authors' PRs get the check
-  only. Enqueueing with the reviewer's token is unverified until rollout
-  ("Credential broker"). It never posts a PR approval, so it can never count
+  GitHub checks the group again). It enqueues nothing: the deploy values set
+  `enqueueAuthors: []`. Its first live enqueue, of #7707 on 2026-11-14, got
+  `FORBIDDEN: Resource not accessible by integration`. Its token has merge
+  queues write, but GitHub evidently also wants contents or pull requests
+  write, as the author App holds. Either would let the reviewer push code
+  or approve, so Joe chose the required check as the gate instead. It never
+  posts a PR approval, so it can never count
   toward an approval or code-owner rule. Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings and human gate in a hidden block, at most
@@ -737,8 +740,10 @@ and public previews).
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
   a passing review on that head, including PRs from Joe, interactive
   sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
-  Third-party Apps may open PRs but merge only through this gate; the
-  reviewer enqueues only Joe's PRs and the connector the factory's. The ruleset's only bypass
+  Third-party Apps may open PRs but merge only through this gate. Authors
+  enqueue: the connector does so for the factory's PRs once the check passes,
+  and other authors use auto-merge (`gh pr merge --auto`), which GitHub
+  queues once the required checks pass. The ruleset's only bypass
   actor is the organization admin role: Joe, for emergencies, and today the
   chart version write-back, which pushes to main with an identity holding
   that bypass (`bazel/helm/write-back-versions.sh`); in-cluster CI (#7922)
