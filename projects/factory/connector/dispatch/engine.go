@@ -72,8 +72,10 @@ type Config struct {
 	// kagent: the A2A call timeout, kagent's two-minute dispatch reservation
 	// and clock skew. An unresolved attempt fails only after it.
 	DispatchWindow time.Duration
-	// MaxIssues bounds the sends of one message before it fails.
-	MaxIssues int
+	// MaxIssues bounds the spaced sends of one message. FinalLookups more
+	// follow, one per DispatchWindow, before the attempt fails.
+	MaxIssues    int
+	FinalLookups int
 	// CancelInterval spaces CancelTask requests for one task.
 	CancelInterval time.Duration
 	Now            func() time.Time
@@ -115,6 +117,9 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.MaxIssues == 0 {
 		cfg.MaxIssues = 20
+	}
+	if cfg.FinalLookups == 0 {
+		cfg.FinalLookups = 3
 	}
 	if cfg.CancelInterval == 0 {
 		cfg.CancelInterval = 30 * time.Second
@@ -189,6 +194,31 @@ func (e *Engine) lockRun(id int64) func() {
 	mu := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
+}
+
+// tryLockRun takes the run's lock only if it is free.
+func (e *Engine) tryLockRun(id int64) (func(), bool) {
+	v, _ := e.locks.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	if !mu.TryLock() {
+		return nil, false
+	}
+	return mu.Unlock, true
+}
+
+// pruneLocks drops the locks of runs that are no longer open.
+func (e *Engine) pruneLocks(open map[int64]bool) {
+	e.locks.Range(func(k, v any) bool {
+		id := k.(int64)
+		if open[id] {
+			return true
+		}
+		if mu := v.(*sync.Mutex); mu.TryLock() {
+			e.locks.Delete(id)
+			mu.Unlock()
+		}
+		return true
+	})
 }
 
 func fatal(err error) bool {
@@ -269,8 +299,14 @@ func (e *Engine) Heartbeats(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// heartbeatRun skips a run whose lock a slow step holds, so it does not
+// delay the other runs' heartbeats; the next pass tries again.
 func (e *Engine) heartbeatRun(ctx context.Context, id int64) error {
-	defer e.lockRun(id)()
+	unlock, ok := e.tryLockRun(id)
+	if !ok {
+		return nil
+	}
+	defer unlock()
 	r, err := e.st.GetRun(ctx, id)
 	if err != nil {
 		return err
@@ -409,6 +445,11 @@ func (e *Engine) stepRuns(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	open := make(map[int64]bool, len(runs))
+	for _, r := range runs {
+		open[r.ID] = true
+	}
+	defer e.pruneLocks(open)
 	var errs []error
 	for _, r := range runs {
 		if err := e.stepLocked(ctx, r.ID); err != nil {
@@ -441,8 +482,40 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 		return e.progress(ctx, r)
 	case store.RunStale:
 		return e.checkStale(ctx, r)
+	case store.RunCanceling:
+		return e.checkCanceling(ctx, r)
+	case store.RunFinishing:
+		return e.checkFinishing(ctx, r)
 	}
 	return nil
+}
+
+// checkCanceling closes a canceling run whose cancellations are all
+// confirmed, so no run waits on a cancellation that already ended.
+func (e *Engine) checkCanceling(ctx context.Context, r *store.Run) error {
+	var pending bool
+	if err := e.st.DB.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM cancellation WHERE run_id = $1 AND state = 'pending')`, r.ID).Scan(&pending); err != nil || pending {
+		return err
+	}
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if err := abandonResult(ctx, tx, r.ID); err != nil {
+			return err
+		}
+		return e.st.SetRunState(ctx, tx, r.ID, store.RunClosed, "canceled; kagent confirmed")
+	})
+}
+
+// checkFinishing closes a finishing run whose result left the outbox without
+// being delivered.
+func (e *Engine) checkFinishing(ctx context.Context, r *store.Run) error {
+	var queued bool
+	if err := e.st.DB.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM outbox WHERE run_id = $1 AND kind = 'result'
+			AND delivered_at IS NULL AND abandoned_at IS NULL)`, r.ID).Scan(&queued); err != nil || queued {
+		return err
+	}
+	return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunClosed, "result not delivered")
 }
 
 func (e *Engine) bindingFor(r *store.Run) (*Binding, error) {
@@ -515,9 +588,12 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		e.m.Reassignments.Inc()
 		e.log.InfoContext(ctx, "work item reassigned", "work_item", wi.ID, "run", r.ID, "epoch", wi.Epoch)
 	}
-	ready, err := e.ready(ctx, r, wi)
+	ready, blocked, err := e.ready(ctx, r, wi)
 	if err != nil {
 		return err
+	}
+	if blocked != "" {
+		return e.failRun(ctx, e.st.DB, r, blocked)
 	}
 	if !ready {
 		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, "")
@@ -525,29 +601,37 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	return e.sendNext(ctx, r, wi, b, 0)
 }
 
-// ready reports whether a run may send now: its work item is not blocked,
-// its grant is not paused, no other run's attempt or cancellation is open,
-// and kagent shows no running task in the session.
-func (e *Engine) ready(ctx context.Context, r *store.Run, wi *store.WorkItem) (bool, error) {
+// ready reports whether a run may send now: no other run's attempt or
+// cancellation is open on the work item and kagent shows no running task in
+// the session. blocked is set when the work item or its grant is blocked: a
+// person's run would have cleared it, so the run fails back to itsaplan with
+// the reason instead of holding a concurrency slot that run needs.
+func (e *Engine) ready(ctx context.Context, r *store.Run, wi *store.WorkItem) (ready bool, blocked string, err error) {
 	if wi.State == store.WorkBlocked {
-		return false, nil
+		return false, "work item is blocked: " + wi.BlockedReason, nil
 	}
-	if blocked, _, err := e.st.GrantBlocked(ctx, store.GrantScope(wi.KagentNamespace, wi.KagentAgent)); err != nil || blocked {
-		return false, err
+	scope := store.GrantScope(wi.KagentNamespace, wi.KagentAgent)
+	paused, reason, err := e.st.GrantBlocked(ctx, scope)
+	if err != nil {
+		return false, "", err
+	}
+	if paused {
+		return false, fmt.Sprintf("paused: %s is blocked (%s); a person's new run or `connector unblock %s` resumes it",
+			scope, reason, scope), nil
 	}
 	pending, err := e.st.HasPendingCancellation(ctx, wi.ID)
 	if err != nil || pending {
-		return false, err
+		return false, "", err
 	}
 	prev, err := e.st.OpenAttemptForWork(ctx, wi.ID)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if prev != nil && prev.RunID != r.ID {
-		return false, nil
+		return false, "", nil
 	}
 	busy, err := e.sessionBusy(ctx, wi)
-	return !busy, err
+	return !busy, "", err
 }
 
 // sessionBusy confirms with kagent that the work item's session has no
@@ -593,23 +677,65 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 	return busy, nil
 }
 
+// unmappedBusy cancels running tasks in the Agent's sessions that no work
+// item maps, reporting whether any were running.
+func (e *Engine) unmappedBusy(ctx context.Context, ref kagent.AgentRef) (bool, error) {
+	busy := false
+	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking} {
+		token := ""
+		for page := 0; page < 10; page++ {
+			if err := e.guard(ctx); err != nil {
+				return false, err
+			}
+			tasks, next, err := e.tasks.ListTasks(ctx, ref, "", state, token)
+			if err != nil {
+				return false, err
+			}
+			for _, t := range tasks {
+				mapped, err := e.st.SessionMapped(ctx, t.ContextID)
+				if err != nil {
+					return false, err
+				}
+				if mapped || kagent.Quiescent(t.Status.State) {
+					continue
+				}
+				busy = true
+				if err := e.guard(ctx); err != nil {
+					return false, err
+				}
+				if _, err := e.tasks.CancelTask(ctx, ref, t.ID); err != nil {
+					e.log.WarnContext(ctx, "cancel request failed", "task", t.ID, "error", err)
+				}
+			}
+			if next == "" {
+				break
+			}
+			token = next
+		}
+	}
+	return busy, nil
+}
+
 // resumeWaiting sends a waiting run once its work item is ready. A run whose
-// work item is blocked fails: its block stands until a person acts.
+// work item or grant is blocked fails: the block stands until a person acts.
 func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
 		return err
 	}
-	if wi.State == store.WorkBlocked {
-		return e.failRun(ctx, e.st.DB, r, "work item is blocked: "+wi.BlockedReason)
-	}
 	b := e.binding(wi.BindingName)
 	if b == nil {
 		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
 	}
-	ready, err := e.ready(ctx, r, wi)
-	if err != nil || !ready {
+	ready, blocked, err := e.ready(ctx, r, wi)
+	if err != nil {
 		return err
+	}
+	if blocked != "" {
+		return e.failRun(ctx, e.st.DB, r, blocked)
+	}
+	if !ready {
+		return nil
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
 }
@@ -691,11 +817,20 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
 	now := e.cfg.Now()
 	if a.State == store.AttemptAmbiguous {
-		if now.Sub(a.SentAt) < e.cfg.ReissueInterval {
+		if a.Issues >= e.cfg.MaxIssues {
+			// Past the cap, sends are only lookups, one per dispatch window.
+			// kagent can commit the last send until its reservation ends, and
+			// a lookup then answers with that task. The attempt fails only a
+			// whole window after its final lookup, when nothing it sent can
+			// still start.
+			if now.Sub(a.SentAt) < e.cfg.DispatchWindow {
+				return nil
+			}
+			if a.Issues >= e.cfg.MaxIssues+e.cfg.FinalLookups {
+				return e.unresolved(ctx, r, wi, a)
+			}
+		} else if now.Sub(a.SentAt) < e.cfg.ReissueInterval {
 			return nil
-		}
-		if a.Issues >= e.cfg.MaxIssues && now.Sub(a.FirstSentAt) >= e.cfg.DispatchWindow {
-			return e.unresolved(ctx, r, wi, a)
 		}
 	}
 	if a.Kind == "continuation" {
@@ -756,8 +891,9 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	}
 }
 
-// unresolved fails an attempt whose sends kept going unanswered past the
-// dispatch window; the turn then follows the engineering failure path.
+// unresolved fails an attempt whose sends all went unanswered and whose last
+// send is a dispatch window old, so kagent can no longer take any of them;
+// the turn then follows the engineering failure path.
 func (e *Engine) unresolved(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
 	e.m.Sends.WithLabelValues(a.Kind, "unresolved").Inc()
 	msg := fmt.Sprintf("kagent did not take the message after %d sends", a.Issues)
@@ -1105,50 +1241,31 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	}
 	ref := kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}
 	if a.TaskID == "" {
-		// The send's outcome is unknown. Sending the same message is the
-		// authoritative lookup: kagent answers with the task holding it, or
-		// takes it now so it can be canceled. Nothing is confirmed unseen.
-		r, err := e.st.GetRun(ctx, a.RunID)
-		if err != nil {
-			return err
-		}
-		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
-		if err != nil {
-			return err
-		}
-		b := e.binding(wi.BindingName)
-		if b == nil {
-			return fmt.Errorf("repository binding %s is no longer configured", wi.BindingName)
-		}
-		if e.cfg.Now().Sub(a.SentAt) < e.cfg.ReissueInterval {
+		// The send's outcome is unknown. A cancellation never sends: that
+		// could start the turn it is meant to stop. kagent can commit a sent
+		// message only within its reservation, so a whole dispatch window
+		// after the last send no new task can appear.
+		if e.cfg.Now().Sub(a.SentAt) < e.cfg.DispatchWindow {
 			return nil
 		}
-		if err := e.guard(ctx); err != nil {
-			return err
-		}
-		if err := e.st.MarkIssued(ctx, a, e.cfg.Now()); err != nil {
-			return err
-		}
-		t, err := e.tasks.Send(ctx, ref, kagent.Message{
-			MessageID: a.MessageID, ContextID: a.ContextID, Parts: []kagent.Part{{Text: taskText(r, wi, b)}},
-			Metadata: map[string]any{
-				"factory.jomcgi.dev/run":        r.ID,
-				"factory.jomcgi.dev/issue":      wi.IssueKey,
-				"factory.jomcgi.dev/repository": b.Owner + "/" + b.Repo,
-				"factory.jomcgi.dev/branch":     wi.Branch,
-			},
-		})
-		switch {
-		case errors.Is(err, kagent.ErrTaskNotFound), errors.Is(err, kagent.ErrRejected):
-			// kagent has no session or refuses the input: nothing runs.
+		if a.ContextID == "" {
+			// A first send opens its own session, which no work item maps
+			// if the response was lost. Stop any running task in such a
+			// session; the listing holds only the connector's sessions.
+			busy, err := e.unmappedBusy(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent})
+			if err != nil || busy {
+				return err
+			}
 			return e.confirmCancel(ctx, c, a, "not_dispatched")
-		case err != nil:
-			return nil
 		}
-		if err := e.st.MarkAccepted(ctx, e.st.DB, a.ID, t.ContextID, t.ID); err != nil {
+		// A continuation's session admits one running task. Whatever runs
+		// there now was started by this message or is stopped anyway before
+		// the work item continues.
+		busy, err := e.sessionBusy(ctx, &store.WorkItem{KagentNamespace: a.KagentNamespace, KagentAgent: a.KagentAgent, SessionID: a.ContextID})
+		if err != nil || busy {
 			return err
 		}
-		a.TaskID = t.ID
+		return e.confirmCancel(ctx, c, a, "not_dispatched")
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -1189,20 +1306,22 @@ func (e *Engine) confirmCancel(ctx context.Context, c *store.Cancellation, a *st
 				return err
 			}
 		}
-		if c.Reason != store.CancelReassignment {
+		var agent, state string
+		if err := tx.QueryRowContext(ctx, `SELECT agent_key, state FROM run WHERE id = $1`, c.RunID).Scan(&agent, &state); err != nil {
+			return err
+		}
+		if state == store.RunClosed {
+			return nil
+		}
+		// A run itsaplan ended closes whatever reason the cancellation had:
+		// it may have started as a reassignment and then gone canceling.
+		if c.Reason != store.CancelReassignment || state == store.RunCanceling {
 			if err := abandonResult(ctx, tx, c.RunID); err != nil {
 				return err
 			}
 			return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "ended in itsaplan; kagent task "+outcome)
 		}
 		// Reassignment: the superseded run reports that another agent took over.
-		var agent, state string
-		if err := tx.QueryRowContext(ctx, `SELECT agent_key, state FROM run WHERE id = $1`, c.RunID).Scan(&agent, &state); err != nil {
-			return err
-		}
-		if state == store.RunClosed || state == store.RunCanceling {
-			return nil
-		}
 		if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(c.RunID), c.RunID, agent,
 			itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"}); err != nil {
 			return err

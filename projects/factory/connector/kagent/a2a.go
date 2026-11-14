@@ -293,10 +293,14 @@ func (c *A2A) GetTask(ctx context.Context, agent AgentRef, taskID string) (*Task
 	return &t, nil
 }
 
-// ListTasks lists one page of a session's tasks in one state, without
-// history, so a page stays small.
+// ListTasks lists one page of tasks in one state, without history, so a
+// page stays small: one session's, or with no contextID, those of every
+// session of the Agent the caller owns.
 func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, pageToken string) ([]*Task, string, error) {
-	params := map[string]any{"pageSize": 100, "contextId": contextID, "historyLength": 0}
+	params := map[string]any{"pageSize": 100, "historyLength": 0}
+	if contextID != "" {
+		params["contextId"] = contextID
+	}
 	if state != "" {
 		params["status"] = state
 	}

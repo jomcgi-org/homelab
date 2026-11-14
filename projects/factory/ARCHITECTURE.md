@@ -162,10 +162,13 @@ connector never sets a task ID, so every send opens a task and kagent
 accepts it once (finding 9). After an ambiguous response the connector
 sends the same message again, at most every 15 s: kagent answers with the
 task holding it, refuses while the first copy's reservation is in flight,
-or takes it when the first copy never arrived. An attempt still unresolved
-after 20 sends and the dispatch window fails as an engineering failure. The
-window covers the 60 s call timeout, the two-minute reservation and 30 s of
-skew; configuration refuses anything under 210 s. The repository and branch
+or takes it when the first copy never arrived. After 20 sends, the
+connector sends only once per dispatch window, three more times, since a
+late save of the last send would be found that way. The attempt fails as
+an engineering failure a full window after its final send, when kagent can
+no longer commit any of them. The window covers the 60 s call timeout, the
+two-minute reservation and 30 s of skew; configuration refuses anything
+under 210 s. The repository and branch
 come only from configuration.
 
 A work item keeps one kagent session whichever agent key delivers its run.
@@ -195,9 +198,11 @@ connector decisions bounded per work item; the retry and the attempt it
 sends commit together. Credential and quota failures block with the reason
 instead of retrying. The class comes from whole identifiers in the status
 text (`codex_login_required`, `unauthorized`, `usage_limit_reached`, an HTTP
-401 or 429 status). A block pauses every work item on the same kagent
+401 or 429 status). A block covers every work item on the same kagent
 Agent, the scope of its grant, until a person starts a new run or an
-operator runs `connector unblock kagent:<namespace>/<agent>`. The reported
+operator runs `connector unblock kagent:<namespace>/<agent>`. While it
+stands, an automated run on that grant fails back to itsaplan with the
+reason, so it does not hold the concurrency slot a person's run needs. The reported
 usage is the last model call's, read from `kagent.dev/a2a/usage`.
 
 **Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
@@ -215,8 +220,12 @@ merge links; a merge-queue failure returns the work item to review.
 Deployment health is a separate record.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
-reports the task in a terminal state. For an attempt whose task is unknown,
-the connector first sends the same message to learn the task.
+reports the task in a terminal state. A cancellation never sends a message.
+For an attempt whose task is unknown, it waits a dispatch window after the
+last send, then cancels any running task in the attempt's session, or for a
+first send in any of the connector's sessions that no work item maps, and
+confirms. A run that itsaplan ended closes once its cancellation is
+confirmed, whatever started that cancellation.
 
 ## Credential broker
 
