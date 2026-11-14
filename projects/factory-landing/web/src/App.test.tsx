@@ -18,7 +18,9 @@ it("links to the operator tools and keeps unrouted kagent unavailable", () => {
     ["Open GitHub", paths.github],
     ["Open factory PRs", paths.pullRequests],
   ]) {
-    expect(screen.getByRole("link", { name: label }).getAttribute("href")).toBe(href);
+    expect(screen.getByRole("link", { name: label }).getAttribute("href")).toBe(
+      href,
+    );
   }
   expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(5);
   expect(screen.getByText("Coming soon")).toBeTruthy();

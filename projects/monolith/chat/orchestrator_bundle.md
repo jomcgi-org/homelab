@@ -84,6 +84,7 @@ Top-level projects/ directories:
 - embervm
 - factory
 - factory-cluster
+- factory-landing
 - firecracker
 - gke-apps
 - gke-cluster
