@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -384,14 +385,22 @@ func (f *fakeItsaplan) Comments() []fakeComment {
 // message ID, a session belongs to the Agent that created it and runs one
 // non-quiescent task at a time, and cancellation completes asynchronously.
 type fakeKagent struct {
-	mu         sync.Mutex
-	tasks      map[string]*fakeTask
-	order      []string
-	contexts   map[string]kagent.AgentRef
-	initial    map[string]string // message ID -> task ID
-	sends      []fakeSend
-	executions int
-	calls      int
+	identity        kagent.CallerIdentity
+	identityErr     error
+	listPageSize    int
+	listErr         error
+	taskReadErr     error
+	repeatPageToken bool
+	vanishCursor    bool
+	listedStates    []string
+	mu              sync.Mutex
+	tasks           map[string]*fakeTask
+	order           []string
+	contexts        map[string]kagent.AgentRef
+	initial         map[string]string // message ID -> task ID
+	sends           []fakeSend
+	executions      int
+	calls           int
 	// loseResponse accepts the next send but loses its response.
 	loseResponse bool
 	// dropSend loses the next send before kagent accepts it.
@@ -446,10 +455,17 @@ const reservation = 2 * time.Minute
 
 func newFakeKagent(now func() time.Time) *fakeKagent {
 	return &fakeKagent{
-		now:   now,
-		tasks: map[string]*fakeTask{}, contexts: map[string]kagent.AgentRef{},
+		identity: kagent.CallerIdentity{Issuer: "https://cluster.example", ServiceAccountUID: "connector-uid", Authority: "test-cluster", A2AEndpoint: "http://controller.example", GRPCTarget: "controller.example:80"},
+		now:      now,
+		tasks:    map[string]*fakeTask{}, contexts: map[string]kagent.AgentRef{},
 		initial: map[string]string{}, sessions: map[string]*kagent.Session{},
 	}
+}
+
+func (k *fakeKagent) Pin(ctx context.Context) (context.Context, kagent.CallerIdentity, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return ctx, k.identity, k.identityErr
 }
 
 func copyTask(t *kagent.Task) *kagent.Task {
@@ -543,7 +559,7 @@ func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.
 		k.nctx++
 		ctxID = fmt.Sprintf("ctx-%d", k.nctx)
 		k.contexts[ctxID] = agent
-		k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, State: kagent.RuntimeReady}
+		k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
 	} else {
 		owner, ok := k.contexts[msg.ContextID]
 		if !ok || owner != agent {
@@ -588,6 +604,9 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	if k.taskReadErr != nil {
+		return nil, k.taskReadErr
+	}
 	t, ok := k.tasks[id]
 	if !ok || t.agent != agent {
 		return nil, fmt.Errorf("%w: task", kagent.ErrTaskNotFound)
@@ -596,10 +615,18 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 	return copyTask(&t.task), nil
 }
 
-func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, _ string) ([]*kagent.Task, string, error) {
+func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, pageToken string) ([]*kagent.Task, string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	k.listedStates = append(k.listedStates, state)
+	if k.listErr != nil {
+		return nil, "", k.listErr
+	}
+	if k.vanishCursor && pageToken != "" {
+		delete(k.tasks, k.order[0])
+		return nil, "", nil // the upstream cursor subquery no longer finds a position
+	}
 	if contextID != "" {
 		if owner, ok := k.contexts[contextID]; !ok || owner != agent {
 			return nil, "", fmt.Errorf("%w: context", kagent.ErrTaskNotFound)
@@ -608,12 +635,27 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 	var out []*kagent.Task
 	for _, id := range k.order {
 		t := k.tasks[id]
+		if t == nil {
+			continue
+		}
 		t.settle()
 		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) && (state == "" || t.task.Status.State == state) {
 			c := copyTask(&t.task)
 			c.History = nil
 			out = append(out, c)
 		}
+	}
+	if k.listPageSize > 0 {
+		start, _ := strconv.Atoi(pageToken)
+		end := min(start+k.listPageSize, len(out))
+		next := ""
+		if end < len(out) {
+			next = strconv.Itoa(end)
+		}
+		if k.repeatPageToken {
+			next = "0"
+		}
+		return out[start:end], next, nil
 	}
 	return out, "", nil
 }

@@ -21,6 +21,7 @@ type Config struct {
 	KagentURL        string // FACTORY_CONNECTOR_KAGENT_URL (A2A over HTTP)
 	KagentGRPCTarget string // FACTORY_CONNECTOR_KAGENT_GRPC (host:port)
 	KagentTokenFile  string // FACTORY_CONNECTOR_KAGENT_TOKEN_FILE
+	KagentAuthority  string // FACTORY_CONNECTOR_KAGENT_AUTHORITY, exactly kagent's configured authority
 	// BrokerURL turns delivery on: the connector's GitHub tokens come from
 	// the broker, authenticated with the projected token in BrokerTokenFile.
 	BrokerURL       string // FACTORY_CONNECTOR_BROKER_URL
@@ -125,6 +126,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		KagentURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_KAGENT_URL"), "/"),
 		KagentGRPCTarget: getenv("FACTORY_CONNECTOR_KAGENT_GRPC"),
 		KagentTokenFile:  getenv("FACTORY_CONNECTOR_KAGENT_TOKEN_FILE"),
+		KagentAuthority:  getenv("FACTORY_CONNECTOR_KAGENT_AUTHORITY"),
 		BrokerURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_BROKER_URL"), "/"),
 		BrokerTokenFile:  getenv("FACTORY_CONNECTOR_BROKER_TOKEN_FILE"),
 		GitHubURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
@@ -160,10 +162,11 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	c.File = *f
 	for name, v := range map[string]string{
-		"FACTORY_CONNECTOR_DATABASE_URL": c.DatabaseURL,
-		"FACTORY_CONNECTOR_ITSAPLAN_URL": c.ItsaplanURL,
-		"FACTORY_CONNECTOR_KAGENT_URL":   c.KagentURL,
-		"FACTORY_CONNECTOR_KAGENT_GRPC":  c.KagentGRPCTarget,
+		"FACTORY_CONNECTOR_DATABASE_URL":     c.DatabaseURL,
+		"FACTORY_CONNECTOR_ITSAPLAN_URL":     c.ItsaplanURL,
+		"FACTORY_CONNECTOR_KAGENT_URL":       c.KagentURL,
+		"FACTORY_CONNECTOR_KAGENT_GRPC":      c.KagentGRPCTarget,
+		"FACTORY_CONNECTOR_KAGENT_AUTHORITY": c.KagentAuthority,
 	} {
 		if v == "" {
 			return nil, fmt.Errorf("config: %s is required", name)

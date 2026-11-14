@@ -42,6 +42,7 @@ var ErrSessionUnrecoverable = errors.New("kagent: session unrecoverable")
 // Session is the subset of kagent.api.v1.Session the connector reads.
 type Session struct {
 	ID            string
+	Creator       string
 	State         int
 	Operation     int
 	FailureReason string
@@ -94,11 +95,11 @@ func (s *Sessions) Close() error {
 
 type bearer struct{ tokens *TokenSource }
 
-func (b bearer) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
+func (b bearer) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
 	if b.tokens == nil {
 		return nil, nil
 	}
-	tok, err := b.tokens.Token()
+	tok, err := tokenForContext(ctx, b.tokens)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +156,10 @@ func EncodeSession(sess Session) []byte {
 	var b []byte
 	b = protowire.AppendTag(b, 1, protowire.BytesType)
 	b = protowire.AppendString(b, sess.ID)
+	if sess.Creator != "" {
+		b = protowire.AppendTag(b, 2, protowire.BytesType)
+		b = protowire.AppendString(b, sess.Creator)
+	}
 	b = protowire.AppendTag(b, 7, protowire.VarintType)
 	b = protowire.AppendVarint(b, uint64(sess.State))
 	b = protowire.AppendTag(b, 8, protowire.VarintType)
@@ -180,6 +185,8 @@ func decodeSession(b []byte) (*Session, error) {
 		switch {
 		case num == 1 && typ == protowire.BytesType:
 			s.ID = string(v)
+		case num == 2 && typ == protowire.BytesType:
+			s.Creator = string(v)
 		case num == 7 && typ == protowire.VarintType:
 			s.State = int(n)
 		case num == 8 && typ == protowire.VarintType:

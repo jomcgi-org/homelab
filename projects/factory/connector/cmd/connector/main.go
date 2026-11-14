@@ -202,6 +202,10 @@ func run(log *slog.Logger) error {
 	}
 
 	eng := dispatch.New(dispatch.Config{
+		Caller: &kagent.InvocationCredentials{
+			Tokens: tokens, Authority: cfg.KagentAuthority,
+			A2AEndpoint: cfg.KagentURL, GRPCTarget: cfg.KagentGRPCTarget,
+		},
 		Holder:          cfg.Holder,
 		Agents:          agents,
 		Bindings:        bindings,
