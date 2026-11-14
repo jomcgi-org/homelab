@@ -1,0 +1,136 @@
+{
+  "routes": {
+    "/public/ember/firecracker": {
+      "initialGzip": 85000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/hikes": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/ships": {
+      "initialGzip": 80000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/stars": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/trips": {
+      "initialGzip": 75000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/trips/[slug]": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 0
+    },
+    "/public/app/trips/[slug]/day/[day]": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 0
+    },
+    "/public/app/trips/[slug]/timeline": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 0
+    },
+    "/public/app/notes": {
+      "initialGzip": 105000,
+      "deferredGzip": 50000,
+      "workerGzip": 0
+    },
+    "/public/app/llm-leaderboard": {
+      "initialGzip": 85000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland/privacy": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland/support": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland/terms": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire": {
+      "initialGzip": 105000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/adventure/[id]": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/book/[book]": {
+      "initialGzip": 95000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/book/[book]/c/[chunk]": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/chat": {
+      "initialGzip": 100000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/chat/s/[id]": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/entities": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/entity/[id]": {
+      "initialGzip": 95000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/explore": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/library": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/world": {
+      "initialGzip": 105000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    }
+  },
+  "redirects": ["/public/app/firecracker"],
+  "documents": {
+    "/public/app/frank": {
+      "file": "src/routes/public/app/frank/frank.html",
+      "gzip": 12000
+    }
+  }
+}

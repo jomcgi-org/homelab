@@ -171,6 +171,8 @@ js_library(
         ],
     ) + [
         "package.json",
+        "performance/bundle-budgets.js",
+        "performance/bundle-budgets.json",
         "svelte.config.js",
         "vite.config.js",
         ":docs_manifest",
@@ -238,6 +240,8 @@ js_library(
         ],
     ) + [
         "package.json",
+        "performance/bundle-budgets.js",
+        "performance/bundle-budgets.json",
         "svelte.config.js",
         "vite.config.js",
         ":docs_manifest",
@@ -1053,6 +1057,8 @@ js_library(
         "factory-preview/fonts.css",
         "factory-preview/fonts/SchibstedGrotesk.ttf",
         "package.json",
+        "performance/bundle-budgets.js",
+        "performance/bundle-budgets.json",
         "src/app.html",
         "svelte.config.js",
         "theme-preview/DataDisplayFixture.svelte",

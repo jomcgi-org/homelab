@@ -1,4 +1,8 @@
 import adapter from "@sveltejs/adapter-node";
+import { checkBundleBudgets } from "./performance/bundle-budgets.js";
+
+const out = process.env.SVELTE_OUT_DIR || "dist";
+const nodeAdapter = adapter({ out, precompress: true });
 
 const config = {
   kit: {
@@ -7,15 +11,20 @@ const config = {
     // the same Bazel package. Defaults to "dist", never "build": on a
     // case-insensitive filesystem (macOS) an output dir named "build" collides
     // with this package's tracked Bazel BUILD file and deletes it.
-    adapter: adapter({
-      out: process.env.SVELTE_OUT_DIR || "dist",
+    adapter: {
+      ...nodeAdapter,
       // Build-time gzip + brotli of static assets (/_app/*.js, CSS). These are
       // served by adapter-node's sirv layer BEFORE the SvelteKit handler, so the
       // hooks.server.js compression hook never sees them; precompress is how the
       // JS bundle stops shipping uncompressed. sirv serves the .br/.gz variant
       // when the client accepts it, at zero runtime cost.
-      precompress: true,
-    }),
+      async adapt(builder) {
+        await nodeAdapter.adapt(builder);
+        // The existing build_test and build_test_public CI targets fail when
+        // a route exceeds its emitted-JavaScript budget.
+        await checkBundleBudgets(builder, out);
+      },
+    },
     // No Content-Security-Policy is set by the app. The markdown renderer
     // (components/notes/markdown.js) HTML-escapes untrusted public-chat output
     // and note bodies and emits no raw HTML, which is the real XSS protection
