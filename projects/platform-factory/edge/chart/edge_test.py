@@ -212,9 +212,10 @@ def test_kagent_hostname_is_owned_and_published():
         "!object.spec.hostnames.exists(h, h == 'factory-agents.jomcgi.dev')",
         "message": "Only the edge namespace may route factory-agents.jomcgi.dev.",
     } in validations
-    assert policies["factory-edge-envoy-resources"]["spec"]["validations"][0][
-        "expression"
-    ] == "request.namespace == 'edge'"
+    assert (
+        policies["factory-edge-envoy-resources"]["spec"]["validations"][0]["expression"]
+        == "request.namespace == 'edge'"
+    )
     for doc in resources:
         assert doc["metadata"]["annotations"]["argocd.argoproj.io/sync-options"] == (
             "Delete=false"
