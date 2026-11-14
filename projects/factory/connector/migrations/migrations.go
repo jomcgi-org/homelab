@@ -34,14 +34,9 @@ func Versions() ([]string, error) {
 }
 
 // Apply runs every migration the database has not recorded, each in its own
-// transaction, under a transaction-scoped advisory lock.
+// transaction under a transaction-scoped advisory lock, which also covers
+// creating the bookkeeping table.
 func Apply(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version text PRIMARY KEY,
-		applied_at timestamptz NOT NULL DEFAULT now()
-	)`); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
-	}
 	versions, err := Versions()
 	if err != nil {
 		return err
@@ -66,6 +61,12 @@ func applyOne(ctx context.Context, db *sql.DB, version string) error {
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
 		return fmt.Errorf("lock migrations: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version text PRIMARY KEY,
+		applied_at timestamptz NOT NULL DEFAULT now()
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 	var seen bool
 	if err := tx.QueryRowContext(ctx,

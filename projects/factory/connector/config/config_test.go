@@ -50,4 +50,7 @@ func TestParseRejectsUnknownAgentAndFields(t *testing.T) {
 	if _, err := Parse([]byte(strings.Replace(sample, "    repo: homelab\n", "", 1))); err == nil {
 		t.Fatal("binding without repo accepted")
 	}
+	if _, err := Parse([]byte(strings.Replace(sample, "poll: 2s", "poll: 2s\n  dispatchWindow: 150s", 1))); err == nil {
+		t.Fatal("dispatch window shorter than timeout plus reservation accepted")
+	}
 }

@@ -14,8 +14,13 @@ func TestClassify(t *testing.T) {
 		{kagent.StateAuthRequired, "", dispatch.ClassCredential},
 		{kagent.StateFailed, "HTTP 401 Unauthorized", dispatch.ClassCredential},
 		{kagent.StateFailed, "usage_limit_reached: try again in 3h", dispatch.ClassQuota},
-		{kagent.StateFailed, "429 Too Many Requests", dispatch.ClassQuota},
+		{kagent.StateFailed, "HTTP 429 Too Many Requests", dispatch.ClassQuota},
 		{kagent.StateFailed, "go test exited with status 1", dispatch.ClassEngineering},
+		{kagent.StateFailed, "listening on port 4011 failed", dispatch.ClassEngineering},
+		{kagent.StateFailed, "quota.go:12: undefined: x", dispatch.ClassEngineering},
+		{kagent.StateFailed, "processed 1429 files then crashed", dispatch.ClassEngineering},
+		{kagent.StateFailed, "upstream returned status 429", dispatch.ClassQuota},
+		{kagent.StateFailed, "Codex error: usageLimitExceeded", dispatch.ClassQuota},
 		{kagent.StateCanceled, "", dispatch.ClassCanceled},
 	}
 	for _, c := range cases {

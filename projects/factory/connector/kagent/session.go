@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -100,14 +101,25 @@ func (b bearer) GetRequestMetadata(context.Context, ...string) (map[string]strin
 
 func (bearer) RequireTransportSecurity() bool { return false }
 
+// Deadlines for session calls. A revert restores a snapshot and can take
+// minutes; kagent bounds one lifecycle attempt at two.
+const (
+	GetSessionTimeout    = 30 * time.Second
+	RevertSessionTimeout = 150 * time.Second
+)
+
 // GetSession reads a session.
 func (s *Sessions) GetSession(ctx context.Context, id string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
+	defer cancel()
 	return s.invoke(ctx, "/kagent.api.v1.SessionService/GetSession", id)
 }
 
 // RevertSession restores a crashed session to its last durable snapshot. It
 // returns the session unchanged when its runtime is not crashed.
 func (s *Sessions) RevertSession(ctx context.Context, id string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, RevertSessionTimeout)
+	defer cancel()
 	return s.invoke(ctx, "/kagent.api.v1.SessionService/RevertSession", id)
 }
 

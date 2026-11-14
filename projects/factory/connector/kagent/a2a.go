@@ -52,9 +52,14 @@ func Quiescent(state string) bool {
 // protocol error after dispatch may have happened. Never resend blindly.
 var ErrAmbiguous = errors.New("kagent: ambiguous send outcome")
 
-// ErrNotAccepted is KAGENT_SEND_NOT_ACCEPTED: nothing was dispatched, and the
-// same message may be sent again.
+// ErrNotAccepted means kagent dispatched nothing for this call: the
+// KAGENT_SEND_NOT_ACCEPTED reason, or UnsupportedOperation while the session
+// is busy or in a lifecycle operation. The same message may be sent again.
 var ErrNotAccepted = errors.New("kagent: send not accepted")
+
+// ErrRejected is an InvalidRequest or InvalidParams answer: kagent refused the
+// message itself, for example a message ID reused with different input.
+var ErrRejected = errors.New("kagent: send rejected")
 
 // ErrTaskNotFound is A2A TaskNotFound (-32001): a missing, expired or hidden
 // task or context.
@@ -147,6 +152,10 @@ func (s *TokenSource) Token() (string, error) {
 	return s.token, nil
 }
 
+// DefaultTimeout bounds one A2A call. The connector's resend window must
+// exceed it plus kagent's two-minute dispatch reservation.
+const DefaultTimeout = 60 * time.Second
+
 // A2A calls the public A2A gateway.
 type A2A struct {
 	BaseURL string
@@ -210,7 +219,7 @@ func (c *A2A) call(ctx context.Context, agent AgentRef, method string, params, o
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: 60 * time.Second}
+		hc = &http.Client{Timeout: DefaultTimeout}
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -234,6 +243,10 @@ func (c *A2A) call(ctx context.Context, agent AgentRef, method string, params, o
 			return fmt.Errorf("%w: %s", ErrNotAccepted, r.Error.Message)
 		case r.Error.Code == -32001:
 			return fmt.Errorf("%w: %s", ErrTaskNotFound, r.Error.Message)
+		case method == "SendMessage" && r.Error.Code == -32004:
+			return fmt.Errorf("%w: %s", ErrNotAccepted, r.Error.Message)
+		case method == "SendMessage" && (r.Error.Code == -32600 || r.Error.Code == -32602):
+			return fmt.Errorf("%w: %s", ErrRejected, r.Error.Message)
 		}
 		return &RPCError{Code: r.Error.Code, Message: r.Error.Message}
 	}
@@ -244,9 +257,11 @@ func (c *A2A) call(ctx context.Context, agent AgentRef, method string, params, o
 }
 
 // Send sends one user message with a deterministic message ID and returns
-// the task holding it without waiting for the turn. A transport failure, or
-// any error other than not-accepted or not-found, is ErrAmbiguous: the
-// message may have been dispatched.
+// the task holding it without waiting for the turn. kagent accepts a
+// task-opening message (no task ID) once per session and answers a repeat
+// with the task that holds it, so sending the same message again is how an
+// ambiguous outcome is resolved. A transport failure, or any error other
+// than not-accepted, rejected or not-found, is ErrAmbiguous.
 func (c *A2A) Send(ctx context.Context, agent AgentRef, msg Message) (*Task, error) {
 	msg.Role = "ROLE_USER"
 	params := map[string]any{
@@ -258,7 +273,7 @@ func (c *A2A) Send(ctx context.Context, agent AgentRef, msg Message) (*Task, err
 		Message *Message `json:"message"`
 	}
 	if err := c.call(ctx, agent, "SendMessage", params, &out); err != nil {
-		if errors.Is(err, ErrNotAccepted) || errors.Is(err, ErrTaskNotFound) {
+		if errors.Is(err, ErrNotAccepted) || errors.Is(err, ErrTaskNotFound) || errors.Is(err, ErrRejected) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %v", ErrAmbiguous, err)
@@ -278,12 +293,12 @@ func (c *A2A) GetTask(ctx context.Context, agent AgentRef, taskID string) (*Task
 	return &t, nil
 }
 
-// ListTasks lists one page of the agent's tasks, narrowed to a context when
-// contextID is set, with their history.
-func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, pageToken string) ([]*Task, string, error) {
-	params := map[string]any{"pageSize": 100}
-	if contextID != "" {
-		params["contextId"] = contextID
+// ListTasks lists one page of a session's tasks in one state, without
+// history, so a page stays small.
+func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, pageToken string) ([]*Task, string, error) {
+	params := map[string]any{"pageSize": 100, "contextId": contextID, "historyLength": 0}
+	if state != "" {
+		params["status"] = state
 	}
 	if pageToken != "" {
 		params["pageToken"] = pageToken

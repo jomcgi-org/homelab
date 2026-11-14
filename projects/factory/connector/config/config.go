@@ -35,11 +35,16 @@ type File struct {
 
 // Intervals are the loop timings.
 type Intervals struct {
-	Poll           Duration `yaml:"poll"`
-	Heartbeat      Duration `yaml:"heartbeat"`
-	DispatchWindow Duration `yaml:"dispatchWindow"`
-	AcquireRetry   Duration `yaml:"acquireRetry"`
+	Poll            Duration `yaml:"poll"`
+	Heartbeat       Duration `yaml:"heartbeat"`
+	ReissueInterval Duration `yaml:"reissueInterval"`
+	DispatchWindow  Duration `yaml:"dispatchWindow"`
+	AcquireRetry    Duration `yaml:"acquireRetry"`
 }
+
+// MinDispatchWindow covers the 60 s A2A call timeout (kagent.DefaultTimeout),
+// kagent's two-minute dispatch reservation and 30 s of clock skew.
+const MinDispatchWindow = 210 * time.Second
 
 // Coordinator is the itsaplan agent that reads runs and comments.
 type Coordinator struct {
@@ -142,7 +147,16 @@ func Parse(b []byte) (*File, error) {
 		f.Intervals.Heartbeat = Duration(60 * time.Second)
 	}
 	if f.Intervals.DispatchWindow == 0 {
-		f.Intervals.DispatchWindow = Duration(150 * time.Second)
+		f.Intervals.DispatchWindow = Duration(4 * time.Minute)
+	}
+	if time.Duration(f.Intervals.DispatchWindow) < MinDispatchWindow {
+		return nil, fmt.Errorf("config: dispatchWindow must be at least %s", MinDispatchWindow)
+	}
+	if f.Intervals.ReissueInterval == 0 {
+		f.Intervals.ReissueInterval = Duration(15 * time.Second)
+	}
+	if hb := time.Duration(f.Intervals.Heartbeat); hb <= 0 || hb > 2*time.Minute {
+		return nil, fmt.Errorf("config: heartbeat must be positive and at most 2m against itsaplan's 300 s lease")
 	}
 	if f.Intervals.AcquireRetry == 0 {
 		f.Intervals.AcquireRetry = Duration(5 * time.Second)

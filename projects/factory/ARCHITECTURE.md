@@ -69,10 +69,15 @@ records how they relate and routes results and feedback between them.
    `GetTask`, `ListTasks` and `CancelTask`, requires the `A2A-Version: 1.0`
    header, and uses `TASK_STATE_*` and `ROLE_USER` values. `SessionService`
    is gRPC only, served as h2c on the controller's `:8083` listener.
-9. **kagent deduplicates only first sends.** [V] A send without a context
-   ID is keyed on creator, Agent and message ID. A continuation has no such
-   key. A dispatch reservation lasts two minutes, and kagent rejects a first
-   save that arrives after it.
+9. **kagent accepts a task-opening message once per session.** [V] A
+   message without a task ID opens a task. `ReserveSessionDispatch` refuses
+   one whose message ID the session already holds, and the gateway then
+   answers with the task holding it. A first send with no context ID also
+   finds its session again: the session's request ID derives from the Agent
+   and message ID. A reservation lasts two minutes and blocks other
+   dispatches to the session (`KAGENT_SEND_NOT_ACCEPTED`), and kagent rejects
+   a first save that arrives after it. A failed turn carries status text
+   only; the Codex error category stays in kagent's traces.
 10. **A session belongs to one kagent Agent.** [V] Every A2A call checks
     that the session belongs to the Agent in the URL.
 11. **itsaplan has no per-run read for an agent key.** [V] The runner queue
@@ -152,12 +157,16 @@ is a transport redelivery: find the kagent task by message ID and attach,
 never send again while kagent could still accept it. A new send uses message
 ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
 connector's record of why it sends (initial, revision or engineering retry).
-The attempt is recorded before the send. After an ambiguous response the
-connector looks the ID up with `ListTasks`: across the Agent's tasks for a
-first send, in the session for a continuation. If no task holds it 150 s
-after the send, the same message goes again; kagent's two-minute dispatch
-reservation has expired by then, so the first copy can no longer start. The
-repository and branch come only from configuration.
+The attempt is recorded, with the run's state, before the send. The
+connector never sets a task ID, so every send opens a task and kagent
+accepts it once (finding 9). After an ambiguous response the connector
+sends the same message again, at most every 15 s: kagent answers with the
+task holding it, refuses while the first copy's reservation is in flight,
+or takes it when the first copy never arrived. An attempt still unresolved
+after 20 sends and the dispatch window fails as an engineering failure. The
+window covers the 60 s call timeout, the two-minute reservation and 30 s of
+skew; configuration refuses anything under 210 s. The repository and branch
+come only from configuration.
 
 A work item keeps one kagent session whichever agent key delivers its run.
 When a run for an existing work item arrives under a different agent, the
@@ -168,18 +177,28 @@ the session's kagent Agent, and every send to the session goes to that
 Agent, whichever itsaplan agent key delivers the run. A new session is
 created only by the replacement path below.
 
-**Heartbeat** every 60 s. On 404, read the run through the runner queue with
-the coordinator's key: canceled starts cancellation; a higher attempt means
-this attempt is stale and stops writing. A run the queue does not show counts
-as canceled, since moving its issue is the v1.10.0 cancel path and hides it. Progress is
+**Heartbeat** every 60 s, from a loop separate from dispatch, so a slow
+kagent call cannot let a lease lapse. On 404, read the run through the
+runner queue with the coordinator's key: canceled starts cancellation; a
+higher attempt means this attempt is stale and stops writing; a run itsaplan
+finished without this attempt's result has its kagent task canceled before
+it closes. The connector looks each run up once after claiming it. Once the
+queue has shown a run, a lookup that no longer shows it counts as canceled,
+since moving its issue is the v1.10.0 cancel path and hides it. Before that
+sighting an empty lookup changes nothing. Progress is
 posted as itsaplan run events with a persisted offset.
 
 **Completion.** The connector opens or updates the one PR for the work
 item from the pushed branch. A run result means the turn finished; the
 issue becomes Done only from the observed merge. Engineering retries are
-connector decisions bounded per work item; credential and quota failures
-block with the reason instead of retrying. The reported usage is the last
-model call's, read from `kagent.dev/a2a/usage`.
+connector decisions bounded per work item; the retry and the attempt it
+sends commit together. Credential and quota failures block with the reason
+instead of retrying. The class comes from whole identifiers in the status
+text (`codex_login_required`, `unauthorized`, `usage_limit_reached`, an HTTP
+401 or 429 status). A block pauses every work item on the same kagent
+Agent, the scope of its grant, until a person starts a new run or an
+operator runs `connector unblock kagent:<namespace>/<agent>`. The reported
+usage is the last model call's, read from `kagent.dev/a2a/usage`.
 
 **Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
 if its commit is the current head and its author is a trusted identity;
@@ -195,8 +214,9 @@ observed, mark the itsaplan issue Done with the issue, run, session, PR and
 merge links; a merge-queue failure returns the work item to review.
 Deployment health is a separate record.
 
-**Cancellation** sends A2A `tasks/cancel` and stays pending until kagent
-reports the task canceled or failed.
+**Cancellation** sends A2A `CancelTask` and stays pending until kagent
+reports the task in a terminal state. For an attempt whose task is unknown,
+the connector first sends the same message to learn the task.
 
 ## Credential broker
 

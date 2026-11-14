@@ -71,6 +71,9 @@ CREATE TABLE run (
     event_task_id text,
     event_task_base integer NOT NULL DEFAULT 0,
     last_heartbeat_at timestamptz,
+    -- Set once the coordinator's queue lookup has shown the run. Only then
+    -- does an empty lookup mean the run was canceled.
+    seen_visible boolean NOT NULL DEFAULT false,
     closed_reason text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
@@ -100,6 +103,9 @@ CREATE TABLE delivery_attempt (
     error text,
     evidence_uri text,
     writer_epoch bigint NOT NULL,
+    -- issues counts sends of this message; sent_at is the latest.
+    issues integer NOT NULL DEFAULT 0,
+    first_sent_at timestamptz,
     sent_at timestamptz,
     finished_at timestamptz,
     UNIQUE (run_id, seq)
@@ -139,9 +145,10 @@ CREATE TABLE cancellation (
     id bigserial PRIMARY KEY,
     delivery_attempt_id bigint NOT NULL REFERENCES delivery_attempt (id),
     run_id bigint NOT NULL REFERENCES run (id),
-    reason text NOT NULL CHECK (reason IN ('run_canceled', 'reassignment')),
+    reason text NOT NULL CHECK (reason IN ('run_canceled', 'run_closed', 'reassignment')),
     state text NOT NULL CHECK (state IN ('pending', 'confirmed')),
     requests integer NOT NULL DEFAULT 0,
+    last_request_at timestamptz,
     outcome text,
     requested_at timestamptz NOT NULL DEFAULT now(),
     confirmed_at timestamptz
@@ -161,11 +168,23 @@ CREATE TABLE outbox (
     agent_key text,
     payload jsonb NOT NULL,
     tries integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
     last_error text,
     created_at timestamptz NOT NULL DEFAULT now(),
     delivered_at timestamptz,
     abandoned_at timestamptz
 );
 
-CREATE INDEX outbox_pending_idx ON outbox (id)
+CREATE INDEX outbox_pending_idx ON outbox (next_attempt_at, id)
     WHERE delivered_at IS NULL AND abandoned_at IS NULL;
+
+-- A credential or quota failure pauses every work item that uses the same
+-- grant, named by its kagent Agent. A person's new run or an operator's
+-- `connector unblock <scope>` clears it.
+CREATE TABLE grant_block (
+    scope text PRIMARY KEY,
+    class text NOT NULL CHECK (class IN ('credential', 'quota')),
+    reason text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    cleared_at timestamptz
+);

@@ -39,6 +39,11 @@ type fakeItsaplan struct {
 	runs     []*fakeRun
 	comments []fakeComment
 	calls    int
+	// commentErr fails every comment while set.
+	commentErr error
+	// resultGone fails the run in itsaplan as its result arrives, as
+	// expireExhaustedRuns can.
+	resultGone bool
 }
 
 type fakeRun struct {
@@ -176,6 +181,9 @@ func (f *fakeItsaplan) Result(_ context.Context, agent string, id int64, res its
 	defer f.mu.Unlock()
 	f.calls++
 	r := f.get(id)
+	if f.resultGone {
+		r.status = "failed"
+	}
 	if r == nil || r.agent != agent || r.status != "pending" || (res.Attempt != 0 && r.attempts != res.Attempt) {
 		return itsaplan.ErrNotFound
 	}
@@ -199,6 +207,9 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.commentErr != nil {
+		return f.commentErr
+	}
 	f.comments = append(f.comments, fakeComment{issueID, body})
 	return nil
 }
@@ -227,8 +238,17 @@ type fakeKagent struct {
 	dropSend bool
 	// notAccepted rejects the next sends with KAGENT_SEND_NOT_ACCEPTED.
 	notAccepted int
-	sessions    map[string]*kagent.Session
-	reverts     int
+	// lateAccept takes the next send's dispatch reservation but loses the
+	// response; the message persists only when acceptPending runs. Until
+	// then other sends to that session are not accepted.
+	lateAccept bool
+	pending    *fakeSend
+	// sendErr fails the next sends before anything is dispatched.
+	sendErr []error
+	// sessionErr fails the next GetSession calls.
+	sessionErr []error
+	sessions   map[string]*kagent.Session
+	reverts    int
 }
 
 type fakeTask struct {
@@ -260,6 +280,47 @@ func (k *fakeKagent) Send(_ context.Context, agent kagent.AgentRef, msg kagent.M
 	defer k.mu.Unlock()
 	k.calls++
 	k.sends = append(k.sends, fakeSend{agent, msg})
+	if len(k.sendErr) > 0 {
+		err := k.sendErr[0]
+		k.sendErr = k.sendErr[1:]
+		return nil, err
+	}
+	if k.pending != nil {
+		// A reservation in flight blocks every other dispatch to the session.
+		if k.pending.msg.MessageID == msg.MessageID || k.pending.msg.ContextID == msg.ContextID {
+			return nil, fmt.Errorf("%w: dispatch busy", kagent.ErrNotAccepted)
+		}
+	}
+	if k.lateAccept {
+		k.lateAccept = false
+		p := fakeSend{agent, msg}
+		k.pending = &p
+		return nil, fmt.Errorf("%w: response lost", kagent.ErrAmbiguous)
+	}
+	return k.accept(agent, msg)
+}
+
+// acceptPending persists the in-flight message, as a slow runtime's first
+// save would.
+func (k *fakeKagent) acceptPending() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p := k.pending
+	k.pending = nil
+	if _, err := k.accept(p.agent, p.msg); err != nil {
+		panic(err)
+	}
+}
+
+// expirePending drops the in-flight message, as kagent rejects a first save
+// after its reservation expires.
+func (k *fakeKagent) expirePending() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.pending = nil
+}
+
+func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.Task, error) {
 	if k.dropSend {
 		k.dropSend = false
 		return nil, fmt.Errorf("%w: connection reset", kagent.ErrAmbiguous)
@@ -281,9 +342,16 @@ func (k *fakeKagent) Send(_ context.Context, agent kagent.AgentRef, msg kagent.M
 		if !ok || owner != agent {
 			return nil, fmt.Errorf("%w: context", kagent.ErrTaskNotFound)
 		}
+		// A task-opening message is accepted once per session.
+		for _, id := range k.order {
+			t := k.tasks[id]
+			if t.task.ContextID == msg.ContextID && t.task.History[0].MessageID == msg.MessageID {
+				return copyTask(&t.task), nil
+			}
+		}
 		for _, t := range k.tasks {
 			if t.task.ContextID == msg.ContextID && !kagent.Quiescent(t.task.Status.State) {
-				return nil, fmt.Errorf("%w: session has a running task", kagent.ErrAmbiguous)
+				return nil, fmt.Errorf("%w: session has a running task", kagent.ErrNotAccepted)
 			}
 		}
 		ctxID = msg.ContextID
@@ -323,7 +391,7 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 	return copyTask(&t.task), nil
 }
 
-func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, _ string) ([]*kagent.Task, string, error) {
+func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, _ string) ([]*kagent.Task, string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
@@ -335,8 +403,10 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 	var out []*kagent.Task
 	for _, id := range k.order {
 		t := k.tasks[id]
-		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) {
-			out = append(out, copyTask(&t.task))
+		if t.agent == agent && t.task.ContextID == contextID && (state == "" || t.task.Status.State == state) {
+			c := copyTask(&t.task)
+			c.History = nil
+			out = append(out, c)
 		}
 	}
 	return out, "", nil
@@ -362,6 +432,11 @@ func (k *fakeKagent) GetSession(_ context.Context, id string) (*kagent.Session, 
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	if len(k.sessionErr) > 0 {
+		err := k.sessionErr[0]
+		k.sessionErr = k.sessionErr[1:]
+		return nil, err
+	}
 	s, ok := k.sessions[id]
 	if !ok {
 		return nil, kagent.ErrSessionNotFound

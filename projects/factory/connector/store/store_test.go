@@ -71,7 +71,7 @@ func TestSingleWriterAndEpoch(t *testing.T) {
 	}
 }
 
-func TestDeliveryAttemptMessageIDIsUnique(t *testing.T) {
+func TestRecordingAMessageIDTwiceReturnsTheAttempt(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()
 	if _, _, err := st.RecordClaim(ctx, store.ClaimedRun{ID: 1, AgentKey: "coder", Trigger: "mention", Attempt: 1}); err != nil {
@@ -81,10 +81,15 @@ func TestDeliveryAttemptMessageIDIsUnique(t *testing.T) {
 		RunID: 1, RunAttempt: 1, WorkItemEpoch: 1, DecisionID: "initial", Kind: "initial",
 		MessageID: "itsaplan-run/1/initial", KagentNamespace: "ns", KagentAgent: "coder", WriterEpoch: 1,
 	}
-	if _, err := st.RecordAttempt(ctx, st.DB, a); err != nil {
+	first, err := st.RecordAttempt(ctx, st.DB, a)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.RecordAttempt(ctx, st.DB, a); err == nil {
-		t.Fatal("second attempt with the same message ID recorded")
+	again, err := st.RecordAttempt(ctx, st.DB, a)
+	if err != nil || again.ID != first.ID {
+		t.Fatalf("recording the same message ID = %+v, %v; want the existing attempt", again, err)
+	}
+	if n, err := st.CountSends(ctx, 1); err != nil || n != 1 {
+		t.Fatalf("attempts = %d, %v", n, err)
 	}
 }
