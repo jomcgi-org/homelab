@@ -8,9 +8,10 @@
 # (charts/kagent-1.0.1.tgz); see its values.yaml for the full set.
 kagent:
   # install: this chart installs kagent and its namespace, CRDs and policies.
-  # existing: kagent is installed elsewhere and this chart renders none of it.
-  # Helm cannot make crds/ conditional, so an existing install also sets
-  # skipCrds on the Application's Helm source.
+  # existing: kagent is installed elsewhere and this chart renders none of it,
+  # CRD hook included. The CRDs in crds/ are applied only by that hook: the
+  # Application sets helm.skipCrds, so ArgoCD neither applies nor tracks them
+  # (and a prune can never delete them, or every Agent with them).
   # `enabled` is the Helm dependency condition and must agree with `mode`
   # (templates/validate.yaml checks).
   mode: install
@@ -22,6 +23,13 @@ kagent:
   # namespace policy.
   fullnameOverride: kagent
   namespaceOverride: kagent
+
+  # Namespaced RBAC: kagent renders Roles in these namespaces only, and the
+  # controller watches only them. Without it the controller gets cluster-wide
+  # ClusterRoles, Secrets included, behind trusted-proxy auth that never
+  # verifies tokens. Each repository binding's namespace is added here.
+  rbac:
+    namespaces: [kagent]
 
   # The factory runs no cluster-operations agents, so the built-in Kubernetes
   # tool server (and its ClusterRole) is off.
@@ -57,6 +65,8 @@ kagent:
       # A kagent principal includes the ServiceAccount UID, so recreating it
       # loses access to every session it owns (ARCHITECTURE.md finding 6).
       annotations:
+        # Wave -2 with the namespace (ARCHITECTURE.md, "Ordering").
+        argocd.argoproj.io/sync-wave: "-2"
         argocd.argoproj.io/sync-options: Prune=false,Delete=false
         helm.sh/resource-policy: keep
     image:

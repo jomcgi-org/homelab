@@ -1,9 +1,12 @@
 {{- if include "factory.kagentInstall" . }}
 {{- /*
 Server-side applies the vendored kagent CRDs (crds/) before every install,
-upgrade and ArgoCD sync. Helm installs crds/ only on first install and never
-upgrades them; this Job keeps them at the vendored version. Every object here
-is a hook, so it exists only while the hook runs.
+upgrade and ArgoCD sync, and is their only owner under ArgoCD: the Application
+sets helm.skipCrds, so ArgoCD neither applies nor tracks crds/, and pruning or
+deleting the Application cannot delete the CRDs and every kagent object with
+them. Helm alone installs crds/ only on first install and never upgrades them;
+this Job keeps them at the vendored version either way. Every object here is a
+hook, so it exists only while the hook runs.
 */}}
 {{- $ns := include "factory.kagentNamespace" . }}
 {{- $name := "kagent-crds" }}
