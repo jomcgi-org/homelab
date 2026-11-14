@@ -69,3 +69,16 @@ http://{{ include "factory.brokerName" . }}.{{ .Values.broker.namespace }}.svc.{
 argocd.argoproj.io/sync-options: Prune=false,Delete=false
 helm.sh/resource-policy: keep
 {{- end }}
+
+{{/* "true" when a workload runs in the factory namespace (broker.namespace). */}}
+{{- define "factory.factoryWorkloads" -}}
+{{- if .Values.broker.enabled -}}true{{- end -}}
+{{- end }}
+
+{{/* The pod's imagePullSecrets for private first-party images. */}}
+{{- define "factory.imagePullSecrets" -}}
+{{- if .Values.imagePullSecret.enabled }}
+imagePullSecrets:
+  - name: {{ .Values.imagePullSecret.name }}
+{{- end }}
+{{- end }}

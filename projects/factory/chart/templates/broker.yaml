@@ -254,6 +254,7 @@ spec:
         checksum/config: {{ $configYAML | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
