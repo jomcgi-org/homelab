@@ -35,6 +35,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
 	"github.com/jomcgi/homelab/projects/factory/connector/migrations"
 	"github.com/jomcgi/homelab/projects/factory/connector/notify"
+	"github.com/jomcgi/homelab/projects/factory/connector/status"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
@@ -200,13 +201,31 @@ func run(log *slog.Logger) error {
 
 	// Delivery (PRs, review rounds, merge) needs the broker's GitHub tokens.
 	var gh dispatch.GitHub
+	var statusGitHub status.GitHub
 	if cfg.BrokerURL != "" {
-		gh = &github.Client{BaseURL: cfg.GitHubURL, Tokens: &github.BrokerTokens{
+		client := &github.Client{BaseURL: cfg.GitHubURL, Tokens: &github.BrokerTokens{
 			URL: cfg.BrokerURL, Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
 		}}
+		gh = client
+		statusGitHub = client
 	} else {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
 	}
+
+	statusSource := &status.Source{Store: st, Plan: its, GitHub: statusGitHub,
+		Bindings: cfg.File.Bindings, IssueURL: cfg.File.Links.Issue}
+	statusHandler := &status.Handler{Load: statusSource.Load}
+	statusCtx, stopStatus := context.WithCancel(ctx)
+	defer stopStatus()
+	go statusHandler.Run(statusCtx)
+	statusServer := &http.Server{Addr: cfg.StatusAddr, Handler: statusHandler,
+		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	go func() {
+		if err := statusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("status server", "error", err)
+		}
+	}()
+	defer statusServer.Close()
 
 	eng := dispatch.New(dispatch.Config{
 		// Native Codex artifact text reaches itsaplan run events (#8017). The

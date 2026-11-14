@@ -1113,6 +1113,44 @@ issuer and monolith permission check confine this sender even if it guesses
 another tool or channel. Durable dedupe handles the response-loss case that
 a connector memory cache cannot.
 
+### Tasks for Joe
+
+An open itsaplan issue in a bound project, assigned to the member `@joe`
+with no delegate, is a task for Joe. HOME-20 to HOME-23 are the first examples.
+Agents leave these tasks with Joe and never pick them up. Delegating an issue
+to an agent is an explicit handoff; the landing page's reads start no runs.
+Open means a backlog, unstarted or started column, excluding archived issues.
+
+### Factory front page
+
+`factory.jomcgi.dev` shows Needs you, In flight, Shipped recently, then the
+tool links (#7959). The connector serves `GET /status` on port 8082,
+separate from metrics. Its coordinator resolves Joe's member ID from each
+bound project's scaffold and filters the assigned issues for no delegate and
+an open column. The connector's store supplies active, blocked, review and
+merging work items plus its ten latest recorded merges. Titles come from
+itsaplan; one small GitHub query per live PR reads checks, the configured
+reviewer check (or human review decision) and queue state. No issue bodies,
+check output, transcripts, tokens or session contents enter the response.
+
+The connector refreshes its cached snapshot every 30 seconds with a 20-second
+read deadline and at most eight concurrent work-item reads. Reads are capped
+at 500 assigned issues per project, 100 live work items and ten merges; a full
+issue listing or excess live work fails the refresh instead of showing an
+incomplete count. Each snapshot expires after 30 seconds and stays available
+until then during a refresh;
+a failed refresh clears it and `/status` returns 503. Visitors trigger no
+upstream reads. The landing server has no credentials and proxies only this
+snapshot with a two-second timeout. Its CSP permits only same-origin fetches.
+
+**Why.** The connector already has the store and coordinator read access.
+The landing chart owns a status-only Service and Cilium ingress grant in the
+connector namespace, so removing the page also removes its access. The
+landing pods can reach only this application port, with DNS from the cluster
+baseline. The edge's Authentik sign-in and route stay unchanged.
+
+### Authentication
+
 | Who | How |
 | --- | --- |
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
