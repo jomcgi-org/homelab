@@ -37,7 +37,7 @@ router must reserve these three leases.
 | Distribution | k3s `v1.37.2+k3s1`, three servers, embedded etcd | In-place on the existing Ubuntu installs; tolerates one node loss. Agent Substrate needs Kubernetes 1.37+ |
 | Certificates API | `certificates.k8s.io/v1beta1` served | Substrate's podcertificate controller uses the v1beta1 ClusterTrustBundle and PodCertificateRequest clients |
 | Sandboxing | gVisor `release-20261102.0` (`runsc`), RuntimeClass `gvisor` | The same release Substrate's SandboxConfig pins. Substrate stages its own runsc inside worker pods; the RuntimeClass serves other sandboxed pods |
-| Agent Substrate | `v1.0.0` (commit `b34fbee`), images pinned by digest; gVisor class only. The version is set in `substrate/render-upstream.sh` and `bootstrap-substrate.sh` | Latest release. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run. Installed by ArgoCD from rendered manifests, not `ate-setup` ([Agent Substrate](#agent-substrate)) |
+| Agent Substrate | kagent-dev fork `1.0.1` (commit `7ce6f43`): its Helm charts rendered into Git, images pinned by digest; gVisor class only. The version is set in `substrate/render-upstream.sh` and `bootstrap-substrate.sh` | The build kagent v1.0.1 compiles against; it adds the Kubernetes-Secret credential provider and the agentgateway egress gateway kagent injects credentials through. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run ([Agent Substrate](#agent-substrate)) |
 | Node sysctls | proxy ARP/NDP, larger neighbour table, inotify | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
 | Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 was validated here with `cilium connectivity test` before default-deny; rerunning it now needs a temporary policy exempting the `cilium-test-*` namespaces |
 | Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
@@ -152,38 +152,61 @@ kubectl --kubeconfig ~/.kube/factory.yaml -n argocd port-forward svc/argocd-serv
 
 ## Agent Substrate
 
-The combination in use is Kubernetes `v1.37.2+k3s1`, Agent Substrate `v1.0.0`
-and gVisor `release-20261102.0`. Substrate needs Kubernetes 1.37 or later with
+The combination in use is Kubernetes `v1.37.2+k3s1`, Agent Substrate `1.0.1`
+from the [kagent-dev fork](https://github.com/kagent-dev/substrate) and gVisor
+`release-20261102.0`. kagent v1.0.1 builds against the fork, not upstream
+agent-substrate/substrate. Substrate needs Kubernetes 1.37 or later with
 `certificates.k8s.io/v1beta1` served. Its atelet downloads the gVisor release
 named in the `gvisor-default` SandboxConfig (version `v7`, sha256-pinned) and
 runs it inside each worker pod; the nodes' own runsc is not used by Substrate.
 
-`ate-setup` supports only kind and GKE: GKE means GCS snapshots and Google
-service accounts, kind means a local registry. The factory therefore takes the
-kind profile's shape with release images:
+The fork publishes four Helm charts: `substrate-crds`, `substrate-podcert`,
+`substrate-atelet` and `substrate`. They take one image tag for every
+component, and ArgoCD here has no post-render step, so a Helm source could not
+pin images by digest. The charts are rendered into Git instead:
 
-- `projects/platform-factory/substrate/render-upstream.sh` copies the
-  release's install manifests into `resources/upstream/`, with each image
-  pinned to its digest. Rerun it to upgrade, then review the diff.
-- `resources/` patches them for this cluster: S3 snapshots in an in-cluster
-  rustfs (`snapshot-store.yaml`), the bundled PostgreSQL with its role setup
-  in a postStart hook, ate-api-server's configuration, OpenTelemetry push off
-  (Prometheus `/metrics` stays on), and Cilium egress allowlists.
-- `bootstrap-substrate.sh` creates the generated Secrets: the podcertificate
-  signer CAs, the actor identity CA and JWT keys, the egress MITM CA and the
-  snapshot store's key. They exist only in the cluster. The CAs expire on
-  2027-11-13, a year after creation. Substrate v1.0.0 has no CA rotation
-  command, so rotation is tracked in
+- `projects/platform-factory/substrate/render-upstream.sh` pulls each chart
+  at its version, checks its OCI digest, renders it with `values/` into
+  `resources/upstream/`, and pins every image to its digest. It also copies
+  the fork's bundled PostgreSQL and role script, which the charts leave out.
+  To upgrade, rerun it and review the diff.
+- `values/` holds the settings kagent needs. Both charts get the preview
+  gates `PerTemplateSnapshotLocation` and `GoldenEgressPolicy`. The router's
+  ingress allowlist and the API's bootstrap owners name
+  `spiffe://cluster.local/ns/kagent/sa/kagent-controller`. The `k8s.io`
+  credential provider grants the `kagent` atespace the `kagent` namespace's
+  Secrets. atelet is its own release.
+- `resources/` adds what the charts don't cover: S3 snapshots in an
+  in-cluster rustfs (`snapshot-store.yaml`, bucket `ate-snapshots`, until
+  Garage replaces it), the PostgreSQL connection-string Secrets (no
+  passwords, since both logins use pod certificates), the role setup in a
+  postStart hook, ate-api-server's authentication config and Cilium
+  allowlists. OpenTelemetry push is off; Prometheus `/metrics` stays on.
+- `bootstrap-substrate.sh` creates the generated Secrets with the fork's
+  `kubectl-ate`: the podcertificate signer CAs, the actor identity CA and JWT
+  keys, the egress MITM CA (`egress-mitm-ca-pool`, published to actors as the
+  `egress-mitm.ate.dev` trust bundle) and the snapshot store's key. They
+  exist only in the cluster, and the fork uses the same names and formats as
+  upstream. The CAs expire on 2027-11-13, a year after creation. Substrate 1.0
+  has no CA rotation command, so rotation is tracked in
   [#7831](https://github.com/jomcgi-org/homelab/issues/7831).
 
 Control plane: `ate-system` (ate-api-server, ate-controller, ate-idp-server,
-atenet-router, atenet-egress, the atelet DaemonSet, postgres and rustfs) and
-`podcertificate-controller-system`. WorkerPools may live in any namespace.
-The `substrate-workers` cluster-wide policy lets their pods reach only the
-egress gateway. atelet reaches workers over a unix socket on the node.
-ate-controller limits their ingress to atenet-router. The egress credential
-provider is off. Actors have no internet egress: the gateway's policy allows
-only ate-api-server.
+atenet-router and atenet-egress on agentgateway, k8s-credential-provider, the
+atelet DaemonSet, postgres and rustfs) and `podcertificate-controller-system`.
+WorkerPools may live in any namespace. The `substrate-workers` cluster-wide
+policy lets their pods reach only the egress gateway. atelet reaches workers
+over a unix socket on the node. ate-controller limits their ingress to
+atenet-router. The gateway reaches ate-api-server and the credential
+provider. The credential provider reaches only the Kubernetes API, and only
+the gateway can reach it. Actors have no other egress until a destination is
+allowed in `network-policy.yaml`.
+
+kagent's installation (step 5 of `projects/factory/ARCHITECTURE.md`) must
+create the `kagent` namespace labelled `ate.dev/api-access=true`, since
+Substrate's API admits only namespaces with that label. It must also run the
+controller as ServiceAccount `kagent-controller` and give it Cilium egress to
+`api.ate-system.svc:443` and the router.
 
 Two broad grants are acceptable while only admins hold kubeconfigs. Revisit
 both before actors get internet egress or agents get cluster credentials:
@@ -202,14 +225,21 @@ Verify an install:
 export KUBECONFIG=~/.kube/factory.yaml
 kubectl -n ate-system get pods          # all Running and Ready
 kubectl get sandboxconfig gvisor-default # DEFAULT v7
-kubectl get clustertrustbundles | grep podcert.ate.dev
+kubectl get clustertrustbundles | grep -e podcert.ate.dev -e egress-mitm
 # kubectl-ate from the same release, then a throwaway actor:
 kubectl ate create atespace substrate-smoke
-kubectl apply -f <WorkerPool in namespace substrate-smoke, workerImage ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.0@sha256:...>
-kubectl ate create actor-template -f <template>   # wait for GOLDEN TAG
+kubectl apply -f <WorkerPool in namespace substrate-smoke, workerImage ghcr.io/kagent-dev/substrate/ateworker-gvisor:v1.0.1@sha256:...>
+kubectl ate --preview create actor-template -f <template>   # wait for GOLDEN TAG
 kubectl ate create actor smoke-1 -a substrate-smoke --template smoke
 kubectl ate proxy actor smoke-1 -a substrate-smoke # then send it a request
 ```
+
+To check credential injection, give the actor an egress policy
+(`kubectl ate create egress-policy`) with an `http` rule for an in-cluster
+echo server. Its `replaceHeaders` effect should name an
+`ate-secret://k8s.io/default/<namespace>/<secret>/<key>` that the actor's
+atespace is granted in `values/substrate.yaml`. The echo server should receive
+the Secret's value, and the actor should hold only its placeholder.
 
 Check Hubble for drops while it runs (see Network policy). Then delete the
 actor, the template, the atespace, the WorkerPool and the namespace.
@@ -278,8 +308,8 @@ These come from the #7817 step 1 checklist:
 
 - Durable Agent Substrate state: its PostgreSQL and snapshot store are on
   local-path volumes on one node each, with no backup.
-- Actor internet egress and the egress credential provider, with the
-  credential broker.
+- Actor internet egress and the credential broker. The credential provider
+  runs, but grants only the `kagent` namespace.
 - Replicated storage, and backup and restore: off-node etcd snapshots with a
   copy of the cluster token, and Substrate's PostgreSQL and snapshots, the
   first state here that Git cannot recreate.
