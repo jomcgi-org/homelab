@@ -194,10 +194,17 @@ async def test_prompt_routing(mode, routing_window, monkeypatch):
 @pytest.mark.asyncio
 async def test_production_templates_preserve_payloads(mode, routing_window):
     # Keep the real templates: sentinel substitution alone hides missing real
-    # placeholders. Assert data flow without copying or pinning prompt prose.
+    # placeholders and table miswiring. Check data flow and distinct modes
+    # without copying or pinning prompt prose.
     messages, payloads, responses = routing_window
     caller = _FakeCaller(responses=responses)
     result = await digest_window(messages, mode, caller)
+
+    other_mode = "summary" if mode == "decisions" else "decisions"
+    other_caller = _FakeCaller(responses=responses)
+    await digest_window(messages, other_mode, other_caller)
+    for mine, theirs in zip(caller.prompts, other_caller.prompts, strict=True):
+        assert mine != theirs
 
     chunked = len(payloads) == 2
     assert len(caller.prompts) == (3 if chunked else 1)
