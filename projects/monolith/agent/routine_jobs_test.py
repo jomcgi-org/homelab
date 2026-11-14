@@ -292,51 +292,6 @@ def test_guarded_unknown_hold_does_not_touch_successor(monkeypatch, tmp_path):
     )
 
 
-def test_update_job_payload_replaces_only_payload(monkeypatch, tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'routine-jobs.db'}")
-    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
-    with Session(engine) as session:
-        session.execute(
-            text(
-                """
-                CREATE TABLE routine_jobs (
-                    name TEXT PRIMARY KEY,
-                    routine_kind TEXT NOT NULL,
-                    interval_secs INTEGER,
-                    payload TEXT,
-                    locked_by TEXT
-                )
-                """
-            )
-        )
-        session.execute(
-            text(
-                """
-                INSERT INTO routine_jobs
-                    (name, routine_kind, interval_secs, payload, locked_by)
-                VALUES
-                    ('scout', 'kg-drain', 3600, :payload, 'holder')
-                """
-            ),
-            {"payload": json.dumps({"mode": "repo-diff", "last_sha": None})},
-        )
-        session.commit()
-
-    assert routine_jobs.update_job_payload(
-        "scout", {"mode": "repo-diff", "last_sha": "a" * 40}
-    )
-
-    with Session(engine) as session:
-        row = session.execute(text("SELECT * FROM routine_jobs")).one()
-    assert json.loads(row.payload) == {
-        "mode": "repo-diff",
-        "last_sha": "a" * 40,
-    }
-    assert row.routine_kind == "kg-drain"
-    assert row.interval_secs == 3600
-    assert row.locked_by == "holder"
-
-
 def test_unknown_job_hold_survives_reclaim_and_preserves_recurring_payload(
     monkeypatch, tmp_path
 ):
@@ -588,7 +543,7 @@ def test_lookalike_or_untracked_worker_is_not_retired(worker_database, unknown):
     )
 
 
-@pytest.mark.parametrize("mutation", ["finish", "defer", "deregister", "payload"])
+@pytest.mark.parametrize("mutation", ["finish", "defer", "deregister"])
 def test_stale_claim_owner_cannot_mutate_reassigned_job(freshness_engine, mutation):
     _queue_freshness_job(
         freshness_engine,
@@ -609,9 +564,6 @@ def test_stale_claim_owner_cannot_mutate_reassigned_job(freshness_engine, mutati
         ),
         "deregister": lambda: routine_jobs.deregister_job(
             "owned", expected_holder="luna-drainer:old:0"
-        ),
-        "payload": lambda: routine_jobs.update_job_payload(
-            "owned", {"stale": True}, expected_holder="luna-drainer:old:0"
         ),
     }
     with Session(freshness_engine) as db:

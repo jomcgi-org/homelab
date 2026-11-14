@@ -3309,7 +3309,12 @@ def test_settled_turn_does_not_release_expired_job_lease_before_finalization(
         "knowledge.extraction.verify_on_main", lambda sha: verified.append(sha)
     )
     _queued_job(admission_database, "postprocessing")
-    assert routine_jobs.update_job_payload("postprocessing", {"mode": "repo-diff"})
+    with Session(admission_database) as db:
+        db.execute(
+            text("UPDATE routine_jobs SET payload = :payload WHERE name = :name"),
+            {"name": "postprocessing", "payload": json.dumps({"mode": "repo-diff"})},
+        )
+        db.commit()
     claim = _admitted_claim("owner")
     with Session(admission_database) as db:
         agent = store.create_session(

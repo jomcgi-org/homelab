@@ -637,25 +637,6 @@ def defer_job(name: str, seconds: int, *, expected_holder: str | None = None) ->
     return result.rowcount > 0
 
 
-def update_job_payload(
-    name: str, payload: dict, *, expected_holder: str | None = None
-) -> bool:
-    """Replace a job payload, preserving the rest of its claim state."""
-    engine = get_engine()
-    sqlite = engine.dialect.name == "sqlite"
-    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
-    payload_expr = ":payload" if sqlite else "CAST(:payload AS JSONB)"
-    sql = text(
-        f"UPDATE {table} SET payload = {payload_expr} WHERE name = :name AND routine_kind != '_drainer-worker'"
-    )
-    with Session(engine) as session:
-        if not lock_claim(session, name, expected_holder):
-            return False
-        result = session.execute(sql, {"name": name, "payload": json.dumps(payload)})
-        session.commit()
-    return result.rowcount > 0
-
-
 DRAINER_WORKER_COUNT = 2
 _DRAINER_WORKER_KIND = "_drainer-worker"
 _DRAINER_WORKER_PREFIX = "_drainer-worker:"

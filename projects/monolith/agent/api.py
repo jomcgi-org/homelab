@@ -56,7 +56,6 @@ _FACTORY_EXPORTS = {
     "hold_job_for_unknown_outcome": "agent.routine_jobs",
     "claim_job": "agent.routine_jobs",
     "defer_job": "agent.routine_jobs",
-    "update_job_payload": "agent.routine_jobs",
     "lock_claim": "agent.routine_jobs",
     "complete_job": "agent.routine_jobs",
     "deregister_job": "agent.routine_jobs",
