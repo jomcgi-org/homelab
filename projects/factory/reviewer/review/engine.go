@@ -529,8 +529,10 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		created, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 			Status: "in_progress", StartedAt: &now,
-			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: keepEnqueueHistory(progressSummary(b, nil, recorded{}, ""), run),
-				Text: encodeState(st)},
+			Output: &github.CheckRunOutput{
+				Title: "Review in progress", Summary: keepEnqueueHistory(progressSummary(b, nil, recorded{}, ""), run),
+				Text: encodeState(st),
+			},
 		})
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
