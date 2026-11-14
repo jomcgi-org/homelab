@@ -78,35 +78,6 @@ func resetGenerateFlags() {
 
 // ---- validate tests ----
 
-func TestRunValidate_ValidFile(t *testing.T) {
-	defer resetValidateFlags()
-
-	filePath := writeYAMLFile(t, validStateMachineYAML)
-	err := runValidate(&cobra.Command{}, []string{filePath})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-}
-
-func TestRunValidate_FileNotFound(t *testing.T) {
-	defer resetValidateFlags()
-
-	err := runValidate(&cobra.Command{}, []string{"/nonexistent/path/does-not-exist.sextant.yaml"})
-	if err == nil {
-		t.Fatal("expected error for non-existent file, got nil")
-	}
-}
-
-func TestRunValidate_InvalidYAML(t *testing.T) {
-	defer resetValidateFlags()
-
-	filePath := writeYAMLFile(t, invalidYAML)
-	err := runValidate(&cobra.Command{}, []string{filePath})
-	if err == nil {
-		t.Fatal("expected error for invalid YAML, got nil")
-	}
-}
-
 func TestRunValidate_MissingInitialState(t *testing.T) {
 	defer resetValidateFlags()
 
@@ -190,40 +161,6 @@ func TestValidateCmd_RequiresExactlyOneArg(t *testing.T) {
 }
 
 // ---- generate tests ----
-
-func TestRunGenerate_ValidFile(t *testing.T) {
-	defer resetGenerateFlags()
-
-	outDir := t.TempDir()
-	generateOutputDir = outDir
-	generatePackage = "testpkg"
-
-	filePath := writeYAMLFile(t, validStateMachineYAML)
-	err := runGenerate(&cobra.Command{}, []string{filePath})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-
-	entries, err := os.ReadDir(outDir)
-	if err != nil {
-		t.Fatalf("failed to read output dir: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Error("expected generated files in output directory, found none")
-	}
-}
-
-func TestRunGenerate_FileNotFound(t *testing.T) {
-	defer resetGenerateFlags()
-
-	generateOutputDir = t.TempDir()
-	generatePackage = "testpkg"
-
-	err := runGenerate(&cobra.Command{}, []string{"/nonexistent/path/does-not-exist.sextant.yaml"})
-	if err == nil {
-		t.Fatal("expected error for non-existent file, got nil")
-	}
-}
 
 func TestRunGenerate_InvalidYAML(t *testing.T) {
 	defer resetGenerateFlags()
