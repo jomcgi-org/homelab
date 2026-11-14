@@ -702,7 +702,9 @@ image's psql before it writes anything. Recover in this order:
    the stored OIDC settings before it accepts new ones, so they cannot simply
    be overwritten), generates new keys, removes the annotation and restarts
    the api and worker, whose running pods would otherwise keep using the old
-   keys. The bootstrap then writes the OIDC settings afresh through the new
+   keys. The keys' generation ID is stored on the Secret with them and set on
+   both pod templates on every run, so a restart interrupted by a failure
+   happens on the next sync. The bootstrap then writes the OIDC settings afresh through the new
    pods. Every session ends, so people sign in again. Anything else encrypted
    with the old key stays unreadable until it is entered again in the app:
    mail, Google, SCIM and bot settings, workspace SCIM tokens, Git
