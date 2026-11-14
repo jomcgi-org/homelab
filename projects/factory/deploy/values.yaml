@@ -28,6 +28,12 @@ kagent:
   # repository binding's.
   rbac:
     namespaces: [kagent, factory-r-homelab]
+  # The controller's metrics for Prometheus
+  # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
+  # whose subject may GET /metrics.
+  controller:
+    metrics:
+      enabled: true
   # Every agent runtime's limits, the codex agent's size (kagent 1.0.1 sets
   # one for all Agents).
   config:

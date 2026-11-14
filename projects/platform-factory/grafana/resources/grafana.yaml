@@ -41,6 +41,16 @@ spec:
     spec:
       serviceAccountName: grafana
       automountServiceAccountToken: false
+      # node-1 is the operator's workstation.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: [node-1]
       securityContext:
         runAsNonRoot: true
         runAsUser: 472
