@@ -5,8 +5,9 @@
 # the passwords. Both steps are idempotent.
 #
 # ArgoCD owns the Secrets as empty placeholders and ignores their data. Only
-# the two connection strings go to the kagent namespace; the passwords'
-# source, the superuser and the backup key stay in kagent-pg.
+# the two connection strings go to the kagent namespace, from the
+# kagent-postgres-secrets Application (../kagent/); the passwords' source,
+# the superuser and the backup key stay in kagent-pg.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -15,24 +16,6 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
-type: Opaque
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kagent-postgres-owner
-  namespace: kagent
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-type: Opaque
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kagent-postgres-readwrite
-  namespace: kagent
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
 type: Opaque
 ---
 # kagent-pg's Garage key, filled by garage-init
@@ -103,42 +86,11 @@ rules:
     resourceNames: [kagent-pg-s3]
     verbs: [get]
 ---
-# The connection strings in kagent, the only names the setup Job may touch
-# there.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: kagent-pg-setup
-  namespace: kagent
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-rules:
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [kagent-postgres-owner, kagent-postgres-readwrite]
-    verbs: [get, update]
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kagent-pg-setup
   namespace: kagent-pg
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: kagent-pg-setup
-subjects:
-  - kind: ServiceAccount
-    name: kagent-pg-setup
-    namespace: kagent-pg
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: kagent-pg-setup
-  namespace: kagent
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 roleRef:
@@ -258,7 +210,9 @@ spec:
           emptyDir: {}
 ---
 # Waits (up to 30 minutes) for garage-init to fill kagent-pg-s3 before the
-# Cluster (wave 0) is created. garage-init runs every 10 minutes.
+# Cluster (wave 0) is created. garage-init runs every 10 minutes. If the
+# deadline passes, the sync fails and ArgoCD does not retry the same
+# revision: sync kagent-postgres again once the key is there (README).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -273,7 +227,8 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: kagent-pg-setup
+        # Its own label: API-server egress only (network-policy.yaml).
+        app.kubernetes.io/name: kagent-pg-wait-for-key
     spec:
       serviceAccountName: kagent-pg-setup
       restartPolicy: OnFailure

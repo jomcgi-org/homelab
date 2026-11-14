@@ -63,7 +63,9 @@ def call(method, path, body=None):
         with urllib.request.urlopen(req, context=CTX, timeout=30) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        if e.code == 404 and method == "GET":
+        # 403: the Role granting this name is not there yet (it comes from
+        # another Application), the same as a missing Secret.
+        if e.code in (403, 404) and method == "GET":
             return None
         raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
 
@@ -77,6 +79,22 @@ def get(name, namespace=NAMESPACE):
     if secret is None:
         raise SystemExit(f"{namespace}/{name} is missing; ArgoCD creates it")
     return secret
+
+
+def get_eventually(name, namespace, timeout=900):
+    """Wait for a Secret another Application creates, for up to timeout s."""
+    deadline = time.monotonic() + timeout
+    while True:
+        secret = call("GET", secret_path(name, namespace))
+        if secret is not None:
+            return secret
+        if time.monotonic() > deadline:
+            raise SystemExit(
+                f"{namespace}/{name} or its Role is still missing; "
+                "the kagent-postgres-secrets Application creates them"
+            )
+        print(f"waiting for {namespace}/{name} (kagent-postgres-secrets)")
+        time.sleep(10)
 
 
 def b64(value):
@@ -101,7 +119,7 @@ def main():
         password = base64.b64decode(data[key]).decode()
         url = f"postgres://{login}:{password}@{HOST}:5432/{DATABASE}?sslmode=require"
         want = {url_key: b64(url)}
-        current = get(name, TARGET_NAMESPACE)
+        current = get_eventually(name, TARGET_NAMESPACE)
         if current.get("data") != want:
             current["data"] = want
             call("PUT", secret_path(name, TARGET_NAMESPACE), current)
@@ -117,7 +135,10 @@ def wait_for_key():
         if "AWS_SECRET_ACCESS_KEY" in data:
             print(f"{NAMESPACE}/kagent-pg-s3 has a key")
             return
-        print(f"waiting for garage-init to fill {NAMESPACE}/kagent-pg-s3")
+        print(
+            f"waiting for garage-init (CronJob garage/garage-bootstrap, every "
+            f"10 minutes) to fill {NAMESPACE}/kagent-pg-s3"
+        )
         time.sleep(15)
 
 
