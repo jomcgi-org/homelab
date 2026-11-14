@@ -803,18 +803,23 @@ Pod may run as:
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
 kubectl -n factory port-forward deploy/factory-broker 8081:8081 &
+sleep 2
 TOKEN=$(kubectl -n factory create token factory-operator --audience factory-broker --duration 10m)
 # Prints verification_url and user_code: open the URL, sign in to the
 # ChatGPT account the factory uses, and enter the code.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" localhost:8081/admin/codex/login
-# login "succeeded" and grant_state "present" once approved.
+# login "granted" and grant_state "present" once approved.
 curl -s -H "Authorization: Bearer $TOKEN" localhost:8081/admin/codex/login
 # Force a refresh, e.g. to check the grant after an account change.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" localhost:8081/admin/codex/refresh
+kill %1
 ```
 
-The ChatGPT account needs device-code sign-in for Codex enabled in its
-security settings.
+The broker waits up to 16 minutes for approval, longer than the token lives:
+mint a new token if a status call returns 401. The login state is held in
+memory, so a broker restart resets it to `none`; a stored grant survives in
+its Secret. The ChatGPT account needs device-code sign-in for Codex enabled
+in its security settings.
 
 ## Connector
 
