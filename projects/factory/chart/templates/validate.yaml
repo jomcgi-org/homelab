@@ -12,6 +12,11 @@ instead of silently rendering nothing.
 {{- if .Values.providers }}
 {{- fail "providers are not implemented in this chart version; agents use the broker's relay" }}
 {{- end }}
+{{- with .Values.broker.operatorServiceAccount }}
+{{- if or (has . (list "default" (include "factory.brokerName" $) (include "factory.connectorName" $))) (hasPrefix "factory-itsaplan" .) }}
+{{- fail (printf "broker.operatorServiceAccount %s is a ServiceAccount the chart's Pods use; name a separate one" .) }}
+{{- end }}
+{{- end }}
 {{- $runtime := .Values.kagent.config.runtimeDefaults }}
 {{- $watched := .Values.kagent.rbac.namespaces }}
 {{- $seen := dict }}

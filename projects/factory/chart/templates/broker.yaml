@@ -69,9 +69,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
 ---
 {{- if $b.operatorServiceAccount }}
-# Operators' identity for the admin endpoints: they mint a short-lived token
-# with `kubectl create token ... --audience factory-broker`. Nothing runs as
-# it (factory-broker-operator-pods below).
+# Operators' identity for the admin endpoints: they mint a token with
+# `kubectl create token ... --audience factory-broker --duration 10m`.
+# Nothing runs as it (factory-broker-operator-pods below).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -83,14 +83,17 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
 automountServiceAccountToken: false
 ---
-# A Pod running as the operators' ServiceAccount could log in and mint GitHub
-# tokens from inside the cluster; only operators hold its tokens.
+# A Pod running as the operators' ServiceAccount could start a device login
+# and replace the Codex grant with another account's; only operators hold its
+# tokens. Applied before the ServiceAccount exists.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
   name: factory-broker-operator-pods
   labels:
     {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -114,6 +117,8 @@ metadata:
   name: factory-broker-operator-pods
   labels:
     {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
 spec:
   policyName: factory-broker-operator-pods
   validationActions: [Deny]

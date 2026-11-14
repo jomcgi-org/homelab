@@ -192,15 +192,16 @@ broker:
   # pre-created empty; the broker's device login fills it.
   grant: codex-primary
   # Projected ServiceAccount token subjects (TokenReview usernames,
-  # system:serviceaccount:<ns>:<name>) allowed to log in or refresh the grant,
-  # and to fetch connector GitHub tokens. Empty: nobody yet.
+  # system:serviceaccount:<ns>:<name>): adminSubjects may start the device
+  # login and force a refresh of the grant, connectorSubjects may fetch
+  # connector GitHub tokens. Empty: nobody yet.
   adminSubjects: []
   connectorSubjects: []
   # A ServiceAccount in the broker's namespace for operators, who mint a
-  # short-lived token for it (audience factory-broker) to call the admin
-  # endpoints, such as the device login. The chart creates it and adds its
-  # subject to adminSubjects; a ValidatingAdmissionPolicy keeps any Pod from
-  # running as it. Empty: none.
+  # token for it (audience factory-broker, with a short --duration) to call
+  # the admin endpoints. The chart creates it and adds its subject to
+  # adminSubjects; a ValidatingAdmissionPolicy keeps any Pod from running as
+  # it. It must not be a ServiceAccount the chart's own Pods use. Empty: none.
   operatorServiceAccount: ""
   # The factory GitHub App (jomcgi-factory) from 1Password item
   # k8s-homelab/factory-github-app (app-id, installation-id, private-key).
