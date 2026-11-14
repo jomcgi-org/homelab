@@ -58,8 +58,6 @@ js_library(
     srcs = glob(["src/**/*.test.tsx"]) + [
         "src/setup.ts",
         "vitest.config.ts",
-        "//projects/factory-landing:server.d.mts",
-        "//projects/factory-landing:server.mjs",
     ],
     deps = [
         ":node_modules/@testing-library/dom",
@@ -69,6 +67,7 @@ js_library(
         ":node_modules/happy-dom",
         ":node_modules/vitest",
         ":src",
+        "//projects/factory-landing:server",
     ],
 )
 
@@ -84,4 +83,5 @@ typescript_bin.tsc_test(
     args = ["--noEmit"],
     chdir = package_name(),
     data = [":test_src"],
+    include_transitive_types = True,
 )
