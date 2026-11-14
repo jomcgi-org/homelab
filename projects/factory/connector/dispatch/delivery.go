@@ -46,8 +46,8 @@ type ReviewPolicy struct {
 	// ReviewerCheck is the independent reviewer's check. Without one, a
 	// trusted reviewer's approval of the head stands in for it.
 	ReviewerCheck *Check
-	// HoldLabels hold a PR for a person: it is not enqueued. A hold on a
-	// queued PR fails its merge group's review check instead.
+	// HoldLabels hold a PR for a person: it is neither revised nor enqueued.
+	// A hold on a queued PR fails its merge group's review check instead.
 	HoldLabels []string
 	// MaxReviewRounds bounds the connector's review rounds per work item.
 	MaxReviewRounds int
@@ -697,6 +697,12 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status,
 ) (started bool, err error) {
 	p := &b.Review
+	// Holds apply to the whole head, not just the event that carries one.
+	// Recheck them on every poll, including after an ejection returned the
+	// item to review. Leave events unseen so they can act once the hold clears.
+	if p.held(d.Labels) != "" || reviewerHumanHold(p, d.HeadSHA, checks) {
+		return false, nil
+	}
 	var cands []candidate
 	for _, rv := range d.Reviews {
 		if rv.State != "CHANGES_REQUESTED" {
@@ -724,10 +730,6 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		}
 		if !named {
 			continue
-		}
-		if r := p.ReviewerCheck; r != nil && c.Name == r.Name && c.AppID == r.AppID && r.AppID != 0 &&
-			strings.Contains(c.Summary, humanHoldMarker) {
-			continue // held for a person: a revision round cannot clear it
 		}
 		cands = append(cands, candidate{
 			ev: store.ReviewEvent{
@@ -899,7 +901,8 @@ func roundPrompt(p *ReviewPolicy, wi *store.WorkItem, pr *store.PullRequest, d *
 // writeThreads appends the unresolved review threads, keeping only comments
 // by trusted reviewer logins. The repository is public, so anyone can
 // comment; the rest never reaches an agent holding a write token, and the
-// text says how many comments were left out.
+// text says how many comments were left out. Thread paths are chosen by the
+// change author, so even a trusted comment does not authorize their text.
 func writeThreads(s *strings.Builder, threads []github.ReviewThread, p *ReviewPolicy) {
 	n, omitted := 0, 0
 	for _, t := range threads {
@@ -921,10 +924,7 @@ func writeThreads(s *strings.Builder, threads []github.ReviewThread, p *ReviewPo
 			s.WriteString("\n### Unresolved review threads\n")
 		}
 		n++
-		where := t.Path
-		if t.Line > 0 {
-			where += ":" + strconv.Itoa(t.Line)
-		}
+		where := "Review thread (file path omitted)"
 		if t.Outdated {
 			where += " (outdated)"
 		}
