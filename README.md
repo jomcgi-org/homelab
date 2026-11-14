@@ -67,6 +67,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
 ├── factory/          #   Reusable software factory: umbrella chart, connector and credential broker (#7817)
 ├── factory-cluster/  #   Factory home cluster: k3s node bootstrap, GitOps handoff and ArgoCD root (#7817)
+├── factory-landing/  #   The factory's private landing page at factory.jomcgi.dev
 └── platform-factory/ #   Factory home cluster infrastructure Applications (ArgoCD, 1Password, Cloudflare)
 bazel/                # Build infrastructure (rules, tools, images)
 docs/                 # Cross-domain documentation and runbooks
