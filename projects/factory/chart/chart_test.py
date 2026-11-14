@@ -698,6 +698,43 @@ def test_broker_secret_writes_are_confined() -> None:
     }
 
 
+def test_operator_service_account_is_optional() -> None:
+    def admin_subjects(docs: list[dict[str, Any]]) -> list[str]:
+        cm = _in(docs, "ConfigMap", "factory", "factory-broker")
+        return yaml.safe_load(cm["data"]["config.yaml"])["tokenReview"]["adminSubjects"]
+
+    docs = _render(["broker.operatorServiceAccount="])
+    assert admin_subjects(docs) == []
+    assert not [
+        d for d in docs if d["metadata"]["name"] == "factory-broker-operator-pods"
+    ]
+
+    subject = "system:serviceaccount:factory:factory-operator"
+    docs = _render(
+        [
+            "broker.operatorServiceAccount=factory-operator",
+            f"broker.adminSubjects={{{subject}}}",
+        ]
+    )
+    # Listed once, though also named in adminSubjects.
+    assert admin_subjects(docs) == [subject]
+    sa = _in(docs, "ServiceAccount", "factory", "factory-operator")
+    assert sa["automountServiceAccountToken"] is False
+    policy = _one(docs, "ValidatingAdmissionPolicy", "factory-broker-operator-pods")
+    assert policy["spec"]["matchConstraints"]["namespaceSelector"] == {
+        "matchLabels": {"kubernetes.io/metadata.name": "factory"}
+    }
+    (validation,) = policy["spec"]["validations"]
+    assert "!= 'factory-operator'" in validation["expression"]
+    binding = _one(
+        docs, "ValidatingAdmissionPolicyBinding", "factory-broker-operator-pods"
+    )
+    assert binding["spec"] == {
+        "policyName": "factory-broker-operator-pods",
+        "validationActions": ["Deny"],
+    }
+
+
 def test_binding_reader_follows_the_credential_provider_switch() -> None:
     docs = _render(["substrate.credentialProvider.secretReaderBinding=false"])
     assert not [

@@ -387,6 +387,11 @@
             "pattern": "^system:serviceaccount:[^:]+:[^:]+$"
           }
         },
+        "operatorServiceAccount": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
         "githubApp": {
           "type": "object",
           "required": ["enabled"],
