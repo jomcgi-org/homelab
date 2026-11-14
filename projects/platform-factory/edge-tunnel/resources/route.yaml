@@ -24,6 +24,7 @@ spec:
   hostnames:
     - factory.jomcgi.dev
     - factory-auth.jomcgi.dev
+    - factory-plan.jomcgi.dev
   # matches and weight are the schema defaults, stated so ArgoCD's diff owns
   # them.
   rules:

@@ -172,7 +172,150 @@
       }
     },
     "itsaplan": {
-      "$ref": "#/definitions/notYet"
+      "description": "itsaplan Community: the chart's own templates against the upstream images.",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "namespace": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "pattern": "^[a-z0-9.-]+$" },
+        "apiPath": {
+          "description": "The api's path on the web's host; / is the web app's.",
+          "type": "string",
+          "pattern": "^/[a-z0-9-]+$"
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["api", "web", "worker", "jobs"],
+          "properties": {
+            "api": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "web": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "worker": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "jobs": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["discoveryUrl", "clientId", "clientSecretName"],
+          "properties": {
+            "discoveryUrl": {
+              "type": "string",
+              "pattern": "^https://[^/]+/.*/\\.well-known/openid-configuration$"
+            },
+            "clientId": { "type": "string", "minLength": 1 },
+            "label": { "type": "string", "maxLength": 60 },
+            "clientSecretName": { "type": "string", "minLength": 1 }
+          }
+        },
+        "admin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["email", "name"],
+          "properties": {
+            "email": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+$" },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        },
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["team", "project", "agents"],
+          "properties": {
+            "team": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "slug"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+                "slug": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+                }
+              }
+            },
+            "project": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "name"],
+              "properties": {
+                "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,9}$" },
+                "name": { "type": "string", "minLength": 1 },
+                "description": { "type": "string", "maxLength": 2000 }
+              }
+            },
+            "agents": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["username", "name"],
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9.-]{1,40}$"
+                  },
+                  "name": { "type": "string", "minLength": 1 },
+                  "triggerOnAssign": { "type": "boolean" },
+                  "triggerOnMention": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "api": { "type": "object" },
+            "web": { "type": "object" },
+            "worker": { "type": "object" },
+            "jobs": { "type": "object" }
+          }
+        },
+        "route": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "gateway": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "namespace"],
+              "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
     },
     "broker": {
       "description": "The credential broker (projects/factory/broker).",

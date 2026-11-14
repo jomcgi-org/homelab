@@ -1,0 +1,354 @@
+{{- if .Values.itsaplan.enabled }}
+{{- /*
+itsaplan Community (ARCHITECTURE.md, "itsaplan"): the api, which applies the
+migrations in an init container before it starts, the web app and the worker,
+from the upstream images. Generated secrets come from itsaplan-jobs.yaml's
+secret-init; the database, S3 key and OIDC client secret from outside the
+chart; the instance's admin, sign-in settings, project and agents from its
+bootstrap. The namespace is not rendered here: the broker's template owns it,
+and the Applications that fill its Secrets create it.
+*/}}
+{{- $i := .Values.itsaplan }}
+{{- $ns := $i.namespace }}
+{{- $name := include "factory.itsaplanName" . }}
+{{- /* The ConfigMap's data; its hash rolls the pods when it changes. */}}
+{{- $env := dict
+  "NODE_ENV" "production"
+  "API_URL" (include "factory.itsaplanAPIURL" .)
+  "APP_URL" (include "factory.itsaplanAppURL" .)
+  "API_PORT" "3000"
+  "PORT" "3001"
+  "HOSTNAME" "0.0.0.0"
+  "SERVICE_URL_API" (include "factory.itsaplanInternalURL" .)
+  "S3_FORCE_PATH_STYLE" "true"
+  "TELEMETRY_DISABLED" "1"
+  "DO_NOT_TRACK" "1"
+  "CLIENT_IP_HEADER" "cf-connecting-ip"
+  "SKIP_PRE_MIGRATION_BACKUP" "1"
+  "PRIVACY_URL" ""
+  "TERMS_URL" ""
+}}
+{{- range $k, $v := $i.env }}
+{{- $_ := set $env $k (toString $v) }}
+{{- end }}
+{{- $checksum := toJson $env | sha256sum }}
+# BETTER_AUTH_SECRET and APP_ENCRYPTION_KEY, generated once by
+# itsaplan-secret-init. They must never change: the first signs every
+# session, the second encrypts the instance's stored credentials (the OIDC
+# client secret among them). The Application ignores the data.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.itsaplanKeep" . | nindent 4 }}
+type: Opaque
+---
+# The break-glass admin's email and generated password (itsaplan-secret-init).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-admin
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.itsaplanKeep" . | nindent 4 }}
+type: Opaque
+{{- range $i.bootstrap.agents }}
+---
+# The external agent {{ .username }}'s API key, written by the bootstrap Job.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "factory.itsaplanAgentSecret" .username }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.itsaplanKeep" $ | nindent 4 }}
+type: Opaque
+{{- end }}
+---
+# Not mounted by the workloads: they never call the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  {{- range $k, $v := $env }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-api
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-web
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-api
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 8 }}
+      annotations:
+        checksum/config: {{ $checksum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      # Applies pending migrations under an advisory lock, then exits; with
+      # nothing pending it changes nothing. The pre-migration pg_dump is
+      # skipped (SKIP_PRE_MIGRATION_BACKUP): the database has continuous WAL
+      # archiving, so it can be restored to just before any migration.
+      initContainers:
+        - name: migrate
+          image: {{ $i.images.api }}
+          command: [bun, run, packages/db/src/migrate.ts]
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+          env:
+            {{- include "factory.itsaplanSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.api | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: backups
+              mountPath: /backups
+      containers:
+        - name: api
+          image: {{ $i.images.api }}
+          command: [bun, run, apps/api/src/index.ts]
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+          env:
+            {{- include "factory.itsaplanSecretEnv" . | nindent 12 }}
+          # The root answers 200 once the server listens.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.api | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: backups
+              mountPath: /backups
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: backups
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-web
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 8 }}
+      annotations:
+        checksum/config: {{ $checksum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      containers:
+        # The web app holds no secret: it reads the public origins and
+        # reaches the api by Service.
+        - name: web
+          image: {{ $i.images.web }}
+          command: [node, apps/web/server.js]
+          ports:
+            - name: http
+              containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.web | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/apps/web/.next/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-worker
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    {{- include "factory.itsaplanSelector" (dict "root" . "component" "worker") | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.itsaplanSelector" (dict "root" . "component" "worker") | nindent 8 }}
+      annotations:
+        checksum/config: {{ $checksum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      # Holds the worker until the api has applied this release's migrations.
+      initContainers:
+        - name: wait-for-migrations
+          image: {{ $i.images.api }}
+          command: [bun, run, packages/db/src/wait-for-migrations.ts]
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+          env:
+            {{- include "factory.itsaplanSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.worker | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: worker
+          image: {{ $i.images.worker }}
+          command: [bun, run, apps/worker/src/index.ts]
+          envFrom:
+            - configMapRef:
+                name: {{ $name }}
+          env:
+            {{- include "factory.itsaplanSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.worker | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

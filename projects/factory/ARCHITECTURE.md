@@ -129,7 +129,8 @@ database-ready gate (-1); kagent, itsaplan api, broker (0); itsaplan web and
 worker, connector (1); kagent CRs and the itsaplan bootstrap Job (2).
 
 **State kept across upgrades.** itsaplan `APP_ENCRYPTION_KEY` and
-`BETTER_AUTH_SECRET` come from 1Password and never change. Generated keys,
+`BETTER_AUTH_SECRET` are generated once in the cluster and never change
+("itsaplan" below). Generated keys,
 the Codex grant and GitHub tokens are ignored by ArgoCD diffs. The CNPG
 Cluster, PVCs and the kagent and connector ServiceAccounts carry
 `Prune=false,Delete=false` and `helm.sh/resource-policy: keep`. Acceptance:
@@ -142,6 +143,75 @@ concurrency, egress grants, permitted tools), providers, and each external
 service in install or existing mode. A repository binding is the access
 boundary: one Agent and namespace per repository, with credentials scoped to
 it.
+
+## itsaplan
+
+Step 6 (#7817). The chart's own templates (`templates/itsaplan*.yaml`) run
+the upstream images `ghcr.io/croffasia/itsaplan-{api,web,worker}:1.10.0` by
+digest in namespace `factory`; `itsaplan.enabled` switches them on.
+
+- **Origin.** `https://factory-plan.jomcgi.dev`, behind the edge's
+  gateway-wide Authentik sign-in. The web app is served at `/` and the api at
+  `/backend` on the same host: the HTTPRoute removes the prefix with a
+  `URLRewrite`, and `API_URL` carries the path. [V] v1.10.0 supports this
+  path mode (`packages/auth/src/index.ts` gives better-auth the origin and
+  puts the path back into links, OAuth redirect URIs and discovery), although
+  the upstream chart's values comment still says it does not; the trial's
+  OIDC sign-in built `https://factory-plan.jomcgi.dev/backend/api/auth/oauth2/callback/oidc`
+  and Authentik accepted it. The session cookie is host-only (`__Host-`).
+- **Data.** PostgreSQL is the CNPG Cluster `factory-db` in its own namespace
+  (`projects/platform-factory/factory-db`): three instances, WAL and daily
+  base backups to Garage bucket `factory-db-backups`. Its roles and databases
+  are declared (managed roles, a `Database` object), so it has no superuser
+  login; a setup Job writes `DATABASE_URL` Secrets `factory-itsaplan-db` and
+  `factory-connector-db` into `factory`. Attachments use Garage bucket
+  `factory-itsaplan` (`factory-itsaplan-s3`).
+- **Migrations** run in the api pod's init container, as upstream's chart
+  does, under itsaplan's advisory lock; the worker waits for them. The
+  pre-migration `pg_dump` is skipped (`SKIP_PRE_MIGRATION_BACKUP=1`): the dump
+  would live in an `emptyDir`, and WAL archiving already restores to any point
+  before a migration.
+- **Secrets.** `secret-init` (wave -1) generates `BETTER_AUTH_SECRET`,
+  `APP_ENCRYPTION_KEY` and the break-glass admin's password once, into
+  Secrets the chart declares empty and keeps. They move to 1Password
+  (`k8s-homelab/factory-itsaplan`) once Postgres has off-site backups, as for
+  Authentik's key: until then a lost cluster loses the database they protect.
+- **Human sign-in.** itsaplan's own OIDC client `factory-itsaplan` in
+  Authentik (blueprint `factory-blueprints/factory-itsaplan.yaml`), bound to
+  `authentik Admins`. Authentik's secret-init generates its client secret and
+  copies it into `factory/factory-itsaplan-oidc`, which `factory-buckets`
+  declares so it exists before the chart enables itsaplan. Registration is
+  invite-only, so a person is invited by an admin before their first OIDC
+  sign-in. The break-glass admin (`factory-itsaplan-admin`) signs in with its
+  generated password, still behind the edge's sign-in.
+- **Bootstrap** (PostSync, `files/itsaplan/bootstrap.py`) signs in as that
+  admin, creating it on an empty database (the first account is itsaplan's
+  instance admin); sets invite-only registration and the OIDC provider; and
+  creates team `factory`, project `HOME` and the external agents
+  `homelab-codex` (claims runs, assignment and mention triggers) and
+  `factory-coordinator` (no triggers; comments, issue state and run lookups
+  on the default role; the trial confirmed `work_items` and `ai_agents` read
+through the runner queue, and the connector step confirms its writes). Each
+  agent's once-returned key goes to `factory-itsaplan-agent-<username>`. A
+  Secret without a working key gets that agent a rotated key; an agent is
+  never created twice. It rewrites the OIDC client secret on every run, since
+  itsaplan cannot return it for comparison, and signs out at the end.
+- **Pods** run as UID 65532 with read-only root filesystems and no
+  ServiceAccount token; the web app gets no Secret. Upstream's images run as
+  root by default.
+- **Network.** The edge reaches web (3001) and api (3000); web, worker,
+  bootstrap and the connector reach the api; the api and worker reach
+  `factory-db` and Garage; the api reaches the OIDC issuer by its public
+  name. The Telegram bot is not deployed, and outbound mail, webhooks and
+  link previews have no egress.
+
+Deviations found in the trial: an empty claim answers `200 {"run":null}`,
+not 204; `/me` answers 200 with `authenticated: false` for a refused key, so
+a key check reads that field. MCP OAuth discovery (`/.well-known/*`) is not
+routed: the edge's sign-in stands in front of it, and agents use keys.
+CloudNativePG waits `smartShutdownTimeout` for clients before a deleted
+primary stops, and the api holds its connections, so `factory-db` sets 15 s
+(the default 180 s delayed the trial failover by three minutes).
 
 ## Connector
 
@@ -342,7 +412,7 @@ and retries once, so a brief overlap during a rollout is safe.
 
 | Who | How |
 | --- | --- |
-| Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client in Authentik; invite-only registration; a break-glass admin |
+| Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
 | Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
 | Connector to itsaplan | A coordinator external agent for comments, issue state and run lookups (`work_items read` and `ai_agents read` in each bound project); the coding agent's key claims runs |
@@ -382,9 +452,12 @@ Each step is its own PR with live evidence recorded on #7817.
   (`app-id`, `installation-id`, `private-key`).
 - **Semgrep reviewer.** App ID, check name, triggers, and adding it to the
   ruleset.
-- **1Password.** `k8s-homelab/factory-itsaplan` (`BETTER_AUTH_SECRET`,
-  `APP_ENCRYPTION_KEY`) and `k8s-homelab/factory-itsaplan-admin`
-  (`email`, `password`).
+- **1Password, later.** `k8s-homelab/factory-itsaplan` (`BETTER_AUTH_SECRET`,
+  `APP_ENCRYPTION_KEY`) and `k8s-homelab/factory-itsaplan-admin` once
+  Postgres has off-site backups; until then both are generated in the
+  cluster ("itsaplan").
+- **itsaplan invites.** The address each person signs in with, invited by
+  the break-glass admin before their first OIDC sign-in.
 - **Hostnames.** `factory.jomcgi.dev` stays the private entry point and links
   to `factory-plan.jomcgi.dev` (itsaplan) and `factory-agents.jomcgi.dev`
   (kagent).

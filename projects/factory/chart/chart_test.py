@@ -313,10 +313,6 @@ def test_existing_kagent_renders_only_crds() -> None:
     [
         ("kagent.enabled=false", "kagent.enabled must be true for kagent.mode install"),
         (
-            "itsaplan.enabled=true",
-            r"itsaplan\.enabled must be one of|itsaplan is not implemented",
-        ),
-        (
             "connector.enabled=true",
             r"connector\.enabled must be one of|connector is not implemented",
         ),

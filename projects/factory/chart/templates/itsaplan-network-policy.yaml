@@ -1,0 +1,182 @@
+{{- if and .Values.itsaplan.enabled .Values.networkPolicy.cilium }}
+{{- /*
+itsaplan's allowlist under the cluster-wide default-deny
+(projects/platform-factory/network-policy/). People reach the web app and
+the api only through the edge; inside the cluster the web app, the worker,
+the bootstrap Job and the connector call the api. The edge needs a matching
+egress rule in its own chart, and the database and Garage matching ingress
+rules in theirs.
+*/}}
+{{- $i := .Values.itsaplan }}
+{{- $ns := $i.namespace }}
+{{- $np := .Values.networkPolicy }}
+{{- $name := include "factory.itsaplanName" . }}
+{{- $edge := dict "k8s:io.kubernetes.pod.namespace" $np.edge.namespace }}
+{{- $edge = merge $edge $np.edge.matchLabels }}
+{{- $issuer := (urlParse $i.oidc.discoveryUrl).host }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-api
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $edge | nindent 12 }}
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 12 }}
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "worker") | nindent 12 }}
+        - matchLabels:
+            app.kubernetes.io/name: {{ $name }}-bootstrap
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
+            {{- toYaml $np.connector.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    {{- with $i.database.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $i.database.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- with $i.s3.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $i.s3.port | quote }}
+              protocol: TCP
+    {{- end }}
+    # The OIDC provider's discovery, keys and token endpoints, by its public
+    # name. It resolves to Cloudflare's anycast addresses, so this admits any
+    # site Cloudflare serves there.
+    - toFQDNs:
+        - matchName: {{ $issuer }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-web
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $edge | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3001"
+              protocol: TCP
+  # Media and document assets stream from the api.
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-worker
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "worker") | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    {{- with $i.database.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $i.database.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- with $i.s3.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $i.s3.port | quote }}
+              protocol: TCP
+    {{- end }}
+---
+# secret-init reads and writes Secrets and nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-secret-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}-secret-init
+  egress:
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-bootstrap
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}-bootstrap
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+{{- end }}

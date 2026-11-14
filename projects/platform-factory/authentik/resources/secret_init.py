@@ -1,8 +1,9 @@
 """Fill authentik's generated secrets once and copy the OIDC client secrets.
 
 authentik-secrets (authentik namespace) is the source of truth. Each key is
-generated only when it is absent, so reruns never rotate a value. The OIDC client secrets are then copied to the namespaces that present
-them: the edge Gateway's SecurityPolicy and ArgoCD.
+generated only when it is absent, so reruns never rotate a value. The OIDC
+client secrets are then copied to the namespaces that present them: the edge
+Gateway's SecurityPolicy, ArgoCD and itsaplan (factory chart).
 
 Uses only the standard library and the pod's service account token.
 """
@@ -12,6 +13,7 @@ import json
 import os
 import secrets
 import ssl
+import time
 import urllib.error
 import urllib.request
 
@@ -29,12 +31,27 @@ GENERATED = {
     "AUTHENTIK_SECRET_KEY": 60,
     "EDGE_OIDC_CLIENT_SECRET": 48,
     "ARGOCD_OIDC_CLIENT_SECRET": 48,
+    "ITSAPLAN_OIDC_CLIENT_SECRET": 48,
 }
-# (namespace, name, key in the copy, key in the source). ArgoCD creates each
-# Secret empty; this fills it.
+# (namespace, name, key in the copy, key in the source, seconds to wait for
+# it). ArgoCD creates each Secret empty; this fills it. The factory chart's
+# Secret comes from another Application, which may sync after this one.
 COPIES = [
-    ("edge", "edge-oidc-client", "client-secret", "EDGE_OIDC_CLIENT_SECRET"),
-    ("argocd", "argocd-authentik-oidc", "client-secret", "ARGOCD_OIDC_CLIENT_SECRET"),
+    ("edge", "edge-oidc-client", "client-secret", "EDGE_OIDC_CLIENT_SECRET", 0),
+    (
+        "argocd",
+        "argocd-authentik-oidc",
+        "client-secret",
+        "ARGOCD_OIDC_CLIENT_SECRET",
+        0,
+    ),
+    (
+        "factory",
+        "factory-itsaplan-oidc",
+        "client-secret",
+        "ITSAPLAN_OIDC_CLIENT_SECRET",
+        900,
+    ),
 ]
 
 
@@ -52,7 +69,9 @@ def call(method, path, body=None):
         with urllib.request.urlopen(req, context=CTX, timeout=30) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        if e.code == 404 and method == "GET":
+        # 403: the Role granting this name is not there yet (it comes with the
+        # Secret's Application), the same as a missing Secret.
+        if e.code in (403, 404) and method == "GET":
             return None
         raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
 
@@ -81,9 +100,14 @@ def main():
     else:
         print(f"{namespace}/{name} complete")
 
-    for copy_ns, copy_name, copy_key, source_key in COPIES:
+    for copy_ns, copy_name, copy_key, source_key, wait in COPIES:
         want = {copy_key: data[source_key]}
+        deadline = time.monotonic() + wait
         current = call("GET", secret_path(copy_ns, copy_name))
+        while current is None and time.monotonic() < deadline:
+            print(f"waiting for {copy_ns}/{copy_name}")
+            time.sleep(10)
+            current = call("GET", secret_path(copy_ns, copy_name))
         if current is None:
             raise SystemExit(f"{copy_ns}/{copy_name} is missing; ArgoCD creates it")
         if current.get("data") != want:

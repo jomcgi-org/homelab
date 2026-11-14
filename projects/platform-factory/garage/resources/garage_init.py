@@ -43,13 +43,20 @@ NODES = 3
 QUORUM = 2
 CAPACITY = 50 * 10**9  # bytes per node; used for balancing, not enforced
 
-BUCKETS = ["factory-itsaplan", "factory-evidence", "ate-snapshots", "kagent-pg-backups"]
+BUCKETS = [
+    "factory-itsaplan",
+    "factory-evidence",
+    "ate-snapshots",
+    "kagent-pg-backups",
+    "factory-db-backups",
+]
 # (bucket, namespace, Secret). ate-snapshots is granted to ate-system when
 # Substrate moves its snapshots from rustfs.
 GRANTS = [
     ("factory-itsaplan", "factory", "factory-itsaplan-s3"),
     ("factory-evidence", "factory", "factory-evidence-s3"),
     ("kagent-pg-backups", "kagent-pg", "kagent-pg-s3"),
+    ("factory-db-backups", "factory-db", "factory-db-s3"),
 ]
 
 

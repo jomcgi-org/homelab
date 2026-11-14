@@ -47,6 +47,8 @@ gateway-crds-helm:
 routeNamespaces:
   - edge
   - argocd
+  # itsaplan at factory-plan.jomcgi.dev (projects/factory/chart).
+  - factory
 
 # Host of the permanent route that keeps the OIDC filter on the listener
 # (templates/oidc-sentinel.yaml).

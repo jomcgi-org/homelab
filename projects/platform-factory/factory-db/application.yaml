@@ -1,0 +1,47 @@
+# The factory's PostgreSQL in its own namespace, outside the factory chart:
+# itsaplan's database now, the connector's later. Its setup Job fills the
+# connection-string Secrets in factory (placeholders from factory-db-secrets,
+# application-factory.yaml; projects/factory-cluster/README.md, "Postgres").
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: factory-db
+  namespace: argocd
+  annotations:
+    # After cloudnative-pg (wave 2, the Cluster CRD). Nothing here is in
+    # another namespace, so it never waits on one existing.
+    argocd.argoproj.io/sync-wave: "3"
+    # The root Application prunes; removing this file must not cascade into
+    # the database.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/factory-db/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: factory-db
+  # factory-db-init and garage-init write these.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      namespace: factory-db
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

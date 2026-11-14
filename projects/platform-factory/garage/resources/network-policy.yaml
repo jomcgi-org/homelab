@@ -32,13 +32,25 @@ spec:
             - port: "3903"
               protocol: TCP
     # The S3 API, only from the workloads holding a bucket key; a request
-    # still needs that bucket's key. itsaplan (factory-itsaplan) and
-    # Substrate (ate-snapshots) are added with their grants.
+    # still needs that bucket's key. Substrate (ate-snapshots) is added with
+    # its grant.
     - fromEndpoints:
-        # kagent-pg's WAL archives and base backups.
+        # kagent-pg's and factory-db's WAL archives and base backups.
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kagent-pg
             cnpg.io/cluster: kagent-pg
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+        # itsaplan's attachments: its api and worker (factory chart).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan
+            app.kubernetes.io/component: api
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan
+            app.kubernetes.io/component: worker
         # The connector's evidence (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
