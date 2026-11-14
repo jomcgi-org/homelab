@@ -287,7 +287,11 @@ the monolith's pytest plugin does.
 none of these is a Pro feature (status-triggered schedules are Pro and are
 not used). Claim runs per agent key. A claimed run with an open attempt
 is a transport redelivery: find the kagent task by message ID and attach,
-never send again while kagent could still accept it. A new send uses message
+never send again while kagent could still accept it. Agents have no itsaplan
+tools, and itsaplan's run prompt only names the issue, so a send that opens
+a session quotes the issue's title and description, read with the
+coordinator key and recorded with the attempt so resends stay identical.
+HOME-1, the first live run, ended "blocked" without this. A new send uses message
 ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
 connector's record of why it sends (initial, revision or engineering retry).
 The attempt is recorded, with the run's state, before the send. The
@@ -477,9 +481,9 @@ connector's kagent principal (finding 15), so it never changes once set.
   connector abandons the item as it would a refused one and logs that
   itsaplan keeps refusing its key. The Done move reads the issue first and
   waits while it cannot. Coordinator lookups that hold a run's slot have a
-  30-minute bound, kept in memory per attempt: a replacement session then
-  starts without its issue, and a dispatched run whose attempt itsaplan no
-  longer accepts closes. Lookups that hold no slot, the issue check before
+  30-minute bound, kept in memory per attempt: a new or replacement session
+  then starts without its issue, and a dispatched run whose attempt itsaplan
+  no longer accepts closes. Lookups that hold no slot, the issue check before
   PR updates, rounds and the merge queue and a stale run's lookup, retry
   until the key works. `factory_connector_credential_refusals_total` counts
   itsaplan 401 and 403 answers by key role and kind. A startup probe allows

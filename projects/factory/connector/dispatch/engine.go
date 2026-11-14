@@ -927,10 +927,47 @@ func taskText(r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) st
 // recordNext records the run's next attempt and moves the run to dispatched
 // in q's transaction. The decision ID says why it sends: the work item's
 // initial send, a revision in its session, an engineering retry (retry > 0)
-// or a replacement of a lost session.
-func (e *Engine) recordNext(ctx context.Context, q store.Querier, r *store.Run, wi *store.WorkItem, retry int) (*store.Attempt, error) {
+// or a replacement of a lost session. brief, from issueBrief, is the context
+// of a send that opens a session.
+func (e *Engine) recordNext(ctx context.Context, q store.Querier, r *store.Run, wi *store.WorkItem, retry int, brief string) (*store.Attempt, error) {
 	kind, decision := nextDecision(wi, retry)
-	return e.record(ctx, q, r, wi, kind, decision, "")
+	if kind != "initial" {
+		brief = ""
+	}
+	return e.record(ctx, q, r, wi, kind, decision, brief)
+}
+
+// issueBrief quotes the run's issue for a send that opens a session. The
+// agent has no itsaplan tools and itsaplan's prompt only names the issue, so
+// without it a new session would not know what was asked. A send in an
+// existing session gets none: the session already has it. Recorded with
+// the attempt, the brief keeps resends identical.
+func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkItem) (string, error) {
+	if wi.SessionID != "" || wi.IssueID == 0 || r.Connector() {
+		return "", nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	issue, err := e.its.GetIssue(ctx, wi.IssueID)
+	gaveUp := e.lookupRefused(ctx, refusalKey{lookupBrief, r.ID, r.Attempt}, err)
+	var s strings.Builder
+	s.WriteString("## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
+		"reports your final message on the issue and opens the pull request from the work branch once you " +
+		"push commits to it.\n")
+	switch {
+	case err == nil:
+		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
+	case terminalHTTP(err):
+		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %v)\n", wi.IssueKey, err)
+	case gaveUp != "":
+		// Past the bound the session starts without the issue rather than
+		// hold the run's slot until the key works.
+		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %s)\n", wi.IssueKey, gaveUp)
+	default:
+		return "", err
+	}
+	return s.String(), nil
 }
 
 func nextDecision(wi *store.WorkItem, retry int) (kind, decision string) {
@@ -968,10 +1005,14 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	brief, err := e.issueBrief(ctx, r, wi)
+	if err != nil {
+		return err
+	}
 	var a *store.Attempt
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
 		var err error
-		a, err = e.recordNext(ctx, tx, r, wi, retry)
+		a, err = e.recordNext(ctx, tx, r, wi, retry, brief)
 		return err
 	})
 	if err != nil {
@@ -1449,8 +1490,13 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 	if b != nil {
 		budget = b.MaxEngineeringRetries
 	}
+	// A retry without a session opens one, which needs the issue.
+	brief, err := e.issueBrief(ctx, r, wi)
+	if err != nil {
+		return err
+	}
 	var next *store.Attempt
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
 		// A grant failure was already finished while blocked. Preserve its
 		// class and evidence when taking the deferred retry after unblock.
 		if a.Open() {
@@ -1463,7 +1509,7 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 			return err
 		}
 		if ok && b != nil {
-			next, err = e.recordNext(ctx, tx, r, wi, n)
+			next, err = e.recordNext(ctx, tx, r, wi, n, brief)
 			return err
 		}
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/retries/%d/%d", r.ID, a.Seq), r.ID, "",
@@ -1781,7 +1827,7 @@ func (e *Engine) countRefusal(role, kind string, err error) bool {
 // authRefusalLimit bounds how long a coordinator lookup that holds a run's
 // slot retries an itsaplan 401 or 403. Like outboxAuthMaxTries, it outlasts
 // a key rotation and the kubelet's refresh of the projected file. Past it
-// the lookup gives up: a replacement session starts without the issue, and
+// the lookup gives up: a new or replacement session starts without the issue, and
 // a dispatched run whose attempt itsaplan stopped accepting is closed.
 // Lookups that hold no slot (the issue check, a stale run) retry without a
 // bound. The clock lives in memory, as the session check's does; a restart
@@ -1791,6 +1837,7 @@ const authRefusalLimit = 30 * time.Minute
 // Coordinator lookups, each a metric kind.
 const (
 	lookupReplacement = "replacement" // a replacement session's issue, bounded per replaced attempt
+	lookupBrief       = "brief"       // a new session's issue, bounded per run attempt
 	lookupIssue       = "issue_check" // whether the issue still wants delivery; unbounded
 	lookupRun         = "run_check"   // a run's state; bounded per run attempt in runGone
 )
