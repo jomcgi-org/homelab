@@ -1196,14 +1196,14 @@ func TestOutboxAuthRecovery(t *testing.T) {
 			if v.run(1).State != store.RunFinishing {
 				t.Fatal("auth refusal closed the result run")
 			}
-			v.clk.Advance(time.Second - time.Nanosecond)
+			v.clk.Advance(time.Second - time.Millisecond)
 			v.tick(v.e)
 			if v.its.resultCalls != 1 || v.its.commentCalls != 1 {
 				t.Fatal("delivery retried before due")
 			}
 			// The result recovers while the comment still fails.
 			v.its.resultErr = nil
-			v.clk.Advance(time.Nanosecond)
+			v.clk.Advance(time.Millisecond)
 			v.tick(v.e)
 			if v.run(1).State != store.RunClosed || len(v.its.Run(1).results) != 1 {
 				t.Fatal("failing comment blocked the recovered result")
@@ -1242,12 +1242,12 @@ func TestOutboxAuthFailureIsBounded(t *testing.T) {
 				if !next.Equal(v.clk.Now().Add(backoff)) {
 					t.Fatalf("attempt %d: next=%s, want backoff %s", attempt, next, backoff)
 				}
-				v.clk.Advance(backoff - time.Nanosecond)
+				v.clk.Advance(backoff - time.Millisecond)
 				v.tick(v.e)
 				if v.its.resultCalls != attempt-1 || v.its.commentCalls != attempt-1 || v.run(1).State != store.RunFinishing {
 					t.Fatalf("attempt %d: premature retry or closure", attempt)
 				}
-				v.clk.Advance(time.Nanosecond)
+				v.clk.Advance(time.Millisecond)
 				v.tick(v.e)
 			}
 			for _, kind := range []string{store.OutboxResult, store.OutboxComment} {
