@@ -110,6 +110,14 @@ connector:
       # While the factory is being bootstrapped, local review agents approve
       # its PRs as jomcgi. A kagent reviewer replaces this afterwards.
       trustedReviewers: [jomcgi]
+      # The ruleset's required check, a commit status BuildBuddy posts: the
+      # connector enqueues only once it passes, and a failure on the head
+      # starts a revision round with its link, so CI failures reach the agent
+      # without waiting for a review. Status creators come from the
+      # statuses list endpoint (#7900).
+      requiredChecks:
+        - name: pr-checks
+          statusCreator: buildbuddy-io[bot]
   database:
     endpoints:
       - matchLabels:
