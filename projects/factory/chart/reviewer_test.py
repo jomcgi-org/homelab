@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -65,8 +64,13 @@ def _helm(
             "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-r-homelab-review}",
         ]
+    else:
+        args += ["--set", "reviewer.enabled=false"]
     for override in overrides or []:
-        args += ["--set-json" if override.endswith("=[]") else "--set", override]
+        # JSON lists and objects; Helm's own list syntax is {a,b}.
+        value = override.split("=", 1)[1]
+        json_value = value.startswith("[") or value.startswith('{"')
+        args += ["--set-json" if json_value else "--set", override]
     result = subprocess.run(args, capture_output=True, text=True, check=False)
     if result.returncode:
         raise RuntimeError(result.stderr)
@@ -101,7 +105,7 @@ def _pod(docs: list[dict[str, Any]], name: str) -> dict[str, Any]:
     return _in(docs, "Deployment", "factory", name)["spec"]["template"]["spec"]
 
 
-def test_default_off_is_absent_and_the_deploy_render_is_unchanged() -> None:
+def test_off_is_absent_and_renders_as_without_the_reviewer_templates() -> None:
     assert (
         yaml.safe_load((_CHART / "values.yaml").read_text())["reviewer"]["enabled"]
         is False
@@ -122,8 +126,14 @@ def test_default_off_is_absent_and_the_deploy_render_is_unchanged() -> None:
         for template in (bare / "templates").glob("reviewer*.yaml"):
             template.unlink()
         assert rendered == _helm(enable=False, chart=bare)
-    normalized = re.sub(r"(helm\.sh/chart: factory-)\S+", r"\g<1>VERSION", rendered)
-    assert hashlib.sha256(normalized.encode()).hexdigest() == _LOCK.read_text().strip()
+
+
+def test_deploy_values_enable_the_reviewer() -> None:
+    # What ArgoCD applies is locked by connector_test's render hash; here, the
+    # deploy values turn the reviewer on as rendered by the enabled tests.
+    deploy = yaml.safe_load(_DEPLOY.read_text())
+    assert deploy["reviewer"]["enabled"] is True
+    assert _REVIEW_NS in deploy["kagent"]["rbac"]["namespaces"]
 
 
 def test_one_kept_identity_and_private_image() -> None:
@@ -207,6 +217,9 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
             "kagentAgent": "homelab-reviewer",
             "enqueueAuthors": ["jomcgi"],
             "humanApprovers": ["jomcgi"],
+            "requiredChecks": [
+                {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
+            ],
         }
     ]
     checksum = _in(docs, "Deployment", "factory", "factory-reviewer")["spec"][
@@ -573,7 +586,7 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
         ("reviewer.bindings.missing.namespace=review", "names no repository"),
         ("reviewer.bindings.homelab.kagentAgent=homelab-codex", "kagentAgent"),
         (
-            "reviewer.bindings.homelab.requiredChecks[0].name=factory review,reviewer.bindings.homelab.requiredChecks[0].appId=5758326",
+            'reviewer.bindings.homelab.requiredChecks=[{"name": "factory review", "appId": 5758326}]',
             "cannot also be a required check",
         ),
         ("agents.reviewer.resources.memory=1Gi", "runtimeDefaults"),
