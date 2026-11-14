@@ -1,5 +1,6 @@
 """Offline adversarial tests for the privileged publisher's trust boundaries."""
 
+import base64
 import copy
 import hashlib
 import io
@@ -511,9 +512,218 @@ class AggregateTests(unittest.TestCase):
             publish.load_state(api, URL)
 
 
+class StateArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.state, self.files = publish.empty_state(URL), {}
+        publish.add_preview(
+            self.state, self.files, 42, A, {"index.html": HTML}, 1000, 9
+        )
+        publish.finish_site(self.state, self.files)
+        self.prefix = f"homelab-{C}/"
+
+    def api(self, files=None, raw=None, *, repair_enabled=True):
+        files = self.files if files is None else files
+        self.tree = {
+            "tree": [
+                {
+                    "path": path,
+                    "type": "blob",
+                    "mode": "100644",
+                    "size": len(data),
+                    "sha": publish.blob_sha(data),
+                }
+                for path, data in files.items()
+            ]
+        }
+        self.raw = (
+            archive(
+                [
+                    (self.prefix, b""),
+                    *[(self.prefix + path, data) for path, data in files.items()],
+                ]
+            )
+            if raw is None
+            else raw
+        )
+        self.responses = {
+            f"https://api.github.com/repos/{publish.REPOSITORY}/git/ref/heads/{publish.STATE_BRANCH}": {
+                "object": {"sha": C}
+            },
+            f"https://api.github.com/repos/{publish.REPOSITORY}/git/commits/{C}": {
+                "tree": {"sha": B}
+            },
+            f"https://api.github.com/repos/{publish.REPOSITORY}/git/trees/{B}?recursive=1": self.tree,
+        }
+        self.archive_url = f"https://codeload.github.com/{publish.REPOSITORY}/zip/{C}"
+        api = publish.API("secret-token", repair_enabled=repair_enabled)
+        blobs = {
+            f"https://api.github.com/repos/{publish.REPOSITORY}/git/blobs/{publish.blob_sha(data)}": {
+                "encoding": "base64",
+                "content": base64.b64encode(data).decode(),
+            }
+            for data in files.values()
+        }
+
+        def respond(req, **kwargs):
+            if req.full_url == self.archive_url:
+                return io.BytesIO(self.raw)
+            if req.full_url in blobs:
+                return io.BytesIO(json.dumps(blobs[req.full_url]).encode())
+            return io.BytesIO(json.dumps(self.responses[req.full_url]).encode())
+
+        api.opener = mock.Mock()
+        api.opener.open.side_effect = respond
+        return api
+
+    def test_1691_files_use_three_metadata_reads_and_one_pinned_archive(self):
+        for number in range(1686):
+            self.files[f"site/pr/42/{A}/asset-{number}.js"] = str(number).encode()
+        self.assertEqual(len(self.files), 1691)
+        api = self.api()
+        parent, state, files = publish.load_state(api, URL)
+        self.assertEqual((parent, state, files), (C, self.state, self.files))
+        requests = [call.args[0] for call in api.opener.open.call_args_list]
+        self.assertEqual(len(requests), 4)
+        self.assertEqual(
+            [req.full_url for req in requests], [*self.responses, self.archive_url]
+        )
+        self.assertFalse(requests[-1].has_header("Authorization"))
+        self.assertTrue(all(req.get_method() == "GET" for req in requests))
+
+    def test_disabled_repair_keeps_blob_loading_and_branch_format(self):
+        api = self.api(repair_enabled=False)
+        parent, state, files = publish.load_state(api, URL)
+        self.assertEqual((parent, state, files), (C, self.state, self.files))
+        requests = [call.args[0] for call in api.opener.open.call_args_list]
+        self.assertEqual(len(requests), 3 + len(self.files))
+        self.assertTrue(all(req.has_header("Authorization") for req in requests))
+        self.assertNotIn(self.archive_url, [req.full_url for req in requests])
+
+    def test_archive_missing_extra_changed_and_wrong_commit_files_fail_closed(self):
+        original = [(self.prefix + path, data) for path, data in self.files.items()]
+        cases = (
+            original[:-1],
+            original + [(self.prefix + "site/unexpected.js", b"bad")],
+            [
+                (name, b"X" * len(data) if name.endswith("state.json") else data)
+                for name, data in original
+            ],
+            [
+                (name, data + b"X" if name.endswith("state.json") else data)
+                for name, data in original
+            ],
+            [(name.replace(C, B), data) for name, data in original],
+            original + [(self.prefix + "../escape.js", b"bad")],
+            original + [(self.prefix + "unknown/", b"")],
+            original + [original[0]],
+        )
+        for entries in cases:
+            with (
+                self.subTest(entries=[name for name, _ in entries]),
+                warnings.catch_warnings(),
+            ):
+                warnings.simplefilter("ignore", UserWarning)
+                api = self.api(raw=archive(entries))
+                with self.assertRaises(publish.Unsafe):
+                    publish.load_state(api, URL)
+
+    def test_archive_links_special_and_executable_entries_fail_closed(self):
+        for mode in (stat.S_IFLNK | 0o644, stat.S_IFREG | 0o755, stat.S_IFIFO | 0o644):
+            member = zipfile.ZipInfo(self.prefix + "state.json")
+            member.create_system = 3
+            member.external_attr = mode << 16
+            entries = [
+                (member if path == "state.json" else self.prefix + path, data)
+                for path, data in self.files.items()
+            ]
+            with self.subTest(mode=mode), self.assertRaises(publish.Unsafe):
+                publish.load_state(self.api(raw=archive(entries)), URL)
+
+    def test_tree_limits_and_types_fail_before_archive_download(self):
+        for changes in (
+            {"mode": "100755"},
+            {"mode": "120000"},
+            {"type": "commit"},
+            {"path": "../escape.js"},
+            {"size": publish.MAX_FILE + 1},
+        ):
+            api = self.api()
+            self.tree["tree"][0].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(publish.Unsafe):
+                publish.load_state(api, URL)
+            self.assertEqual(api.opener.open.call_count, 3)
+        api = self.api()
+        self.tree["truncated"] = True
+        with self.assertRaisesRegex(publish.Unsafe, "truncated"):
+            publish.load_state(api, URL)
+        self.assertEqual(api.opener.open.call_count, 3)
+        for constant, limit in (("MAX_SITE_FILES", 2), ("MAX_SITE", 1000)):
+            api = self.api()
+            if constant == "MAX_SITE":
+                # Metadata is small enough to read, but declares an oversized aggregate.
+                for entry in self.tree["tree"]:
+                    entry["size"] = 500
+            with (
+                mock.patch.object(publish, constant, limit),
+                self.assertRaises(publish.Unsafe),
+            ):
+                publish.load_state(api, URL)
+            self.assertEqual(api.opener.open.call_count, 3)
+
+    def test_archive_transport_is_bounded_and_does_not_follow_redirects(self):
+        api = publish.API("secret-token")
+        api.opener = mock.Mock()
+        api.opener.open.return_value = io.BytesIO(b"oversized")
+        with (
+            mock.patch.object(publish, "MAX_SITE", 3),
+            self.assertRaises(publish.Unsafe),
+        ):
+            api.state_archive(C)
+        self.assertFalse(api.opener.open.call_args.args[0].has_header("Authorization"))
+        error = urllib.error.HTTPError(
+            "https://codeload.github.com",
+            302,
+            "redirect",
+            {"Location": "https://untrusted.invalid"},
+            None,
+        )
+        api.opener.open.reset_mock()
+        api.opener.open.side_effect = error
+        with (
+            mock.patch.object(sys, "stderr", io.StringIO()),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            api.state_archive(C)
+        api.opener.open.assert_called_once()
+        with self.assertRaises(publish.Unsafe):
+            api.state_archive("main")
+        api.opener.open.assert_called_once()
+        self.assertIsNone(
+            publish.NoRedirect().redirect_request(
+                None, None, 302, "", {}, "https://untrusted.invalid"
+            )
+        )
+
+    def test_archive_must_still_contain_marked_complete_state(self):
+        cases = []
+        unmarked = {**self.files, "state.json": b"{}"}
+        cases.append(unmarked)
+        missing_index = {
+            path: data
+            for path, data in self.files.items()
+            if path != f"site/pr/42/{A}/index.html"
+        }
+        cases.append(missing_index)
+        orphan = {**self.files, f"site/pr/43/{B}/index.html": HTML}
+        cases.append(orphan)
+        for files in cases:
+            with self.subTest(files=list(files)), self.assertRaises(publish.Unsafe):
+                publish.load_state(self.api(files), URL)
+
+
 class HTTPDiagnosticTests(unittest.TestCase):
     def setUp(self):
-        self.api = publish.API("secret-token")
+        self.api = publish.API("secret-token", repair_enabled=True)
         self.api.opener = mock.Mock()
 
     def error(self, code=403, headers=None):
@@ -540,6 +750,185 @@ class HTTPDiagnosticTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "HTTP method=POST route=pages status=403\n")
         error.fp.seek(0)
         self.assertEqual(error.read(), b"private response secret-body")
+
+    def test_all_routes_report_only_bounded_numeric_refusal_metadata(self):
+        for path, route in (
+            ("/pages", "pages"),
+            (f"/git/blobs/{A}", "git-blob"),
+            ("/pulls/42", "pull-request"),
+        ):
+            for status in (403, 429):
+                error = self.error(
+                    status,
+                    {
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": "1794655500",
+                        "Retry-After": "999",
+                        "Authorization": "secret-header",
+                    },
+                )
+                self.api.opener.open.side_effect = error
+                self.api.opener.open.reset_mock()
+                with (
+                    self.subTest(path=path, status=status),
+                    mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+                ):
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        self.api.repo(path)
+                    self.assertIs(raised.exception, error)
+                    self.assertEqual(
+                        stderr.getvalue(),
+                        f"HTTP method=GET route={route} status={status}\n"
+                        "HTTP rate_limit remaining=0 reset=1794655500 retry_after=999\n",
+                    )
+                    self.api.opener.open.assert_called_once()
+                    self.assertEqual(error.read(), b"private response secret-body")
+
+    def test_malformed_metadata_never_echoes_headers_or_retries(self):
+        for path in ("/pages", f"/git/blobs/{A}"):
+            for value in (
+                "secret-token",
+                "0\nsecret-header",
+                "１２",
+                "-1",
+                "+1",
+                "1.0",
+                " 0",
+                "0 ",
+                "12345678901",
+                "",
+                "Wed, 21 Oct 2015 07:28:00 GMT",
+            ):
+                self.api.opener.open.side_effect = self.error(
+                    headers={
+                        "X-RateLimit-Remaining": value,
+                        "X-RateLimit-Reset": value,
+                        "Retry-After": value,
+                    }
+                )
+                self.api.opener.open.reset_mock()
+                with (
+                    self.subTest(path=path, value=value),
+                    mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+                    mock.patch.object(publish.time, "sleep") as sleep,
+                ):
+                    with self.assertRaises(urllib.error.HTTPError):
+                        self.api.repo(path)
+                    route = publish.http_route(f"/repos/{publish.REPOSITORY}{path}")
+                    self.assertEqual(
+                        stderr.getvalue(), f"HTTP method=GET route={route} status=403\n"
+                    )
+                    sleep.assert_not_called()
+                    self.api.opener.open.assert_called_once()
+
+    def test_identified_rate_limits_retry_reads_after_server_delay(self):
+        for status, headers, delay in (
+            (403, {"Retry-After": "2"}, 2),
+            (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1005"}, 5),
+            (403, {"X-RateLimit-Remaining": "0"}, 60),
+            (429, {}, 60),
+            (429, {"Retry-After": "0"}, 1),
+            (
+                403,
+                {
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "1005",
+                    "Retry-After": "2",
+                },
+                5,
+            ),
+        ):
+            self.api.opener.open.side_effect = [
+                self.error(status, headers),
+                io.BytesIO(b"{}"),
+            ]
+            self.api.opener.open.reset_mock()
+            with (
+                self.subTest(status=status, headers=headers),
+                mock.patch.object(publish.time, "time", return_value=1000),
+                mock.patch.object(publish.time, "sleep") as sleep,
+                mock.patch.object(sys, "stderr", io.StringIO()),
+            ):
+                self.assertEqual(self.api.repo(f"/git/blobs/{A}"), {})
+                sleep.assert_called_once_with(delay)
+                self.assertEqual(self.api.opener.open.call_count, 2)
+                requests = self.api.opener.open.call_args_list
+                self.assertIs(requests[0].args[0], requests[1].args[0])
+
+    def test_retries_have_attempt_and_total_wait_bounds(self):
+        for delay, attempts, sleeps in ((1, 3, 2), (60, 3, 2), (70, 2, 1), (121, 1, 0)):
+            errors = [self.error(429, {"Retry-After": str(delay)}) for _ in range(3)]
+            self.api.opener.open.side_effect = errors
+            self.api.opener.open.reset_mock()
+            with (
+                self.subTest(delay=delay),
+                mock.patch.object(publish.time, "sleep") as sleep,
+                mock.patch.object(sys, "stderr", io.StringIO()),
+            ):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    self.api.repo("/pages")
+                self.assertIs(raised.exception, errors[attempts - 1])
+                self.assertEqual(self.api.opener.open.call_count, attempts)
+                self.assertEqual(sleep.call_args_list, [mock.call(delay)] * sleeps)
+
+    def test_other_refusals_and_writes_are_never_retried(self):
+        for status, headers, method in (
+            (403, {}, "GET"),
+            (403, {"X-RateLimit-Remaining": "1"}, "GET"),
+            (403, {"X-RateLimit-Reset": "1005"}, "GET"),
+            (401, {"Retry-After": "1"}, "GET"),
+            (500, {"Retry-After": "1"}, "GET"),
+            (403, {"X-RateLimit-Remaining": "0"}, "POST"),
+            (429, {"Retry-After": "1"}, "PATCH"),
+        ):
+            error = self.error(status, headers)
+            self.api.opener.open.side_effect = error
+            self.api.opener.open.reset_mock()
+            with (
+                self.subTest(status=status, headers=headers, method=method),
+                mock.patch.object(publish.time, "sleep") as sleep,
+                mock.patch.object(sys, "stderr", io.StringIO()),
+            ):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    self.api.repo("/pages", method=method)
+                self.assertIs(raised.exception, error)
+                self.api.opener.open.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_default_client_does_not_retry_even_an_explicit_rate_limit(self):
+        api = publish.API("secret-token")
+        api.opener = self.api.opener
+        api.opener.open.side_effect = self.error(429, {"Retry-After": "1"})
+        with (
+            mock.patch.object(publish.time, "sleep") as sleep,
+            mock.patch.object(sys, "stderr", io.StringIO()),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            api.repo("/pages")
+        self.assertFalse(api.repair_enabled)
+        api.opener.open.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_cli_requires_explicit_repair_activation(self):
+        for value in (None, "", "false", "True", "1", "true"):
+            environment = {
+                "GITHUB_REPOSITORY": publish.REPOSITORY,
+                "GH_TOKEN": "secret-token",
+                "STATE_COMMIT": A,
+            }
+            if value is not None:
+                environment["FIXTURE_PREVIEW_REPAIR_ENABLED"] = value
+            with (
+                self.subTest(value=value),
+                mock.patch.dict(os.environ, environment, clear=True),
+                mock.patch.object(sys, "argv", ["publish.py", "guard"]),
+                mock.patch.object(publish, "guard") as guard,
+                mock.patch.object(publish, "output"),
+            ):
+                publish.main()
+                self.assertEqual(
+                    guard.call_args.args[0].repair_enabled, value == "true"
+                )
 
     def test_routes_never_include_identifiers_queries_or_contents(self):
         routes = {
@@ -678,6 +1067,7 @@ class PrepareTests(unittest.TestCase):
             "/pulls/43": pr(43, B),
         }
         self.api = mock.Mock()
+        self.api.repair_enabled = False
         self.api.repo.side_effect = lambda path: self.responses[path]
         self.api.all.return_value = [
             {"name": f"fixture-preview-{A}", "workflow_run": {"id": 9, "head_sha": A}}
@@ -704,6 +1094,77 @@ class PrepareTests(unittest.TestCase):
             publish.prepare(
                 self.api, self.event, "workflow_run", Path(directory) / "site"
             )
+
+    def test_closed_event_cleans_preview_and_preserves_open_pr(self):
+        self.api.repair_enabled = True
+        publish.add_preview(
+            self.state, self.files, 42, A, {"index.html": HTML}, self.now, 9
+        )
+        self.responses["/pulls/42"] = pr(state="closed")
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(publish, "load_state", self.loaded),
+            mock.patch.object(publish, "save_state", self.saved),
+            mock.patch.object(publish, "output", self.outputs),
+            mock.patch.object(publish.time, "time", return_value=self.now),
+        ):
+            publish.prepare(
+                self.api,
+                {
+                    "repository": {"full_name": publish.REPOSITORY},
+                    "action": "closed",
+                    "number": 42,
+                },
+                "pull_request_target",
+                Path(directory) / "site",
+            )
+            public_state = (Path(directory) / "site" / "state.json").read_bytes()
+            self.assertEqual(public_state, self.files["state.json"])
+            self.assertEqual(
+                publish.validate_state(json.loads(public_state), URL), self.state
+            )
+            self.assertNotIn("42", json.loads(public_state)["previews"])
+            self.assertFalse((Path(directory) / "site" / "pr" / "42").exists())
+            self.assertEqual(
+                (Path(directory) / "site" / "pr" / "43" / B / "index.html").read_bytes(),
+                HTML,
+            )
+        self.assertEqual(set(self.state["previews"]), {"43"})
+        self.assertFalse(any(path.startswith("site/pr/42/") for path in self.files))
+        self.saved.assert_called_once()
+        self.api.artifact.assert_not_called()
+        self.api.all.assert_not_called()
+        self.outputs.assert_any_call("ready", "true")
+
+    def test_disabled_repair_preserves_published_site_layout(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(publish, "load_state", self.loaded),
+            mock.patch.object(publish, "save_state", self.saved),
+            mock.patch.object(publish, "output", self.outputs),
+            mock.patch.object(publish.time, "time", return_value=self.now),
+        ):
+            destination = Path(directory) / "site"
+            publish.prepare(self.api, self.event, "workflow_run", destination)
+            self.assertFalse((destination / "state.json").exists())
+            self.assertTrue((destination / "index.html").is_file())
+            self.assertNotIn("site/state.json", self.files)
+
+    def test_pages_refusal_stops_before_reconciliation_or_writes(self):
+        for enabled in (False, True):
+            self.api.repair_enabled = enabled
+            error = urllib.error.HTTPError("https://api.github.com", 403, "", {}, None)
+            self.api.repo.side_effect = error
+            with (
+                self.subTest(enabled=enabled),
+                self.assertRaises(urllib.error.HTTPError),
+            ):
+                self.prepare()
+            self.api.repo.assert_called_with("/pages")
+            self.loaded.assert_not_called()
+            self.saved.assert_not_called()
+            self.outputs.assert_not_called()
+            self.api.artifact.assert_not_called()
 
     def test_non_main_build_skips_artifacts_and_preserves_existing_previews(self):
         self.responses["/pulls/42"]["base"]["ref"] = "factory/held-stack"

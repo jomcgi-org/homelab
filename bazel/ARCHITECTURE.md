@@ -248,10 +248,37 @@ and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
 and selectors fail closed. Reachability remains a separate workflow stage.
 Hook-versus-CI duplication remains intentional for fast feedback.
 
+## Fixture publisher request volume
+
+**Why.** The investigation in [#7917](https://github.com/jomcgi-org/homelab/pull/7917)
+records git-blob 403s followed by immediate Pages refusals on 2026-11-14,
+with successful runs between bursts using the same publisher and permissions.
+This suggests request-quota or rate limiting; historical headers do not
+identify the limit. The workflow still grants aggregate `pages: read`.
+Loading the recorded 1,691 state files required 1,694 REST reads.
+
+The repair defaults off in Python; the publisher workflow does not set
+`FIXTURE_PREVIEW_REPAIR_ENABLED`. When the authorized owner activates it,
+state loading uses three REST metadata reads and one public archive pinned to the state
+commit. The archive request sends no Authorization header and follows no
+redirects. Each member must match the validated tree's path, size and Git
+blob hash. State ownership, archive limits and preview completeness remain
+required. No fallback bypasses a failed Pages configuration check.
+
+Bounded decimal remaining/reset/retry-after diagnostics are always available.
+When enabled, GET requests retry at most twice, waiting at most 120 seconds
+per request, only for 429 or a 403 with zero remaining quota or numeric
+Retry-After. Longer server delays fail immediately. Writes and ordinary
+refusals are never retried. The enabled repair also publishes the validated
+`state.json` beside the site index, keeping the state branch layout compatible
+with the legacy loader. The [preview runbook](../docs/runbooks/fixture-previews.md)
+records activation, rollback and the acceptance checks still owned by #7905.
+
 ## Direction
 
-Nothing is decided and unbuilt here at present; outstanding work is
-tracked in GitHub Issues.
+| Work | Remaining acceptance |
+|---|---|
+| [Fixture publisher request volume #7905](https://github.com/jomcgi-org/homelab/issues/7905) | Within 72 hours after authorized landing, verify a naturally triggered closed-PR publisher run using the delivered protected-main revision succeeds through aggregate/prepare and required deploy, then read valid public state.json and confirm that closed PR is absent. Landing and validation remain with their authorized owners. |
 
 ## Decision history
 
