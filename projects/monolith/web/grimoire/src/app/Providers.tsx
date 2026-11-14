@@ -6,6 +6,7 @@ import { ToastViewport } from "@astryxdesign/core/Toast";
 import { ApiError } from "../api/client";
 import { sheetTheme } from "../theme";
 import { RouterLink } from "./RouterLink";
+import { ViewerBoundary } from "./ViewerBoundary";
 
 export function createQueryClient() {
   return new QueryClient({
@@ -34,7 +35,9 @@ export function Providers({
     <Theme theme={sheetTheme}>
       <LinkProvider component={RouterLink}>
         <QueryClientProvider client={client}>
-          <ToastViewport position="bottomEnd">{children}</ToastViewport>
+          <ViewerBoundary>
+            <ToastViewport position="bottomEnd">{children}</ToastViewport>
+          </ViewerBoundary>
         </QueryClientProvider>
       </LinkProvider>
     </Theme>

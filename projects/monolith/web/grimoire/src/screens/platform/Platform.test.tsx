@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { lobby } from "../../test/fixtures";
 import { findToast, openApp } from "../../test/app";
 import type { Call, OtherRoutes } from "../../test/backend";
 import {
@@ -18,7 +19,7 @@ const COMMANDS = "POST /api/auth/platform/commands";
 const DELIVER = "POST /api/auth/platform/invitations/{invitation_id}/deliver";
 
 const open = (other: OtherRoutes = {}, path = "/platform") =>
-  openApp({}, path, { ...platformOther, ...other });
+  openApp({ "GET /lobby": lobby() }, path, { ...platformOther, ...other });
 
 const body = (call: Call | undefined) =>
   call?.body as {

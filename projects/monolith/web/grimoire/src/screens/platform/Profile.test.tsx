@@ -1,11 +1,12 @@
 import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { lobby } from "../../test/fixtures";
 import { openApp } from "../../test/app";
 import { platformIds, platformUser } from "../../test/fixtures/platform";
 
 const SELF = "GET /api/auth/platform/self";
 const open = (reply: unknown) =>
-  openApp({}, "/platform/profile", { [SELF]: reply });
+  openApp({ "GET /lobby": lobby() }, "/platform/profile", { [SELF]: reply });
 
 describe("Profile", () => {
   it("welcomes an account with Grimoire access and links to the lobby", async () => {

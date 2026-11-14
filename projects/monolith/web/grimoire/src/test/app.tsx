@@ -23,14 +23,15 @@ afterEach(() => {
 
 export function openApp(routes: Routes, path = "/", other: OtherRoutes = {}) {
   current = installBackend(routes, other);
+  const client = createQueryClient();
   render(
     <MemoryRouter initialEntries={[path]}>
-      <Providers client={createQueryClient()}>
+      <Providers client={client}>
         <App />
       </Providers>
     </MemoryRouter>,
   );
-  return { user: userEvent.setup(), backend: current };
+  return { user: userEvent.setup(), backend: current, client };
 }
 
 /** A toast renders its text twice: once visibly, once for screen readers. */

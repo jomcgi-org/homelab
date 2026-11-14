@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Button } from "@astryxdesign/core/Button";
@@ -40,7 +40,6 @@ import { JournalPanel, type JournalView } from "../../journal/JournalPanel";
 import { KnowledgeDrawer } from "../../knowledge/KnowledgeDrawer";
 import { KnowledgeSearch } from "../../knowledge/KnowledgeSearch";
 import { RevealPanel } from "../../knowledge/RevealPanel";
-import { dropDraft } from "../../lib/session-expiry.js";
 import { SessionNotesPanel } from "../../notes/SessionNotesPanel";
 import { InitiativeEditor } from "../../turns/InitiativeEditor";
 import { TurnStrip } from "../../turns/TurnStrip";
@@ -130,18 +129,6 @@ function TableView({ table }: { table: Table }) {
       : signInState === "reconnecting" || !table.feedLive
         ? "Reconnecting"
         : "Live";
-
-  // Another account signing in on this browser changes who the polls answer
-  // for. Panels hold their own state, so only a full load is safe. A draft
-  // kept for the earlier account is dropped, never shown to the new one.
-  const identity = `${viewer.user.id}|${viewer.campaign.role}|${viewer.campaign.player_character_id}`;
-  const firstIdentity = useRef(identity);
-  const firstUser = useRef(viewer.user.id);
-  useEffect(() => {
-    if (identity === firstIdentity.current) return;
-    if (viewer.user.id !== firstUser.current) dropDraft(campaignId);
-    location.reload();
-  }, [identity, viewer.user.id, campaignId]);
 
   const invalidate = afterCommand(campaignId, session?.id);
   const start = useAction(startSession, { invalidate });
