@@ -574,9 +574,10 @@ def test_default_coder_uses_a_catalogued_model() -> None:
         ],
         binding=False,
     )
-    assert _in(docs, "ModelConfig", "factory-r-example", "codex")["spec"][
-        "model"
-    ] == "gpt-6-astra"
+    assert (
+        _in(docs, "ModelConfig", "factory-r-example", "codex")["spec"]["model"]
+        == "gpt-6-astra"
+    )
 
 
 def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
