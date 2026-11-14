@@ -57,7 +57,13 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
 
 
 def _ours(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [d for d in docs if d["metadata"].get("namespace") == _NS]
+    """itsaplan's objects; the broker shares the namespace."""
+    return [
+        d
+        for d in docs
+        if d["metadata"].get("namespace") == _NS
+        and d["metadata"]["name"].startswith("factory-itsaplan")
+    ]
 
 
 def _one(docs: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
@@ -79,12 +85,13 @@ def test_disabled_renders_nothing_in_factory() -> None:
 
 
 def test_no_namespace_of_its_own() -> None:
-    # The broker's template owns the factory namespace.
-    assert not [
+    # The broker's template declares the factory namespace; itsaplan adds none.
+    namespaces = [
         d
         for d in _render()
         if d["kind"] == "Namespace" and d["metadata"]["name"] == _NS
     ]
+    assert len(namespaces) <= 1
 
 
 def test_images_are_upstream_by_digest() -> None:
