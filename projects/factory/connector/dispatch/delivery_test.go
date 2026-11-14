@@ -1234,7 +1234,7 @@ func TestDoneMoveAuthRefusalIsRetried(t *testing.T) {
 			v.its.moveErr = []error{&itsaplan.HTTPError{Status: status}}
 			v.gh.merge(1, "merge-sha-1")
 			v.poll()
-			tries, next, delivered, abandoned := outboxState(t, v.env, store.OutboxIssueDone)
+			tries, next, delivered, abandoned := outboxState(t, v, store.OutboxIssueDone)
 			if tries != 1 || delivered || abandoned || !next.After(v.clk.Now()) {
 				t.Fatal("auth refusal abandoned the Done move")
 			}
