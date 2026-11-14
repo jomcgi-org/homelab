@@ -423,8 +423,10 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 			ID: fmt.Sprintf("%d:%s", i, huge), Severity: SeverityHigh, Path: huge, Line: 3, Title: huge, Detail: huge,
 		}))
 	}
-	g := &Gate{Labels: []string{"human"}, ObservedLabels: []string{}, ApprovalAfter: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), Approver: "jomcgi",
-		ApprovalSnapshot: &ReviewSnapshot{IDs: []int64{11, 22}, Unavailable: true}}
+	g := &Gate{
+		Labels: []string{"human"}, ObservedLabels: []string{}, ApprovalAfter: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), Approver: "jomcgi",
+		ApprovalSnapshot: &ReviewSnapshot{IDs: []int64{11, 22}, Unavailable: true},
+	}
 	for i := range maxGatePaths {
 		g.Paths = append(g.Paths, fmt.Sprintf("%d/%s", i, huge))
 		g.Findings = append(g.Findings, storable(Finding{ID: fmt.Sprintf("%d:human-gate:%s", i, huge), Severity: SeverityHigh, Title: huge}))
