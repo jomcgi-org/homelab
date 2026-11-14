@@ -733,6 +733,18 @@ def test_operator_service_account_is_optional() -> None:
         "policyName": "factory-broker-operator-pods",
         "validationActions": ["Deny"],
     }
+    # Pods are refused before the ServiceAccount exists.
+    for d in (policy, binding):
+        assert d["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-3"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["default", "factory-broker", "factory-connector", "factory-itsaplan-bootstrap"],
+)
+def test_operator_service_account_is_not_a_chart_pod_identity(name: str) -> None:
+    with pytest.raises(RuntimeError, match="ServiceAccount the chart's Pods use"):
+        _render([f"broker.operatorServiceAccount={name}"])
 
 
 def test_binding_reader_follows_the_credential_provider_switch() -> None:
