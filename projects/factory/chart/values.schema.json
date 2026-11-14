@@ -279,6 +279,7 @@
           "provider",
           "model",
           "resources",
+          "worker",
           "concurrency"
         ],
         "additionalProperties": false,
@@ -296,15 +297,16 @@
             "minLength": 1
           },
           "resources": {
+            "description": "The actor's limits; must equal kagent.config.runtimeDefaults.",
             "type": "object",
-            "required": ["limits"],
+            "required": ["cpu", "memory"],
+            "additionalProperties": false,
             "properties": {
-              "limits": {
-                "type": "object",
-                "required": ["cpu", "memory"]
+              "cpu": {
+                "type": "string"
               },
-              "requests": {
-                "type": "object"
+              "memory": {
+                "type": "string"
               }
             }
           },
@@ -323,6 +325,26 @@
           "systemPrompt": {
             "type": "string",
             "minLength": 1
+          },
+          "worker": {
+            "type": "object",
+            "required": ["resources"],
+            "additionalProperties": false,
+            "properties": {
+              "resources": {
+                "type": "object",
+                "required": ["limits"],
+                "properties": {
+                  "limits": {
+                    "type": "object",
+                    "required": ["cpu", "memory"]
+                  },
+                  "requests": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
           }
         }
       }

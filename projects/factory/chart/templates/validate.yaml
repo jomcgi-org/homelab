@@ -39,7 +39,7 @@ instead of silently rendering nothing.
 {{- fail (printf "repositories %s: agent provider broker needs broker.enabled" $r.name) }}
 {{- end }}
 {{- /* kagent 1.0.1 applies one CPU and memory limit to every runtime. */}}
-{{- if or (ne (toString $a.resources.limits.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.limits.memory) (toString $runtime.memory)) }}
-{{- fail (printf "agents %s: resources.limits must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $r.agent $runtime.cpu $runtime.memory) }}
+{{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
+{{- fail (printf "agents %s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $r.agent $runtime.cpu $runtime.memory) }}
 {{- end }}
 {{- end }}

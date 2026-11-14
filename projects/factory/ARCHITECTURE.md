@@ -114,7 +114,10 @@ Substrate's credential provider grants. A Harness needs a Substrate
 WorkerPool in its own namespace, so each binding has one. Its replicas
 are the agent's concurrency, with one actor per worker. kagent 1.0.1 sets
 one CPU and memory limit for every runtime (`config.runtimeDefaults`), so
-each agent's resource limits must equal it, and the chart refuses others.
+each agent's resource limits must equal it, and the chart refuses others. A
+worker's capacity is its pod memory limit less a 64Mi reserve, and each actor
+books its limit plus the gVisor sentry, so worker pods get 1Gi more memory
+than their actor.
 Substrate's egress gateway admits actors to the broker's relay and to
 `github.com`. Its credential provider reads a binding namespace only through
 the chart's RoleBinding and the namespace's `namespacePolicies` entry.
