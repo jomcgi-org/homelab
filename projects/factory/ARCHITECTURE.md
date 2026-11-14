@@ -165,26 +165,68 @@ reports the task canceled or failed.
 
 ## Credential broker
 
-`projects/factory/broker`, one replica holding a Lease. It reuses the Codex
-OAuth code in `projects/embervm/tokenbroker`, moved out of `internal/` first.
+`projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
+OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
+(`factory-broker-grant-`), metric prefix (`factory_broker_`) and refresh
+window configured per consumer; EmberVM keeps its defaults. No Lease: grant
+writes are newer-only and a `refresh_token_reused` answer rereads the Secret
+and retries once, so a brief overlap during a rollout is safe.
 
-- **Codex relay (preferred).** The ModelConfig points at the broker's relay
-  with `actorJwt`. Codex in the actor holds a placeholder; the Substrate
-  gateway swaps in a short-lived JWT minted for that actor; the broker
-  verifies it against Substrate's issuer, attributes the call to the actor,
-  and forwards to
-  `chatgpt.com/backend-api/codex/responses` with the access token and
-  `chatgpt-account-id`. Provider credentials exist only in the broker.
-  Direct injection is the fallback if the backend accepts a request with
-  only `Authorization`.
-- **Refresh.** One grant from the broker's own device login. Refresh when
-  under 24 h from expiry or 7 days old, single-flight, written before use. A
-  dead grant answers `codex_login_required`, which the connector treats as a
-  credential failure. ActorJWT leaves no relay key to rotate.
-- **GitHub.** Installation tokens from the factory GitHub App, minted every
-  30 minutes and downscoped per repository binding (`contents: write` for the
-  agent, PR and check access for the connector). The agent's git uses a
-  placeholder header that the gateway replaces for `https://github.com`.
+- **Codex relay.** The ModelConfig uses `provider: OpenAI`,
+  `openAI.apiFormat: responses`, `openAI.baseUrl` set to the broker's
+  Service with `/v1` (a DNS name, not an IP), and `actorJwt.audiences:
+  [factory-broker]`. [V] kagent binds that origin's `authorization` header
+  with prefix `Bearer `; Codex in the actor holds a placeholder that the
+  Substrate gateway replaces with a JWT minted for the actor, also over
+  cleartext `http`. The broker verifies it against the issuer's discovery
+  document and key set: signature (ES256 or RS256), `iss`, `aud`, `exp` and
+  `nbf` with 30 s skew, `sub` = `actor/<atespace>/<name>` with the
+  `actor.ate.dev` claim, and it rejects `worker-for-actor` tokens. Keys
+  refresh every 5 minutes; an unknown `kid` refetches at most every
+  30 seconds. The call is logged against the actor, atespace and actor UID
+  (the UID can be stale for a recreated actor, Substrate #2208). The relay
+  accepts `POST /v1/responses`, `POST /v1/responses/compact` and
+  `GET /v1/models` (the last two [I]), and forwards to
+  `chatgpt.com/backend-api/codex` with the grant's access token and
+  `chatgpt-account-id`, streaming SSE back. That the backend accepts the
+  Responses request Codex sends in API-key mode is [I] until the first live
+  run. Provider credentials exist only in the broker.
+- **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
+  (401), `codex_login_required` (401: no grant, a dead refresh token, or the
+  backend still refusing after one forced refresh), `codex_quota_exhausted`
+  (429 with `resets_at` and `Retry-After`, from the `x-codex-*` headers or a
+  `usage_limit_reached` body; a current exhausted window blocks before the
+  backend is called), `codex_grant_unavailable` (503, transient). Other
+  backend 429s pass through for Codex to retry. The connector treats the
+  login and quota codes as credential and quota failures.
+- **Refresh.** One grant, `codex-primary`, from the broker's own device
+  login: `POST /admin/codex/login` returns the user code, `GET` reports
+  state, `POST /admin/codex/refresh` forces a refresh. These require a
+  projected ServiceAccount token (audience `factory-broker`) whose TokenReview
+  username is in `tokenReview.adminSubjects`. The grant refreshes when under
+  24 h from expiry or 7 days old, single-flight, written to the Secret
+  before use, checked every 10 minutes without traffic. When a refresh fails
+  but the stored access token is still valid, the relay keeps serving it and
+  the grant state metric reports the failure. ActorJWT leaves no relay key
+  to rotate.
+- **GitHub.** Installation tokens from the factory GitHub App (key, App ID
+  and installation ID mounted from the 1Password Secret). Every 30 minutes
+  the broker mints one token per repository binding (`repositories=[repo]`,
+  `contents: write`) and writes Secret `github-git` in the binding's
+  namespace: key `basic` holds base64 of `x-access-token:<token>`, labelled
+  `substrate.ate.dev/injectable: "true"`. The agent's git sends a placeholder
+  `Authorization: Basic` header that the gateway replaces for
+  `https://github.com`; Substrate's credential provider needs a RoleBinding
+  in each binding namespace (step 8). The connector fetches its own token
+  from `GET /github/connector-token?repository=<owner/name>` with a
+  TokenReview-checked projected token: contents and pull requests write,
+  checks and statuses read, and `merge_queues: write` [I]. GitHub adds
+  `metadata: read`; the broker rejects any token wider than requested.
+- **Metrics** (`factory_broker_*`): grant state and expiry, refresh checks
+  and the shared refresh counters, relay requests by outcome and status
+  class, actor JWT rejections by reason, GitHub mints by kind, binding and
+  outcome, and the shared quota gauges. Labels come only from fixed sets or
+  configuration.
 
 ## Identities
 
