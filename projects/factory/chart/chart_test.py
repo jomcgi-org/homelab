@@ -173,7 +173,27 @@ def test_rbac_is_namespaced() -> None:
         "kagent-kagent-crds",
         "factory-broker-tokenreview",
         "kagent-kagent-invocation-auth",
+        # The controller's secure metrics (deploy values): it reviews a
+        # scraper's token and access to GET /metrics, nothing else.
+        "kagent-metrics-auth-role",
+        "kagent-metrics-auth-rolebinding",
+        "kagent-metrics-reader",
     }
+    assert _one(docs, "ClusterRole", "kagent-metrics-auth-role")["rules"] == [
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["tokenreviews"],
+            "verbs": ["create"],
+        },
+        {
+            "apiGroups": ["authorization.k8s.io"],
+            "resources": ["subjectaccessreviews"],
+            "verbs": ["create"],
+        },
+    ]
+    assert _one(docs, "ClusterRole", "kagent-metrics-reader")["rules"] == [
+        {"nonResourceURLs": ["/metrics"], "verbs": ["get"]}
+    ]
     # kagent reviews the connector's ServiceAccount token, and nothing else.
     assert _one(docs, "ClusterRole", "kagent-kagent-invocation-auth")["rules"] == [
         {
