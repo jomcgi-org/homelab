@@ -24,6 +24,7 @@ TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 FAILURES=0
 RUN="source-commit-123"
 REPO="ghcr.io/jomcgi/homelab/projects/demo/image"
+EXTRA_REPO="ghcr.io/jomcgi/homelab/projects/extra/image"
 INDEX_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 STALE_DIGEST="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
@@ -132,6 +133,31 @@ else
 	fail "stale pin diagnostics" "$out"
 fi
 
+# The expected pin still matches; only the final artifact broadens membership.
+setup extra-first-party-pin
+candidate_values "$INDEX_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+final_values "$INDEX_DIGEST" >"$CASE_DIR/final.values"
+printf 'extra:\n  repository: %s\n  digest: %s\n' "$EXTRA_REPO" "$STALE_DIGEST" >>"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/demo:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "extra first-party pin" "verifier incorrectly succeeded: $out"
+elif [[ "$out" == "ERROR: publish verification run=${RUN} chart=demo image=${EXTRA_REPO} expected=absent observed=${STALE_DIGEST} (unexpected first-party pin in final artifact)"$'\n'"1 published image verification failure(s)" ]]; then
+	pass "extra first-party pin is the only verification failure"
+else
+	fail "extra first-party pin diagnostics" "$out"
+fi
+
+setup extra-third-party-pin
+candidate_values "$INDEX_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+final_values "$INDEX_DIGEST" >"$CASE_DIR/final.values"
+printf 'extra:\n  repository: docker.io/library/alpine\n  digest: %s\n' "$STALE_DIGEST" >>"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/demo:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	pass "extra third-party pin in final artifact passes"
+else
+	fail "extra third-party pin" "$out"
+fi
+
 setup missing-push-result
 candidate_values "$INDEX_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
 final_values "$INDEX_DIGEST" >"$CASE_DIR/final.values"
@@ -202,6 +228,19 @@ if out=$(run_case); then
 	pass "chart with no first-party images passes once its artifact is published"
 else
 	fail "third-party-only chart" "$out"
+fi
+
+setup third-party-only-extra-first-party
+third_party_values >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+third_party_values >"$CASE_DIR/final.values"
+printf 'extra:\n  repository: %s\n  digest: %s\n' "$EXTRA_REPO" "$INDEX_DIGEST" >>"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "third-party-only extra first-party pin" "verifier incorrectly succeeded: $out"
+elif [[ "$out" == "ERROR: publish verification run=${RUN} chart=demo image=- expected=no first-party pins observed=${EXTRA_REPO}"$'\t'"${INDEX_DIGEST} (unexpected first-party pin in final artifact)"$'\n'"1 published image verification failure(s)" ]]; then
+	pass "third-party-only extra first-party pin is the only verification failure"
+else
+	fail "third-party-only extra first-party pin diagnostics" "$out"
 fi
 
 setup third-party-only-unpublished
