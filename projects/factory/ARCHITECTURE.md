@@ -326,7 +326,12 @@ and retries once, so a brief overlap during a rollout is safe.
   own namespace `get`/`update` on the grant Secret and the quota ConfigMap
   by `resourceNames`; in each binding namespace `create` on Secrets (RBAC
   cannot restrict `create` by name) and `get`/`update` on `github-git` by
-  `resourceNames`.
+  `resourceNames`. A ValidatingAdmissionPolicy closes the `create` gap: the
+  broker's ServiceAccount may write only its grant Secret and Opaque
+  `github-git` Secrets in binding namespaces, so it cannot mint a
+  ServiceAccount token. Its image, like every first-party image, is private
+  on GHCR; the chart syncs `k8s-homelab/ghcr-read-permissions` into the
+  factory namespace as a pull secret.
 - **Metrics** (`factory_broker_*`): grant state and expiry, refresh checks
   and the shared refresh counters, relay requests by outcome and status
   class, actor JWT rejections by reason, GitHub mints by kind, binding and
