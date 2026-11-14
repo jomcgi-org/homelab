@@ -72,10 +72,11 @@ type Manager struct {
 	mu          sync.Mutex
 	lastFailure time.Time
 	lastForced  time.Time
-	// rejectMu serializes RefreshRejected, so concurrent callers holding
-	// the same refused token wait for the one in-flight refresh.
-	rejectMu sync.Mutex
-	login    loginState
+	// rejectSlot serializes RefreshRejected, so concurrent callers holding
+	// the same refused token wait for the one in-flight refresh. A channel,
+	// so a waiter can give up when its request ends.
+	rejectSlot chan struct{}
+	login      loginState
 }
 
 type loginState struct {
@@ -106,7 +107,7 @@ func New(opts Options) *Manager {
 	b := broker.New(st, map[string]provider.Adapter{ProviderName: opts.Adapter}, nil,
 		[]broker.GrantConfig{{Name: opts.Grant, ProviderName: ProviderName}}, opts.Logger, opts.Metrics.Refresh)
 	b.SetRefreshPolicy(opts.RefreshBeforeExpiry, opts.MaxGrantAge)
-	return &Manager{opts: opts, store: st, broker: b, login: loginState{state: "none"}}
+	return &Manager{opts: opts, store: st, broker: b, login: loginState{state: "none"}, rejectSlot: make(chan struct{}, 1)}
 }
 
 // Grant is the managed grant's name.
@@ -196,8 +197,12 @@ func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, 
 	if m.broker.NeedsLogin(grant) {
 		return Token{}, ErrLoginRequired
 	}
-	m.rejectMu.Lock()
-	defer m.rejectMu.Unlock()
+	select {
+	case m.rejectSlot <- struct{}{}:
+		defer func() { <-m.rejectSlot }()
+	case <-ctx.Done():
+		return Token{}, ErrUnavailable
+	}
 	if access, expiry, err := m.broker.CachedAccessToken(grant, ctx); err == nil && access != rejected {
 		return m.token(access, expiry)
 	}

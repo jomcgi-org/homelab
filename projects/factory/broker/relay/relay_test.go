@@ -464,3 +464,48 @@ func TestRelayPassesThroughTransient429(t *testing.T) {
 		t.Fatalf("transient 429 = %d %s", resp.StatusCode, body)
 	}
 }
+
+// A server ReadTimeout bounds the request upload only: a stream that runs
+// longer than it must arrive whole.
+func TestRelayStreamOutlivesServerReadTimeout(t *testing.T) {
+	h := newHarness(t, true)
+	h.backend.set(func(b *backend) {
+		b.respond = func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			for i := 0; i < 8; i++ {
+				fmt.Fprintf(w, "data: {\"n\":%d}\n\n", i)
+				flusher.Flush()
+				time.Sleep(100 * time.Millisecond)
+			}
+			fmt.Fprint(w, "event: response.completed\ndata: {}\n\n")
+		}
+	})
+	srv := httptest.NewUnstartedServer(h.handler)
+	srv.Config.ReadTimeout = 200 * time.Millisecond
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", strings.NewReader(`{"stream":true}`))
+	req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("stream read: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 4*srv.Config.ReadTimeout {
+		t.Fatalf("stream took %v; the test needs it to outlive ReadTimeout", elapsed)
+	}
+	if !strings.Contains(string(body), `{"n":7}`) || !strings.Contains(string(body), "response.completed") {
+		t.Fatalf("stream cut short: %q", body)
+	}
+	if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("ok", "2xx")); got != 1 {
+		t.Fatalf("relay ok metric = %v", got)
+	}
+}

@@ -208,6 +208,11 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 			return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 		}
 	}
+	// The server's ReadTimeout bounds the body upload only. net/http
+	// already clears the read deadline when the body reaches EOF (its
+	// background read); clear it here too so a long stream never depends
+	// on that, since an expired deadline would cancel r.Context().
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
 
 	tok, failure, ok := rl.token(w, r.Context())
 	if !ok {
