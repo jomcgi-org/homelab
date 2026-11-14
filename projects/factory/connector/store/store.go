@@ -79,6 +79,9 @@ func (w *Writer) Check(ctx context.Context) error {
 	}
 	var epoch int64
 	if err := w.conn.QueryRowContext(ctx, `SELECT epoch FROM writer WHERE id = 1`).Scan(&epoch); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("%w: %v", ErrNotWriter, err)
 	}
 	if epoch != w.Epoch {
@@ -152,18 +155,19 @@ type Run struct {
 	EventTaskID     string
 	EventTaskBase   int
 	LastHeartbeatAt time.Time
+	SeenVisible     bool
 	ClosedReason    string
 }
 
 const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0), coalesce(issue_key, ''),
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
-	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), coalesce(closed_reason, '')`
+	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, '')`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
 	err := row.Scan(&r.ID, &r.AgentKey, &r.WorkItemID, &r.IssueID, &r.IssueKey, &r.Trigger,
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
-		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.ClosedReason)
+		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason)
 	return r, err
 }
 
@@ -272,6 +276,12 @@ func (s *Store) MarkStale(ctx context.Context, id int64, attempt int) error {
 	return err
 }
 
+// MarkVisible records that the coordinator's queue lookup showed the run.
+func (s *Store) MarkVisible(ctx context.Context, id int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE run SET seen_visible = true WHERE id = $1`, id)
+	return err
+}
+
 // SetHeartbeat records a successful heartbeat.
 func (s *Store) SetHeartbeat(ctx context.Context, id int64, at time.Time) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE run SET last_heartbeat_at = $2 WHERE id = $1`, id, at)
@@ -341,13 +351,16 @@ type NewWorkItem struct {
 	IssueID  int64
 	IssueKey string
 	AgentKey string
+	// Human is true for a run a person started; it clears blocks.
+	Human bool
 }
 
 // ResolveWorkItem finds or creates the run's work item and links the run to
 // it. When the work item was last delivered by another agent key, its epoch
-// is bumped and reassigned is true; the session stays. A new run makes the
-// work item active again and clears a block, since only a person starts one
-// after fixing its cause.
+// is bumped, reassigned is true, and in the same transaction any open
+// attempt of another run gets a pending cancellation; the session stays. A
+// run a person started makes the work item active again and clears its block
+// and its grant's.
 func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem) (w *WorkItem, reassigned bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		w, err = scanWork(tx.QueryRowContext(ctx, `SELECT `+workCols+` FROM work_item WHERE issue_id = $1 FOR UPDATE`, n.IssueID))
@@ -368,10 +381,30 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 			w, err = scanWork(tx.QueryRowContext(ctx, `
 				UPDATE work_item SET agent_key = $2,
 					epoch = epoch + CASE WHEN $3 THEN 1 ELSE 0 END,
-					state = CASE WHEN state = 'done' THEN state ELSE 'active' END,
-					blocked_class = NULL, blocked_reason = NULL, updated_at = now()
-				WHERE id = $1 RETURNING `+workCols, w.ID, n.AgentKey, reassigned))
+					state = CASE WHEN state = 'blocked' AND NOT $4 THEN state
+						WHEN state = 'done' THEN state ELSE 'active' END,
+					blocked_class = CASE WHEN $4 THEN NULL ELSE blocked_class END,
+					blocked_reason = CASE WHEN $4 THEN NULL ELSE blocked_reason END,
+					updated_at = now()
+				WHERE id = $1 RETURNING `+workCols, w.ID, n.AgentKey, reassigned, n.Human))
 			if err != nil {
+				return err
+			}
+			if reassigned {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
+					SELECT a.id, a.run_id, 'reassignment', 'pending' FROM delivery_attempt a
+					JOIN run r ON r.id = a.run_id
+					WHERE r.work_item_id = $1 AND a.run_id <> $2
+						AND a.state IN ('sending', 'ambiguous', 'accepted')
+					ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, w.ID, runID); err != nil {
+					return err
+				}
+			}
+		}
+		if n.Human {
+			if _, err := tx.ExecContext(ctx, `UPDATE grant_block SET cleared_at = now() WHERE scope = $1 AND cleared_at IS NULL`,
+				GrantScope(w.KagentNamespace, w.KagentAgent)); err != nil {
 				return err
 			}
 		}
@@ -391,19 +424,42 @@ func (s *Store) SetSession(ctx context.Context, q Querier, workID int64, session
 	return err
 }
 
-// ClearSession forgets a session that kagent no longer has, so the next
-// send starts a replacement.
-func (s *Store) ClearSession(ctx context.Context, workID int64) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE work_item SET session_id = NULL, updated_at = now() WHERE id = $1`, workID)
+// GrantScope names the grant a kagent Agent's runs use.
+func GrantScope(namespace, agent string) string { return "kagent:" + namespace + "/" + agent }
+
+// Block marks a work item blocked by a credential or quota failure and
+// pauses its grant's other work items.
+func (s *Store) Block(ctx context.Context, q Querier, w *WorkItem, class, reason string) error {
+	if _, err := q.ExecContext(ctx, `
+		UPDATE work_item SET state = 'blocked', blocked_class = $2, blocked_reason = $3, updated_at = now()
+		WHERE id = $1`, w.ID, class, reason); err != nil {
+		return err
+	}
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO grant_block (scope, class, reason) VALUES ($1, $2, $3)
+		ON CONFLICT (scope) DO UPDATE SET class = $2, reason = $3, created_at = now(), cleared_at = NULL`,
+		GrantScope(w.KagentNamespace, w.KagentAgent), class, reason)
 	return err
 }
 
-// Block marks a work item blocked by a credential or quota failure.
-func (s *Store) Block(ctx context.Context, q Querier, workID int64, class, reason string) error {
-	_, err := q.ExecContext(ctx, `
-		UPDATE work_item SET state = 'blocked', blocked_class = $2, blocked_reason = $3, updated_at = now()
-		WHERE id = $1`, workID, class, reason)
-	return err
+// GrantBlocked reports whether a grant is paused, and why.
+func (s *Store) GrantBlocked(ctx context.Context, scope string) (bool, string, error) {
+	var reason string
+	err := s.DB.QueryRowContext(ctx, `SELECT reason FROM grant_block WHERE scope = $1 AND cleared_at IS NULL`, scope).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	return err == nil, reason, err
+}
+
+// ClearGrantBlock is the operator's unblock.
+func (s *Store) ClearGrantBlock(ctx context.Context, scope string) (bool, error) {
+	res, err := s.DB.ExecContext(ctx, `UPDATE grant_block SET cleared_at = now() WHERE scope = $1 AND cleared_at IS NULL`, scope)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // SetWorkState moves a work item to state.
@@ -453,6 +509,8 @@ type Attempt struct {
 	ErrorClass      string
 	Error           string
 	WriterEpoch     int64
+	Issues          int
+	FirstSentAt     time.Time
 	SentAt          time.Time
 }
 
@@ -463,13 +521,14 @@ func (a *Attempt) Open() bool {
 
 const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id, kind, message_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
-	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, coalesce(sent_at, 'epoch'::timestamptz)`
+	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
+	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz)`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
-		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.SentAt)
+		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt)
 	return a, err
 }
 
@@ -502,21 +561,32 @@ func (s *Store) OpenAttemptForWork(ctx context.Context, workID int64) (*Attempt,
 }
 
 // RecordAttempt inserts an attempt in state sending before anything is sent.
+// Recording a message ID that exists returns the existing attempt.
 func (s *Store) RecordAttempt(ctx context.Context, q Querier, a Attempt) (*Attempt, error) {
 	return scanAttempt(q.QueryRowContext(ctx, `
 		INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch, decision_id, kind, message_id,
 			kagent_namespace, kagent_agent, context_id, state, writer_epoch)
 		VALUES ($1, coalesce((SELECT max(seq) FROM delivery_attempt WHERE run_id = $1), 0) + 1,
 			$2, $3, $4, $5, $6, $7, $8, nullif($9, ''), 'sending', $10)
+		ON CONFLICT (message_id) DO UPDATE SET message_id = EXCLUDED.message_id
 		RETURNING `+attemptCols,
 		a.RunID, a.RunAttempt, a.WorkItemEpoch, a.DecisionID, a.Kind, a.MessageID,
 		a.KagentNamespace, a.KagentAgent, a.ContextID, a.WriterEpoch))
 }
 
-// MarkSent records that a send was issued, whatever its outcome.
-func (s *Store) MarkSent(ctx context.Context, id int64, at time.Time, state string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE delivery_attempt SET sent_at = coalesce(sent_at, $2), state = $3 WHERE id = $1`,
-		id, at, state)
+// MarkIssued records, before the call, that the message is being sent. From
+// then on only kagent's answer to the same message decides whether it holds it.
+func (s *Store) MarkIssued(ctx context.Context, a *Attempt, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE delivery_attempt SET state = 'ambiguous', sent_at = $2, first_sent_at = coalesce(first_sent_at, $2),
+			issues = issues + 1
+		WHERE id = $1 AND state IN ('sending', 'ambiguous')`, a.ID, at)
+	if err == nil {
+		a.State, a.SentAt, a.Issues = AttemptAmbiguous, at, a.Issues+1
+		if a.FirstSentAt.Unix() <= 0 {
+			a.FirstSentAt = at
+		}
+	}
 	return err
 }
 
@@ -547,6 +617,7 @@ func (s *Store) CountSends(ctx context.Context, runID int64) (int, error) {
 // Cancellation reasons and states.
 const (
 	CancelRunCanceled  = "run_canceled"
+	CancelRunClosed    = "run_closed" // itsaplan finished the run without this attempt's result
 	CancelReassignment = "reassignment"
 	CancelPending      = "pending"
 	CancelConfirmed    = "confirmed"
@@ -560,13 +631,14 @@ type Cancellation struct {
 	Reason    string
 	State     string
 	Requests  int
+	LastAt    time.Time
 	Outcome   string
 }
 
 // RequestCancellation records a pending cancellation for an attempt; a
 // pending one already recorded is kept.
-func (s *Store) RequestCancellation(ctx context.Context, attemptID, runID int64, reason string) error {
-	_, err := s.DB.ExecContext(ctx, `
+func (s *Store) RequestCancellation(ctx context.Context, q Querier, attemptID, runID int64, reason string) error {
+	_, err := q.ExecContext(ctx, `
 		INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
 		VALUES ($1, $2, $3, 'pending')
 		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, reason)
@@ -576,7 +648,8 @@ func (s *Store) RequestCancellation(ctx context.Context, attemptID, runID int64,
 // PendingCancellations lists cancellations kagent has not confirmed.
 func (s *Store) PendingCancellations(ctx context.Context) ([]*Cancellation, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, delivery_attempt_id, run_id, reason, state, requests, coalesce(outcome, '')
+		SELECT id, delivery_attempt_id, run_id, reason, state, requests,
+			coalesce(last_request_at, 'epoch'::timestamptz), coalesce(outcome, '')
 		FROM cancellation WHERE state = 'pending' ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -585,7 +658,7 @@ func (s *Store) PendingCancellations(ctx context.Context) ([]*Cancellation, erro
 	var out []*Cancellation
 	for rows.Next() {
 		c := &Cancellation{}
-		if err := rows.Scan(&c.ID, &c.AttemptID, &c.RunID, &c.Reason, &c.State, &c.Requests, &c.Outcome); err != nil {
+		if err := rows.Scan(&c.ID, &c.AttemptID, &c.RunID, &c.Reason, &c.State, &c.Requests, &c.LastAt, &c.Outcome); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -604,8 +677,8 @@ func (s *Store) HasPendingCancellation(ctx context.Context, workID int64) (bool,
 }
 
 // CountCancelRequest records that CancelTask was sent.
-func (s *Store) CountCancelRequest(ctx context.Context, id int64) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE cancellation SET requests = requests + 1 WHERE id = $1`, id)
+func (s *Store) CountCancelRequest(ctx context.Context, id int64, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE cancellation SET requests = requests + 1, last_request_at = $2 WHERE id = $1`, id, at)
 	return err
 }
 
@@ -647,11 +720,13 @@ func (s *Store) Enqueue(ctx context.Context, q Querier, kind, dedupe string, run
 	return err
 }
 
-// PendingOutbox lists undelivered side effects in order.
-func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]*OutboxItem, error) {
+// PendingOutbox lists undelivered side effects that are due, in order. A
+// failing item backs off, so it does not hold newer ones back.
+func (s *Store) PendingOutbox(ctx context.Context, now time.Time, limit int) ([]*OutboxItem, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, kind, dedupe_key, coalesce(run_id, 0), coalesce(agent_key, ''), payload, tries
-		FROM outbox WHERE delivered_at IS NULL AND abandoned_at IS NULL ORDER BY id LIMIT $1`, limit)
+		FROM outbox WHERE delivered_at IS NULL AND abandoned_at IS NULL AND next_attempt_at <= $1
+		ORDER BY id LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -673,9 +748,10 @@ func (s *Store) OutboxDelivered(ctx context.Context, q Querier, id int64) error 
 	return err
 }
 
-// OutboxFailed records a failed delivery to retry later.
-func (s *Store) OutboxFailed(ctx context.Context, id int64, msg string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2 WHERE id = $1`, id, msg)
+// OutboxFailed records a failed delivery and when to try again.
+func (s *Store) OutboxFailed(ctx context.Context, id int64, msg string, next time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3 WHERE id = $1`,
+		id, msg, next)
 	return err
 }
 

@@ -1,7 +1,7 @@
 package dispatch
 
 import (
-	"strings"
+	"regexp"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
@@ -14,31 +14,16 @@ const (
 	ClassCanceled    = "canceled"
 )
 
-// credentialMarkers name a dead or missing credential. codex_login_required
-// is the broker's answer for a dead Codex grant.
-var credentialMarkers = []string{
-	"codex_login_required",
-	"login required",
-	"invalid_api_key",
-	"invalid api key",
-	"unauthorized",
-	"401",
-	"authentication failed",
-	"bad credentials",
-	"token expired",
-	"refresh_token",
-}
-
-var quotaMarkers = []string{
-	"usage_limit_reached",
-	"usage limit",
-	"insufficient_quota",
-	"quota",
-	"rate limit",
-	"rate_limit",
-	"429",
-	"too many requests",
-}
+// kagent v1.0.1 reports a failed turn as status text only; the Codex error
+// category stays in its traces. These patterns match whole identifiers the
+// failure text carries: the broker's codex_login_required, Codex error
+// categories, OpenAI error codes, and HTTP statuses written as a status.
+var (
+	credentialRE = regexp.MustCompile(`(?i)\b(codex_login_required|invalid_api_key|unauthorized|` +
+		`(http|status|status code)[ :=]*401|token_expired|refresh_token_(expired|invalid|reused))\b`)
+	quotaRE = regexp.MustCompile(`(?i)\b(usage_?limit_?(reached|exceeded)|insufficient_quota|rate_limit_exceeded|` +
+		`(http|status|status code)[ :=]*429)\b`)
+)
 
 // Classify assigns a failed turn's error class from kagent's task state and
 // status text. Unknown failures are engineering failures.
@@ -49,16 +34,11 @@ func Classify(state, message string) string {
 	case kagent.StateCanceled:
 		return ClassCanceled
 	}
-	m := strings.ToLower(message)
-	for _, k := range credentialMarkers {
-		if strings.Contains(m, k) {
-			return ClassCredential
-		}
-	}
-	for _, k := range quotaMarkers {
-		if strings.Contains(m, k) {
-			return ClassQuota
-		}
+	switch {
+	case credentialRE.MatchString(message):
+		return ClassCredential
+	case quotaRE.MatchString(message):
+		return ClassQuota
 	}
 	return ClassEngineering
 }

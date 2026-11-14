@@ -78,6 +78,22 @@ func TestSendNotAcceptedIsRetryable(t *testing.T) {
 	}
 }
 
+func TestSendBusySessionIsNotAccepted(t *testing.T) {
+	var got rpcSeen
+	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","error":{"code":-32004,"message":"Session cannot accept work during a lifecycle operation"}}`, &got)
+	if _, err := c.Send(context.Background(), ref, Message{MessageID: "m", ContextID: "c1"}); !errors.Is(err, ErrNotAccepted) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSendInvalidRequestIsRejected(t *testing.T) {
+	var got rpcSeen
+	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","error":{"code":-32600,"message":"message ID was already used with a different request"}}`, &got)
+	if _, err := c.Send(context.Background(), ref, Message{MessageID: "m"}); !errors.Is(err, ErrRejected) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSendTransportErrorIsAmbiguous(t *testing.T) {
 	c := &A2A{BaseURL: "http://127.0.0.1:1"}
 	if _, err := c.Send(context.Background(), ref, Message{MessageID: "m"}); !errors.Is(err, ErrAmbiguous) {
@@ -96,11 +112,11 @@ func TestSendContinuationNotFound(t *testing.T) {
 func TestListGetCancel(t *testing.T) {
 	var got rpcSeen
 	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","result":{"tasks":[{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_WORKING"},"history":[{"messageId":"itsaplan-run/7/initial","role":"ROLE_USER","parts":[{"text":"hi"}]}]}],"totalSize":1,"pageSize":100,"nextPageToken":""}}`, &got)
-	tasks, next, err := c.ListTasks(context.Background(), ref, "c1", "")
-	if err != nil || next != "" || len(tasks) != 1 || !tasks[0].HasMessage("itsaplan-run/7/initial") {
+	tasks, next, err := c.ListTasks(context.Background(), ref, "c1", StateWorking, "")
+	if err != nil || next != "" || len(tasks) != 1 {
 		t.Fatalf("tasks = %+v next = %q err = %v", tasks, next, err)
 	}
-	if got.method != "ListTasks" || got.params["contextId"] != "c1" {
+	if got.method != "ListTasks" || got.params["contextId"] != "c1" || got.params["status"] != StateWorking || got.params["historyLength"] != float64(0) {
 		t.Fatalf("request = %+v", got)
 	}
 

@@ -1,10 +1,15 @@
 // Command connector runs the factory connector's dispatch loop between
 // itsaplan and kagent (projects/factory/ARCHITECTURE.md, "Connector").
+//
+//	connector                  run the loop
+//	connector unblock SCOPE    clear a credential or quota block, for example
+//	                           kagent:factory-homelab/coder
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,10 +32,39 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log); err != nil && !errors.Is(err, context.Canceled) {
+	var err error
+	if len(os.Args) == 3 && os.Args[1] == "unblock" {
+		err = unblock(os.Args[2])
+	} else {
+		err = run(log)
+	}
+	// A SIGTERM ends the loop with context.Canceled: a clean exit.
+	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("connector stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// unblock is the operator's action that clears a grant block.
+func unblock(scope string) error {
+	dsn := os.Getenv("FACTORY_CONNECTOR_DATABASE_URL")
+	if dsn == "" {
+		return errors.New("FACTORY_CONNECTOR_DATABASE_URL is required")
+	}
+	st, err := store.Open(dsn)
+	if err != nil {
+		return err
+	}
+	defer st.DB.Close()
+	cleared, err := st.ClearGrantBlock(context.Background(), scope)
+	if err != nil {
+		return err
+	}
+	if !cleared {
+		return fmt.Errorf("no active block for %s", scope)
+	}
+	fmt.Println("cleared", scope)
+	return nil
 }
 
 func run(log *slog.Logger) error {
@@ -102,11 +136,12 @@ func run(log *slog.Logger) error {
 	defer srv.Close()
 
 	eng := dispatch.New(dispatch.Config{
-		Holder:         cfg.Holder,
-		Agents:         agents,
-		Bindings:       bindings,
-		Heartbeat:      time.Duration(cfg.File.Intervals.Heartbeat),
-		DispatchWindow: time.Duration(cfg.File.Intervals.DispatchWindow),
+		Holder:          cfg.Holder,
+		Agents:          agents,
+		Bindings:        bindings,
+		Heartbeat:       time.Duration(cfg.File.Intervals.Heartbeat),
+		ReissueInterval: time.Duration(cfg.File.Intervals.ReissueInterval),
+		DispatchWindow:  time.Duration(cfg.File.Intervals.DispatchWindow),
 	}, st, its, a2a, sessions, m, log)
 
 	// Wait for the writer lock: during a Recreate rollout the old pod may
@@ -114,7 +149,8 @@ func run(log *slog.Logger) error {
 	for {
 		ok, err := eng.Acquire(ctx)
 		if err != nil {
-			log.Error("acquire writer", "error", err)
+			// Acquire released the lock; exit and let the pod restart.
+			return fmt.Errorf("acquire writer: %w", err)
 		}
 		if ok {
 			break
@@ -128,6 +164,15 @@ func run(log *slog.Logger) error {
 	defer eng.Release()
 	log.Info("writer acquired", "epoch", eng.Epoch(), "holder", cfg.Holder)
 
+	// Leases are kept by their own loop so a slow call in a tick cannot let
+	// itsaplan expire a run. Either loop ending stops the process.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		err := eng.RunHeartbeats(ctx, time.Duration(cfg.File.Intervals.Heartbeat)/4)
+		cancel(err)
+	}()
+
 	tick := time.NewTicker(time.Duration(cfg.File.Intervals.Poll))
 	defer tick.Stop()
 	for {
@@ -136,11 +181,16 @@ func run(log *slog.Logger) error {
 				// Another process took over; exit so nothing writes twice.
 				return err
 			}
-			log.Error("tick", "error", err)
+			if ctx.Err() == nil {
+				log.Error("tick", "error", err)
+			}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+				return cause
+			}
+			return context.Canceled
 		case <-tick.C:
 		}
 	}
