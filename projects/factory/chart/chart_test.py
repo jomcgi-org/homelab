@@ -500,7 +500,7 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
         "provider": "OpenAI",
         "model": "gpt-6.1-terra",
         "openAI": {
-            "baseUrl": "http://factory-broker.factory.svc/v1",
+            "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",
             "apiFormat": "responses",
         },
         "actorJwt": {"audiences": ["factory-broker"]},

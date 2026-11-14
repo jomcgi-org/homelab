@@ -8,15 +8,15 @@ change. Labels: **[V]** verified in upstream source, docs or live state;
 
 ## Components and ownership
 
-| Responsibility | Component | Pin |
-| --- | --- | --- |
-| Work requests, assignment, work feed, run queue | itsaplan Community | v1.10.0 (`ghcr.io/croffasia/itsaplan-{api,web,worker}`), by digest |
-| Agent definitions, execution, sessions | kagent | v1.0.1 charts `oci://ghcr.io/kagent-dev/kagent/helm/{kagent-crds,kagent}` |
-| Isolated workspaces (actors) | Agent Substrate, kagent-dev fork | v1.0.1 |
-| Coding harness | Codex CLI | 0.161.0, as the kagent harness image pins it |
-| Repository, PR, CI, merge queue | GitHub | |
-| Provider and GitHub credentials | `projects/factory/broker` | this repo |
-| Relationships between itsaplan, kagent and GitHub | `projects/factory/connector` | this repo |
+| Responsibility                                    | Component                        | Pin                                                                       |
+| ------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------- |
+| Work requests, assignment, work feed, run queue   | itsaplan Community               | v1.10.0 (`ghcr.io/croffasia/itsaplan-{api,web,worker}`), by digest        |
+| Agent definitions, execution, sessions            | kagent                           | v1.0.1 charts `oci://ghcr.io/kagent-dev/kagent/helm/{kagent-crds,kagent}` |
+| Isolated workspaces (actors)                      | Agent Substrate, kagent-dev fork | v1.0.1                                                                    |
+| Coding harness                                    | Codex CLI                        | 0.161.0, as the kagent harness image pins it                              |
+| Repository, PR, CI, merge queue                   | GitHub                           |                                                                           |
+| Provider and GitHub credentials                   | `projects/factory/broker`        | this repo                                                                 |
+| Relationships between itsaplan, kagent and GitHub | `projects/factory/connector`     | this repo                                                                 |
 
 itsaplan owns the request and its run history, kagent owns execution and
 session state, GitHub owns PR, check, review and merge state. The connector
@@ -256,8 +256,10 @@ and retries once, so a brief overlap during a rollout is safe.
 
 - **Codex relay.** The ModelConfig uses `provider: OpenAI`,
   `openAI.apiFormat: responses`, `openAI.baseUrl` set to the broker's
-  Service with `/v1` (a DNS name, not an IP), and `actorJwt.audiences:
-  [factory-broker]`. [V] kagent binds that origin's `authorization` header
+  Service with `/v1` (a DNS name, not an IP, fully qualified with the
+  cluster domain: Substrate resolves actor destinations as absolute names,
+  so `<svc>.<ns>.svc` gets NXDOMAIN [V]), and `actorJwt.audiences:
+[factory-broker]`. [V] kagent binds that origin's `authorization` header
   with prefix `Bearer `; Codex in the actor holds a placeholder that the
   Substrate gateway replaces with a JWT minted for the actor, also over
   cleartext `http`. The broker verifies it against the issuer's discovery
@@ -333,15 +335,15 @@ and retries once, so a brief overlap during a rollout is safe.
 
 ## Identities
 
-| Who | How |
-| --- | --- |
-| Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client in Authentik; invite-only registration; a break-glass admin |
-| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
-| Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
-| Connector to itsaplan | A coordinator external agent for comments, issue state and run lookups (`work_items read` and `ai_agents read` in each bound project); the coding agent's key claims runs |
-| Connector and agents to GitHub | Broker-minted App tokens, one repository per binding |
-| Independent review | The Semgrep reviewer as a required check bound to its App ID in the ruleset |
-| Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
+| Who                            | How                                                                                                                                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Humans to itsaplan             | Edge OIDC, then itsaplan's own OIDC client in Authentik; invite-only registration; a break-glass admin                                                                                                                         |
+| Humans to kagent               | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
+| Connector to kagent            | Projected ServiceAccount token, kept ServiceAccount                                                                                                                                                                            |
+| Connector to itsaplan          | A coordinator external agent for comments, issue state and run lookups (`work_items read` and `ai_agents read` in each bound project); the coding agent's key claims runs                                                      |
+| Connector and agents to GitHub | Broker-minted App tokens, one repository per binding                                                                                                                                                                           |
+| Independent review             | The Semgrep reviewer as a required check bound to its App ID in the ruleset                                                                                                                                                    |
+| Workloads                      | Substrate pod certificates and actor SPIFFE IDs; no SPIRE                                                                                                                                                                      |
 
 ## Delivery plan
 
