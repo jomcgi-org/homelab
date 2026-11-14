@@ -63,6 +63,15 @@ bazel_dep(name = "toolchains_buildbuddy", version = "0.0.4")
 # directory in the upstream archive.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# Test-only real OTTL engine. SHA-256 verified against the upstream v0.159.0
+# otelcol-contrib_0.159.0_linux_amd64.tar.gz.sha256 release asset.
+http_archive(
+    name = "otelcol_contrib_runtime_test",
+    build_file_content = 'exports_files(["otelcol-contrib"], visibility = ["//visibility:public"])',
+    sha256 = "9d589f6349f01179957a2052bc7307a99db2efc971e14e00575941a77122eaaf",
+    urls = ["https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.159.0/otelcol-contrib_0.159.0_linux_amd64.tar.gz"],
+)
+
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")

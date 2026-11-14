@@ -1,3 +1,4 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -14,6 +15,8 @@ exports_files(
 # The chart mounts this script and runs it with the image's Python.
 # Keep it as chart data without a generated Bazel binary or nested package.
 # gazelle:exclude files/backup_check.py
+# gazelle:python_library_naming_convention redaction_fixtures
+# gazelle:resolve py redaction_fixtures //projects/platform/otel-collector:redaction_fixtures
 exports_files(["files/backup_check.py"])
 
 helm_chart(
@@ -112,6 +115,7 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = [
+        "//projects/platform/otel-collector:redaction_fixtures",
         "@pip//pytest",
         "@pip//pyyaml",
     ],
@@ -122,4 +126,41 @@ py_test(
     srcs = ["backup_check_test.py"],
     data = ["files/backup_check.py"],
     deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "collector_redaction_runtime_test",
+    srcs = [
+        "collector_redaction_runtime_test.py",
+    ],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+        "@otelcol_contrib_runtime_test//:otelcol-contrib",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "files/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "OTELCOL_BIN": "$(rootpath @otelcol_contrib_runtime_test//:otelcol-contrib)",
+    },
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    deps = [
+        "//projects/platform/otel-collector:redaction_fixtures",
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_library(
+    name = "redaction_fixtures",
+    srcs = ["redaction_fixtures.py"],
+    visibility = ["//:__subpackages__"],
 )
