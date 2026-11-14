@@ -3,8 +3,12 @@ package statemachine
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -92,49 +96,127 @@ func TestMetricsObserver_OnTransition_SubsequentTransition(t *testing.T) {
 	}
 }
 
-// TestMetricsObserver_OnTransitionError verifies that OnTransitionError does
-// not panic and records the error metric.
-func TestMetricsObserver_OnTransitionError(t *testing.T) {
-	obs := NewMetricsObserver()
+// These tests share the production collectors. Keep them serial and compare
+// snapshots so previous tests and repeated runs can accumulate observations.
+func metricsRegistry(t *testing.T) *prometheus.Registry {
+	t.Helper()
+	registry := prometheus.NewRegistry()
+	for _, collector := range []prometheus.Collector{reconcileTotal, reconcileDuration, errorsTotal, resourcePhase} {
+		if err := registry.Register(collector); err != nil {
+			t.Fatalf("register collector: %v", err)
+		}
+	}
+	return registry
+}
 
+func gatherMetrics(t *testing.T, registry *prometheus.Registry) []*dto.MetricFamily {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	return families
+}
+
+// findMetric preserves the distinction between absent and present zero samples.
+func findMetric(families []*dto.MetricFamily, name string, labels map[string]string) (*dto.Metric, bool) {
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if len(metric.GetLabel()) != len(labels) {
+				continue
+			}
+			matches := true
+			for _, label := range metric.GetLabel() {
+				value, ok := labels[label.GetName()]
+				if !ok || value != label.GetValue() {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return metric, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func assertCounterDeltas(t *testing.T, before, after []*dto.MetricFamily, family, label string, values []string, selected string) {
+	t.Helper()
+	for _, value := range values {
+		labels := map[string]string{label: value}
+		previous, _ := findMetric(before, family, labels)
+		current, present := findMetric(after, family, labels)
+		want := 0.0
+		if value == selected {
+			want = 1
+			if !present {
+				t.Errorf("%s{%s=%q} absent after increment", family, label, value)
+			}
+		}
+		if delta := current.GetCounter().GetValue() - previous.GetCounter().GetValue(); delta != want {
+			t.Errorf("%s{%s=%q} counter delta = %g, want %g", family, label, value, delta, want)
+		}
+	}
+}
+
+var metricErrorTypes = []string{"transient", "permanent", "transition_error", "unknown_type"}
+
+func TestMetricsObserver_OnTransitionError(t *testing.T) {
+	registry := metricsRegistry(t)
+	obs := NewMetricsObserver()
 	mc := newMCForMetrics("model3", "default", PhasePending)
 	from := ModelCachePending{resource: mc}
 	to := ModelCacheResolving{
 		resource:      mc,
 		ResolveResult: ResolveResult{ResolvedRef: "ref", ResolvedRevision: "main", Format: "gguf"},
 	}
-
-	// Should not panic.
+	before := gatherMetrics(t, registry)
 	obs.OnTransitionError(context.Background(), from, to, errValidation)
+	assertCounterDeltas(t, before, gatherMetrics(t, registry), "modelcache_errors_total", "error_type", metricErrorTypes, "transition_error")
 }
 
-// TestRecordReconcile_DoesNotPanic verifies that RecordReconcile does not panic
-// for both success and error results.
-func TestRecordReconcile_DoesNotPanic(t *testing.T) {
-	cases := []struct {
-		phase   string
-		success bool
-	}{
-		{PhasePending, true},
-		{PhaseResolving, false},
-		{PhaseSyncing, true},
-		{PhaseReady, true},
-		{PhaseFailed, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.phase, func(t *testing.T) {
-			RecordReconcile(tc.phase, 50*time.Millisecond, tc.success)
-		})
+func TestRecordReconcile_Metrics(t *testing.T) {
+	registry := metricsRegistry(t)
+	for _, phase := range []string{PhasePending, PhaseResolving, PhaseSyncing, PhaseReady, PhaseFailed} {
+		for _, success := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/success=%t", phase, success), func(t *testing.T) {
+				duration := 50 * time.Millisecond
+				before := gatherMetrics(t, registry)
+				RecordReconcile(phase, duration, success)
+				after := gatherMetrics(t, registry)
+				result := "error"
+				if success {
+					result = "success"
+				}
+				assertCounterDeltas(t, before, after, "modelcache_reconcile_total", "result", []string{"success", "error"}, result)
+				labels := map[string]string{"phase": phase}
+				previous, _ := findMetric(before, "modelcache_reconcile_duration_seconds", labels)
+				current, present := findMetric(after, "modelcache_reconcile_duration_seconds", labels)
+				if !present {
+					t.Fatal("reconciliation duration histogram absent after observation")
+				}
+				if delta := current.GetHistogram().GetSampleCount() - previous.GetHistogram().GetSampleCount(); delta != 1 {
+					t.Errorf("reconciliation duration count delta = %d, want 1", delta)
+				}
+				if delta := current.GetHistogram().GetSampleSum() - previous.GetHistogram().GetSampleSum(); math.Abs(delta-duration.Seconds()) > 1e-9 {
+					t.Errorf("reconciliation duration sum delta = %g, want %g seconds", delta, duration.Seconds())
+				}
+			})
+		}
 	}
 }
 
-// TestRecordError_DoesNotPanic verifies that RecordError does not panic for
-// arbitrary error type strings.
-func TestRecordError_DoesNotPanic(t *testing.T) {
-	types := []string{"transient", "permanent", "transition_error", "unknown_type"}
-	for _, et := range types {
-		t.Run(et, func(t *testing.T) {
-			RecordError(et)
+func TestRecordError_Metrics(t *testing.T) {
+	registry := metricsRegistry(t)
+	for _, errorType := range metricErrorTypes {
+		t.Run(errorType, func(t *testing.T) {
+			before := gatherMetrics(t, registry)
+			RecordError(errorType)
+			assertCounterDeltas(t, before, gatherMetrics(t, registry), "modelcache_errors_total", "error_type", metricErrorTypes, errorType)
 		})
 	}
 }
@@ -146,12 +228,44 @@ func TestCleanupResourceMetrics_DoesNotPanic(t *testing.T) {
 	CleanupResourceMetrics("non-existent-ns", "non-existent-name")
 }
 
-// TestCleanupResourceMetrics_AfterPhaseGauge verifies that cleanup after
-// setting a gauge doesn't leave stale metrics around (no panic).
 func TestCleanupResourceMetrics_AfterPhaseGauge(t *testing.T) {
-	// Set a gauge then clean it up.
-	resourcePhase.WithLabelValues("cleanup-ns", "cleanup-model", PhaseReady).Set(1)
-	CleanupResourceMetrics("cleanup-ns", "cleanup-model")
+	registry := metricsRegistry(t)
+	phases := []string{PhasePending, PhaseResolving, PhaseSyncing, PhaseReady, PhaseFailed, "Unknown"}
+	resources := []struct{ namespace, name string }{
+		{"cleanup-ns", "cleanup-model"},
+		{"cleanup-ns", "control-model"},
+		{"control-ns", "cleanup-model"},
+	}
+	for _, resource := range resources {
+		for i, phase := range phases {
+			// Include a present zero sample, which must still be deleted.
+			resourcePhase.WithLabelValues(resource.namespace, resource.name, phase).Set(float64(i))
+			t.Cleanup(func() {
+				resourcePhase.DeleteLabelValues(resource.namespace, resource.name, phase)
+			})
+		}
+	}
+	assertGauges := func(families []*dto.MetricFamily, cleaned bool) {
+		t.Helper()
+		for index, resource := range resources {
+			for i, phase := range phases {
+				labels := map[string]string{"namespace": resource.namespace, "name": resource.name, "phase": phase}
+				metric, present := findMetric(families, "modelcache_resource_phase", labels)
+				if cleaned && index == 0 {
+					if present {
+						t.Errorf("target phase %s still present after cleanup", phase)
+					}
+				} else if !present {
+					t.Errorf("phase gauge %v absent, want present with value %d", labels, i)
+				} else if got := metric.GetGauge().GetValue(); got != float64(i) {
+					t.Errorf("phase gauge %v = %g, want %d", labels, got, i)
+				}
+			}
+		}
+	}
+	assertGauges(gatherMetrics(t, registry), false)
+	CleanupResourceMetrics(resources[0].namespace, resources[0].name)
+	assertGauges(gatherMetrics(t, registry), true)
 }
 
 // TestMetricsObserver_ConcurrentTransitions verifies that concurrent calls to

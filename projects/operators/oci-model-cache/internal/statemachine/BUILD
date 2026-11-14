@@ -66,6 +66,8 @@ go_test(
         "@com_github_go_logr_logr//testr",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@com_github_prometheus_client_model//go",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
