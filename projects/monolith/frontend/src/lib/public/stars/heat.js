@@ -162,6 +162,13 @@ export function isUpcoming(iso, nowMs) {
 }
 
 const NIGHT_SHIFT_MS = 12 * HOUR_MS;
+const nightFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/London",
+});
+// Sites share forecast hours. Keep the conversion once per timestamp, with a
+// bound for long-open pages whose forecast horizon keeps advancing.
+const nightKeys = new Map();
+const MAX_NIGHT_KEYS = 1024;
 
 // The viewing-night key (YYYY-MM-DD) an hour belongs to, matching the server's
 // retired _night_key. A night runs from one evening into the next morning, so
@@ -170,9 +177,11 @@ const NIGHT_SHIFT_MS = 12 * HOUR_MS;
 export function nightKey(iso) {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return null;
-  return new Date(ms - NIGHT_SHIFT_MS).toLocaleDateString("en-CA", {
-    timeZone: "Europe/London",
-  });
+  if (nightKeys.has(ms)) return nightKeys.get(ms);
+  const key = nightFormatter.format(new Date(ms - NIGHT_SHIFT_MS));
+  if (nightKeys.size >= MAX_NIGHT_KEYS) nightKeys.clear();
+  nightKeys.set(ms, key);
+  return key;
 }
 
 // A site's upcoming clear windows (the live layer): best_hours with already-

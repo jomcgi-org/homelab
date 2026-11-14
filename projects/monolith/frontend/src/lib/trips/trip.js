@@ -26,6 +26,8 @@ export const dayColor = (i) => DAY_COLORS[i % DAY_COLORS.length];
 
 const NOISE_THRESHOLD = 5; // metres: GPS elevation noise floor near sea level
 const CHANGE_THRESHOLD = 5; // metres: ignore sub-5m wiggle in ascent/descent
+const dayFormatters = new Map();
+const MAX_DAY_FORMATTERS = 32;
 
 // "YYYY-MM-DD" for an ISO timestamp in the trip's IANA zone, so day grouping is
 // stable regardless of where the SSR render runs (the server clock is UTC).
@@ -34,12 +36,21 @@ export function dayKey(iso, tz) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz || "UTC",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(d);
+    const zone = tz || "UTC";
+    let formatter = dayFormatters.get(zone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      // Reuse the trip's formatter across every point and navigation. Bound
+      // the cache because server rendering shares the module across requests.
+      if (dayFormatters.size >= MAX_DAY_FORMATTERS) dayFormatters.clear();
+      dayFormatters.set(zone, formatter);
+    }
+    return formatter.format(d);
   } catch {
     return d.toISOString().slice(0, 10);
   }

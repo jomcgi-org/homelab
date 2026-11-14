@@ -196,6 +196,34 @@ describe("nightKey", () => {
   it("returns null for an unparseable time", () => {
     expect(nightKey("nope")).toBe(null);
   });
+
+  it.each([
+    ["2026-03-29T11:00:00Z", "2026-03-28"],
+    ["2026-03-29T12:00:00Z", "2026-03-29"],
+    ["2026-10-25T10:59:00Z", "2026-10-24"],
+    ["2026-10-25T11:00:00Z", "2026-10-25"],
+    ["2026-01-01T00:00:00Z", "2025-12-31"],
+  ])("preserves the absolute twelve-hour shift for %s", (iso, expected) => {
+    expect(nightKey(iso)).toBe(expected);
+    expect(nightKey(iso)).toBe(expected);
+  });
+
+  it("shares a night across equivalent offsets and keeps later nights separate", () => {
+    expect(nightKey("2026-06-16T03:00:00+01:00")).toBe("2026-06-15");
+    expect(nightKey("2026-06-16T02:00:00Z")).toBe("2026-06-15");
+    expect(nightKey("2026-06-17T02:00:00Z")).toBe("2026-06-16");
+  });
+
+  it("retains the same results as the forecast horizon advances", () => {
+    const first = "2026-01-01T22:00:00Z";
+    const expected = nightKey(first);
+    const start = Date.parse(first);
+    for (let day = 1; day <= 1100; day++) {
+      const iso = new Date(start + day * 86_400_000).toISOString();
+      expect(nightKey(iso)).toBe(iso.slice(0, 10));
+    }
+    expect(nightKey(first)).toBe(expected);
+  });
 });
 
 describe("liveWindows", () => {
