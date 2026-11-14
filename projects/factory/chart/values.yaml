@@ -265,6 +265,27 @@ agents:
       requested change on the branch you are given, run the checks the
       repository documents, and push the branch. Never print credentials.
 
+  reviewer:
+    harness: codex
+    provider: broker
+    model: gpt-6-astra
+    # All runtimes share kagent.config.runtimeDefaults, as for codex above.
+    resources:
+      cpu: "4"
+      memory: 8Gi
+    worker:
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "4"
+          memory: 9Gi
+    concurrency: 2
+    egress: [github-git]
+    systemPrompt: |
+      you review pull requests read-only per the rules in your task; you never push, commit or open PRs
+
 # Repository bindings: the access boundary. Each gets one namespace (its
 # Substrate atespace) holding one Agent, its ModelConfig, Harness,
 # EgressPolicies and Substrate WorkerPool, plus the broker's git token. Each
@@ -443,6 +464,46 @@ connector:
     endpoints: []
     port: 5432
   # Metrics and /healthz.
+  metricsPort: 9090
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# The independent reviewer. Enabling it needs the broker, kagent's fixed
+# serviceAccount.authority and each review namespace in kagent.rbac.namespaces
+# and Substrate credentialProvider.namespacePolicies. Deploy values follow the
+# chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
+reviewer:
+  enabled: false
+  # Overwritten at build time by helm_chart(images = ...).
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/reviewer
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  githubApp:
+    # app-id, installation-id and private-key, mounted only by the broker.
+    itemPath: vaults/k8s-homelab/items/factory-review-gh-app
+  appId: 5758326
+  checkName: factory review
+  concurrency: 2
+  enqueueAuthors: [jomcgi]
+  humanApprovers: [jomcgi]
+  # Per repository name: namespace defaults to <coding namespace>-review.
+  # Other keys are reviewer/config Binding policy fields (requiredChecks,
+  # skipLabels, enqueueAuthors, humanGatePaths, humanGateLabels,
+  # humanApprovers, trustedCommenters, contextDocs, generatedPaths,
+  # maxDiffLines, maxDiffFiles). Unset policy fields use the service defaults;
+  # explicit empty lists stay empty. Owner/repo/baseBranch/agent are derived.
+  bindings: {}
+  # Service defaults: poll 30s, taskPoll/reissue 15s, timeout 45m,
+  # retryBackoff 5m. Values use Go duration strings.
+  intervals: {}
+  ruleIds: []
+  # /healthz and /metrics; no scraper ingress is granted.
   metricsPort: 9090
   resources:
     requests:

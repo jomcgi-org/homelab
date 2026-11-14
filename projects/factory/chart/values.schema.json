@@ -415,6 +415,208 @@
         }
       }
     },
+    "reviewer": {
+      "description": "Independent reviewer (projects/factory/reviewer), off until deploy values enable it.",
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(|sha256:[0-9a-f]{64})$"
+            },
+            "pullPolicy": {
+              "enum": [
+                "IfNotPresent",
+                "Always",
+                "Never"
+              ]
+            }
+          }
+        },
+        "githubApp": {
+          "type": "object",
+          "required": [
+            "itemPath"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "itemPath": {
+              "type": "string",
+              "pattern": "^vaults/[^/]+/items/[^/]+$"
+            }
+          }
+        },
+        "appId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "enqueueAuthors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "humanApprovers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 63
+              },
+              "requiredChecks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/connectorCheck"
+                }
+              },
+              "skipLabels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "enqueueAuthors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "humanGatePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "humanGateLabels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "humanApprovers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "trustedCommenters": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "contextDocs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "generatedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxDiffLines": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxDiffFiles": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "intervals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "poll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "taskPoll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "reissue": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "timeout": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "retryBackoff": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            }
+          }
+        },
+        "ruleIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "metricsPort": {
+          "$ref": "#/definitions/port"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
     "connector": {
       "description": "The connector (projects/factory/connector).",
       "type": "object",

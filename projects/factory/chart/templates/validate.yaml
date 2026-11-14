@@ -13,7 +13,7 @@ instead of silently rendering nothing.
 {{- fail "providers are not implemented in this chart version; agents use the broker's relay" }}
 {{- end }}
 {{- with .Values.broker.operatorServiceAccount }}
-{{- if or (has . (list "default" (include "factory.brokerName" $) (include "factory.connectorName" $))) (hasPrefix "factory-itsaplan" .) }}
+{{- if or (has . (list "default" (include "factory.brokerName" $) (include "factory.connectorName" $) (include "factory.reviewerName" $))) (hasPrefix "factory-itsaplan" .) }}
 {{- fail (printf "broker.operatorServiceAccount %s is a ServiceAccount the chart's Pods use; name a separate one" .) }}
 {{- end }}
 {{- end }}

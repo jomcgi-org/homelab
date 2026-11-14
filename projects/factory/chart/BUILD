@@ -10,6 +10,7 @@ helm_chart(
     images = {
         "broker.image": "//projects/factory/broker/image:image.info",
         "connector.image": "//projects/factory/connector/image:image.info",
+        "reviewer.image": "//projects/factory/reviewer/image:image.info",
     },
     # The vendored kagent subcharts are linted by their own repository.
     lint = False,
@@ -121,6 +122,36 @@ py_test(
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "reviewer_test",
+    srcs = ["reviewer_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.schema.json",
+        "values.yaml",
+        "//projects/factory/chart/configcheck",
+        "//projects/factory/deploy:deploy_values",
+        "//projects/factory/deploy:render_lock",
+        "@multitool//tools/helm",
+    ] + glob([
+        "charts/**",
+        "crds/**",
+        "files/**",
+        "templates/**",
+    ]),
+    env = {
+        "CONFIG_CHECK_BIN": "$(rootpath //projects/factory/chart/configcheck)",
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
     },
     deps = [
         "@pip//pytest",

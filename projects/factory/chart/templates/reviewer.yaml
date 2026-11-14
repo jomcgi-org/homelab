@@ -1,0 +1,122 @@
+{{- if .Values.reviewer.enabled }}
+{{- $c := .Values.reviewer }}
+{{- $ns := .Values.broker.namespace }}
+{{- $name := include "factory.reviewerName" . }}
+{{- $configYAML := include "factory.reviewerConfig" . }}
+# A kagent principal includes this ServiceAccount's UID. Keep it across
+# upgrades and disable/re-enable cycles, just like the connector's.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  config.yaml: |
+    {{- $configYAML | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # There is no writer lease: two instances would review every head twice.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "factory.reviewerSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.reviewerSelector" . | nindent 8 }}
+        app.kubernetes.io/part-of: factory
+      annotations:
+        checksum/config: {{ $configYAML | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reviewer
+          image: {{ include "factory.reviewerImage" . | quote }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          env:
+            - name: FACTORY_REVIEWER_CONFIG
+              value: /etc/factory-reviewer/config.yaml
+          ports:
+            - name: metrics
+              containerPort: {{ $c.metricsPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 30
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/factory-reviewer
+              readOnly: true
+            - name: kagent-token
+              mountPath: /var/run/secrets/kagent
+              readOnly: true
+            - name: broker-token
+              mountPath: /var/run/secrets/factory-broker
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: kagent-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: kagent-invocation
+                  expirationSeconds: 3600
+                  path: token
+        - name: broker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: factory-broker
+                  expirationSeconds: 3600
+                  path: token
+{{- end }}

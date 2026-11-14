@@ -1,0 +1,8 @@
+{{- if .Values.reviewer.enabled }}
+{{- range $r := .Values.repositories }}
+{{- $binding := deepCopy $r }}
+{{- $_ := set $binding "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" $r)) }}
+{{- $_ := set $binding "agent" "reviewer" }}
+{{- include "factory.bindingResources" (dict "root" $ "binding" $binding "description" "Reviews pull requests in") }}
+{{- end }}
+{{- end }}

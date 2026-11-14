@@ -1,0 +1,230 @@
+{{/* Shared coding and review binding resources. Keep the caller's source file stable. */}}
+{{- define "factory.bindingResources" -}}
+{{- $r := .binding }}
+{{- $description := .description }}
+{{- $ := .root }}
+{{- $a := index $.Values.agents $r.agent }}
+{{- $ns := $r.namespace }}
+{{- $agent := include "factory.bindingAgentName" $r }}
+{{- $worker := printf "%s-worker" $agent }}
+---
+# Kept: deleting it would take the Agent's WorkerPool and the git token with
+# it; removing a binding is a deliberate cleanup.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    factory.jomcgi.dev/repository: {{ $r.name }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" $ | nindent 4 }}
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $worker }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+{{- if $.Values.substrate.credentialProvider.secretReaderBinding }}
+---
+# Lets Substrate's credential provider read this namespace's Secrets for
+# egress injection; it injects only those labelled
+# substrate.ate.dev/injectable=true, and only for actors in the atespaces its
+# namespacePolicies grant this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: substrate-credential-provider
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $.Values.substrate.credentialProvider.clusterRole }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $.Values.substrate.credentialProvider.serviceAccount }}
+    namespace: {{ $.Values.substrate.namespace }}
+{{- end }}
+---
+# One worker per concurrent actor. The placement labels keep this Agent's
+# actors on this pool (kagent matches them; Substrate copies pool labels to
+# its workers).
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: {{ $agent }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    kagent.dev/worker-pool-name: {{ $agent }}
+    kagent.dev/worker-pool-namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ $a.concurrency }}
+  workerImage: {{ $.Values.workers.image | quote }}
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: {{ $.Values.workers.sandboxConfig }}
+  template:
+    serviceAccountName: {{ $worker }}
+    resources:
+      {{- toYaml $a.worker.resources | nindent 6 }}
+---
+# The broker's Codex relay. kagent binds the origin's Authorization header
+# (prefix "Bearer ") to an actor JWT for audience factory-broker; Codex holds
+# only a placeholder.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $r.agent }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: OpenAI
+  model: {{ $a.model | quote }}
+  openAI:
+    baseUrl: {{ include "factory.brokerRelayURL" $ | quote }}
+    apiFormat: responses
+  actorJwt:
+    audiences: [factory-broker]
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: {{ $a.harness }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  {{ $a.harness }}: {}
+  env:
+    # git sends a placeholder Authorization to GitHub; the egress gateway
+    # replaces it from github-git (EgressPolicy github-git). No credential
+    # helper or prompt can hand git anything else.
+    - name: GIT_TERMINAL_PROMPT
+      value: "0"
+    - name: GIT_CONFIG_COUNT
+      value: "2"
+    - name: GIT_CONFIG_KEY_0
+      value: http.https://github.com/.extraHeader
+    - name: GIT_CONFIG_VALUE_0
+      value: "Authorization: Basic factory-placeholder"
+    - name: GIT_CONFIG_KEY_1
+      value: credential.helper
+    - name: GIT_CONFIG_VALUE_1
+      value: ""
+  substrate:
+    workerPoolRef:
+      name: {{ $agent }}
+    snapshotPolicy:
+      location: {{ printf "%s%s/" $.Values.workers.snapshotLocationPrefix $ns | quote }}
+{{- if has "github-git" $a.egress }}
+---
+# git over HTTPS to GitHub, authenticated with the binding's installation
+# token: key `basic` is base64 of x-access-token:<token>, minted by the broker.
+apiVersion: api.kagent.dev/v1alpha3
+kind: EgressPolicy
+metadata:
+  name: github-git
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  destinations:
+    - origin: https://github.com
+      authentication:
+        header: Authorization
+        prefix: "Basic "
+        secretKeyRef:
+          name: github-git
+          key: basic
+{{- end }}
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: {{ $agent }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    factory.jomcgi.dev/repository: {{ $r.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  template:
+    inline:
+      description: {{ printf "%s %s/%s" $description $r.owner $r.repo | quote }}
+      modelConfig:
+        name: {{ $r.agent }}
+      systemPrompt: {{ $a.systemPrompt | quote }}
+  harnessRef:
+    name: {{ $a.harness }}
+  {{- with $a.egress }}
+  egressPolicyRefs:
+    {{- range . }}
+    - name: {{ . }}
+    {{- end }}
+  {{- end }}
+{{- if $.Values.networkPolicy.cilium }}
+---
+# Worker pods: actor traffic arrives only from Substrate's router and leaves
+# only through its egress gateway (the cluster-wide substrate-workers policy
+# says the same for egress). Nothing else in this namespace has any access.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.substrate.namespace }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $.Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+
+{{- end }}
