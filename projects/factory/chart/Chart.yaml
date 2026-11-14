@@ -2,7 +2,7 @@ apiVersion: v2
 name: factory
 description: The software factory on the factory home cluster (projects/factory/ARCHITECTURE.md). This version installs kagent; itsaplan, the credential broker and the connector follow.
 type: application
-version: 0.1.0
+version: 0.2.23
 appVersion: "0.1.0"
 dependencies:
   # Agent definitions, execution and sessions.
