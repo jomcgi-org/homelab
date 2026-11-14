@@ -25,8 +25,17 @@ py_test(
     srcs = ["edge_test.py"],
     data = [
         ":chart",
+        "//projects/platform-factory/edge-admission/resources:policies.yaml",
+        "//projects/platform-factory/edge-tunnel/resources:route.yaml",
         "@multitool//tools/helm",
     ],
-    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pyyaml"],
+    env = {
+        "EDGE_ADMISSION": "$(rootpath //projects/platform-factory/edge-admission/resources:policies.yaml)",
+        "EDGE_TUNNEL": "$(rootpath //projects/platform-factory/edge-tunnel/resources:route.yaml)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )

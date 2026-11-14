@@ -5,7 +5,7 @@ import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import { App } from "./App";
 import { paths } from "./paths";
 
-it("links to the operator tools and keeps unrouted kagent unavailable", () => {
+it("links to all operator tools, including live kagent sessions", () => {
   render(
     <Theme theme={neutralTheme}>
       <App />
@@ -13,6 +13,7 @@ it("links to the operator tools and keeps unrouted kagent unavailable", () => {
   );
   for (const [label, href] of [
     ["Open itsaplan", paths.plan],
+    ["Open kagent", "https://factory-agents.jomcgi.dev"],
     ["Open Grafana", paths.grafana],
     ["Open ArgoCD", paths.argocd],
     ["Open GitHub", paths.github],
@@ -23,6 +24,5 @@ it("links to the operator tools and keeps unrouted kagent unavailable", () => {
     );
   }
   expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(5);
-  expect(screen.getByText("Coming soon")).toBeTruthy();
-  expect(screen.queryByRole("link", { name: /kagent/i })).toBeNull();
+  expect(screen.queryByText("Coming soon")).toBeNull();
 });

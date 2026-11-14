@@ -135,3 +135,13 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # kagent's UI proxies authenticated API calls to its controller.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kagent
+            app.kubernetes.io/name: kagent
+            app.kubernetes.io/component: ui
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

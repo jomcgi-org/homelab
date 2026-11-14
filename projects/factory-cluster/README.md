@@ -150,9 +150,9 @@ That shows one node; run it against each agent pod for the whole cluster.
 ## factory.jomcgi.dev
 
 The private entry point is a static Astryx landing page
-(`projects/factory-landing/`). It links to itsaplan, Grafana, ArgoCD and
-GitHub, including open factory PRs. kagent is marked coming soon until its
-hostname is routed. The page makes no API calls and holds no credentials.
+(`projects/factory-landing/`). It links to itsaplan, kagent, Grafana, ArgoCD
+and GitHub, including open factory PRs. The page makes no API calls and holds
+no credentials.
 
 The only path in from the internet:
 
@@ -179,13 +179,27 @@ The only path in from the internet:
 | factory-auth.jomcgi.dev | `edge/authentik` | Authentik itself, with MFA required |
 | factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
 | factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |
+| factory-agents.jomcgi.dev | `edge/kagent` to `kagent/kagent-ui:8080` | Envoy OIDC (client `factory-edge`), only `authentik Admins`; access token forwarded to kagent |
 
 Envoy's OIDC session lasts as long as the access token, ten minutes, with no
 refresh. Envoy then sends the browser back to Authentik, which checks the
 group binding again, so removing someone from `authentik Admins` ends their
 access within ten minutes. The cookies are `SameSite=Lax`.
 
-Authentik's own route is the one exemption from the gateway-wide policy:
+kagent's route and SecurityPolicy live in `edge`, where admission permits
+policies and their namespace-local targets. The policy replaces the gateway
+policy with the same OIDC settings plus `forwardAccessToken: true`. The
+gateway policy does not forward the token to ArgoCD, Grafana, itsaplan or
+the landing page. The edge chart also owns a ReferenceGrant in `kagent`,
+permitting only HTTPRoutes from `edge` to reference the `kagent-ui` Service.
+Cilium permits the edge proxy to reach the UI on 8080; the UI proxies API
+calls to the controller on 8083.
+The controller's bearer paths remain the edge, UI, connector,
+`atenet-egress` and the controller itself (factory architecture finding 5).
+A raw UI port-forward has no edge token and returns `Unauthenticated` for
+API calls. Sessions remain scoped to the signed-in user's kagent principal.
+
+Authentik's own route is the one exemption from sign-in:
 a route-level SecurityPolicy replaces it there, since the gateway policy
 redirects to Authentik. From the internet that route serves the flow pages,
 static files, the OAuth2 endpoints under `/application/o/` and three API
@@ -203,8 +217,8 @@ namespace and no per-Gateway EnvoyProxy; EnvoyProxy, SecurityPolicy,
 EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
 objects live only in `edge`; any route with a parent in `cfgate-system` must
 be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
-only `edge` may route factory-auth.jomcgi.dev; routes in `factory` may
-name only factory-plan.jomcgi.dev, routes in `grafana` only
+only `edge` may route factory-auth.jomcgi.dev or factory-agents.jomcgi.dev;
+routes in `factory` may name only factory-plan.jomcgi.dev, routes in `grafana` only
 factory-grafana.jomcgi.dev, routes in `argocd` only
 factory-argocd.jomcgi.dev and routes in `factory-landing` only
 factory.jomcgi.dev; and CloudflareDNS and
@@ -236,8 +250,11 @@ To publish another hostname, change these together in one PR: the hostname
 list in `projects/platform-factory/edge-tunnel/resources/route.yaml`, the
 `factory-edge` provider's `redirect_uris` in
 `projects/platform/authentik/factory-blueprints/factory-auth.yaml`, the app's
-HTTPRoute on `edge/edge` and its namespace in `routeNamespaces`, and the
-network policies above.
+HTTPRoute on `edge/edge` and its namespace in `routeNamespaces`, its hostname
+ownership rule in `edge-admission`, and the network policies above. A route
+that needs the access token uses the shared OIDC template in a policy in
+`edge`, with a ReferenceGrant in the backend namespace. Token forwarding
+stays off the gateway-wide policy.
 
 To take the edge down, delete the `edge-tunnel` Application first, so
 nothing is published while the rest goes, then `authentik`,
