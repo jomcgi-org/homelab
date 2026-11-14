@@ -3,6 +3,7 @@ import {
   useQueryClient,
   type QueryKey,
 } from "@tanstack/react-query";
+import { useRef } from "react";
 import { useToast } from "@astryxdesign/core/Toast";
 import { errorMessage, SignInError } from "../api/client";
 
@@ -28,6 +29,8 @@ export function useAction<TInput, TResult>(
 ) {
   const client = useQueryClient();
   const toast = useToast();
+  // Keyboard handlers can run twice before React renders isPending.
+  const running = useRef(false);
   const mutation = useMutation({
     mutationFn: action,
     onSuccess: async (result, input) => {
@@ -51,7 +54,17 @@ export function useAction<TInput, TResult>(
   });
   return {
     /** Resolves to the result, or undefined when the action failed. */
-    run: (input: TInput) => mutation.mutateAsync(input).catch(() => undefined),
+    run: async (input: TInput): Promise<TResult | undefined> => {
+      if (running.current) return undefined;
+      running.current = true;
+      try {
+        return await mutation.mutateAsync(input);
+      } catch {
+        return undefined;
+      } finally {
+        running.current = false;
+      }
+    },
     isPending: mutation.isPending,
   };
 }
