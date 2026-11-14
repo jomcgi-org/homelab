@@ -29,6 +29,8 @@ fail() {
 # claim already exist; CRANE_BROKEN makes every lookup fail instead.
 setup() {
 	local manifest="$1" published="$2" broken="${3:-}"
+	unset STUB_QUERY_FAIL STUB_LAYER_BUILD_FAIL STUB_LAYERED_IMAGE STUB_LAYERS
+	unset STUB_PREFLIGHT_FAIL STUB_TOOLS_TAG_DIGEST
 	WORK=$(mktemp -d)
 	mkdir -p "$WORK/bazel/images" "$WORK/bazel-bin/bazel/images/digests" "$WORK/bin"
 
@@ -71,6 +73,13 @@ BUILD
 # `query` answers with STUB_LAYERS (one label per line) only for the image
 # named in STUB_LAYERED_IMAGE, and `build` records what it was asked to fetch.
 if [ "${1:-}" = "query" ]; then
+	image=${2#*deps(}
+	image=${image%%,*}.push
+	echo "query $image" >>"$STUB_ORDER_LOG"
+	if [ "$image" = "${STUB_QUERY_FAIL:-}" ]; then
+		echo "stub: layer query failed for $image (exit 7)" >&2
+		exit 7
+	fi
 	if [ -n "${STUB_LAYERED_IMAGE:-}" ] && [[ "$2" == *"deps(${STUB_LAYERED_IMAGE%.push},"* ]]; then
 		printf '%s\n' "$STUB_LAYERS"
 	fi
@@ -78,13 +87,20 @@ if [ "${1:-}" = "query" ]; then
 fi
 if [ "${1:-}" = "build" ] && [[ "$*" == *"--remote_download_toplevel"* ]]; then
 	echo "$*" >>"$STUB_ORDER_LOG"
+	if [ "${STUB_LAYERED_IMAGE:-}" = "${STUB_LAYER_BUILD_FAIL:-}" ] && [ -n "${STUB_LAYER_BUILD_FAIL:-}" ]; then
+		echo "stub: layer build failed for $STUB_LAYER_BUILD_FAIL (exit 9)" >&2
+		exit 9
+	fi
 	exit 0
 fi
 if [ "${1:-}" = "run" ]; then
 	if [[ "$*" == *"--run_under="* ]]; then
 		echo "$2" >>"$STUB_PREFLIGHT_LOG"
 		echo "check $2" >>"$STUB_ORDER_LOG"
-		[ "$2" != "${STUB_PREFLIGHT_FAIL:-}" ] || exit 1
+		if [ "$2" = "${STUB_PREFLIGHT_FAIL:-}" ]; then
+			echo "stub: unreadable layout for $2" >&2
+			exit 1
+		fi
 		exit 0
 	fi
 	echo "$2" >>"$STUB_RUN_LOG"
@@ -421,7 +437,9 @@ teardown
 setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
+	"query //projects/beta:image.push" \
 	"check //projects/beta:image.push" \
+	"query //projects/gamma:image.push" \
 	"check //projects/gamma:image.push" \
 	"push //projects/beta:image.push" \
 	"push //projects/gamma:image.push" \
@@ -454,6 +472,7 @@ export STUB_LAYERED_IMAGE="//projects/beta:image.push"
 export STUB_LAYERS="//bazel/tools/image:prettier_tar"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
+	"query //projects/beta:image.push" \
 	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel //bazel/tools/image:prettier_tar" \
 	"check //projects/beta:image.push" \
 	"push //projects/beta:image.push" \
@@ -483,6 +502,96 @@ if grep -E -- "^run //bazel/images:push_charts .*--experimental_check_output_fil
 	pass "chart push re-checks remote outputs"
 else
 	fail "chart push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
+fi
+teardown
+
+# 21. A failed layer query defers to a valid layout and ordinary publication.
+setup "$MANIFEST_3" ""
+export STUB_QUERY_FAIL="//projects/beta:image.push"
+OUT=$(run_script) && STATUS=0 || STATUS=$?
+EXPECTED=$(printf '%s\n' \
+	"query //projects/alpha:image.push" \
+	"check //projects/alpha:image.push" \
+	"query //projects/beta:image.push" \
+	"check //projects/beta:image.push" \
+	"query //projects/gamma:image.push" \
+	"check //projects/gamma:image.push" \
+	"push //projects/alpha:image.push" \
+	"push //projects/beta:image.push" \
+	"push //projects/gamma:image.push" \
+	"push //bazel/images:push_charts")
+EXPECTED_RESULTS=$(printf '%s\t%s\t%s\t%s\t%s\n' \
+	"test-run" "pushed" "//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "sha256:aaa" \
+	"test-run" "pushed" "//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb" \
+	"test-run" "pushed" "//projects/gamma:image.push" "ghcr.io/jomcgi/homelab/gamma" "sha256:ccc")
+WARNING="WARNING: could not list layer tars for //projects/beta:image.push; the layout check decides"
+if [ "$STATUS" -eq 0 ] &&
+	grep -qF "$WARNING" <<<"$OUT" &&
+	[ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] &&
+	[ "$(cat "$STUB_RUN_LOG")" = "$(printf '%s\n' \
+		"//projects/alpha:image.push" "//projects/beta:image.push" \
+		"//projects/gamma:image.push" "//bazel/images:push_charts")" ] &&
+	grep -qE "^test-run [^ ]+ $WORK/\.chart-version-records [^ ]+ $WORK/bazel-bin$" "$STUB_VERIFY_ARGV" &&
+	[ "$(cat "$STUB_VERIFY_RESULTS")" = "$EXPECTED_RESULTS" ]; then
+	pass "failed layer query falls back to layout and completes publication and verification"
+else
+	fail "failed layer query falls back to layout and completes publication and verification" "status=$STATUS
+$OUT
+order: $(cat "$STUB_ORDER_LOG")
+verifier argv: $(cat "$STUB_VERIFY_ARGV")
+verifier results: $(cat "$STUB_VERIFY_RESULTS")"
+fi
+teardown
+
+# 22. The same warning must reach an unreadable layout and stop all writes.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+export STUB_QUERY_FAIL="//projects/beta:image.push"
+export STUB_PREFLIGHT_FAIL="//projects/beta:image.push"
+OUT=$(run_script) && STATUS=0 || STATUS=$?
+EXPECTED=$(printf '%s\n' \
+	"query //projects/alpha:image.push" \
+	"check //projects/alpha:image.push" \
+	"query //projects/beta:image.push" \
+	"check //projects/beta:image.push")
+if [ "$STATUS" -ne 0 ] &&
+	grep -qF "$WARNING" <<<"$OUT" &&
+	grep -qF "stub: unreadable layout for //projects/beta:image.push" <<<"$OUT" &&
+	[ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] &&
+	[ ! -s "$STUB_RUN_LOG" ] && [ ! -s "$STUB_VERIFY_ARGV" ] &&
+	[ ! -s "$STUB_VERIFY_RESULTS" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "failed layer query reaches unreadable layout and stops publication"
+else
+	fail "failed layer query reaches unreadable layout and stops publication" "status=$STATUS
+$OUT
+order: $(cat "$STUB_ORDER_LOG")"
+fi
+teardown
+
+# 23. A later layer download failure must abort before its layout check, even
+#     after an earlier selected image passed preflight. Nothing may publish.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+export STUB_LAYERED_IMAGE="//projects/beta:image.push"
+export STUB_LAYERS="//bazel/tools/image:prettier_tar"
+export STUB_LAYER_BUILD_FAIL="//projects/beta:image.push"
+OUT=$(run_script) && STATUS=0 || STATUS=$?
+EXPECTED=$(printf '%s\n' \
+	"query //projects/alpha:image.push" \
+	"check //projects/alpha:image.push" \
+	"query //projects/beta:image.push" \
+	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel //bazel/tools/image:prettier_tar")
+if [ "$STATUS" -eq 9 ] &&
+	grep -qF "stub: layer build failed for //projects/beta:image.push (exit 9)" <<<"$OUT" &&
+	[ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] &&
+	[ "$(cat "$STUB_PREFLIGHT_LOG")" = "//projects/alpha:image.push" ] &&
+	[ ! -s "$STUB_RUN_LOG" ] && [ ! -s "$STUB_VERIFY_ARGV" ] &&
+	[ ! -s "$STUB_VERIFY_RESULTS" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "failed later layer download stops before layout and all publication"
+else
+	fail "failed later layer download stops before layout and all publication" "status=$STATUS
+$OUT
+order: $(cat "$STUB_ORDER_LOG")"
 fi
 teardown
 
