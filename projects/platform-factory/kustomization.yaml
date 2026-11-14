@@ -22,4 +22,6 @@ resources:
   - ./factory-buckets # The factory namespace's Garage bucket keys
   - ./factory-db # The factory's CNPG Cluster (itsaplan, later the connector) and its Secrets in factory
   - ../factory/deploy # The software factory: kagent (projects/factory/)
+  - ./prometheus # Prometheus and kube-state-metrics: the operators' metrics store
+  - ./grafana # Grafana at factory-grafana.jomcgi.dev: dashboards over Prometheus
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

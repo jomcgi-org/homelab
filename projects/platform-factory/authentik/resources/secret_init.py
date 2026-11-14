@@ -3,7 +3,7 @@
 authentik-secrets (authentik namespace) is the source of truth. Each key is
 generated only when it is absent, so reruns never rotate a value. The OIDC
 client secrets are then copied to the namespaces that present them: the edge
-Gateway's SecurityPolicy, ArgoCD and itsaplan (factory chart).
+Gateway's SecurityPolicy, ArgoCD, itsaplan (factory chart) and Grafana.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -32,10 +32,11 @@ GENERATED = {
     "EDGE_OIDC_CLIENT_SECRET": 48,
     "ARGOCD_OIDC_CLIENT_SECRET": 48,
     "ITSAPLAN_OIDC_CLIENT_SECRET": 48,
+    "GRAFANA_OIDC_CLIENT_SECRET": 48,
 }
 # (namespace, name, key in the copy, key in the source, seconds to wait for
-# it). ArgoCD creates each Secret empty; this fills it. The factory chart's
-# Secret comes from another Application, which may sync after this one.
+# it). ArgoCD creates each Secret empty; this fills it. The factory's and
+# Grafana's Secrets come from other Applications, which may sync after this one.
 COPIES = [
     ("edge", "edge-oidc-client", "client-secret", "EDGE_OIDC_CLIENT_SECRET", 0),
     (
@@ -52,6 +53,7 @@ COPIES = [
         "ITSAPLAN_OIDC_CLIENT_SECRET",
         900,
     ),
+    ("grafana", "grafana-oidc", "client-secret", "GRAFANA_OIDC_CLIENT_SECRET", 900),
 ]
 
 

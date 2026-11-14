@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Grafana for the operators' metrics view (projects/factory-cluster/
+# README.md, "Metrics view"). Every ConfigMap name carries its content's hash,
+# so a change to the configuration or a dashboard rolls the pod.
+resources:
+  - network-policy.yaml
+  - oidc.yaml
+  - grafana.yaml
+  - route.yaml
+
+configMapGenerator:
+  - name: grafana-config
+    namespace: grafana
+    files:
+      - grafana.ini
+  - name: grafana-provisioning
+    namespace: grafana
+    files:
+      - datasources.yaml
+      - dashboards.yaml
+  - name: grafana-dashboards
+    namespace: grafana
+    files:
+      - dashboards/cluster.json
+      - dashboards/cilium-drops.json
+      - dashboards/cnpg.json
+      - dashboards/factory-delivery.json

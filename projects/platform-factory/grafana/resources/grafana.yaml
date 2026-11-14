@@ -1,0 +1,164 @@
+# Grafana, one replica. Nothing in its data directory needs keeping (grafana.ini),
+# so it is an emptyDir and the pod can move freely between nodes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana
+  namespace: grafana
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+spec:
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+    spec:
+      serviceAccountName: grafana
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+        seccompProfile:
+          type: RuntimeDefault
+      # A fresh admin password and secret key for each start; the database
+      # they protect starts fresh too.
+      initContainers:
+        - name: generate
+          image: docker.io/grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              umask 077
+              for f in admin-password secret-key; do
+                head -c 32 /dev/urandom | base64 | tr -d '\n/+=' > "/run/grafana/$f"
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: run
+              mountPath: /run/grafana
+      containers:
+        - name: grafana
+          image: docker.io/grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
+          env:
+            - name: GF_PATHS_CONFIG
+              value: /etc/grafana/grafana.ini
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/grafana/grafana.ini
+              subPath: grafana.ini
+              readOnly: true
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning
+              readOnly: true
+            - name: dashboards
+              mountPath: /var/lib/grafana-dashboards
+              readOnly: true
+            # The pod waits in ContainerCreating until authentik-secret-init
+            # has filled the key (the volume names it). Grafana reads it only
+            # at start, so restart it after the value changes.
+            - name: oidc
+              mountPath: /etc/grafana/oidc
+              readOnly: true
+            - name: run
+              mountPath: /run/grafana
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: grafana-config
+        - name: provisioning
+          configMap:
+            name: grafana-provisioning
+            items:
+              - key: datasources.yaml
+                path: datasources/datasources.yaml
+              - key: dashboards.yaml
+                path: dashboards/dashboards.yaml
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: oidc
+          secret:
+            secretName: grafana-oidc
+            items:
+              - key: client-secret
+                path: client-secret
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
