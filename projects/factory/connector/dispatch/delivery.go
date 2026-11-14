@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -999,7 +1000,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	cols, err := e.its.ProjectColumns(ctx, p.Project)
 	switch {
 	case e.refused(ctx, it, err):
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+		return e.abandonDone(ctx, it, p, "", "itsaplan refused reading the project: "+clip(err.Error(), 200))
 	case err != nil:
 		return err
 	}
@@ -1011,15 +1012,16 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	is, err := e.its.GetIssue(ctx, p.IssueID)
 	switch {
 	case errors.Is(err, itsaplan.ErrNotFound):
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is no longer visible; not moved to Done")
+		return e.abandonDone(ctx, it, p, "", "the issue is no longer visible to the factory")
 	case e.refused(ctx, it, err):
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+		return e.abandonDone(ctx, it, p, "", "itsaplan refused reading the issue: "+clip(err.Error(), 200))
 	case err != nil:
 		return err
 	}
 	for _, c := range cols {
 		if c.ID == is.ColumnID && c.StateType == "canceled" {
-			// Canceled since the merge: a person's decision stands.
+			// Canceled since the merge: a person's decision stands, and the
+			// issue already shows it, so nothing is posted.
 			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is canceled; not moved to Done")
 		}
 	}
@@ -1035,7 +1037,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 		}
 	}
 	if done == nil {
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "project "+p.Project+" has no done column")
+		return e.abandonDone(ctx, it, p, "", "project "+p.Project+" has no done column")
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -1052,12 +1054,38 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 		}
 		return err
 	case e.refused(ctx, it, err):
-		if cerr := e.doneRefused(ctx, p, done.Name, "itsaplan refused the move: "+clip(err.Error(), 200)); cerr != nil {
-			return cerr
-		}
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+		return e.abandonDone(ctx, it, p, done.Name, "itsaplan refused the move: "+clip(err.Error(), 200))
 	}
 	return err
+}
+
+// abandonDone gives up on a Done move and, in the same transaction, says
+// so on the issue once, so a merged issue never sits outside Done
+// unexplained. An empty column names the payload's, or Done.
+func (e *Engine) abandonDone(ctx context.Context, it *store.OutboxItem, p issueDonePayload, column, why string) error {
+	if column == "" {
+		column = cmp.Or(p.Column, "Done")
+	}
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/done-abandoned/%d", p.IssueID), 0, "",
+			commentPayload{IssueID: p.IssueID, Body: fmt.Sprintf(
+				"The pull request merged, but the factory could not move this issue to %q and has stopped trying: %s. "+
+					"Move it by hand.", column, why)}); err != nil {
+			return err
+		}
+		return e.st.OutboxAbandon(ctx, tx, it.ID, clip(why, maxErrorText))
+	})
+}
+
+// abandonItem gives up on an outbox item after outboxMaxTries. A Done move
+// is reported on its issue.
+func (e *Engine) abandonItem(ctx context.Context, it *store.OutboxItem, err error) error {
+	var p issueDonePayload
+	if it.Kind == store.OutboxIssueDone && json.Unmarshal(it.Payload, &p) == nil {
+		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("itsaplan kept failing after %d tries: %s",
+			outboxMaxTries, clip(err.Error(), 200)))
+	}
+	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
 }
 
 // doneRefused says on the issue, once, that it could not be moved to Done.
