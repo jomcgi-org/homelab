@@ -37,8 +37,10 @@ S3_ENDPOINT = "http://garage.garage.svc:3900"
 REGION = "garage"
 
 # Garage pods and the initial layout. Each pod runs on its own node
-# (required anti-affinity), so the pod's hostname is its zone.
+# (required anti-affinity), so the pod's hostname is its zone. The first
+# layout waits for all of them; later runs need only a write quorum.
 NODES = 3
+QUORUM = 2
 CAPACITY = 50 * 10**9  # bytes per node; used for balancing, not enforced
 
 BUCKETS = ["factory-itsaplan", "factory-evidence", "ate-snapshots", "kagent-pg-backups"]
@@ -47,7 +49,7 @@ BUCKETS = ["factory-itsaplan", "factory-evidence", "ate-snapshots", "kagent-pg-b
 GRANTS = [
     ("factory-itsaplan", "factory", "factory-itsaplan-s3"),
     ("factory-evidence", "factory", "factory-evidence-s3"),
-    ("kagent-pg-backups", "kagent", "kagent-pg-s3"),
+    ("kagent-pg-backups", "kagent-pg", "kagent-pg-s3"),
 ]
 
 
@@ -136,13 +138,18 @@ def wait_for_nodes(timeout=600):
     deadline = time.monotonic() + timeout
     while True:
         try:
+            # With a layout in place a node down for maintenance must not
+            # fail the run: two of three still serve every read and write.
+            need = QUORUM if garage("GET", "GetClusterLayout")["roles"] else NODES
             # A peer's hostname arrives with its first status exchange, a
             # few seconds after it connects; it names the node's zone.
             status = garage("GET", "GetClusterStatus")["nodes"]
             nodes = [n for n in status if n["isUp"] and n.get("hostname")]
-            if len(nodes) >= NODES:
+            if len(nodes) >= need:
+                if len(nodes) < NODES:
+                    print(f"WARNING: only {len(nodes)} of {NODES} Garage nodes up")
                 return nodes
-            print(f"{len(nodes)} of {NODES} Garage nodes up; waiting")
+            print(f"{len(nodes)} of {NODES} Garage nodes up, {need} needed; waiting")
         except (urllib.error.URLError, OSError) as e:
             print(f"Garage admin API not answering ({e}); waiting")
         if time.monotonic() > deadline:
@@ -213,7 +220,19 @@ def ensure_grant(bucket_id, bucket, namespace, name):
         # leaves credentials that the next run imports, never a lost key.
         k8s("PUT", secret_path(namespace, name), secret)
         print(f"updated {namespace}/{name}")
-    if garage("GET", "GetKeyInfo", query={"id": key_id}, missing_ok=True) is None:
+    info = garage(
+        "GET",
+        "GetKeyInfo",
+        query={"id": key_id, "showSecretKey": "true"},
+        missing_ok=True,
+    )
+    if info is not None and info.get("secretAccessKey") != key_secret:
+        # Never overwrite either side: the Secret may be stale, or Garage's
+        # key may have been changed by hand. An operator decides (README).
+        raise RuntimeError(
+            f"{namespace}/{name}: Garage key {key_id} has a different secret"
+        )
+    if info is None:
         garage(
             "POST",
             "ImportKey",
@@ -240,13 +259,21 @@ def bootstrap():
     nodes = wait_for_nodes()
     ensure_layout(nodes)
     ids = {name: ensure_bucket(name) for name in BUCKETS}
+    failed = []
+    # One bad grant must not stop the others.
     for bucket, namespace, name in GRANTS:
-        ensure_grant(ids[bucket], bucket, namespace, name)
+        try:
+            ensure_grant(ids[bucket], bucket, namespace, name)
+        except (Exception, SystemExit) as e:
+            print(f"ERROR: {namespace}/{name}: {e}")
+            failed.append(f"{namespace}/{name}")
     health = garage("GET", "GetClusterHealth")
     print(
         f"cluster {health['status']}: {health['storageNodesUp']}/{health['storageNodes']} "
         f"storage nodes up, {health['partitionsAllOk']}/{health['partitions']} partitions all ok"
     )
+    if failed:
+        raise SystemExit(f"grants failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

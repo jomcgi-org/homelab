@@ -2,15 +2,17 @@
 # (projects/factory/chart). The cluster has one install, so there is no
 # overlay.
 
-# kagent's database is the planned CNPG Cluster kagent-pg in the kagent
-# namespace, prepared with kagent's setup script, with the connection-string
-# Secrets kagent-postgres-owner and kagent-postgres-readwrite (the chart's
-# defaults). The CNPG operator and that Cluster land with delivery plan step 3;
-# until then the controller waits for those Secrets.
+# kagent's database is the CNPG Cluster kagent-pg in its own namespace,
+# kagent-pg (projects/platform-factory/kagent-postgres), prepared with
+# kagent's setup script. Its setup Job writes the connection-string Secrets
+# kagent-postgres-owner and kagent-postgres-readwrite (the chart's defaults)
+# into kagent; the superuser and backup credentials stay in kagent-pg, out of
+# the controller's reach.
 postgres:
   mode: existing
   existing:
     endpoints:
       - matchLabels:
+          k8s:io.kubernetes.pod.namespace: kagent-pg
           cnpg.io/cluster: kagent-pg
     port: 5432

@@ -2,11 +2,15 @@
 # daily base backups to Garage (projects/factory-cluster/README.md,
 # "Postgres"). Garage runs on the same three nodes, so this survives losing a
 # node or a volume, not losing the cluster.
+#
+# It runs in its own namespace, kagent-pg: the kagent controller can read
+# every Secret in kagent, and the superuser and backup credentials stay out
+# of its reach. Only the two connection strings are written into kagent.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: kagent-pg
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
     # Neither a prune nor deleting the Application removes the database; the
@@ -16,8 +20,10 @@ spec:
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised
-  # kagent-pg-setup runs kagent's setup script as the superuser: it creates
-  # roles, which the database owner cannot.
+  # kagent-pg-setup reruns kagent's setup script as the superuser after every
+  # sync: it creates roles, which the database owner cannot. The password
+  # stays in this namespace, and only the setup Job may connect besides the
+  # controller, peers and operator (network-policy.yaml).
   enableSuperuserAccess: true
   affinity:
     enablePodAntiAffinity: true
@@ -39,11 +45,15 @@ spec:
       owner: kagent_admin
   backup:
     retentionPolicy: "14d"
-    # The in-tree barman-cloud integration: CloudNativePG 1.30 still serves
-    # it, and the barman-cloud plugin would also need cert-manager. 1.31
-    # removes it, so the operator upgrade moves this to the plugin first.
+    # The in-tree barman-cloud integration, deprecated for several releases;
+    # CloudNativePG 1.31 removes it, so the operator upgrade moves this to the
+    # barman-cloud plugin (which also needs cert-manager) first.
     barmanObjectStore:
       destinationPath: s3://kagent-pg-backups/
+      # One prefix per incarnation. A Cluster created fresh refuses to
+      # archive into a non-empty prefix, so recreating it (rather than
+      # recovering from these backups) takes the next name (README).
+      serverName: kagent-pg-v1
       endpointURL: http://garage.garage.svc:3900
       s3Credentials:
         accessKeyId:
@@ -64,7 +74,7 @@ apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
 metadata:
   name: kagent-pg-daily
-  namespace: kagent
+  namespace: kagent-pg
 spec:
   schedule: "0 30 2 * * *"
   # One base backup as soon as this is created, then daily.

@@ -1,14 +1,17 @@
-# kagent's PostgreSQL, outside the factory chart: the chart runs with
-# postgres.mode existing and reads the Secrets this creates
-# (projects/factory-cluster/README.md, "Postgres").
+# kagent's PostgreSQL in its own namespace, outside the factory chart: the
+# chart runs with postgres.mode existing and reads the two connection-string
+# Secrets this writes into kagent (projects/factory-cluster/README.md,
+# "Postgres").
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: kagent-postgres
   namespace: argocd
   annotations:
-    # After cloudnative-pg (wave 2, the Cluster CRD); with garage (wave 3).
-    argocd.argoproj.io/sync-wave: "3"
+    # After cloudnative-pg (wave 2, the Cluster CRD), garage (wave 3) and the
+    # factory chart (wave 3), which creates the kagent namespace the
+    # connection strings go to.
+    argocd.argoproj.io/sync-wave: "4"
     # The root Application prunes; removing this file must not cascade into
     # the database.
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
@@ -22,26 +25,28 @@ spec:
     path: projects/platform-factory/kagent-postgres/resources
   destination:
     server: https://kubernetes.default.svc
-    # The factory chart labels and keeps this namespace once it is installed;
-    # CreateNamespace leaves it untracked here, so the two never conflict.
-    namespace: kagent
+    namespace: kagent-pg
   # kagent-pg-setup and garage-init write these.
   ignoreDifferences:
     - group: ""
       kind: Secret
+      namespace: kagent-pg
       name: kagent-pg-logins
       jsonPointers: [/data]
     - group: ""
       kind: Secret
+      namespace: kagent-pg
+      name: kagent-pg-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: kagent
       name: kagent-postgres-owner
       jsonPointers: [/data]
     - group: ""
       kind: Secret
+      namespace: kagent
       name: kagent-postgres-readwrite
-      jsonPointers: [/data]
-    - group: ""
-      kind: Secret
-      name: kagent-pg-s3
       jsonPointers: [/data]
   syncPolicy:
     automated:

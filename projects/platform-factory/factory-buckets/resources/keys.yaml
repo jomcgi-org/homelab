@@ -10,7 +10,7 @@ metadata:
   name: factory-itsaplan-s3
   namespace: factory
   annotations:
-    argocd.argoproj.io/sync-options: Delete=false
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
 apiVersion: v1
@@ -19,7 +19,7 @@ metadata:
   name: factory-evidence-s3
   namespace: factory
   annotations:
-    argocd.argoproj.io/sync-options: Delete=false
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
 apiVersion: rbac.authorization.k8s.io/v1

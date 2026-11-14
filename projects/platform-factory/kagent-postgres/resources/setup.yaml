@@ -4,15 +4,17 @@
 # script (setup.psql, setup.sql), which creates the roles and schema and sets
 # the passwords. Both steps are idempotent.
 #
-# ArgoCD owns the Secrets as empty placeholders and ignores their data.
+# ArgoCD owns the Secrets as empty placeholders and ignores their data. Only
+# the two connection strings go to the kagent namespace; the passwords'
+# source, the superuser and the backup key stay in kagent-pg.
 apiVersion: v1
 kind: Secret
 metadata:
   name: kagent-pg-logins
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
-    argocd.argoproj.io/sync-options: Delete=false
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
 apiVersion: v1
@@ -39,17 +41,17 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: kagent-pg-s3
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
-    argocd.argoproj.io/sync-options: Delete=false
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: garage-init
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 rules:
@@ -62,7 +64,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: garage-init
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 roleRef:
@@ -78,10 +80,25 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kagent-pg-setup
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kagent-pg-setup
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [kagent-pg-logins]
+    verbs: [get, update]
+---
+# The connection strings in kagent, the only names the setup Job may touch
+# there.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -92,8 +109,24 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [kagent-pg-logins, kagent-postgres-owner, kagent-postgres-readwrite]
+    resourceNames: [kagent-postgres-owner, kagent-postgres-readwrite]
     verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kagent-pg-setup
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kagent-pg-setup
+subjects:
+  - kind: ServiceAccount
+    name: kagent-pg-setup
+    namespace: kagent-pg
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -109,13 +142,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: kagent-pg-setup
-    namespace: kagent
+    namespace: kagent-pg
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: kagent-pg-setup
-  namespace: kagent
+  namespace: kagent-pg
   annotations:
     argocd.argoproj.io/hook: PostSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
