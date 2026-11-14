@@ -270,16 +270,27 @@ def test_existing_kagent_renders_only_crds() -> None:
     ("override", "message"),
     [
         ("kagent.enabled=false", "kagent.enabled must be true for kagent.mode install"),
-        ("itsaplan.enabled=true", "itsaplan is not implemented"),
-        ("broker.enabled=true", "broker is not implemented"),
-        ("connector.enabled=true", "connector is not implemented"),
+        (
+            "itsaplan.enabled=true",
+            r"itsaplan\.enabled must be one of|itsaplan is not implemented",
+        ),
+        (
+            "broker.enabled=true",
+            r"broker\.enabled must be one of|broker is not implemented",
+        ),
+        (
+            "connector.enabled=true",
+            r"connector\.enabled must be one of|connector is not implemented",
+        ),
         (
             "repositories[0].repo=homelab",
-            "repositories, agents and providers are not implemented",
+            r"repositories: Array must have at most 0|repositories, agents and providers",
         ),
         ("postgres.mode=install", "postgres.mode"),
     ],
 )
+# The schema rejects most of these before templates/validate.yaml does; the
+# pattern accepts either layer's message.
 def test_unimplemented_or_inconsistent_values_fail(override: str, message: str) -> None:
     with pytest.raises(RuntimeError, match=message):
         _render([override])
