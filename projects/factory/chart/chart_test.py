@@ -46,9 +46,7 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
 
 
 def _one(docs: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
-    found = [
-        d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name
-    ]
+    found = [d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name]
     assert len(found) == 1, f"expected one {kind}/{name}, found {len(found)}"
     return found[0]
 
@@ -66,7 +64,9 @@ def test_crds_match_vendored_chart() -> None:
 
 def test_crd_hook_applies_every_crd() -> None:
     docs = _render()
-    crds = {d["metadata"]["name"] for d in docs if d["kind"] == "CustomResourceDefinition"}
+    crds = {
+        d["metadata"]["name"] for d in docs if d["kind"] == "CustomResourceDefinition"
+    }
     assert len(crds) == 8
     config = _one(docs, "ConfigMap", "kagent-crds")
     assert {
@@ -95,7 +95,9 @@ def test_controller_identity_is_kept() -> None:
     assert sa["metadata"]["namespace"] == "kagent"
     assert _KEEP.items() <= sa["metadata"]["annotations"].items()
     deploy = _one(docs, "Deployment", "kagent-controller")
-    assert deploy["spec"]["template"]["spec"]["serviceAccountName"] == "kagent-controller"
+    assert (
+        deploy["spec"]["template"]["spec"]["serviceAccountName"] == "kagent-controller"
+    )
 
 
 def test_credential_provider_reads_only_this_namespace() -> None:
@@ -117,23 +119,33 @@ def test_credential_provider_reads_only_this_namespace() -> None:
     # No Secret in the chart is offered for egress injection.
     for doc in docs:
         if doc["kind"] == "Secret":
-            assert "substrate.ate.dev/injectable" not in doc["metadata"].get("labels", {})
+            assert "substrate.ate.dev/injectable" not in doc["metadata"].get(
+                "labels", {}
+            )
 
 
 def test_trusted_proxy_without_tool_server_or_default_model() -> None:
     docs = _render()
-    config = yaml.safe_load(_one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"])
+    config = yaml.safe_load(
+        _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
+    )
     assert config["server"]["auth"]["mode"] == "trusted-proxy"
     assert config["substrate"]["clientCertFile"]
     kinds = {d["kind"] for d in docs}
     assert "ModelConfig" not in kinds
-    assert not [d for d in docs if d["kind"] == "Deployment" and "tools" in d["metadata"]["name"]]
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and "tools" in d["metadata"]["name"]
+    ]
 
 
 def test_controller_admits_only_bearer_paths() -> None:
     policy = _one(_render(), "CiliumNetworkPolicy", "kagent-controller")
     peers = policy["spec"]["ingress"][0]["fromEndpoints"]
-    namespaces = {p["matchLabels"].get("k8s:io.kubernetes.pod.namespace") for p in peers}
+    namespaces = {
+        p["matchLabels"].get("k8s:io.kubernetes.pod.namespace") for p in peers
+    }
     # None: the UI and the controller itself, in the policy's namespace.
     assert namespaces == {None, "edge", "factory", "ate-system"}
     assert len(policy["spec"]["ingress"]) == 1

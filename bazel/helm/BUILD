@@ -84,6 +84,8 @@ SKIPPED_MANIFEST_SETS = {
     "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
     "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
+    "projects/factory": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by :template_test and :chart_test and trialled on the factory cluster.",
+    "projects/factory/deploy/values.yaml": "The factory chart's values; see projects/factory.",
     "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
     "projects/platform/authentik": "Hub-only chart; rendered with its hub overlay by :manifests_gke.",
     "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
