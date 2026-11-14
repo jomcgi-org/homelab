@@ -254,10 +254,25 @@ func (s *Store) OpenRuns(ctx context.Context) ([]*Run, error) {
 }
 
 // CountActiveRuns counts open runs of an agent key, for its concurrency.
+// A waiting run held by a block keeps no concurrency slot, so further runs
+// are still claimed while an operator fixes the grant.
 func (s *Store) CountActiveRuns(ctx context.Context, agentKey string) (int, error) {
 	var n int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT count(*) FROM run r WHERE r.agent_key = $1 AND r.state NOT IN ('closed', 'stale')
+			AND NOT (r.state = 'waiting' AND EXISTS (
+				SELECT 1 FROM work_item w
+				LEFT JOIN grant_block g ON g.scope = 'kagent:' || w.kagent_namespace || '/' || w.kagent_agent
+					AND g.cleared_at IS NULL
+				WHERE w.id = r.work_item_id AND (w.state = 'blocked' OR g.scope IS NOT NULL)))`, agentKey).Scan(&n)
+	return n, err
+}
+
+// CountBusyRuns counts an agent key's runs that hold a slot beyond waiting.
+func (s *Store) CountBusyRuns(ctx context.Context, agentKey string) (int, error) {
+	var n int
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT count(*) FROM run WHERE agent_key = $1 AND state NOT IN ('closed', 'stale')`, agentKey).Scan(&n)
+		`SELECT count(*) FROM run WHERE agent_key = $1 AND state NOT IN ('closed', 'stale', 'waiting')`, agentKey).Scan(&n)
 	return n, err
 }
 
@@ -358,16 +373,14 @@ type NewWorkItem struct {
 	IssueID  int64
 	IssueKey string
 	AgentKey string
-	// Human is true for a run a person started; it clears blocks.
-	Human bool
 }
 
 // ResolveWorkItem finds or creates the run's work item and links the run to
 // it. When the work item was last delivered by another agent key, its epoch
 // is bumped, reassigned is true, and in the same transaction any open
 // attempt of another run gets a pending cancellation; the session stays. A
-// run a person started makes the work item active again and clears its block
-// and its grant's.
+// new run makes the work item active again, except a blocked one: only an
+// operator's unblock clears a block.
 func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem) (w *WorkItem, reassigned bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		w, err = scanWork(tx.QueryRowContext(ctx, `SELECT `+workCols+` FROM work_item WHERE issue_id = $1 FOR UPDATE`, n.IssueID))
@@ -388,12 +401,9 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 			w, err = scanWork(tx.QueryRowContext(ctx, `
 				UPDATE work_item SET agent_key = $2,
 					epoch = epoch + CASE WHEN $3 THEN 1 ELSE 0 END,
-					state = CASE WHEN state = 'blocked' AND NOT $4 THEN state
-						WHEN state = 'done' THEN state ELSE 'active' END,
-					blocked_class = CASE WHEN $4 THEN NULL ELSE blocked_class END,
-					blocked_reason = CASE WHEN $4 THEN NULL ELSE blocked_reason END,
+					state = CASE WHEN state IN ('blocked', 'done') THEN state ELSE 'active' END,
 					updated_at = now()
-				WHERE id = $1 RETURNING `+workCols, w.ID, n.AgentKey, reassigned, n.Human))
+				WHERE id = $1 RETURNING `+workCols, w.ID, n.AgentKey, reassigned))
 			if err != nil {
 				return err
 			}
@@ -407,12 +417,6 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 					ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, w.ID, runID); err != nil {
 					return err
 				}
-			}
-		}
-		if n.Human {
-			if _, err := tx.ExecContext(ctx, `UPDATE grant_block SET cleared_at = now() WHERE scope = $1 AND cleared_at IS NULL`,
-				GrantScope(w.KagentNamespace, w.KagentAgent)); err != nil {
-				return err
 			}
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE run SET work_item_id = $2, updated_at = now() WHERE id = $1`, runID, w.ID)
@@ -435,18 +439,24 @@ func (s *Store) SetSession(ctx context.Context, q Querier, workID int64, session
 func GrantScope(namespace, agent string) string { return "kagent:" + namespace + "/" + agent }
 
 // Block marks a work item blocked by a credential or quota failure and
-// pauses its grant's other work items.
-func (s *Store) Block(ctx context.Context, q Querier, w *WorkItem, class, reason string) error {
+// pauses its grant's other work items. started is false when the grant was
+// already blocked, so the block is announced once.
+func (s *Store) Block(ctx context.Context, q Querier, w *WorkItem, class, reason string) (started bool, err error) {
 	if _, err := q.ExecContext(ctx, `
 		UPDATE work_item SET state = 'blocked', blocked_class = $2, blocked_reason = $3, updated_at = now()
 		WHERE id = $1`, w.ID, class, reason); err != nil {
-		return err
+		return false, err
 	}
-	_, err := q.ExecContext(ctx, `
+	res, err := q.ExecContext(ctx, `
 		INSERT INTO grant_block (scope, class, reason) VALUES ($1, $2, $3)
-		ON CONFLICT (scope) DO UPDATE SET class = $2, reason = $3, created_at = now(), cleared_at = NULL`,
+		ON CONFLICT (scope) DO UPDATE SET class = $2, reason = $3, created_at = now(), cleared_at = NULL
+		WHERE grant_block.cleared_at IS NOT NULL`,
 		GrantScope(w.KagentNamespace, w.KagentAgent), class, reason)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // GrantBlocked reports whether a grant is paused, and why.
@@ -459,13 +469,23 @@ func (s *Store) GrantBlocked(ctx context.Context, scope string) (bool, string, e
 	return err == nil, reason, err
 }
 
-// ClearGrantBlock is the operator's unblock.
+// ClearGrantBlock is the operator's unblock. It clears the grant and the
+// work items it blocked.
 func (s *Store) ClearGrantBlock(ctx context.Context, scope string) (bool, error) {
-	res, err := s.DB.ExecContext(ctx, `UPDATE grant_block SET cleared_at = now() WHERE scope = $1 AND cleared_at IS NULL`, scope)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE grant_block SET cleared_at = now() WHERE scope = $1 AND cleared_at IS NULL`, scope)
+		if err != nil {
+			return err
+		}
+		if n, err = res.RowsAffected(); err != nil || n == 0 {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE work_item SET state = 'active', blocked_class = NULL, blocked_reason = NULL, updated_at = now()
+			WHERE state = 'blocked' AND 'kagent:' || kagent_namespace || '/' || kagent_agent = $1`, scope)
+		return err
+	})
 	return n > 0, err
 }
 

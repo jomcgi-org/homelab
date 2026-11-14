@@ -87,10 +87,6 @@ func MinDispatchWindow(callTimeout time.Duration) time.Duration {
 	return callTimeout + 2*time.Minute + 30*time.Second
 }
 
-// humanTriggers are itsaplan run triggers a person starts. Only these clear
-// a credential or quota block.
-var humanTriggers = map[string]bool{"mention": true, "manual": true, "field": true}
-
 // Engine runs dispatch.
 type Engine struct {
 	cfg      Config
@@ -569,7 +565,6 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	}
 	wi, reassigned, err := e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
 		Binding: b.Binding, IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
-		Human: humanTriggers[r.Trigger],
 	})
 	if err != nil {
 		return err
@@ -588,12 +583,9 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		e.m.Reassignments.Inc()
 		e.log.InfoContext(ctx, "work item reassigned", "work_item", wi.ID, "run", r.ID, "epoch", wi.Epoch)
 	}
-	ready, blocked, err := e.ready(ctx, r, wi)
+	ready, err := e.ready(ctx, r, wi)
 	if err != nil {
 		return err
-	}
-	if blocked != "" {
-		return e.failRun(ctx, e.st.DB, r, blocked)
 	}
 	if !ready {
 		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, "")
@@ -601,37 +593,31 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	return e.sendNext(ctx, r, wi, b, 0)
 }
 
-// ready reports whether a run may send now: no other run's attempt or
-// cancellation is open on the work item and kagent shows no running task in
-// the session. blocked is set when the work item or its grant is blocked: a
-// person's run would have cleared it, so the run fails back to itsaplan with
-// the reason instead of holding a concurrency slot that run needs.
-func (e *Engine) ready(ctx context.Context, r *store.Run, wi *store.WorkItem) (ready bool, blocked string, err error) {
+// ready reports whether a run may send now: its work item and grant are not
+// blocked, no other run's attempt or cancellation is open on the work item,
+// and kagent shows no running task in the session. A blocked run waits for
+// the operator's unblock without holding a concurrency slot.
+func (e *Engine) ready(ctx context.Context, r *store.Run, wi *store.WorkItem) (bool, error) {
 	if wi.State == store.WorkBlocked {
-		return false, "work item is blocked: " + wi.BlockedReason, nil
+		return false, nil
 	}
-	scope := store.GrantScope(wi.KagentNamespace, wi.KagentAgent)
-	paused, reason, err := e.st.GrantBlocked(ctx, scope)
-	if err != nil {
-		return false, "", err
-	}
-	if paused {
-		return false, fmt.Sprintf("paused: %s is blocked (%s); a person's new run or `connector unblock %s` resumes it",
-			scope, reason, scope), nil
+	paused, _, err := e.st.GrantBlocked(ctx, store.GrantScope(wi.KagentNamespace, wi.KagentAgent))
+	if err != nil || paused {
+		return false, err
 	}
 	pending, err := e.st.HasPendingCancellation(ctx, wi.ID)
 	if err != nil || pending {
-		return false, "", err
+		return false, err
 	}
 	prev, err := e.st.OpenAttemptForWork(ctx, wi.ID)
 	if err != nil {
-		return false, "", err
+		return false, err
 	}
 	if prev != nil && prev.RunID != r.ID {
-		return false, "", nil
+		return false, nil
 	}
 	busy, err := e.sessionBusy(ctx, wi)
-	return !busy, "", err
+	return !busy, err
 }
 
 // sessionBusy confirms with kagent that the work item's session has no
@@ -677,34 +663,44 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 	return busy, nil
 }
 
-// unmappedBusy cancels running tasks in the Agent's sessions that no work
-// item maps, reporting whether any were running.
-func (e *Engine) unmappedBusy(ctx context.Context, ref kagent.AgentRef) (bool, error) {
-	busy := false
+// runningTaskWithMessage finds the running task whose history holds a
+// message: in the session when contextID is set, otherwise in the Agent's
+// sessions that no work item maps, where a first send with a lost response
+// runs. Other runs' unattached first sends also run there, so only the
+// message ID, which kagent keys a first send's session by, picks the task.
+func (e *Engine) runningTaskWithMessage(ctx context.Context, ref kagent.AgentRef, contextID, messageID string) (*kagent.Task, error) {
 	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking} {
 		token := ""
 		for page := 0; page < 10; page++ {
 			if err := e.guard(ctx); err != nil {
-				return false, err
+				return nil, err
 			}
-			tasks, next, err := e.tasks.ListTasks(ctx, ref, "", state, token)
+			tasks, next, err := e.tasks.ListTasks(ctx, ref, contextID, state, token)
+			if errors.Is(err, kagent.ErrTaskNotFound) {
+				return nil, nil
+			}
 			if err != nil {
-				return false, err
+				return nil, err
 			}
-			for _, t := range tasks {
-				mapped, err := e.st.SessionMapped(ctx, t.ContextID)
-				if err != nil {
-					return false, err
+			for _, c := range tasks {
+				if contextID == "" {
+					mapped, err := e.st.SessionMapped(ctx, c.ContextID)
+					if err != nil {
+						return nil, err
+					}
+					if mapped {
+						continue
+					}
 				}
-				if mapped || kagent.Quiescent(t.Status.State) {
-					continue
-				}
-				busy = true
 				if err := e.guard(ctx); err != nil {
-					return false, err
+					return nil, err
 				}
-				if _, err := e.tasks.CancelTask(ctx, ref, t.ID); err != nil {
-					e.log.WarnContext(ctx, "cancel request failed", "task", t.ID, "error", err)
+				t, err := e.tasks.GetTask(ctx, ref, c.ID)
+				if err != nil {
+					return nil, err
+				}
+				if t.HasMessage(messageID) {
+					return t, nil
 				}
 			}
 			if next == "" {
@@ -713,11 +709,10 @@ func (e *Engine) unmappedBusy(ctx context.Context, ref kagent.AgentRef) (bool, e
 			token = next
 		}
 	}
-	return busy, nil
+	return nil, nil
 }
 
-// resumeWaiting sends a waiting run once its work item is ready. A run whose
-// work item or grant is blocked fails: the block stands until a person acts.
+// resumeWaiting sends a waiting run once its work item is ready.
 func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
@@ -727,17 +722,26 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	if b == nil {
 		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
 	}
-	ready, blocked, err := e.ready(ctx, r, wi)
-	if err != nil {
+	ready, err := e.ready(ctx, r, wi)
+	if err != nil || !ready {
 		return err
 	}
-	if blocked != "" {
-		return e.failRun(ctx, e.st.DB, r, blocked)
-	}
-	if !ready {
-		return nil
+	// Runs a block held were claimed without taking a slot; they resume
+	// within the agent key's concurrency.
+	busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
+	if err != nil || busy >= e.concurrency(r.AgentKey) {
+		return err
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
+}
+
+func (e *Engine) concurrency(agent string) int {
+	for _, a := range e.cfg.Agents {
+		if a.Key == agent && a.Concurrency > 0 {
+			return a.Concurrency
+		}
+	}
+	return 1
 }
 
 func messageID(runID int64, decision string) string {
@@ -1129,23 +1133,23 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, class, msg); err != nil {
 				return err
 			}
-			if err := e.st.Block(ctx, tx, wi, class, clip(msg, maxErrorText)); err != nil {
+			started, err := e.st.Block(ctx, tx, wi, class, clip(msg, maxErrorText))
+			if err != nil {
 				return err
+			}
+			if !started {
+				return e.reportBlocked(ctx, tx, r, t, reason)
 			}
 			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/blocked/%d/%d", r.ID, a.Seq), r.ID, "",
 				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
 					"The factory stopped %s: a %s failure needs a person before it can continue. "+
-						"Work items using kagent agent %s/%s are paused until a person starts a new run "+
-						"or an operator runs `connector unblock %s`. %s",
+						"Work items using kagent agent %s/%s wait until an operator fixes the grant "+
+						"and runs `connector unblock %s`. %s",
 					wi.IssueKey, class, wi.KagentNamespace, wi.KagentAgent,
 					store.GrantScope(wi.KagentNamespace, wi.KagentAgent), clip(msg, maxErrorText))}); err != nil {
 				return err
 			}
-			if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey,
-				itsaplan.Result{Status: "failed", Error: clip(reason, maxErrorText), Output: Output(t)}); err != nil {
-				return err
-			}
-			return e.st.SetRunState(ctx, tx, r.ID, store.RunFinishing, "")
+			return e.reportBlocked(ctx, tx, r, t, reason)
 		})
 	case ClassCanceled:
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
@@ -1160,6 +1164,15 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 		})
 	}
 	return e.engineeringFailure(ctx, r, wi, a, msg)
+}
+
+// reportBlocked queues the failed result of the turn that hit a block.
+func (e *Engine) reportBlocked(ctx context.Context, tx *sql.Tx, r *store.Run, t *kagent.Task, reason string) error {
+	if err := e.st.Enqueue(ctx, tx, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey,
+		itsaplan.Result{Status: "failed", Error: clip(reason, maxErrorText), Output: Output(t)}); err != nil {
+		return err
+	}
+	return e.st.SetRunState(ctx, tx, r.ID, store.RunFinishing, "")
 }
 
 // engineeringFailure retries in the same session within the work item's
@@ -1248,24 +1261,20 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		if e.cfg.Now().Sub(a.SentAt) < e.cfg.DispatchWindow {
 			return nil
 		}
-		if a.ContextID == "" {
-			// A first send opens its own session, which no work item maps
-			// if the response was lost. Stop any running task in such a
-			// session; the listing holds only the connector's sessions.
-			busy, err := e.unmappedBusy(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent})
-			if err != nil || busy {
-				return err
-			}
-			return e.confirmCancel(ctx, c, a, "not_dispatched")
-		}
-		// A continuation's session admits one running task. Whatever runs
-		// there now was started by this message or is stopped anyway before
-		// the work item continues.
-		busy, err := e.sessionBusy(ctx, &store.WorkItem{KagentNamespace: a.KagentNamespace, KagentAgent: a.KagentAgent, SessionID: a.ContextID})
-		if err != nil || busy {
+		// Only the task holding this attempt's message is a target. A first
+		// send runs in a session no work item maps yet; the listing holds
+		// only the connector's sessions.
+		t, err := e.runningTaskWithMessage(ctx, ref, a.ContextID, a.MessageID)
+		if err != nil {
 			return err
 		}
-		return e.confirmCancel(ctx, c, a, "not_dispatched")
+		if t == nil {
+			return e.confirmCancel(ctx, c, a, "not_dispatched")
+		}
+		if err := e.st.MarkAccepted(ctx, e.st.DB, a.ID, t.ContextID, t.ID); err != nil {
+			return err
+		}
+		a.TaskID, a.ContextID = t.ID, t.ContextID
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
