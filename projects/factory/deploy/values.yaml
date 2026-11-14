@@ -69,6 +69,10 @@ kagent:
 agents:
   codex:
     model: gpt-6-astra
+    # Coding actors at once, each its own Substrate worker (requests 1 CPU,
+    # 2Gi). The nodes idle at ~4% CPU, so the queue and merge contention bound
+    # throughput, not compute. Matches connector.agents below.
+    concurrency: 4
   # The reviewer reads and never edits, so it needs no apply_patch and runs on
   # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14:
   # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
@@ -77,6 +81,8 @@ agents:
   # the coder.
   reviewer:
     model: gpt-6.1-terra
+    # One worker per concurrent review (reviewer.concurrency).
+    concurrency: 3
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
@@ -111,6 +117,10 @@ itsaplan:
 # for the homelab binding.
 connector:
   enabled: true
+  # homelab-codex claims up to agents.codex.concurrency runs at once.
+  agents:
+    - username: homelab-codex
+      concurrency: 4
   bindings:
     homelab:
       itsaplanProject: HOME
@@ -148,6 +158,8 @@ connector:
 # (k8s-homelab/factory-review-gh-app).
 reviewer:
   enabled: true
+  # Reviews at once; agents.reviewer.concurrency gives each a worker.
+  concurrency: 3
   bindings:
     homelab:
       enqueueAuthors: []
