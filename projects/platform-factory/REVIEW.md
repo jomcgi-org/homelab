@@ -5,8 +5,12 @@ Rules for anything deployed to the factory cluster, on top of the root
 boundary: a rule below broken on them is critical.
 
 - **Every route signs in.** Each HTTPRoute attaches to the `edge` Gateway
-  under its gateway-wide Authentik OIDC policy. The only other
-  SecurityPolicy is Authentik's own route. The `oidc-sentinel` route stays.
+  under its gateway-wide Authentik OIDC policy. The only two route-level
+  SecurityPolicies are Authentik's own route and `kagent-authentik-oidc`,
+  which carries the shared `edge.oidc` settings plus `forwardAccessToken: true`.
+  `test_only_kagent_forwards_the_access_token` in
+  `projects/platform-factory/edge/chart/edge_test.py` pins this set.
+  The `oidc-sentinel` route stays.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.
 - **Hostnames are owned.** A new route's namespace gets a rule in
