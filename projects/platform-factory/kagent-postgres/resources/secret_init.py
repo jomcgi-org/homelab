@@ -14,6 +14,8 @@ import json
 import os
 import secrets
 import ssl
+import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -108,5 +110,16 @@ def main():
             print(f"{TARGET_NAMESPACE}/{name} current")
 
 
+def wait_for_key():
+    """Return once garage-init has written kagent-pg's Garage key."""
+    while True:
+        data = get("kagent-pg-s3").get("data") or {}
+        if "AWS_SECRET_ACCESS_KEY" in data:
+            print(f"{NAMESPACE}/kagent-pg-s3 has a key")
+            return
+        print(f"waiting for garage-init to fill {NAMESPACE}/kagent-pg-s3")
+        time.sleep(15)
+
+
 if __name__ == "__main__":
-    main()
+    wait_for_key() if sys.argv[1:] == ["wait-for-key"] else main()

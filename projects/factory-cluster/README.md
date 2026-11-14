@@ -288,7 +288,8 @@ does the rest, idempotently:
 - **Secrets.** Before the StatefulSet, it fills `garage/garage-secrets` with
   the RPC secret and admin token, once. They exist only in the cluster; the
   Secret carries `Prune=false,Delete=false`.
-- **Layout.** After every sync (PostSync Job) and hourly (CronJob), it
+- **Layout.** After every sync (PostSync Job) and every 10 minutes
+  (CronJob), it
   applies the first layout once all three nodes are connected. Later runs
   need only two nodes up, so a node down for maintenance does not fail them.
   It never changes an existing layout: a node that comes back with a new ID
@@ -303,7 +304,7 @@ does the rest, idempotently:
   Garage lacks it, and grants read and write on that one bucket. The Secret
   is the source of truth, so a rebuilt Garage gets the same keys back. A
   consumer whose Secret appears after the last sync is served by the next
-  hourly run. Each grant is handled on its own: one failing grant is logged
+  scheduled run. Each grant is handled on its own: one failing grant is logged
   and fails the run without stopping the others. A Secret whose key ID
   exists in Garage with a different secret is reported, never overwritten
   on either side; delete the Garage key (`garage key delete`) to have the
@@ -365,6 +366,11 @@ has no versioning or Object Lock) stay in `kagent-pg`; only the two
 connection strings cross into `kagent`. Superuser access stays enabled
 because the setup Job reruns `setup.sql` after every sync; within its
 namespace only that Job and the operator can use it.
+
+A CloudNativePG instance that starts before its Garage key exists caches
+the missing credentials and archives nothing until it restarts, so
+`kagent-pg-wait-for-key` (wave -1) holds the Cluster back until garage-init
+has filled `kagent-pg-s3`, at most one 10-minute run on a fresh install.
 
 Backups use the in-tree barman-cloud integration: continuous WAL archiving
 and a daily base backup (02:30 UTC, 14 days kept) to `kagent-pg-backups` in

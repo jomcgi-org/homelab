@@ -6,7 +6,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   annotations:
-    # Before the Cluster (wave -1), whose instances need the API server.
+    # Before the Cluster (wave 0), whose instances need the API server.
     argocd.argoproj.io/sync-wave: "-3"
   name: kagent-pg
   namespace: kagent-pg

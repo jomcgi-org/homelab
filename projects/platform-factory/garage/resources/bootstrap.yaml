@@ -1,6 +1,6 @@
 # garage-init (garage_init.py): the secrets Job fills garage-secrets before
 # the StatefulSet starts; the bootstrap Job (after every sync) and CronJob
-# (hourly) assign the initial layout and create buckets and per-bucket keys.
+# (every 10 minutes) assign the initial layout and create buckets and per-bucket keys.
 #
 # ArgoCD owns garage-secrets and each consumer's key Secret as empty
 # placeholders and ignores their data. Each consumer namespace grants the
@@ -158,15 +158,16 @@ spec:
           configMap:
             name: garage-init
 ---
-# The same reconciliation hourly: serves a consumer Secret created after the
-# last sync and re-imports keys Garage has lost.
+# The same reconciliation every 10 minutes: serves a consumer Secret created
+# after the last sync (kagent-pg waits for its key) and re-imports keys
+# Garage has lost.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: garage-bootstrap
   namespace: garage
 spec:
-  schedule: "17 * * * *"
+  schedule: "*/10 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 2
