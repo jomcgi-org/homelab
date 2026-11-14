@@ -236,6 +236,10 @@ type fakeKagent struct {
 	loseResponse bool
 	// dropSend loses the next send before kagent accepts it.
 	dropSend bool
+	// dropFor loses every send of these message IDs before acceptance;
+	// loseFor accepts them but loses every response.
+	dropFor map[string]bool
+	loseFor map[string]bool
 	// notAccepted rejects the next sends with KAGENT_SEND_NOT_ACCEPTED.
 	notAccepted int
 	// lateAccept takes the next send's dispatch reservation but loses the
@@ -296,6 +300,15 @@ func (k *fakeKagent) Send(_ context.Context, agent kagent.AgentRef, msg kagent.M
 	defer k.mu.Unlock()
 	k.calls++
 	k.sends = append(k.sends, fakeSend{agent, msg})
+	if k.dropFor[msg.MessageID] {
+		return nil, fmt.Errorf("%w: connection reset", kagent.ErrAmbiguous)
+	}
+	if k.loseFor[msg.MessageID] {
+		if _, err := k.accept(agent, msg); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: response lost", kagent.ErrAmbiguous)
+	}
 	if len(k.sendErr) > 0 {
 		err := k.sendErr[0]
 		k.sendErr = k.sendErr[1:]

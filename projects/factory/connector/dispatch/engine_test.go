@@ -931,7 +931,7 @@ func (v *env) setTrigger(id int64, trigger string) {
 	v.its.get(id).run.Trigger = trigger
 }
 
-func TestBlockedGrantFailsAutomatedRunsAndFreesTheSlot(t *testing.T) {
+func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 	v := newEnv(t)
 	v.cfg.Agents = []dispatch.Agent{{Key: "coder", Concurrency: 1}, {Key: "coder-b", Concurrency: 1}}
 	v.e.Release()
@@ -942,34 +942,96 @@ func TestBlockedGrantFailsAutomatedRunsAndFreesTheSlot(t *testing.T) {
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 
-	// An automated run on another issue fails back instead of holding the
-	// only slot.
+	// A person sets the delegate on another issue: the run waits, and the
+	// next one is still claimed.
 	v.its.add(2, "coder", 102, "HL-2", "Other work.")
 	v.setTrigger(2, "delegation")
+	v.its.add(3, "coder", 103, "HL-3", "More work.")
+	v.setTrigger(3, "delegation")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
-	if r := v.run(2); r.State != store.RunClosed {
-		t.Fatalf("run 2 = %s, want closed", r.State)
-	}
-	if res := v.its.Run(2).results; len(res) != 1 || !strings.Contains(res[0].Error, "paused") {
-		t.Fatalf("run 2 results = %+v", res)
+	for _, id := range []int64{2, 3} {
+		if r := v.run(id); r.State != store.RunWaiting {
+			t.Fatalf("run %d = %s, want waiting", id, r.State)
+		}
+		if res := v.its.Run(id).results; len(res) != 0 {
+			t.Fatalf("run %d reported %+v while blocked", id, res)
+		}
 	}
 	if n := len(v.kg.Sends()); n != 1 {
 		t.Fatalf("sends = %d while blocked", n)
 	}
-	// A person's run is claimed in the freed slot and clears the block.
-	v.its.add(3, "coder", 102, "HL-2", "Credentials are fixed, go.")
+	if n := len(v.its.Comments()); n != 1 {
+		t.Fatalf("comments = %d, want one per block", n)
+	}
+	cleared, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope("factory-homelab", "coder"))
+	if err != nil || !cleared {
+		t.Fatalf("unblock = %v %v", cleared, err)
+	}
+	if w := v.work(101); w.State == store.WorkBlocked {
+		t.Fatal("unblock left the work item blocked")
+	}
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 2 {
-		t.Fatalf("sends = %d after a person's run, want 2", n)
+		t.Fatalf("sends = %d after unblock, want 2 within concurrency 1", n)
 	}
-	if blocked, _, _ := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); blocked {
-		t.Fatal("grant still blocked")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if n := len(v.kg.Sends()); n != 3 {
+		t.Fatalf("sends = %d, want the last waiting run sent", n)
 	}
 }
 
-func TestOperatorUnblockLetsAutomatedRunsThrough(t *testing.T) {
+func TestAgentMentionDoesNotClearBlock(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "status 429", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	// Another agent's comment mentions the coder on the same issue.
+	v.its.add(2, "coder", 101, "HL-1", "@coder please retry")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if blocked, _, _ := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); !blocked {
+		t.Fatal("a mention cleared the grant block")
+	}
+	if w := v.work(101); w.State != store.WorkBlocked {
+		t.Fatalf("work item = %s, want blocked", w.State)
+	}
+	if r := v.run(2); r.State != store.RunWaiting {
+		t.Fatalf("run 2 = %s, want waiting", r.State)
+	}
+	if n := len(v.kg.Sends()); n != 1 {
+		t.Fatalf("sends = %d, want no retry", n)
+	}
+}
+
+func TestCancelSparesAnotherRunsUnattachedFirstSend(t *testing.T) {
+	v := newEnv(t)
+	v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
+	v.kg.loseFor = map[string]bool{"itsaplan-run/2/initial": true}
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.its.add(2, "coder", 102, "HL-2", "Other work.")
+	v.tick(v.e)
+	other := v.kg.lastTask() // run 2's task, in a session no work item maps
+	v.its.cancel(1, false)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	v.tickUntil(16*time.Second, 30, func() bool { return len(v.pendingCancellations()) == 0 })
+	if v.kg.state(other) != kagent.StateWorking {
+		t.Fatalf("run 2's task = %s; run 1's cancellation stopped it", v.kg.state(other))
+	}
+	if r := v.run(1); r.State != store.RunClosed {
+		t.Fatalf("run 1 = %s", r.State)
+	}
+}
+
+func TestOperatorUnblockLetsRunsThrough(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)

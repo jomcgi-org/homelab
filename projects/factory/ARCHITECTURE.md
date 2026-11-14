@@ -199,10 +199,13 @@ sends commit together. Credential and quota failures block with the reason
 instead of retrying. The class comes from whole identifiers in the status
 text (`codex_login_required`, `unauthorized`, `usage_limit_reached`, an HTTP
 401 or 429 status). A block covers every work item on the same kagent
-Agent, the scope of its grant, until a person starts a new run or an
-operator runs `connector unblock kagent:<namespace>/<agent>`. While it
-stands, an automated run on that grant fails back to itsaplan with the
-reason, so it does not hold the concurrency slot a person's run needs. The reported
+Agent, the scope of its grant, and is announced once on the issue that hit
+it. Only an operator clears it, with `connector unblock
+kagent:<namespace>/<agent>` after fixing the grant: itsaplan v1.10.0 runs
+carry no requester identity, and a mention can come from an agent. Runs
+claimed meanwhile wait without holding a concurrency slot, since a failed
+itsaplan run is never retried; after the unblock they resume within the
+agent key's concurrency. The reported
 usage is the last model call's, read from `kagent.dev/a2a/usage`.
 
 **Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
@@ -222,8 +225,9 @@ Deployment health is a separate record.
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
 reports the task in a terminal state. A cancellation never sends a message.
 For an attempt whose task is unknown, it waits a dispatch window after the
-last send, then cancels any running task in the attempt's session, or for a
-first send in any of the connector's sessions that no work item maps, and
+last send. It then cancels the running task whose history holds the
+attempt's message ID, looking in the attempt's session or, for a first
+send, in the connector's sessions that no work item maps; with none, it
 confirms. A run that itsaplan ended closes once its cancellation is
 confirmed, whatever started that cancellation.
 
