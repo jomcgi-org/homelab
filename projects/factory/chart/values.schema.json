@@ -418,9 +418,7 @@
     "reviewer": {
       "description": "Independent reviewer (projects/factory/reviewer), off until deploy values enable it.",
       "type": "object",
-      "required": [
-        "enabled"
-      ],
+      "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
         "enabled": {
@@ -428,9 +426,7 @@
         },
         "image": {
           "type": "object",
-          "required": [
-            "repository"
-          ],
+          "required": ["repository"],
           "additionalProperties": false,
           "properties": {
             "repository": {
@@ -445,19 +441,13 @@
               "pattern": "^(|sha256:[0-9a-f]{64})$"
             },
             "pullPolicy": {
-              "enum": [
-                "IfNotPresent",
-                "Always",
-                "Never"
-              ]
+              "enum": ["IfNotPresent", "Always", "Never"]
             }
           }
         },
         "githubApp": {
           "type": "object",
-          "required": [
-            "itemPath"
-          ],
+          "required": ["itemPath"],
           "additionalProperties": false,
           "properties": {
             "itemPath": {
