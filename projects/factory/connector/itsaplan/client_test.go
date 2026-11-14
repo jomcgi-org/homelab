@@ -160,25 +160,42 @@ func TestProjectColumnsAndMoveIssueUseTheCoordinator(t *testing.T) {
 }
 
 func TestKeyFuncIsAskedPerCall(t *testing.T) {
-	var got seen
-	c := server(t, http.StatusOK, `{"run":null}`, &got)
-	key := "k-1"
-	c.KeyFunc = func(agent string) (string, error) {
-		if agent != "coder" {
-			return "", errors.New("unknown agent")
-		}
-		return key, nil
-	}
-	for _, want := range []string{"k-1", "k-2"} {
-		key = want
-		if _, err := c.Claim(context.Background(), "coder"); err != nil {
-			t.Fatal(err)
-		}
-		if got.key != want {
-			t.Fatalf("key = %q, want %q", got.key, want)
-		}
-	}
-	if _, err := c.Claim(context.Background(), "stranger"); err == nil {
-		t.Fatal("claim without a key succeeded")
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("x-api-key")
+				if got == "k-1" {
+					w.WriteHeader(status)
+				}
+				_, _ = io.WriteString(w, `{"run":null}`)
+			}))
+			defer srv.Close()
+			key := "k-1"
+			c := &Client{BaseURL: srv.URL, KeyFunc: func(agent string) (string, error) {
+				if agent != "coder" {
+					return "", errors.New("unknown agent")
+				}
+				return key, nil
+			}}
+			for _, want := range []string{"k-1", "k-2"} {
+				key = want
+				_, err := c.Claim(context.Background(), "coder")
+				if want == "k-1" && status != http.StatusOK {
+					var refusal *HTTPError
+					if !errors.As(err, &refusal) || refusal.Status != status {
+						t.Fatalf("claim error = %v, want HTTP %d", err, status)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if got != want {
+					t.Fatalf("key = %q, want %q", got, want)
+				}
+			}
+			if _, err := c.Claim(context.Background(), "stranger"); err == nil {
+				t.Fatal("claim without a key succeeded")
+			}
+		})
 	}
 }
