@@ -42,12 +42,10 @@ kagent:
   providers: null
 
   config:
-    # Every agent runtime's CPU and memory limits. kagent 1.0.1 sets these for
-    # all Agents at once, so templates/validate.yaml requires each agent's
-    # `resources` to match them.
-    runtimeDefaults:
-      cpu: "4"
-      memory: 8Gi
+    # runtimeDefaults (every agent runtime's CPU and memory limits) stays at
+    # kagent's 1 CPU and 1Gi here. kagent 1.0.1 applies it to all Agents at
+    # once, so templates/validate.yaml requires each bound agent's `resources`
+    # to match it; an install with bindings sets it to its agents' size.
     server:
       auth:
         # The edge authenticates people and forwards their access token;
@@ -134,12 +132,11 @@ substrate:
   credentialProvider:
     # Binds Substrate's ClusterRole k8s-credential-provider-secret-reader to
     # its provider in the kagent namespace, so the egress gateway can inject
-    # Secrets from here. Only Secrets labelled
-    # substrate.ate.dev/injectable=true are injectable; label only egress
-    # credentials, never kagent's database or application Secrets.
-    #
-    # Each repository binding's namespace will need the same RoleBinding and
-    # its own namespacePolicies entry in Substrate's provider configuration.
+    # Secrets from here, and in each repository binding's namespace (which
+    # also needs its own namespacePolicies entry in Substrate's provider
+    # configuration). Only Secrets labelled substrate.ate.dev/injectable=true
+    # are injectable; label only egress credentials, never kagent's database
+    # or application Secrets.
     secretReaderBinding: true
     serviceAccount: k8s-credential-provider
     clusterRole: k8s-credential-provider-secret-reader
@@ -173,7 +170,9 @@ clusterDomain: cluster.local
 # grant, and mints GitHub App tokens per repository binding once the App
 # exists. Provider credentials exist only in its pod.
 broker:
-  enabled: true
+  # Off by default, so an install renders nothing new until its values turn
+  # it on (projects/factory/deploy/values.yaml).
+  enabled: false
   # The connector's namespace too (networkPolicy.connector). This chart owns
   # it and keeps it.
   namespace: factory
@@ -213,6 +212,15 @@ broker:
       memory: 64Mi
     limits:
       memory: 256Mi
+
+# GHCR pull credentials for the factory's first-party images (the broker's,
+# and later the connector's and itsaplan bootstrap's), which are private. A
+# OnePasswordItem syncs a kubernetes.io/dockerconfigjson Secret into the
+# factory namespace (broker.namespace) whenever a workload there is enabled.
+imagePullSecret:
+  enabled: true
+  name: ghcr-imagepull-secret
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
 
 # Agent profiles a repository binding instantiates, one Agent per binding.
 agents:

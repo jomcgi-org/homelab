@@ -11,6 +11,7 @@ import io
 import os
 import subprocess
 import tarfile
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,32 @@ _KEEP = {
 }
 
 
-def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
+# The homelab binding as an install turns it on (deploy values carry it once
+# the chart that supports it is published).
+_BINDING_VALUES = {
+    "broker": {"enabled": True},
+    "kagent": {
+        "rbac": {"namespaces": ["kagent", "factory-r-homelab"]},
+        "config": {"runtimeDefaults": {"cpu": "4", "memory": "8Gi"}},
+    },
+    "repositories": [
+        {
+            "name": "homelab",
+            "owner": "jomcgi-org",
+            "repo": "homelab",
+            "baseBranch": "main",
+            "namespace": "factory-r-homelab",
+            "agent": "codex",
+        }
+    ],
+}
+_BINDING_FILE = Path(tempfile.mkdtemp()) / "binding.yaml"
+_BINDING_FILE.write_text(yaml.safe_dump(_BINDING_VALUES))
+
+
+def _render(
+    overrides: list[str] | None = None, binding: bool = True
+) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -39,6 +65,8 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
         "--values",
         str(_DEPLOY_VALUES),
     ]
+    if binding:
+        argv += ["--values", str(_BINDING_FILE)]
     for override in overrides or []:
         argv += ["--set", override]
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
@@ -291,14 +319,7 @@ def test_ui_admits_only_the_edge() -> None:
 def test_existing_kagent_renders_only_crds() -> None:
     # Helm cannot make crds/ conditional. The factory Application sets
     # helm.skipCrds, so under ArgoCD an existing install renders nothing.
-    docs = _render(
-        [
-            "kagent.mode=existing",
-            "kagent.enabled=false",
-            "broker.enabled=false",
-            "repositories=null",
-        ]
-    )
+    docs = _render(["kagent.mode=existing", "kagent.enabled=false"], binding=False)
     assert {d["kind"] for d in docs} == {"CustomResourceDefinition"}
 
 
@@ -362,7 +383,12 @@ def test_broker_runs_one_replica_from_its_config() -> None:
     )
     # No GitHub App yet: no key volume, no 1Password item, minting off.
     assert "github-app" not in {v["name"] for v in pod["volumes"]}
-    assert not [d for d in docs if d["kind"] == "OnePasswordItem"]
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "OnePasswordItem"
+        and d["metadata"]["name"] == "factory-github-app"
+    ]
     config = yaml.safe_load(
         _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
     )
@@ -587,4 +613,69 @@ def test_binding_namespace_policy_admits_only_substrate() -> None:
             ],
             "toPorts": [{"ports": [{"port": "8443", "protocol": "TCP"}]}],
         }
+    ]
+
+
+def test_deploy_values_render_no_broker_or_binding() -> None:
+    # The published chart and the deploy values move separately: this chart's
+    # defaults must render nothing beyond kagent, so main's values work with
+    # it before the binding is switched on.
+    docs = _render(binding=False)
+    namespaces = {d["metadata"].get("namespace") for d in docs}
+    assert namespaces <= {"kagent", None}
+    assert not [
+        d
+        for d in docs
+        if d["kind"]
+        in (
+            "Agent",
+            "ModelConfig",
+            "WorkerPool",
+            "OnePasswordItem",
+            "ValidatingAdmissionPolicy",
+        )
+        or d["metadata"]["name"].startswith("factory-broker")
+    ]
+
+
+def test_broker_pulls_with_the_ghcr_secret() -> None:
+    docs = _render()
+    item = _in(docs, "OnePasswordItem", "factory", "ghcr-imagepull-secret")
+    assert item["type"] == "kubernetes.io/dockerconfigjson"
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/ghcr-read-permissions"
+    pod = _in(docs, "Deployment", "factory", "factory-broker")["spec"]["template"]
+    assert pod["spec"]["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
+
+
+def test_broker_secret_writes_are_confined() -> None:
+    docs = _render()
+    policy = _one(docs, "ValidatingAdmissionPolicy", "factory-broker-secrets")["spec"]
+    assert policy["matchConditions"] == [
+        {
+            "name": "broker",
+            "expression": "request.userInfo.username == "
+            "'system:serviceaccount:factory:factory-broker'",
+        }
+    ]
+    (validation,) = policy["validations"]
+    for fragment in (
+        "'factory-broker-grant-codex-primary'",
+        "object.metadata.name == 'github-git'",
+        "object.type == 'Opaque'",
+    ):
+        assert fragment in validation["expression"]
+    binding = _one(docs, "ValidatingAdmissionPolicyBinding", "factory-broker-secrets")
+    assert binding["spec"] == {
+        "policyName": "factory-broker-secrets",
+        "validationActions": ["Deny"],
+    }
+
+
+def test_binding_reader_follows_the_credential_provider_switch() -> None:
+    docs = _render(["substrate.credentialProvider.secretReaderBinding=false"])
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "RoleBinding"
+        and d["metadata"]["name"] == "substrate-credential-provider"
     ]
