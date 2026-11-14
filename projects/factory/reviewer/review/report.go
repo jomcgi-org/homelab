@@ -413,18 +413,19 @@ const (
 // gate, which no revision round can fix. Every marker starts with
 // markerStart, which is stripped from anything the agent or the PR wrote.
 const (
-	markerStart    = "<!-- factory-review:"
-	enqueuedMarker = markerStart + "enqueued -->"
-	gateOnlyMarker = markerStart + "human-gate-only -->"
-	statePrefix    = markerStart + "state v1 "
-	stateSuffix    = " -->"
+	markerStart         = "<!-- factory-review:"
+	enqueuedMarker      = markerStart + "enqueued -->"
+	gateOnlyMarker      = markerStart + "human-gate-only -->"
+	duplicateHeadMarker = markerStart + "duplicate-head -->"
+	statePrefix         = markerStart + "state v1 "
+	stateSuffix         = " -->"
 )
 
 var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*) -->`)
 
-// State is what a completed review keeps on its check run: the blocking
-// findings the next round must account for (never the human gate, which
-// only a person clears) and the head's human gate.
+// State keeps a running review's label snapshot, then its blocking
+// findings and human gate on the completed check. The next round must
+// account for the findings; only a person clears the human gate.
 type State struct {
 	Blocking []Finding `json:"blocking"`
 	Gate     *Gate     `json:"gate,omitempty"`

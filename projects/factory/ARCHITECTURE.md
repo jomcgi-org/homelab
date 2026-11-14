@@ -669,9 +669,12 @@ previews).
   toward an approval or code-owner rule. Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings and human gate in a hidden block, at most
-  48,000 characters, for the next head. Reviews are keyed by commit: PRs
-  that share a head share its review, and a cancelled check on a current
-  head is reviewed again.
+  48,000 characters, for the next head. Checks are keyed by commit, so
+  multiple ready PRs at one head are held without further model tasks.
+  Once only one remains, it gets a new review and any human gate requires
+  fresh approval. A duplicate PR can therefore hold another author's PR
+  until it is closed, drafted or moved to another head. A cancelled check
+  on a current head is reviewed again.
 - **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
   one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
   and a kept ServiceAccount. Projected tokens use audiences `factory-broker`

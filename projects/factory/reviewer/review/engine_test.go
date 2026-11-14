@@ -394,9 +394,9 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 func TestSharedHeadIsReviewedInItsRemainingPR(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
-	h.gh.addPR(&fakePR{Number: 8, Title: "same commit", Head: shaA, Labels: []string{"human"}})
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
+	h.gh.addPR(&fakePR{Number: 8, Title: "same commit", Head: shaA, Labels: []string{"human"}})
 	shaB := strings.Repeat("b", 40)
 	h.gh.push(7, shaB)
 	e.Tick(ctx)
@@ -1061,6 +1061,233 @@ func TestReattachedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
 	e.Tick(ctx)
 	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
 		t.Fatal("PR 8 could not clear its own hold with a fresh approval")
+	}
+}
+
+func TestDuplicateHeadStaysHeldWithoutCheckOrTaskChurn(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.label(7, "human")
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	if c := h.gh.check(shaA); c == nil || c.Status != "completed" || c.Conclusion != ConclusionFailure {
+		t.Fatalf("duplicate head was not held: %+v", c)
+	}
+	n := h.gh.checkCount()
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	for range 3 {
+		e.Tick(ctx)
+	}
+	e = h.engine()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n || h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("duplicate head rewrote or cleared its hold across polls/restart")
+	}
+	if n, _ := h.k.state(); n != 0 {
+		t.Fatalf("duplicate head started %d model tasks", n)
+	}
+}
+
+func TestDuplicateHeadRevokesAPassAndReviewsAgainAfterResolution(t *testing.T) {
+	h, e, ctx := approvedQueuedHead(t)
+	e.Tick(ctx)
+	if len(h.gh.enqueues()) != 1 {
+		t.Fatal("the initial head was not enqueued")
+	}
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure {
+		t.Fatal("duplicate head retained a passing head or merge group")
+	}
+	n := h.gh.checkCount()
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "while the duplicate exists")
+	e.Tick(ctx)
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("approved and unlabelled duplicate PRs churned the shared check")
+	}
+	h.gh.mu.Lock()
+	h.gh.prs[8].Closed = true
+	delete(h.gh.queued, 7)
+	h.gh.mu.Unlock()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the fresh review after duplicate resolution", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("resolving the duplicate reused its earlier approval")
+	}
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after resolving the duplicate")
+	e.Tick(ctx)
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1 {
+		t.Fatal("fresh approval failed or re-enqueued a previously returned head")
+	}
+	if n, _ := h.k.state(); n != 2 {
+		t.Fatalf("model executions = %d, want initial and recovered review", n)
+	}
+}
+
+func TestDuplicateHeadStopsARunningReviewBeforeHoldingItsCheck(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	e.Tick(ctx)
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
+		t.Fatalf("running duplicate head was not held: %+v", c)
+	}
+	if _, cancels := h.k.state(); !slices.Contains(cancels, task) {
+		t.Fatal("the duplicate head's running task was not cancelled")
+	}
+	n := h.gh.checkCount()
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.checkCount() != n {
+		t.Fatal("the old task overwrote the duplicate hold")
+	}
+}
+
+func TestCompletionDetectsADuplicateCreatedDuringReview(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA}) // No intervening Tick.
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
+		t.Fatalf("completed a shared head from one PR's context: %+v", c)
+	}
+}
+
+func TestCompletionUsesTheLatestListedPRContext(t *testing.T) {
+	for _, change := range []string{"different sole PR", "new hold label"} {
+		t.Run(change, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the metadata changed")
+			e, ctx, _ := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			shaB := strings.Repeat("b", 40)
+			if change == "different sole PR" {
+				h.gh.addPR(&fakePR{Number: 8, Head: shaB})
+			}
+			h.gh.mu.Lock()
+			h.gh.afterQueueRead = func() {
+				if change == "different sole PR" {
+					h.gh.prs[7].Head, h.gh.prs[8].Head = shaB, shaA
+				} else {
+					h.gh.prs[7].Labels = []string{"human"}
+				}
+			}
+			h.gh.mu.Unlock()
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
+			want := ConclusionFailure
+			if change == "different sole PR" {
+				want = ConclusionCancelled
+			}
+			if c := h.gh.check(shaA); c.Conclusion != want {
+				t.Fatalf("ignored the later listing: %s, want %s", c.Conclusion, want)
+			}
+		})
+	}
+}
+
+func TestDuplicateRecoveryKeepsARemovedStickyLabel(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.label(7, "human")
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the original hold", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.label(7)
+	e.Tick(ctx)
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	e.Tick(ctx)
+	h.gh.mu.Lock()
+	h.gh.prs[8].Closed = true
+	h.gh.mu.Unlock()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, gateOnlyMarker) {
+		t.Fatalf("duplicate recovery discarded a sticky label: %s", c.Conclusion)
+	}
+}
+
+func TestDuplicateRecoveryKeepsSameHeadFindingsAcrossRestart(t *testing.T) {
+	for _, id := range []string{"x.go:bug", "x.go:human-gate"} {
+		t.Run(id, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, stop := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+				map[string]any{"id": id, "severity": "high", "path": "x.go", "title": "Still unresolved"},
+			}}))
+			eventually(t, "the original finding", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+			e.Tick(ctx)
+			h.gh.mu.Lock()
+			h.gh.prs[8].Closed = true
+			h.gh.mu.Unlock()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			if prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text; !strings.Contains(prompt, id) {
+				t.Error("recovery prompt omitted the same-head finding")
+			}
+			eventually(t, "the recovered task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
+			h.gh.mu.Lock()
+			h.gh.prs[8].Closed = false // A second duplicate interrupts the recovery task.
+			h.gh.mu.Unlock()
+			e.Tick(ctx)
+			h.gh.mu.Lock()
+			h.gh.prs[8].Closed = true
+			h.gh.mu.Unlock()
+			task = runReview(t, h, e, ctx, 7, shaA)
+			eventually(t, "the second recovered task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
+			stop()
+			e, ctx, _ = h.start()
+			h.k.finish(task, kagent.StateCompleted, report(t, passing)) // Omitting an unresolved finding cannot clear it.
+			e.Tick(ctx)
+			eventually(t, "the recovered report", func() bool { return h.gh.check(shaA).Status == "completed" })
+			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, id) {
+				t.Fatalf("recovery discarded the finding: %s:\n%s", c.Conclusion, c.Summary)
+			}
+		})
+	}
+}
+
+func TestCompletedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.label(7, "human")
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the original approval", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	h.gh.review(8, "jomcgi", "APPROVED", shaA, "before PR 8's hold")
+	h.gh.mu.Lock()
+	h.gh.prs[7].Closed = true // No poll observed both PRs open.
+	h.gh.mu.Unlock()
+	h.gh.label(8, "human")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("PR 8 reused PR 7's label baseline with a pre-hold approval")
+	}
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("the foreign snapshot caused repeated cutoff/check changes")
+	}
+	h.gh.review(8, "jomcgi", "APPROVED", shaA, "after PR 8's hold")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("PR 8 could not clear its own hold")
 	}
 }
 

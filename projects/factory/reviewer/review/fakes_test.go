@@ -94,6 +94,9 @@ type fakeGitHub struct {
 	ignoreAppFilter bool
 	// failCheckSHA rejects check creation for one head, leaving group writes available.
 	failCheckSHA string
+	// afterQueueRead changes metadata after its GraphQL snapshot was returned.
+	// It runs once under mu, before the caller's subsequent open-PR listing.
+	afterQueueRead func()
 	// fail answers "METHOD /path" with a status code; failGQL fails a
 	// GraphQL call by kind.
 	fail    map[string]int
@@ -634,6 +637,10 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			"baseRefName": pr.Base, "mergeQueueEntry": entry,
 			"labels": map[string]any{"nodes": labels, "pageInfo": map[string]bool{"hasNextPage": false}},
 		}}})
+		if after := f.afterQueueRead; after != nil {
+			f.afterQueueRead = nil
+			after()
+		}
 	default:
 		f.t.Errorf("unexpected GraphQL query %s", req.Query)
 	}

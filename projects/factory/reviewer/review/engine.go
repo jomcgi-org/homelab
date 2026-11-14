@@ -144,8 +144,8 @@ type Engine struct {
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
 }
 
-// headKey names a review: check runs belong to a commit, so two open PRs
-// with the same head share one.
+// headKey names a review. Check runs belong to a commit, so a head shared
+// by multiple ready PRs is held until its PR context is unambiguous.
 type headKey struct {
 	binding string
 	sha     string
@@ -154,6 +154,7 @@ type headKey struct {
 type running struct {
 	number int
 	cancel context.CancelCauseFunc
+	done   chan struct{}
 	// unlisted counts the complete listings in a row that left out both
 	// the head and the PR.
 	unlisted int
@@ -165,8 +166,9 @@ type running struct {
 const closedAfter = 2
 
 var (
-	errSuperseded = errors.New("a newer head of the PR superseded this one")
-	errClosed     = errors.New("the PR closed or no longer targets the base branch")
+	errSuperseded    = errors.New("a newer head of the PR superseded this one")
+	errClosed        = errors.New("the PR closed or no longer targets the base branch")
+	errDuplicateHead = errors.New("multiple ready PRs share this head")
 )
 
 // New builds an engine, filling unset settings with defaults.
@@ -277,11 +279,32 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	}
 	e.supersede(b, prs, complete)
 	prioritize(b, prs)
+	counts := readyHeadCounts(b, prs)
 
 	var attach, start []candidate
 	reviews := map[int]*github.CheckRun{}
+	heldHeads := map[string]*github.CheckRun{}
 	for _, pr := range prs {
-		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft || b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
+		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft {
+			continue
+		}
+		if !complete || counts[pr.HeadSHA] > 1 {
+			cur, held := heldHeads[pr.HeadSHA]
+			if !held {
+				// Await the worker before replacing its check, so even a
+				// completed task cannot subsequently overwrite this hold.
+				if !e.stopSharedHead(ctx, b, pr.HeadSHA) {
+					return
+				}
+				if run, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
+					cur = e.holdSharedHead(ctx, b, pr, run)
+				}
+				heldHeads[pr.HeadSHA] = cur
+			}
+			reviews[pr.Number] = cur
+			continue
+		}
+		if b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
 			continue
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
@@ -291,6 +314,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 		reviews[pr.Number] = run
 		switch {
+		case sharedHeadHeld(run):
+			// A resolved duplicate needs its remaining PR reviewed afresh.
+			start = append(start, candidate{pr, run})
 		case run == nil || (run.Status == "completed" && run.Conclusion == ConclusionCancelled):
 			// A cancelled review is no review: the head is current again.
 			start = append(start, candidate{pr, nil})
@@ -315,6 +341,70 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 	}
 	e.mergeGroups(ctx, b, reviews)
+}
+
+// readyHeadCounts includes skipped PRs: skipping their review cannot let
+// them borrow another PR's passing check on the same commit.
+func readyHeadCounts(b *Binding, prs []github.PullRequest) map[string]int {
+	counts := map[string]int{}
+	for _, pr := range prs {
+		if pr.BaseRef == b.BaseBranch && pr.HeadSHA != "" && !pr.Draft {
+			counts[pr.HeadSHA]++
+		}
+	}
+	return counts
+}
+
+func sharedHeadHeld(run *github.CheckRun) bool {
+	return run != nil && run.Status == "completed" && run.Conclusion == ConclusionFailure && strings.Contains(run.Summary, duplicateHeadMarker)
+}
+
+func sharedHeadOutcome(prev *github.CheckRun) Outcome {
+	o := Outcome{Conclusion: ConclusionFailure, Output: github.CheckRunOutput{
+		Title: "One ready PR per head required",
+		Summary: "The reviewer cannot establish one ready open PR for this commit. Close, draft or move duplicate PRs; the open PR listing must also be complete. " +
+			"The remaining PR will receive a new review, and any human gate will require fresh approval.\n\n" + duplicateHeadMarker + "\n\n" + gateOnlyMarker,
+	}}
+	if prev != nil {
+		o.Output.Text = prev.Text // Keep prior findings available to a later head.
+	}
+	o.Output.Summary = keepEnqueueHistory(o.Output.Summary, prev)
+	return o
+}
+
+// stopSharedHead also waits for any check write already in progress.
+func (e *Engine) stopSharedHead(ctx context.Context, b *Binding, sha string) bool {
+	e.mu.Lock()
+	r := e.inflight[headKey{b.Name, sha}]
+	if r != nil {
+		r.cancel(errDuplicateHead)
+	}
+	e.mu.Unlock()
+	if r != nil {
+		select {
+		case <-r.done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun) *github.CheckRun {
+	if sharedHeadHeld(prev) {
+		return prev
+	}
+	o := sharedHeadOutcome(prev)
+	now := e.cfg.Now().UTC()
+	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
+		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
+		Status: "completed", Conclusion: o.Conclusion, StartedAt: &now, CompletedAt: &now, Output: &o.Output,
+	})
+	if err != nil {
+		e.ghError(ctx, e.prLog(b, pr), b, "create_check", err)
+		return nil
+	}
+	return run
 }
 
 // prioritize orders a listing for the review slots: PRs whose authors the
@@ -414,25 +504,39 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		return true
 	}
 	rctx, cancel := context.WithCancelCause(ctx)
-	e.inflight[key] = &running{number: pr.Number, cancel: cancel}
+	r := &running{number: pr.Number, cancel: cancel, done: make(chan struct{})}
+	e.inflight[key] = r
 	e.m.InFlight.Set(float64(len(e.inflight)))
 	e.mu.Unlock()
 
 	l := e.prLog(b, pr)
 	kind := "reattach"
-	if run == nil {
+	if run == nil || sharedHeadHeld(run) {
 		kind = "new"
 		now := e.cfg.Now().UTC()
+		st := State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}}
+		if run != nil {
+			if prior, ok := LoadState(run.Text); ok {
+				st = prior // Same-head findings and sticky holds survive duplicate recovery.
+			}
+			if st.Gate == nil {
+				st.Gate = &Gate{}
+			}
+			st.Gate.observeLabels(gateLabels(b, pr.Labels), now)
+			st.Gate.ApprovalAfter = now // Prior approval belonged to an ambiguous PR context.
+			st.Gate.Approver = ""
+		}
 		created, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 			Status: "in_progress", StartedAt: &now,
-			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, nil, recorded{}, ""),
-				Text: encodeState(State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}})},
+			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: keepEnqueueHistory(progressSummary(b, nil, recorded{}, ""), run),
+				Text: encodeState(st)},
 		})
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
 			cancel(nil)
 			e.done(key)
+			close(r.done)
 			return false
 		}
 		if created.StartedAt.IsZero() {
@@ -446,6 +550,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	e.m.ReviewsStarted.WithLabelValues(b.Name, kind).Inc()
 	e.wg.Add(1)
 	go func() {
+		defer close(r.done)
 		defer e.wg.Done()
 		defer e.done(key)
 		defer cancel(nil)
@@ -526,6 +631,8 @@ type inputs struct {
 // fails the check. A restart finds the task the check run records, else
 // sends the recorded attempt's message again.
 func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, l *slog.Logger) {
+	local := *run
+	run = &local
 	rec := RecordedTask(run.Summary)
 	attempt := max(rec.Attempt, 1)
 	began := e.cfg.Now()
@@ -574,18 +681,39 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				in = got
-				if st, ok := LoadState(run.Text); ok && st.Gate != nil && run.ExternalID == MessageID(b.repo(), pr.Number, pr.HeadSHA) {
-					if in.gate == nil {
-						in.gate = &Gate{}
+				sameSnapshot := false
+				if st, ok := LoadState(run.Text); ok {
+					if st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
+						// A recovery review must account for the last report on
+						// this same head, which previousState deliberately skips.
+						in.prior, in.priorHead, in.priorUnknown = st, pr.HeadSHA, ""
 					}
-					in.gate.Labels, in.gate.ObservedLabels = st.Gate.Labels, st.Gate.ObservedLabels
-					in.gate.ApprovalAfter = st.Gate.ApprovalAfter
-				} else if in.gate != nil && len(in.gate.Labels) > 0 {
+					if st.Gate != nil {
+						if in.gate == nil {
+							in.gate = &Gate{}
+						}
+						for _, p := range st.Gate.Paths {
+							if len(in.gate.Paths) < maxGatePaths && !slices.Contains(in.gate.Paths, p) {
+								in.gate.Paths = append(in.gate.Paths, p)
+							}
+						}
+						if run.ExternalID == MessageID(b.repo(), pr.Number, pr.HeadSHA) {
+							in.gate.Labels, in.gate.ObservedLabels = st.Gate.Labels, st.Gate.ObservedLabels
+							in.gate.ApprovalAfter = st.Gate.ApprovalAfter
+							sameSnapshot = true
+						}
+					}
+				}
+				if !sameSnapshot && in.gate != nil && len(in.gate.Labels) > 0 {
 					// Older progress checks and another PR's shared-head check
 					// have no starting label snapshot for this PR. Require a
 					// fresh review rather than assume the hold predates it.
 					in.gate.ApprovalAfter = e.cfg.Now().UTC()
 				}
+				// The restored gate now belongs to this PR. Persist its
+				// origin with progress/completion so the next poll does not
+				// mistake the new cutoff for another PR's snapshot again.
+				run.ExternalID = MessageID(b.repo(), pr.Number, pr.HeadSHA)
 			case late:
 				if next("the reviewer could not read the PR from GitHub.") {
 					return
@@ -666,6 +794,25 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			currentPR := pr
 			currentPR.Labels = current.Labels
+			prs, complete, err := e.gh.ListPullRequests(ctx, b.repo(), b.BaseBranch)
+			if err != nil {
+				e.ghError(ctx, l, b, "list_pulls", err)
+				return
+			}
+			if !complete || readyHeadCounts(b, prs)[pr.HeadSHA] > 1 {
+				e.complete(ctx, b, run, sharedHeadOutcome(run), l)
+				return
+			}
+			listed := slices.IndexFunc(prs, func(p github.PullRequest) bool {
+				return p.Number == pr.Number && p.HeadSHA == pr.HeadSHA && p.BaseRef == b.BaseBranch && !p.Draft
+			})
+			if listed < 0 {
+				e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
+					Title: "PR changed during review", Summary: "The PR is no longer open and ready on this head and base branch.",
+				}}, l)
+				return
+			}
+			currentPR.Labels = prs[listed].Labels
 			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if res.reason != "" {
 				if next(res.reason) {
@@ -819,7 +966,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		return nil, err
 	}
 	var interdiff *github.CommitComparison
-	if in.priorHead != "" {
+	if in.priorHead != "" && in.priorHead != pr.HeadSHA {
 		interdiff, err = e.gh.CompareCommits(ctx, repo, in.priorHead, pr.HeadSHA)
 		if err != nil && !errors.Is(err, github.ErrNotFound) {
 			e.ghError(ctx, l, b, "compare", err)
@@ -851,13 +998,21 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 // in-progress check run, so a restart reads the task instead of sending a
 // message whose PR text may have changed.
 func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.CheckRun, gate *Gate, rec recorded, note string, l *slog.Logger) {
+	st, _ := LoadState(run.Text)
 	if gate == nil {
-		if st, ok := LoadState(run.Text); ok {
-			gate = st.Gate
-		}
+		gate = st.Gate
 	}
+	if gate != nil {
+		observed := *gate
+		if st.Gate != nil {
+			observed.Findings = st.Gate.Findings
+		}
+		st.Gate = &observed
+	}
+	run.Text = encodeState(st)
 	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
-		Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, gate, rec, note), Text: encodeState(State{Gate: gate})},
+		ExternalID: run.ExternalID,
+		Output:     &github.CheckRunOutput{Title: "Review in progress", Summary: keepEnqueueHistory(progressSummary(b, gate, rec, note), run), Text: run.Text},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)
@@ -1026,7 +1181,11 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	if st.Gate != nil {
 		*gate = *st.Gate
 	}
-	changed := gate.observeLabels(labels, e.cfg.Now())
+	foreign := run.ExternalID != MessageID(b.repo(), pr.Number, pr.HeadSHA)
+	if foreign {
+		gate.ObservedLabels = []string{} // Another PR's label baseline cannot clear this PR's hold.
+	}
+	changed := gate.observeLabels(labels, e.cfg.Now()) || foreign
 	// A read error means approval is unknown. Close a previous pass and
 	// keep retrying the read on later polls; the error creates no new hold.
 	approver, _ := e.approval(ctx, b, pr, gate.ApprovalAfter)
@@ -1059,9 +1218,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 		summary += " (" + prev.URL + ")"
 	}
 	summary += "."
-	if strings.Contains(prev.Summary, enqueuedMarker) {
-		summary += "\n\n" + enqueuedMarker + "This head was already in the merge queue."
-	}
+	summary = keepEnqueueHistory(summary, prev)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
@@ -1081,7 +1238,11 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 // in progress; the next poll re-attaches and completes it again.
 func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun, o Outcome, l *slog.Logger) bool {
 	now := e.cfg.Now().UTC()
-	w := github.CheckRunWrite{Status: "completed", Conclusion: o.Conclusion, CompletedAt: &now, Output: &o.Output}
+	o.Output.Summary = keepEnqueueHistory(o.Output.Summary, run)
+	if o.Conclusion == ConclusionCancelled && o.Output.Text == "" {
+		o.Output.Text = run.Text // Cancellation must not erase findings needed after another hold.
+	}
+	w := github.CheckRunWrite{ExternalID: run.ExternalID, Status: "completed", Conclusion: o.Conclusion, CompletedAt: &now, Output: &o.Output}
 	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, w)
 	var he *github.HTTPError
 	if errors.As(err, &he) && he.Status == http.StatusUnprocessableEntity && len(o.Output.Annotations) > 0 {
@@ -1105,7 +1266,7 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 // cancelled and its check completed as cancelled.
 func (e *Engine) stop(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, taskID string, l *slog.Logger) {
 	cause := context.Cause(ctx)
-	if !errors.Is(cause, errSuperseded) && !errors.Is(cause, errClosed) {
+	if !errors.Is(cause, errSuperseded) && !errors.Is(cause, errClosed) && !errors.Is(cause, errDuplicateHead) {
 		l.Info("review interrupted; its check stays in progress for the next process", "task", taskID)
 		return
 	}
@@ -1130,6 +1291,13 @@ func (e *Engine) cancelTask(ctx context.Context, b *Binding, taskID string, l *s
 
 func enqueueKey(b *Binding, pr github.PullRequest) string {
 	return fmt.Sprintf("%s#%d@%s", b.repo(), pr.Number, pr.HeadSHA)
+}
+
+func keepEnqueueHistory(summary string, prev *github.CheckRun) string {
+	if prev != nil && strings.Contains(prev.Summary, enqueuedMarker) && !strings.Contains(summary, enqueuedMarker) {
+		summary += "\n\n" + enqueuedMarker + "This head was already in the merge queue."
+	}
+	return summary
 }
 
 // maybeEnqueue adds a head whose review passed to the merge queue, once:
