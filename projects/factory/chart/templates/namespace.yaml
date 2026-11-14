@@ -1,0 +1,16 @@
+{{- if include "factory.kagentInstall" . }}
+# kagent's namespace. ate-api-server admits non-worker pods only from
+# namespaces labelled ate.dev/api-access=true. Deleting it would take the
+# controller's ServiceAccount, and with it session ownership, so it is kept.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "factory.kagentNamespace" . }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    ate.dev/api-access: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    helm.sh/resource-policy: keep
+{{- end }}

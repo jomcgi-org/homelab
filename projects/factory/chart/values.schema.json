@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "factory chart values",
+  "type": "object",
+  "required": ["kagent", "postgres", "substrate", "networkPolicy", "crdHook"],
+  "definitions": {
+    "endpointSelectors": {
+      "description": "Cilium endpoint selectors (matchLabels/matchExpressions); a k8s:io.kubernetes.pod.namespace label selects another namespace.",
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "peer": {
+      "type": "object",
+      "required": ["namespace", "matchLabels"],
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "matchLabels": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "notYet": {
+      "description": "A later step of the delivery plan; not implemented in this chart version.",
+      "type": "object",
+      "properties": { "enabled": { "enum": [false] } }
+    }
+  },
+  "properties": {
+    "kagent": {
+      "description": "kagent install or reference. Other keys are the kagent 1.0.1 subchart's values.",
+      "type": "object",
+      "required": ["mode", "enabled"],
+      "properties": {
+        "mode": { "enum": ["install", "existing"] },
+        "enabled": {
+          "type": "boolean",
+          "description": "Helm dependency condition; true exactly when mode is install."
+        },
+        "namespaceOverride": { "type": "string" }
+      }
+    },
+    "kagent-crds": {
+      "type": "object",
+      "properties": { "enabled": { "enum": [false] } }
+    },
+    "crdHook": {
+      "type": "object",
+      "required": ["image"],
+      "additionalProperties": false,
+      "properties": {
+        "image": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+        "resources": { "type": "object" }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "install (a CNPG Cluster) arrives with the CNPG operator.",
+          "enum": ["existing"]
+        },
+        "existing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        }
+      }
+    },
+    "substrate": {
+      "type": "object",
+      "required": ["namespace"],
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "credentialProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretReaderBinding": { "type": "boolean" },
+            "serviceAccount": { "type": "string", "minLength": 1 },
+            "clusterRole": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["cilium"],
+      "additionalProperties": false,
+      "properties": {
+        "cilium": { "type": "boolean" },
+        "edge": { "$ref": "#/definitions/peer" },
+        "connector": { "$ref": "#/definitions/peer" },
+        "otlp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        }
+      }
+    },
+    "itsaplan": { "$ref": "#/definitions/notYet" },
+    "broker": { "$ref": "#/definitions/notYet" },
+    "connector": { "$ref": "#/definitions/notYet" },
+    "providers": { "type": "object", "maxProperties": 0 },
+    "agents": { "type": "object", "maxProperties": 0 },
+    "repositories": { "type": "array", "maxItems": 0 }
+  }
+}

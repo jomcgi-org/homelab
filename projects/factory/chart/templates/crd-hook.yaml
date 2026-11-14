@@ -1,0 +1,162 @@
+{{- if include "factory.kagentInstall" . }}
+{{- /*
+Server-side applies the vendored kagent CRDs (crds/) before every install,
+upgrade and ArgoCD sync. Helm installs crds/ only on first install and never
+upgrades them; this Job keeps them at the vendored version. Every object here
+is a hook, so it exists only while the hook runs.
+*/}}
+{{- $ns := include "factory.kagentNamespace" . }}
+{{- $name := "kagent-crds" }}
+{{- $hook := "pre-install,pre-upgrade" }}
+{{- $deletePolicy := "before-hook-creation,hook-succeeded" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: {{ $deletePolicy }}
+data:
+{{- range $path, $_ := .Files.Glob "crds/api.kagent.dev_*.yaml" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: {{ $deletePolicy }}
+---
+# Only the kagent CRDs. Create cannot be narrowed by name; server-side apply
+# needs it the first time a CRD is applied.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $ns }}-{{ $name }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: {{ $deletePolicy }}
+rules:
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    resourceNames: {{ include "factory.kagentCRDNames" . }}
+    verbs: [get, patch]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $ns }}-{{ $name }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: {{ $deletePolicy }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $ns }}-{{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $ns }}
+{{- if .Values.networkPolicy.cilium }}
+---
+# The Job reaches only the API server.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: {{ $deletePolicy }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  egress:
+    - toEntities: [kube-apiserver]
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: {{ $hook }}
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: {{ $deletePolicy }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/part-of: factory
+    spec:
+      serviceAccountName: {{ $name }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apply
+          image: {{ .Values.crdHook.image }}
+          args:
+            - apply
+            - --server-side
+            - --force-conflicts
+            - --field-manager=factory-kagent-crds
+            - --filename=/crds
+          env:
+            - name: HOME
+              value: /tmp
+          resources:
+            {{- toYaml .Values.crdHook.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: crds
+              mountPath: /crds
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: crds
+          configMap:
+            name: {{ $name }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}

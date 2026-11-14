@@ -17,4 +17,5 @@ resources:
   - ./cloudnative-pg # Postgres operator; Authentik's database
   - ./edge # Envoy Gateway: every published route signs in through Authentik
   - ./authentik # Identity provider at factory-auth.jomcgi.dev
+  - ../factory/deploy # The software factory: kagent (projects/factory/)
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

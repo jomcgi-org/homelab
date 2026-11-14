@@ -1,0 +1,47 @@
+# The software factory on the factory home cluster (projects/factory/), from the
+# published factory chart. CI writes the chart version back to targetRevision.
+# Not named `factory`: that is the cluster's root Application.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: software-factory
+  namespace: argocd
+  annotations:
+    # After Substrate (wave 2), which kagent calls.
+    argocd.argoproj.io/sync-wave: "3"
+    # ArgoCD v3.3's built-in schema predates the Kubernetes 1.37
+    # podCertificate projected volume the kagent controller uses, so the
+    # apiserver computes the diff (as for substrate).
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: factory
+      targetRevision: 0.1.0
+      helm:
+        releaseName: factory
+        valueFiles:
+          - $values/projects/factory/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    # The CRD hook runs here before the chart's own Namespace is applied.
+    namespace: kagent
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
