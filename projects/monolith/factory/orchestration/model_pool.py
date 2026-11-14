@@ -21,6 +21,7 @@ import math
 import os
 from datetime import datetime, timezone
 
+from core.clock import aware
 
 logger = logging.getLogger(__name__)
 
@@ -276,8 +277,7 @@ def reset_passed(resets_at: object, now: datetime | None = None) -> bool | None:
             reset = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
         except ValueError:
             return None
-        if reset.tzinfo is None:
-            reset = reset.replace(tzinfo=timezone.utc)
+        reset = aware(reset)
     else:
         return None
     return (now or datetime.now(timezone.utc)) >= reset

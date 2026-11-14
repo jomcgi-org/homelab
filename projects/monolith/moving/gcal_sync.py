@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
+from core.clock import aware
 from moving.models import GcalTombstone, Milestone
 from shared import google_calendar
 
@@ -76,9 +77,7 @@ def _snapshot_tombstones(session: Session) -> list[str]:
     live: list[str] = []
     expired: list[str] = []
     for row in session.exec(select(GcalTombstone)).all():
-        created = row.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+        created = aware(row.created_at)
         (live if created >= cutoff else expired).append(row.event_id)
     if expired:
         logger.warning(

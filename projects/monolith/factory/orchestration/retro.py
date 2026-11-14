@@ -22,6 +22,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
+from core.clock import aware
 from core.db import query_rows
 
 logger = logging.getLogger(__name__)
@@ -94,8 +95,7 @@ def _one_line(text, limit: int = 160) -> str:
 
 def _iso(value) -> str:
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+        value = aware(value)
         return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
     return str(value or "")[:16].replace("T", " ")
 

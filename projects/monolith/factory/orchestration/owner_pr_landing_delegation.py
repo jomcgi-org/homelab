@@ -53,15 +53,6 @@ def _require(condition, reason):
         raise ValueError("owner_pr_landing_" + reason)
 
 
-def _latest(db, action):
-    return db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action == action)
-        .order_by(FactoryAudit.id.desc())
-        .limit(1)
-    ).first()
-
-
 def _binding(db, control, *, enabled):
     from factory.orchestration.factory_landing_release import latest_policy_transition
 
@@ -141,7 +132,7 @@ def configure(
                     _require(saved["request"] == request, "request_conflict")
                     return saved["result"]
         _require(control.version == expected_version, "version_changed")
-        prior = _latest(db, CONTROL)
+        prior = controls.latest_audit(db, CONTROL)
         proposal = {
             "enabled": enabled,
             "version": control.version,
@@ -181,7 +172,7 @@ def configure(
 
 
 def _authority(db):
-    event = _latest(db, CONTROL)
+    event = controls.latest_audit(db, CONTROL)
     _require(event is not None, "disabled")
     saved = json.loads(event.detail_json)
     proposal, result = saved["proposal"], saved["result"]
@@ -228,7 +219,7 @@ def _grants(db, *, canonical=None, since=None):
 
 
 def status(db):
-    event = _latest(db, CONTROL)
+    event = controls.latest_audit(db, CONTROL)
     if event is None:
         return {"enabled": False, "reason": "owner_pr_landing_disabled"}
     try:

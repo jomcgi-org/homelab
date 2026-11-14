@@ -10,14 +10,14 @@ execution only after positive teardown proof.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import math
 import os
 
 from sqlmodel import select
 
-from core.clock import utc_now as _now
+from core.clock import aware, utc_now as _now
 from factory.execution.api import (
     factory_attempt_never_posted,
     fence_bound_zero_turn_factory_attempt,
@@ -107,7 +107,7 @@ _PRECONDITION_KEYS = frozenset(
 
 def _timestamp(value):
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    return aware(parsed)
 
 
 def _records(db, pin):

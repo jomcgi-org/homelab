@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlmodel import select
 
@@ -26,6 +26,7 @@ from factory.orchestration.factory_controls import (
     intake_state,
     is_advisory,
     lane_for,
+    latest_audit,
     receipt_task_class,
     repos_map,
 )
@@ -39,7 +40,6 @@ from factory.orchestration.factory_intake import (
 from factory.orchestration import factory_operational_handoff as handoff
 from factory.orchestration import intake_evidence
 from factory.orchestration.factory_models import (
-    FactoryAudit,
     FactoryReceipt,
     WorkItem,
     WorkItemEdge,
@@ -207,9 +207,7 @@ def _created_rank(issue: dict) -> float:
     value = issue.get("created_at")
     if isinstance(value, str):
         try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
             return parsed.timestamp()
         except ValueError:
             pass
@@ -217,14 +215,6 @@ def _created_rank(issue: dict) -> float:
     # low number as an old date and hand the top rank to the one candidate
     # whose age could not be established.
     return float("inf")
-
-
-def _latest(db, action: str) -> FactoryAudit | None:
-    return db.exec(
-        select(FactoryAudit)
-        .where(FactoryAudit.action == action)
-        .order_by(FactoryAudit.id.desc())
-    ).first()
 
 
 def _throttled(action: str, detail: dict, *, session=None) -> None:
@@ -236,7 +226,7 @@ def _throttled(action: str, detail: dict, *, session=None) -> None:
     """
     cutoff = _now() - timedelta(seconds=IDLE_AUDIT_SECONDS)
     with _locked_session(session) as (db, _control):
-        last = _latest(db, action)
+        last = latest_audit(db, action)
         if last is not None and aware(last.created_at) >= cutoff:
             return
         _audit(db, ACTOR, action, **detail)
@@ -287,12 +277,12 @@ def _listing_due(now: datetime, *, session=None) -> bool:
     returns before reaching this.
     """
     with _read_session(session) as db:
-        last = _latest(db, "intake_swept")
+        last = latest_audit(db, "intake_swept")
         if last is None:
             return True
         marked = aware(last.created_at)
         interval = IDLE_AUDIT_SECONDS
-        evaluated = _latest(db, "intake_evaluated")
+        evaluated = latest_audit(db, "intake_evaluated")
         if evaluated is not None and evaluated.id > last.id:
             try:
                 detail = json.loads(evaluated.detail_json)
@@ -308,7 +298,7 @@ def _listing_due(now: datetime, *, session=None) -> bool:
             return True
         if evaluated is None or evaluated.id < last.id:
             return False
-        admitted = _latest(db, "intake_admitted")
+        admitted = latest_audit(db, "intake_admitted")
         if admitted is not None and aware(admitted.created_at) >= marked:
             return True
         settled = db.exec(
@@ -606,7 +596,7 @@ def intake_tick(
             listing_due = _listing_due(now, session=db)
             if listing_due:
                 _audit(db, ACTOR, "intake_swept")
-                marker = _latest(db, "intake_swept")
+                marker = latest_audit(db, "intake_swept")
                 evidence = intake_evidence.Sweep(marker.id, now)
                 evidence.coverage = {repo: "unavailable" for repo in repos}
         with _read_session() as db:

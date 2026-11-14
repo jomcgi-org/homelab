@@ -1046,9 +1046,9 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
         _mismatch(task["id"], number, f"{effective} left the issue closed", True)
         return
 
-    admitted = datetime.fromisoformat(receipt["admitted_at"].replace("Z", "+00:00"))
-    if admitted.tzinfo is None:
-        admitted = admitted.replace(tzinfo=timezone.utc)
+    admitted = aware(
+        datetime.fromisoformat(receipt["admitted_at"].replace("Z", "+00:00"))
+    )
     match, read, any_brief = _brief_comment(
         repo, number, admitted, artifact.get("comment_url")
     )

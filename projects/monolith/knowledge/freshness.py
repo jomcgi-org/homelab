@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
+from core.clock import aware
+
 STANDARD = "standard-90d/v1"
 VOLATILE = "volatile-24h/v1"
 MAX_INTERVAL = timedelta(days=90)
@@ -96,8 +98,7 @@ def utc(value: object) -> datetime | None:
             return None
     if not isinstance(value, datetime):
         return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+    value = aware(value)
     return value.astimezone(timezone.utc)
 
 

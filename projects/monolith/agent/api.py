@@ -7,6 +7,7 @@ Other domains must import from ``agent.api`` (enforced by
 
 from __future__ import annotations
 
+from core.lazy import lazy_exports
 from agent import config as _config
 from agent import routine_jobs as _routine_jobs
 from agent.config import agent_sessions_channel_id, agent_sessions_channel_notify
@@ -66,10 +67,4 @@ _FACTORY_EXPORTS = {
 }
 
 
-def __getattr__(name: str):
-    module = _FACTORY_EXPORTS.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from importlib import import_module
-
-    return getattr(import_module(module), name)
+__getattr__ = lazy_exports(__name__, _FACTORY_EXPORTS)

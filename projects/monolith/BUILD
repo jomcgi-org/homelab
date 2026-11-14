@@ -2612,6 +2612,16 @@ py_test(
 )
 
 py_test(
+    name = "lazy_test",
+    srcs = ["core/lazy_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "clock_test",
     srcs = ["core/clock_test.py"],
     imports = ["."],

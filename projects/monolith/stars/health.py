@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, func, select
 
+from core.clock import aware
 from shared.forecast_freshness import top_of_hour
 from stars.models import Site, SiteHour
 
@@ -68,9 +69,7 @@ async def stars_health() -> dict:
     if snapshot.latest_fetched_at is None:
         return {"ok": False, "detail": "stars forecast has no fetch timestamp"}
 
-    latest = snapshot.latest_fetched_at
-    if latest.tzinfo is None:
-        latest = latest.replace(tzinfo=timezone.utc)
+    latest = aware(snapshot.latest_fetched_at)
     age_seconds = max(0.0, (datetime.now(timezone.utc) - latest).total_seconds())
     if age_seconds > FORECAST_MAX_AGE_SECONDS:
         return {

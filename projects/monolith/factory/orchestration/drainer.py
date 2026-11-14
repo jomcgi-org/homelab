@@ -8,6 +8,7 @@ from dataclasses import asdict
 
 import agent.api as agent_config
 from dbos import DBOS
+from core.clock import aware
 from knowledge.api import (
     KG_JOB_KIND,
     MAX_GARDENER_RETRIES,
@@ -1372,9 +1373,7 @@ def settle_lost_drainer_reservations(
         table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
         for permit in permits:
             workflow_id = _lost_owner_workflow(permit)
-            created_at = permit.created_at
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = aware(permit.created_at)
             if (
                 workflow_id is None
                 or workflow_id == current_workflow_id

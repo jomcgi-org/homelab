@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 
 import json
-from datetime import timezone, timedelta
+from datetime import timedelta
 
 from sqlalchemy import String, case, cast, func, or_
 from sqlmodel import Session, select
 
+from core.clock import aware
 from core.jsonio import dumps
 from factory.orchestration.factory_controls import (
     _audit,
@@ -502,9 +503,7 @@ def _audit_throttled(
     # SQLite hands back naive timestamps; treat them as UTC like _now().
     last_at = None
     if last is not None:
-        last_at = last.created_at
-        if last_at.tzinfo is None:
-            last_at = last_at.replace(tzinfo=timezone.utc)
+        last_at = aware(last.created_at)
     if last_at is None or _now() - last_at >= timedelta(seconds=IDLE_AUDIT_SECONDS):
         kwargs = {"receipt_id": receipt_id}
         if work_item_id is not None:

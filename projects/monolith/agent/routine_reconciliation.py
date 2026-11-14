@@ -17,6 +17,7 @@ import re
 from sqlalchemy import text
 from sqlmodel import Session, select
 
+from core.clock import aware
 from agent.routine_reconciliation_models import RoutineReconciliation
 from factory.api import (
     DRAINER_NODE_KEY,
@@ -365,9 +366,9 @@ def _reconcile(db, request):
     ):
         raise ValueError("Held attempt ownership is not quiescent")
     if not unbound:
-        turn_at = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
-        if turn_at.tzinfo is None:
-            turn_at = turn_at.replace(tzinfo=timezone.utc)
+        turn_at = aware(
+            datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
+        )
         exact_dispatch = terminal_dispatch_cessation(
             proof,
             state["latest_dispatch"],
@@ -601,9 +602,9 @@ def _review_guest_ceased(state, observation):
         return False
     try:
         observed = _proof_time(observation)
-        turn = datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
-        if turn.tzinfo is None:
-            turn = turn.replace(tzinfo=timezone.utc)
+        turn = aware(
+            datetime.fromisoformat(state["latest_turn_at"].replace("Z", "+00:00"))
+        )
     except (KeyError, TypeError, ValueError):
         return False
     prior = state.get("permit_observation")

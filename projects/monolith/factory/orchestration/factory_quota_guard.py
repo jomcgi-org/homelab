@@ -24,13 +24,14 @@ mid-task, and so the board can render it without a broker call.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import logging
 import time
 
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.orchestration.factory_controls import (
     JUDGMENT_CLASSES,
     QUOTA_GUARD_MAX_AGE_SECONDS,
@@ -135,9 +136,7 @@ def _audit_unknown(db: Session, reason: str, detail: dict) -> None:
         .order_by(FactoryAudit.id.desc())
     ).first()
     if last is not None:
-        created = last.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+        created = aware(last.created_at)
         known = latest_verdict(db)
         if created >= cutoff and (known is None or last.id > known.id):
             return
@@ -206,8 +205,7 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
                             reset = datetime.fromisoformat(
                                 resets_at.replace("Z", "+00:00")
                             )
-                            if reset.tzinfo is None:
-                                reset = reset.replace(tzinfo=timezone.utc)
+                            reset = aware(reset)
                             remaining = reset - _now()
                             imminent_reset = (
                                 timedelta(0) <= remaining <= timedelta(minutes=horizon)
@@ -245,9 +243,7 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
         )
         if unchanged and used is not None:
             previous_detail = _detail(previous)
-            created = previous.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+            created = aware(previous.created_at)
             last_unknown = db.exec(
                 select(FactoryAudit)
                 .where(FactoryAudit.action == "quota_guard_unknown")

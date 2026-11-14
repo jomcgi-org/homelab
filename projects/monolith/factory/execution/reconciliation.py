@@ -935,16 +935,13 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
     dispatched = datetime.fromisoformat(
         recovery["last_dispatch_at"].replace("Z", "+00:00")
     )
-    if dispatched.tzinfo is None:
-        dispatched = dispatched.replace(tzinfo=timezone.utc)
+    dispatched = aware(dispatched)
 
     def encode(value):
         if isinstance(value, bytes):
             return {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
         if isinstance(value, datetime):
-            return (
-                value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-            ).isoformat()
+            return aware(value).isoformat()
         raise TypeError(type(value).__name__)
 
     failed_turn_at = (
@@ -1020,9 +1017,7 @@ def factory_attempt_never_posted(db: Session, identity: dict) -> dict | None:
         or agent.result_receipt_fence_id is not None
     ):
         return None
-    failed_turn_at = datetime.fromisoformat(identity["failed_turn_at"])
-    if failed_turn_at.tzinfo is None:
-        failed_turn_at = failed_turn_at.replace(tzinfo=timezone.utc)
+    failed_turn_at = aware(datetime.fromisoformat(identity["failed_turn_at"]))
     if datetime.now(timezone.utc) - failed_turn_at >= timedelta(
         days=result_receipts.RETAIN_DAYS
     ):
@@ -1531,9 +1526,7 @@ def release_bound_zero_turn_factory_fence(
         if receipt.result_sha256 is not None or receipt.received_at is not None:
             raise ValueError("factory_bound_zero_turn_result_committed")
         now = datetime.now(timezone.utc)
-        retain_until = receipt.retain_until
-        if retain_until.tzinfo is None:
-            retain_until = retain_until.replace(tzinfo=timezone.utc)
+        retain_until = aware(receipt.retain_until)
         receipt.accept_until = min(now + timedelta(hours=ACCEPT_HOURS), retain_until)
         db.add(receipt)
     agent = _locked_session(db, identity["session_id"])

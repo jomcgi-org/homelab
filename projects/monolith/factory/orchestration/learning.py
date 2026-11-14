@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
+from core.clock import aware
 from core.db import query_rows
 
 REPO = "jomcgi-org/homelab"
@@ -281,8 +282,7 @@ def complete(db, name, holder):
                 observed = source["created_at"]
                 if isinstance(observed, str):
                     observed = datetime.fromisoformat(observed)
-                if observed.tzinfo is None:
-                    observed = observed.replace(tzinfo=timezone.utc)
+                observed = aware(observed)
                 if (
                     not datetime.now(timezone.utc) - timedelta(hours=72)
                     <= observed

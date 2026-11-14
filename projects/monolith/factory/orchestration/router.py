@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from core.clock import aware
 from core.identity import verified_email
 from goosecracker.api import REPO_CATALOG
 from framework import log_task_exception
@@ -978,9 +979,7 @@ async def task_start_status(task_id: str) -> StartStatusResponse:
     state = snapshot["state"]
     task = _CLASSIFICATION_TASKS.get(task_id)
     has_live_task = task is not None and not task.done()
-    updated_at = snapshot["updated_at"]
-    if updated_at.tzinfo is None:
-        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    updated_at = aware(snapshot["updated_at"])
     now = datetime.now(timezone.utc)
     soft_cutoff = now - timedelta(seconds=_CLASSIFY_STUCK_SECONDS)
     hard_cutoff = now - timedelta(seconds=_CLASSIFY_HARD_STUCK_SECONDS)

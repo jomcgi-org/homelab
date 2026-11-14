@@ -12,6 +12,7 @@ from sqlalchemy import exists, text
 from sqlalchemy.orm import defer
 from sqlmodel import Session, func, select
 
+from core.clock import aware
 from factory.execution.constants import (
     GRIMOIRE_KG_NODE_KEY,
     KG_NODE_KEY,
@@ -78,8 +79,7 @@ def _since_floor(session: Session) -> datetime:
     floor = row.first_enabled_at
     if isinstance(floor, str):
         floor = datetime.fromisoformat(floor.replace("Z", "+00:00"))
-    if floor.tzinfo is None:
-        floor = floor.replace(tzinfo=timezone.utc)
+    floor = aware(floor)
     return floor.astimezone(timezone.utc)
 
 

@@ -4,6 +4,7 @@ Storage-only callers must not load the MCP executor or its domain dependencies.
 Existing execution functions resolve lazily to their unchanged implementation.
 """
 
+from core.lazy import lazy_exports
 from factory.execution import admission as _admission
 from factory.execution.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from factory.execution.constants import KG_NODE_KEY as KG_NODE_KEY
@@ -115,12 +116,9 @@ def relay_response_lost_drain(session_id: int, expected_hold: dict, evidence: di
     return store.relay_response_lost_drain_sync(session_id, expected_hold, evidence)
 
 
-def __getattr__(name: str):
-    if name not in _EXECUTION_EXPORTS:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from factory.execution import execution_api
-
-    return getattr(execution_api, name)
+__getattr__ = lazy_exports(
+    __name__, dict.fromkeys(_EXECUTION_EXPORTS, "factory.execution.execution_api")
+)
 
 
 def observe_guest_for_recomputation(guest_id: str) -> dict | None:

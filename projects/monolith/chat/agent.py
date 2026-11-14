@@ -14,6 +14,7 @@ import shared.inference
 from pydantic_ai import Agent, ModelSettings, RunContext, ToolDefinition
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
+from core.clock import aware
 from sandbox.client import run_code_in_sandbox
 from shared.embedding import EmbeddingClient
 
@@ -134,8 +135,7 @@ def _parse_due_at(due_at_iso: Any) -> datetime | None:
         parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = aware(parsed)
     return parsed.astimezone(timezone.utc)
 
 

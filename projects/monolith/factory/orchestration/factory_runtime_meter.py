@@ -6,7 +6,7 @@ It never changes cash budgets, provider quotas, funding, or uncertainty fences.
 """
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -14,6 +14,7 @@ import math
 
 from sqlmodel import select
 
+from core.clock import aware
 from core.jsonio import dumps
 from factory.execution import admission, result_receipts
 from factory.execution.runtime_meter_evidence import (
@@ -200,9 +201,7 @@ def _validate_update(value):
 
 def _usage_stale(binding, last):
     observed = (last or {}).get("usage_observed_at") or binding["bound_at"]
-    at = datetime.fromisoformat(observed)
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=timezone.utc)
+    at = aware(datetime.fromisoformat(observed))
     return (controls._now() - at).total_seconds() >= binding["usage_max_age_seconds"]
 
 
