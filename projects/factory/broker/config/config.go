@@ -36,6 +36,11 @@ type Config struct {
 	// Namespace holds the grant Secret and the quota ConfigMap.
 	Namespace  string `json:"namespace"`
 	ListenAddr string `json:"listenAddr"`
+	// AdminListenAddr, when set, serves the admin, connector-token and
+	// metrics endpoints on their own listener, so network policy can admit
+	// actors to the relay without reaching them. Empty serves everything on
+	// ListenAddr.
+	AdminListenAddr string `json:"adminListenAddr"`
 
 	Codex       Codex       `json:"codex"`
 	ActorJWT    ActorJWT    `json:"actorJwt"`
@@ -184,6 +189,7 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	for key, target := range map[string]*string{
 		"BROKER_NAMESPACE":          &cfg.Namespace,
 		"BROKER_LISTEN_ADDR":        &cfg.ListenAddr,
+		"BROKER_ADMIN_LISTEN_ADDR":  &cfg.AdminListenAddr,
 		"BROKER_ACTOR_JWT_ISSUER":   &cfg.ActorJWT.Issuer,
 		"BROKER_ACTOR_JWT_AUDIENCE": &cfg.ActorJWT.Audience,
 		"BROKER_ACTOR_JWT_CA_FILE":  &cfg.ActorJWT.CAFile,
@@ -229,6 +235,9 @@ func (c Config) Validate() error {
 	var errs []error
 	if c.Namespace == "" {
 		errs = append(errs, errors.New("namespace is required (or POD_NAMESPACE)"))
+	}
+	if c.AdminListenAddr != "" && c.AdminListenAddr == c.ListenAddr {
+		errs = append(errs, errors.New("adminListenAddr must differ from listenAddr"))
 	}
 	if c.Codex.Grant == "" || c.Codex.SecretPrefix == "" {
 		errs = append(errs, errors.New("codex.grant and codex.secretPrefix are required"))

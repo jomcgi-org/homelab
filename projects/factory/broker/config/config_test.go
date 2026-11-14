@@ -64,6 +64,7 @@ func TestLoadRejects(t *testing.T) {
 		"slow mint":      "namespace: f\ngithub: {mintInterval: 2h}\n",
 		"http issuer":    "namespace: f\nactorJwt: {issuer: 'http://idp'}\n",
 		"no app id":      "namespace: f\ngithub: {privateKeyFile: /k}\n",
+		"shared listen":  "namespace: f\nadminListenAddr: ':8080'\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(write(t, "c.yaml", content), func(string) string { return "" }); err == nil {
