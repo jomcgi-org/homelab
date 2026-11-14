@@ -31,7 +31,12 @@ HOST = "kagent-pg-rw.kagent.svc"
 DATABASE = "kagent"
 # (password key in SOURCE, login, Secret the chart reads, key in it)
 LOGINS = [
-    ("owner-password", "kagent_owner_user", "kagent-postgres-owner", "ownerConnectionString"),
+    (
+        "owner-password",
+        "kagent_owner_user",
+        "kagent-postgres-owner",
+        "ownerConnectionString",
+    ),
     (
         "readwrite-password",
         "kagent_readwrite_user",

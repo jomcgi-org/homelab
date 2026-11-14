@@ -61,7 +61,10 @@ def k8s(method, path, body=None):
         api + path,
         method=method,
         data=None if body is None else json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
     )
     ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
     try:
@@ -214,7 +217,11 @@ def ensure_grant(bucket_id, bucket, namespace, name):
         garage(
             "POST",
             "ImportKey",
-            {"accessKeyId": key_id, "secretAccessKey": key_secret, "name": f"{namespace}/{name}"},
+            {
+                "accessKeyId": key_id,
+                "secretAccessKey": key_secret,
+                "name": f"{namespace}/{name}",
+            },
         )
         print(f"imported key {namespace}/{name}")
     garage(
