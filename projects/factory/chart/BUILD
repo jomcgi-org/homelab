@@ -9,6 +9,7 @@ helm_chart(
     name = "chart",
     images = {
         "broker.image": "//projects/factory/broker/image:image.info",
+        "connector.image": "//projects/factory/connector/image:image.info",
     },
     # The vendored kagent subcharts are linted by their own repository.
     lint = False,
@@ -97,4 +98,30 @@ py_test(
         "SECRET_INIT": "$(rootpath files/itsaplan/secret_init.py)",
     },
     deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "connector_test",
+    srcs = ["connector_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.schema.json",
+        "values.yaml",
+        "//projects/factory/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "charts/**",
+        "crds/**",
+        "files/**",
+        "templates/**",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )

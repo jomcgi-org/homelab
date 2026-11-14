@@ -318,10 +318,7 @@ def test_existing_kagent_renders_only_crds() -> None:
     ("override", "message"),
     [
         ("kagent.enabled=false", "kagent.enabled must be true for kagent.mode install"),
-        (
-            "connector.enabled=true",
-            r"connector\.enabled must be one of|connector is not implemented",
-        ),
+        ("connector.enabled=true", r"connector\.enabled needs itsaplan\.enabled"),
         (
             "providers.openai.kind=x",
             r"providers: Must have at most 0 properties|providers are not implemented",

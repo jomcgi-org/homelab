@@ -15,6 +15,11 @@ and metrics. Provider and GitHub credentials exist only in this pod.
 {{- $bindings = append $bindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" .namespace) }}
 {{- $atespaces = append $atespaces .namespace }}
 {{- end }}
+{{- /* The connector's own ServiceAccount fetches connector tokens. */}}
+{{- $connectorSubjects := $b.connectorSubjects }}
+{{- if .Values.connector.enabled }}
+{{- $connectorSubjects = append $connectorSubjects (include "factory.connectorSubject" .) | uniq }}
+{{- end }}
 {{- $config := dict
   "namespace" $ns
   "listenAddr" (printf ":%d" (int $b.relayPort))
@@ -25,7 +30,7 @@ and metrics. Provider and GitHub credentials exist only in this pod.
     "audience" "factory-broker"
     "caFile" "/run/substrate-servicedns/trust-bundle.pem"
     "allowedAtespaces" $atespaces)
-  "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $b.adminSubjects "connectorSubjects" $b.connectorSubjects)
+  "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $b.adminSubjects "connectorSubjects" $connectorSubjects)
   "bindings" $bindings
 }}
 {{- if $github }}
