@@ -50,6 +50,7 @@ func newEnv(t *testing.T) *env {
 		m: metrics.New(nil),
 	}
 	v.cfg = dispatch.Config{
+		Caller: v.kg,
 		Holder: "connector-a",
 		Agents: []dispatch.Agent{{Key: "coder", Concurrency: 2}, {Key: "coder-b", Concurrency: 1}},
 		Bindings: []dispatch.Binding{{

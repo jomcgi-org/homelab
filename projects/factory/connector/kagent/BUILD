@@ -4,6 +4,7 @@ go_library(
     name = "kagent",
     srcs = [
         "a2a.go",
+        "identity.go",
         "session.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/kagent",
@@ -21,7 +22,10 @@ go_library(
 
 go_test(
     name = "kagent_test",
-    srcs = ["a2a_test.go"],
+    srcs = [
+        "a2a_test.go",
+        "identity_test.go",
+    ],
     embed = [":kagent"],
     deps = [
         "@org_golang_google_grpc//:grpc",

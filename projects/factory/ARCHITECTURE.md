@@ -353,12 +353,32 @@ sends the same message again, at most every 15 s: kagent answers with the
 task holding it, refuses while the first copy's reservation is in flight,
 or takes it when the first copy never arrived. After 20 sends, the
 connector sends only once per dispatch window, three more times, since a
-late save of the last send would be found that way. The attempt fails as
-an engineering failure a full window after its final send, when kagent can
-no longer commit any of them. The window covers the 60 s call timeout, the
+late save of the last send would be found that way. A full window after its
+final send, the connector searches every task state and every page for the
+original message ID. A match attaches the original task, including a task
+that has finished or is waiting for input. Only a complete successful scan
+with no match permits an engineering retry. A failed read, repeated cursor,
+scan timeout or missing Agent leaves the attempt uncertain and keeps its slot.
+The window covers the 60 s call timeout, the
 two-minute reservation and 30 s of skew; configuration refuses anything
 under 210 s. The repository and branch
 come only from configuration.
+
+Before the first send, the work item keeps an immutable caller witness:
+projected token issuer, ServiceAccount UID, the controller's configured
+authority, and the A2A and gRPC endpoints. Each observation/action sequence
+pins one projected token for both protocols and checks that witness before
+sending, cancelling or relying on session absence. Token rotation preserves
+the witness; a recreated ServiceAccount, changed authority or changed
+endpoint holds the original attempt without spending a retry. Legacy rows
+without a witness need positive ownership from a readable session whose
+creator matches the current principal; an unknown first send must first be
+found by its exact message ID. A new unsent retry cannot establish ownership
+for older work that may still execute: all uncertain historical sends must
+also have readable ownership and quiescent tasks. Missing legacy evidence stays held
+until the original identity or positive ownership can be restored. Tokens
+are never persisted in the witness. The controller authority and kept
+ServiceAccount remain immutable operational requirements (finding 15).
 
 A work item keeps one kagent session whichever agent key delivers its run.
 When a run for an existing work item arrives under a different agent, the
@@ -533,16 +553,19 @@ sees their stops, and GitHub's required
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
 reports the task in a terminal state. A cancellation never sends a message.
 For an attempt whose task is unknown, it waits a dispatch window after the
-last send. It then cancels the running task whose history holds the
+last send. It then finds the task in any state whose history holds the
 attempt's message ID, looking in the attempt's session or, for a first
-send, in the connector's sessions that no work item maps; with none, it
-confirms. A run that itsaplan ended closes once its cancellation is
+send, across all of the original caller's sessions. A terminal task confirms
+cancellation; a running or waiting task is cancelled. Only a complete
+successful scan with no match confirms that nothing was dispatched. A run that itsaplan ended closes once its cancellation is
 confirmed, whatever started that cancellation.
 
 **Deployment.** `templates/connector*.yaml` render with `connector.enabled`,
 which needs `itsaplan.enabled`, `broker.enabled` and kagent's
 `config.server.auth.serviceAccount.authority`. That authority is part of the
 connector's kagent principal (finding 15), so it never changes once set.
+The chart passes this same authority to the connector in
+`FACTORY_CONNECTOR_KAGENT_AUTHORITY`, including existing-controller mode.
 
 - **Pod.** Deployment `factory/factory-connector`, one replica, `Recreate`,
   wave 1, the image by digest with the GHCR pull secret. Its ServiceAccount

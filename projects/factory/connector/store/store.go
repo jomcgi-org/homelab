@@ -369,20 +369,60 @@ type WorkItem struct {
 	TurnAttemptID   int64
 	SyncedAttemptID int64
 	StoppedReason   string
+	// CallerIdentity is the immutable non-secret kagent caller witness.
+	// Empty means legacy work whose ownership must be established positively.
+	CallerIdentity string
 }
 
 const workCols = `id, binding_name, issue_id, issue_key, branch, agent_key, kagent_namespace, kagent_agent,
 	coalesce(session_id, ''), session_generation, epoch, engineering_retries, state,
 	coalesce(blocked_class, ''), coalesce(blocked_reason, ''), review_rounds,
-	coalesce(turn_attempt_id, 0), coalesce(synced_attempt_id, 0), coalesce(stopped_reason, '')`
+	coalesce(turn_attempt_id, 0), coalesce(synced_attempt_id, 0), coalesce(stopped_reason, ''),
+	coalesce(caller_identity, '')`
 
 func scanWork(row interface{ Scan(...any) error }) (*WorkItem, error) {
 	w := &WorkItem{}
 	err := row.Scan(&w.ID, &w.BindingName, &w.IssueID, &w.IssueKey, &w.Branch, &w.AgentKey,
 		&w.KagentNamespace, &w.KagentAgent, &w.SessionID, &w.SessionGeneration, &w.Epoch,
 		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason, &w.ReviewRounds,
-		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason)
+		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason, &w.CallerIdentity)
 	return w, err
+}
+
+// BindCaller records a caller witness once. An existing witness never changes;
+// a matching repeat is harmless, but a mismatch remains fenced.
+func (s *Store) BindCaller(ctx context.Context, workID int64, identity string) (bool, error) {
+	if identity == "" {
+		return false, errors.New("store: empty caller identity")
+	}
+	res, err := s.DB.ExecContext(ctx, `UPDATE work_item SET caller_identity = $2, updated_at = now()
+		WHERE id = $1 AND (caller_identity IS NULL OR caller_identity = $2)`, workID, identity)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// SentAttemptsForWork returns the newest sent attempt first. Legacy adoption
+// must account for every uncertain predecessor, not only the latest retry.
+func (s *Store) SentAttemptsForWork(ctx context.Context, workID int64) ([]*Attempt, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt
+		WHERE run_id IN (SELECT id FROM run WHERE work_item_id = $1)
+			AND first_sent_at IS NOT NULL ORDER BY id DESC`, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var attempts []*Attempt
+	for rows.Next() {
+		a, err := scanAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, a)
+	}
+	return attempts, rows.Err()
 }
 
 // SessionMapped reports whether a work item records the kagent session.

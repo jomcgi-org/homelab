@@ -67,6 +67,7 @@ type Binding struct {
 
 // Config holds dispatch settings.
 type Config struct {
+	Caller    Caller
 	Holder    string
 	Agents    []Agent
 	Bindings  []Binding
@@ -75,7 +76,7 @@ type Config struct {
 	ReissueInterval time.Duration
 	// DispatchWindow is how long a sent message may still be taken up by
 	// kagent: the A2A call timeout, kagent's two-minute dispatch reservation
-	// and clock skew. An unresolved attempt fails only after it.
+	// and clock skew. Absence can be proved only after this window.
 	DispatchWindow time.Duration
 	// MaxIssues bounds the spaced sends of one message. FinalLookups more
 	// follow, one per DispatchWindow, before the attempt fails.
@@ -754,22 +755,41 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 	if wi.SessionID == "" {
 		return false, nil
 	}
+	var err error
+	ctx, err = e.guardCaller(ctx, wi, nil)
+	if err != nil {
+		return false, err
+	}
 	ref := agentRef(wi)
 	busy := false
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking} {
 		token := ""
-		for page := 0; page < 10; page++ {
+		seen := map[string]bool{}
+		for {
 			if err := e.guard(ctx); err != nil {
 				return false, err
 			}
 			tasks, next, err := e.tasks.ListTasks(ctx, ref, wi.SessionID, state, token)
-			if errors.Is(err, kagent.ErrTaskNotFound) {
-				return false, nil
+			if errors.Is(err, kagent.ErrTaskNotFound) && e.sessions != nil {
+				// An Agent can disappear while its actor still runs. Only
+				// the same caller's session absence can clear this barrier.
+				if guardErr := e.guard(ctx); guardErr != nil {
+					return false, guardErr
+				}
+				s, sessionErr := e.sessions.GetSession(ctx, wi.SessionID)
+				if errors.Is(sessionErr, kagent.ErrSessionNotFound) || (sessionErr == nil && s != nil && s.State == kagent.RuntimeDeleted) {
+					return false, nil
+				}
 			}
 			if err != nil {
 				return false, err
 			}
 			for _, t := range tasks {
+				if t == nil || t.ID == "" || t.ContextID != wi.SessionID {
+					return false, errors.New("session tasks: invalid task listing")
+				}
 				if kagent.Quiescent(t.Status.State) {
 					continue
 				}
@@ -784,59 +804,14 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 			if next == "" {
 				break
 			}
+			if seen[next] {
+				return false, errors.New("session tasks: repeated page token")
+			}
+			seen[next] = true
 			token = next
 		}
 	}
 	return busy, nil
-}
-
-// runningTaskWithMessage finds the running task whose history holds a
-// message: in the session when contextID is set, otherwise in the Agent's
-// sessions that no work item maps, where a first send with a lost response
-// runs. Other runs' unattached first sends also run there, so only the
-// message ID, which kagent keys a first send's session by, picks the task.
-func (e *Engine) runningTaskWithMessage(ctx context.Context, ref kagent.AgentRef, contextID, messageID string) (*kagent.Task, error) {
-	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking} {
-		token := ""
-		for page := 0; page < 10; page++ {
-			if err := e.guard(ctx); err != nil {
-				return nil, err
-			}
-			tasks, next, err := e.tasks.ListTasks(ctx, ref, contextID, state, token)
-			if errors.Is(err, kagent.ErrTaskNotFound) {
-				return nil, nil
-			}
-			if err != nil {
-				return nil, err
-			}
-			for _, c := range tasks {
-				if contextID == "" {
-					mapped, err := e.st.SessionMapped(ctx, c.ContextID)
-					if err != nil {
-						return nil, err
-					}
-					if mapped {
-						continue
-					}
-				}
-				if err := e.guard(ctx); err != nil {
-					return nil, err
-				}
-				t, err := e.tasks.GetTask(ctx, ref, c.ID)
-				if err != nil {
-					return nil, err
-				}
-				if t.HasMessage(messageID) {
-					return t, nil
-				}
-			}
-			if next == "" {
-				break
-			}
-			token = next
-		}
-	}
-	return nil, nil
 }
 
 // resumeWaiting sends a waiting run once its work item is ready.
@@ -1025,14 +1000,17 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 // again when its outcome is unknown: kagent answers a repeated task-opening
 // message with the task that holds it, so the same message is the lookup.
 func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
+	var err error
+	ctx, err = e.guardCaller(ctx, wi, a)
+	if err != nil {
+		return err
+	}
 	now := e.cfg.Now()
 	if a.State == store.AttemptAmbiguous {
 		if a.Issues >= e.cfg.MaxIssues {
-			// Past the cap, sends are only lookups, one per dispatch window.
-			// kagent can commit the last send until its reservation ends, and
-			// a lookup then answers with that task. The attempt fails only a
-			// whole window after its final lookup, when nothing it sent can
-			// still start.
+			// Past the cap, reissues are spaced by one dispatch window.
+			// Exhausting responses still proves nothing about an execution
+			// already accepted: unresolved performs a separate complete scan.
 			if now.Sub(a.SentAt) < e.cfg.DispatchWindow {
 				return nil
 			}
@@ -1075,7 +1053,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		// in flight, so the attempt stays ambiguous and goes again later.
 		e.m.Sends.WithLabelValues(a.Kind, "not_accepted").Inc()
 		return nil
-	case errors.Is(err, kagent.ErrTaskNotFound) && a.Kind == "initial":
+	case errors.Is(err, kagent.ErrTaskNotFound) && a.Kind == "initial" && a.Issues == 1:
 		e.m.Sends.WithLabelValues(a.Kind, "not_found").Inc()
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "kagent agent not found"); err != nil {
@@ -1085,9 +1063,17 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		})
 	case errors.Is(err, kagent.ErrTaskNotFound):
 		e.m.Sends.WithLabelValues(a.Kind, "not_found").Inc()
-		return e.replaceSession(ctx, r, wi, b, a, "expired or deleted")
+		// A missing Agent does not stop a previously dispatched actor. An
+		// earlier send remains uncertain until the original message or the
+		// session lifecycle can be reconciled under the same caller.
+		return nil
 	case errors.Is(err, kagent.ErrRejected):
 		e.m.Sends.WithLabelValues(a.Kind, "rejected").Inc()
+		if a.Issues > 1 {
+			// Rejecting this call says nothing about an earlier accepted
+			// copy whose response was lost (for example after Agent edits).
+			return nil
+		}
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", clip(err.Error(), maxErrorText)); err != nil {
 				return err
@@ -1101,12 +1087,19 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	}
 }
 
-// unresolved fails an attempt whose sends all went unanswered and whose last
-// send is a dispatch window old, so kagent can no longer take any of them;
-// the turn then follows the engineering failure path.
+// unresolved reconciles an attempt after its final dispatch window. Waiting
+// out the reservation excludes late acceptance, but not an already accepted
+// execution whose replies were lost. Only a complete absent lookup may retry.
 func (e *Engine) unresolved(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
+	t, err := e.taskWithMessage(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.ContextID, a.MessageID)
+	if err != nil {
+		return err
+	}
+	if t != nil {
+		return e.attach(ctx, a, wi, t)
+	}
 	e.m.Sends.WithLabelValues(a.Kind, "unresolved").Inc()
-	msg := fmt.Sprintf("kagent did not take the message after %d sends", a.Issues)
+	msg := fmt.Sprintf("original message absent after %d sends and a complete task lookup", a.Issues)
 	return e.engineeringFailure(ctx, r, wi, a, msg)
 }
 
@@ -1151,6 +1144,8 @@ func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.Wor
 		return false, err
 	}
 	switch {
+	case s.State == kagent.RuntimeDeleting:
+		return false, nil // actor deletion has not yet proved execution stopped
 	case s.Gone():
 		return false, e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "deleted")
 	case s.Crashed():
@@ -1208,6 +1203,8 @@ func (e *Engine) watchSession(ctx context.Context, r *store.Run, wi *store.WorkI
 		return e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "expired or deleted")
 	case err != nil:
 		return err
+	case s.State == kagent.RuntimeDeleting:
+		return nil
 	case s.Gone():
 		return e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "deleted")
 	case s.Crashed():
@@ -1319,6 +1316,10 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		return e.dispatch(ctx, r)
 	}
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	ctx, err = e.guardCaller(ctx, wi, a)
 	if err != nil {
 		return err
 	}
@@ -1569,6 +1570,18 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if !a.Open() {
 		return e.confirmCancel(ctx, c, a, a.State)
 	}
+	r, err := e.st.GetRun(ctx, c.RunID)
+	if err != nil {
+		return err
+	}
+	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	ctx, err = e.guardCaller(ctx, wi, a)
+	if err != nil {
+		return err
+	}
 	ref := kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}
 	if a.TaskID == "" {
 		// The send's outcome is unknown. A cancellation never sends: that
@@ -1578,10 +1591,10 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		if e.cfg.Now().Sub(a.SentAt) < e.cfg.DispatchWindow {
 			return nil
 		}
-		// Only the task holding this attempt's message is a target. A first
-		// send runs in a session no work item maps yet; the listing holds
-		// only the connector's sessions.
-		t, err := e.runningTaskWithMessage(ctx, ref, a.ContextID, a.MessageID)
+		// Only the task holding this attempt's message is a target. The
+		// all-state listing covers the original caller's sessions, including
+		// a first send whose session the work item has not recorded yet.
+		t, err := e.taskWithMessage(ctx, ref, a.ContextID, a.MessageID)
 		if err != nil {
 			return err
 		}

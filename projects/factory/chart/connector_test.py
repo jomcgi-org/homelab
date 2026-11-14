@@ -254,7 +254,31 @@ def test_endpoints_and_secrets() -> None:
     )
     assert env["FACTORY_CONNECTOR_KAGENT_GRPC"] == "kagent-controller.kagent.svc:8083"
     assert env["FACTORY_CONNECTOR_KAGENT_TOKEN_FILE"] == "/var/run/secrets/kagent/token"
+    assert env["FACTORY_CONNECTOR_KAGENT_AUTHORITY"] == "factory"
     assert env["POD_NAME"] == {"fieldRef": {"fieldPath": "metadata.name"}}
+
+
+def test_caller_authority_tracks_the_controller_in_both_modes() -> None:
+    for mode in ("install", "existing"):
+        overrides = [
+            f"kagent.mode={mode}",
+            f"kagent.enabled={str(mode == 'install').lower()}",
+            "kagent.controller.service.ports.port=8083",
+            "kagent.config.server.auth.serviceAccount.authority=kept-controller",
+        ]
+        assert (
+            _env(_render(overrides))["FACTORY_CONNECTOR_KAGENT_AUTHORITY"]
+            == "kept-controller"
+        )
+        with pytest.raises(RuntimeError, match="serviceAccount.authority"):
+            _render(
+                [
+                    f"kagent.mode={mode}",
+                    f"kagent.enabled={str(mode == 'install').lower()}",
+                    "kagent.controller.service.ports.port=8083",
+                    "kagent.config.server.auth.serviceAccount=null",
+                ]
+            )
 
 
 def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:

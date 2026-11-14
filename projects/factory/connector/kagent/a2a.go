@@ -211,7 +211,7 @@ func (c *A2A) call(ctx context.Context, agent AgentRef, method string, params, o
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("A2A-Version", "1.0")
 	if c.Tokens != nil {
-		tok, err := c.Tokens.Token()
+		tok, err := tokenForContext(ctx, c.Tokens)
 		if err != nil {
 			return err
 		}
@@ -293,7 +293,7 @@ func (c *A2A) GetTask(ctx context.Context, agent AgentRef, taskID string) (*Task
 	return &t, nil
 }
 
-// ListTasks lists one page of tasks in one state, without history, so a
+// ListTasks lists one page of tasks in one state (or all when empty), without history, so a
 // page stays small: one session's, or with no contextID, those of every
 // session of the Agent the caller owns.
 func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, pageToken string) ([]*Task, string, error) {

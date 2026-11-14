@@ -17,8 +17,8 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- fail "connector.enabled needs broker.enabled: the connector shares its namespace and gets GitHub tokens from it" }}
 {{- end }}
 {{- $kagentAuth := ((.Values.kagent.config | default dict).server | default dict).auth | default dict }}
-{{- if and (include "factory.kagentInstall" .) (not ($kagentAuth.serviceAccount | default dict).authority) }}
-{{- fail "connector.enabled needs kagent.config.server.auth.serviceAccount.authority: kagent authenticates the connector's ServiceAccount token only with it" }}
+{{- if not ($kagentAuth.serviceAccount | default dict).authority }}
+{{- fail "connector.enabled needs kagent.config.server.auth.serviceAccount.authority: use the installed or existing controller's exact authority for caller continuity" }}
 {{- end }}
 {{- /* The peers' policies admit the connector by networkPolicy.connector. */}}
 {{- $peer := .Values.networkPolicy.connector }}
@@ -175,6 +175,8 @@ spec:
               value: {{ include "factory.kagentControllerAddress" . | quote }}
             - name: FACTORY_CONNECTOR_KAGENT_TOKEN_FILE
               value: /var/run/secrets/kagent/token
+            - name: FACTORY_CONNECTOR_KAGENT_AUTHORITY
+              value: {{ $kagentAuth.serviceAccount.authority | quote }}
             {{- if $delivers }}
             - name: FACTORY_CONNECTOR_BROKER_URL
               value: {{ printf "http://%s.%s.svc:%d" (include "factory.brokerName" .) $ns (int .Values.broker.adminPort) | quote }}

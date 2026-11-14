@@ -30,6 +30,29 @@ bindings:
     kagentAgent: coder
 `
 
+func TestLoadRequiresTheControllersAuthority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(sample), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"FACTORY_CONNECTOR_CONFIG":       path,
+		"FACTORY_CONNECTOR_DATABASE_URL": "postgres://localhost/factory",
+		"FACTORY_CONNECTOR_ITSAPLAN_URL": "http://itsaplan",
+		"FACTORY_CONNECTOR_KAGENT_URL":   "http://kagent",
+		"FACTORY_CONNECTOR_KAGENT_GRPC":  "kagent:8083",
+	}
+	getenv := func(name string) string { return env[name] }
+	if _, err := Load(getenv); err == nil || !strings.Contains(err.Error(), "FACTORY_CONNECTOR_KAGENT_AUTHORITY") {
+		t.Fatalf("missing authority = %v", err)
+	}
+	env["FACTORY_CONNECTOR_KAGENT_AUTHORITY"] = "kept-controller"
+	c, err := Load(getenv)
+	if err != nil || c.KagentAuthority != "kept-controller" {
+		t.Fatalf("authority = %+v, %v", c, err)
+	}
+}
+
 func TestParseAppliesDefaults(t *testing.T) {
 	f, err := Parse([]byte(sample))
 	if err != nil {
