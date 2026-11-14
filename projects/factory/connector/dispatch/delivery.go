@@ -1000,7 +1000,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	cols, err := e.its.ProjectColumns(ctx, p.Project)
 	switch {
 	case e.refused(ctx, it, err):
-		return e.abandonDone(ctx, it, p, "", "itsaplan refused reading the project: "+clip(err.Error(), 200))
+		return e.abandonDone(ctx, it, p, "", "the factory could not read the project", err)
 	case err != nil:
 		return err
 	}
@@ -1012,9 +1012,9 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	is, err := e.its.GetIssue(ctx, p.IssueID)
 	switch {
 	case errors.Is(err, itsaplan.ErrNotFound):
-		return e.abandonDone(ctx, it, p, "", "the issue is no longer visible to the factory")
+		return e.abandonDone(ctx, it, p, "", "the issue is no longer visible to the factory", nil)
 	case e.refused(ctx, it, err):
-		return e.abandonDone(ctx, it, p, "", "itsaplan refused reading the issue: "+clip(err.Error(), 200))
+		return e.abandonDone(ctx, it, p, "", "the factory could not read the issue", err)
 	case err != nil:
 		return err
 	}
@@ -1037,7 +1037,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 		}
 	}
 	if done == nil {
-		return e.abandonDone(ctx, it, p, "", "project "+p.Project+" has no done column")
+		return e.abandonDone(ctx, it, p, "", "project "+p.Project+" has no done column", nil)
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -1054,27 +1054,51 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 		}
 		return err
 	case e.refused(ctx, it, err):
-		return e.abandonDone(ctx, it, p, done.Name, "itsaplan refused the move: "+clip(err.Error(), 200))
+		return e.abandonDone(ctx, it, p, done.Name, "itsaplan did not accept the move", err)
 	}
 	return err
 }
 
 // abandonDone gives up on a Done move and, in the same transaction, says
-// so on the issue once, so a merged issue never sits outside Done
-// unexplained. An empty column names the payload's, or Done.
-func (e *Engine) abandonDone(ctx context.Context, it *store.OutboxItem, p issueDonePayload, column, why string) error {
+// so on the issue once per move, so a merged issue never sits outside Done
+// unexplained. why is fixed text; the comment names only err's class, since
+// an error can carry response bodies and internal URLs, while last_error
+// and the log keep it whole. An empty column names the payload's, or Done.
+func (e *Engine) abandonDone(ctx context.Context, it *store.OutboxItem, p issueDonePayload, column, why string, err error) error {
 	if column == "" {
 		column = cmp.Or(p.Column, "Done")
 	}
+	public, detail := why, why
+	if err != nil {
+		public += " (" + publicReason(err) + ")"
+		detail += ": " + err.Error()
+	}
+	e.log.WarnContext(ctx, "Done move abandoned", "outbox", it.ID, "issue", p.IssueID, "reason", detail)
 	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/done-abandoned/%d", p.IssueID), 0, "",
+		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/done-abandoned/%d/%d", p.IssueID, it.ID), 0, "",
 			commentPayload{IssueID: p.IssueID, Body: fmt.Sprintf(
 				"The pull request merged, but the factory could not move this issue to %q and has stopped trying: %s. "+
-					"Move it by hand.", column, why)}); err != nil {
+					"Move it to %s by hand unless it was canceled.", column, public, column)}); err != nil {
 			return err
 		}
-		return e.st.OutboxAbandon(ctx, tx, it.ID, clip(why, maxErrorText))
+		return e.st.OutboxAbandon(ctx, tx, it.ID, clip(detail, maxErrorText))
 	})
+}
+
+// publicReason is the class of an itsaplan error, fit for an issue comment.
+func publicReason(err error) string {
+	var h *itsaplan.HTTPError
+	switch {
+	case authHTTP(err):
+		return "itsaplan refused the factory's key"
+	case errors.Is(err, itsaplan.ErrNotFound):
+		return "not found"
+	case errors.Is(err, itsaplan.ErrConflict):
+		return "conflict"
+	case errors.As(err, &h) && h.Status < 500:
+		return fmt.Sprintf("HTTP %d", h.Status)
+	}
+	return "itsaplan was unavailable"
 }
 
 // abandonItem gives up on an outbox item after outboxMaxTries. A Done move
@@ -1082,8 +1106,7 @@ func (e *Engine) abandonDone(ctx context.Context, it *store.OutboxItem, p issueD
 func (e *Engine) abandonItem(ctx context.Context, it *store.OutboxItem, err error) error {
 	var p issueDonePayload
 	if it.Kind == store.OutboxIssueDone && json.Unmarshal(it.Payload, &p) == nil {
-		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("itsaplan kept failing after %d tries: %s",
-			outboxMaxTries, clip(err.Error(), 200)))
+		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("the move kept failing for %d tries", outboxMaxTries), err)
 	}
 	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
 }

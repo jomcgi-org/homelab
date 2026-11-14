@@ -1440,7 +1440,7 @@ func TestOutboxCredentialRefusalsAreBoundedAndCounted(t *testing.T) {
 			}
 			var queued int
 			if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind = 'comment'
-				AND payload->>'body' LIKE '%itsaplan refused the move%'`).Scan(&queued); err != nil {
+				AND payload->>'body' LIKE '%did not accept the move (itsaplan refused the factory''s key)%'`).Scan(&queued); err != nil {
 				t.Fatal(err)
 			}
 			if queued != 1 {

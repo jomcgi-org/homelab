@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -988,43 +989,81 @@ func TestDoneMoveWaitsForTheIssue(t *testing.T) {
 	}
 }
 
-// TestAbandonedDoneMoveIsReported: every way the Done move's issue read can
-// give up abandons the move and says so on the issue.
+// TestAbandonedDoneMoveIsReported: every way the Done move can give up
+// abandons it and says so on the issue, once, naming only the error's
+// class: never a response body or an internal URL.
 func TestAbandonedDoneMoveIsReported(t *testing.T) {
+	const secret = "SECRET-BODY"
+	transport := &url.Error{Op: "Get", URL: "http://itsaplan.internal:8080/issues/101", Err: errors.New("connection refused")}
 	cases := []struct {
 		name   string
-		err    error
-		tries  int // failed tries recorded before the move is abandoned
-		reason string
+		fail   func(v *env)
+		tries  int    // failed tries recorded before the move is abandoned
+		reason string // the comment's reason; last_error starts with it too
 	}{
-		{"not found", itsaplan.ErrNotFound, 1, "the issue is no longer visible to the factory"},
-		{"401", &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}, 11, "itsaplan refused reading the issue: "},
-		{"403", &itsaplan.HTTPError{Status: 403, Body: "forbidden"}, 11, "itsaplan refused reading the issue: "},
-		{"503", &itsaplan.HTTPError{Status: 503, Body: "unavailable"}, 19, "itsaplan kept failing after 20 tries: "},
+		{
+			"issue not found", func(v *env) { v.setIssueErr(itsaplan.ErrNotFound) }, 1,
+			"the issue is no longer visible to the factory",
+		},
+		{
+			"issue 401", func(v *env) { v.setIssueErr(&itsaplan.HTTPError{Status: 401, Body: secret}) }, 11,
+			"the factory could not read the issue (itsaplan refused the factory's key)",
+		},
+		{
+			"issue 403", func(v *env) { v.setIssueErr(&itsaplan.HTTPError{Status: 403, Body: secret}) }, 11,
+			"the factory could not read the issue (itsaplan refused the factory's key)",
+		},
+		{
+			"issue 422", func(v *env) { v.setIssueErr(&itsaplan.HTTPError{Status: 422, Body: secret}) }, 1,
+			"the factory could not read the issue (HTTP 422)",
+		},
+		{
+			"issue 503", func(v *env) { v.setIssueErr(&itsaplan.HTTPError{Status: 503, Body: secret}) }, 19,
+			"the move kept failing for 20 tries (itsaplan was unavailable)",
+		},
+		{
+			"transport", func(v *env) { v.setIssueErr(transport) }, 19,
+			"the move kept failing for 20 tries (itsaplan was unavailable)",
+		},
+		{"project 403", func(v *env) {
+			v.its.mu.Lock()
+			v.its.columnsErr = &itsaplan.HTTPError{Status: 403, Body: secret}
+			v.its.mu.Unlock()
+		}, 11, "the factory could not read the project (itsaplan refused the factory's key)"},
+		{"no done column", func(v *env) {
+			v.its.mu.Lock()
+			v.its.columns = v.its.columns[:2]
+			v.its.mu.Unlock()
+		}, 1, "project HL has no done column"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			v := newDeliveryEnv(t)
 			v.mergedAtWIPLimit()
-			v.setIssueErr(c.err)
+			c.fail(v)
 			v.tickUntil(time.Minute, 300, func() bool {
 				_, abandoned, _ := v.outbox(store.OutboxIssueDone)
 				return abandoned
 			})
-			tries, _, reason := v.outbox(store.OutboxIssueDone)
-			if tries != c.tries || !strings.HasPrefix(reason, c.reason) {
-				t.Fatalf("tries = %d reason = %q, want %d and %q", tries, reason, c.tries, c.reason)
+			tries, _, lastErr := v.outbox(store.OutboxIssueDone)
+			if tries != c.tries || !strings.HasPrefix(lastErr, strings.SplitN(c.reason, " (", 2)[0]) {
+				t.Fatalf("tries = %d last error = %q, want %d and %q", tries, lastErr, c.tries, c.reason)
 			}
 			if moves := v.its.Moves(); len(moves) != 0 {
 				t.Fatalf("moves = %+v", moves)
 			}
 			v.tick(v.e)
-			var said bool
+			var reports int
 			for _, cm := range v.its.Comments() {
-				said = said || (strings.Contains(cm.body, "has stopped trying") && strings.Contains(cm.body, c.reason))
+				if strings.Contains(cm.body, secret) || strings.Contains(cm.body, "itsaplan.internal") {
+					t.Fatalf("comment leaks error detail: %q", cm.body)
+				}
+				if strings.Contains(cm.body, "has stopped trying: "+c.reason+".") {
+					reports++
+				}
 			}
-			if !said {
-				t.Fatalf("comments = %+v, want the abandoned move reported", v.its.Comments())
+			if reports != 1 {
+				t.Fatalf("comments = %+v, want one report of %q", v.its.Comments(), c.reason)
 			}
 		})
 	}
