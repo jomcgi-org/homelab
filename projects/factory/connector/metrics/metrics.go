@@ -23,6 +23,8 @@ type Metrics struct {
 	ReviewRounds      prometheus.Counter
 	MergeQueue        *prometheus.CounterVec // outcome
 	SessionRecoveries *prometheus.CounterVec // kind
+
+	CredentialRefusals *prometheus.CounterVec // role, kind
 }
 
 // New registers the metrics with reg; a nil reg leaves them unregistered.
@@ -92,11 +94,17 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_session_recoveries_total",
 			Help: "kagent session recoveries by kind (revert, replace).",
 		}, []string{"kind"}),
+		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_credential_refusals_total",
+			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
+				"(result, comment, issue_done), a lookup (replacement, issue_check, run_check) or a runner call " +
+				"(claim, heartbeat, events).",
+		}, []string{"role", "kind"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.MergeQueue, m.SessionRecoveries)
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.MergeQueue, m.SessionRecoveries, m.CredentialRefusals)
 	}
 	return m
 }

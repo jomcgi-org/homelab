@@ -35,6 +35,8 @@ go_test(
         "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
+        "//projects/factory/connector/metrics",
         "//projects/factory/connector/store",
+        "@com_github_prometheus_client_golang//prometheus/testutil",
     ],
 )

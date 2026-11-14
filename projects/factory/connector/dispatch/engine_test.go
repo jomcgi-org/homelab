@@ -3,6 +3,7 @@ package dispatch_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,9 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
+	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
@@ -28,6 +31,7 @@ type env struct {
 	kg  *fakeKagent
 	gh  *fakeGitHub
 	cfg dispatch.Config
+	m   *metrics.Metrics
 	e   *dispatch.Engine
 }
 
@@ -39,7 +43,10 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { st.DB.Close() })
 	clk := &clock{t: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}
-	v := &env{t: t, ctx: context.Background(), st: st, clk: clk, its: newFakeItsaplan(clk.Now), kg: newFakeKagent(clk.Now)}
+	v := &env{
+		t: t, ctx: context.Background(), st: st, clk: clk, its: newFakeItsaplan(clk.Now), kg: newFakeKagent(clk.Now),
+		m: metrics.New(nil),
+	}
 	v.cfg = dispatch.Config{
 		Holder: "connector-a",
 		Agents: []dispatch.Agent{{Key: "coder", Concurrency: 2}, {Key: "coder-b", Concurrency: 1}},
@@ -67,7 +74,7 @@ func (v *env) engine(holder string) *dispatch.Engine {
 	if v.gh != nil {
 		gh = v.gh
 	}
-	e := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, gh, nil, nil)
+	e := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, gh, v.m, nil)
 	// Postgres releases a closed session's advisory lock asynchronously.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -1362,11 +1369,188 @@ func TestFailingCommentBacksOffWithoutBlockingResults(t *testing.T) {
 // resultOutbox reads the result's outbox row.
 func (v *env) resultOutbox() (tries int, abandoned bool, lastErr string) {
 	v.t.Helper()
+	return v.outbox(store.OutboxResult)
+}
+
+// outbox reads the first outbox row of kind.
+func (v *env) outbox(kind string) (tries int, abandoned bool, lastErr string) {
+	v.t.Helper()
 	if err := v.st.DB.QueryRow(`SELECT tries, abandoned_at IS NOT NULL, coalesce(last_error, '')
-		FROM outbox WHERE kind = 'result'`).Scan(&tries, &abandoned, &lastErr); err != nil {
+		FROM outbox WHERE kind = $1 ORDER BY id LIMIT 1`, kind).Scan(&tries, &abandoned, &lastErr); err != nil {
 		v.t.Fatal(err)
 	}
 	return tries, abandoned, lastErr
+}
+
+// refusals reads factory_connector_credential_refusals_total.
+func (v *env) refusals(role, kind string) int {
+	return int(testutil.ToFloat64(v.m.CredentialRefusals.WithLabelValues(role, kind)))
+}
+
+// TestOutboxCredentialRefusalsAreBoundedAndCounted covers each outbox kind
+// under a persistent 401 or 403: twelve tries, then abandoned, each one
+// counted under the key role that sent it.
+func TestOutboxCredentialRefusalsAreBoundedAndCounted(t *testing.T) {
+	kinds := []struct {
+		kind, role string
+		// start queues the item, failing every delivery with refusal.
+		start func(v *env, refusal error)
+		// after checks what abandoning the item did.
+		after func(t *testing.T, v *env)
+	}{{
+		kind: store.OutboxComment, role: "coordinator",
+		start: func(v *env, refusal error) {
+			v.its.mu.Lock()
+			v.its.commentErr = refusal
+			v.its.mu.Unlock()
+			if err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "comment/test/1", 0, "",
+				map[string]any{"issueId": 101, "body": "Hello."}); err != nil {
+				v.t.Fatal(err)
+			}
+			v.tick(v.e)
+		},
+		after: func(t *testing.T, v *env) {
+			if c := v.its.Comments(); len(c) != 0 {
+				t.Fatalf("comments = %+v", c)
+			}
+		},
+	}, {
+		kind: store.OutboxIssueDone, role: "coordinator",
+		start: func(v *env, refusal error) {
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.its.mu.Lock()
+			for range 40 {
+				v.its.moveErr = append(v.its.moveErr, refusal)
+			}
+			v.its.mu.Unlock()
+			v.gh.merge(1, "merge-sha-1")
+			v.poll()
+		},
+		after: func(t *testing.T, v *env) {
+			if moves := v.its.Moves(); len(moves) != 0 {
+				t.Fatalf("moves = %+v", moves)
+			}
+			v.tick(v.e)
+			var said bool
+			for _, c := range v.its.Comments() {
+				said = said || strings.Contains(c.body, "itsaplan refused the move")
+			}
+			if !said {
+				t.Fatalf("comments = %+v, want the refused move reported", v.its.Comments())
+			}
+		},
+	}, {
+		kind: store.OutboxResult, role: "agent",
+		start: func(v *env, refusal error) {
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			v.its.mu.Lock()
+			for range 40 {
+				v.its.resultErr = append(v.its.resultErr, refusal)
+			}
+			v.its.mu.Unlock()
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+		},
+		after: func(t *testing.T, v *env) {
+			if r := v.run(1); r.State != store.RunClosed || r.ClosedReason != "result refused" {
+				t.Fatalf("run = %s (%s)", r.State, r.ClosedReason)
+			}
+		},
+	}}
+	for _, k := range kinds {
+		for _, status := range []int{401, 403} {
+			t.Run(fmt.Sprintf("%s/%d", k.kind, status), func(t *testing.T) {
+				v := newDeliveryEnv(t)
+				k.start(v, &itsaplan.HTTPError{Status: status, Body: "refused"})
+				if _, abandoned, _ := v.outbox(k.kind); abandoned {
+					t.Fatal("abandoned after one refusal")
+				}
+				v.tickUntil(time.Minute, 120, func() bool {
+					_, abandoned, _ := v.outbox(k.kind)
+					return abandoned
+				})
+				tries, _, lastErr := v.outbox(k.kind)
+				if tries != 11 || !strings.Contains(lastErr, fmt.Sprint(status)) {
+					t.Fatalf("tries = %d, last error = %q; want 11 backoffs and the %d", tries, lastErr, status)
+				}
+				if n := v.refusals(k.role, k.kind); n != 12 {
+					t.Fatalf("refusals{%s,%s} = %d, want 12", k.role, k.kind, n)
+				}
+				k.after(t, v)
+			})
+		}
+	}
+}
+
+// TestRefusedRunLookupClosesRunAfterBound: the agent key's heartbeat gets
+// 404 and the coordinator key is refused when it reads why. The run waits
+// out a key rotation, then closes rather than holding its slot.
+func TestRefusedRunLookupClosesRunAfterBound(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.its.mu.Lock()
+	v.its.get(1).status = "failed"
+	v.its.runErr = &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
+	v.its.mu.Unlock()
+	start := v.clk.Now()
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("canceled after one refusal: %+v", cs)
+	}
+	v.tickUntil(61*time.Second, 40, func() bool { return len(v.pendingCancellations()) == 1 })
+	if waited := v.clk.Now().Sub(start); waited < 30*time.Minute {
+		t.Fatalf("canceled after %s, want the 30m bound", waited)
+	}
+	if cs := v.pendingCancellations(); cs[0].Reason != store.CancelRunClosed {
+		t.Fatalf("cancellations = %+v", cs)
+	}
+	if r := v.run(1); r.State != store.RunCanceling || !strings.Contains(r.ClosedReason, "refused the coordinator key") {
+		t.Fatalf("run = %s (%s)", r.State, r.ClosedReason)
+	}
+	if n := v.refusals("coordinator", "run_check"); n < 30 {
+		t.Fatalf("run_check refusals = %d", n)
+	}
+}
+
+// TestRefusedReplacementIssueStartsWithoutItAfterBound: a replacement
+// session reads its issue with the coordinator key. While the key is
+// refused it waits; past the bound it starts without the issue.
+func TestRefusedReplacementIssueStartsWithoutItAfterBound(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.kg.expire(v.work(101).SessionID)
+	v.its.mu.Lock()
+	v.its.issueErr = &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}
+	v.its.mu.Unlock()
+	v.its.add(2, "coder", 101, "HL-1", "Address review.")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if sends := v.kg.Sends(); len(sends) != 1 {
+		t.Fatalf("sends = %d, want the replacement to wait", len(sends))
+	}
+	if n := v.refusals("coordinator", "replacement"); n == 0 {
+		t.Fatal("the refused replacement lookup was not counted")
+	}
+	v.tickUntil(time.Minute, 40, func() bool { return len(v.kg.Sends()) == 2 })
+	text := v.kg.Sends()[1].msg.Parts[0].Text
+	for _, want := range []string{"## Replacement session", "### Issue HL-1", "unavailable", "refused the coordinator key"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("replacement text lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Issue 101 description.") {
+		t.Errorf("replacement text has the issue it could not read:\n%s", text)
+	}
 }
 
 func TestResultUnauthorizedIsRetried(t *testing.T) {

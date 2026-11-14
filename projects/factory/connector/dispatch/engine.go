@@ -114,6 +114,9 @@ type Engine struct {
 	locks    sync.Map // run ID -> *sync.Mutex
 	// checked holds when each running attempt's session was last checked.
 	checked sync.Map // attempt ID -> sessionCheck
+	// refusals holds when itsaplan began refusing the coordinator key for
+	// each lookup a run or work item waits on.
+	refusals sync.Map // refusalKey -> refusal
 }
 
 // New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
@@ -246,6 +249,13 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 		}
 		return true
 	})
+	now := e.cfg.Now()
+	e.refusals.Range(func(k, v any) bool {
+		if now.Sub(v.(refusal).last) >= authRefusalLimit {
+			e.refusals.Delete(k)
+		}
+		return true
+	})
 }
 
 func fatal(err error) bool {
@@ -371,6 +381,7 @@ func (e *Engine) heartbeatRun(ctx context.Context, id int64) error {
 		return err
 	default:
 		e.m.Heartbeats.WithLabelValues("error").Inc()
+		e.countRefusal(roleAgent, "heartbeat", err)
 		return err
 	}
 }
@@ -383,8 +394,14 @@ func (e *Engine) runGone(ctx context.Context, r *store.Run) (gone bool, err erro
 		return false, err
 	}
 	st, err := e.its.GetRun(ctx, r.ID)
+	if why := e.lookupRefused(ctx, lookupRun, r.ID, err); why != "" {
+		// The agent key's call already failed for this attempt, and the
+		// coordinator cannot say why: end the run rather than hold its slot.
+		return true, e.startCancel(ctx, r, store.CancelRunClosed, why)
+	}
 	switch {
 	case errors.Is(err, itsaplan.ErrNotFound):
+		e.refusals.Delete(refusalKey{lookupRun, r.ID})
 		if !r.SeenVisible {
 			// Without a sighting, an empty lookup may be a permission gap.
 			e.log.WarnContext(ctx, "run not visible to the coordinator", "run", r.ID)
@@ -396,6 +413,7 @@ func (e *Engine) runGone(ctx context.Context, r *store.Run) (gone bool, err erro
 	case err != nil:
 		return false, err
 	}
+	e.refusals.Delete(refusalKey{lookupRun, r.ID})
 	if !r.SeenVisible {
 		if err := e.st.MarkVisible(ctx, r.ID); err != nil {
 			return false, err
@@ -427,9 +445,13 @@ func (e *Engine) checkStale(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	st, err := e.its.GetRun(ctx, r.ID)
+	if why := e.lookupRefused(ctx, lookupRun, r.ID, err); why != "" {
+		return e.startCancel(ctx, r, store.CancelRunClosed, "stale attempt; "+why)
+	}
 	if err != nil && !errors.Is(err, itsaplan.ErrNotFound) {
 		return err
 	}
+	e.refusals.Delete(refusalKey{lookupRun, r.ID})
 	if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
 		return err
 	}
@@ -1340,6 +1362,7 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 			return e.runGone(ctx, r)
 		case err != nil:
 			e.m.Events.WithLabelValues("error").Inc()
+			e.countRefusal(roleAgent, "events", err)
 			return false, err
 		}
 		e.m.Events.WithLabelValues("ok").Inc()
@@ -1608,6 +1631,7 @@ func (e *Engine) claim(ctx context.Context) error {
 			run, err := e.its.Claim(ctx, ag.Key)
 			if err != nil {
 				e.m.Claims.WithLabelValues(ag.Key, "error").Inc()
+				e.countRefusal(roleAgent, "claim", err)
 				errs = append(errs, fmt.Errorf("claim %s: %w", ag.Key, err))
 				break
 			}
@@ -1729,11 +1753,85 @@ func authHTTP(err error) bool {
 	return errors.As(err, &h) && (h.Status == 401 || h.Status == 403)
 }
 
+// Key roles for factory_connector_credential_refusals_total: an agent's
+// key claims, heartbeats and reports runs; the coordinator's key reads runs
+// and issues, comments and moves issues.
+const (
+	roleAgent       = "agent"
+	roleCoordinator = "coordinator"
+)
+
+// countRefusal counts err if it is an itsaplan 401 or 403 and reports
+// whether it was.
+func (e *Engine) countRefusal(role, kind string, err error) bool {
+	if !authHTTP(err) {
+		return false
+	}
+	e.m.CredentialRefusals.WithLabelValues(role, kind).Inc()
+	return true
+}
+
+// authRefusalLimit bounds how long a coordinator lookup that a run or work
+// item waits on retries an itsaplan 401 or 403. Like outboxAuthMaxTries, it
+// outlasts a key rotation and the kubelet's refresh of the projected file.
+// Past it the lookup gives up: a replacement session starts without the
+// issue, a run whose attempt itsaplan stopped accepting is closed, and
+// delivery stops on an issue the connector cannot check. The clock lives in
+// memory, as the session check's does; a restart starts it again.
+const authRefusalLimit = 30 * time.Minute
+
+// Coordinator lookups bounded by authRefusalLimit. Each names a metric kind.
+const (
+	lookupReplacement = "replacement" // a replacement session's issue, per work item
+	lookupIssue       = "issue_check" // whether the issue still wants delivery, per work item
+	lookupRun         = "run_check"   // a run itsaplan stopped accepting, per run
+)
+
+type refusalKey struct {
+	lookup string
+	id     int64
+}
+
+// refusal is a run of 401 and 403 answers to one lookup.
+type refusal struct{ first, last time.Time }
+
+// lookupRefused records a coordinator lookup's error. While itsaplan has
+// answered 401 or 403 for less than authRefusalLimit it returns "", so the
+// caller handles err as before and tries again next pass; past the limit it
+// returns why the lookup gave up. The caller clears the record once the
+// lookup gets an answer.
+func (e *Engine) lookupRefused(ctx context.Context, lookup string, id int64, err error) string {
+	if !e.countRefusal(roleCoordinator, lookup, err) {
+		return ""
+	}
+	now := e.cfg.Now()
+	k := refusalKey{lookup, id}
+	rf := refusal{first: now, last: now}
+	if v, ok := e.refusals.Load(k); ok {
+		if prev := v.(refusal); now.Sub(prev.last) < authRefusalLimit {
+			rf.first = prev.first
+		}
+	}
+	e.refusals.Store(k, rf)
+	if now.Sub(rf.first) < authRefusalLimit {
+		return ""
+	}
+	e.log.ErrorContext(ctx, "itsaplan keeps refusing the coordinator key; giving up on the lookup. "+
+		"Check the itsaplan agent key Secrets and the bootstrap",
+		"lookup", lookup, "id", id, "since", rf.first, "error", err)
+	return fmt.Sprintf("itsaplan has refused the coordinator key since %s (%s)",
+		rf.first.UTC().Format(time.RFC3339), clip(err.Error(), 200))
+}
+
 // refused reports that the outbox item must be abandoned after err: a
 // terminal answer, or a 401 or 403 that has used up outboxAuthMaxTries. Below
 // that bound a 401 or 403 backs off like any other failure.
 func (e *Engine) refused(ctx context.Context, it *store.OutboxItem, err error) bool {
-	if !authHTTP(err) {
+	role := roleCoordinator
+	if it.Kind == store.OutboxResult {
+		role = roleAgent
+	}
+	if !e.countRefusal(role, it.Kind, err) {
 		return terminalHTTP(err)
 	}
 	if it.Tries+1 < outboxAuthMaxTries {

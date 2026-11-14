@@ -58,6 +58,9 @@ type fakeItsaplan struct {
 	validKeys map[string]string
 	// beforeResult runs, with f.mu held, as a Result call arrives.
 	beforeResult func(f *fakeItsaplan)
+	// issueErr and runErr fail every GetIssue and GetRun while set.
+	issueErr error
+	runErr   error
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -275,6 +278,9 @@ func (f *fakeItsaplan) GetRun(_ context.Context, id int64) (*itsaplan.RunStatus,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.runErr != nil {
+		return nil, f.runErr
+	}
 	r := f.get(id)
 	if r == nil || r.hidden {
 		return nil, itsaplan.ErrNotFound
@@ -297,6 +303,9 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.issueErr != nil {
+		return nil, f.issueErr
+	}
 	is := f.issues[issueID]
 	if is == nil {
 		return nil, itsaplan.ErrNotFound
