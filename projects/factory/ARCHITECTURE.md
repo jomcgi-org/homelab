@@ -64,6 +64,24 @@ records how they relate and routes results and feedback between them.
    gets 404, the same answer as a reclaimed attempt. [I] At v1.10.0 the only
    path that cancels a started run is moving its issue to another project;
    the itsaplan PR confirms the operator's cancel action.
+8. **kagent speaks A2A v1.0.** [V] The gateway at
+   `/agents/{namespace}/{name}` takes JSON-RPC methods `SendMessage`,
+   `GetTask`, `ListTasks` and `CancelTask`, requires the `A2A-Version: 1.0`
+   header, and uses `TASK_STATE_*` and `ROLE_USER` values. `SessionService`
+   is gRPC only, served as h2c on the controller's `:8083` listener.
+9. **kagent deduplicates only first sends.** [V] A send without a context
+   ID is keyed on creator, Agent and message ID. A continuation has no such
+   key. A dispatch reservation lasts two minutes, and kagent rejects a first
+   save that arrives after it.
+10. **A session belongs to one kagent Agent.** [V] Every A2A call checks
+    that the session belongs to the Agent in the URL.
+11. **itsaplan has no per-run read for an agent key.** [V] The runner queue
+    (`GET /agent-runs/queue?runId=`) needs `work_items read` and
+    `ai_agents read` in the run's project, and it hides runs whose issue
+    moved to another project.
+12. **kagent reports usage per model call.** [V] Each call's usage sits in
+    metadata key `kagent.dev/a2a/usage` (`promptTokenCount`,
+    `candidatesTokenCount`).
 
 ## Umbrella chart
 
@@ -110,42 +128,58 @@ it.
 
 Go, built with rules_go and apko, one replica with `Recreate` and a Postgres
 advisory lock. Each takeover increments a writer epoch, and every external
-side effect checks it first. kagent guarantees one non-quiescent task per
+side effect checks it first. The epoch check runs on the lock's own
+connection, so a lost session also fails it. kagent guarantees one non-quiescent task per
 session and one execution per actor, which keeps one writer per worktree.
 
 **Data**, in its own database: repository bindings, work items (issue,
 binding, branch `factory/<KEY>`, kagent session and generation, state),
-runs, delivery attempts (unique per run and attempt, A2A message ID, kagent
-task, error class, evidence URI), pull requests (head SHA, merge-queue
+runs, delivery attempts (unique per run and sequence number, A2A message ID,
+kagent task, error class, evidence URI, and the itsaplan attempt as
+`run_attempt`, since engineering retries add sends within one itsaplan
+attempt), pull requests (head SHA, merge-queue
 state), review events (unique GitHub node ID, commit SHA, disposition),
 cancellations and an outbox. Full transcripts and CI logs go to the
-`factory-evidence` bucket.
+`factory-evidence` bucket. Migrations are timestamped SQL files, named like
+the monolith's, embedded in the binary and applied at startup under an
+advisory lock. Database tests start PostgreSQL 16 from `@postgres_test`, as
+the monolith's pytest plugin does.
 
 **Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
 none of these is a Pro feature (status-triggered schedules are Pro and are
 not used). Claim runs per agent key. A claimed run with an open attempt
 is a transport redelivery: find the kagent task by message ID and attach,
-never send again. A new send uses message ID
-`itsaplan-run/<runId>/<decisionId>`, where the decision ID is the connector's
-record of why it sends (initial, revision or engineering retry); for continuation sends, look the ID up
-in the session history after an ambiguous response before any resend. The
+never send again while kagent could still accept it. A new send uses message
+ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
+connector's record of why it sends (initial, revision or engineering retry).
+The attempt is recorded before the send. After an ambiguous response the
+connector looks the ID up with `ListTasks`: across the Agent's tasks for a
+first send, in the session for a continuation. If no task holds it 150 s
+after the send, the same message goes again; kagent's two-minute dispatch
+reservation has expired by then, so the first copy can no longer start. The
 repository and branch come only from configuration.
 
 A work item keeps one kagent session whichever agent key delivers its run.
 When a run for an existing work item arrives under a different agent, the
-connector bumps the writer epoch, confirms the mapped session has no running
-task (cancelling it first if needed), and continues in that session; a new
-session is created only by the replacement path below.
+connector bumps the work item's epoch, which fences attempts sent under the
+previous one. It confirms the mapped session has no running task, cancelling
+it first if needed, and continues in that session. The work item records
+the session's kagent Agent, and every send to the session goes to that
+Agent, whichever itsaplan agent key delivers the run. A new session is
+created only by the replacement path below.
 
-**Heartbeat** every 60 s. On 404, read the run: canceled starts cancellation;
-a higher attempt means this attempt is stale and stops writing. Progress is
+**Heartbeat** every 60 s. On 404, read the run through the runner queue with
+the coordinator's key: canceled starts cancellation; a higher attempt means
+this attempt is stale and stops writing. A run the queue does not show counts
+as canceled, since moving its issue is the v1.10.0 cancel path and hides it. Progress is
 posted as itsaplan run events with a persisted offset.
 
 **Completion.** The connector opens or updates the one PR for the work
 item from the pushed branch. A run result means the turn finished; the
 issue becomes Done only from the observed merge. Engineering retries are
 connector decisions bounded per work item; credential and quota failures
-block with the reason instead of retrying.
+block with the reason instead of retrying. The reported usage is the last
+model call's, read from `kagent.dev/a2a/usage`.
 
 **Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
 if its commit is the current head and its author is a trusted identity;
@@ -252,7 +286,7 @@ and retries once, so a brief overlap during a rollout is safe.
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client in Authentik; invite-only registration; a break-glass admin |
 | Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
-| Connector to itsaplan | A coordinator external agent for comments and issue state; the coding agent's key claims runs |
+| Connector to itsaplan | A coordinator external agent for comments, issue state and run lookups (`work_items read` and `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding |
 | Independent review | The Semgrep reviewer as a required check bound to its App ID in the ruleset |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
