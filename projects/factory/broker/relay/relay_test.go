@@ -258,6 +258,53 @@ func TestRelayStreamsWithGrantCredentials(t *testing.T) {
 	}
 }
 
+func TestRelaySetsReasoningEffort(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.ReasoningEffort = "xhigh"
+	jwt := h.actorJWT()
+	send := func(path, body, encoding string) map[string]any {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, h.relay.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		if encoding != "" {
+			req.Header.Set("Content-Encoding", encoding)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		h.backend.mu.Lock()
+		got := h.backend.lastBody
+		h.backend.mu.Unlock()
+		var out map[string]any
+		if err := json.Unmarshal(got, &out); err != nil {
+			return map[string]any{"raw": string(got)}
+		}
+		return out
+	}
+	// The effort replaces the sent one; the rest of the request is kept.
+	got := send("/v1/responses", `{"model":"gpt-6-astra","reasoning":{"effort":"low","summary":"auto"},"stream":true}`, "")
+	if r, _ := got["reasoning"].(map[string]any); r["effort"] != "xhigh" || r["summary"] != "auto" || got["model"] != "gpt-6-astra" || got["stream"] != true {
+		t.Fatalf("upstream request = %v", got)
+	}
+	// A request without reasoning gains it.
+	got = send("/v1/responses", `{"model":"gpt-6-astra","reasoning":null}`, "")
+	if r, _ := got["reasoning"].(map[string]any); r["effort"] != "xhigh" {
+		t.Fatalf("upstream request = %v", got)
+	}
+	// Compaction and compressed bodies are forwarded as sent.
+	const compact = `{"model":"gpt-6-astra","reasoning":{"effort":"low"}}`
+	if got = send("/v1/responses/compact", compact, ""); got["reasoning"].(map[string]any)["effort"] != "low" {
+		t.Fatalf("compact request = %v", got)
+	}
+	if got = send("/v1/responses", compact, "zstd"); got["reasoning"].(map[string]any)["effort"] != "low" {
+		t.Fatalf("encoded request = %v", got)
+	}
+}
+
 func TestRelayRejectsActors(t *testing.T) {
 	h := newHarness(t, true)
 	expired := h.signer.Sign(t, fakes.ActorClaims(h.idp.URL, audience, "factory-homelab", "session-1", time.Now().Add(-time.Hour)))

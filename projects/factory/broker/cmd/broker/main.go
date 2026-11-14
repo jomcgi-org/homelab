@@ -160,6 +160,7 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 			Client: &http.Client{Transport: transport},
 			Quota:  quotaStore, Metrics: m, Logger: logger, MaxRequestBytes: cfg.Codex.MaxRequestBytes,
 			StreamIdleTimeout: cfg.Codex.StreamIdleTimeout.Duration, MaxConcurrent: cfg.Codex.MaxConcurrentRequests,
+			ReasoningEffort: cfg.Codex.ReasoningEffort,
 		},
 		reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger},
 	}
