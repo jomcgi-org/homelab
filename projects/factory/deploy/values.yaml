@@ -115,9 +115,15 @@ connector:
     homelab:
       itsaplanProject: HOME
       agents: [homelab-codex]
-      # While the factory is being bootstrapped, local review agents approve
-      # its PRs as jomcgi. A kagent reviewer replaces this afterwards.
+      # The factory-reviewer's check is the review: the connector enqueues a
+      # head only once `factory review` from the reviewer App passes on it,
+      # and its findings start a revision round (a human-gate-only hold waits
+      # for Joe instead). jomcgi stays trusted, so Joe's "request changes"
+      # still blocks and starts a round (#7817 decision 6882698416).
       trustedReviewers: [jomcgi]
+      reviewerCheck:
+        name: factory review
+        appId: 5758326
       # The ruleset's required check, a commit status BuildBuddy posts: the
       # connector enqueues only once it passes, and a failure on the head
       # starts a revision round with its link, so CI failures reach the agent
@@ -134,7 +140,7 @@ connector:
 
 # The factory-reviewer (projects/factory/reviewer; ARCHITECTURE.md "Merge
 # authority"): posts the `factory review` check on every PR into main, which
-# the ruleset is to require. It enqueues nothing: GitHub refuses enqueues from its
+# the connector waits for and the ruleset is to require. It enqueues nothing: GitHub refuses enqueues from its
 # read-only token, and write access would let it push or approve. The
 # connector enqueues the factory's PRs; other authors use auto-merge
 # (#7817 decision 6882698416). Its agent runs in factory-r-homelab-review
