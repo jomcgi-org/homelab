@@ -201,8 +201,9 @@ through the runner queue, and the connector step confirms its writes). Each
   any: new keys would end every session and make the stored credentials
   unreadable. An annotation on the Secret accepts the loss; secret-init then
   deletes the `app_secret` rows encrypted with the lost key, since itsaplan
-  decrypts the stored OIDC settings before it accepts new ones
-  (factory-cluster README, "itsaplan").
+  decrypts the stored OIDC settings before it accepts new ones, and restarts
+  the api and worker so the bootstrap writes through pods holding the new
+  keys (factory-cluster README, "itsaplan").
 - **Public api surface.** The route answers 404 for MCP and for the runner
   feeds (`claim`, `heartbeat`, `events`, `result` of runs and chats), so
   claiming and reporting runs happens only inside the cluster. An agent key
@@ -216,7 +217,8 @@ through the runner queue, and the connector step confirms its writes). Each
   settings carry a client secret itsaplan never returns, so Secret
   `factory-itsaplan-bootstrap` records a digest of what was last written and
   when; they are rewritten when that digest or a visible field changes, and
-  at least daily, which also undoes a client secret changed in god mode.
+  on the first sync more than a day after the last write, which also undoes
+  a client secret changed in god mode.
 - **Pods** run as UID 65532 with read-only root filesystems and no
   ServiceAccount token; the web app gets no Secret. Upstream's images run as
   root by default.

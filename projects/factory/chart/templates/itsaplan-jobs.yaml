@@ -74,6 +74,11 @@ rules:
     resources: [secrets]
     resourceNames: [{{ $name }}, {{ $name }}-admin]
     verbs: [get, update]
+  # Restarts the api and worker after it writes new keys (secret_init.py).
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [{{ $name }}-api, {{ $name }}-worker]
+    verbs: [patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -106,8 +111,10 @@ metadata:
     argocd.argoproj.io/sync-options: Replace=true,Force=true
 spec:
   backoffLimit: 6
-  # Bounds a database or API server that never answers.
-  activeDeadlineSeconds: 600
+  # Bounds a database or API server that never answers. On a rebuild the
+  # database's URL appears only after garage-init (every 10 minutes), the
+  # Cluster's bootstrap and factory-db's PostSync, so this is generous.
+  activeDeadlineSeconds: 3600
   template:
     metadata:
       labels:

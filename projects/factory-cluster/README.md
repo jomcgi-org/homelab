@@ -680,10 +680,17 @@ secrets, `factory-itsaplan-secret-init` fails the sync with `REFUSING to
 generate` rather than replace them. It counts the rows read-only with the api
 image's psql before it writes anything. Recover in this order:
 
-1. Restore the old values into `factory/factory-itsaplan`, from wherever a
-   copy survives (1Password once it holds them, or an etcd snapshot), and
-   sync again.
-2. With no copy left, accept the loss and sync again:
+1. While the api still runs, its pods hold the keys in their environment.
+   Copy them back into the Secret and sync again:
+
+   ```bash
+   KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-itsaplan-api -c api -- \
+     printenv BETTER_AUTH_SECRET APP_ENCRYPTION_KEY
+   ```
+
+2. Otherwise restore the old values from wherever a copy survives (1Password
+   once it holds them, or an etcd snapshot), and sync again.
+3. With no copy left, accept the loss and sync again:
 
    ```bash
    KUBECONFIG=~/.kube/factory.yaml kubectl -n factory annotate secret factory-itsaplan \
@@ -693,12 +700,14 @@ image's psql before it writes anything. Recover in this order:
    secret-init then deletes every `app_secret` row (the OIDC, Google, mail,
    SCIM and bot settings, all encrypted with the lost key; itsaplan decrypts
    the stored OIDC settings before it accepts new ones, so they cannot simply
-   be overwritten), generates new keys and removes the annotation. The
-   bootstrap then writes the OIDC settings afresh. Every session ends, so
-   people sign in again. Anything else encrypted with the old key stays
-   unreadable until it is entered again in the app: mail, Google, SCIM and
-   bot settings, workspace SCIM tokens, Git connections, integration
-   credentials and agent invocation secrets.
+   be overwritten), generates new keys, removes the annotation and restarts
+   the api and worker, whose running pods would otherwise keep using the old
+   keys. The bootstrap then writes the OIDC settings afresh through the new
+   pods. Every session ends, so people sign in again. Anything else encrypted
+   with the old key stays unreadable until it is entered again in the app:
+   mail, Google, SCIM and bot settings, workspace SCIM tokens, Git
+   connections, integration credentials and agent invocation secrets. An
+   annotation secret-init finds when no keys are missing is removed unused.
 
 The public route answers 404 for the agent-facing api: `/backend/mcp`, the
 run and chat feeds' `claim`, and their per-run `heartbeat`, `events` and
