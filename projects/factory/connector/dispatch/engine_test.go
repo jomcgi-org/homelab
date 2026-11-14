@@ -1104,7 +1104,7 @@ func TestInflightGrantFailuresRecoverAfterUnblock(t *testing.T) {
 func TestGrantBlockPreservesSiblingOutcomesAndOtherGrants(t *testing.T) {
 	v := newEnv(t)
 	other := v.cfg.Bindings[0]
-	other.Name, other.ItsaplanProject, other.KagentAgent = "other", "OTHER", "other"
+	other.Name, other.Repo, other.ItsaplanProject, other.KagentAgent = "other", "other", "OTHER", "other"
 	v.cfg.Bindings = append(v.cfg.Bindings, other)
 	v.cfg.Agents[0].Concurrency = 4
 	v.e.Release()
@@ -1336,13 +1336,15 @@ func TestCancelOfUnresolvedSendNeverSends(t *testing.T) {
 func TestFailingCommentBacksOffWithoutBlockingResults(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.its.add(2, "coder", 102, "HL-2", "Other work.")
 	v.tick(v.e)
 	v.its.commentErr = &itsaplan.HTTPError{Status: 503, Body: "unavailable"}
-	// The block queues a comment before the result.
-	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "status 429 from the provider", nil)
+	// The first run's block queues a comment before the sibling's result.
+	v.kg.finish(v.latest(1).TaskID, kagent.StateFailed, "status 429 from the provider", nil)
+	v.kg.finish(v.latest(2).TaskID, kagent.StateCompleted, "done", nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
-	if res := v.its.Run(1).results; len(res) != 1 {
+	if res := v.its.Run(2).results; len(res) != 1 || res[0].Status != "success" {
 		t.Fatalf("results = %+v; the failing comment held the result back", res)
 	}
 	var tries int
