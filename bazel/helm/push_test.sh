@@ -50,7 +50,7 @@ expect() {
 # whether the missed-bump guard passes, which together select the branch.
 setup() {
 	local name="$1" current="$2" computed="$3" published="$4" digests_match="$5"
-	local version_status="${6:-0}"
+	local version_status="${6:-0}" escalated="${7-0.4.0}" escalation_status="${8:-0}" escalated_published="${9:-no}"
 	local ws="$TMP/$name" stubs="$TMP/$name-stubs"
 	mkdir -p "$ws/projects/demo/chart" "$stubs/bazel_tools/tools/bash/runfiles"
 
@@ -61,21 +61,112 @@ setup() {
 		rlocation() { echo "$1"; }
 	RUNFILES
 
-	printf 'name: demo\nversion: %s\n' "$current" >"$ws/projects/demo/chart/Chart.yaml"
+	printf 'apiVersion: v2\nname: demo\nversion: %s\n' "$current" >"$ws/projects/demo/chart/Chart.yaml"
 	git -C "$ws" init --quiet --initial-branch=main
 	git -C "$ws" config user.email "t@e.com"
 	git -C "$ws" config user.name "t"
 	git -C "$ws" add -A
 	git -C "$ws" commit --quiet -m "chore: seed"
 
-	printf '#!/usr/bin/env bash\necho "%s"\nexit %s\n' "$computed" "$version_status" \
-		>"$stubs/chart-version.sh"
-	# `helm show chart` exiting 0 is how the template reads "already published".
-	printf '#!/usr/bin/env bash\nexit %s\n' "$([[ "$published" == "yes" ]] && echo 0 || echo 1)" \
-		>"$stubs/helm"
-	printf '#!/usr/bin/env bash\nexit %s\n' "$([[ "$digests_match" == "yes" ]] && echo 0 || echo 1)" \
-		>"$stubs/check-missed-bump.sh"
-	: >"$stubs/chart.tgz"
+	# Keep source values distinct from the build-time digest-pinned package.
+	mkdir -p "$stubs/archive/demo"
+	cp "$ws/projects/demo/chart/Chart.yaml" "$stubs/archive/demo/Chart.yaml"
+	cat >"$stubs/archive/demo/values.yaml" <<-'VALUES'
+		replicas: 2
+		image:
+		  repository: ghcr.io/example/demo
+		  digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		sidecar:
+		  image: ghcr.io/example/helper@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+	VALUES
+	tar -czf "$stubs/chart.tgz" -C "$stubs/archive" demo
+	# Write fixture configuration as shell-quoted assignments, including empty
+	# escalation output. Each stub loads this independently of the caller env.
+	printf '%s=%q\n' current "$current" computed "$computed" published "$published" \
+		digests_match "$digests_match" version_status "$version_status" \
+		escalated "$escalated" escalation_status "$escalation_status" \
+		escalated_published "$escalated_published" >"$stubs/config"
+	cat >"$stubs/common.sh" <<-'COMMON'
+		set -euo pipefail
+		stubs=$(cd "$(dirname "$0")" && pwd)
+		source "$stubs/config"
+		repository=oci://example.test/charts
+		unexpected() {
+			echo "unexpected stub operation: $*" >>"$stubs/unexpected"
+			echo "unexpected stub operation: $*" >&2
+			exit 97
+		}
+	COMMON
+	cat >"$stubs/chart-version.sh" <<-'VERSION'
+		#!/usr/bin/env bash
+		source "$(dirname "$0")/common.sh"
+		[[ $# == 2 && $1 == projects/demo/chart && $2 == //projects/demo/chart:chart.package ]] || unexpected "version args: $*"
+		[[ $PWD == "$BUILD_WORKSPACE_DIRECTORY" ]] || unexpected "version cwd: $PWD"
+		printf '%s %s %s\n' "${CHART_VERSION_ALL_PATHS-unset}" "$1" "$2" >>"$stubs/version.calls"
+		calls=$(wc -l <"$stubs/version.calls")
+		if [[ $calls == 1 && ${CHART_VERSION_ALL_PATHS-unset} == unset ]]; then
+			printf '%s\n' "$computed"
+			exit "$version_status"
+		elif [[ $calls == 2 && ${CHART_VERSION_ALL_PATHS-unset} == 1 ]]; then
+			printf '%s\n' "$escalated"
+			exit "$escalation_status"
+		fi
+		unexpected "version call $calls, all paths: ${CHART_VERSION_ALL_PATHS-unset}"
+	VERSION
+	cat >"$stubs/helm" <<-'HELM'
+		#!/usr/bin/env bash
+		source "$(dirname "$0")/common.sh"
+		printf '%s\n' "$*" >>"$stubs/helm.calls"
+		case "${1-}" in
+			show)
+				[[ $# == 5 && $2 == chart && $3 == "$repository/demo" && $4 == --version ]] || unexpected "show: $*"
+				printf '%s\n' "$5" >>"$stubs/show.calls"
+				if [[ $5 == "$computed" ]]; then
+					exists=$published
+				elif [[ $5 == "$escalated" ]]; then
+					exists=$escalated_published
+				else
+					unexpected "show version: $5"
+				fi
+				if [[ $exists == yes ]]; then
+					printf 'name: demo\nversion: %s\n' "$5"
+				else
+					echo 'manifest unknown' >&2
+					exit 1
+				fi
+				;;
+			package)
+				[[ $# == 4 && $3 == --destination && $2 == "$4/demo" && -d $2 ]] || unexpected "package: $*"
+				version=$(awk '/^version:/ {print $2}' "$2/Chart.yaml")
+				[[ $version == "$escalated" ]] || unexpected "package version: $version"
+				cmp "$stubs/archive/demo/values.yaml" "$2/values.yaml" || unexpected 'package values changed'
+				tar -czf "$4/demo-$version.tgz" -C "$4" demo
+				printf '%s\n' "$4/demo-$version.tgz" >>"$stubs/package.calls"
+				;;
+			push)
+				[[ $# == 3 && $3 == "$repository" && -f $2 && $2 == */demo-"$escalated".tgz ]] || unexpected "push: $*"
+				[[ $(cat "$stubs/package.calls") == "$2" ]] || unexpected 'push did not use packaged artifact'
+				mkdir -p "$stubs/pushed"
+				tar -xzf "$2" -C "$stubs/pushed"
+				cmp "$stubs/archive/demo/values.yaml" "$stubs/pushed/demo/values.yaml" || unexpected 'pushed values changed'
+				[[ $(awk '/^version:/ {print $2}' "$stubs/pushed/demo/Chart.yaml") == "$escalated" ]] || unexpected 'pushed Chart.yaml version'
+				printf '%s\n' "$2" >>"$stubs/push.calls"
+				;;
+			*) unexpected "helm: $*" ;;
+		esac
+	HELM
+	cat >"$stubs/check-missed-bump.sh" <<-'GUARD'
+		#!/usr/bin/env bash
+		source "$(dirname "$0")/common.sh"
+		[[ $# == 3 && $1 == demo && $2 == "$computed" && $3 == "$stubs/chart.tgz" ]] || unexpected "guard: $*"
+		[[ $HELM == "$stubs/helm" && $REPOSITORY == "$repository" ]] || unexpected 'guard environment'
+		mkdir -p "$stubs/guarded"
+		tar -xzf "$3" -C "$stubs/guarded"
+		cmp "$stubs/archive/demo/Chart.yaml" "$stubs/guarded/demo/Chart.yaml" || unexpected 'guard did not get fresh chart'
+		cmp "$stubs/archive/demo/values.yaml" "$stubs/guarded/demo/values.yaml" || unexpected 'guard values changed'
+		printf '%s %s %s\n' "$1" "$2" "$3" >>"$stubs/guard.calls"
+		[[ $digests_match == yes ]]
+	GUARD
 	chmod +x "$stubs"/*.sh "$stubs/helm"
 
 	sed \
@@ -179,6 +270,89 @@ else
 	echo "FAIL: missing package not reported before publishing: ${out}" >&2
 	FAILURES=$((FAILURES + 1))
 fi
+
+# A missing flag or wrong helper argument must never look like a deliberate
+# refusal. Check fixture errors separately from the production diagnostics.
+no_push() {
+	local name="$1"
+	expect "$name pushes nothing" no "$([[ -e "$TMP/$name-stubs/push.calls" ]] && echo yes || echo no)" "registry writes remain local stubs"
+}
+
+collision_calls() {
+	local name="$1" shows="$2" stubs="$TMP/$1-stubs"
+	expect "$name checks exact versions in order" "$shows" "$(cat "$stubs/show.calls")" "registry version lookups"
+	expect "$name computes repo-wide with chart arguments" \
+		$'unset projects/demo/chart //projects/demo/chart:chart.package\n1 projects/demo/chart //projects/demo/chart:chart.package' \
+		"$(cat "$stubs/version.calls")" "initial computation then escalation"
+	expect "$name guards fresh archive at initial version" \
+		"demo 0.3.3 $stubs/chart.tgz" "$(cat "$stubs/guard.calls")" "digest mismatch selects escalation"
+}
+
+# 5. Changed digests under a published version recover at an absent version.
+ws=$(setup recovery 0.2.0 0.3.3 yes no)
+set +e
+out=$(run_push "$ws" recovery)
+push_rc=$?
+set -e
+expect "recovery succeeds" 0 "$push_rc" "$out"
+collision_calls recovery $'0.3.3\n0.4.0'
+expect "recovery records escalated version" 0.4.0 "$(record_version "$ws")" "write-back receipt"
+stubs="$TMP/recovery-stubs"
+expect "recovery packages exactly once" 1 "$(wc -l <"$stubs/package.calls" | tr -d ' ')" "real local archive"
+expect "recovery pushes exactly once" 1 "$(wc -l <"$stubs/push.calls" | tr -d ' ')" "push inspects package values and Chart.yaml"
+expect "recovery pushes escalated package" "$(cat "$stubs/package.calls")" "$(cat "$stubs/push.calls")" "same artifact"
+expect "recovery preserves values and pinned digests" yes \
+	"$(cmp -s "$stubs/archive/demo/values.yaml" "$stubs/pushed/demo/values.yaml" && echo yes || echo no)" "all original values survive"
+expect "recovery updates packaged Chart.yaml version" 0.4.0 \
+	"$(awk '/^version:/ {print $2}' "$stubs/pushed/demo/Chart.yaml")" "published chart metadata"
+
+# 6-9. Each refusal must reach its own diagnostic, never an incidental tar or
+# fixture error. Empty and unchanged output share a production diagnostic, but
+# use different helper outputs and still require a successful helper call.
+for name in escalationfail empty unchanged collision; do
+	escalated=0.4.0 escalation_status=0 escalated_published=no
+	shows=0.3.3
+	case "$name" in
+	escalationfail)
+		escalation_status=9
+		diagnostic='ERROR: repo-wide version escalation failed for demo.'
+		;;
+	empty | unchanged)
+		if [[ $name == empty ]]; then escalated=""; else escalated=0.3.3; fi
+		diagnostic='ERROR: demo 0.3.3 is published with DIFFERENT image digests, and no higher version could be computed.'
+		;;
+	collision)
+		escalated_published=yes
+		shows=$'0.3.3\n0.4.0'
+		diagnostic='ERROR: escalated version demo 0.4.0 is ALSO already published.'
+		;;
+	esac
+	ws=$(setup "$name" 0.2.0 0.3.3 yes no 0 "$escalated" "$escalation_status" "$escalated_published")
+	set +e
+	out=$(run_push "$ws" "$name")
+	push_rc=$?
+	set -e
+	expect "$name refuses publication" 1 "$push_rc" "$out"
+	expect "$name reaches specific diagnostic" yes \
+		"$(grep -Fq "$diagnostic" <<<"$out" && echo yes || echo no)" "$diagnostic"
+	collision_calls "$name" "$shows"
+	no_push "$name"
+	expect "$name records nothing" '(no record)' "$(record_version "$ws")" "refusal before receipt"
+	expect "$name does not repackage" no "$([[ -e "$TMP/$name-stubs/package.calls" ]] && echo yes || echo no)" "refusal before artifact changes"
+done
+
+for name in orphan aligned versionfail missingtgz; do no_push "$name"; done
+expect "initial helper failure stops before registry" no \
+	"$([[ -e "$TMP/versionfail-stubs/helm.calls" ]] && echo yes || echo no)" "no registry access"
+expect "missing package stops before registry" no \
+	"$([[ -e "$TMP/missingtgz-stubs/helm.calls" ]] && echo yes || echo no)" "runfile guard"
+for name in orphan aligned; do
+	expect "$name reaches digest guard" 1 "$(wc -l <"$TMP/$name-stubs/guard.calls" | tr -d ' ')" "content-verified reuse"
+done
+for name in orphan aligned versionfail missingtgz recovery escalationfail empty unchanged collision; do
+	expect "$name uses only expected stub operations" no \
+		"$([[ -e "$TMP/$name-stubs/unexpected" ]] && echo yes || echo no)" "fixture contract"
+done
 
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
