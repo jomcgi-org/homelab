@@ -67,6 +67,28 @@ type Broker struct {
 	mu             sync.RWMutex
 	logger         *slog.Logger
 	metrics        *metrics.Metrics
+	refreshBefore  time.Duration
+	maxGrantAge    time.Duration
+}
+
+// Default refresh policy. Codex access tokens are valid for roughly eight
+// days. Refresh at seven days so a broker outage does not run into the
+// provider's staleness boundary.
+const (
+	DefaultRefreshBeforeExpiry = 5 * time.Minute
+	DefaultMaxGrantAge         = 7 * 24 * time.Hour
+)
+
+// SetRefreshPolicy makes GetAccessToken refresh a grant once it is within
+// beforeExpiry of expiry or older than maxAge. Zero keeps the default. Call
+// it before the broker serves requests.
+func (b *Broker) SetRefreshPolicy(beforeExpiry, maxAge time.Duration) {
+	if beforeExpiry > 0 {
+		b.refreshBefore = beforeExpiry
+	}
+	if maxAge > 0 {
+		b.maxGrantAge = maxAge
+	}
 }
 
 func New(s Store, adapters map[string]provider.Adapter, minters map[string]provider.Minter, configs []GrantConfig, logger *slog.Logger, m *metrics.Metrics) *Broker {
@@ -82,7 +104,7 @@ func New(s Store, adapters map[string]provider.Adapter, minters map[string]provi
 	if minters == nil {
 		minters = map[string]provider.Minter{}
 	}
-	b := &Broker{adapters: adapters, minters: minters, store: s, grants: make(map[string]*grantState), grantProviders: make(map[string]string), logger: logger, metrics: m}
+	b := &Broker{adapters: adapters, minters: minters, store: s, grants: make(map[string]*grantState), grantProviders: make(map[string]string), logger: logger, metrics: m, refreshBefore: DefaultRefreshBeforeExpiry, maxGrantAge: DefaultMaxGrantAge}
 	for _, config := range configs {
 		s := &grantState{}
 		s.cond = sync.NewCond(&s.mu)
@@ -310,15 +332,13 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 		}
 	}
 	expires := grant.TokenBundle.ExpiresAt
-	// Codex access tokens are valid for roughly eight days. Refresh at seven days
-	// so a broker outage does not run into the provider's staleness boundary.
-	if time.Until(expires) <= 5*time.Minute || time.Since(grant.LastRefresh) > 7*24*time.Hour {
+	if time.Until(expires) <= b.refreshBefore || time.Since(grant.LastRefresh) > b.maxGrantAge {
 		state, stateErr := b.state(grantName)
 		if stateErr != nil {
 			return "", time.Time{}, stateErr
 		}
 		state.mu.Lock()
-		if state.lastAccess != "" && time.Until(state.lastExpiry) > 5*time.Minute && time.Since(grant.LastRefresh) <= 7*24*time.Hour {
+		if state.lastAccess != "" && time.Until(state.lastExpiry) > b.refreshBefore && time.Since(grant.LastRefresh) <= b.maxGrantAge {
 			access, expiry := state.lastAccess, state.lastExpiry
 			state.mu.Unlock()
 			return access, expiry, nil

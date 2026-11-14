@@ -35,7 +35,13 @@ type SecretStore struct {
 	Client    kubernetes.Interface
 	Namespace string
 	Context   context.Context
+	// NamePrefix names each grant's Secret as NamePrefix+grant. Empty keeps
+	// EmberVM's DefaultSecretPrefix.
+	NamePrefix string
 }
+
+// DefaultSecretPrefix is EmberVM's grant Secret name prefix.
+const DefaultSecretPrefix = "embervm-oauth-grant-"
 
 func (s *SecretStore) ctx() context.Context {
 	if s.Context != nil {
@@ -43,12 +49,22 @@ func (s *SecretStore) ctx() context.Context {
 	}
 	return context.Background()
 }
-func SecretName(name string) string { return "embervm-oauth-grant-" + name }
+
+// SecretName is the grant Secret name under DefaultSecretPrefix.
+func SecretName(name string) string { return DefaultSecretPrefix + name }
+
+// SecretName is the grant Secret name under this store's prefix.
+func (s *SecretStore) SecretName(name string) string {
+	if s.NamePrefix == "" {
+		return SecretName(name)
+	}
+	return s.NamePrefix + name
+}
 
 func (s *SecretStore) LoadGrant(name string) (Grant, error) {
-	secret, err := s.Client.CoreV1().Secrets(s.Namespace).Get(s.ctx(), SecretName(name), metav1.GetOptions{})
+	secret, err := s.Client.CoreV1().Secrets(s.Namespace).Get(s.ctx(), s.SecretName(name), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return Grant{}, fmt.Errorf("chart-managed OAuth Secret %q not found", SecretName(name))
+		return Grant{}, fmt.Errorf("chart-managed OAuth Secret %q not found", s.SecretName(name))
 	}
 	if err != nil {
 		return Grant{}, err
@@ -89,9 +105,9 @@ func data(b TokenBundle, lastRefresh time.Time) map[string][]byte {
 
 func (s *SecretStore) SaveGrant(g Grant) error {
 	secrets := s.Client.CoreV1().Secrets(s.Namespace)
-	current, err := secrets.Get(s.ctx(), SecretName(g.Name), metav1.GetOptions{})
+	current, err := secrets.Get(s.ctx(), s.SecretName(g.Name), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return fmt.Errorf("chart-managed OAuth Secret %q not found", SecretName(g.Name))
+		return fmt.Errorf("chart-managed OAuth Secret %q not found", s.SecretName(g.Name))
 	}
 	if err != nil {
 		return err
@@ -105,9 +121,9 @@ var ErrGrantNotNewer = errors.New("grant_not_newer")
 
 func (s *SecretStore) SaveGrantIfNewer(g Grant) error {
 	secrets := s.Client.CoreV1().Secrets(s.Namespace)
-	current, err := secrets.Get(s.ctx(), SecretName(g.Name), metav1.GetOptions{})
+	current, err := secrets.Get(s.ctx(), s.SecretName(g.Name), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return fmt.Errorf("chart-managed OAuth Secret %q not found", SecretName(g.Name))
+		return fmt.Errorf("chart-managed OAuth Secret %q not found", s.SecretName(g.Name))
 	}
 	if err != nil {
 		return err

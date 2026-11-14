@@ -12,15 +12,17 @@ reuse it. EmberVM's binary, HTTP server and authentik adapter stay in EmberVM.
 | Package                  | Provides                                                                                 |
 | ------------------------ | ---------------------------------------------------------------------------------------- |
 | `provider`               | Device-flow `Adapter` and `Minter` interfaces, token types, `ErrInvalidGrant`, `ErrRefreshTokenReused` |
-| `provider/codexchatgpt`  | Codex ChatGPT device login, code exchange, refresh, and `/wham/usage` parsing            |
+| `provider/codexchatgpt`  | Codex ChatGPT device login, code exchange, refresh, `/wham/usage` and `x-codex-*` quota header parsing |
 | `broker`                 | Single-flight refresh, reused-token retry, `invalid_grant` login state, durable rotation |
 | `store`                  | Kubernetes Secret grant store with newer-only writes, ConfigMap quota persistence        |
 | `quota`                  | Quota observation store and read-time pacing                                             |
-| `metrics`                | `tokenbroker_*` refresh and quota metrics                                                |
+| `metrics`                | Refresh and quota metrics, `tokenbroker_*` by default                                    |
 
-The grant Secret name prefix (`embervm-oauth-grant-`) and metric names are
-unchanged from EmberVM; a second consumer that needs different names should
-make them configurable without changing EmberVM's defaults.
+EmberVM uses the defaults: grant Secrets named `embervm-oauth-grant-<grant>`,
+`tokenbroker_*` metrics, and refresh 5 minutes before expiry or at 7 days. A
+second consumer sets `store.SecretStore.NamePrefix`, `metrics.NewWithPrefix`
+and `NewQuotaCollectorWithPrefix`, and `Broker.SetRefreshPolicy`; the factory
+broker (`projects/factory/broker`) does.
 
 ## homelab-library
 
