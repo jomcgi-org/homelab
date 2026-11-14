@@ -42,10 +42,12 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   error, a timeout or an unparseable answer produces no pass, no enqueue and
   no token. An enqueue names the reviewed head (`expectedHeadOid`) and the
   bound base branch. Critical.
-- **Models.** A change to the Codex model or release shows that the model is
-  in that release's bundled catalogue
+- **Models.** A change to the model or Codex release of an agent that edits
+  code shows that the model is in that release's bundled catalogue
   (`codex-rs/models-manager/models.json`), or the agent loses `apply_patch`
-  (#7911).
+  (#7911). An agent that never edits, such as the reviewer, may run a model
+  outside the catalogue. The change then states the fallback limits that
+  apply, such as tool output cut at 10,000 bytes.
 - **Kept identity.** ServiceAccount `factory/factory-connector` and kagent's
   `serviceAccount.authority` never change: they are the connector's kagent
   principal (findings 6 and 15).
