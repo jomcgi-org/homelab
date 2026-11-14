@@ -142,7 +142,13 @@ def test_credential_provider_reads_only_granted_namespaces() -> None:
         ]
     # The only Secret the chart ships is the broker's empty grant, outside
     # every granted namespace; nothing it renders is injectable.
-    secrets = [d for d in docs if d["kind"] == "Secret"]
+    # itsaplan's Secrets (itsaplan_test.py) are in factory too, also empty.
+    secrets = [
+        d
+        for d in docs
+        if d["kind"] == "Secret"
+        and not d["metadata"]["name"].startswith("factory-itsaplan")
+    ]
     assert [(d["metadata"]["namespace"], d["metadata"]["name"]) for d in secrets] == [
         ("factory", "factory-broker-grant-codex-primary")
     ]
