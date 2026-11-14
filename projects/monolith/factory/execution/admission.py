@@ -11,6 +11,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from core.clock import aware
 from core.db import get_engine
 from sqlalchemy import exists, or_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -96,9 +97,7 @@ def _warn_stale_uncertain(active) -> None:
     now = datetime.now(timezone.utc)
     stalled = []
     for row in active:
-        created_at = row.created_at
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+        created_at = aware(row.created_at)
         age = int((now - created_at).total_seconds())
         if row.state == "uncertain" and age > UNCERTAIN_STALL_SECONDS:
             stalled.append((row.id, row.tier, age))

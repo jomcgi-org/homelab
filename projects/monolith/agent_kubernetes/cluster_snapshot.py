@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+from core.clock import aware
 from core.db import get_engine
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -54,8 +55,7 @@ def _read_cluster_snapshot(application: str | None) -> dict:
             payload = json.loads(payload)
         if isinstance(snapshot_at, str):
             snapshot_at = datetime.fromisoformat(snapshot_at)
-        if snapshot_at.tzinfo is None:
-            snapshot_at = snapshot_at.replace(tzinfo=timezone.utc)
+        snapshot_at = aware(snapshot_at)
         age_seconds = (datetime.now(timezone.utc) - snapshot_at).total_seconds()
         if application is not None:
             payload = {

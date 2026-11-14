@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from core.clock import utc_now as _now
+from core.clock import aware, utc_now as _now
 from core.db import get_engine  # noqa: F401 - for test monkeypatching
 from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
@@ -108,16 +108,14 @@ def _github_created_at(issue: dict) -> datetime | None:
         value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as exc:
         raise WorkItemError("GitHub issue created_at must be an ISO timestamp") from exc
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return aware(value)
 
 
 def _same_value(left: Any, right: Any) -> bool:
     """Compare persisted values without treating SQLite timezone loss as a change."""
     if isinstance(left, datetime) and isinstance(right, datetime):
-        if left.tzinfo is None:
-            left = left.replace(tzinfo=timezone.utc)
-        if right.tzinfo is None:
-            right = right.replace(tzinfo=timezone.utc)
+        left = aware(left)
+        right = aware(right)
         return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
     return left == right
 
@@ -133,8 +131,7 @@ def github_issue_updated_at(issue: dict) -> datetime | None:
         value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as exc:
         raise WorkItemError("GitHub issue updated_at must be an ISO timestamp") from exc
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+    value = aware(value)
     return value.astimezone(timezone.utc)
 
 

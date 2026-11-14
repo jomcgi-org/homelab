@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlmodel import Session, text
 
+from core.clock import aware
+
 logger = logging.getLogger(__name__)
 
 # Workload kinds scanned by the health rollup. Mirrors dashboard._HEALTH_KINDS
@@ -226,8 +228,7 @@ def read_cluster_snapshot(session: Session) -> dict | None:
         alerts = json.loads(alerts)
     if isinstance(snapshot_at, str):
         snapshot_at = datetime.fromisoformat(snapshot_at)
-    if snapshot_at.tzinfo is None:
-        snapshot_at = snapshot_at.replace(tzinfo=timezone.utc)
+    snapshot_at = aware(snapshot_at)
 
     age_secs = (datetime.now(timezone.utc) - snapshot_at).total_seconds()
     if age_secs > _STALE_FALLBACK_SECS:

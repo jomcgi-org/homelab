@@ -15,6 +15,7 @@ import httpx
 import jsonschema
 from sqlmodel import select
 
+from core.clock import aware
 from core.jsonio import dumps
 from factory.execution.models import AgentSession, PendingMessage
 from factory.orchestration import factory_controls as controls, graph
@@ -61,8 +62,7 @@ def _utc(value):
 def _iso(value):
     if value is None:
         return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+    value = aware(value)
     return value.astimezone(timezone.utc).isoformat()
 
 

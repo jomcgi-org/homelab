@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlmodel import select
 
@@ -207,9 +207,7 @@ def _created_rank(issue: dict) -> float:
     value = issue.get("created_at")
     if isinstance(value, str):
         try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
             return parsed.timestamp()
         except ValueError:
             pass

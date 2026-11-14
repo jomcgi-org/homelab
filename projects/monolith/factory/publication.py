@@ -45,6 +45,7 @@ from sqlalchemy import BigInteger, Integer, String, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select, text
 
+from core.clock import aware
 from core.db import row_value
 from factory.utils import sanitize_payload
 
@@ -125,8 +126,7 @@ def _iso(value) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+        value = aware(value)
         return value.astimezone(timezone.utc).isoformat()
     return str(value)
 

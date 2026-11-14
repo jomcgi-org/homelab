@@ -8,7 +8,7 @@ another request from accumulating behind a lost response.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta, timezone
+from datetime import timedelta
 import logging
 import json
 import math
@@ -17,6 +17,7 @@ from uuid import uuid4
 from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.execution.models import (
     AgentCapacityReservation,
     AgentSession,
@@ -225,9 +226,7 @@ def claim(payload: dict) -> str | None:
         ).first()
         now = controls._now()
         if previous is not None:
-            created = previous.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+            created = aware(previous.created_at)
             if (now - created).total_seconds() < interval:
                 return None
         # No second guest while a prior probe is running, still bound, or has
@@ -345,9 +344,7 @@ def codex_claim(payload: dict) -> str | None:
         ).first()
         now = controls._now()
         if previous is not None:
-            created = previous.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+            created = aware(previous.created_at)
             if (now - created).total_seconds() < interval:
                 return None
         # Orphan evidence can outlive its guest. Age each pending/unknown row,

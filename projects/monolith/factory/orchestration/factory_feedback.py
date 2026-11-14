@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.orchestration.turn_artifact import run_artifact
 from factory.orchestration.factory_controls import (
     ADVISORY_CLASSES,
@@ -88,9 +89,7 @@ def _classified_verdict(run: dict) -> tuple[str, str, str | None]:
 
 
 def _verdict_dict(row: FactoryReviewVerdict) -> dict:
-    reviewed_at = row.reviewed_at
-    if reviewed_at.tzinfo is None:
-        reviewed_at = reviewed_at.replace(tzinfo=timezone.utc)
+    reviewed_at = aware(row.reviewed_at)
     return {
         "id": row.id,
         "task_id": row.task_id,

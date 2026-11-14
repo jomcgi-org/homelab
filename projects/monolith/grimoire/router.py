@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
+from core.clock import aware
 from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
 from fastapi import (
@@ -581,9 +582,7 @@ def _note_view(
 
     # Normalize SQLite's naive TIMESTAMPTZ mirror to the PostgreSQL wire shape.
     def iso(value):
-        return (
-            value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-        ).isoformat()
+        return aware(value).isoformat()
 
     result = {
         "id": row.id,
@@ -877,11 +876,7 @@ class InventoryMoveRequest(BaseModel):
 
 
 def _inventory_iso(value):
-    return (
-        (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value)
-        .astimezone(timezone.utc)
-        .isoformat()
-    )
+    return aware(value).astimezone(timezone.utc).isoformat()
 
 
 def _inventory_owner(row):
@@ -2692,7 +2687,7 @@ class SessionEventView(BaseModel):
     def timestamps_as_utc(cls, value: datetime | None) -> datetime | None:
         if value is None:
             return None
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+        return aware(value)
 
 
 def _session_in_campaign(
@@ -3377,9 +3372,7 @@ class CampaignJournalView(BaseModel):
 
 
 def _journal_cursor(row: GameSession) -> str:
-    timestamp = row.started_at
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    timestamp = aware(row.started_at)
     value = json.dumps([timestamp.isoformat(), row.id]).encode()
     return base64.urlsafe_b64encode(value).decode()
 

@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
-from core.clock import as_utc
+from core.clock import as_utc, aware
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
     DRAINER_NODE_KEY,
@@ -1255,9 +1255,7 @@ def relay_response_lost_drain_sync(
             or pending.last_dispatch_at is None
         ):
             return False
-        dispatched_at = pending.last_dispatch_at
-        if dispatched_at.tzinfo is None:
-            dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
+        dispatched_at = aware(pending.last_dispatch_at)
         if evidence["invoke_started_at"] <= int(dispatched_at.timestamp() * 1000):
             return False
         # Serialize with capture_result exactly as settlement does: a result

@@ -20,7 +20,7 @@ from typing import Iterator
 from sqlalchemy import func, or_, update
 from sqlmodel import Session, select
 
-from core.clock import utc_now as _now
+from core.clock import aware, utc_now as _now
 from core.db import get_engine
 from core.jsonio import dumps, loads_or
 from factory.orchestration.factory_models import (
@@ -2508,9 +2508,7 @@ def _start_dict(row: FactoryStart) -> dict:
             "session_id",
         )
     }
-    created_at = row.created_at
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
+    created_at = aware(row.created_at)
     result["created_at"] = created_at.isoformat()
     return result
 
@@ -3216,9 +3214,7 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
             row = observations.get(action)
             if row is None:
                 return None
-            created = row.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+            created = aware(row.created_at)
             return {
                 "created_at": created.isoformat(),
                 "detail": json.loads(row.detail_json),
@@ -3284,9 +3280,7 @@ def problem_issues_state(policy: dict, *, session: Session | None = None) -> dic
         ).first()
         last_event = None
         if last is not None:
-            created = last.created_at
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+            created = aware(last.created_at)
             last_event = {
                 "action": last.action,
                 "created_at": created.isoformat(),
@@ -3372,18 +3366,14 @@ def review_routing_view(policy: dict, *, session: Session | None = None) -> dict
         detail = {}
     seen = None
     if last is not None:
-        created = last.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+        created = aware(last.created_at)
         seen = created.isoformat()
     # A routing decision can outlive its observation. Never present its old
     # percentage as current after observation loss or a broker/window expiry.
     used = detail.get("used_percent")
     quota_status = "unavailable"
     if verdict is not None and isinstance(used, (int, float)):
-        observed = verdict.created_at
-        if observed.tzinfo is None:
-            observed = observed.replace(tzinfo=timezone.utc)
+        observed = aware(verdict.created_at)
         age = detail.get("observation_age_seconds") or 0
         age = age if isinstance(age, (int, float)) and math.isfinite(age) else 0
         fresh = (_now() - observed).total_seconds() + age <= QUOTA_GUARD_MAX_AGE_SECONDS
@@ -3550,8 +3540,7 @@ def receipt_operator_direction(db: Session, row: FactoryReceipt) -> dict | None:
         created = row.created_at
         if decided.tzinfo is None:
             return direction
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+        created = aware(created)
         if decided > created:
             return direction
     except (KeyError, TypeError, ValueError):

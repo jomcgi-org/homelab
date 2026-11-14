@@ -8,11 +8,12 @@ that execution has ceased.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 
 from sqlmodel import Session, select
 
+from core.clock import aware
 from factory.execution import admission
 from factory.execution.constants import INTERRUPTED_TERMINAL_REASONS, UNKNOWN_INVOCATION
 from factory.execution.models import (
@@ -33,8 +34,7 @@ def _stamp(value) -> str:
         value = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if not isinstance(value, datetime):
         raise ValueError("missing_factory_dispatch_identity")
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+    value = aware(value)
     return value.isoformat()
 
 
