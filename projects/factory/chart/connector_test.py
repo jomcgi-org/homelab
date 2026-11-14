@@ -312,6 +312,9 @@ def test_bindings_derive_from_repositories() -> None:
             "itsaplanProject": "HOME",
             "agents": ["homelab-codex"],
             "trustedReviewers": ["reviewer-bot"],
+            "requiredChecks": [
+                {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
+            ],
             "reviewerCheck": {"name": "semgrep", "appId": 12345},
         }
     ]
