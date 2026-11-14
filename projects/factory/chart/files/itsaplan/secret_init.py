@@ -10,6 +10,14 @@ when it is absent, so reruns never rotate one:
   ADMIN_SECRET     The break-glass admin's email (ADMIN_EMAIL, written once)
                    and password.
 
+ITSAPLAN_SECRET is generated only for an empty database. When the database
+already holds accounts or settings (DB_ROWS, counted read-only by the Job's
+db-state init container) and either key is missing, the Secret was lost:
+new keys would end every session and leave the stored credentials
+unreadable, so this refuses. Restore the old values, or accept the loss by
+annotating the Secret with ALLOW_ANNOTATION=true (see the factory-cluster
+README, "itsaplan"); the annotation is removed when the keys are written.
+
 Uses only the standard library and the pod's service account token.
 """
 
@@ -29,6 +37,7 @@ with open(f"{SA}/token") as f:
     TOKEN = f.read()
 CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 NAMESPACE = os.environ["NAMESPACE"]
+ALLOW_ANNOTATION = "factory.jomcgi.dev/regenerate-itsaplan-keys"
 
 GENERATED = {
     os.environ["ITSAPLAN_SECRET"]: {
@@ -60,16 +69,40 @@ def call(method, path, body=None):
         raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
 
 
+def database_rows():
+    """Accounts and settings rows in itsaplan's database (0 before migrations)."""
+    with open(os.environ["DB_ROWS"]) as f:
+        return int(f.read().strip() or "0")
+
+
 def main():
+    rows = database_rows()
+    print(f"itsaplan's database holds {rows} account and settings rows")
     for name, keys in GENERATED.items():
         path = f"/api/v1/namespaces/{NAMESPACE}/secrets/{name}"
         secret = call("GET", path)
         data = dict(secret.get("data") or {})
         missing = [key for key in keys if not data.get(key)]
+        annotations = secret["metadata"].get("annotations") or {}
+        allowed = annotations.get(ALLOW_ANNOTATION) == "true"
+        if missing and name == os.environ["ITSAPLAN_SECRET"] and rows and not allowed:
+            raise SystemExit(
+                f"REFUSING to generate {', '.join(missing)} in {NAMESPACE}/{name}: "
+                f"the database already holds {rows} account and settings rows, so "
+                "these keys existed and were lost. New ones would end every session "
+                "and make the stored OIDC, mail and SCIM credentials unreadable. "
+                "Restore the old values into the Secret, or accept the loss with "
+                f"`kubectl -n {NAMESPACE} annotate secret {name} "
+                f"{ALLOW_ANNOTATION}=true` and sync again (factory-cluster README, "
+                '"itsaplan").'
+            )
         for key in missing:
             data[key] = base64.b64encode(keys[key]()).decode()
         if missing:
             secret["data"] = data
+            if allowed:
+                annotations.pop(ALLOW_ANNOTATION)
+                secret["metadata"]["annotations"] = annotations
             call("PUT", path, secret)
             print(f"added {', '.join(missing)} to {NAMESPACE}/{name}")
         else:

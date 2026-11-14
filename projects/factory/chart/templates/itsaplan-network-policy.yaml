@@ -140,7 +140,7 @@ spec:
               protocol: TCP
     {{- end }}
 ---
-# secret-init reads and writes Secrets and nothing else.
+# secret-init reads and writes Secrets, and counts the database's rows.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -156,6 +156,14 @@ spec:
       app.kubernetes.io/name: {{ $name }}-secret-init
   egress:
     - toEntities: [kube-apiserver]
+    {{- with $i.database.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $i.database.port | quote }}
+              protocol: TCP
+    {{- end }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

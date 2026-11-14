@@ -215,6 +215,14 @@ spec:
         !has(object.spec.hostnames) ||
         !object.spec.hostnames.exists(h, h == 'factory-auth.jomcgi.dev')
       message: Only the edge namespace may route factory-auth.jomcgi.dev.
+    # itsaplan's namespace routes its own hostname and nothing else, so a
+    # route there cannot take over another application's host.
+    - expression: >-
+        request.namespace != 'factory' ||
+        (has(object.spec.hostnames) && size(object.spec.hostnames) > 0 &&
+         object.spec.hostnames.all(h, h == 'factory-plan.jomcgi.dev'))
+      message: >-
+        Routes in the factory namespace must name only factory-plan.jomcgi.dev.
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

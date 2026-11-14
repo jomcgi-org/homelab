@@ -17,6 +17,9 @@ _CHART_DIR = Path(__file__).resolve().parent
 _DEPLOY_VALUES = Path(
     os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
 )
+_APPLICATION = Path(
+    os.environ.get("APPLICATION", _CHART_DIR.parent / "deploy" / "application.yaml")
+)
 _NS = "factory"
 # The factory's deploy values, with itsaplan enabled as the follow-up
 # enablement will set it.
@@ -114,6 +117,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
     assert {s["metadata"]["name"] for s in secrets} == {
         "factory-itsaplan",
         "factory-itsaplan-admin",
+        "factory-itsaplan-bootstrap",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
     }
@@ -165,7 +169,19 @@ def test_route_strips_the_api_prefix() -> None:
     assert route["spec"]["parentRefs"][0]["name"] == "edge"
     assert route["spec"]["parentRefs"][0]["namespace"] == "edge"
     assert route["spec"]["hostnames"] == ["factory-plan.jomcgi.dev"]
-    api, web = route["spec"]["rules"]
+    blocked, api, web = route["spec"]["rules"]
+    assert [m["path"]["value"] for m in blocked["matches"]] == [
+        "/backend/mcp",
+        "/backend/agent-runs/claim",
+        "/backend/agent-chats/claim",
+        "^/backend/agent-(runs|chats)/[^/]+/(heartbeat|events|result)/?$",
+    ]
+    assert "backendRefs" not in blocked
+    assert blocked["filters"][0]["extensionRef"]["name"] == (
+        "factory-itsaplan-not-public"
+    )
+    not_public = _one(_render(), "HTTPRouteFilter", "factory-itsaplan-not-public")
+    assert not_public["spec"]["directResponse"]["statusCode"] == 404
     assert api["matches"][0]["path"] == {"type": "PathPrefix", "value": "/backend"}
     assert api["filters"][0]["urlRewrite"]["path"] == {
         "type": "ReplacePrefixMatch",
@@ -194,6 +210,7 @@ def test_job_roles_name_only_their_secrets() -> None:
     ]
     assert bootstrap[0]["verbs"] == ["get"]
     assert bootstrap[1]["resourceNames"] == [
+        "factory-itsaplan-bootstrap",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
     ]
@@ -246,3 +263,33 @@ def test_api_egress_is_database_s3_and_issuer() -> None:
 def test_kagent_namespace_is_refused() -> None:
     with pytest.raises(RuntimeError, match="must not be kagent's"):
         _render(["itsaplan.namespace=kagent"])
+
+
+def test_application_ignores_every_generated_secret() -> None:
+    # The Jobs write these Secrets' data. Without an ignoreDifferences entry
+    # self-heal would reset each to the chart's empty Secret. Checked only
+    # once the deploy values enable itsaplan.
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text()) or {}
+    if not (deploy.get("itsaplan") or {}).get("enabled"):
+        pytest.skip("itsaplan is not enabled in the deploy values yet")
+    declared = {
+        d["metadata"]["name"] for d in _ours(_render()) if d["kind"] == "Secret"
+    }
+    app = yaml.safe_load(_APPLICATION.read_text())
+    ignored = {
+        e["name"]
+        for e in app["spec"].get("ignoreDifferences", [])
+        if e.get("kind") == "Secret"
+        and e.get("namespace") == _NS
+        and "/data" in e.get("jsonPointers", [])
+    }
+    assert declared <= ignored, f"not ignored: {sorted(declared - ignored)}"
+
+
+def test_secret_init_counts_rows_before_it_generates() -> None:
+    pod = _pods(_render())["factory-itsaplan-secret-init"]["spec"]
+    (db_state,) = pod["initContainers"]
+    assert db_state["image"].startswith("ghcr.io/croffasia/itsaplan-api:")
+    assert "/state/rows" in db_state["command"][-1]
+    env = {e["name"]: e.get("value") for e in pod["containers"][0]["env"]}
+    assert env["DB_ROWS"] == "/state/rows"

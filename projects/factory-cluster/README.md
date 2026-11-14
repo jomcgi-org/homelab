@@ -194,7 +194,8 @@ namespace and no per-Gateway EnvoyProxy; EnvoyProxy, SecurityPolicy,
 EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
 objects live only in `edge`; any route with a parent in `cfgate-system` must
 be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
-only `edge` may route factory-auth.jomcgi.dev; and CloudflareDNS and
+only `edge` may route factory-auth.jomcgi.dev; routes in `factory` may
+name only factory-plan.jomcgi.dev; and CloudflareDNS and
 CloudflareTunnel objects live only in `cfgate-system`. Envoy Gateway runs each
 proxy in its Gateway's namespace, so no other Gateway's proxy could run
 under the edge proxy's namespace and network identity.
@@ -672,5 +673,31 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory get secret factory-itsaplan-a
 The generated `BETTER_AUTH_SECRET` and `APP_ENCRYPTION_KEY`
 (`factory/factory-itsaplan`) move to 1Password item
 `k8s-homelab/factory-itsaplan` once Postgres has off-site backups, as
-Authentik's secret key does. Losing `APP_ENCRYPTION_KEY` makes the stored
-OIDC client secret unreadable; the next sync's bootstrap writes it again.
+Authentik's secret key does.
+
+If those keys are lost while the database has accounts or settings,
+`factory-itsaplan-secret-init` fails the sync with `REFUSING to generate`
+rather than replace them. It counts the rows read-only with the api image's
+psql before it writes anything. Recover in this order:
+
+1. Restore the old values into `factory/factory-itsaplan`, from wherever a
+   copy survives (1Password once it holds them, or an etcd snapshot), and
+   sync again.
+2. With no copy left, accept the loss and sync again:
+
+   ```bash
+   KUBECONFIG=~/.kube/factory.yaml kubectl -n factory annotate secret factory-itsaplan \
+     factory.jomcgi.dev/regenerate-itsaplan-keys=true
+   ```
+
+   secret-init then generates new keys and removes the annotation. Every
+   session ends, so people sign in again. The stored OIDC client secret
+   becomes unreadable; the bootstrap notices it cannot read the settings back
+   and writes them again. Mail and SCIM credentials, if any were set in god
+   mode, must be entered again.
+
+The public route answers 404 for the agent-facing api: `/backend/mcp`, the
+run and chat feeds' `claim`, and their per-run `heartbeat`, `events` and
+`result`. Agents and the connector use the api's Service inside the cluster.
+God mode stays public, behind both sign-ins, because the web app calls it for
+the instance admin.

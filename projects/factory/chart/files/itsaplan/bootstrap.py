@@ -5,7 +5,8 @@ Idempotent; every step reads before it writes:
 1. Sign in as the break-glass admin from ADMIN_SECRET. On a database with no
    accounts, sign up instead: the first account is the instance admin.
 2. Registration invite-only, and the OIDC provider from CONFIG with the
-   client secret from OIDC_SECRET (written there by Authentik's secret-init).
+   client secret from OIDC_SECRET (written there by Authentik's secret-init),
+   written only when it differs from what STATE_SECRET records.
 3. The team and project from CONFIG, in the admin's workspace.
 4. Each external agent from CONFIG, working in that project. The api returns
    an agent's API key once, at creation or rotation, and this writes it to
@@ -16,6 +17,7 @@ Uses only the standard library and the pod's service account token.
 """
 
 import base64
+import hashlib
 import json
 import os
 import ssl
@@ -179,8 +181,11 @@ def ensure_settings(session, client_secret):
     else:
         print("registration invite-only")
 
-    # The stored client secret cannot be read back, so it is written on every
-    # run: a value Authentik rotated takes effect on the next sync.
+    # itsaplan cannot return the stored client secret, so the state Secret
+    # (STATE_SECRET) records a digest of what was last written. The settings
+    # are written only when the visible fields, the client secret or that
+    # digest differ, or when itsaplan cannot read them back (a replaced
+    # APP_ENCRYPTION_KEY leaves the stored secret undecryptable).
     oidc = CONFIG["oidc"]
     want = {
         "enabled": True,
@@ -190,8 +195,29 @@ def ensure_settings(session, client_secret):
         "scopes": ["openid", "email", "profile"],
         "pkce": True,
     }
-    session.call("PUT", "/god/oidc-settings", {**want, "clientSecret": client_secret})
-    current = session.call("GET", "/god/oidc-settings")
+    digest = hashlib.sha256(
+        json.dumps({**want, "clientSecret": client_secret}, sort_keys=True).encode()
+    ).hexdigest()
+    state_name = os.environ["STATE_SECRET"]
+    try:
+        current = session.call("GET", "/god/oidc-settings")
+    except HTTPError as e:
+        if e.status < 500:
+            raise
+        print(f"itsaplan cannot read its OIDC settings ({e.status}); rewriting them")
+        current = {}
+    matches = current.get("hasClientSecret") and all(
+        current.get(k) == v for k, v in want.items()
+    )
+    if matches and secret_data(k8s("GET", state_name)).get("oidc") == digest:
+        print("OIDC provider current")
+    else:
+        session.call(
+            "PUT", "/god/oidc-settings", {**want, "clientSecret": client_secret}
+        )
+        write_secret(state_name, {"oidc": digest})
+        current = session.call("GET", "/god/oidc-settings")
+        print("OIDC provider written")
     print(
         f"OIDC provider {current['label']!r} enabled={current['enabled']} "
         f"redirect URI {current['redirectUri']}"
