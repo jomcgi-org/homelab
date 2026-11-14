@@ -84,6 +84,29 @@ patches:
         name: not-used
         annotations:
           argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  # The chart sets the OTEL exporters on every component but the credential
+  # provider, which then retries an OTLP push to localhost:4317; turn it off
+  # here too, as values/common.yaml does for the rest.
+  - target:
+      kind: Deployment
+      name: k8s-credential-provider
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: k8s-credential-provider
+      spec:
+        template:
+          spec:
+            containers:
+              - name: k8s-credential-provider
+                env:
+                  - name: OTEL_TRACES_EXPORTER
+                    value: none
+                  - name: OTEL_METRICS_EXPORTER
+                    value: none
+                  - name: OTEL_LOGS_EXPORTER
+                    value: none
   # The bundled PostgreSQL, sized for this cluster, with its role setup run on
   # every start rather than by an installer over kubectl exec.
   - path: patches/postgres.yaml
