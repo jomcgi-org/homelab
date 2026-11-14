@@ -1,5 +1,10 @@
 {
   "routes": {
+    "/public/app/firecracker": {
+      "initialGzip": 65000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
     "/public/ember/firecracker": {
       "initialGzip": 85000,
       "deferredGzip": 0,
@@ -126,7 +131,24 @@
       "workerGzip": 0
     }
   },
-  "redirects": ["/public/app/firecracker"],
+  "apiEndpoints": [
+    "/public/app/grimoire/api/[...path]",
+    "/public/app/grimoire/book/[book]/read",
+    "/public/app/grimoire/chat/fork",
+    "/public/app/grimoire/chat/message",
+    "/public/app/grimoire/chat/session",
+    "/public/app/grimoire/chat/share",
+    "/public/app/hikes/walk/[uuid]",
+    "/public/app/notes/body/[id]",
+    "/public/app/notes/graph",
+    "/public/app/notes/stats",
+    "/public/app/ships/heat",
+    "/public/app/ships/track/[mmsi]",
+    "/public/app/stars/history",
+    "/public/app/stars/history-map",
+    "/public/app/stars/map",
+    "/public/scotland/marketplace.json"
+  ],
   "documents": {
     "/public/app/frank": {
       "file": "src/routes/public/app/frank/frank.html",

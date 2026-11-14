@@ -6,6 +6,9 @@ The existing `//projects/monolith/frontend:build_test` and
 `bundle-budgets.json`. A new page under `/public/app` or `/public/scotland`
 needs an explicit budget. Missing pages, missing chunks and unrecognized
 SvelteKit manifest declarations fail the check.
+Each endpoint in the same scope must also be classified explicitly as an API
+or a budgeted document. An unclassified `+server.js` fails even when it has no
+page component. An API classification never exempts a page on the same route.
 
 Initial bytes include the SvelteKit runtime, router, layouts, page and their
 static imports, counted once per route. Deferred bytes include the selected
@@ -65,7 +68,9 @@ first view; its initial limit still applies independently.
 
 Grimoire keeps its admission and session behavior. Its bundle budgets do not
 require server rendering protected data or permit caching session responses.
-`/app/firecracker` is a server redirect; its destination
+`/app/firecracker` is a server redirect. Its generated page closure is still
+checked against a 65,000-byte limit, so replacing the redirect with a rendered
+page cannot bypass the budget. Its destination
 `/ember/firecracker` measures 69,345 gzip bytes and has an 85,000-byte
 initial limit. `/app/frank` serves one
 static HTML document with inline scripts, measured at 10,080 gzip bytes and
