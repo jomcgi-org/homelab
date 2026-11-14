@@ -85,20 +85,32 @@ func run(logger *slog.Logger) error {
 		logger.Warn("GitHub App not configured; no tokens will be minted")
 	}
 
-	server := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           d.handler(cfg, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),
-		ReadHeaderTimeout: 10 * time.Second,
-		// Bounds the request body upload; responses stream without a
-		// write timeout, ended instead by the relay's idle timeout.
-		ReadTimeout: cfg.Codex.RequestReadTimeout.Duration,
-		IdleTimeout: 2 * time.Minute,
+	metricsHandler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+	listeners := map[string]http.Handler{cfg.ListenAddr: d.handler(cfg, metricsHandler)}
+	if cfg.AdminListenAddr != "" {
+		listeners = map[string]http.Handler{
+			cfg.ListenAddr:      d.relayHandler(),
+			cfg.AdminListenAddr: d.adminHandler(cfg, metricsHandler),
+		}
 	}
-	errc := make(chan error, 1)
-	go func() {
-		logger.Info("broker listening", "addr", cfg.ListenAddr)
-		errc <- server.ListenAndServe()
-	}()
+	servers := make([]*http.Server, 0, len(listeners))
+	errc := make(chan error, len(listeners))
+	for addr, handler := range listeners {
+		server := &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			// Bounds the request body upload; responses stream without a
+			// write timeout, ended instead by the relay's idle timeout.
+			ReadTimeout: cfg.Codex.RequestReadTimeout.Duration,
+			IdleTimeout: 2 * time.Minute,
+		}
+		servers = append(servers, server)
+		go func() {
+			logger.Info("broker listening", "addr", addr)
+			errc <- server.ListenAndServe()
+		}()
+	}
 	select {
 	case err := <-errc:
 		return err
@@ -106,8 +118,10 @@ func run(logger *slog.Logger) error {
 	}
 	shutdown, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
-	if err := server.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	for _, server := range servers {
+		if err := server.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
 	}
 	return nil
 }
@@ -165,11 +179,33 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 	return d, nil
 }
 
-// handler routes the broker's endpoints. Everything except health and
-// metrics authenticates: the relay by actor JWT, the rest by TokenReview.
+// handler routes every endpoint on one listener. Everything except health
+// and metrics authenticates: the relay by actor JWT, the rest by TokenReview.
 func (d *deps) handler(cfg config.Config, metricsHandler http.Handler) http.Handler {
+	mux := d.adminMux(cfg, metricsHandler)
+	mux.Handle("/", d.relay)
+	return mux
+}
+
+// relayHandler serves only health and the relay, for actors.
+func (d *deps) relayHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	mux.HandleFunc("GET /healthz", healthz)
+	mux.Handle("/", d.relay)
+	return mux
+}
+
+// adminHandler serves health, metrics, the admin endpoints and connector
+// tokens, and nothing else.
+func (d *deps) adminHandler(cfg config.Config, metricsHandler http.Handler) http.Handler {
+	mux := d.adminMux(cfg, metricsHandler)
+	mux.Handle("/", http.NotFoundHandler())
+	return mux
+}
+
+func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /metrics", metricsHandler)
 	mux.Handle("/admin/", d.reviewer.Require(cfg.TokenReview.AdminSubjects, d.grants.AdminHandler()))
 	connector := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -181,6 +217,7 @@ func (d *deps) handler(cfg config.Config, metricsHandler http.Handler) http.Hand
 		connector = d.minter.ConnectorHandler()
 	}
 	mux.Handle("/github/connector-token", d.reviewer.Require(cfg.TokenReview.ConnectorSubjects, connector))
-	mux.Handle("/", d.relay)
 	return mux
 }
+
+func healthz(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) }
