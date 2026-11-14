@@ -1133,13 +1133,33 @@ itsaplan; one small GitHub query per live PR reads checks, the configured
 reviewer check (or human review decision) and queue state. No issue bodies,
 check output, transcripts, tokens or session contents enter the response.
 
+The API contract is verified against itsaplan v1.10.0 commit
+`6c7c2fe2cb9d810d29c68e054de25876b47434f8`:
+the [project route](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/index.ts#L143)
+returns columns and assignees, whose [schema](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/model.ts#L203)
+includes `userId`, nullable `username` and `kind` (`member` or `agent`).
+The [issue listing](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/index.ts#L462)
+accepts `assigneeUserId`, `limit` (at most 500) and `includeArchived`, and returns
+an array of [summary fields](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/model.ts#L318).
+It cannot filter a null delegate, so the connector checks that locally.
+Joe's user ID is resolved from the bound project's current members on every
+refresh; a missing member fails the refresh. The HOME-24 task identifies the
+owner as `@joe`; live membership and HOME-20 to HOME-23 remain rollout checks.
+
+Status polling starts after writer acquisition. Its HTTP transport checks the
+same epoch on the lock's connection before each itsaplan, broker and GitHub
+request, including retries. Writer loss cancels status and dispatch together;
+shutdown waits for both before releasing the lock. These reads send no kagent
+messages or work-item mutations, so they create no delivery attempts or message
+IDs. The delivery protocol remains on dispatch side effects.
+
 The connector refreshes its cached snapshot every 30 seconds with a 20-second
 read deadline and at most eight concurrent work-item reads. Reads are capped
 at 500 assigned issues per project, 100 live work items and ten merges; a full
 issue listing or excess live work fails the refresh instead of showing an
-incomplete count. Each snapshot expires after 30 seconds and stays available
-until then during a refresh;
-a failed refresh clears it and `/status` returns 503. Visitors trigger no
+incomplete count. Each snapshot expires after 30 seconds; a refresh already
+in progress keeps it available through that read's deadline. A failed refresh
+or stopped polling loop clears it and `/status` returns 503. Visitors trigger no
 upstream reads. The landing server has no credentials and proxies only this
 snapshot with a two-second timeout. Its CSP permits only same-origin fetches.
 

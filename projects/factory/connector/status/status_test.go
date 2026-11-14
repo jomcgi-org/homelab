@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,7 +118,115 @@ func TestCacheRefreshesOnTicksAndRequestsNeverReadUpstream(t *testing.T) {
 	results <- nil
 	cancel()
 	<-done
-	check(200)
+	check(503)
+}
+
+func TestCacheRemainsAvailableDuringSlowerRefresh(t *testing.T) {
+	for _, elapsed := range []time.Duration{2 * time.Second, ReadTimeout} {
+		t.Run(elapsed.String(), func(t *testing.T) {
+			var nanos atomic.Int64
+			h := &Handler{now: func() time.Time { return time.Unix(0, nanos.Load()) },
+				Load: func(context.Context) (*Snapshot, error) { return &Snapshot{}, nil }}
+			h.refresh(context.Background())
+			started, finish, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			h.Load = func(context.Context) (*Snapshot, error) {
+				close(started)
+				<-finish
+				return &Snapshot{}, nil
+			}
+			nanos.Store(int64(RefreshInterval))
+			go func() { h.refresh(context.Background()); close(done) }()
+			<-started
+			nanos.Store(int64(RefreshInterval + elapsed))
+			r := httptest.NewRecorder()
+			h.ServeHTTP(r, httptest.NewRequest("GET", "/status", nil))
+			// A refresh may extend availability only through its read deadline.
+			want := http.StatusOK
+			if elapsed == ReadTimeout { want = http.StatusServiceUnavailable }
+			close(finish)
+			<-done
+			if r.Code != want { t.Fatalf("during refresh = %d, want %d", r.Code, want) }
+			r = httptest.NewRecorder()
+			h.ServeHTTP(r, httptest.NewRequest("GET", "/status", nil))
+			if r.Code != http.StatusOK { t.Fatalf("after refresh = %d", r.Code) }
+		})
+	}
+}
+
+func TestCanceledStatusLoopDoesNotReadOrPublish(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h := &Handler{Load: func(context.Context) (*Snapshot, error) {
+		t.Fatal("canceled status loop read upstream")
+		return nil, nil
+	}}
+	h.run(ctx, make(chan time.Time))
+
+	ctx, cancel = context.WithCancel(context.Background())
+	h.Load = func(context.Context) (*Snapshot, error) {
+		cancel()
+		return &Snapshot{}, nil
+	}
+	h.refresh(ctx)
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest("GET", "/status", nil))
+	if r.Code != http.StatusServiceUnavailable { t.Fatal("published a canceled refresh") }
+}
+
+func TestWriterTransportFencesEveryRequest(t *testing.T) {
+	var reads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reads.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	var checks int
+	var writerErr error
+	transport := &WriterTransport{Check: func(context.Context) error {
+		checks++
+		return writerErr
+	}}
+	client := &http.Client{Transport: transport}
+	// The scaffold, listing, title, broker and GraphQL requests all pass the
+	// guard, including repeated requests by the GitHub client's 401 retry.
+	for _, path := range []string{"/projects/HOME", "/projects/HOME/issues", "/issues/24", "/github/connector-token", "/graphql", "/graphql"} {
+		method := http.MethodGet
+		if path == "/graphql" { method = http.MethodPost }
+		req := httptest.NewRequest(method, srv.URL+path, nil)
+		req.RequestURI = ""
+		res, err := client.Do(req)
+		if err != nil { t.Fatal(err) }
+		res.Body.Close()
+	}
+	if checks != 6 || reads.Load() != 6 { t.Fatalf("checks=%d reads=%d", checks, reads.Load()) }
+	writerErr = store.ErrNotWriter
+	if _, err := client.Get(srv.URL); !errors.Is(err, store.ErrNotWriter) { t.Fatalf("lost writer: %v", err) }
+	if checks != 7 || reads.Load() != 6 { t.Fatal("lost writer reached upstream") }
+	transport.Check = nil
+	if _, err := client.Get(srv.URL); !errors.Is(err, store.ErrNotWriter) { t.Fatalf("missing writer: %v", err) }
+	if reads.Load() != 6 { t.Fatal("missing writer reached upstream") }
+}
+
+func TestWriterTransportCancelsAnInProgressRead(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Transport: &WriterTransport{Check: func(context.Context) error { return nil }}}
+	finished := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+		res, err := client.Do(req)
+		if res != nil { res.Body.Close() }
+		finished <- err
+	}()
+	<-started
+	cancel()
+	if err := <-finished; !errors.Is(err, context.Canceled) { t.Fatalf("in-progress read: %v", err) }
 }
 
 func TestHandlerRejectsOtherRoutesAndMethods(t *testing.T) {

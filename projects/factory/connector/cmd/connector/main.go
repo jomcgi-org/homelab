@@ -201,31 +201,14 @@ func run(log *slog.Logger) error {
 
 	// Delivery (PRs, review rounds, merge) needs the broker's GitHub tokens.
 	var gh dispatch.GitHub
-	var statusGitHub status.GitHub
 	if cfg.BrokerURL != "" {
 		client := &github.Client{BaseURL: cfg.GitHubURL, Tokens: &github.BrokerTokens{
 			URL: cfg.BrokerURL, Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
 		}}
 		gh = client
-		statusGitHub = client
 	} else {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
 	}
-
-	statusSource := &status.Source{Store: st, Plan: its, GitHub: statusGitHub,
-		Bindings: cfg.File.Bindings, IssueURL: cfg.File.Links.Issue}
-	statusHandler := &status.Handler{Load: statusSource.Load}
-	statusCtx, stopStatus := context.WithCancel(ctx)
-	defer stopStatus()
-	go statusHandler.Run(statusCtx)
-	statusServer := &http.Server{Addr: cfg.StatusAddr, Handler: statusHandler,
-		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
-	go func() {
-		if err := statusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("status server", "error", err)
-		}
-	}()
-	defer statusServer.Close()
 
 	eng := dispatch.New(dispatch.Config{
 		// Native Codex artifact text reaches itsaplan run events (#8017). The
@@ -282,6 +265,44 @@ func run(log *slog.Logger) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	defer cancel(nil)
+
+	// Status starts only after Acquire. Each outbound request checks the same
+	// writer, and loss of it cancels every loop and in-progress read. Wait for
+	// the status loop as well as heartbeats before releasing the lock.
+	statusHTTP := &http.Client{Timeout: status.ReadTimeout, Transport: &status.WriterTransport{
+		Check: func(ctx context.Context) error {
+			err := eng.CheckWriter(ctx)
+			if errors.Is(err, store.ErrNotWriter) {
+				cancel(err)
+			}
+			return err
+		},
+	}}
+	statusPlan := &itsaplan.Client{BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key,
+		Coordinator: cfg.File.Coordinator.Key, HTTP: statusHTTP}
+	var statusGitHub status.GitHub
+	if cfg.BrokerURL != "" {
+		statusGitHub = &github.Client{BaseURL: cfg.GitHubURL, HTTP: statusHTTP,
+			Tokens: &github.BrokerTokens{URL: cfg.BrokerURL, HTTP: statusHTTP,
+				Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile}}}
+	}
+	statusSource := &status.Source{Store: st, Plan: statusPlan, GitHub: statusGitHub,
+		Bindings: cfg.File.Bindings, IssueURL: cfg.File.Links.Issue}
+	statusHandler := &status.Handler{Load: statusSource.Load}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		statusHandler.Run(ctx)
+	}()
+	statusServer := &http.Server{Addr: cfg.StatusAddr, Handler: statusHandler,
+		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	go func() {
+		if err := statusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("status server", "error", err)
+		}
+	}()
+	defer statusServer.Close()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

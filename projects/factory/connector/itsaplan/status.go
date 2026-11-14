@@ -25,6 +25,8 @@ type IssueSummary struct {
 // as the coordinator. v1.10.0 has no null-delegate or open-state list filter,
 // so those predicates are checked locally. A full page fails rather than
 // presenting an incomplete count as all of Joe's tasks.
+// The pinned upstream routes and schemas are linked in factory/ARCHITECTURE.md,
+// "Factory front page". Resolve the member each time instead of pinning a user ID.
 func (c *Client) NeedsYou(ctx context.Context, project, username string) ([]IssueSummary, error) {
 	var scaffold struct {
 		Columns   []Column `json:"columns"`

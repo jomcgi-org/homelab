@@ -21,6 +21,26 @@ import (
 const RefreshInterval = 30 * time.Second
 const ReadTimeout = 20 * time.Second
 
+// WriterTransport checks the writer immediately before each status HTTP call,
+// including token fetches, redirects and retries. These reads send no kagent
+// messages and therefore create no delivery attempts or message IDs.
+type WriterTransport struct {
+	Check func(context.Context) error
+}
+
+func (t *WriterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := r.Context().Err(); err != nil {
+		return nil, err
+	}
+	if t.Check == nil {
+		return nil, store.ErrNotWriter
+	}
+	if err := t.Check(r.Context()); err != nil {
+		return nil, err
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
 type NeedsYou struct {
 	Key       string  `json:"key"`
 	Title     string  `json:"title"`
@@ -165,14 +185,15 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 
 // Handler refreshes in the background, independent of visitors. HTTP never
 // starts upstream work or waits for it. Failed refreshes clear the snapshot;
-// during a refresh the previous snapshot remains readable until its 30-second
-// expiry. No upstream error text is exposed or logged here.
+// during a refresh the previous snapshot remains readable for at most the
+// read deadline beyond its expiry. No upstream error text is exposed or logged.
 type Handler struct {
-	Load      func(context.Context) (*Snapshot, error)
-	mu        sync.RWMutex
-	body      []byte
-	expiresAt time.Time
-	now       func() time.Time
+	Load         func(context.Context) (*Snapshot, error)
+	mu           sync.RWMutex
+	body         []byte
+	expiresAt    time.Time
+	refreshUntil time.Time
+	now          func() time.Time
 }
 
 func (h *Handler) clock() time.Time {
@@ -185,7 +206,13 @@ func (h *Handler) clock() time.Time {
 func (h *Handler) refresh(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
 	defer cancel()
+	h.mu.Lock()
+	h.refreshUntil = h.clock().Add(ReadTimeout)
+	h.mu.Unlock()
 	snapshot, err := h.Load(ctx)
+	if err == nil {
+		err = ctx.Err()
+	}
 	var body []byte
 	if err == nil {
 		body, err = json.Marshal(snapshot)
@@ -196,6 +223,7 @@ func (h *Handler) refresh(ctx context.Context) {
 	h.mu.Lock()
 	h.body = body
 	h.expiresAt = h.clock().Add(RefreshInterval)
+	h.refreshUntil = time.Time{}
 	h.mu.Unlock()
 }
 
@@ -206,12 +234,24 @@ func (h *Handler) Run(ctx context.Context) {
 }
 
 func (h *Handler) run(ctx context.Context, ticks <-chan time.Time) {
+	defer func() {
+		h.mu.Lock()
+		h.body = nil
+		h.refreshUntil = time.Time{}
+		h.mu.Unlock()
+	}()
+	if ctx.Err() != nil {
+		return
+	}
 	h.refresh(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
+			if ctx.Err() != nil {
+				return
+			}
 			h.refresh(ctx)
 		}
 	}
@@ -231,7 +271,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.RLock()
 	body := h.body
-	expired := !h.clock().Before(h.expiresAt)
+	now := h.clock()
+	expired := !now.Before(h.expiresAt) && !now.Before(h.refreshUntil)
 	h.mu.RUnlock()
 	if body == nil || expired {
 		http.Error(w, "Status unavailable", http.StatusServiceUnavailable)

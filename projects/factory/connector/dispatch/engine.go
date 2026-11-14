@@ -206,6 +206,12 @@ func (e *Engine) guard(ctx context.Context) error {
 	return e.w.Check(ctx)
 }
 
+// CheckWriter fences background status reads with the dispatch writer's epoch
+// and lock session. Callers must stop before Release closes that session.
+func (e *Engine) CheckWriter(ctx context.Context) error {
+	return e.guard(ctx)
+}
+
 // guardAttempt also checks that the attempt was sent under the work item's
 // current epoch: a reassignment fences the previous agent's attempt.
 func (e *Engine) guardAttempt(ctx context.Context, a *store.Attempt, wi *store.WorkItem) error {
