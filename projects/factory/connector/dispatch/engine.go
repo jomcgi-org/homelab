@@ -360,7 +360,11 @@ func (e *Engine) heartbeatRun(ctx context.Context, id int64) error {
 	switch {
 	case err == nil:
 		e.m.Heartbeats.WithLabelValues("ok").Inc()
-		return e.st.SetHeartbeat(ctx, r.ID, now)
+		if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
+			return err
+		}
+		// A PR closed during the turn stops delivery and cancels the turn.
+		return e.checkPRClosed(ctx, r)
 	case errors.Is(err, itsaplan.ErrNotFound):
 		e.m.Heartbeats.WithLabelValues("not_found").Inc()
 		_, err := e.runGone(ctx, r)
@@ -506,15 +510,17 @@ func (e *Engine) stepLocked(ctx context.Context, id int64) error {
 
 // step advances one open run. The caller holds the run's lock.
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
-	if r.Connector() && (r.State == store.RunClaimed || r.State == store.RunWaiting || r.State == store.RunDispatched) {
+	// A claimed itsaplan run is new work on the issue: dispatch resumes a
+	// stopped work item for it. Every other open run of a stopped work item
+	// is stopped.
+	live := r.State == store.RunWaiting || r.State == store.RunDispatched || (r.Connector() && r.State == store.RunClaimed)
+	if live && r.WorkItemID != 0 {
 		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 		if err != nil {
 			return err
 		}
 		if wi.State == store.WorkStopped {
-			// Cancellation reaches execution: the round's task is canceled
-			// and the run stays canceling until kagent confirms.
-			return e.startCancel(ctx, r, store.CancelRoundStopped, "delivery stopped: "+wi.StoppedReason)
+			return e.stopRun(ctx, r, wi)
 		}
 	}
 	switch r.State {
@@ -532,6 +538,28 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 		return e.checkFinishing(ctx, r)
 	}
 	return nil
+}
+
+// stopRun stops a run whose work item stopped delivery. Cancellation reaches
+// execution: an open kagent task gets a pending cancellation, and the run
+// reports its failure, with the reason, only when kagent confirms. A run
+// with nothing in kagent reports at once.
+func (e *Engine) stopRun(ctx context.Context, r *store.Run, wi *store.WorkItem) error {
+	a, err := e.st.LatestAttempt(ctx, r.ID)
+	if err != nil {
+		return err
+	}
+	if a != nil && a.Open() && a.State != store.AttemptSending {
+		return e.st.RequestCancellation(ctx, e.st.DB, a.ID, r.ID, store.CancelRoundStopped)
+	}
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if a != nil && a.State == store.AttemptSending {
+			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, "delivery stopped"); err != nil {
+				return err
+			}
+		}
+		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip("delivery stopped: "+wi.StoppedReason, maxErrorText)})
+	})
 }
 
 // checkCanceling closes a canceling run whose cancellations are all
@@ -634,9 +662,17 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	if err != nil {
 		return e.failRun(ctx, e.st.DB, r, err.Error())
 	}
-	wi, reassigned, err := e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
-		Binding: b.Binding, IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
-	})
+	var wi *store.WorkItem
+	var reassigned bool
+	if r.Connector() {
+		// A round never resumes a stopped work item: only a new itsaplan
+		// run, a person's decision, does.
+		wi, err = e.st.GetWorkItem(ctx, r.WorkItemID)
+	} else {
+		wi, reassigned, err = e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
+			Binding: b.Binding, IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -1499,8 +1535,11 @@ func (e *Engine) confirmCancel(ctx context.Context, c *store.Cancellation, a *st
 			}
 		}
 		r := &store.Run{ID: c.RunID}
-		if err := tx.QueryRowContext(ctx, `SELECT agent_key, state, origin, coalesce(work_item_id, 0) FROM run WHERE id = $1`,
-			c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID); err != nil {
+		var stopped string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT r.agent_key, r.state, r.origin, coalesce(r.work_item_id, 0), coalesce(w.stopped_reason, '')
+			FROM run r LEFT JOIN work_item w ON w.id = r.work_item_id WHERE r.id = $1`,
+			c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID, &stopped); err != nil {
 			return err
 		}
 		if r.State == store.RunClosed {
@@ -1508,11 +1547,14 @@ func (e *Engine) confirmCancel(ctx context.Context, c *store.Cancellation, a *st
 		}
 		// A run itsaplan ended closes whatever reason the cancellation had:
 		// it may have started as a reassignment and then gone canceling.
-		if c.Reason != store.CancelReassignment || r.State == store.RunCanceling {
+		if (c.Reason != store.CancelReassignment && c.Reason != store.CancelRoundStopped) || r.State == store.RunCanceling {
 			if err := abandonResult(ctx, tx, c.RunID); err != nil {
 				return err
 			}
 			return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "canceled ("+c.Reason+"); kagent task "+outcome)
+		}
+		if c.Reason == store.CancelRoundStopped {
+			return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip("delivery stopped: "+stopped, maxErrorText)})
 		}
 		// Reassignment: the superseded run reports that another agent took over.
 		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"})

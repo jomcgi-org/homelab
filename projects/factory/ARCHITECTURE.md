@@ -265,15 +265,22 @@ failed round returns the work item to review.
 
 **Stopping delivery.** A round has no itsaplan run to cancel, and its
 kagent session belongs to the connector, so the connector watches for the
-signals a person gives. Before a round starts, and every heartbeat interval
-while it runs, it reads the issue: if the issue left the binding's
-project, or sits in a `completed` or `canceled` column, delivery stops. A
-closed PR stops it too, whether seen by the round's check or the PR poll,
-including a PR closed while queued. `connector cancel <ISSUE>` stops it
-from the operator's shell. A stopped work item gets no PR updates or
-rounds and is not polled; its running round is canceled through the
-cancellation path above and stays canceling until kagent reports the task
-terminal. The stop is announced on the issue. A new itsaplan run on the
+signals a person gives. It reads the issue before a round starts, every
+heartbeat interval while one runs, before it opens or updates the PR, and
+on every PR poll, so before any enqueue and any merge into Done. Delivery
+stops if the issue left the binding's project or sits in a `completed` or
+`canceled` column. A closed PR stops it too, whether the PR poll sees it
+(including a PR closed while queued) or the heartbeat of a running turn.
+`connector cancel <ISSUE> [--by NAME]` stops it from the operator's shell
+and records who did. A stopped work item gets no PR updates or rounds.
+Every running turn on it, itsaplan's or a round, gets a pending
+cancellation and is reported failed, with the reason, only once kagent
+confirms the task stopped. Its open PR is still polled: a queued PR is
+dequeued with GraphQL `dequeuePullRequest`, and a merge is recorded and
+commented but never moves the issue to Done. State writes that would
+resume a stopped item (a round start, enqueue, ejection, merge) are
+guarded, so a stop that races them stands; an enqueue that lost the race
+is dequeued. The stop is announced on the issue. A new itsaplan run on the
 issue resumes delivery; a closed PR must be reopened by a person first.
 
 So a person cancels a round by moving the issue to a canceled column (or

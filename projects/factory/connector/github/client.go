@@ -574,6 +574,16 @@ func (c *Client) EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA s
 	return "", errors.New("github: enqueuePullRequest returned no merge queue entry")
 }
 
+const dequeueMutation = `mutation($id: ID!) {
+  dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { state } }
+}`
+
+// DequeuePullRequest removes a PR from the merge queue.
+func (c *Client) DequeuePullRequest(ctx context.Context, repo, nodeID string) error {
+	var out json.RawMessage
+	return c.graphql(ctx, repo, dequeueMutation, map[string]any{"id": nodeID}, &out)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
