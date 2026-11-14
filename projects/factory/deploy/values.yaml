@@ -16,20 +16,3 @@ postgres:
           k8s:io.kubernetes.pod.namespace: kagent-pg
           cnpg.io/cluster: kagent-pg
     port: 5432
-
-# Agents and the controller's watch: the factory namespace's own plus each
-# repository binding's.
-kagent:
-  rbac:
-    namespaces: [kagent, factory-r-homelab]
-
-# jomcgi-org/homelab. Its namespace is also granted in Substrate's
-# credentialProvider.namespacePolicies
-# (projects/platform-factory/substrate/values/substrate.yaml).
-repositories:
-  - name: homelab
-    owner: jomcgi-org
-    repo: homelab
-    baseBranch: main
-    namespace: factory-r-homelab
-    agent: codex
