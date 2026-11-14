@@ -45,6 +45,18 @@ _image_pins() {
     END { flush() }' | LC_ALL=C sort -u
 }
 
+# Count first-party image references in chart values, pinned or not. A chart
+# that references none (it deploys only third-party images, like the factory
+# chart's kagent subchart) has nothing for this run to pin.
+_first_party_refs() {
+	"$HELM" show values "$@" | awk '
+    /^[[:space:]]*repository:[[:space:]]*/ {
+      repo = $2; gsub(/"/, "", repo)
+      if (repo ~ /^ghcr\.io\/jomcgi\/homelab\//) n++
+    }
+    END { print n + 0 }'
+}
+
 if [[ ! -s "$IMAGE_RESULTS" ]]; then
 	_fail "-" "-" "same-run image results" "missing" "no image publication evidence"
 fi
@@ -88,7 +100,20 @@ while IFS= read -r chart_target || [[ -n "$chart_target" ]]; do
 		continue
 	fi
 	if [[ ! -s "$candidate_pins" ]]; then
-		_fail "$chart_name" "-" "digest-pinned first-party images" "missing" "expected image set is empty"
+		# No digest-pinned first-party image. That is correct only for a chart
+		# with no first-party image at all; a first-party image left tag-only
+		# still fails here.
+		if [[ "$(_first_party_refs "$candidate")" != "0" ]]; then
+			_fail "$chart_name" "-" "digest-pinned first-party images" "missing" "expected image set is empty"
+			continue
+		fi
+		if ! _image_pins "${CHART_REPOSITORY}/${chart_name}" --version "$version" >"$final_pins"; then
+			_fail "$chart_name" "-" "published artifact ${version}" "missing" "final artifact bytes unavailable"
+			continue
+		fi
+		if [[ -s "$final_pins" ]]; then
+			_fail "$chart_name" "-" "no first-party pins" "$(head -1 "$final_pins")" "unexpected first-party pin in final artifact"
+		fi
 		continue
 	fi
 	if ! _image_pins "${CHART_REPOSITORY}/${chart_name}" --version "$version" >"$final_pins"; then

@@ -190,6 +190,46 @@ else
 	fail "stale invocation diagnostics" "$out"
 fi
 
+# A chart that deploys only third-party images has no first-party set to pin.
+third_party_values() {
+	printf 'image:\n  repository: ghcr.io/kagent-dev/kagent/controller\n  tag: 1.0.1\n  digest: sha256:eeee\n'
+}
+setup third-party-only
+third_party_values >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+third_party_values >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	pass "chart with no first-party images passes once its artifact is published"
+else
+	fail "third-party-only chart" "$out"
+fi
+
+setup third-party-only-unpublished
+third_party_values >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+FINAL_VALUES_OVERRIDE="$CASE_DIR/does-not-exist"
+if out=$(run_case); then
+	fail "unpublished third-party-only chart" "expected non-zero"
+elif [[ "$out" == *"final artifact bytes unavailable"* ]]; then
+	pass "chart with no first-party images still needs its published artifact"
+else
+	fail "unpublished third-party-only diagnostics" "$out"
+fi
+unset FINAL_VALUES_OVERRIDE
+
+# A first-party image left tag-only is the gap the empty-set check guards.
+setup first-party-tag-only
+printf 'tagOnly:\n  repository: ghcr.io/jomcgi/homelab/tools/tag-only\n  tag: main\n' >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+printf 'tagOnly:\n  repository: ghcr.io/jomcgi/homelab/tools/tag-only\n  tag: main\n' >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "first-party tag-only chart" "expected non-zero"
+elif [[ "$out" == *"expected image set is empty"* ]]; then
+	pass "first-party image without a digest pin still fails"
+else
+	fail "first-party tag-only diagnostics" "$out"
+fi
+
 echo ""
 if [[ "$FAILURES" -ne 0 ]]; then
 	echo "$FAILURES test(s) failed"
