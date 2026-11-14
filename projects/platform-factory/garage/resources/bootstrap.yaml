@@ -83,7 +83,7 @@ spec:
       containers:
         - name: secrets
           image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
-          command: [python3, -I, /scripts/garage_init.py, secrets]
+          command: [python3, -I, -u, /scripts/garage_init.py, secrets]
           resources:
             requests:
               cpu: 10m
@@ -131,7 +131,7 @@ spec:
       containers:
         - name: bootstrap
           image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
-          command: [python3, -I, /scripts/garage_init.py, bootstrap]
+          command: [python3, -I, -u, /scripts/garage_init.py, bootstrap]
           env:
             - name: GARAGE_ADMIN_TOKEN
               valueFrom:
@@ -190,7 +190,7 @@ spec:
           containers:
             - name: bootstrap
               image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
-              command: [python3, -I, /scripts/garage_init.py, bootstrap]
+              command: [python3, -I, -u, /scripts/garage_init.py, bootstrap]
               env:
                 - name: GARAGE_ADMIN_TOKEN
                   valueFrom:
