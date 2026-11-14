@@ -165,9 +165,10 @@ spec:
             tcpSocket:
               port: s3
             periodSeconds: 10
+          # Not the RPC port: a bare TCP probe there logs a handshake error.
           livenessProbe:
             tcpSocket:
-              port: rpc
+              port: admin
             initialDelaySeconds: 30
             periodSeconds: 20
           resources:

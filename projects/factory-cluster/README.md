@@ -41,7 +41,8 @@ router must reserve these three leases.
 | Agent Substrate | kagent-dev fork `1.0.1` (commit `7ce6f43`): its Helm charts rendered into Git, images pinned by digest; gVisor class only. The version is set in `substrate/render-upstream.sh` and `bootstrap-substrate.sh` | The fork release line kagent v1.0.1 uses (it builds against fork v1.0.0); it adds the Kubernetes-Secret credential provider and the agentgateway egress gateway kagent injects credentials through. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run ([Agent Substrate](#agent-substrate)) |
 | Node sysctls | proxy ARP/NDP, larger neighbour table, inotify | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
 | Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 was validated here with `cilium connectivity test` before default-deny; rerunning it now needs a temporary policy exempting the `cilium-test-*` namespaces |
-| Storage | local-path (k3s default) | Enough for bootstrap; replicated storage comes with the first stateful service |
+| Storage | local-path (k3s default) volumes; services replicate across nodes themselves | No replicated block storage: Garage and CloudNativePG each keep three copies on the three nodes' local disks ([Object storage](#object-storage), [Postgres](#postgres)) |
+| Object storage | Garage v2.5.0, three nodes, replication factor 3, S3 at `garage.garage.svc:3900` | Workload S3 (CNPG WAL archives, itsaplan, evidence, Substrate snapshots) with plain S3 and three copies on three disks; Joe's decision on #7817. No versioning or Object Lock, so it is not a backup target |
 | Images | embedded Spegel mirror for every registry | Each image crosses the home uplink once |
 | Cilium devices | `enp+` (the wired NICs) | Auto-detection also took `tailscale0` on node-1, set every pod there to its 1280 MTU and silently dropped full-size QUIC replies from the Cloudflare edge; it also served KPR services on the tailnet |
 | Tailscale (node-1) | netfilter mode off; `src_valid_mark=0` | With Tailscale managing iptables it sets `src_valid_mark=1`, and the kernel then drops every pod packet Cilium redirects to its DNS or L7 proxy, which breaks `toFQDNs` policies |
@@ -49,7 +50,8 @@ router must reserve these three leases.
 | Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
 | Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
 | Admission policy | ValidatingAdmissionPolicy (`projects/platform-factory/edge-admission/`) | Keeps Gateways, routes, the edge label and Envoy's proxy and auth objects inside `edge`. The API server evaluates it in every namespace; Kyverno skips kube-system, kube-public, kube-node-lease and its own namespace |
-| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's database; one instance on local-path, no backups yet |
+| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's database (one instance, no backups yet) and kagent's `kagent-pg` (three instances, one per node) |
+| Backups | `kagent-pg`: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Survives losing a pod, a volume or a node. Garage shares the cluster's failure domain, so this is not off-site: losing the cluster loses the backups too. Off-site copies (R2 or GCS) are deferred |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Repository convention. Authentik's secrets cannot outlive its database until Postgres has off-node backups, so a copy in 1Password would protect nothing yet |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 | Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
@@ -266,6 +268,100 @@ KUBECONFIG=~/.kube/factory.yaml kubectl config set-context --current --namespace
 KUBECONFIG=~/.kube/factory.yaml argocd app list --core
 ```
 
+## Object storage
+
+Garage (`projects/platform-factory/garage/`) runs as a three-pod StatefulSet,
+one pod per node by required anti-affinity, each with local-path volumes for
+metadata (1 GiB) and data. Replication factor 3 with `consistent` mode: reads
+and writes need two of the three nodes, so it tolerates one node down. Each
+node's zone is its pod name; the layout gives each 50 GB of capacity, which
+balances data but is not enforced (local-path has no quotas). The manifests
+are written by hand because the upstream Helm chart is published only in
+Garage's Git repository and generates its RPC secret with Helm's `lookup` and
+`randHex`.
+
+Nodes find each other with Garage's Kubernetes discovery: each publishes a
+`GarageNode` (CRD in `resources/crd.yaml`) with its pod IP when it starts, so
+a restart with a new IP reconnects. `garage-init` (`resources/garage_init.py`)
+does the rest, idempotently:
+
+- **Secrets.** Before the StatefulSet, it fills `garage/garage-secrets` with
+  the RPC secret and admin token, once. They exist only in the cluster; the
+  Secret carries `Delete=false`.
+- **Layout.** After every sync (PostSync Job) and hourly (CronJob), it waits
+  for three connected nodes and applies the first layout if there is none.
+  It never changes an existing layout: a node that comes back with a new ID
+  (a lost metadata volume) is logged as a warning, and replacing it is an
+  operator step (`garage layout assign`/`remove` from a Garage pod).
+- **Buckets and keys.** It creates `factory-itsaplan`, `factory-evidence`,
+  `ate-snapshots` and `kagent-pg-backups`. Each consuming namespace declares
+  an empty Secret and a Role letting `garage/garage-init` get and update only
+  that name; garage-init generates a key into the Secret
+  (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
+  `AWS_REGION`, `BUCKET`, ready for `envFrom`), imports it into Garage if
+  Garage lacks it, and grants read and write on that one bucket. The Secret
+  is the source of truth, so a rebuilt Garage gets the same keys back. A
+  consumer whose Secret appears after the last sync is served by the next
+  hourly run.
+
+| Bucket | Key Secret | Consumer |
+| --- | --- | --- |
+| `kagent-pg-backups` | `kagent/kagent-pg-s3` | `kagent-pg` WAL archive and base backups |
+| `factory-itsaplan` | `factory/factory-itsaplan-s3` | itsaplan (step 6) |
+| `factory-evidence` | `factory/factory-evidence-s3` | the connector's transcripts and CI logs (step 9) |
+| `ate-snapshots` | none yet | Agent Substrate, when its snapshots move off rustfs |
+
+`projects/platform-factory/factory-buckets/` holds the `factory` namespace's
+key Secrets ahead of the workloads. The S3 API admits only `ate-system`,
+`factory`, `kagent`, `cnpg-system` and CloudNativePG instance pods in any
+namespace; RPC (3901) only Garage pods; the admin API (3903) only
+garage-init. A consumer also needs its own egress rule to
+`app.kubernetes.io/name=garage` in `garage` on 3900. Traffic is plain HTTP
+inside the cluster; Cilium's WireGuard encrypts it between nodes.
+
+The Application, the StatefulSet's PVCs (retention policy `Retain`) and the
+key Secrets carry `Prune=false,Delete=false`, so removing the Application
+leaves the data and keys. Check health with:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n garage exec garage-0 -- /garage -c /etc/garage/garage.toml status
+KUBECONFIG=~/.kube/factory.yaml kubectl -n garage logs job/garage-bootstrap
+```
+
+## Postgres
+
+CloudNativePG 1.30 runs every database. `kagent-pg`
+(`projects/platform-factory/kagent-postgres/`) is kagent's: three instances,
+one per node by required anti-affinity, each 256 MiB requested with a 1 GiB
+limit. Three fit: the nodes have about 11 GiB free each, and idle instances
+use under 100 MiB. Losing the primary promotes a replica in seconds; the
+failover trial on #7817 kept every row.
+
+It is a separate Application rather than part of the factory chart
+(`postgres.mode: existing`), so the database's lifecycle and the chart's are
+independent: a chart rollback or reinstall never touches the data, and the
+Cluster, its logins and the Application carry `Prune=false,Delete=false`.
+`kagent-pg-setup`, a PostSync Job, generates the two login passwords once
+into `kagent-pg-logins`, writes the connection-string Secrets the chart reads
+(`kagent-postgres-owner`, `kagent-postgres-readwrite`), and runs kagent
+v1.0.1's own setup script (`setup.sql`, copied unchanged) as the superuser
+to create `kagent_owner`, `kagent_readwrite`, their login users and schema
+`kagent`. Only the kagent controller, the setup Job, peers and the operator
+reach the instances. kagent reads the connection strings only at start, so
+restart its controller (through ArgoCD) after they change.
+
+Backups use the in-tree barman-cloud integration: continuous WAL archiving
+and a daily base backup (02:30 UTC, 14 days kept) to `kagent-pg-backups` in
+Garage. 1.30 deprecates it and 1.31 removes it; the barman-cloud plugin would
+also need cert-manager, which the cluster does not run. The operator upgrade
+to 1.31 must move this to the plugin first. Garage is on the same three
+nodes, so these backups protect against losing a node, a volume or a bad
+change, not against losing the cluster.
+
+The itsaplan and connector databases come with the factory chart's
+`postgres.mode: install` (steps 6 and 9), which knows their roles and
+clients.
+
 ## Agent Substrate
 
 The combination in use is Kubernetes `v1.37.2+k3s1`, Agent Substrate `1.0.1`
@@ -460,12 +556,19 @@ These come from the #7817 step 1 checklist:
   local-path volumes on one node each, with no backup.
 - Actor internet egress and the credential broker. The credential provider
   runs, but grants only the `kagent` namespace.
-- Replicated storage, and backup and restore: off-node etcd snapshots with a
-  copy of the cluster token, and Substrate's PostgreSQL and snapshots, the
-  first state here that Git cannot recreate.
+- Off-site backup and restore: etcd snapshots with a copy of the cluster
+  token, Garage's buckets and the CNPG archives, to R2 or GCS. Garage and
+  `kagent-pg` replicate across the nodes but share the cluster's failure
+  domain.
+- Substrate's PostgreSQL and snapshots onto the replicated stores: its
+  snapshots to Garage's `ate-snapshots` (grant `ate-system` a key), its
+  database to CloudNativePG.
+- Moving `kagent-pg` backups to the barman-cloud plugin (and cert-manager)
+  before upgrading CloudNativePG to 1.31, which removes the in-tree
+  integration.
 - Agent Substrate CA rotation before 2027-11-13
   ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
-- Postgres backups for Authentik, then its secret key in 1Password.
+- Postgres backups for Authentik (Garage now available), then its secret key in 1Password.
 - Spreading the cloudflared replicas across nodes: cfgate v0.2.0-alpha.11's
   CloudflareTunnel has no topologySpreadConstraints or affinity field, so
   placement is the scheduler's default spreading.
