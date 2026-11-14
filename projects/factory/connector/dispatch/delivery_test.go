@@ -1416,7 +1416,7 @@ func TestHoldLabelKeepsAPassingHeadOutOfTheQueue(t *testing.T) {
 	}
 }
 
-func TestHoldLabelOnAQueuedPRDequeuesIt(t *testing.T) {
+func TestHoldLabelOnAQueuedPRLeavesItToTheQueue(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.delivered()
 	v.gh.green("sha-1")
@@ -1424,17 +1424,12 @@ func TestHoldLabelOnAQueuedPRDequeuesIt(t *testing.T) {
 	if !v.gh.queued(1) || v.work(101).State != store.WorkMerging {
 		t.Fatal("PR not queued")
 	}
-	v.gh.label(1, "Human") // a hold placed after the enqueue, in any case
+	// The reviewer fails the merge group's check; the connector does not
+	// dequeue, so a person's own requeue of a held PR stands.
+	v.gh.label(1, "Human")
 	v.poll()
-	if v.gh.queued(1) || len(v.gh.Dequeues()) != 1 {
-		t.Fatalf("dequeues = %v, want the held PR out of the queue", v.gh.Dequeues())
-	}
-	v.poll()
-	if w := v.work(101); w.State != store.WorkReview {
-		t.Fatalf("work item = %s, want back in review", w.State)
-	}
-	if n := len(v.gh.Enqueues()); n != 1 {
-		t.Fatalf("enqueues = %d, want the held head not enqueued again", n)
+	if !v.gh.queued(1) || len(v.gh.Dequeues()) != 0 {
+		t.Fatalf("dequeues = %v, want the queue left to GitHub", v.gh.Dequeues())
 	}
 }
 

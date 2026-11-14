@@ -658,7 +658,8 @@ previews).
   `projects/factory/reviewer` posts the `factory review` check run on every
   head of every open PR into the base branch, whatever its author, and on
   each merge group commit (success when the queued PR's head passed, since
-  GitHub checks the group again). It enqueues nothing: the deploy values set
+  GitHub checks the group again; a passing group whose PR's head stops
+  passing, say for a hold label, gets a failing check on the next poll). It enqueues nothing: the deploy values set
   `enqueueAuthors: []`. Its first live enqueue, of #7707 on 2026-11-14, got
   `FORBIDDEN: Resource not accessible by integration`. Its token has merge
   queues write, but GitHub evidently also wants contents or pull requests
@@ -778,9 +779,11 @@ previews).
   characters, so the findings after the overview survive). A failure that
   the reviewer App marks `human-gate-only` starts no round: the PR waits for
   Joe's approval, which turns the check green. A `human` or `needs-human`
-  label holds a PR at the connector too: it is not enqueued, and a queued
-  one is dequeued and returns to review with that head ejected, so a hold
-  placed after a passing review cannot race the reviewer's next poll.
+  label holds a PR at the connector too: labels are read at enqueue, so a
+  hold placed after a passing review cannot race the reviewer's next poll.
+  A hold on a queued PR is the reviewer's: it fails the merge group's
+  required check on its next poll, and the queue ejects the PR. Joe's
+  approval of the head clears the hold, so his own requeue merges.
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the

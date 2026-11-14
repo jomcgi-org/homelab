@@ -46,8 +46,8 @@ type ReviewPolicy struct {
 	// ReviewerCheck is the independent reviewer's check. Without one, a
 	// trusted reviewer's approval of the head stands in for it.
 	ReviewerCheck *Check
-	// HoldLabels hold a PR for a person: it is not enqueued, and a queued
-	// one leaves the queue.
+	// HoldLabels hold a PR for a person: it is not enqueued. A hold on a
+	// queued PR fails its merge group's review check instead.
 	HoldLabels []string
 	// MaxReviewRounds bounds the connector's review rounds per work item.
 	MaxReviewRounds int
@@ -568,18 +568,8 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		// Closed by a person, queued or not: delivery stops until a new run.
 		return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed without merging", pr.Number, pr.URL))
 	case wi.State == store.WorkMerging && d.MergeQueueState != "":
-		if l := b.Review.held(d.Labels); l != "" {
-			// A hold placed after the enqueue: leave the queue. The next poll
-			// sees the PR out of the queue and returns it to review.
-			if err := e.guard(ctx); err != nil {
-				return err
-			}
-			if err := e.gh.DequeuePullRequest(ctx, repo, pr.NodeID); err != nil {
-				return fmt.Errorf("dequeue held PR %d: %w", pr.Number, err)
-			}
-			e.m.MergeQueue.WithLabelValues("dequeued").Inc()
-			e.log.InfoContext(ctx, "PR dequeued: held for a person", "work_item", wi.ID, "pr", pr.Number, "label", l)
-		}
+		// A hold placed after the enqueue is the factory-reviewer's: it fails
+		// the merge group's required check, and the queue ejects the PR.
 		return nil
 	case wi.State == store.WorkMerging:
 		// The queue entry can go before the merge shows; look again before
