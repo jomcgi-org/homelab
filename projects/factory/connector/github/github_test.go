@@ -220,6 +220,42 @@ func TestStatusesKeepTheLatestPerContextWithItsCreator(t *testing.T) {
 	}
 }
 
+func TestPullRequestDetailQueueEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		queue      string
+		mergeable  string
+		wantState  string
+		wantCommit string
+	}{
+		{"testing", `{"state":"AWAITING_CHECKS","headCommit":{"oid":"group-sha"}}`, "MERGEABLE", "AWAITING_CHECKS", "group-sha"},
+		{"building", `{"state":"QUEUED","headCommit":null}`, "UNKNOWN", "QUEUED", ""},
+		{"conflict", `null`, "CONFLICTING", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct{ Query string }
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+				}
+				if !strings.Contains(req.Query, "mergeQueueEntry { state headCommit { oid } }") || !strings.Contains(req.Query, "mergeable") {
+					t.Errorf("query omits ejection evidence: %s", req.Query)
+				}
+				fmt.Fprintf(w, `{"data":{"repository":{"pullRequest":{"id":"PR_5","number":5,"state":"OPEN","headRefOid":"pr-sha","mergeable":%q,"mergeQueueEntry":%s}}}}`, tc.mergeable, tc.queue)
+			}))
+			defer gh.Close()
+			c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+			d, err := c.PullRequestDetail(context.Background(), "example-org/homelab", 5)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.HeadSHA != "pr-sha" || d.MergeGroupSHA != tc.wantCommit || d.MergeQueueState != tc.wantState || d.Mergeable != tc.mergeable {
+				t.Fatalf("detail = %+v", d)
+			}
+		})
+	}
+}
+
 func TestPullRequestDetailAndEnqueue(t *testing.T) {
 	var mu sync.Mutex
 	var enqueued map[string]any

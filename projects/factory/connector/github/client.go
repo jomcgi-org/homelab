@@ -133,6 +133,11 @@ type PullRequestDetail struct {
 	MergeQueueState string
 	Reviews         []Review
 	Threads         []ReviewThread
+
+	// MergeGroupSHA is the queue entry's synthetic commit, available while
+	// queued. Mergeable is GitHub's MERGEABLE, CONFLICTING or UNKNOWN state.
+	MergeGroupSHA string
+	Mergeable     string
 }
 
 // CheckRun is a check run on a commit.
@@ -457,9 +462,9 @@ func (c *Client) graphql(ctx context.Context, repo, query string, vars map[strin
 const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName
+      id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName mergeable
       mergeCommit { oid }
-      mergeQueueEntry { state }
+      mergeQueueEntry { state headCommit { oid } }
       labels(first: 100) { nodes { name } }
       reviews(last: 100) {
         nodes { id state body submittedAt author { login } commit { oid } }
@@ -500,9 +505,11 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 				HeadRefOid      string     `json:"headRefOid"`
 				HeadRefName     string     `json:"headRefName"`
 				BaseRefName     string     `json:"baseRefName"`
+				Mergeable       string     `json:"mergeable"`
 				MergeCommit     *oid       `json:"mergeCommit"`
 				MergeQueueEntry *struct {
-					State string `json:"state"`
+					State      string `json:"state"`
+					HeadCommit *oid   `json:"headCommit"`
 				} `json:"mergeQueueEntry"`
 				Labels struct {
 					Nodes []struct {
@@ -551,6 +558,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 		Number: p.Number, NodeID: p.ID, URL: p.URL, State: strings.ToLower(p.State), Merged: p.Merged,
 		Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName,
 	}}
+	d.Mergeable = p.Mergeable
 	if d.State == "merged" {
 		d.State, d.Merged = "closed", true
 	}
@@ -562,6 +570,9 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	}
 	if p.MergeQueueEntry != nil {
 		d.MergeQueueState = p.MergeQueueEntry.State
+		if p.MergeQueueEntry.HeadCommit != nil {
+			d.MergeGroupSHA = p.MergeQueueEntry.HeadCommit.OID
+		}
 	}
 	for _, l := range p.Labels.Nodes {
 		d.Labels = append(d.Labels, l.Name)
