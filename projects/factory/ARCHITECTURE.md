@@ -431,7 +431,9 @@ queue is recorded as enqueued, never enqueued twice. A PR against another
 base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge
 links on the issue and moves it to the project's first `completed` column
 (or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
-WIP limit, is reported on the issue and retried with backoff. A PR that
+WIP limit, is reported on the issue and retried with backoff. A move the
+connector gives up on is also reported on the issue, unless a person
+canceled the issue since the merge. A PR that
 leaves the queue unmerged, after a second read confirms it did not merge,
 returns the work item to review, the ejection is announced, and that head
 is not enqueued again; a new push or review moves it on. Deployment health is a separate

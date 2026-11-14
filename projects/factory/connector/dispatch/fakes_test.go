@@ -61,9 +61,6 @@ type fakeItsaplan struct {
 	// issueErr and runErr fail every GetIssue and GetRun while set.
 	issueErr error
 	runErr   error
-	// issueErrs answers the next GetIssue calls first; a nil entry reads
-	// the issue.
-	issueErrs []error
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -315,13 +312,7 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	if len(f.issueErrs) > 0 {
-		err := f.issueErrs[0]
-		f.issueErrs = f.issueErrs[1:]
-		if err != nil {
-			return nil, err
-		}
-	} else if f.issueErr != nil {
+	if f.issueErr != nil {
 		return nil, f.issueErr
 	}
 	is := f.issues[issueID]

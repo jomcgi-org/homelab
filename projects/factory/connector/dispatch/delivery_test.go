@@ -937,32 +937,96 @@ func TestRefusedIssueCheckWaitsWithoutStopping(t *testing.T) {
 	}
 }
 
+// mergedAtWIPLimit merges the delivered PR while the Done column is at its
+// WIP limit, so the Done move waits in the outbox for its next try.
+func (v *env) mergedAtWIPLimit() {
+	v.t.Helper()
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.its.mu.Lock()
+	v.its.moveErr = []error{fmt.Errorf("%w: wip_limit_exceeded", itsaplan.ErrConflict)}
+	v.its.mu.Unlock()
+	v.gh.merge(1, "merge-sha-1")
+	v.poll()
+	if _, abandoned, _ := v.outbox(store.OutboxIssueDone); abandoned || len(v.its.Moves()) != 0 {
+		v.t.Fatal("the Done move did not wait for the WIP limit")
+	}
+}
+
+func (v *env) setIssueErr(err error) {
+	v.its.mu.Lock()
+	v.its.issueErr = err
+	v.its.mu.Unlock()
+}
+
 // TestDoneMoveWaitsForTheIssue: the Done move reads the issue first, so an
 // issue a person canceled while it could not be read is not moved to Done.
 func TestDoneMoveWaitsForTheIssue(t *testing.T) {
 	v := newDeliveryEnv(t)
-	v.delivered()
-	v.gh.green("sha-1")
-	v.poll()
-	// The PR poll reads the issue; the Done move's read then fails.
-	v.its.mu.Lock()
-	v.its.issueErrs = []error{nil, &itsaplan.HTTPError{Status: 503, Body: "unavailable"}}
-	v.its.mu.Unlock()
-	v.gh.merge(1, "merge-sha-1")
-	v.poll()
+	v.mergedAtWIPLimit()
+	v.setIssueErr(&itsaplan.HTTPError{Status: 503, Body: "unavailable"})
+	v.clk.Advance(2 * time.Second)
+	v.tick(v.e)
 	if moves := v.its.Moves(); len(moves) != 0 {
 		t.Fatalf("moves = %+v, want the move to wait for the issue", moves)
 	}
-	if _, abandoned, _ := v.outbox(store.OutboxIssueDone); abandoned {
-		t.Fatal("Done move abandoned after one failed read")
+	if tries, abandoned, lastErr := v.outbox(store.OutboxIssueDone); abandoned || tries != 2 || !strings.Contains(lastErr, "503") {
+		t.Fatalf("tries = %d abandoned = %t last error = %q, want a failed read retried", tries, abandoned, lastErr)
 	}
 	v.its.moveTo(101, 4, "") // Canceled
+	v.setIssueErr(nil)
 	v.tickUntil(2*time.Second, 5, func() bool {
 		_, abandoned, _ := v.outbox(store.OutboxIssueDone)
 		return abandoned
 	})
+	if _, _, reason := v.outbox(store.OutboxIssueDone); reason != "the issue is canceled; not moved to Done" {
+		t.Fatalf("abandon reason = %q", reason)
+	}
 	if moves := v.its.Moves(); len(moves) != 0 {
 		t.Fatalf("moves = %+v, want a canceled issue left alone", moves)
+	}
+}
+
+// TestAbandonedDoneMoveIsReported: every way the Done move's issue read can
+// give up abandons the move and says so on the issue.
+func TestAbandonedDoneMoveIsReported(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		tries  int // failed tries recorded before the move is abandoned
+		reason string
+	}{
+		{"not found", itsaplan.ErrNotFound, 1, "the issue is no longer visible to the factory"},
+		{"401", &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}, 11, "itsaplan refused reading the issue: "},
+		{"403", &itsaplan.HTTPError{Status: 403, Body: "forbidden"}, 11, "itsaplan refused reading the issue: "},
+		{"503", &itsaplan.HTTPError{Status: 503, Body: "unavailable"}, 19, "itsaplan kept failing after 20 tries: "},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.mergedAtWIPLimit()
+			v.setIssueErr(c.err)
+			v.tickUntil(time.Minute, 300, func() bool {
+				_, abandoned, _ := v.outbox(store.OutboxIssueDone)
+				return abandoned
+			})
+			tries, _, reason := v.outbox(store.OutboxIssueDone)
+			if tries != c.tries || !strings.HasPrefix(reason, c.reason) {
+				t.Fatalf("tries = %d reason = %q, want %d and %q", tries, reason, c.tries, c.reason)
+			}
+			if moves := v.its.Moves(); len(moves) != 0 {
+				t.Fatalf("moves = %+v", moves)
+			}
+			v.tick(v.e)
+			var said bool
+			for _, cm := range v.its.Comments() {
+				said = said || (strings.Contains(cm.body, "has stopped trying") && strings.Contains(cm.body, c.reason))
+			}
+			if !said {
+				t.Fatalf("comments = %+v, want the abandoned move reported", v.its.Comments())
+			}
+		})
 	}
 }
 
