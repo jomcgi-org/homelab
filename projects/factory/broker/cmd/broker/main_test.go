@@ -12,7 +12,10 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/broker/internal/fakes"
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 type routeCase struct {
@@ -84,6 +87,49 @@ func checkRoutes(t *testing.T, h http.Handler, cases []routeCase) {
 			if body["factory_error"] != tc.code {
 				t.Fatalf("%s %s factory_error = %q, want %q", tc.method, tc.path, body["factory_error"], tc.code)
 			}
+		}
+	}
+}
+
+// The reviewer token route admits only reviewer subjects: the connector,
+// the author's identity, is refused, and a reviewer reaches the handler
+// (503 here, as no reviewer App key is loaded).
+func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
+	const connector, reviewer = "system:serviceaccount:factory:factory-connector", "system:serviceaccount:factory:factory-reviewer"
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		review := action.(k8stesting.CreateAction).GetObject().(*authenticationv1.TokenReview).DeepCopy()
+		user := map[string]string{"connector-token": connector, "reviewer-token": reviewer}[review.Spec.Token]
+		if user != "" {
+			review.Status = authenticationv1.TokenReviewStatus{Authenticated: true, Audiences: review.Spec.Audiences, User: authenticationv1.UserInfo{Username: user}}
+		}
+		return true, review, nil
+	})
+	idp := fakes.NewIdP(t)
+	cfg := config.Defaults()
+	cfg.Namespace = "factory"
+	cfg.ActorJWT.Issuer = idp.URL
+	cfg.TokenReview.ConnectorSubjects = []string{connector}
+	cfg.TokenReview.ReviewerSubjects = []string{reviewer}
+	d, err := build(context.Background(), cfg, client, quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := d.adminHandler(cfg, http.NotFoundHandler())
+	for _, tc := range []struct {
+		path, token string
+		status      int
+	}{
+		{"/github/reviewer-token?repository=o/r", "connector-token", http.StatusForbidden},
+		{"/github/reviewer-token?repository=o/r", "reviewer-token", http.StatusServiceUnavailable},
+		{"/github/connector-token?repository=o/r", "reviewer-token", http.StatusForbidden},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.Header.Set("Authorization", "Bearer "+tc.token)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("%s with %s = %d, want %d", tc.path, tc.token, rec.Code, tc.status)
 		}
 	}
 }

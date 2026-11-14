@@ -368,8 +368,13 @@ func (c Config) validateReview() []error {
 			errs = append(errs, fmt.Errorf("githubReview.agentPermissions %s: the reviewer agent's token is read-only", k))
 		}
 	}
-	if r.ConnectorPermissions["pull_requests"] == "write" {
-		errs = append(errs, errors.New("githubReview.connectorPermissions: pull_requests write would let the reviewer approve"))
+	// The reviewer may write only its check and the merge queue: any other
+	// write (contents, workflows, pull_requests approval) would let it
+	// author or approve what it reviews.
+	for k, v := range r.ConnectorPermissions {
+		if v == "write" && k != "checks" && k != "merge_queues" {
+			errs = append(errs, fmt.Errorf("githubReview.connectorPermissions %s: the reviewer may write only checks and merge_queues", k))
+		}
 	}
 	author := map[string]bool{}
 	for _, b := range c.Bindings {

@@ -70,6 +70,7 @@ func TestLoadRejects(t *testing.T) {
 		"review same app":    "namespace: f\ngithub: {privateKeyFile: /k, appId: '1', installationId: '2'}\ngithubReview: {privateKeyFile: /r, appId: '1', installationId: '3'}\n",
 		"review writes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', agentPermissions: {contents: write}}\n",
 		"review approves":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {pull_requests: write}}\n",
+		"review pushes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {contents: write, checks: write}}\n",
 		"review namespace":   "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}]\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\nreviewBindings: [{name: a, namespace: n, repository: o/a}]\n",
 		"review subject":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\ntokenReview: {connectorSubjects: [s], reviewerSubjects: [s]}\n",
 	} {

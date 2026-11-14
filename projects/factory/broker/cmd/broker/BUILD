@@ -40,6 +40,9 @@ go_test(
         "//projects/factory/broker/internal/fakes",
         "//projects/factory/broker/metrics",
         "//projects/shared/go/tokenbroker/quota",
+        "@io_k8s_api//authentication/v1:authentication",
+        "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_client_go//kubernetes/fake",
+        "@io_k8s_client_go//testing",
     ],
 )

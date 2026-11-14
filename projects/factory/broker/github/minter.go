@@ -65,7 +65,7 @@ func (m *Minter) Run(ctx context.Context) {
 	for {
 		wait := m.Interval
 		if err := m.MintAgents(ctx); err != nil {
-			m.Logger.Error("GitHub agent token round failed", "err", err)
+			m.Logger.Error("GitHub agent token round failed", "kind", orDefault(m.AgentKind, "agent"), "err", err)
 			if m.RetryInterval > 0 && m.RetryInterval < wait {
 				wait = m.RetryInterval
 			}
@@ -186,7 +186,7 @@ func (m *Minter) ConnectorHandler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"factory_error": "repository_not_bound"})
 			return
 		case err != nil:
-			m.Logger.Error("GitHub connector token failed", "err", err)
+			m.Logger.Error("GitHub connector token failed", "kind", orDefault(m.TokenKind, "connector"), "err", err)
 			w.WriteHeader(http.StatusBadGateway)
 			_ = json.NewEncoder(w).Encode(map[string]string{"factory_error": "github_mint_failed"})
 			return
