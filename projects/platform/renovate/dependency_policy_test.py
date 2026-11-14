@@ -361,12 +361,21 @@ def test_two_line_bazelversion_and_module_toolchains_are_extracted():
     assert [dep["currentValue"] for dep in values] == ["22.22.0", "10.34.5"]
 
 
-def test_overlays_are_scanned_and_python_regeneration_is_root_only():
+@pytest.mark.parametrize(
+    "values_files",
+    [
+        ("values.yaml",),
+        ("values.yaml", "values-gke.yaml"),
+        ("values.yaml", "values-factory.yaml"),
+    ],
+)
+def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files):
     config = json.loads((ROOT / "renovate.json").read_text())
     for path in (
         "projects/platform/cloudflare-gateway/values.yaml",
         "projects/platform/polylane/values.yaml",
         "projects/platform/renovate/values-gke.yaml",
+        "projects/platform/renovate/values-factory.yaml",
         "projects/monolith/deploy/values.yaml",
     ):
         assert any(
@@ -386,9 +395,26 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only():
     ]
     helm = [r for r in config["packageRules"] if r.get("matchManagers") == ["helmv3"]]
     assert helm[0]["postUpdateOptions"] == ["helmUpdateSubChartArchives"]
-    workflow = (HERE / "templates" / "cronworkflow.yaml").read_text()
-    assert "bump-renovated-chart" not in workflow
-    assert "value: jomcgi-org/homelab" in workflow
+    # Check the effective runner after Helm resolves the shared container
+    # template, for both the hub workflows and the factory Job.
+    workload = next(
+        doc
+        for doc in _render(*values_files)
+        if doc["kind"] in {"CronWorkflow", "CronJob"}
+        and doc["metadata"]["name"] == "renovate"
+    )
+    assert "bump-renovated-chart" not in json.dumps(workload)
+    if workload["kind"] == "CronJob":
+        container = workload["spec"]["jobTemplate"]["spec"]["template"]["spec"][
+            "containers"
+        ][0]
+    else:
+        container = workload["spec"]["workflowSpec"]["templates"][0]["container"]
+    env = {entry["name"]: entry for entry in container["env"]}
+    assert env["RENOVATE_REPOSITORIES"]["value"] == "jomcgi-org/homelab"
+    assert json.loads(env["RENOVATE_ALLOWED_COMMANDS"]["value"]) == [
+        r"^bazel/tools/format/update-python-requirements\.sh$"
+    ]
 
 
 def test_envoy_family_is_held_but_cloudflared_and_other_upstreams_are_eligible():
