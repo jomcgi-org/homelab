@@ -40,7 +40,11 @@
   let map = null;
   let maplibre = null;
   let photoMarker = null;
+  let startMarker = null;
+  let endMarker = null;
   let mapReady = $state(false);
+  let painted = false;
+  let routeInitialized = false;
 
   function applyScheme() {
     if (!map || !mapReady) return;
@@ -92,6 +96,72 @@
     return result;
   }
 
+  function syncRoute() {
+    if (!map || !mapReady) return;
+    // A reused map must paint the new day before optional photo work resumes.
+    // Photo selection changes only currentCoords, so it leaves this lease intact.
+    painted = false;
+    routeInitialized = false;
+    onReady(false);
+    const pts = geoPoints();
+    const coordinates = dedupePoints(pts).map((p) => [p.lng, p.lat]);
+    map
+      .getSource("route")
+      .setData(
+        coordinates.length >= 2
+          ? { type: "Feature", geometry: { type: "LineString", coordinates } }
+          : { type: "FeatureCollection", features: [] },
+      );
+    routeInitialized = true;
+    map.setPaintProperty("route-color-accent", "line-color", dayColor);
+    if (pts.length) {
+      if (!startMarker) {
+        const element = document.createElement("div");
+        element.style.cssText =
+          "width:16px;height:16px;background:var(--ink);border:1px solid var(--sheet);border-radius:50%;";
+        startMarker = new maplibre.Marker({ element })
+          .setLngLat([pts[0].lng, pts[0].lat])
+          .addTo(map);
+      } else {
+        startMarker.setLngLat([pts[0].lng, pts[0].lat]);
+      }
+      const last = pts.at(-1);
+      const distance = Math.sqrt(
+        Math.pow(last.lng - pts[0].lng, 2) + Math.pow(last.lat - pts[0].lat, 2),
+      );
+      if (distance > 0.01) {
+        if (!endMarker) {
+          const element = document.createElement("div");
+          element.style.cssText =
+            "width:14px;height:14px;background:var(--sheet);border:1px solid var(--ink);border-radius:50%;";
+          endMarker = new maplibre.Marker({ element })
+            .setLngLat([last.lng, last.lat])
+            .addTo(map);
+        } else {
+          endMarker.setLngLat([last.lng, last.lat]);
+        }
+      } else {
+        endMarker?.remove();
+        endMarker = null;
+      }
+      const b = bounds();
+      if (b) map.fitBounds(b, { padding: 50, duration: 0 });
+    } else {
+      startMarker?.remove();
+      endMarker?.remove();
+      startMarker = null;
+      endMarker = null;
+    }
+  }
+
+  // Kit reuses this component between days and data refreshes. Replace the
+  // route and endpoints in place, retaining the loaded map and terrain layers.
+  $effect(() => {
+    void points;
+    void dayColor;
+    if (mapReady) syncRoute();
+  });
+
   // --- hillshade relighting from the sun ---
   // SunCalc azimuth is radians from south, positive west; MapLibre's
   // illumination-direction is degrees from north.
@@ -129,6 +199,7 @@
   // original. Guarded on mapReady so it no-ops until the marker can be created.
   $effect(() => {
     const coords = currentCoords;
+    const markerColor = dayColor;
     if (!mapReady || !map || !maplibre) return;
     let frame;
     if (coords) {
@@ -148,11 +219,12 @@
       } else {
         const el = document.createElement("div");
         // DOM markers inherit sheet tokens and follow scheme changes directly.
-        el.style.cssText = `width:24px;height:24px;background:${dayColor};border:1px solid var(--ink);cursor:pointer;`;
+        el.style.cssText = `width:24px;height:24px;background:${markerColor};border:1px solid var(--ink);cursor:pointer;`;
         photoMarker = new maplibre.Marker({ element: el })
           .setLngLat(coords)
           .addTo(map);
       }
+      photoMarker.getElement().style.background = markerColor;
       map.easeTo({
         center: coords,
         zoom: 10,
@@ -219,10 +291,14 @@
         "top-right",
       );
 
-      let painted = false;
-      let hasRoute = false;
       map.on("render", () => {
-        if (painted || !mapReady || (hasRoute && !map.isSourceLoaded("route")))
+        if (
+          painted ||
+          !mapReady ||
+          !routeInitialized ||
+          !map.getSource("route") ||
+          !map.isSourceLoaded("route")
+        )
           return;
         painted = true;
         onReady(true);
@@ -262,115 +338,86 @@
           firstSymbol?.id,
         );
 
-        const routePoints = dedupePoints(geoPoints());
-        const coordinates = routePoints.map((p) => [p.lng, p.lat]);
-        if (coordinates.length >= 2) {
-          map.addSource("route", {
-            type: "geojson",
-            data: {
-              type: "Feature",
-              geometry: { type: "LineString", coordinates },
-            },
-          });
-          hasRoute = true;
-          // Ink casing separates the route from the basemap in either scheme.
-          map.addLayer({
-            id: "route-line",
-            type: "line",
-            source: "route",
-            layout: { "line-join": "round", "line-cap": "round" },
-            paint: {
-              "line-color": mapPalette(mapContainer).ink,
-              "line-width": 6,
-              "line-opacity": 1,
-            },
-          });
-          // Thin real-day-colour core down the centre of the ink casing.
-          map.addLayer({
-            id: "route-color-accent",
-            type: "line",
-            source: "route",
-            layout: { "line-join": "round", "line-cap": "round" },
-            paint: {
-              "line-color": dayColor,
-              "line-width": 2.5,
-              "line-opacity": 1,
-            },
-          });
-          // Wide transparent hit area for easier clicking.
-          map.addLayer({
-            id: "route-hit-area",
-            type: "line",
-            source: "route",
-            layout: { "line-join": "round", "line-cap": "round" },
-            paint: {
-              "line-color": "transparent",
-              "line-width": 20,
-              "line-opacity": 0,
-            },
-          });
+        map.addSource("route", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+        });
+        // Ink casing separates the route from the basemap in either scheme.
+        map.addLayer({
+          id: "route-line",
+          type: "line",
+          source: "route",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": mapPalette(mapContainer).ink,
+            "line-width": 6,
+            "line-opacity": 1,
+          },
+        });
+        // Thin real-day-colour core down the centre of the ink casing.
+        map.addLayer({
+          id: "route-color-accent",
+          type: "line",
+          source: "route",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": dayColor,
+            "line-width": 2.5,
+            "line-opacity": 1,
+          },
+        });
+        // Wide transparent hit area for easier clicking.
+        map.addLayer({
+          id: "route-hit-area",
+          type: "line",
+          source: "route",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": "transparent",
+            "line-width": 20,
+            "line-opacity": 0,
+          },
+        });
 
-          if (onLocationClick) {
-            map.on("mouseenter", "route-hit-area", () => {
-              map.getCanvas().style.cursor = "pointer";
-            });
-            map.on("mouseleave", "route-hit-area", () => {
-              map.getCanvas().style.cursor = "";
-            });
-            map.on("click", "route-hit-area", (e) => {
-              const { lng: clickLng, lat: clickLat } = e.lngLat;
-              let minDist = Infinity;
-              let closest = null;
-              for (const p of points) {
-                if (p.lat == null || p.lng == null || !p.taken_at) continue;
-                const dist =
-                  Math.pow(p.lng - clickLng, 2) + Math.pow(p.lat - clickLat, 2);
-                if (dist < minDist) {
-                  minDist = dist;
-                  closest = p;
-                }
+        if (onLocationClick) {
+          map.on("mouseenter", "route-hit-area", () => {
+            map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", "route-hit-area", () => {
+            map.getCanvas().style.cursor = "";
+          });
+          map.on("click", "route-hit-area", (e) => {
+            const { lng: clickLng, lat: clickLat } = e.lngLat;
+            let minDist = Infinity;
+            let closest = null;
+            for (const p of points) {
+              if (p.lat == null || p.lng == null || !p.taken_at) continue;
+              const dist =
+                Math.pow(p.lng - clickLng, 2) + Math.pow(p.lat - clickLat, 2);
+              if (dist < minDist) {
+                minDist = dist;
+                closest = p;
               }
-              if (closest?.taken_at) onLocationClick(closest.taken_at);
-            });
-          }
+            }
+            if (closest?.taken_at) onLocationClick(closest.taken_at);
+          });
         }
-
-        // Start / end DOM markers use opposite sheet/ink fills. The square current-photo marker is
-        // created by the $effect.
-        const pts = geoPoints();
-        if (pts.length > 0) {
-          const startEl = document.createElement("div");
-          startEl.style.cssText =
-            "width:16px;height:16px;background:var(--ink);border:1px solid var(--sheet);border-radius:50%;";
-          new maplibre.Marker({ element: startEl })
-            .setLngLat([pts[0].lng, pts[0].lat])
-            .addTo(map);
-
-          const last = pts[pts.length - 1];
-          const distance = Math.sqrt(
-            Math.pow(last.lng - pts[0].lng, 2) +
-              Math.pow(last.lat - pts[0].lat, 2),
-          );
-          if (distance > 0.01) {
-            const endEl = document.createElement("div");
-            endEl.style.cssText =
-              "width:14px;height:14px;background:var(--sheet);border:1px solid var(--ink);border-radius:50%;";
-            new maplibre.Marker({ element: endEl })
-              .setLngLat([last.lng, last.lat])
-              .addTo(map);
-          }
-        }
-
         mapReady = true;
         applyScheme();
       });
 
       cleanup = () => {
         photoMarker?.remove();
+        startMarker?.remove();
+        endMarker?.remove();
         photoMarker = null;
+        startMarker = null;
+        endMarker = null;
         map?.remove();
         map = null;
         mapReady = false;
+        painted = false;
+        routeInitialized = false;
       };
     })();
 

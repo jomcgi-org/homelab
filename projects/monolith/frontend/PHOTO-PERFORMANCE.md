@@ -10,6 +10,11 @@ at low priority. A changed selection cancels the pending optional image and
 warms the new neighbourhood. Save-Data disables this optional work. Every
 photo remains available through the existing scrubber and fullscreen view.
 
+Day navigation reuses the loaded map and replaces its route source and start
+and end markers. A changed day or route geometry resets photo readiness until
+the replacement source has loaded and rendered. Scrubbing within that day
+keeps readiness, so selecting a photo does not wait for another route load.
+
 The first cover on the trips index is eager and high priority. Later covers
 remain lazy. Image URLs, dimensions and payloads are unchanged.
 
@@ -31,7 +36,10 @@ exclude map assets and do not measure browser wire traffic or LCP.
 The original schedule was measured at
 `1f536d94934ccfef73aa3a2129f00be60f8a44ca`. The changed schedule is asserted by
 `pages.dom.test.js`, including both readiness orders, source loading, serial
-requests, navigation cancellation, unmount, decode failure and Save-Data.
+requests, direct day navigation, geometry refresh, navigation cancellation,
+unmount, decode failure and Save-Data. The direct-navigation and geometry
+regressions both fail against the one-shot readiness implementation and pass
+with route readiness reset on each source replacement.
 
 The public production snapshot had 288 photos on day one of
 `2025-liard-hot-springs` and 4,838 photos across the trip. One sampled day-one

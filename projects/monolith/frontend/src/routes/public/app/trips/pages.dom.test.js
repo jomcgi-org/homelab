@@ -4,7 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { fromStore, writable } from "svelte/store";
 import Route from "../../../../../test/TripsRoute.svelte";
 import { tripsData } from "../../../../../test/trips-fixtures.js";
-import { maps } from "../../../../../test/trips-map-stub.js";
+import { maps, markers } from "../../../../../test/trips-map-stub.js";
 import { setPage } from "../../../../../test/profile-page.svelte.js";
 vi.mock(
   "$app/state",
@@ -26,6 +26,7 @@ const textButton = (text) =>
   );
 beforeEach(() => {
   maps.length = 0;
+  markers.length = 0;
   window.happyDOM.settings.disableCSSFileLoading = true;
   window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
 });
@@ -64,10 +65,9 @@ async function render(surface, data = tripsData(), query = "") {
     if (surface === "trip" || surface === "day" || query.includes("view=map"))
       expect(maps).toHaveLength(1);
   });
-  maps.forEach((map) => {
-    map.fire("load");
-    map.fire("render");
-  });
+  maps.forEach((map) => map.fire("load"));
+  await settle();
+  maps.forEach((map) => map.fire("render"));
   await settle();
 }
 
@@ -176,6 +176,90 @@ describe("trips composed sheets", () => {
       "/app/trips/fixture-walk",
     );
   });
+  it("updates the existing map route when the selected day changes", async () => {
+    const data = tripsData();
+    await render("day", data);
+    const map = maps[0];
+    const coordinates = (points) =>
+      points.map((point) => [point.lng, point.lat]);
+    expect(map.sources.route.data.geometry.coordinates).toEqual(
+      coordinates(data.points.slice(0, 3)),
+    );
+    const source = map.sources.route;
+    const layers = map.layers.map((layer) => layer.id);
+    const start = markers.find(
+      (marker) => marker.element.style.width === "16px",
+    );
+    const end = markers.find((marker) => marker.element.style.width === "14px");
+    const photoMarker = markers.find(
+      (marker) => marker.element.style.width === "24px",
+    );
+    const firstPhotoColor = photoMarker.getElement().style.background;
+    dataStore.set({ ...data, dayNumber: 2 });
+    await settle();
+    expect(maps).toHaveLength(1);
+    expect(map.remove).not.toHaveBeenCalled();
+    expect(map.sources.route.data.geometry.coordinates).toEqual(
+      coordinates(data.points.slice(3)),
+    );
+    expect(map.sources.route).toBe(source);
+    expect(map.layers.map((layer) => layer.id)).toEqual(layers);
+    expect(start.coords).toEqual(coordinates(data.points.slice(3))[0]);
+    expect(end.coords).toEqual(coordinates(data.points.slice(3)).at(-1));
+    expect(map.setPaintProperty).toHaveBeenCalledWith(
+      "route-color-accent",
+      "line-color",
+      "#059669",
+    );
+    expect(button("View photo 1 fullscreen")).not.toBeNull();
+    expect(photoMarker.getElement().style.background).not.toBe(firstPhotoColor);
+    const expectedColor = document.createElement("div");
+    expectedColor.style.background = "#059669";
+    expect(photoMarker.getElement().style.background).toBe(
+      expectedColor.style.background,
+    );
+    const routeUpdates = source.setData.mock.calls.length;
+    map.fire("click", "route-hit-area", {
+      lngLat: { lng: data.points[5].lng, lat: data.points[5].lat },
+    });
+    await settle();
+    expect(button("Next photo").disabled).toBe(true);
+    expect(source.setData).toHaveBeenCalledTimes(routeUpdates);
+    dataStore.set({ ...data, dayNumber: 1 });
+    await settle();
+    expect(map.sources.route.data.geometry.coordinates).toEqual(
+      coordinates(data.points.slice(0, 3)),
+    );
+    expect(button("View photo 1 fullscreen")).not.toBeNull();
+    expect(photoMarker.getElement().style.background).toBe(firstPhotoColor);
+    await unmount(instance);
+    instance = null;
+    expect(start.remove).toHaveBeenCalledOnce();
+    expect(end.remove).toHaveBeenCalledOnce();
+  });
+
+  it("updates a one-point day after a refreshed route arrives", async () => {
+    const data = tripsData();
+    await render("day", { ...data, points: [data.points[0]] });
+    const map = maps[0];
+    expect(map.sources.route.data).toEqual({
+      type: "FeatureCollection",
+      features: [],
+    });
+    dataStore.set(data);
+    await settle();
+    expect(map.sources.route.data.geometry.coordinates).toEqual(
+      data.points.slice(0, 3).map((point) => [point.lng, point.lat]),
+    );
+    dataStore.set({ ...data, points: [data.points[0]] });
+    await settle();
+    expect(map.sources.route.data).toEqual({
+      type: "FeatureCollection",
+      features: [],
+    });
+    expect(maps).toHaveLength(1);
+  });
+
   it("keeps timeline URL parameters, filtering and the real view control", async () => {
     await render("timeline", tripsData(), "?view=map&keep=1");
     expect(textButton("Map").getAttribute("aria-pressed")).toBe("true");
@@ -335,6 +419,7 @@ describe("trip image loading", () => {
         "/fixture-display-0.jpg",
       ]);
       map.fire("load");
+      await settle();
       map.isSourceLoaded = vi.fn(() => false);
       map.fire("render");
       if (first === "photo") requested[0].decoded();
@@ -371,6 +456,7 @@ describe("trip image loading", () => {
     const requested = photoRequests();
     const map = await mountDay(galleryData());
     map.fire("load");
+    await settle();
     map.fire("render");
     requested[0].decoded();
     await settle();
@@ -397,6 +483,85 @@ describe("trip image loading", () => {
     pending.onload();
     await settle();
     expect(requested).toHaveLength(count);
+  });
+
+  it("waits for the new day route to paint when navigation reuses the map", async () => {
+    const requested = photoRequests();
+    const data = tripsData();
+    await render("day", data);
+    const map = maps[0];
+    requested[0].decoded();
+    await settle();
+    const oldNeighbour = requested.at(-1);
+    expect(oldNeighbour.fetchPriority).toBe("low");
+    map.isSourceLoaded = vi.fn(() => false);
+
+    dataStore.set({ ...data, dayNumber: 2 });
+    await settle();
+    expect(maps).toHaveLength(1);
+    expect(map.remove).not.toHaveBeenCalled();
+    expect(oldNeighbour.cancelled).toBe(true);
+    const visible = requested.at(-1);
+    expect(visible.src).toBe(data.points[3].imgDisplay);
+    visible.decoded();
+    await settle();
+    const beforePaint = requested.length;
+    expect(
+      requested.filter((image) => image.fetchPriority === "low"),
+    ).toHaveLength(1);
+    map.fire("render");
+    await settle();
+    expect(requested).toHaveLength(beforePaint);
+
+    map.isSourceLoaded.mockReturnValue(true);
+    map.fire("render");
+    await settle();
+    expect(requested).toHaveLength(beforePaint + 1);
+    expect(requested.at(-1).src).toBe(data.points[4].imgDisplay);
+    expect(requested.at(-1).fetchPriority).toBe("low");
+
+    // Scrubbing within the painted day does not wait for another map frame.
+    const routeUpdates = map.sources.route.setData.mock.calls.length;
+    map.isSourceLoaded.mockReturnValue(false);
+    button("Next photo").click();
+    await settle();
+    const nextVisible = requested.at(-1);
+    expect(nextVisible.src).toBe(data.points[4].imgDisplay);
+    nextVisible.decoded();
+    await settle();
+    expect(requested.at(-1).src).toBe(data.points[5].imgDisplay);
+    expect(requested.at(-1).fetchPriority).toBe("low");
+    expect(map.sources.route.setData).toHaveBeenCalledTimes(routeUpdates);
+  });
+
+  it("pauses neighbours for changed route geometry until the replacement source paints", async () => {
+    const requested = photoRequests();
+    const data = tripsData();
+    await render("day", data);
+    const map = maps[0];
+    requested[0].decoded();
+    await settle();
+    const oldNeighbour = requested.at(-1);
+    map.isSourceLoaded = vi.fn(() => false);
+    dataStore.set({
+      ...data,
+      points: data.points.map((point) => ({ ...point, lat: point.lat + 1 })),
+    });
+    await settle();
+    expect(oldNeighbour.cancelled).toBe(true);
+    const beforePaint = requested.length;
+    expect(
+      requested.filter((image) => image.fetchPriority === "low"),
+    ).toHaveLength(1);
+    map.fire("render");
+    await settle();
+    expect(requested).toHaveLength(beforePaint);
+    map.isSourceLoaded.mockReturnValue(true);
+    map.fire("render");
+    await settle();
+    expect(requested).toHaveLength(beforePaint + 1);
+    expect(requested.at(-1).src).toBe(data.points[1].imgDisplay);
+    expect(maps).toHaveLength(1);
   });
 
   it("waits for a new map after visiting a missing day", async () => {
@@ -441,6 +606,7 @@ describe("trip image loading", () => {
       try {
         const map = await mountDay(galleryData());
         map.fire("load");
+        await settle();
         map.fire("render");
         if (condition === "save-data") requested[0].decoded();
         else requested[0].failed(new Error("image unavailable"));
