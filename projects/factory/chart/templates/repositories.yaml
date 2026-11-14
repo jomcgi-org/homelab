@@ -83,7 +83,7 @@ spec:
   template:
     serviceAccountName: {{ $worker }}
     resources:
-      {{- toYaml $a.resources | nindent 6 }}
+      {{- toYaml $a.worker.resources | nindent 6 }}
 ---
 # The broker's Codex relay. kagent binds the origin's Authorization header
 # (prefix "Bearer ") to an actor JWT for audience factory-broker; Codex holds

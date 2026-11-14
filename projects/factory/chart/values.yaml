@@ -44,7 +44,7 @@ kagent:
   config:
     # Every agent runtime's CPU and memory limits. kagent 1.0.1 sets these for
     # all Agents at once, so templates/validate.yaml requires each agent's
-    # `resources.limits` to match them.
+    # `resources` to match them.
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
@@ -220,15 +220,22 @@ agents:
     harness: codex
     provider: broker
     model: gpt-6.1-terra
-    # The worker pod's resources. Its limits are also the actor's, which
-    # kagent takes from kagent.config.runtimeDefaults (they must match).
+    # The actor's CPU and memory limits. kagent 1.0.1 takes every runtime's
+    # from kagent.config.runtimeDefaults, so these must equal them.
     resources:
-      requests:
-        cpu: "1"
-        memory: 2Gi
-      limits:
-        cpu: "4"
-        memory: 8Gi
+      cpu: "4"
+      memory: 8Gi
+    # The Substrate worker pod hosting the actor. Its limits are the worker's
+    # capacity, which must hold the actor's limits plus the worker's own 64Mi
+    # reserve and gVisor's sentry: hence 1Gi more memory than the actor.
+    worker:
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "4"
+          memory: 9Gi
     # Actors running at once: one Substrate worker each.
     concurrency: 1
     # Egress grants (EgressPolicies rendered in the binding's namespace).
