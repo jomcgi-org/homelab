@@ -33,6 +33,9 @@ export class Map {
   getLayer(id) {
     return this.layers.find((layer) => layer.id === id);
   }
+  isSourceLoaded() {
+    return true;
+  }
   addSource(id, source) {
     this.sources[id] = source;
   }

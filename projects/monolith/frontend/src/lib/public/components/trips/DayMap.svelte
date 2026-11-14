@@ -30,6 +30,7 @@
     currentCoords = null,
     sunPosition = null,
     onLocationClick,
+    onReady = () => {},
   } = $props();
 
   const BASEMAP_STYLE =
@@ -194,6 +195,7 @@
   });
 
   onMount(() => {
+    onReady(false);
     let destroyed = false;
     let cleanup = () => {};
     const unwatch = watchMapScheme(applyScheme);
@@ -216,6 +218,15 @@
         new maplibre.NavigationControl({ showCompass: false }),
         "top-right",
       );
+
+      let painted = false;
+      let hasRoute = false;
+      map.on("render", () => {
+        if (painted || !mapReady || (hasRoute && !map.isSourceLoaded("route")))
+          return;
+        painted = true;
+        onReady(true);
+      });
 
       map.on("load", () => {
         // Terrain hillshade, lit from the photo-time sun, under the basemap.
@@ -261,6 +272,7 @@
               geometry: { type: "LineString", coordinates },
             },
           });
+          hasRoute = true;
           // Ink casing separates the route from the basemap in either scheme.
           map.addLayer({
             id: "route-line",
@@ -366,6 +378,7 @@
       destroyed = true;
       unwatch();
       cleanup();
+      onReady(false);
     };
   });
 </script>

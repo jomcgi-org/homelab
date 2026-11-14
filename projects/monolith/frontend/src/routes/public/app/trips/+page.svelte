@@ -23,7 +23,7 @@
 
   {#if trips.length}
     <ul class="grid">
-      {#each trips as trip (trip.slug)}
+      {#each trips as trip, i (trip.slug)}
         <li>
           <a class="card edition" href={`/app/trips/${trip.slug}`}>
             <div class="thumb">
@@ -31,7 +31,8 @@
                 <img
                   src={trip.coverUrl}
                   alt={trip.title}
-                  loading="lazy"
+                  loading={i === 0 ? "eager" : "lazy"}
+                  fetchpriority={i === 0 ? "high" : "auto"}
                   decoding="async"
                 />
               {:else}
