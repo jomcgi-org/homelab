@@ -201,7 +201,7 @@ def test_tokens_are_bound_to_kagent_and_the_broker() -> None:
         return out
 
     # Without the GitHub App the broker mints nothing, so delivery is off.
-    docs = _render()
+    docs = _render(["broker.githubApp.enabled=false"])
     assert audiences(docs) == {"kagent-token": "kagent-invocation"}
     assert "FACTORY_CONNECTOR_BROKER_URL" not in _env(docs)
     docs = _render(["broker.githubApp.enabled=true"])
@@ -329,7 +329,7 @@ def test_policy_egress_only_to_its_peers() -> None:
     def policy(docs: list[dict[str, Any]]) -> dict[str, Any]:
         return _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")["spec"]
 
-    docs = _render()
+    docs = _render(["broker.githubApp.enabled=false"])
     spec = policy(docs)
     assert (
         spec["endpointSelector"]["matchLabels"].items()
