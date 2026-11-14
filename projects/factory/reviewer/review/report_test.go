@@ -348,6 +348,27 @@ func TestMarkersAreStrippedToAFixpoint(t *testing.T) {
 	}
 }
 
+// TestMarkersCannotFormFromWhitespaceOrPaths writes markers with a tab or
+// a newline inside, which collapsing whitespace turns into the real one,
+// and markers in a finding's path.
+func TestMarkersCannotFormFromWhitespaceOrPaths(t *testing.T) {
+	tab := "<!--\tfactory-review:enqueued -->"
+	if got := oneLine(tab, maxTitle); strings.Contains(got, markerStart) {
+		t.Fatalf("oneLine(%q) = %q", tab, got)
+	}
+	r := &Report{Summary: "s", Findings: []Finding{{
+		ID: "a.go:x", Severity: SeverityMedium, Path: "<!-- factory-review:human-gate-only -->a.go", Title: tab,
+		Detail: "<!--\n\tfactory-review:state v1 e30= -->",
+	}}}
+	o := Render(Assess(r, nil), r, nil, "footer")
+	if strings.Contains(o.Output.Summary, markerStart) {
+		t.Fatalf("summary holds a marker:\n%s", o.Output.Summary)
+	}
+	if got := cleanPath("a/<!-- factory-review:b.go"); got != "a/b.go" {
+		t.Fatalf("cleanPath = %q", got)
+	}
+}
+
 func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	huge := strings.Repeat("<\"\x01é", 20000)
 	var st State
@@ -394,5 +415,39 @@ func TestGateFindingsAreSetApartBeforeTheLowCap(t *testing.T) {
 	a := Assess(r, nil)
 	if len(a.Gated) != 2 || a.DroppedLow != 2 || len(a.Blocking) != 0 {
 		t.Fatalf("gated %d, dropped %d, blocking %d", len(a.Gated), a.DroppedLow, len(a.Blocking))
+	}
+}
+
+// TestAssessKeepsPreviousGateFindings carries the agent's human-gate
+// findings from the previous head: each one not fixed or withdrawn is a
+// gate finding of this head, whether left out, open or justified.
+func TestAssessKeepsPreviousGateFindings(t *testing.T) {
+	prior := []Finding{
+		finding("AGENTS.md:human-gate", SeverityHigh),
+		finding("a:human-gate#fixed", SeverityHigh),
+		finding("b:human-gate#withdrawn", SeverityHigh),
+		finding("c:human-gate#justified", SeverityMedium),
+		finding("d:human-gate#again", SeverityHigh),
+	}
+	r := &Report{Findings: []Finding{finding("d:human-gate#again", SeverityHigh)}, Previous: []Previous{
+		{ID: "a:human-gate#fixed", Status: StatusFixed},
+		{ID: "b:human-gate#withdrawn", Status: StatusJustified, Note: "withdrawn: the PR does not touch it"},
+		{ID: "c:human-gate#justified", Status: StatusJustified, Note: "Joe asked for it"},
+	}}
+	a := Assess(r, prior)
+	var gated []string
+	for _, f := range a.Gated {
+		gated = append(gated, f.ID)
+	}
+	if want := "d:human-gate#again,AGENTS.md:human-gate,c:human-gate#justified"; strings.Join(gated, ",") != want {
+		t.Fatalf("gated = %v, want %s", gated, want)
+	}
+	if len(a.Fixed) != 1 || a.Fixed[0].ID != "a:human-gate#fixed" || len(a.Withdrawn) != 1 || a.Withdrawn[0].ID != "b:human-gate#withdrawn" ||
+		len(a.Blocking) != 0 || len(a.Accepted) != 0 {
+		t.Fatalf("assessment = %+v", a)
+	}
+	st := State{Blocking: []Finding{finding("x.go:correctness", SeverityHigh)}, Gate: &Gate{Paths: []string{"REVIEW.md"}, Findings: prior[:1]}}
+	if got := st.Previous(); len(got) != 2 || got[0].ID != "x.go:correctness" || got[1].ID != "AGENTS.md:human-gate" {
+		t.Fatalf("previous = %+v", got)
 	}
 }

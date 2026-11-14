@@ -255,7 +255,9 @@ const MaxLow = 5
 // justified with any note. Anything else (open, unaccounted for, a justified
 // critical or high, a justification without a note) still blocks. A previous
 // finding reported again keeps the higher of its two severities unless it
-// is marked fixed or withdrawn.
+// is marked fixed or withdrawn. A previous human-gate finding that is not
+// fixed or withdrawn is a human-gate finding of this head too: only a
+// person's approval of this head clears it.
 func Assess(r *Report, prior []Finding) Assessment {
 	var a Assessment
 	status := map[string]Previous{}
@@ -287,6 +289,7 @@ func Assess(r *Report, prior []Finding) Assessment {
 	low := 0
 	for _, f := range r.Findings {
 		if isGate(f) {
+			current[f.ID] = true
 			a.Gated = append(a.Gated, f)
 			continue
 		}
@@ -317,6 +320,19 @@ func Assess(r *Report, prior []Finding) Assessment {
 	for _, p := range prior {
 		s, ok := status[p.ID]
 		note := strings.TrimSpace(s.Note)
+		if isGate(p) {
+			switch {
+			case current[p.ID]:
+				// Reported again and set apart above.
+			case ok && s.Status == StatusFixed:
+				a.Fixed = append(a.Fixed, p)
+			case ok && s.Status == StatusJustified && withdrawn(note):
+				a.Withdrawn = append(a.Withdrawn, Blocked{Finding: p, Carried: true, Note: note})
+			default:
+				a.Gated = append(a.Gated, p)
+			}
+			continue
+		}
 		if current[p.ID] {
 			// Reported again and judged above; a withdrawal is still recorded.
 			if ok && s.Status == StatusJustified && withdrawn(note) {
@@ -407,6 +423,17 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*)
 type State struct {
 	Blocking []Finding `json:"blocking"`
 	Gate     *Gate     `json:"gate,omitempty"`
+}
+
+// Previous is what the next head's review accounts for: the blocking
+// findings and the agent's human-gate findings. The service's own gate, by
+// path or label, is found again on every head.
+func (st State) Previous() []Finding {
+	out := append([]Finding(nil), st.Blocking...)
+	if st.Gate != nil {
+		out = append(out, st.Gate.Findings...)
+	}
+	return out
 }
 
 // Render writes an assessment as the check run's output. The summary lists
@@ -696,9 +723,9 @@ func quotePath(p string) string {
 }
 
 // cleanPath is a repository-relative path fit for an annotation or a code
-// span, or empty when p cannot be one.
+// span, without service markers, or empty when p cannot be one.
 func cleanPath(p string) string {
-	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
+	p = strings.TrimPrefix(strings.TrimSpace(untrusted(p)), "./")
 	p = strings.TrimLeft(p, "/")
 	if p == "" || len(p) > 1024 || strings.ContainsAny(p, "\n\r\t`") {
 		return ""
@@ -720,8 +747,10 @@ func untrusted(s string) string {
 	return s
 }
 
+// oneLine collapses s to one line of single spaces, then strips service
+// markers, so whitespace inside a marker cannot hide it.
 func oneLine(s string, n int) string {
-	return clip(strings.Join(strings.Fields(untrusted(s)), " "), n)
+	return clip(untrusted(strings.Join(strings.Fields(s), " ")), n)
 }
 
 // ReplyText is the agent's final answer: the task's status message, else

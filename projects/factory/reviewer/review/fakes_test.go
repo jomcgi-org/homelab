@@ -49,6 +49,7 @@ type fakePR struct {
 	Comments []github.Comment
 	// TimelineTruncated reports older timeline events than GitHub lists.
 	TimelineTruncated bool
+	Closed            bool
 }
 
 type fakeCheck struct {
@@ -96,6 +97,9 @@ type fakeGitHub struct {
 	fail    map[string]int
 	failGQL map[string]bool
 	nextID  int64
+	// closeAfterPage closes PR [1] once the open PR listing's page [0] is
+	// served, as a PR that closes between two page reads would.
+	closeAfterPage [2]int
 }
 
 func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
@@ -276,7 +280,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/pulls":
 		out := []map[string]any{}
 		for _, pr := range f.sortedPRs() {
-			if q.Get("state") != "open" || pr.Base != q.Get("base") {
+			if q.Get("state") != "open" || pr.Closed || pr.Base != q.Get("base") {
 				continue
 			}
 			labels := []map[string]string{}
@@ -292,7 +296,11 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"base":       map[string]string{"ref": pr.Base},
 			})
 		}
-		f.get(w, r, page(out, q))
+		served := page(out, q)
+		if c := f.closeAfterPage; c[1] != 0 && first(q["page"]) == strconv.Itoa(c[0]) {
+			f.prs[c[1]].Closed, f.closeAfterPage = true, [2]int{}
+		}
+		f.get(w, r, served)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/commits/") && strings.HasSuffix(path, "/check-runs"):
 		sha := strings.TrimSuffix(strings.TrimPrefix(path, "/commits/"), "/check-runs")
 		latest := map[string]*fakeCheck{}
