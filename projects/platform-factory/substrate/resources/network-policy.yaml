@@ -285,13 +285,20 @@ spec:
   egress:
     - toEntities: [kube-apiserver]
 ---
-# Worker pods, in whichever namespace their WorkerPool lives: actor traffic
-# leaves only through the egress gateway. atelet reaches its workers over a
-# unix socket on the node, not the network. The selector is any pod with the
-# ate.dev/worker-pool label in any namespace, which is acceptable while only
-# admins can create pods; revisit before actors get internet egress or agents
-# get cluster credentials. Workers probe a cloud metadata server
-# (169.254.169.254:80) at start; Hubble shows that drop, and it stays denied.
+# Worker pods: actor traffic leaves only through the egress gateway, which
+# admits only attested actors and allows each actor only its own egress
+# policy (the kagent model and control plane, the factory broker's relay,
+# and github.com for factory repository bindings). atelet reaches its workers
+# over a unix socket on the node, not the network. The policy selects
+# ate.dev/worker-pool pods only in namespaces labelled
+# factory.jomcgi.dev/substrate-workers=true, which the factory chart sets on
+# each binding namespace, so a pod that labels itself elsewhere gets no path
+# to the gateway. Residual risk: upstream's atenet-egress NetworkPolicy still
+# admits worker-pool pods from any namespace, and anyone who can label a
+# namespace or create pods in a labelled one can reach the gateway, though
+# not as an actor; today only admins and ArgoCD can. Workers probe a cloud
+# metadata server (169.254.169.254:80) at start; Hubble shows that drop, and
+# it stays denied.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:
@@ -302,6 +309,9 @@ spec:
     matchExpressions:
       - key: ate.dev/worker-pool
         operator: Exists
+      - key: k8s:io.cilium.k8s.namespace.labels.factory.jomcgi.dev/substrate-workers
+        operator: In
+        values: ["true"]
   egress:
     # The atenet-egress Service's port 443, which agentgateway serves on 8443.
     - toEndpoints:
