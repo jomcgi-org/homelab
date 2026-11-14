@@ -16,6 +16,8 @@ const headers = {
   "Referrer-Policy": "no-referrer",
   "Cache-Control": "no-store",
   "Cloudflare-CDN-Cache-Control": "no-store",
+  // The web app imports a built Astryx theme as external CSS; csp.test.tsx
+  // guards against introducing runtime style injection.
   "Content-Security-Policy":
     "default-src 'none'; script-src 'self'; style-src 'self'; " +
     "img-src 'self' data:; font-src 'self'; connect-src 'none'; " +
