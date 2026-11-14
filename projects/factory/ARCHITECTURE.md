@@ -340,17 +340,20 @@ the branch after the merge is not delivered, and the issue says follow-up
 work needs a new issue. A run result means
 the turn finished; the issue becomes Done only from the observed merge. Engineering retries are
 connector decisions bounded per work item; the retry and the attempt it
-sends commit together. Credential and quota failures block with the reason
-instead of retrying. The class comes from whole identifiers in the status
+sends commit together. Credential and quota failures finish the external attempt with persisted
+failure evidence and keep the run waiting until an operator unblocks its grant. The class comes from whole identifiers in the status
 text (`codex_login_required`, `unauthorized`, `usage_limit_reached`, an HTTP
 401 or 429 status). A block covers every work item on the same kagent
 Agent, the scope of its grant, and is announced once on the issue that hit
 it. Only an operator clears it, with `connector unblock
 kagent:<namespace>/<agent>` after fixing the grant: itsaplan v1.10.0 runs
-carry no requester identity, and a mention can come from an agent. Runs
-claimed meanwhile wait without holding a concurrency slot, since a failed
-itsaplan run is never retried; after the unblock they resume within the
-agent key's concurrency. The reported
+carry no requester identity, and a mention can come from an agent. Failed runs and runs claimed meanwhile wait without holding a concurrency
+slot, keeping their itsaplan leases alive. After unblock, failed runs consume
+an engineering retry and send a fresh deterministic retry message in the same
+session within the agent key's concurrency. Polling while blocked spends no
+retries. An exhausted run reports the existing engineering-retries-exhausted
+failure only after unblock. Running or ambiguous tasks keep their existing
+reconciliation path. The reported
 usage is the last model call's, read from `kagent.dev/a2a/usage`.
 
 **Review.** Poll owned PRs every 60 s (no public webhook): GraphQL for the

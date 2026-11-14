@@ -839,7 +839,24 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	if err != nil || busy >= e.concurrency(r.AgentKey) {
 		return err
 	}
+	a, err := e.st.LatestAttempt(ctx, r.ID)
+	if err != nil {
+		return err
+	}
+	if grantFailure(a) {
+		if a.WorkItemEpoch != wi.Epoch {
+			return e.failRun(ctx, e.st.DB, r, "superseded: the work item was reassigned to another agent")
+		}
+		return e.engineeringFailure(ctx, r, wi, a, a.Error)
+	}
 	return e.sendNext(ctx, r, wi, b, 0)
+}
+
+// grantFailure is durable evidence that a terminal external task needs a
+// fresh engineering retry once its grant is explicitly unblocked.
+func grantFailure(a *store.Attempt) bool {
+	return a != nil && a.State == store.AttemptFailed &&
+		(a.ErrorClass == ClassCredential || a.ErrorClass == ClassQuota)
 }
 
 func (e *Engine) concurrency(agent string) int {
@@ -1258,6 +1275,14 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		}
 	case store.AttemptAccepted:
 	default:
+		// A stale waiting run resumes as dispatched on transport redelivery.
+		// Its finished grant failure still requires waiting admission.
+		if grantFailure(a) {
+			if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
+				return err
+			}
+			return e.resumeWaiting(ctx, r)
+		}
 		return nil
 	}
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
@@ -1356,7 +1381,6 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	switch class {
 	case ClassCredential, ClassQuota:
 		e.m.Blocked.WithLabelValues(class).Inc()
-		reason := fmt.Sprintf("blocked (%s): %s", class, msg)
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, class, msg); err != nil {
 				return err
@@ -1366,7 +1390,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 				return err
 			}
 			if !started {
-				return e.reportBlocked(ctx, tx, r, t, reason)
+				return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
 			}
 			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/blocked/%d/%d", r.ID, a.Seq), r.ID, "",
 				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
@@ -1377,7 +1401,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 					store.GrantScope(wi.KagentNamespace, wi.KagentAgent), clip(msg, maxErrorText))}); err != nil {
 				return err
 			}
-			return e.reportBlocked(ctx, tx, r, t, reason)
+			return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
 		})
 	case ClassCanceled:
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
@@ -1388,11 +1412,6 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 		})
 	}
 	return e.engineeringFailure(ctx, r, wi, a, msg)
-}
-
-// reportBlocked queues the failed result of the turn that hit a block.
-func (e *Engine) reportBlocked(ctx context.Context, tx *sql.Tx, r *store.Run, t *kagent.Task, reason string) error {
-	return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip(reason, maxErrorText), Output: Output(t)})
 }
 
 // engineeringFailure retries in the same session within the work item's
@@ -1406,8 +1425,12 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 	}
 	var next *store.Attempt
 	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, ClassEngineering, msg); err != nil {
-			return err
+		// A grant failure was already finished while blocked. Preserve its
+		// class and evidence when taking the deferred retry after unblock.
+		if a.Open() {
+			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, ClassEngineering, msg); err != nil {
+				return err
+			}
 		}
 		n, ok, err := e.st.TakeEngineeringRetry(ctx, tx, wi.ID, budget)
 		if err != nil {

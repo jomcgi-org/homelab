@@ -579,8 +579,12 @@ func TestCredentialAndQuotaFailuresBlock(t *testing.T) {
 				t.Fatalf("work item = %+v", w)
 			}
 			res := v.its.Run(1).results
-			if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "blocked ("+tc.class+")") {
-				t.Fatalf("results = %+v", res)
+			if len(res) != 0 || v.run(1).State != store.RunWaiting {
+				t.Fatalf("results = %+v, state = %s, want waiting without a result", res, v.run(1).State)
+			}
+			a, err := v.st.LatestAttempt(v.ctx, 1)
+			if err != nil || a.State != store.AttemptFailed || a.ErrorClass != tc.class || a.Error != tc.msg {
+				t.Fatalf("failure evidence = %+v, %v", a, err)
 			}
 			cs := v.its.Comments()
 			if len(cs) != 1 || cs[0].issueID != 101 {
@@ -955,7 +959,7 @@ func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 	v.setTrigger(3, "delegation")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
-	for _, id := range []int64{2, 3} {
+	for _, id := range []int64{1, 2, 3} {
 		if r := v.run(id); r.State != store.RunWaiting {
 			t.Fatalf("run %d = %s, want waiting", id, r.State)
 		}
@@ -987,7 +991,225 @@ func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 3 {
-		t.Fatalf("sends = %d, want the last waiting run sent", n)
+		t.Fatalf("sends = %d, want the next waiting run sent", n)
+	}
+}
+
+// The first failure blocks admission, but already dispatched siblings retain
+// their own external outcome. Only a definitive grant failure waits to retry.
+func TestInflightGrantFailuresRecoverAfterUnblock(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "First.")
+	v.its.add(2, "coder", 102, "HL-2", "Second.")
+	v.tick(v.e)
+	first, err := v.st.LatestAttempt(v.ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := v.st.LatestAttempt(v.ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.kg.finish(first.TaskID, kagent.StateFailed, "codex_login_required", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if a, _ := v.st.LatestAttempt(v.ctx, 2); a.State != store.AttemptAccepted || len(v.kg.Sends()) != 2 {
+		t.Fatalf("running sibling changed: %+v, sends=%d", a, len(v.kg.Sends()))
+	}
+	v.kg.finish(second.TaskID, kagent.StateFailed, "status 429", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+
+	// Restart while blocked and poll for longer than an itsaplan lease.
+	v.e.Release()
+	v.cfg.Agents[0].Concurrency = 1
+	v.e = v.engine("connector-restarted")
+	for i := 0; i < 6; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	for _, id := range []int64{1, 2} {
+		fr := v.its.Run(id)
+		if v.run(id).State != store.RunWaiting || len(fr.results) != 0 || fr.beats < 6 || fr.attempts != 1 {
+			t.Fatalf("run %d = %+v, state=%s", id, fr, v.run(id).State)
+		}
+		if w := v.work(100 + id); w.EngineeringRetries != 0 {
+			t.Fatalf("spent retries while blocked: %+v", w)
+		}
+	}
+	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 0 {
+		t.Fatalf("active runs = %d, %v", n, err)
+	}
+	if len(v.kg.Sends()) != 2 || len(v.its.Comments()) != 1 {
+		t.Fatal("block resent or announced twice")
+	}
+
+	// Stale fencing and a transport redelivery must retain the retry decision.
+	v.its.reclaimElsewhere(1)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if v.run(1).State != store.RunStale {
+		t.Fatalf("state = %s", v.run(1).State)
+	}
+	fr := v.its.Run(1)
+	redelivery := fr.run
+	redelivery.Attempts = fr.attempts
+	if err := v.e.HandleClaim(v.ctx, "coder", &redelivery); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.e.HandleClaim(v.ctx, "coder", &redelivery); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.kg.Sends()) != 2 || v.run(1).State != store.RunWaiting {
+		t.Fatal("redelivery escaped the block")
+	}
+
+	if ok, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || !ok {
+		t.Fatalf("unblock = %v, %v", ok, err)
+	}
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 3 || v.run(2).State != store.RunWaiting {
+		t.Fatal("unblock exceeded concurrency")
+	}
+	if s := v.kg.Sends()[2]; s.msg.MessageID != "itsaplan-run/1/retry-1" || s.msg.ContextID != first.ContextID {
+		t.Fatalf("retry = %+v", s)
+	}
+	// Restart after the retry is recorded, then redeliver it again.
+	v.e.Release()
+	v.e = v.engine("connector-restarted-again")
+	if err := v.e.HandleClaim(v.ctx, "coder", &redelivery); err != nil {
+		t.Fatal(err)
+	}
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 3 {
+		t.Fatal("restart duplicated the retry")
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.tick(v.e)
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 4 {
+		t.Fatalf("sends = %d", len(v.kg.Sends()))
+	}
+	if s := v.kg.Sends()[3]; s.msg.MessageID != "itsaplan-run/2/retry-1" || s.msg.ContextID != second.ContextID {
+		t.Fatalf("sibling retry = %+v", s)
+	}
+	for _, id := range []int64{1, 2} {
+		if w := v.work(100 + id); w.EngineeringRetries != 1 {
+			t.Fatalf("retries = %+v", w)
+		}
+	}
+}
+
+func TestGrantBlockPreservesSiblingOutcomesAndOtherGrants(t *testing.T) {
+	v := newEnv(t)
+	other := v.cfg.Bindings[0]
+	other.Name, other.ItsaplanProject, other.KagentAgent = "other", "OTHER", "other"
+	v.cfg.Bindings = append(v.cfg.Bindings, other)
+	v.cfg.Agents[0].Concurrency = 4
+	v.e.Release()
+	v.e = v.engine("connector-other-grant")
+	v.its.add(1, "coder", 101, "HL-1", "Fail.")
+	v.its.add(2, "coder", 102, "HL-2", "Succeed.")
+	v.its.add(3, "coder", 103, "HL-3", "Cancel.")
+	v.its.add(4, "coder", 104, "OTHER-4", "Other grant.")
+	v.tick(v.e)
+	a, _ := v.st.LatestAttempt(v.ctx, 1)
+	v.kg.finish(a.TaskID, kagent.StateFailed, "codex_login_required", nil)
+	v.tick(v.e)
+	a, _ = v.st.LatestAttempt(v.ctx, 2)
+	v.kg.finish(a.TaskID, kagent.StateCompleted, "done", nil)
+	a, _ = v.st.LatestAttempt(v.ctx, 3)
+	v.kg.finish(a.TaskID, kagent.StateCanceled, "canceled", nil)
+	v.tick(v.e)
+	if res := v.its.Run(2).results; len(res) != 1 || res[0].Status != "success" {
+		t.Fatalf("successful sibling = %+v", res)
+	}
+	if res := v.its.Run(3).results; len(res) != 1 || res[0].Error != "kagent canceled the task" {
+		t.Fatalf("canceled sibling = %+v", res)
+	}
+	a, _ = v.st.LatestAttempt(v.ctx, 4)
+	if a.State != store.AttemptAccepted {
+		t.Fatalf("other grant changed = %+v", a)
+	}
+	v.kg.finish(a.TaskID, kagent.StateFailed, "test failed", nil)
+	v.tick(v.e)
+	if s := v.kg.Sends(); len(s) != 5 || s[4].msg.MessageID != "itsaplan-run/4/retry-1" {
+		t.Fatalf("other grant retry = %+v", s)
+	}
+	if blocked, _, err := v.st.GrantBlocked(v.ctx, store.GrantScope(other.KagentNamespace, other.KagentAgent)); err != nil || blocked {
+		t.Fatalf("other grant blocked = %v, %v", blocked, err)
+	}
+}
+
+func TestWaitingGrantFailureCanceledOrReassigned(t *testing.T) {
+	for _, reassigned := range []bool{false, true} {
+		t.Run(map[bool]string{false: "canceled", true: "reassigned"}[reassigned], func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "codex_login_required", nil)
+			v.tick(v.e)
+			if reassigned {
+				v.its.add(2, "coder-b", 101, "HL-1", "Take over.")
+				v.tick(v.e)
+			} else {
+				v.its.cancel(1, true)
+				v.clk.Advance(61 * time.Second)
+				v.tick(v.e)
+			}
+			if _, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil {
+				t.Fatal(err)
+			}
+			v.tick(v.e)
+			v.tick(v.e)
+			if v.run(1).State != store.RunClosed || v.work(101).EngineeringRetries != 0 {
+				t.Fatal("ended run retried after unblock")
+			}
+			if reassigned {
+				if s := v.kg.Sends(); len(s) != 2 || s[1].msg.MessageID != "itsaplan-run/2/revision" {
+					t.Fatalf("reassignment = %+v", s)
+				}
+			} else if len(v.kg.Sends()) != 1 {
+				t.Fatal("canceled run resent")
+			}
+		})
+	}
+}
+
+func TestGrantFailureExhaustionWaitsForUnblock(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	// Spend both retries through normal engineering failures.
+	for i := 0; i < 2; i++ {
+		v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "test failed", nil)
+		v.tick(v.e)
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "codex_login_required", nil)
+	v.tick(v.e)
+	v.e.Release()
+	v.e = v.engine("connector-restarted")
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if len(v.its.Run(1).results) != 0 || len(v.kg.Sends()) != 3 || v.run(1).State != store.RunWaiting {
+		t.Fatal("exhausted run did not wait")
+	}
+	if _, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil {
+		t.Fatal(err)
+	}
+	v.tick(v.e)
+	v.tick(v.e)
+	res := v.its.Run(1).results
+	if len(res) != 1 || !strings.Contains(res[0].Error, "engineering retries exhausted (2): codex_login_required") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(v.kg.Sends()) != 3 || v.work(101).EngineeringRetries != 2 {
+		t.Fatal("exhaustion reset or overspent the budget")
+	}
+	a, err := v.st.LatestAttempt(v.ctx, 1)
+	if err != nil || a.ErrorClass != dispatch.ClassCredential || a.Error != "codex_login_required" {
+		t.Fatalf("evidence = %+v, %v", a, err)
 	}
 }
 
@@ -1051,8 +1273,8 @@ func TestOperatorUnblockLetsRunsThrough(t *testing.T) {
 	v.setTrigger(2, "delegation")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
-	if n := len(v.kg.Sends()); n != 2 {
-		t.Fatalf("sends = %d after unblock, want 2", n)
+	if n := len(v.kg.Sends()); n != 3 {
+		t.Fatalf("sends = %d after unblock, want the retry and new run", n)
 	}
 }
 
