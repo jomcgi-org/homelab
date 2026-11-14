@@ -484,25 +484,11 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 	if len(a.Blocking) > 0 {
 		out.WriteString("### Blocking\n\n")
 		listed := 0
-		for _, b := range a.Blocking {
-			var e strings.Builder
-			writeFinding(&e, b.Finding)
-			switch {
-			case b.Carried:
-				fmt.Fprintf(&e, "  From the previous review: %s.", b.Reason)
-			case b.Repeated && b.Reason != "":
-				fmt.Fprintf(&e, "  Raised in the previous review and still present; %s.", b.Reason)
-			case b.Repeated:
-				e.WriteString("  Raised in the previous review and still present.")
-			}
-			if b.Note != "" {
-				fmt.Fprintf(&e, " Note: %s", oneLine(b.Note, maxMessage))
-			}
-			e.WriteString("\n")
-			if out.Len()+e.Len()+maxOmitted > budget {
+		for _, e := range blockingEntries(a.Blocking, budget-out.Len()-maxOmitted) {
+			if out.Len()+len(e)+maxOmitted > budget {
 				break
 			}
-			out.WriteString(e.String())
+			out.WriteString(e)
 			listed++
 		}
 		if n := len(a.Blocking) - listed; n > 0 {
@@ -637,7 +623,54 @@ func storeText(s string, n int) string {
 	return oneLine(s, n)
 }
 
+// blockingEntries renders the blocking findings in full when they all fit in
+// room. Otherwise it renders every one with its detail and note cut to a
+// shared length, down to none, so a revision gets each finding's location
+// and title before any finding is left out.
+func blockingEntries(bs []Blocked, room int) []string {
+	var entries []string
+	for _, limit := range []int{maxMessage, 500, 200, 0} {
+		entries = entries[:0]
+		total := 0
+		for _, b := range bs {
+			e := blockingEntry(b, limit)
+			entries = append(entries, e)
+			total += len(e)
+		}
+		if total <= room {
+			break
+		}
+	}
+	return entries
+}
+
+// blockingEntry renders one blocking finding with its detail and note cut to
+// limit characters (the detail to at most maxDetail); 0 leaves both out.
+func blockingEntry(b Blocked, limit int) string {
+	var e strings.Builder
+	writeFindingN(&e, b.Finding, min(limit, maxDetail))
+	switch {
+	case b.Carried:
+		fmt.Fprintf(&e, "  From the previous review: %s.", b.Reason)
+	case b.Repeated && b.Reason != "":
+		fmt.Fprintf(&e, "  Raised in the previous review and still present; %s.", b.Reason)
+	case b.Repeated:
+		e.WriteString("  Raised in the previous review and still present.")
+	}
+	if b.Note != "" && limit > 0 {
+		fmt.Fprintf(&e, " Note: %s", oneLine(b.Note, min(limit, maxMessage)))
+	}
+	e.WriteString("\n")
+	return e.String()
+}
+
 func writeFinding(s *strings.Builder, f Finding) {
+	writeFindingN(s, f, maxDetail)
+}
+
+// writeFindingN writes a finding as one list line, its detail cut to
+// detail characters; 0 leaves the detail out.
+func writeFindingN(s *strings.Builder, f Finding, detail int) {
 	fmt.Fprintf(s, "- **%s**", f.Severity)
 	if p := cleanPath(f.Path); p != "" {
 		if f.Line > 0 {
@@ -647,8 +680,8 @@ func writeFinding(s *strings.Builder, f Finding) {
 		}
 	}
 	fmt.Fprintf(s, " %s (`%s`)", oneLine(f.Title, maxTitle), oneLine(f.ID, maxTitle))
-	if f.Detail != "" {
-		fmt.Fprintf(s, ": %s", oneLine(f.Detail, maxDetail))
+	if f.Detail != "" && detail > 0 {
+		fmt.Fprintf(s, ": %s", oneLine(f.Detail, detail))
 	}
 	s.WriteString("\n")
 }

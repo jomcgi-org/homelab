@@ -261,11 +261,26 @@ func TestSummaryKeepsHoldMarkerAndFindingsWithinLimit(t *testing.T) {
 		a.Blocking = append(a.Blocking, Blocked{Finding: f, Note: long})
 	}
 	o = Render(a, &Report{}, nil, "footer")
+	if got := strings.Count(o.Output.Summary, "- **high**"); len(o.Output.Summary) > maxSummary || got != 40 ||
+		strings.Contains(o.Output.Summary, "did not fit") || !strings.HasSuffix(o.Output.Summary, "footer") {
+		t.Fatalf("summary of %d characters lists %d of 40 large blocking findings; want all, shortened", len(o.Output.Summary), got)
+	}
+	if !strings.Contains(o.Output.Summary, "`a.go:1` b39 (`b39`)") {
+		t.Fatal("a shortened finding lost its location, title or ID")
+	}
+
+	// Far more findings than fit even without details: the rest are counted.
+	a = Assess(&Report{}, nil)
+	for i := range 1000 {
+		f := finding(fmt.Sprintf("c%d-%s", i, strings.Repeat("i", 200)), SeverityHigh)
+		f.Title = strings.Repeat("t", maxTitle)
+		a.Blocking = append(a.Blocking, Blocked{Finding: f})
+	}
+	o = Render(a, &Report{}, nil, "footer")
 	listed := strings.Count(o.Output.Summary, "- **high**")
-	if len(o.Output.Summary) > maxSummary || listed == 0 || listed == 40 || !strings.HasSuffix(o.Output.Summary, "footer") ||
-		!strings.Contains(o.Output.Summary, fmt.Sprintf("%d more blocking findings did not fit", 40-listed)) {
-		t.Fatalf("summary of %d characters lists %d of 40 blocking findings without saying how many are left",
-			len(o.Output.Summary), listed)
+	if len(o.Output.Summary) > maxSummary || listed == 0 || listed == 1000 || !strings.HasSuffix(o.Output.Summary, "footer") ||
+		!strings.Contains(o.Output.Summary, fmt.Sprintf("%d more blocking findings did not fit", 1000-listed)) {
+		t.Fatalf("summary of %d characters lists %d of 1000 blocking findings without counting the rest", len(o.Output.Summary), listed)
 	}
 }
 
