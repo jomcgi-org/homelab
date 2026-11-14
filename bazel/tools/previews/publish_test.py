@@ -1126,7 +1126,9 @@ class PrepareTests(unittest.TestCase):
             self.assertNotIn("42", json.loads(public_state)["previews"])
             self.assertFalse((Path(directory) / "site" / "pr" / "42").exists())
             self.assertEqual(
-                (Path(directory) / "site" / "pr" / "43" / B / "index.html").read_bytes(),
+                (
+                    Path(directory) / "site" / "pr" / "43" / B / "index.html"
+                ).read_bytes(),
                 HTML,
             )
         self.assertEqual(set(self.state["previews"]), {"43"})
