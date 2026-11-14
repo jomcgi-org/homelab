@@ -283,6 +283,11 @@ the monolith's, embedded in the binary and applied at startup under an
 advisory lock. Database tests start PostgreSQL 16 from `@postgres_test`, as
 the monolith's pytest plugin does.
 
+Itsaplan result, comment and issue-Done auth refusals (401/403) stay in
+the persisted outbox with exponential backoff capped at ten minutes and
+a twenty-attempt limit. Each request reloads its key; a queued result
+keeps its run finishing until delivery succeeds or the limit is reached.
+
 **Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
 none of these is a Pro feature (status-triggered schedules are Pro and are
 not used). Claim runs per agent key. A claimed run with an open attempt

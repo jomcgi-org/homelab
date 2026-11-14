@@ -1681,12 +1681,13 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 }
 
 // terminalHTTP reports an itsaplan answer that a retry cannot change.
+// Auth refusals can recover when the next request reloads a rotated key.
 func terminalHTTP(err error) bool {
 	var h *itsaplan.HTTPError
 	if errors.Is(err, itsaplan.ErrNotFound) || errors.Is(err, itsaplan.ErrConflict) {
 		return true
 	}
-	return errors.As(err, &h) && h.Status >= 400 && h.Status < 500 && h.Status != 408 && h.Status != 429
+	return errors.As(err, &h) && h.Status >= 400 && h.Status < 500 && h.Status != 401 && h.Status != 403 && h.Status != 408 && h.Status != 429
 }
 
 func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {

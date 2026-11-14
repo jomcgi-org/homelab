@@ -3,6 +3,7 @@ package dispatch_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -1151,5 +1152,140 @@ func TestResultNotFoundIsTerminal(t *testing.T) {
 	// Only the claim loop's empty claims follow.
 	if extra := v.its.Calls() - calls; extra > 6 {
 		t.Fatalf("%d itsaplan calls after the terminal 404", extra)
+	}
+}
+
+// outboxState reads persisted scheduling rather than inferring it from calls.
+func outboxState(t *testing.T, v *env, kind string) (int, time.Time, bool, bool) {
+	t.Helper()
+	var tries int
+	var next time.Time
+	var delivered, abandoned bool
+	if err := v.st.DB.QueryRow(`SELECT tries, next_attempt_at, delivered_at IS NOT NULL, abandoned_at IS NOT NULL FROM outbox WHERE kind = $1`, kind).Scan(&tries, &next, &delivered, &abandoned); err != nil {
+		t.Fatal(err)
+	}
+	return tries, next, delivered, abandoned
+}
+
+func queueAuthDeliveries(t *testing.T, status int) *env {
+	t.Helper()
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	if err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "auth-comment", 0, "", map[string]any{"issueId": 101, "body": "progress"}); err != nil {
+		t.Fatal(err)
+	}
+	v.its.commentErr = &itsaplan.HTTPError{Status: status, Body: "refused"}
+	v.its.resultErr = v.its.commentErr
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	return v
+}
+
+func TestOutboxAuthRecovery(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := queueAuthDeliveries(t, status)
+			for _, kind := range []string{store.OutboxResult, store.OutboxComment} {
+				tries, next, delivered, abandoned := outboxState(t, v, kind)
+				if tries != 1 || !next.Equal(v.clk.Now().Add(time.Second)) || delivered || abandoned {
+					t.Fatalf("%s: tries=%d next=%s delivered=%v abandoned=%v", kind, tries, next, delivered, abandoned)
+				}
+			}
+			if v.run(1).State != store.RunFinishing {
+				t.Fatal("auth refusal closed the result run")
+			}
+			v.clk.Advance(time.Second - time.Nanosecond)
+			v.tick(v.e)
+			if v.its.resultCalls != 1 || v.its.commentCalls != 1 {
+				t.Fatal("delivery retried before due")
+			}
+			// The result recovers while the comment still fails.
+			v.its.resultErr = nil
+			v.clk.Advance(time.Nanosecond)
+			v.tick(v.e)
+			if v.run(1).State != store.RunClosed || len(v.its.Run(1).results) != 1 {
+				t.Fatal("failing comment blocked the recovered result")
+			}
+			tries, next, delivered, abandoned := outboxState(t, v, store.OutboxComment)
+			if tries != 2 || !next.Equal(v.clk.Now().Add(2*time.Second)) || delivered || abandoned {
+				t.Fatal("comment did not retain its retry schedule")
+			}
+			v.its.commentErr = nil
+			v.tick(v.e)
+			if v.its.commentCalls != 2 {
+				t.Fatal("comment retried before due after auth recovery")
+			}
+			v.clk.Advance(2 * time.Second)
+			v.tick(v.e)
+			if len(v.its.Comments()) != 1 || v.its.resultCalls != 2 || v.its.commentCalls != 3 {
+				t.Fatal("recovered deliveries were lost or duplicated")
+			}
+			for _, kind := range []string{store.OutboxResult, store.OutboxComment} {
+				_, _, delivered, abandoned := outboxState(t, v, kind)
+				if !delivered || abandoned {
+					t.Fatalf("%s not delivered after auth recovered", kind)
+				}
+			}
+		})
+	}
+}
+
+func TestOutboxAuthFailureIsBounded(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := queueAuthDeliveries(t, status)
+			for attempt := 2; attempt <= 20; attempt++ {
+				_, next, _, _ := outboxState(t, v, store.OutboxResult)
+				backoff := min(time.Duration(1<<min(attempt-2, 10))*time.Second, 10*time.Minute)
+				if !next.Equal(v.clk.Now().Add(backoff)) {
+					t.Fatalf("attempt %d: next=%s, want backoff %s", attempt, next, backoff)
+				}
+				v.clk.Advance(backoff - time.Nanosecond)
+				v.tick(v.e)
+				if v.its.resultCalls != attempt-1 || v.its.commentCalls != attempt-1 || v.run(1).State != store.RunFinishing {
+					t.Fatalf("attempt %d: premature retry or closure", attempt)
+				}
+				v.clk.Advance(time.Nanosecond)
+				v.tick(v.e)
+			}
+			for _, kind := range []string{store.OutboxResult, store.OutboxComment} {
+				_, _, delivered, abandoned := outboxState(t, v, kind)
+				if delivered || !abandoned {
+					t.Fatalf("%s not abandoned at twenty attempts", kind)
+				}
+			}
+			v.tick(v.e) // checkFinishing observes the abandoned result.
+			if r := v.run(1); r.State != store.RunClosed || r.ClosedReason != "result not delivered" {
+				t.Fatalf("run after exhaustion = %+v", r)
+			}
+			v.its.resultErr, v.its.commentErr = nil, nil
+			v.clk.Advance(time.Hour)
+			v.tick(v.e)
+			if v.its.resultCalls != 20 || v.its.commentCalls != 20 {
+				t.Fatal("abandoned auth deliveries retried beyond the bound")
+			}
+		})
+	}
+}
+
+func TestOutboxTerminalRefusalsStillAbandon(t *testing.T) {
+	for _, refusal := range []error{&itsaplan.HTTPError{Status: 400}, itsaplan.ErrConflict} {
+		t.Run(refusal.Error(), func(t *testing.T) {
+			v := queueAuthDeliveries(t, 401)
+			v.its.resultErr, v.its.commentErr = refusal, refusal
+			v.clk.Advance(time.Second)
+			v.tick(v.e)
+			for _, kind := range []string{store.OutboxResult, store.OutboxComment} {
+				_, _, delivered, abandoned := outboxState(t, v, kind)
+				if delivered || !abandoned {
+					t.Fatalf("%s retried terminal refusal", kind)
+				}
+			}
+			if v.run(1).State != store.RunClosed {
+				t.Fatal("terminal refusal left run open")
+			}
+		})
 	}
 }

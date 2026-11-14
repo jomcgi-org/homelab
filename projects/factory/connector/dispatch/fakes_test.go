@@ -40,7 +40,9 @@ type fakeItsaplan struct {
 	comments []fakeComment
 	calls    int
 	// commentErr fails every comment while set.
-	commentErr error
+	commentErr                error
+	resultErr                 error
+	resultCalls, commentCalls int
 	// resultGone fails the run in itsaplan as its result arrives, as
 	// expireExhaustedRuns can.
 	resultGone bool
@@ -203,6 +205,10 @@ func (f *fakeItsaplan) Result(_ context.Context, agent string, id int64, res its
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.resultCalls++
+	if f.resultErr != nil {
+		return f.resultErr
+	}
 	r := f.get(id)
 	if f.resultGone {
 		r.status = "failed"
@@ -230,6 +236,7 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.commentCalls++
 	if f.commentErr != nil {
 		return f.commentErr
 	}

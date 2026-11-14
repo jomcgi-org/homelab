@@ -1223,3 +1223,35 @@ func TestClosedPullRequestStopsInFlightItsaplanTurn(t *testing.T) {
 	v.tick(v.e)
 	v.turnStopped(task, "was closed")
 }
+
+func TestDoneMoveAuthRefusalIsRetried(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.its.moveErr = []error{&itsaplan.HTTPError{Status: status}}
+			v.gh.merge(1, "merge-sha-1")
+			v.poll()
+			tries, next, delivered, abandoned := outboxState(t, v.env, store.OutboxIssueDone)
+			if tries != 1 || delivered || abandoned || !next.After(v.clk.Now()) {
+				t.Fatal("auth refusal abandoned the Done move")
+			}
+			v.tick(v.e)
+			if len(v.its.Moves()) != 0 {
+				t.Fatal("Done move retried before due")
+			}
+			v.clk.Advance(next.Sub(v.clk.Now()))
+			v.tick(v.e)
+			if len(v.its.Moves()) != 1 {
+				t.Fatal("Done move did not recover")
+			}
+			for _, c := range v.its.Comments() {
+				if strings.Contains(c.body, "could not move this issue") {
+					t.Fatal("transient auth refusal requested a manual move")
+				}
+			}
+		})
+	}
+}
