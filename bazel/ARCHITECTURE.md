@@ -248,15 +248,19 @@ and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
 and selectors fail closed. Reachability remains a separate workflow stage.
 Hook-versus-CI duplication remains intentional for fast feedback.
 
-## Fixture publisher refusals
+## Fixture publisher request volume
 
-**Why.** The failing closed-PR run [43589747259](https://github.com/jomcgi-org/homelab/actions/runs/43589747259) reports GET Pages 403 despite `Pages: read`. Its workflow and trusted publisher match the successful run's code; scheduled run [43590695735](https://github.com/jomcgi-org/homelab/actions/runs/43590695735) later succeeded with the same permissions. Historical logs omit the response metadata needed to identify the refusal. The shared API reader now records only bounded decimal remaining/reset/retry-after values for Pages 403/429 responses. Prepare, both deployment guards and comment retain their Pages validation and fail on refusals. No retries or permission changes are justified by the available evidence. This diagnostic change is staged through repository review; it does not establish a repair of #7905.
+**Why.** On 2026-11-14, [run 43537841287](https://github.com/jomcgi-org/homelab/actions/runs/43537841287) reached a git-blob 403 at 01:14Z after six minutes of prepare. [Run 43592747623](https://github.com/jomcgi-org/homelab/actions/runs/43592747623) failed the same way at 12:13Z after 12.4 minutes; [the next queued run](https://github.com/jomcgi-org/homelab/actions/runs/43593637062) failed on its first Pages request. Runs started at [11:34Z](https://github.com/jomcgi-org/homelab/actions/runs/43590695735) and [11:52Z](https://github.com/jomcgi-org/homelab/actions/runs/43592050740) succeeded between bursts with the same publisher and permissions. Successful Pages reads followed by blob refusals and intermittent recovery point to request-quota or rate limiting. Historical headers do not identify which limit was reached.
+
+The state branch held 1,691 files. Loading each through a separate REST blob request consumed 1,694 REST reads per reconciliation. The publisher now reads the ref, commit and tree, then downloads one public archive pinned to that commit from `codeload.github.com`, without an Authorization header or redirects. It reads archive members in memory and compares every file's path, size and Git blob hash with the validated tree. Tree modes, aggregate limits, state ownership and preview completeness still gate publication. Archive duplicates, extra files, links and executable entries fail closed.
+
+Every HTTP route logs only bounded decimal remaining/reset/retry-after metadata for 403/429 responses, including git-blob. GET requests may retry twice, with at most 120 seconds of total waiting per request, only for 429 or a 403 with zero remaining quota or numeric Retry-After. Server delays beyond that budget fail immediately. Writes and other refusals are never retried. The repository repair is staged through review; operational acceptance remains on #7905 with the authorized landing and validation owners.
 
 ## Direction
 
 | Work | Remaining acceptance |
 |---|---|
-| [Pages refusal investigation #7905](https://github.com/jomcgi-org/homelab/issues/7905) | Identify the refusal from Actions-token evidence if it recurs. Within 72 hours after authorized landing, verify a naturally triggered closed-PR publisher run using the delivered protected-main revision succeeds through aggregate/prepare and required deploy, then read valid public state.json and confirm that closed PR is absent. Landing and validation remain with their authorized owners. |
+| [Fixture publisher request volume #7905](https://github.com/jomcgi-org/homelab/issues/7905) | Within 72 hours after authorized landing, verify a naturally triggered closed-PR publisher run using the delivered protected-main revision succeeds through aggregate/prepare and required deploy, then read valid public state.json and confirm that closed PR is absent. Landing and validation remain with their authorized owners. |
 
 ## Decision history
 

@@ -34,6 +34,8 @@ MAX_ARCHIVE = 50 * 1024 * 1024
 MAX_FILES = 2000
 MAX_SITE = 200 * 1024 * 1024
 MAX_SITE_FILES = 10000
+MAX_RATE_LIMIT_RETRIES = 2
+MAX_RATE_LIMIT_WAIT = 120
 EXTENSIONS = {
     ".html",
     ".css",
@@ -483,12 +485,63 @@ def http_route(path):
     return "repository-api"
 
 
+def rate_limit_metadata(error):
+    fields = {}
+    for header, label in (
+        ("X-RateLimit-Remaining", "remaining"),
+        ("X-RateLimit-Reset", "reset"),
+        ("Retry-After", "retry_after"),
+    ):
+        value = error.headers.get(header) if error.headers else None
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value):
+            fields[label] = int(value)
+    return fields
+
+
+def rate_limit_delay(error):
+    """Only an explicit quota signal permits retrying a refusal."""
+    if error.code not in {403, 429}:
+        return None
+    fields = rate_limit_metadata(error)
+    if (
+        error.code != 429
+        and fields.get("remaining") != 0
+        and "retry_after" not in fields
+    ):
+        return None
+    delays = [fields["retry_after"]] if "retry_after" in fields else []
+    if fields.get("remaining") == 0 and "reset" in fields:
+        delays.append(fields["reset"] - int(time.time()))
+    return max(1, *delays) if delays else 60
+
+
 class API:
     def __init__(self, token):
         self.token = token
         self.opener = urllib.request.build_opener(NoRedirect)
 
     def _read(self, req, limit, route):
+        waited = 0
+        for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                return self._read_once(req, limit, route)
+            except urllib.error.HTTPError as error:
+                delay = rate_limit_delay(error)
+                # Never replay writes or retry an undifferentiated 403. Respect
+                # server delays in full; fail if they exceed our total budget.
+                if (
+                    req.get_method() != "GET"
+                    or delay is None
+                    or attempt == MAX_RATE_LIMIT_RETRIES
+                    or waited + delay > MAX_RATE_LIMIT_WAIT
+                ):
+                    raise
+                error.close()
+                print(f"HTTP rate_limit_retry wait={delay}", file=sys.stderr)
+                time.sleep(delay)
+                waited += delay
+
+    def _read_once(self, req, limit, route):
         try:
             with self.opener.open(req, timeout=60) as response:
                 return response.read(limit + 1)
@@ -514,21 +567,16 @@ class API:
             print(
                 f"HTTP method={method} route={route} status={status}", file=sys.stderr
             )
-            # All Pages callers (prepare, guard and comment) share this path.
-            # Numeric metadata can distinguish rate-limit evidence on the next
-            # refusal without exposing response bodies or arbitrary headers.
-            if route == "pages" and status in {403, 429}:
-                fields = []
-                for header, label in (
-                    ("X-RateLimit-Remaining", "remaining"),
-                    ("X-RateLimit-Reset", "reset"),
-                    ("Retry-After", "retry_after"),
-                ):
-                    value = error.headers.get(header) if error.headers else None
-                    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value):
-                        fields.append(f"{label}={int(value)}")
+            # All routes share the same bounded metadata allowlist, including
+            # the blob refusals that preceded the observed Pages failures.
+            if status in {403, 429}:
+                fields = rate_limit_metadata(error)
                 if fields:
-                    print("HTTP pages_limit " + " ".join(fields), file=sys.stderr)
+                    print(
+                        "HTTP rate_limit "
+                        + " ".join(f"{key}={value}" for key, value in fields.items()),
+                        file=sys.stderr,
+                    )
             raise
 
     def request(self, path, method="GET", payload=None, limit=MAX_SITE):
@@ -572,6 +620,20 @@ class API:
             if len(items) < 100:
                 return result
         raise Unsafe("pagination exceeds limit")
+
+    def state_archive(self, commit_sha):
+        require(SHA.fullmatch(commit_sha) is not None, "invalid state commit")
+        # This repository is public. Download only the exact validated commit
+        # from GitHub's fixed archive host, without forwarding the Actions token.
+        raw = self._read(
+            urllib.request.Request(
+                f"https://codeload.github.com/{REPOSITORY}/zip/{commit_sha}"
+            ),
+            MAX_SITE,
+            "state-archive",
+        )
+        require(len(raw) <= MAX_SITE, "compressed state archive exceeds limit")
+        return raw
 
     def artifact(self, artifact):
         require(not artifact.get("expired"), "artifact expired")
@@ -629,6 +691,63 @@ def state_path(path):
     return path
 
 
+def extract_state_archive(raw, commit_sha, entries):
+    """Read data in memory and compare every file with the pinned Git tree."""
+    require(len(raw) <= MAX_SITE, "compressed state archive exceeds limit")
+    prefix = f"homelab-{commit_sha}/"
+    directories = {prefix}
+    for path in entries:
+        directories.update(
+            prefix + parent.as_posix() + "/"
+            for parent in PurePosixPath(path).parents
+            if parent.as_posix() != "."
+        )
+    files = {}
+    seen = set()
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        members = archive.infolist()
+        require(
+            len(members) <= len(entries) + len(directories),
+            "too many state archive entries",
+        )
+        for member in members:
+            name = member.filename
+            require("\x00" not in member.orig_filename, "NUL in state archive name")
+            require(name not in seen, "duplicate state archive path")
+            seen.add(name)
+            require(name.startswith(prefix), "unexpected state archive root")
+            mode = member.external_attr >> 16
+            kind = stat.S_IFMT(mode)
+            require(not member.flag_bits & 1, "encrypted state archive entry")
+            require(
+                member.compress_type in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED},
+                "unsupported state archive compression",
+            )
+            if member.is_dir():
+                require(
+                    name in directories
+                    and kind in {0, stat.S_IFDIR}
+                    and member.file_size == 0,
+                    "invalid state archive directory",
+                )
+                continue
+            require(
+                kind in {0, stat.S_IFREG} and not mode & 0o111,
+                "state archive contains executable, link or special file",
+            )
+            path = name[len(prefix) :]
+            require(path in entries, "unexpected state archive file")
+            entry = entries[path]
+            require(member.file_size == entry["size"], "state blob size mismatch")
+            with archive.open(member) as source:
+                data = source.read(entry["size"] + 1)
+            require(len(data) == entry["size"], "state blob size mismatch")
+            require(blob_sha(data) == entry["sha"], "state blob hash mismatch")
+            files[path] = data
+    require(files.keys() == entries.keys(), "incomplete state archive")
+    return files
+
+
 def load_state(api, url):
     ref = api.optional(f"/git/ref/heads/{STATE_BRANCH}")
     if ref is None:
@@ -643,7 +762,7 @@ def load_state(api, url):
     require(not tree.get("truncated"), "state tree truncated")
     entries = [entry for entry in tree["tree"] if entry["type"] != "tree"]
     require(len(entries) <= MAX_SITE_FILES, "state has too many files")
-    files = {}
+    expected = {}
     total = 0
     for entry in entries:
         require(
@@ -651,18 +770,15 @@ def load_state(api, url):
             "state contains executable, link or special file",
         )
         path = state_path(entry["path"])
+        require(path not in expected, "duplicate state tree path")
         require(
             0 <= entry.get("size", MAX_FILE + 1) <= MAX_FILE, "state file exceeds limit"
         )
         total += entry["size"]
         require(total <= MAX_SITE, "state exceeds size limit")
-        blob = api.repo(f"/git/blobs/{entry['sha']}")
-        require(blob.get("encoding") == "base64", "unexpected blob encoding")
-        raw = base64.b64decode(blob["content"], validate=False)
-        require(blob_sha(raw) == entry["sha"], "state blob hash mismatch")
-        require(len(raw) == entry["size"], "state blob size mismatch")
-        files[path] = raw
-    require("state.json" in files, "unmarked state branch; refusing replacement")
+        expected[path] = entry
+    require("state.json" in expected, "unmarked state branch; refusing replacement")
+    files = extract_state_archive(api.state_archive(commit_sha), commit_sha, expected)
     state = validate_state(json.loads(files["state.json"]), url)
     expected_prefixes = {
         f"site/pr/{number}/{entry['sha']}/"
