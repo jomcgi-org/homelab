@@ -56,15 +56,22 @@ atenetRouter:
     - spiffe://cluster.local/ns/ate-system/sa/atenet-client
     - spiffe://cluster.local/ns/kagent/sa/kagent-controller
 
-# Which Secrets each atespace may inject at the egress gateway. kagent runs its
-# agents in the kagent atespace with credentials in the kagent namespace; only
-# Secrets there labelled substrate.ate.dev/injectable=true are granted. The
+# Which Secrets each atespace may inject at the egress gateway. kagent runs each
+# Agent in the atespace named after its namespace and reads credentials from
+# that namespace: kagent's own, and each factory repository binding's
+# (projects/factory/deploy/values.yaml `repositories`). Only Secrets labelled
+# substrate.ate.dev/injectable=true are granted. The
 # provider can read only namespaces it has a RoleBinding in (its ClusterRole's
 # cluster-wide binding is removed in ../resources/kustomization.yaml).
 credentialProvider:
   namespacePolicies:
     - atespace: kagent
       allowedNamespaces: [kagent]
+      secretSelector:
+        matchLabels:
+          substrate.ate.dev/injectable: "true"
+    - atespace: factory-r-homelab
+      allowedNamespaces: [factory-r-homelab]
       secretSelector:
         matchLabels:
           substrate.ate.dev/injectable: "true"
