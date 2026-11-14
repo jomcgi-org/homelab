@@ -49,6 +49,36 @@ describe("dayKey", () => {
       "2025-01-02",
     );
   });
+
+  it("keeps cached formatters separate for trips in different zones", () => {
+    const iso = "2026-11-15T01:30:00Z";
+    for (let i = 0; i < 3; i++) {
+      expect(dayKey(iso, "America/Vancouver")).toBe("2026-11-14");
+      expect(dayKey(iso, "Europe/London")).toBe("2026-11-15");
+      expect(dayKey(iso, "Asia/Tokyo")).toBe("2026-11-15");
+    }
+  });
+
+  it.each([
+    ["2026-03-08T07:59:00Z", "2026-03-07"],
+    ["2026-03-08T08:00:00Z", "2026-03-08"],
+    ["2026-11-01T08:30:00Z", "2026-11-01"],
+    ["2026-11-01T09:30:00Z", "2026-11-01"],
+  ])(
+    "preserves Vancouver day boundaries across DST for %s",
+    (iso, expected) => {
+      expect(dayKey(iso, "America/Vancouver")).toBe(expected);
+    },
+  );
+
+  it("preserves UTC fallbacks and invalid-date handling", () => {
+    const iso = "2026-11-15T01:30:00Z";
+    expect(dayKey(iso)).toBe("2026-11-15");
+    expect(dayKey(iso, "")).toBe("2026-11-15");
+    expect(dayKey(iso, "invalid/timezone")).toBe("2026-11-15");
+    expect(dayKey("invalid", "America/Vancouver")).toBeNull();
+    expect(dayKey(null, "America/Vancouver")).toBeNull();
+  });
 });
 
 describe("groupByDay", () => {
