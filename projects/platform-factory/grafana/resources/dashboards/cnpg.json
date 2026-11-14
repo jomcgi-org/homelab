@@ -2,9 +2,7 @@
   "uid": "factory-cnpg",
   "title": "CloudNativePG",
   "description": "kagent-pg, factory-db and authentik-pg: instance roles, replication, WAL archiving and base backups to Garage, size and load. authentik-pg has no backups yet.",
-  "tags": [
-    "factory"
-  ],
+  "tags": ["factory"],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
@@ -34,12 +32,8 @@
         "includeAll": true,
         "current": {
           "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "text": ["All"],
+          "value": ["$__all"]
         },
         "sort": 1
       }
@@ -170,9 +164,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -230,9 +222,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -294,9 +284,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -358,9 +346,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -422,9 +408,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -486,9 +470,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -559,10 +541,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -617,10 +596,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -675,10 +651,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -733,10 +706,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -804,10 +774,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -862,10 +829,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -920,10 +884,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -978,10 +939,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -1036,10 +994,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",

@@ -2,9 +2,7 @@
   "uid": "factory-cilium-drops",
   "title": "Cilium drops",
   "description": "What Cilium drops and why. Hubble's drop counters carry the source and destination namespaces; POLICY_DENIED is the cluster-wide default-deny (projects/platform-factory/network-policy/). Find the flows with hubble observe --verdict DROPPED.",
-  "tags": [
-    "factory"
-  ],
+  "tags": ["factory"],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
@@ -79,9 +77,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -139,9 +135,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -199,9 +193,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -263,9 +255,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -323,10 +313,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -381,10 +368,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -508,10 +492,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -566,10 +547,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -624,10 +602,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",
@@ -682,10 +657,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
+          "calcs": ["lastNotNull", "max"]
         },
         "tooltip": {
           "mode": "multi",

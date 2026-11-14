@@ -55,6 +55,7 @@ router must reserve these three leases.
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Repository convention. Authentik's secrets cannot outlive its database until Postgres has off-node backups, so a copy in 1Password would protect nothing yet |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 | Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
+| Metrics view | Prometheus v3.15.1 (one replica, 7 days or 4 GB on a local-path volume) with kube-state-metrics v2.20.0, and Grafana 13.3.1 at factory-grafana.jomcgi.dev; plain manifests, images pinned by digest | The operators' dashboards #7817 names, next to Honeycomb rather than replacing it. No operator or chart: one scrape file names every target, and its RBAC, egress and each target's ingress are written out by hand ([Metrics view](#metrics-view)) |
 
 Traefik and ServiceLB are disabled.
 
@@ -161,7 +162,8 @@ The only path in from the internet:
 3. Envoy Gateway's `edge` Gateway (`projects/platform-factory/edge/`) signs
    every request in through Authentik with a gateway-wide OIDC
    SecurityPolicy, then routes it. Routes attach only from the namespaces
-   listed in the chart's `routeNamespaces` (`edge`, `argocd`, `factory`),
+   listed in the chart's `routeNamespaces` (`edge`, `argocd`, `factory`,
+   `grafana`),
    matched by name.
 4. The application can run its own Authentik login too; ArgoCD does.
 
@@ -170,6 +172,7 @@ The only path in from the internet:
 | factory.jomcgi.dev | `argocd/argocd-server` | Envoy OIDC (client `factory-edge`), then ArgoCD's OIDC (client `factory-argocd`); both admit only `authentik Admins` |
 | factory-auth.jomcgi.dev | `edge/authentik` | Authentik itself, with MFA required |
 | factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
+| factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |
 
 Envoy's OIDC session lasts as long as the access token, ten minutes, with no
 refresh. Envoy then sends the browser back to Authentik, which checks the
@@ -195,7 +198,8 @@ EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
 objects live only in `edge`; any route with a parent in `cfgate-system` must
 be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
 only `edge` may route factory-auth.jomcgi.dev; routes in `factory` may
-name only factory-plan.jomcgi.dev; and CloudflareDNS and
+name only factory-plan.jomcgi.dev and routes in `grafana` only
+factory-grafana.jomcgi.dev; and CloudflareDNS and
 CloudflareTunnel objects live only in `cfgate-system`. Envoy Gateway runs each
 proxy in its Gateway's namespace, so no other Gateway's proxy could run
 under the edge proxy's namespace and network identity.
@@ -253,10 +257,11 @@ bound to `localhost` and fails on factory-auth.jomcgi.dev. The admin and user
 interfaces are reachable only through the port-forward.
 
 `authentik-secret-init` (`projects/platform-factory/authentik/resources/`)
-fills `AUTHENTIK_SECRET_KEY` and both OIDC client secrets into
+fills `AUTHENTIK_SECRET_KEY` and the OIDC client secrets into
 `authentik/authentik-secrets` once, and copies the client secrets to
-`edge/edge-oidc-client` and `argocd/argocd-authentik-oidc`. ArgoCD creates
-the three Secrets empty and ignores their data, so the Job can only read and
+`edge/edge-oidc-client`, `argocd/argocd-authentik-oidc`,
+`factory/factory-itsaplan-oidc` and `grafana/grafana-oidc`. ArgoCD creates
+those Secrets empty and ignores their data, so the Job can only read and
 update those names. CloudNativePG generates `authentik-pg-app`. Move the
 secret key to 1Password once Postgres has off-node backups.
 
@@ -606,6 +611,77 @@ never runs two Event watchers. That is not a guarantee: if a node is
 partitioned, a replacement can start while the old pod still runs, and both
 ship each Event until the old one stops.
 
+## Metrics view
+
+Prometheus (`projects/platform-factory/prometheus/`) and Grafana
+(`projects/platform-factory/grafana/`) are the operators' dashboards. They
+sit next to the Honeycomb pipeline above, which keeps shipping the same
+baseline; neither depends on the other.
+
+Prometheus is one StatefulSet replica scraping every 30 s, with seven days or
+4 GB of data (whichever comes first) on an 8 GiB local-path volume. It
+prefers a node other than node-1, the operator's workstation, and its volume
+pins it to the node it first lands on. The data is disposable: deleting the
+StatefulSet or the Application deletes the volume. It uses about 30,000 series
+and under 400 MiB at first (limit 1.5 GiB). kube-state-metrics lists only the kinds in its
+`--resources`, never Secrets or ConfigMaps.
+
+`resources/prometheus.yml` names every target, and a new one needs three
+changes: a job there, an egress rule in `resources/network-policy.yaml`, and
+an ingress rule at the target in `resources/scrape-ingress.yaml`. Those
+ingress rules are CiliumClusterwideNetworkPolicies so they sync whether or
+not the target's namespace exists yet, and leave with Prometheus.
+
+| Job | Target | Notes |
+| --- | --- | --- |
+| `kubelet`, `kubelet-resource`, `kubelet-cadvisor` | each node's kubelet, :10250 | Node and pod CPU and memory, the root filesystem, host NIC and pod network bytes, CFS throttling; most series are dropped at scrape. Verified against the cluster CA; RBAC grants `nodes/metrics`, not `nodes/proxy` |
+| `cilium-agent`, `hubble`, `cilium-operator` | :9962, :9965, :9963 on the host network | Drop reasons and flow counts by namespace |
+| `kube-state-metrics` | `prometheus/kube-state-metrics:8080` | Node conditions, pod phases, restarts, rollouts |
+| `kagent-controller` | `kagent` controller :8443 | controller-runtime's secure metrics: a TokenReview and a SubjectAccessReview for `GET /metrics` (ClusterRole `prometheus`); self-signed certificate. Enabled in `projects/factory/deploy/values.yaml` |
+| `factory-broker` | broker admin port :8081 | Every other path there needs a reviewed admin or connector token |
+| `factory-connector` | :9090 | |
+| `cnpg` | every instance in `kagent-pg`, `factory-db` and `authentik`, :9187 | |
+| `garage` | admin API :3903 | `/metrics` needs no token (no `metrics_token` is set); every other admin path needs the admin token |
+
+Grafana is one replica whose data directory is an emptyDir: the Prometheus
+datasource and the dashboards come from Git, users are created at sign-in, and
+a restart forgets sessions and preferences. Its dashboards, in the Factory
+folder, are `resources/dashboards/*.json`:
+
+- **Cluster and nodes**: node CPU, memory, disk and network, object health,
+  restarts and scrape health.
+- **Cilium drops**: policy drops by source and destination namespace, all
+  drop reasons, flow verdicts and DNS response codes.
+- **CloudNativePG**: roles, replication lag, WAL archiving, base backup age,
+  the recovery window, size and load for each cluster.
+- **Factory delivery**: the broker's Codex grant state, token refreshes,
+  relay outcomes and GitHub mints; the connector's claims, kagent sends,
+  results, blocks, retries and errors; and deliveries as pull requests,
+  review events and merge queue outcomes. A counter appears once it is first
+  incremented, so a quiet factory leaves some panels empty.
+
+Edit a dashboard by changing its JSON; Grafana rejects saves from the UI. Each
+ConfigMap's name carries its content hash, so a change rolls the pod.
+
+Grafana's own OIDC client is `factory-grafana`
+(`projects/platform/authentik/factory-blueprints/factory-grafana.yaml`). Its
+secret reaches `grafana/grafana-oidc` from `authentik-secret-init`, and the
+pod waits in ContainerCreating until it has. Grafana reads it only at start,
+so restart the Deployment after the value changes. Anyone signing in outside
+`authentik Admins` is refused rather than given a default role. Grafana's
+egress is Prometheus and factory-auth.jomcgi.dev only, so it makes no calls to
+grafana.com.
+
+The break-glass admin's password is generated at each start into memory:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n grafana exec deploy/grafana -c grafana -- \
+  cat /run/grafana/admin-password
+KUBECONFIG=~/.kube/factory.yaml kubectl -n grafana port-forward svc/grafana 3000:3000
+# open http://localhost:3000/login?disableAutoLogin=true and sign in as admin
+KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/prometheus 9090:9090
+```
+
 ## Not yet done
 
 These come from the #7817 step 1 checklist:
@@ -630,10 +706,11 @@ These come from the #7817 step 1 checklist:
 - Spreading the cloudflared replicas across nodes: cfgate v0.2.0-alpha.11's
   CloudflareTunnel has no topologySpreadConstraints or affinity field, so
   placement is the scheduler's default spreading.
-- Prometheus and Grafana as the operators' metrics view (#7817 names them);
-  Honeycomb carries the baseline telemetry until then.
 - Alerting on the factory telemetry. Honeycomb's single free trigger is taken
-  (`projects/platform/honeycomb/README.md`).
+  (`projects/platform/honeycomb/README.md`), and Prometheus runs no rules or
+  Alertmanager.
+- Metrics that outlive the cluster: Prometheus keeps seven days on one
+  node's disk, so a lost node or rebuild starts it empty.
 
 ### factory-db
 
