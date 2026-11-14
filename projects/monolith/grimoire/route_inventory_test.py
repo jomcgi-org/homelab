@@ -242,6 +242,7 @@ CASES = {
     ("PATCH", PREFIX + "/sessions/{session_id}"): Case(
         params={"session_id": "$campaign_session.id"},
         body={"status": "paused"},
+        state="play",
     ),
     ("POST", PREFIX + "/sessions/{session_id}/events"): Case(
         params={"session_id": "$campaign_session.id"},

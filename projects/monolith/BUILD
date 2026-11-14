@@ -6914,6 +6914,11 @@ bdd_test(
     deps = [":grimoire_session_events_test_data"],
 )
 
+bdd_test(
+    name = "grimoire_session_lifecycle_postgres_test",
+    srcs = ["grimoire/session_lifecycle_postgres_test.py"],
+)
+
 py_test(
     name = "grimoire_models_test",
     srcs = ["grimoire/models_test.py"],

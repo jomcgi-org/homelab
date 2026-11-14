@@ -255,6 +255,22 @@ in `visibility.py`.
 
 ## Session event log
 
+Starting a session locks its campaign through the active-session check and
+commit. Concurrent starts produce one session and a 409 for the other caller.
+Other campaigns start independently. The campaign lock permits foreign-key
+references while excluding another start.
+
+Pause, resume and end lock and refresh the session row used by event writers.
+Ended sessions cannot return to active or paused, including from an old tab
+after a new session starts. Repeating End preserves the end time and the
+original fact-extraction queue; later seating changes do not add extraction
+jobs to an already ended session. These controls remain DM-only.
+
+**Why.** The database's unique active-session index remains the final guard.
+Serializing the absence check returns a useful conflict response before an
+insert can violate it. Refreshing the locked session prevents a waiting
+request with cached state from reopening a session after End commits.
+
 `grimoire.session_event` stores each session's ordered events: campaign and
 session ids, a positive `seq`, kind, author member, audience columns, JSON body,
 creation time, and optional retraction time. The unique `(session_id, seq)`
