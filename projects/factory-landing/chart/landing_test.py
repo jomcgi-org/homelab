@@ -37,7 +37,21 @@ def test_private_static_app():
     ]
     assert "filters" not in route["rules"][0]
     assert route["rules"][0]["backendRefs"][0]["name"] == "factory-landing"
+    pull_secret = docs["OnePasswordItem"]
+    assert pull_secret["apiVersion"] == "onepassword.com/v1"
+    assert pull_secret["type"] == "kubernetes.io/dockerconfigjson"
+    assert pull_secret["metadata"]["name"] == "ghcr-imagepull-secret"
+    assert pull_secret["metadata"]["namespace"] == "factory-landing"
+    assert (
+        pull_secret["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+        == "-2"
+    )
+    assert (
+        pull_secret["spec"]["itemPath"]
+        == "vaults/k8s-homelab/items/ghcr-read-permissions"
+    )
     pod = docs["Deployment"]["spec"]["template"]["spec"]
+    assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["runAsNonRoot"] is True
     container = pod["containers"][0]

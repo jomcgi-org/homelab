@@ -13,6 +13,8 @@ spec:
         app.kubernetes.io/name: factory-landing
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
