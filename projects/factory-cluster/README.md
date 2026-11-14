@@ -204,8 +204,10 @@ EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
 objects live only in `edge`; any route with a parent in `cfgate-system` must
 be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
 only `edge` may route factory-auth.jomcgi.dev; routes in `factory` may
-name only factory-plan.jomcgi.dev and routes in `grafana` only
-factory-grafana.jomcgi.dev; and CloudflareDNS and
+name only factory-plan.jomcgi.dev, routes in `grafana` only
+factory-grafana.jomcgi.dev, routes in `argocd` only
+factory-argocd.jomcgi.dev and routes in `factory-landing` only
+factory.jomcgi.dev; and CloudflareDNS and
 CloudflareTunnel objects live only in `cfgate-system`. Envoy Gateway runs each
 proxy in its Gateway's namespace, so no other Gateway's proxy could run
 under the edge proxy's namespace and network identity.

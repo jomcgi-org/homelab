@@ -81,6 +81,7 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/factory-landing/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/factory-landing/deploy:template_test and //projects/factory-landing/chart:landing_test.",
     "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
     "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",

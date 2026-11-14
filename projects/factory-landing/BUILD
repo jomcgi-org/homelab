@@ -28,3 +28,10 @@ apko_image(
     contents = "@monolith_frontend_lock//:contents",
     tars = [":static_tar"],
 )
+
+# Indexed through //:repo_docs so the factory does not modify the monolith.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(["**/*.md"], exclude = ["**/node_modules/**"]),
+    visibility = ["//:__pkg__"],
+)
