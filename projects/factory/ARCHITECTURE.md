@@ -602,7 +602,7 @@ and retries once, so a brief overlap during a rollout is safe.
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
 | Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
-| Independent review | The Semgrep reviewer as a required check bound to its App ID in the ruleset |
+| Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards a kagent reviewer with its own App, as a reviewer check bound to that App's ID |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
 
 ## Delivery plan
@@ -630,13 +630,16 @@ Each step is its own PR with live evidence recorded on #7817.
 - **Codex.** Which ChatGPT account, device-code login enabled, the broker's
   own login, the model, and acceptance of OpenAI's public-repository
   guidance (or an API key instead).
-- **GitHub App** `jomcgi-factory` in jomcgi-org: Contents and Pull requests
-  read/write, Merge queues read/write [I], Checks, Commit statuses and
-  Metadata read; installed on
-  `jomcgi-org/homelab`; 1Password item `k8s-homelab/factory-github-app`
-  (`app-id`, `installation-id`, `private-key`).
-- **Semgrep reviewer.** App ID, check name, triggers, and adding it to the
-  ruleset.
+- **GitHub App** `jomcgi-factory` (App ID 5757158) in jomcgi-org: Contents
+  and Pull requests read/write, Merge queues read/write [I], Checks, Commit
+  statuses and Metadata read; installed on `jomcgi-org/homelab`. 1Password
+  item `k8s-homelab/factory-gh-app`, an SSH Key item: its `private key`
+  field reaches the Secret as `private-key`, beside text fields `app-id` and
+  `installation-id`. Created 2026-11-14.
+- **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
+  review agents approve its PRs as `jomcgi` (`trustedReviewers`). A kagent
+  reviewer with its own App replaces them afterwards; an App cannot approve
+  a PR it opened.
 - **1Password, later.** `k8s-homelab/factory-itsaplan` (`BETTER_AUTH_SECRET`,
   `APP_ENCRYPTION_KEY`) and `k8s-homelab/factory-itsaplan-admin` once
   Postgres has off-site backups; until then both are generated in the

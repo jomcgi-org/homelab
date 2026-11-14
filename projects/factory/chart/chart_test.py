@@ -391,7 +391,9 @@ def _in(docs: list[dict[str, Any]], kind: str, ns: str, name: str) -> dict[str, 
 
 
 def test_broker_runs_one_replica_from_its_config() -> None:
-    docs = _render(["broker.image.digest=sha256:" + "a" * 64])
+    docs = _render(
+        ["broker.image.digest=sha256:" + "a" * 64, "broker.githubApp.enabled=false"]
+    )
     deploy = _in(docs, "Deployment", "factory", "factory-broker")
     assert deploy["spec"]["replicas"] == 1
     assert deploy["spec"]["strategy"] == {"type": "Recreate"}
@@ -430,9 +432,15 @@ def test_broker_runs_one_replica_from_its_config() -> None:
 
 
 def test_github_app_is_optional() -> None:
-    docs = _render(["broker.githubApp.enabled=true"])
+    docs = _render(
+        ["broker.enabled=true", "broker.githubApp.enabled=true"], binding=False
+    )
     item = _in(docs, "OnePasswordItem", "factory", "factory-github-app")
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-github-app"
+    # The deploy values read the homelab App from its own item.
+    item = _in(_render(), "OnePasswordItem", "factory", "factory-github-app")
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-gh-app"
+    docs = _render(["broker.githubApp.enabled=true"])
     pod = _in(docs, "Deployment", "factory", "factory-broker")["spec"]["template"]
     volumes = {v["name"]: v for v in pod["spec"]["volumes"]}
     assert volumes["github-app"]["secret"]["secretName"] == "factory-github-app"

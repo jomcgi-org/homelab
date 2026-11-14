@@ -18,10 +18,15 @@ postgres:
     port: 5432
 
 # The credential broker (projects/factory/broker): relays the Codex harness's
-# model calls with its own grant; GitHub minting stays off until the App's
-# 1Password item exists (broker.githubApp.enabled).
+# model calls with its own grant, and mints tokens from the jomcgi-factory
+# GitHub App (installed on jomcgi-org/homelab only). Its 1Password item is an
+# SSH Key item whose `private key` field the operator writes as private-key,
+# with text fields app-id and installation-id.
 broker:
   enabled: true
+  githubApp:
+    enabled: true
+    itemPath: vaults/k8s-homelab/items/factory-gh-app
 
 kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
@@ -78,13 +83,16 @@ itsaplan:
           app.kubernetes.io/name: garage
 
 # The connector (projects/factory/connector) as factory/factory-connector,
-# for the homelab binding. Delivery starts once broker.githubApp.enabled.
+# for the homelab binding.
 connector:
   enabled: true
   bindings:
     homelab:
       itsaplanProject: HOME
       agents: [homelab-codex]
+      # While the factory is being bootstrapped, local review agents approve
+      # its PRs as jomcgi. A kagent reviewer replaces this afterwards.
+      trustedReviewers: [jomcgi]
   database:
     endpoints:
       - matchLabels:
