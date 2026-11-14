@@ -52,9 +52,11 @@ type Intervals struct {
 	TaskPoll Duration `yaml:"taskPoll"`
 	// Reissue spaces resends of a review message kagent has not taken.
 	Reissue Duration `yaml:"reissue"`
-	// Timeout bounds one review attempt; a timed-out attempt is retried
-	// once.
+	// Timeout bounds one review attempt.
 	Timeout Duration `yaml:"timeout"`
+	// RetryBackoff spaces the attempts of one review after one ends without
+	// a report (a failed, rejected or timed-out task, or an unusable reply).
+	RetryBackoff Duration `yaml:"retryBackoff"`
 }
 
 // Binding is one repository whose PRs into BaseBranch are reviewed by the
@@ -69,8 +71,9 @@ type Binding struct {
 	KagentAgent     string   `yaml:"kagentAgent"`
 	RequiredChecks  []Check  `yaml:"requiredChecks"`
 	SkipLabels      []string `yaml:"skipLabels"`
-	// EnqueueAuthors are the PR authors whose passing heads are enqueued;
-	// other authors' PRs get the check only.
+	// EnqueueAuthors are the PR authors whose passing heads the reviewer
+	// enqueues; other authors' PRs get the check only. The connector
+	// enqueues the factory's own PRs, since it sees their stops.
 	EnqueueAuthors []string `yaml:"enqueueAuthors"`
 	// A PR touching HumanGatePaths (globs, ** for any directories) or
 	// carrying HumanGateLabels needs an APPROVED review from one of
@@ -91,8 +94,15 @@ type Binding struct {
 
 // Binding defaults.
 var (
-	DefaultEnqueueAuthors  = []string{"jomcgi-factory[bot]", "jomcgi"}
-	DefaultHumanGatePaths  = []string{"REVIEW.md", "**/REVIEW.md", "projects/factory/reviewer/**", ".github/CODEOWNERS"}
+	DefaultEnqueueAuthors = []string{"jomcgi"}
+	// DefaultHumanGatePaths are the rules, the reviewer, the code its
+	// GitHub, kagent and token calls go through, its chart templates and
+	// CODEOWNERS.
+	DefaultHumanGatePaths = []string{
+		"REVIEW.md", "**/REVIEW.md", "projects/factory/reviewer/**",
+		"projects/factory/connector/github/**", "projects/factory/connector/kagent/**", "projects/factory/broker/**",
+		"projects/factory/chart/templates/*reviewer*", ".github/CODEOWNERS",
+	}
 	DefaultHumanGateLabels = []string{"human", "needs-human"}
 	DefaultHumanApprovers  = []string{"jomcgi"}
 	DefaultContextDocs     = []string{"AGENTS.md", "docs/agents/reference.md"}
@@ -186,7 +196,13 @@ func Parse(b []byte) (*Config, error) {
 	for _, d := range []struct {
 		v   *Duration
 		def time.Duration
-	}{{&iv.Poll, 30 * time.Second}, {&iv.TaskPoll, 15 * time.Second}, {&iv.Reissue, 15 * time.Second}, {&iv.Timeout, 45 * time.Minute}} {
+	}{
+		{&iv.Poll, 30 * time.Second},
+		{&iv.TaskPoll, 15 * time.Second},
+		{&iv.Reissue, 15 * time.Second},
+		{&iv.Timeout, 45 * time.Minute},
+		{&iv.RetryBackoff, 5 * time.Minute},
+	} {
 		if *d.v == 0 {
 			*d.v = Duration(d.def)
 		}

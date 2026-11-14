@@ -39,15 +39,17 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 	iv := c.Intervals
 	if time.Duration(iv.Poll) != 30*time.Second || time.Duration(iv.TaskPoll) != 15*time.Second ||
-		time.Duration(iv.Reissue) != 15*time.Second || time.Duration(iv.Timeout) != 45*time.Minute {
+		time.Duration(iv.Reissue) != 15*time.Second || time.Duration(iv.Timeout) != 45*time.Minute ||
+		time.Duration(iv.RetryBackoff) != 5*time.Minute {
 		t.Fatalf("intervals = %+v", iv)
 	}
 	b := c.Bindings[0]
 	if len(b.SkipLabels) != 0 || b.RequiredChecks[0].StatusCreator != "buildbuddy-io[bot]" {
 		t.Fatalf("binding = %+v", b)
 	}
-	if strings.Join(b.EnqueueAuthors, ",") != "jomcgi-factory[bot],jomcgi" ||
-		strings.Join(b.HumanGatePaths, ",") != "REVIEW.md,**/REVIEW.md,projects/factory/reviewer/**,.github/CODEOWNERS" ||
+	gated := "REVIEW.md,**/REVIEW.md,projects/factory/reviewer/**,projects/factory/connector/github/**," +
+		"projects/factory/connector/kagent/**,projects/factory/broker/**,projects/factory/chart/templates/*reviewer*,.github/CODEOWNERS"
+	if strings.Join(b.EnqueueAuthors, ",") != "jomcgi" || strings.Join(b.HumanGatePaths, ",") != gated ||
 		strings.Join(b.HumanGateLabels, ",") != "human,needs-human" || strings.Join(b.HumanApprovers, ",") != "jomcgi" ||
 		strings.Join(b.TrustedCommenters, ",") != "jomcgi" || strings.Join(b.ContextDocs, ",") != "AGENTS.md,docs/agents/reference.md" ||
 		b.MaxDiffLines != 2500 || b.MaxDiffFiles != 150 || len(b.GeneratedPaths) == 0 {

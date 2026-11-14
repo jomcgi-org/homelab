@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,12 +28,12 @@ import (
 
 // GitHub is the part of the GitHub client the reviewer uses.
 type GitHub interface {
-	ListPullRequests(ctx context.Context, repo, base string) ([]github.PullRequest, error)
+	ListPullRequests(ctx context.Context, repo, base string) ([]github.PullRequest, bool, error)
 	ListCheckRuns(ctx context.Context, repo, sha string, f github.CheckRunFilter) ([]github.CheckRun, error)
 	CreateCheckRun(ctx context.Context, repo string, w github.CheckRunWrite) (*github.CheckRun, error)
 	UpdateCheckRun(ctx context.Context, repo string, id int64, w github.CheckRunWrite) (*github.CheckRun, error)
 	PullRequestFiles(ctx context.Context, repo string, number int) ([]github.PullRequestFile, error)
-	PullRequestHeads(ctx context.Context, repo string, number int) ([]string, error)
+	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	PullRequestComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
 	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
@@ -104,9 +105,18 @@ type Config struct {
 	// message kagent has not taken, and retries of failed reads.
 	TaskPoll time.Duration
 	Reissue  time.Duration
-	// Timeout bounds one review attempt, from the check run's start; a head
-	// gets MaxAttempts.
+	// Timeout bounds one attempt: its task's run from the send, and the
+	// reads and sends before it.
 	Timeout time.Duration
+	// RetryBackoff spaces the attempts of one review after one ends without
+	// a report; a review makes at most MaxAttempts.
+	RetryBackoff time.Duration
+	// MaxSends bounds the sends of one attempt's message that kagent does
+	// not answer with a task. One final send follows DispatchWindow after
+	// the last, once nothing sent earlier can still start, before the
+	// attempt ends without a report.
+	MaxSends       int
+	DispatchWindow time.Duration
 	// EnqueueBackoff spaces enqueue attempts for one head after a failure.
 	EnqueueBackoff time.Duration
 	// RuleIDs are scoped rule names that, with ContractRules, bound the rule
@@ -126,7 +136,7 @@ type Engine struct {
 	rules map[string]bool
 
 	mu       sync.Mutex
-	inflight map[prKey]*running
+	inflight map[headKey]*running
 	wg       sync.WaitGroup
 
 	// Only the polling goroutine uses these.
@@ -134,13 +144,15 @@ type Engine struct {
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
 }
 
-type prKey struct {
+// headKey names a review: check runs belong to a commit, so two open PRs
+// with the same head share one.
+type headKey struct {
 	binding string
-	number  int
+	sha     string
 }
 
 type running struct {
-	sha    string
+	number int
 	cancel context.CancelCauseFunc
 }
 
@@ -165,6 +177,17 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 45 * time.Minute
+	}
+	if cfg.RetryBackoff <= 0 {
+		cfg.RetryBackoff = 5 * time.Minute
+	}
+	if cfg.MaxSends <= 0 {
+		cfg.MaxSends = 20
+	}
+	if cfg.DispatchWindow <= 0 {
+		// The send's timeout, kagent's two-minute dispatch reservation and
+		// 30 s of clock skew, as the connector waits.
+		cfg.DispatchWindow = kagent.DefaultTimeout + 2*time.Minute + 30*time.Second
 	}
 	if cfg.EnqueueBackoff <= 0 {
 		cfg.EnqueueBackoff = 5 * time.Minute
@@ -193,7 +216,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules,
-		inflight: map[prKey]*running{}, groups: map[string]bool{}, enqueueAfter: map[string]time.Time{},
+		inflight: map[headKey]*running{}, groups: map[string]bool{}, enqueueAfter: map[string]time.Time{},
 	}
 }
 
@@ -236,21 +259,21 @@ type candidate struct {
 func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	repo := b.repo()
 	bl := e.log.With("binding", b.Name, "repo", repo)
-	prs, err := e.gh.ListPullRequests(ctx, repo, b.BaseBranch)
+	prs, complete, err := e.gh.ListPullRequests(ctx, repo, b.BaseBranch)
 	if err != nil {
 		e.ghError(ctx, bl, b, "list_pulls", err)
 		return
 	}
-	complete := len(prs) < github.MaxListed
 	if !complete {
-		bl.WarnContext(ctx, "the open PR listing is full; PRs past it are not reviewed this poll", "listed", len(prs))
+		bl.WarnContext(ctx, "the open PR listing is longer than the client reads; PRs past it are not reviewed this poll", "listed", len(prs))
 	}
 	e.supersede(b, prs, complete)
+	prioritize(b, prs)
 
 	var attach, start []candidate
 	reviews := map[int]*github.CheckRun{}
 	for _, pr := range prs {
-		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft || b.skipped(&pr) || e.isRunning(prKey{b.Name, pr.Number}) {
+		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft || b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
 			continue
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
@@ -259,7 +282,8 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 		reviews[pr.Number] = run
 		switch {
-		case run == nil:
+		case run == nil || (run.Status == "completed" && run.Conclusion == ConclusionCancelled):
+			// A cancelled review is no review: the head is current again.
 			start = append(start, candidate{pr, nil})
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
@@ -280,39 +304,53 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	e.mergeGroups(ctx, b, reviews)
 }
 
-// supersede cancels running reviews whose head is no longer the PR's, or
-// whose PR left the listing. An incomplete listing proves no PR closed.
+// prioritize orders a listing for the review slots: PRs whose authors the
+// binding enqueues first, then the most recently updated.
+func prioritize(b *Binding, prs []github.PullRequest) {
+	sort.SliceStable(prs, func(i, j int) bool {
+		ei, ej := containsFold(b.EnqueueAuthors, prs[i].Author), containsFold(b.EnqueueAuthors, prs[j].Author)
+		if ei != ej {
+			return ei
+		}
+		return prs[i].UpdatedAt.After(prs[j].UpdatedAt)
+	})
+}
+
+// supersede cancels running reviews of heads no open PR into the base
+// still has. Another PR at the same commit keeps its review running. An
+// incomplete listing proves no PR closed.
 func (e *Engine) supersede(b *Binding, prs []github.PullRequest, complete bool) {
-	heads := map[int]string{}
+	heads := map[string]bool{}
+	open := map[int]bool{}
 	for _, pr := range prs {
 		if pr.BaseRef == b.BaseBranch {
-			heads[pr.Number] = pr.HeadSHA
+			heads[pr.HeadSHA] = true
+			open[pr.Number] = true
 		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for key, r := range e.inflight {
-		if key.binding != b.Name {
+		if key.binding != b.Name || heads[key.sha] {
 			continue
 		}
-		head, open := heads[key.number]
 		switch {
-		case !open && complete:
-			r.cancel(errClosed)
-		case open && head != r.sha:
+		case open[r.number]:
 			r.cancel(errSuperseded)
+		case complete:
+			r.cancel(errClosed)
 		}
 	}
 }
 
-func (e *Engine) isRunning(key prKey) bool {
+func (e *Engine) isRunning(key headKey) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, ok := e.inflight[key]
 	return ok
 }
 
-func (e *Engine) done(key prKey) {
+func (e *Engine) done(key headKey) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	delete(e.inflight, key)
@@ -346,16 +384,20 @@ func (e *Engine) reviewCheck(ctx context.Context, b *Binding, sha string) (*gith
 
 // begin starts a review in the background, creating its check run first
 // when the head has none. It reports true, starting nothing, when every
-// slot is taken.
+// slot is taken; a head already under review starts nothing either.
 func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
-	key := prKey{b.Name, pr.Number}
+	key := headKey{b.Name, pr.HeadSHA}
 	e.mu.Lock()
+	if _, ok := e.inflight[key]; ok {
+		e.mu.Unlock()
+		return false
+	}
 	if len(e.inflight) >= e.cfg.Concurrency {
 		e.mu.Unlock()
 		return true
 	}
 	rctx, cancel := context.WithCancelCause(ctx)
-	e.inflight[key] = &running{sha: pr.HeadSHA, cancel: cancel}
+	e.inflight[key] = &running{number: pr.Number, cancel: cancel}
 	e.m.InFlight.Set(float64(len(e.inflight)))
 	e.mu.Unlock()
 
@@ -367,7 +409,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		created, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 			Status: "in_progress", StartedAt: &now,
-			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, nil, recorded{})},
+			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, nil, recorded{}, "")},
 		})
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
@@ -394,31 +436,54 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	return false
 }
 
-// recorded is the task an in-progress check run names, and its attempt.
+// recorded is the attempt an in-progress check run records, its task once
+// sent and when it was sent.
 type recorded struct {
-	ID      string
 	Attempt int
+	ID      string
+	Sent    time.Time
 }
 
-var recordedTask = regexp.MustCompile("kagent task `([^`\\s]+)` \\(attempt ([0-9]+)\\)")
+// The task marker is written only by the service; markerStart is stripped
+// from every text the agent or the PR supplies, and the last marker counts.
+var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*) -->`)
 
-// RecordedTask is the kagent task an in-progress review check run records.
+// RecordedTask is the attempt and kagent task an in-progress review check
+// run records.
 func RecordedTask(summary string) recorded {
-	m := recordedTask.FindStringSubmatch(summary)
-	if m == nil {
+	all := taskMarker.FindAllStringSubmatch(summary, -1)
+	if len(all) == 0 {
 		return recorded{}
 	}
-	n, _ := strconv.Atoi(m[2])
-	return recorded{ID: m[1], Attempt: max(n, 1)}
+	m := all[len(all)-1]
+	n, _ := strconv.Atoi(m[1])
+	rec := recorded{Attempt: max(n, 1), ID: m[2]}
+	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
+		rec.Sent = time.Unix(sec, 0)
+	}
+	return rec
 }
 
-func progressSummary(b *Binding, gate *Gate, rec recorded) string {
+// progressSummary is an in-progress check's summary: what is running, why
+// an earlier attempt ended, the head's human gate, and the attempt marker.
+func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 	s := fmt.Sprintf("The kagent agent `%s/%s` is reviewing this commit.", b.Agent.Namespace, b.Agent.Name)
+	if note != "" {
+		s += "\n\n" + note
+	}
 	if gate.held() {
 		s += "\n\n" + gateFinding(b, gate).Detail
 	}
-	if rec.ID != "" {
-		s += fmt.Sprintf("\n\nkagent task `%s` (attempt %d)", rec.ID, rec.Attempt)
+	if rec.Attempt > 0 {
+		s += fmt.Sprintf("\n\nAttempt %d of %d", rec.Attempt, MaxAttempts)
+		if rec.ID != "" {
+			s += fmt.Sprintf(": kagent task `%s`", rec.ID)
+		}
+		var sent int64
+		if !rec.Sent.IsZero() {
+			sent = rec.Sent.Unix()
+		}
+		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d -->", rec.Attempt, rec.ID, sent)
 	}
 	return s
 }
@@ -430,112 +495,169 @@ type inputs struct {
 	gate      *Gate
 	prior     State
 	priorHead string
+	// priorUnknown says why an earlier head's review could not be found.
+	priorUnknown string
 }
 
-// review drives one head's review to a completed check run. The head gets
-// at most MaxAttempts tasks, each with Timeout of wall clock from the check
-// run's start; each task opens a fresh kagent session. A task is found by
-// the ID the check run records, else by resending its attempt's message,
-// which kagent answers with the task already holding it.
+// review drives one head's review to a completed check run. It makes at
+// most MaxAttempts attempts. Each builds its message once and sends those
+// exact bytes until kagent answers with a task, which runs in a fresh
+// session for at most Timeout. An attempt that ends without a report (a
+// failed, rejected or timed-out task, an unusable reply, or reads that kept
+// failing) is followed by the next one after RetryBackoff; the last one
+// fails the check. A restart finds the task the check run records, else
+// sends the recorded attempt's message again.
 func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, l *slog.Logger) {
-	started := run.StartedAt
-	if started.IsZero() {
-		started = e.cfg.Now()
-	}
-	attemptEnd := func(a int) time.Time { return started.Add(time.Duration(a) * e.cfg.Timeout) }
-	final := attemptEnd(MaxAttempts)
 	rec := RecordedTask(run.Summary)
-
-	// The review cannot be judged without its inputs, so it waits for them.
-	var in *inputs
-	for in == nil && e.alive(ctx, final) {
-		var err error
-		if in, err = e.gather(ctx, b, pr, l); err != nil {
-			e.sleep(ctx, e.cfg.Reissue, final)
+	attempt := max(rec.Attempt, 1)
+	began := e.cfg.Now()
+	if rec.ID != "" && rec.Sent.IsZero() {
+		rec.Sent = run.StartedAt
+		if rec.Sent.IsZero() {
+			rec.Sent = began
 		}
 	}
-	switch {
-	case ctx.Err() != nil:
-		e.stop(ctx, b, pr, run, rec.ID, l)
-		return
-	case in == nil:
-		e.timeout(ctx, b, pr, run, rec.ID, l)
-		return
-	case rec.ID == "" && in.size.over(b):
-		l.WarnContext(ctx, "the PR is over the review budget; asking for a split",
-			"lines", in.size.Lines, "files", in.size.Files, "generated", in.size.Generated)
-		e.m.SplitRequests.WithLabelValues(b.Name).Inc()
-		e.complete(ctx, b, run, SplitOutcome(b, in.size, e.footer(b, pr, "")), l)
-		return
+	var (
+		in       *inputs
+		msg      *kagent.Message
+		sends    int
+		lastSend time.Time
+	)
+	// next ends the attempt without a report. It reports true when that was
+	// the last attempt and the check is complete.
+	next := func(reason string) bool {
+		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
+		if attempt >= MaxAttempts {
+			e.complete(ctx, b, run, NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason),
+				e.footer(b, pr, rec.ID)), l)
+			return true
+		}
+		e.m.Retries.WithLabelValues(b.Name).Inc()
+		var gate *Gate
+		if in != nil {
+			gate = in.gate
+		}
+		note := fmt.Sprintf("Attempt %d ended without a report: %s Attempt %d follows.", attempt, reason, attempt+1)
+		attempt++
+		rec, msg, sends = recorded{Attempt: attempt}, nil, 0
+		e.recordProgress(ctx, b, run, gate, rec, note, l)
+		e.sleep(ctx, e.cfg.RetryBackoff)
+		began = e.cfg.Now()
+		return false
 	}
-
-	var task *kagent.Task
-	for task == nil {
+	for {
 		if ctx.Err() != nil {
 			e.stop(ctx, b, pr, run, rec.ID, l)
 			return
 		}
-		now := e.cfg.Now()
-		if !now.Before(final) {
-			e.timeout(ctx, b, pr, run, rec.ID, l)
-			return
-		}
-		attempt := 1
-		for attempt < MaxAttempts && !now.Before(attemptEnd(attempt)) {
-			attempt++
-		}
-		if rec.ID == "" {
-			t, err := e.send(ctx, b, pr, in, attempt, l)
+		late := !e.cfg.Now().Before(began.Add(e.cfg.Timeout))
+		if in == nil {
+			got, err := e.gather(ctx, b, pr, l)
 			switch {
 			case err == nil:
-				rec = recorded{ID: t.ID, Attempt: attempt}
-				e.recordTask(ctx, b, run, in.gate, rec, l)
-				if kagent.Quiescent(t.Status.State) {
-					task = t
+				in = got
+			case late:
+				if next("the reviewer could not read the PR from GitHub.") {
+					return
+				}
+				continue
+			default:
+				e.sleep(ctx, e.cfg.Reissue)
+				continue
+			}
+			if rec.ID == "" && in.size.over(b) {
+				l.WarnContext(ctx, "the PR is over the review budget; asking for a split",
+					"lines", in.size.Lines, "files", in.size.Files, "generated", in.size.Generated)
+				e.m.SplitRequests.WithLabelValues(b.Name).Inc()
+				e.complete(ctx, b, run, SplitOutcome(b, in.size, e.footer(b, pr, "")), l)
+				return
+			}
+		}
+		if rec.ID == "" {
+			if msg == nil {
+				m, err := e.message(ctx, b, pr, run, in, attempt, l)
+				switch {
+				case err == nil:
+					msg, sends = m, 0
+				case late:
+					if next("the reviewer could not read the rules or the PR from GitHub.") {
+						return
+					}
+					continue
+				default:
+					e.sleep(ctx, e.cfg.Reissue)
 					continue
 				}
-				e.sleep(ctx, e.cfg.TaskPoll, attemptEnd(attempt))
+			}
+			if sends > e.cfg.MaxSends {
+				if next(fmt.Sprintf("kagent did not take the review task in %d sends.", sends)) {
+					return
+				}
+				continue
+			}
+			if wait := e.cfg.DispatchWindow - e.cfg.Now().Sub(lastSend); sends == e.cfg.MaxSends && wait > 0 {
+				// The final send waits until nothing sent earlier can still
+				// start, so it finds any task kagent took meanwhile.
+				e.sleep(ctx, wait)
+				continue
+			}
+			t, err := e.tasks.Send(ctx, b.Agent, *msg)
+			sends++
+			lastSend = e.cfg.Now()
+			switch {
+			case err == nil:
+				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend}
+				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends)
+				e.recordProgress(ctx, b, run, in.gate, rec, "", l)
 			case errors.Is(err, kagent.ErrRejected):
-				e.complete(ctx, b, run, NoReport("kagent rejected the review task, so this head has no review.", e.footer(b, pr, "")), l)
-				return
+				e.kagentError(ctx, l, b, "send", err)
+				if next("kagent rejected the review task.") {
+					return
+				}
 			default:
-				e.sleep(ctx, e.cfg.Reissue, attemptEnd(attempt))
+				e.kagentError(ctx, l, b, "send", err)
+				e.sleep(ctx, e.cfg.Reissue)
 			}
 			continue
 		}
 		t, err := e.tasks.GetTask(ctx, b.Agent, rec.ID)
 		switch {
 		case err == nil && kagent.Quiescent(t.Status.State):
-			task = t
-			continue
-		case err == nil && rec.Attempt < attempt:
-			l.WarnContext(ctx, "review attempt ran out of time; retrying once in a new session", "task", rec.ID, "attempt", rec.Attempt)
-			e.m.Retries.WithLabelValues(b.Name).Inc()
-			e.cancelTask(ctx, b, rec.ID, l)
-			rec = recorded{}
-			continue
+			res := e.outcome(ctx, b, pr, t, in, l)
+			if res.reason != "" {
+				if next(res.reason) {
+					return
+				}
+				continue
+			}
+			if e.complete(ctx, b, run, res.o, l) {
+				e.observe(ctx, b, res.r, res.a, l)
+			}
+			return
 		case errors.Is(err, kagent.ErrTaskNotFound):
 			// Expired or never seen: the attempt's message finds or opens it.
 			l.WarnContext(ctx, "review task not found; sending its message again", "task", rec.ID)
 			e.m.KagentErrors.WithLabelValues(b.Name, "get_task").Inc()
-			rec = recorded{}
+			rec = recorded{Attempt: attempt}
+			e.sleep(ctx, e.cfg.TaskPoll)
+			continue
 		case err != nil:
 			e.kagentError(ctx, l, b, "get_task", err)
 		}
-		e.sleep(ctx, e.cfg.TaskPoll, attemptEnd(attempt))
-	}
-	o, r, a := e.outcome(ctx, b, pr, task, in, l)
-	if e.complete(ctx, b, run, o, l) {
-		e.observe(ctx, b, r, a, l)
+		// The task is read before its time runs out, so one that finished
+		// in time is never timed out.
+		if !e.cfg.Now().Before(rec.Sent.Add(e.cfg.Timeout)) {
+			e.cancelTask(ctx, b, rec.ID, l)
+			if next(fmt.Sprintf("its task did not finish within %s.", e.cfg.Timeout)) {
+				return
+			}
+			continue
+		}
+		e.sleep(ctx, e.cfg.TaskPoll)
 	}
 }
 
-func (e *Engine) alive(ctx context.Context, deadline time.Time) bool {
-	return ctx.Err() == nil && e.cfg.Now().Before(deadline)
-}
-
-func (e *Engine) sleep(ctx context.Context, d time.Duration, deadline time.Time) {
-	d = min(d, max(deadline.Sub(e.cfg.Now()), 0))
+func (e *Engine) sleep(ctx context.Context, d time.Duration) {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -551,49 +673,61 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		e.ghError(ctx, l, b, "files", err)
 		return nil, err
 	}
-	prior, head, err := e.previousState(ctx, b, pr)
+	prior, head, unknown, err := e.previousState(ctx, b, pr)
 	if err != nil {
 		return nil, err
 	}
+	if unknown != "" {
+		l.WarnContext(ctx, "the previous review could not be found; asking for a full review", "reason", unknown)
+	}
 	return &inputs{
 		files: files, size: measure(b, files), gate: humanGate(b, changedPaths(files), pr.Labels),
-		prior: prior, priorHead: head,
+		prior: prior, priorHead: head, priorUnknown: unknown,
 	}, nil
 }
 
-// maxPreviousLookups bounds the earlier heads searched for a review.
+// maxPreviousLookups bounds the earlier heads whose review check is read.
 const maxPreviousLookups = 20
 
 // previousState reads the State kept by the review of the newest earlier
-// head of the PR that has one, and that head. A review that ended without a
-// report keeps none and is skipped.
-func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRequest) (State, string, error) {
-	heads, err := e.gh.PullRequestHeads(ctx, b.repo(), pr.Number)
+// head of the PR that has one, and that head. One GraphQL read lists the
+// heads that carry a completed review check; only those are read. A review
+// that ended without a report keeps none and is skipped. When the search
+// stops at a bound (an older timeline than was read, or more reviewed heads
+// than maxPreviousLookups), unknown says so instead of starting fresh.
+func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRequest) (st State, head, unknown string, err error) {
+	hist, err := e.gh.PullRequestHeads(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID})
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
-		return State{}, "", err
+		return State{}, "", "", err
 	}
 	seen := map[string]bool{pr.HeadSHA: true}
 	looked := 0
-	for i := len(heads) - 1; i >= 0 && looked < maxPreviousLookups; i-- {
-		sha := heads[i]
-		if seen[sha] {
+	for i := len(hist.Heads) - 1; i >= 0; i-- {
+		h := hist.Heads[i]
+		if seen[h.SHA] || !h.Checked {
 			continue
 		}
-		seen[sha] = true
+		seen[h.SHA] = true
+		if looked == maxPreviousLookups {
+			return State{}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), nil
+		}
 		looked++
-		run, err := e.reviewCheck(ctx, b, sha)
+		run, err := e.reviewCheck(ctx, b, h.SHA)
 		if err != nil {
-			return State{}, "", err
+			return State{}, "", "", err
 		}
 		if run == nil || run.Status != "completed" {
 			continue
 		}
 		if st, ok := LoadState(run.Text); ok {
-			return st, sha, nil
+			return st, h.SHA, "", nil
 		}
 	}
-	return State{}, "", nil
+	if hist.Truncated {
+		return State{}, "", "its timeline has more commit and push events than the reviewer reads", nil
+	}
+	return State{}, "", "", nil
 }
 
 // trustedComments are the PR's review bodies and comments from trusted
@@ -625,9 +759,10 @@ func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.Pull
 	return out, dropped, nil
 }
 
-// send builds the head's review task for an attempt and sends it. The
-// message names no session, so kagent opens a fresh one for it.
-func (e *Engine) send(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, attempt int, l *slog.Logger) (*kagent.Task, error) {
+// message builds an attempt's review task. It is built once per attempt:
+// kagent rejects a message ID sent again with other content. The message
+// names no session, so kagent opens a fresh one for it.
+func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, in *inputs, attempt int, l *slog.Logger) (*kagent.Message, error) {
 	repo := b.repo()
 	rules, err := LoadRules(ctx, e.gh, repo, b.BaseBranch, changedPaths(in.files), b.ContextDocs)
 	if err != nil {
@@ -650,34 +785,30 @@ func (e *Engine) send(ctx context.Context, b *Binding, pr github.PullRequest, in
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Blocking, PreviousHead: in.priorHead, Interdiff: interdiff,
+		Previous: in.prior.Blocking, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Comments: comments, DroppedComments: dropped, Gate: in.gate, Attempt: attempt,
 	})
-	msgID := attemptMessageID(repo, pr.Number, pr.HeadSHA, attempt)
-	t, err := e.tasks.Send(ctx, b.Agent, kagent.Message{
-		MessageID: msgID,
+	msg := &kagent.Message{
+		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/repository":   repo,
 			"factory.jomcgi.dev/pull-request": pr.Number,
 			"factory.jomcgi.dev/head":         pr.HeadSHA,
 		},
-	})
-	if err != nil {
-		e.kagentError(ctx, l, b, "send", err)
-		return nil, err
 	}
-	l.InfoContext(ctx, "review task sent", "message_id", msgID, "task", t.ID, "attempt", attempt,
-		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead,
+	l.InfoContext(ctx, "review task built", "message_id", msg.MessageID, "attempt", attempt,
+		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead, "previous_unknown", in.priorUnknown,
 		"previous_findings", len(in.prior.Blocking), "trusted_comments", len(comments), "dropped_comments", dropped)
-	return t, nil
+	return msg, nil
 }
 
-// recordTask notes the task on the in-progress check run, so a restart
-// reads it instead of resending a message whose PR text may have changed.
-func (e *Engine) recordTask(ctx context.Context, b *Binding, run *github.CheckRun, gate *Gate, rec recorded, l *slog.Logger) {
+// recordProgress writes the attempt, and its task once sent, on the
+// in-progress check run, so a restart reads the task instead of sending a
+// message whose PR text may have changed.
+func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.CheckRun, gate *Gate, rec recorded, note string, l *slog.Logger) {
 	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
-		Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, gate, rec)},
+		Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, gate, rec, note)},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)
@@ -692,9 +823,18 @@ func (e *Engine) footer(b *Binding, pr github.PullRequest, taskID string) string
 	return s + ". The reviewer service decides the conclusion from the findings' severities."
 }
 
+// result is how a quiescent task ends its review: an outcome with the
+// report and assessment behind it, or the reason it gave no report.
+type result struct {
+	o      Outcome
+	r      *Report
+	a      *Assessment
+	reason string
+}
+
 // outcome reads a quiescent task. Only a parsed report can pass, and a
 // gated head passes only once its human approved it.
-func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) (Outcome, *Report, *Assessment) {
+func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) result {
 	footer := e.footer(b, pr, task.ID)
 	switch task.Status.State {
 	case kagent.StateCompleted, kagent.StateInputRequired:
@@ -702,14 +842,14 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		r, err := ParseReport(reply)
 		if err != nil {
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
-			return NoReport("The reviewer's reply had no usable findings report: "+err.Error()+".", footer), nil, nil
+			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
 		a := Assess(r, in.prior.Blocking)
 		gate := &Gate{}
 		if in.gate != nil {
 			*gate = *in.gate
 		}
-		for _, f := range takeGate(&a) {
+		for _, f := range a.Gated {
 			if len(gate.Findings) < maxGatePaths {
 				gate.Findings = append(gate.Findings, storable(f))
 			}
@@ -736,7 +876,12 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		if len(a.Blocking) > 0 {
 			a.Conclusion = ConclusionFailure
 		}
-		return Render(a, r, gate, footer), r, &a
+		o := Render(a, r, gate, footer)
+		if in.priorUnknown != "" {
+			o.Output.Summary = clip(fmt.Sprintf("The review of an earlier head could not be found (%s), so this head was reviewed in full.\n\n",
+				in.priorUnknown)+o.Output.Summary, maxSummary)
+		}
+		return result{o: o, r: r, a: &a}
 	}
 	state := strings.ToLower(strings.TrimPrefix(task.Status.State, "TASK_STATE_"))
 	status := ""
@@ -745,7 +890,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 	}
 	// The status text can be provider output; it stays in the logs.
 	l.WarnContext(ctx, "the review task ended without a report", "task", task.ID, "state", state, "status", status)
-	return NoReport(fmt.Sprintf("The review task ended %s without a report; the reviewer's logs hold its status.", state), footer), nil, nil
+	return result{reason: fmt.Sprintf("its task ended %s without a report; the reviewer's logs hold its status.", oneLine(state, 40))}
 }
 
 // approval is the configured human whose APPROVED review of the PR's head
@@ -759,11 +904,17 @@ func (e *Engine) approval(ctx context.Context, b *Binding, pr github.PullRequest
 	return approvedBy(b, reviews, pr.HeadSHA), nil
 }
 
-// rule is a finding ID's rule, the part after its last ':', when REVIEW.md
-// or the configuration names it; otherwise "other", which bounds the metric.
+// rule is a finding ID's rule when REVIEW.md or the configuration names it:
+// the first rule segment that does, without its symbol suffix. Anything
+// else is "other", which bounds the metric.
 func (e *Engine) rule(id string) string {
-	if r := ruleOf(id); e.rules[r] {
-		return r
+	for _, seg := range ruleSegments(id) {
+		if strings.HasPrefix(seg, HumanGateID) {
+			return HumanGateID
+		}
+		if r := ruleName(seg); e.rules[r] {
+			return r
+		}
 	}
 	return "other"
 }
@@ -910,14 +1061,6 @@ func (e *Engine) stop(ctx context.Context, b *Binding, pr github.PullRequest, ru
 		Title:   "Review cancelled",
 		Summary: "Cancelled: " + cause.Error() + ".\n\n" + e.footer(b, pr, taskID),
 	}}, l)
-}
-
-// timeout fails a head whose attempts all ran out of time.
-func (e *Engine) timeout(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, taskID string, l *slog.Logger) {
-	l.WarnContext(ctx, "review timed out", "task", taskID, "timeout", e.cfg.Timeout, "attempts", MaxAttempts)
-	e.cancelTask(ctx, b, taskID, l)
-	e.complete(ctx, b, run, NoReport(fmt.Sprintf("The review did not finish: each of its %d attempts has %s.", MaxAttempts, e.cfg.Timeout),
-		e.footer(b, pr, taskID)), l)
 }
 
 func (e *Engine) cancelTask(ctx context.Context, b *Binding, taskID string, l *slog.Logger) {

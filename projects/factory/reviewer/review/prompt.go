@@ -9,20 +9,23 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
 
-// MaxAttempts is how many tasks one head's review may send: a first one
-// and one retry after its wall-clock limit.
-const MaxAttempts = 2
+// MaxAttempts is how many tasks one review check run may send: a first one
+// and two retries after an attempt ends without a report.
+const MaxAttempts = 3
 
-// MessageID is the A2A message ID of a head's review task; the first
-// attempt's is also the review check run's external ID. Each message opens
-// its own kagent session, and kagent answers a repeated task-opening
-// message with the task that already holds it.
+// MessageID identifies a head's review; it is the review check run's
+// external ID and the stem of its tasks' message IDs.
 func MessageID(repo string, number int, sha string) string {
 	return "factory-review/" + repo + "/" + strconv.Itoa(number) + "/" + sha
 }
 
-func attemptMessageID(repo string, number int, sha string, attempt int) string {
-	id := MessageID(repo, number, sha)
+// AttemptMessageID is the A2A message ID of one attempt of the review that
+// check run runID holds. Each message opens its own kagent session, and
+// kagent answers a repeated task-opening message with the task that already
+// holds it, so a later check run on the same head never finds an earlier
+// run's task.
+func AttemptMessageID(repo string, number int, sha string, runID int64, attempt int) string {
+	id := MessageID(repo, number, sha) + "/" + strconv.FormatInt(runID, 10)
 	if attempt > 1 {
 		id += "/attempt-" + strconv.Itoa(attempt)
 	}
@@ -47,6 +50,9 @@ type PromptInput struct {
 	// Interdiff is what changed since PreviousHead; nil when GitHub no
 	// longer has that commit.
 	Interdiff *github.CommitComparison
+	// PreviousUnknown says why the review of an earlier head could not be
+	// found when one may exist.
+	PreviousUnknown string
 	// Comments are from trusted logins; DroppedComments counts the rest.
 	Comments        []github.Comment
 	DroppedComments int
@@ -76,7 +82,7 @@ func Prompt(in PromptInput) string {
 	fmt.Fprintf(&b, "You are the factory's independent code reviewer. Review pull request #%d in %s at head commit %s, which targets %s.\n\n",
 		in.Number, in.Repo, in.SHA, in.Base)
 	if in.Attempt > 1 {
-		b.WriteString("This is the review's last attempt: the first one did not finish within its time limit.\n\n")
+		fmt.Fprintf(&b, "This is attempt %d of %d: the earlier ones ended without a report.\n\n", in.Attempt, MaxAttempts)
 	}
 	fmt.Fprintf(&b, "Set up two read-only checkouts of https://github.com/%s:\n\n", in.Repo)
 	fmt.Fprintf(&b, "- `main/`: %s at %s, the trusted base.\n", in.Base, commit)
@@ -121,7 +127,7 @@ func Prompt(in PromptInput) string {
 		b.WriteString("## Human gate\n\n")
 		b.WriteString("The reviewer service already holds this head for a human review")
 		if len(in.Gate.Paths) > 0 {
-			fmt.Fprintf(&b, ": it touches %s", strings.Join(in.Gate.Paths, ", "))
+			fmt.Fprintf(&b, ": it touches %d gated %s, listed in the pull request block below", len(in.Gate.Paths), plural(len(in.Gate.Paths), "path"))
 		}
 		if len(in.Gate.Labels) > 0 {
 			fmt.Fprintf(&b, "; the PR carries %s", strings.Join(in.Gate.Labels, ", "))
@@ -130,6 +136,12 @@ func Prompt(in PromptInput) string {
 			"the rules reserve for Joe as `human-gate`.\n\n")
 	}
 
+	if in.PreviousHead == "" && in.PreviousUnknown != "" {
+		b.WriteString("## Previous review\n\n")
+		fmt.Fprintf(&b, "The reviewer service could not find the review of an earlier head of this PR (%s), so earlier blocking "+
+			"findings may exist that this prompt cannot list. Review the whole change as a first review and report every "+
+			"blocking finding again.\n\n", in.PreviousUnknown)
+	}
 	if in.PreviousHead != "" {
 		b.WriteString("## Previous review\n\n")
 		if len(in.Previous) == 0 {
@@ -164,10 +176,13 @@ func Prompt(in PromptInput) string {
 			fmt.Fprintf(&b, "The PR was rebased since %s (%s), so the interdiff includes the base's changes: review the whole change again.\n\n",
 				in.PreviousHead, d.Status)
 		default:
-			fmt.Fprintf(&b, "Changed since %s (`git -C pr diff %s %s` after `git -C pr fetch origin %s`); start there:\n\n",
-				in.PreviousHead, in.PreviousHead, in.SHA, in.PreviousHead)
-			writeFileList(&b, d.Files)
-			b.WriteString("\n")
+			fmt.Fprintf(&b, "The files changed since %s are listed in the pull request block below; start there "+
+				"(`git -C pr diff %s %s` after `git -C pr fetch origin %s`).", in.PreviousHead, in.PreviousHead, in.SHA, in.PreviousHead)
+			if d.Truncated {
+				fmt.Fprintf(&b, " GitHub lists only the first %d; `git -C pr diff --stat %s %s` lists them all.",
+					github.MaxCompareFiles, in.PreviousHead, in.SHA)
+			}
+			b.WriteString("\n\n")
 		}
 	}
 
@@ -201,11 +216,26 @@ func Prompt(in PromptInput) string {
 	fmt.Fprintf(&b, "\n</untrusted-pr-description-%s>\n\n", short)
 
 	b.WriteString("## Pull request\n\n")
+	b.WriteString("File names are quoted strings, as the PR's author chose them.\n\n")
 	fmt.Fprintf(&b, "<untrusted-pr-content-%s>\n", short)
-	fmt.Fprintf(&b, "URL: %s\nAuthor: %s\nTitle: %s\n\n", in.URL, safe(in.Author), safe(clip(in.Title, maxPromptTitle)))
-	fmt.Fprintf(&b, "Changed files (%d):\n", len(in.Files))
 	var fb strings.Builder
+	fmt.Fprintf(&fb, "URL: %s\nAuthor: %s\nTitle: %s\n\n", in.URL, in.Author, clip(in.Title, maxPromptTitle))
+	fmt.Fprintf(&fb, "Changed files (%d):\n", len(in.Files))
 	writeFileList(&fb, in.Files)
+	if in.Gate != nil && len(in.Gate.Paths) > 0 {
+		fmt.Fprintf(&fb, "\nGated paths (%d):\n", len(in.Gate.Paths))
+		for _, p := range in.Gate.Paths {
+			fmt.Fprintf(&fb, "- %s\n", quotePath(p))
+		}
+	}
+	if d := in.Interdiff; in.PreviousHead != "" && d != nil && d.Status == "ahead" {
+		fmt.Fprintf(&fb, "\nChanged since %s (%d", in.PreviousHead, len(d.Files))
+		if d.Truncated {
+			fb.WriteString(", the first GitHub lists")
+		}
+		fb.WriteString("):\n")
+		writeFileList(&fb, d.Files)
+	}
 	b.WriteString(safe(fb.String()))
 	fmt.Fprintf(&b, "</untrusted-pr-content-%s>\n\n", short)
 
@@ -241,11 +271,13 @@ func writeFiles(b *strings.Builder, files []RuleFile) {
 	}
 }
 
+// writeFileList lists files one per line, each path quoted so a name with a
+// newline cannot start a line of its own.
 func writeFileList(b *strings.Builder, files []github.PullRequestFile) {
 	for _, f := range files {
-		fmt.Fprintf(b, "- %s %s", f.Status, f.Path)
+		fmt.Fprintf(b, "- %s %s", oneLine(f.Status, 20), quotePath(f.Path))
 		if f.PreviousPath != "" {
-			fmt.Fprintf(b, " (from %s)", f.PreviousPath)
+			fmt.Fprintf(b, " (from %s)", quotePath(f.PreviousPath))
 		}
 		fmt.Fprintf(b, " (+%d -%d)\n", f.Additions, f.Deletions)
 	}

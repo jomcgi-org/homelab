@@ -49,7 +49,8 @@ func New(reg prometheus.Registerer) *Metrics {
 		}, []string{"binding"}),
 		Retries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_retries_total",
-			Help: "Review attempts that ran out of time and were retried once, by binding.",
+			Help: "Review attempts that ended without a report (a failed, rejected or timed-out task, an unusable reply, " +
+				"or reads that kept failing) and were followed by another attempt on the same head, by binding.",
 		}, []string{"binding"}),
 		SplitRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_split_requests_total",

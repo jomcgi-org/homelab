@@ -22,7 +22,11 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   text: agents have no itsaplan tools (#7908). Text from GitHub, a model or
   a provider reaches a prompt or an issue comment only from a trusted
   reviewer login or the reviewer App; the rest is dropped or reduced to a
-  fixed class name. Critical.
+  fixed class name. The reviewer's own prompt is the one exception: it
+  receives PR text, file names and diffs from any author, because reviewing
+  them is its job, and only inside a delimited untrusted block, quoted and
+  sanitized so no text closes the block or starts a line of its own.
+  Critical.
 - **Credentials.** Provider and GitHub credentials never enter a sandbox, a
   log or the evidence bucket; they are injected at egress. A minted token
   names exactly the repository and permissions it needs. Critical.

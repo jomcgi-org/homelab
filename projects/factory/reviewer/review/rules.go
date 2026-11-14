@@ -19,7 +19,9 @@ const (
 	FallbackRules = "docs/agents/review.md"
 )
 
-// Bounds on the rules a prompt carries.
+// Bounds on the rules a prompt carries. MaxRuleFiles bounds the rule files
+// read; a tree read finds which exist, so it is reached only by a PR that
+// touches as many directories holding a REVIEW.md.
 const (
 	MaxRuleFiles = 100
 	maxRuleFile  = 16 << 10
@@ -29,16 +31,17 @@ const (
 // RuleFiles lists the REVIEW.md files that may apply to a change: the root
 // one and one in every ancestor directory of each changed path (and of a
 // rename's previous path). The root comes first, then by depth and name, so
-// nearer files come later. Past MaxRuleFiles the deepest are left out and
-// counted.
+// nearer files come later. A path no rule can be looked up for (an empty or
+// ".." segment) is counted as unchecked.
 func RuleFiles(paths []string) (files []string, unchecked int) {
 	set := map[string]bool{RulesFile: true}
 	for _, p := range paths {
-		p = cleanPath(p)
-		if p == "" {
+		c, ok := lookupPath(p)
+		if !ok {
+			unchecked++
 			continue
 		}
-		for dir := path.Dir(p); dir != "." && dir != "/"; dir = path.Dir(dir) {
+		for dir := path.Dir(c); dir != "." && dir != "/"; dir = path.Dir(dir) {
 			set[dir+"/"+RulesFile] = true
 		}
 	}
@@ -52,10 +55,6 @@ func RuleFiles(paths []string) (files []string, unchecked int) {
 		}
 		return files[i] < files[j]
 	})
-	if len(files) > MaxRuleFiles {
-		unchecked = len(files) - MaxRuleFiles
-		files = files[:MaxRuleFiles]
-	}
 	return files, unchecked
 }
 
@@ -72,7 +71,8 @@ type Rules struct {
 	// Fallback is set when the base has no root REVIEW.md and FallbackRules
 	// stands in for it.
 	Fallback bool
-	// Unchecked counts directories past MaxRuleFiles.
+	// Unchecked counts rule files past MaxRuleFiles and changed paths no
+	// rule could be looked up for.
 	Unchecked int
 	// Notes report includes that are missing, malformed or loop.
 	Notes []string
@@ -91,6 +91,7 @@ type RuleFile struct {
 // RulesReader is the part of the GitHub client rules are read with.
 type RulesReader interface {
 	BranchHead(ctx context.Context, repo, branch string) (string, error)
+	Tree(ctx context.Context, repo, ref string) (*github.Tree, error)
 	FileContent(ctx context.Context, repo, path, ref string) ([]byte, error)
 }
 
@@ -128,9 +129,14 @@ func includes(content string) []string {
 // LoadRules reads, from the base branch's current commit and never from the
 // PR head, the REVIEW.md files that apply to the changed paths with the
 // files they include, and the context documents. A PR cannot change the
-// rules it is reviewed against.
+// rules it is reviewed against. One tree read of the commit says which
+// files exist, so only those are read.
 func LoadRules(ctx context.Context, gh RulesReader, repo, base string, paths, contextDocs []string) (*Rules, error) {
 	commit, err := gh.BranchHead(ctx, repo, base)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := gh.Tree(ctx, repo, commit)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +145,7 @@ func LoadRules(ctx context.Context, gh RulesReader, repo, base string, paths, co
 	r.Unchecked = unchecked
 	budget := maxRules
 	loaded := map[string]bool{}
+	reads := 0
 	var load func(p string, chain []string) (bool, error)
 	load = func(p string, chain []string) (bool, error) {
 		switch {
@@ -150,7 +157,13 @@ func LoadRules(ctx context.Context, gh RulesReader, repo, base string, paths, co
 		case len(chain) > maxIncludeDepth:
 			r.Notes = append(r.Notes, fmt.Sprintf("%s is included more than %d levels deep and was not read.", p, maxIncludeDepth))
 			return true, nil
+		case !tree.Has(p):
+			return false, nil
+		case reads >= MaxRuleFiles:
+			r.Unchecked++
+			return true, nil
 		}
+		reads++
 		b, err := gh.FileContent(ctx, repo, p, commit)
 		switch {
 		case errors.Is(err, github.ErrNotFound):
@@ -169,8 +182,8 @@ func LoadRules(ctx context.Context, gh RulesReader, repo, base string, paths, co
 			incs = incs[:maxIncludesEach]
 		}
 		for _, inc := range incs {
-			c := cleanPath(inc)
-			if c == "" {
+			c, ok := lookupPath(inc)
+			if !ok {
 				r.Notes = append(r.Notes, fmt.Sprintf("%s includes %q, which is not a repository path.", p, clip(inc, 100)))
 				continue
 			}
@@ -199,6 +212,10 @@ func LoadRules(ctx context.Context, gh RulesReader, repo, base string, paths, co
 	}
 	ctxBudget := maxContext
 	for _, p := range contextDocs {
+		if !tree.Has(p) {
+			r.Notes = append(r.Notes, fmt.Sprintf("%s has no %s.", base, p))
+			continue
+		}
 		b, err := gh.FileContent(ctx, repo, p, commit)
 		switch {
 		case errors.Is(err, github.ErrNotFound):

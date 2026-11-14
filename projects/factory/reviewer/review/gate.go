@@ -69,12 +69,18 @@ func (g *Gate) Needed() bool { return g != nil && len(g.Paths)+len(g.Labels)+len
 func (g *Gate) held() bool { return g != nil && len(g.Paths)+len(g.Labels) > 0 }
 
 // humanGate finds the gated paths among a head's changed paths (both sides
-// of the diff) and the gate labels on its PR.
+// of the diff) and the gate labels on its PR. A path of any characters is
+// matched as it is; one with an empty or ".." segment, which no rule can be
+// looked up for, is gated.
 func humanGate(b *Binding, paths, labels []string) *Gate {
 	g := &Gate{}
 	seen := map[string]bool{}
 	for _, p := range paths {
-		if c := cleanPath(p); c != "" && !seen[c] && matchAny(b.HumanGatePaths, c) {
+		c, ok := lookupPath(p)
+		if !ok {
+			c = p
+		}
+		if !seen[c] && (!ok || matchAny(b.HumanGatePaths, c)) {
 			seen[c] = true
 			g.Paths = append(g.Paths, c)
 		}
@@ -125,7 +131,11 @@ func approvedBy(b *Binding, reviews []github.PullRequestReview, head string) str
 func gateFinding(b *Binding, g *Gate) Finding {
 	var why []string
 	if len(g.Paths) > 0 {
-		why = append(why, "touches "+strings.Join(g.Paths, ", "))
+		quoted := make([]string, len(g.Paths))
+		for i, p := range g.Paths {
+			quoted[i] = quotePath(clip(p, maxStoredPath))
+		}
+		why = append(why, "touches "+strings.Join(quoted, ", "))
 	}
 	if len(g.Labels) > 0 {
 		why = append(why, "carries "+strings.Join(g.Labels, ", "))
@@ -147,12 +157,12 @@ type DiffSize struct {
 	Capped bool
 }
 
-// measure sizes the diff, leaving out files whose path on either side is
-// generated.
+// measure sizes the diff, leaving out files generated at their new path: a
+// file renamed away from a generated path is reviewed like any other.
 func measure(b *Binding, files []github.PullRequestFile) DiffSize {
 	var d DiffSize
 	for _, f := range files {
-		if matchAny(b.GeneratedPaths, f.Path) || (f.PreviousPath != "" && matchAny(b.GeneratedPaths, f.PreviousPath)) {
+		if matchAny(b.GeneratedPaths, f.Path) {
 			d.Generated++
 			continue
 		}

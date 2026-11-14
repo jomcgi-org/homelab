@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -378,9 +379,9 @@ func TestConditionalGetReusesTheCachedBodyOn304(t *testing.T) {
 	}}}
 	ctx := context.Background()
 	for i := range 3 {
-		prs, err := c.ListPullRequests(ctx, "example-org/homelab", "main")
-		if err != nil {
-			t.Fatal(err)
+		prs, complete, err := c.ListPullRequests(ctx, "example-org/homelab", "main")
+		if err != nil || !complete {
+			t.Fatal(complete, err)
 		}
 		want := PullRequest{
 			Number: 7, NodeID: "PR_7", State: "open", Title: "t", Body: "b", Author: "renovate[bot]",
@@ -399,7 +400,7 @@ func TestConditionalGetReusesTheCachedBodyOn304(t *testing.T) {
 	srv.mu.Lock()
 	srv.body, srv.version = `[]`, srv.version+1
 	srv.mu.Unlock()
-	if prs, err := c.ListPullRequests(ctx, "example-org/homelab", "main"); err != nil || len(prs) != 0 || srv.full != 2 || misses != 1 {
+	if prs, _, err := c.ListPullRequests(ctx, "example-org/homelab", "main"); err != nil || len(prs) != 0 || srv.full != 2 || misses != 1 {
 		t.Fatalf("changed body: prs = %v, err = %v, full = %d, misses = %d", prs, err, srv.full, misses)
 	}
 }
@@ -560,5 +561,119 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	}
 	if _, err := c.CompareCommits(ctx, "example-org/homelab", "gone", "sha-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("compare with a missing commit = %v", err)
+	}
+}
+
+// pagedServer serves n numbered items from path, per_page at a time.
+func pagedServer(t *testing.T, path string, n int, item func(i int) string) (*httptest.Server, *[]string) {
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.URL.RawQuery)
+		mu.Unlock()
+		if r.URL.Path != path {
+			http.NotFound(w, r)
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		var items []string
+		for i := (page-1)*per + 1; i <= min(page*per, n); i++ {
+			items = append(items, item(i))
+		}
+		_, _ = w.Write([]byte("[" + strings.Join(items, ",") + "]"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+func TestListPullRequestsReadsEveryPage(t *testing.T) {
+	srv, seen := pagedServer(t, "/repos/example-org/homelab/pulls", 250, func(i int) string {
+		return fmt.Sprintf(`{"number": %d, "state": "open", "updated_at": "2026-11-14T12:00:00Z", "user": {"login": "u"},
+			"head": {"ref": "b", "sha": "s"}, "base": {"ref": "main"}}`, i)
+	})
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	prs, complete, err := c.ListPullRequests(context.Background(), "example-org/homelab", "main")
+	if err != nil || !complete || len(prs) != 250 || prs[249].Number != 250 || prs[0].UpdatedAt.IsZero() {
+		t.Fatalf("%d PRs, complete %v, err %v", len(prs), complete, err)
+	}
+	if len(*seen) != 3 || !strings.Contains((*seen)[2], "page=3") || !strings.Contains((*seen)[0], "sort=created") {
+		t.Fatalf("queries = %v", *seen)
+	}
+}
+
+func TestPullRequestReviewsReadsEveryPage(t *testing.T) {
+	srv, _ := pagedServer(t, "/repos/example-org/homelab/pulls/7/reviews", 230, func(i int) string {
+		state := "COMMENTED"
+		if i == 230 {
+			state = "APPROVED"
+		}
+		return fmt.Sprintf(`{"user": {"login": "jomcgi"}, "state": %q, "commit_id": "sha-%d"}`, state, i)
+	})
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	rv, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7)
+	if err != nil || len(rv) != 230 || rv[229].State != "APPROVED" || rv[229].CommitSHA != "sha-230" {
+		t.Fatalf("%d reviews, err %v", len(rv), err)
+	}
+	// Past the bound the listing fails instead of leaving the newest out.
+	srv, _ = pagedServer(t, "/repos/example-org/homelab/pulls/7/reviews", MaxReviewPages*MaxListed+1, func(int) string {
+		return `{"user": {"login": "x"}, "state": "COMMENTED"}`
+	})
+	c = &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	if _, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7); !errors.Is(err, ErrTooMany) {
+		t.Fatalf("err = %v, want ErrTooMany", err)
+	}
+}
+
+func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
+	var gql map[string]any
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/example-org/homelab/git/trees/base-1" && r.URL.Query().Get("recursive") == "1":
+			_, _ = w.Write([]byte(`{"tree": [{"path": "REVIEW.md", "type": "blob"}, {"path": "docs", "type": "tree"},
+				{"path": "docs/REVIEW.md", "type": "blob"}], "truncated": false}`))
+		case r.URL.Path == "/graphql":
+			var req struct {
+				Variables map[string]any `json:"variables"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			gql = req.Variables
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"pageInfo":{"hasPreviousPage":true},"nodes":[
+				{"__typename":"PullRequestCommit","commit":{"oid":"a","checkSuites":{"nodes":[
+					{"app":{"databaseId":5758326},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"FAILURE"}]}}]}}},
+				{"__typename":"PullRequestCommit","commit":{"oid":"b","checkSuites":{"nodes":[
+					{"app":{"databaseId":5758326},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"CANCELLED"}]}},
+					{"app":{"databaseId":1},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"SUCCESS"}]}}]}}},
+				{"__typename":"HeadRefForcePushedEvent","beforeCommit":{"oid":"b","checkSuites":{"nodes":[]}},"afterCommit":{"oid":"c","checkSuites":{"nodes":[]}}}
+			]}}}}}`))
+		case strings.HasPrefix(r.URL.Path, "/repos/example-org/homelab/compare/"):
+			var files []string
+			for i := range MaxCompareFiles {
+				files = append(files, fmt.Sprintf(`{"filename": "f%d.go", "status": "modified"}`, i))
+			}
+			_, _ = w.Write([]byte(`{"status": "ahead", "files": [` + strings.Join(files, ",") + `]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
+	ctx := context.Background()
+	tree, err := c.Tree(ctx, "example-org/homelab", "base-1")
+	if err != nil || !tree.Has("docs/REVIEW.md") || tree.Has("docs") || tree.Has("x/REVIEW.md") || c.ETags.Len() != 0 {
+		t.Fatalf("tree = %+v, err %v, cached %d", tree, err, c.ETags.Len())
+	}
+	h, err := c.PullRequestHeads(ctx, "example-org/homelab", 7, CheckRunFilter{Name: "factory review", AppID: 5758326})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Head{{SHA: "a", Checked: true}, {SHA: "b"}, {SHA: "b"}, {SHA: "c"}}
+	if fmt.Sprint(h.Heads) != fmt.Sprint(want) || !h.Truncated || gql["appId"] != float64(5758326) || gql["check"] != "factory review" {
+		t.Fatalf("heads = %+v, truncated %v, vars %v", h.Heads, h.Truncated, gql)
+	}
+	cmp, err := c.CompareCommits(ctx, "example-org/homelab", "a", "c")
+	if err != nil || !cmp.Truncated || len(cmp.Files) != MaxCompareFiles {
+		t.Fatalf("compare = %d files, truncated %v, err %v", len(cmp.Files), cmp.Truncated, err)
 	}
 }
