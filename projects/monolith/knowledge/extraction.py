@@ -43,6 +43,7 @@ from knowledge.repo_diff_source import (
     verify_on_main,
 )
 from shared.embedding import EmbeddingClient
+from shared.json_objects import select_json_object
 
 logger = logging.getLogger("monolith.knowledge.extraction")
 
@@ -664,50 +665,9 @@ def record_extraction_failure(
 
 
 def _parse_result(result_text: str) -> _ExtractionResult:
-    fenced_payloads = []
-    for block in _FENCED_BLOCK_RE.findall(result_text):
-        try:
-            payload = json.loads(block)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            fenced_payloads.append(payload)
-
-    payload = fenced_payloads[-1] if fenced_payloads else None
-    if payload is None:
-        spans: list[str] = []
-        depth = 0
-        start = None
-        in_string = False
-        escaped = False
-        for index, char in enumerate(result_text):
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                if depth == 0:
-                    start = index
-                depth += 1
-            elif char == "}" and depth:
-                depth -= 1
-                if depth == 0 and start is not None:
-                    spans.append(result_text[start : index + 1])
-                    start = None
-        for span in reversed(spans):
-            try:
-                candidate = json.loads(span)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict):
-                payload = candidate
-                break
+    payload = select_json_object(
+        result_text, _FENCED_BLOCK_RE.findall(result_text), fallback="reverse"
+    )
     if payload is None:
         raise ExtractionOutputInvalid("missing valid JSON object")
     try:

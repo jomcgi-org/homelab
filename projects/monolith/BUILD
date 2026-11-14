@@ -3146,6 +3146,28 @@ py_test(
 )
 
 py_test(
+    name = "shared_json_objects_test",
+    srcs = ["shared/json_objects_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "shared_json_objects_adapters_test",
+    srcs = ["shared/json_objects_adapters_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        ":pkg_shared",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "shared_async_retry_test",
     srcs = ["shared/async_retry_test.py"],
     imports = ["."],

@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from grimoire.character_facts import build_fact_payload
 from grimoire.models import CampaignMember
+from shared.json_objects import select_json_object
 
 JOB_KIND = "grimoire-kg-drain"
 EXTRACTION_VERSION = "grimoire-kg-drain/luna@v1"
@@ -41,49 +42,16 @@ class _Extraction(BaseModel):
 def parse_facts(result_text: str) -> list[ExtractedFact]:
     """Accept the last JSON object, including fenced responses, like kg-drain.
 
-    The knowledge parser validates a different result schema, so keep this small
-    local decoder rather than importing its extraction/writer machinery.
+    Selection is shared with knowledge; fence matching, traversal order and
+    strict fact validation remain local contracts.
     """
-    objects = []
-    for block in _FENCED_JSON.findall(result_text):
-        try:
-            obj = json.loads(block)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            objects.append(obj)
-    if not objects:
-        depth = 0
-        start = None
-        in_string = False
-        escaped = False
-        for index, char in enumerate(result_text):
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                if depth == 0:
-                    start = index
-                depth += 1
-            elif char == "}" and depth:
-                depth -= 1
-                if depth == 0 and start is not None:
-                    try:
-                        obj = json.loads(result_text[start : index + 1])
-                    except json.JSONDecodeError:
-                        continue
-                    objects.append(obj)
-    if not objects:
+    payload = select_json_object(
+        result_text, _FENCED_JSON.findall(result_text), fallback="forward"
+    )
+    if payload is None:
         raise FactExtractionInvalid("missing valid JSON object")
     try:
-        return _Extraction.model_validate(objects[-1]).facts
+        return _Extraction.model_validate(payload).facts
     except ValidationError as exc:
         # ValidationError's text echoes source values. Failure notifications
         # should not carry private campaign material outside this lane.
