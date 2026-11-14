@@ -10,7 +10,7 @@ contents:
 archs:
   - x86_64
 
-cmd: node build/index.js
+cmd: node build/cache-server.js
 
 work-dir: /app
 

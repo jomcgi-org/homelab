@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "projects/monolith/frontend/apko.yaml",
-    "checksum": "sha256-/Ik9FwbDejlz7q3+M6cz99gWjMthyXZGRn3oSIMCgsY="
+    "checksum": "sha256-KSwlP4IERlIjComxldGQemPIKNGC1nXHXv+jP1KzqAU="
   },
   "contents": {
     "keyring": [
