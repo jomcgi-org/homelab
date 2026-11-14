@@ -1,6 +1,0 @@
-const p=3,t="2026-01-01T00:00:00.000Z",e="synthetic-fixture",n="Synthetic model",s="Synthetic hardware",m=!1,d=200,o="Entirely synthetic. Timings are invented for UI testing.",i={routing:!1,stats:!1},r={title:"Synthetic crate",url:"https://example.invalid/crate"},a={pages:2,sections:[{from:1,label:"src/lib.rs"},{from:2,label:"src/fixture.rs"}]},c={},l=[{title:"Synthetic coding",prompt:"Synthetic instruction.",events:[{at:1e3,content:`//! Fixture module.
-`,reasoning:"",tokens:1},{at:1040,content:`
-`,reasoning:"",tokens:1},{at:1041,content:`pub fn fixture() -> u32 {
-`,reasoning:"",tokens:1},{at:1080,content:`    1
-`,reasoning:"",tokens:1},{at:1081,content:`}
-`,reasoning:"",tokens:1}],samples:[],progress:[{at:0,stage:"prefill"}],statsSamples:[],usage:{prompt_tokens:1e3,completion_tokens:5,cached_tokens:0},finishReason:"stop",durationMs:1281,metrics:{ttftMs:1e3,generationMs:81,completionTokens:5,tokensPerSecond:50}}],g={version:3,recordedAt:t,build:e,model:n,hardware:s,thinking:!1,sampleIntervalMs:200,conditions:o,telemetry:i,source:r,document:a,review:c,turns:l};export{e as build,o as conditions,g as default,a as document,s as hardware,n as model,t as recordedAt,c as review,d as sampleIntervalMs,r as source,i as telemetry,m as thinking,l as turns,p as version};
