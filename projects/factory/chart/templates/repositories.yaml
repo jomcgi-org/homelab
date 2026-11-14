@@ -21,6 +21,9 @@ metadata:
   labels:
     {{- include "factory.labels" $ | nindent 4 }}
     factory.jomcgi.dev/repository: {{ $r.name }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
     {{- include "factory.keep" $ | nindent 4 }}
@@ -36,6 +39,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 automountServiceAccountToken: false
+{{- if $.Values.substrate.credentialProvider.secretReaderBinding }}
 ---
 # Lets Substrate's credential provider read this namespace's Secrets for
 # egress injection; it injects only those labelled
@@ -58,6 +62,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ $.Values.substrate.credentialProvider.serviceAccount }}
     namespace: {{ $.Values.substrate.namespace }}
+{{- end }}
 ---
 # One worker per concurrent actor. The placement labels keep this Agent's
 # actors on this pool (kagent matches them; Substrate copies pool labels to
