@@ -40,8 +40,10 @@ func (v *env) exhaustOriginalResponses() {
 }
 
 func TestOriginalMessageReconciliationAdoptsEveryTaskState(t *testing.T) {
-	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking, kagent.StateCompleted,
-		kagent.StateFailed, kagent.StateCanceled, kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired} {
+	for _, state := range []string{
+		kagent.StateSubmitted, kagent.StateWorking, kagent.StateCompleted,
+		kagent.StateFailed, kagent.StateCanceled, kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired,
+	} {
 		t.Run(state, func(t *testing.T) {
 			v := newEnv(t)
 			v.cfg.Bindings[0].MaxEngineeringRetries = 0
@@ -256,9 +258,11 @@ func TestLegacyAdoptionChecksOlderUncertainSendsBeforeNewRetry(t *testing.T) {
 	}
 	// Reproduce pre-migration history: A's response was lost and A still
 	// runs, while a later replacement B has already completed.
-	older := store.Attempt{RunID: 1, RunAttempt: 1, WorkItemEpoch: wi.Epoch, Kind: "initial",
+	older := store.Attempt{
+		RunID: 1, RunAttempt: 1, WorkItemEpoch: wi.Epoch, Kind: "initial",
 		DecisionID: "replacement-0-1", MessageID: "itsaplan-run/1/replacement-0-1",
-		KagentNamespace: "factory-homelab", KagentAgent: "coder", WriterEpoch: v.e.Epoch()}
+		KagentNamespace: "factory-homelab", KagentAgent: "coder", WriterEpoch: v.e.Epoch(),
+	}
 	b, err := v.st.RecordAttempt(v.ctx, v.st.DB, older)
 	if err != nil {
 		t.Fatal(err)
