@@ -40,6 +40,7 @@ type fakeGitHub struct {
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
 	onChecks  func()
+	onRead    func(operation, resource string)
 }
 
 // close closes a PR, as a person does.
@@ -112,7 +113,7 @@ func (g *fakeGitHub) byNumber(n int) *fakePR {
 func (g *fakeGitHub) sync(p *fakePR) {
 	if b := g.branches[p.pr.HeadRef]; b != nil && p.pr.State == "open" {
 		if p.pr.HeadSHA != b.head && p.queue != "" {
-			p.queue = "" // a push removes the PR from the queue
+			p.queue, p.groupSHA = "", "" // a push removes the PR from the queue
 		}
 		p.pr.HeadSHA = b.head
 	}
@@ -335,6 +336,9 @@ func (g *fakeGitHub) Compare(_ context.Context, _, _, head string) (*github.Comp
 }
 
 func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) (*github.PullRequestDetail, error) {
+	if g.onRead != nil {
+		g.onRead("detail", fmt.Sprint(number))
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
@@ -356,6 +360,9 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 }
 
 func (g *fakeGitHub) CheckRuns(_ context.Context, _, sha string) ([]github.CheckRun, error) {
+	if g.onRead != nil {
+		g.onRead("checks", sha)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
@@ -371,6 +378,9 @@ func (g *fakeGitHub) CheckRuns(_ context.Context, _, sha string) ([]github.Check
 }
 
 func (g *fakeGitHub) Statuses(_ context.Context, _, sha string) ([]github.Status, error) {
+	if g.onRead != nil {
+		g.onRead("statuses", sha)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
@@ -985,6 +995,9 @@ func TestMergeQueueFailureRevisesInTheMappedSessionWithGroupEvidence(t *testing.
 	v.gh.check("group-sha-1", "semgrep-review", 999, "failure")
 	v.gh.check("group-sha-1", "unconfigured", 100, "failure")
 	v.gh.mu.Lock()
+	v.gh.checks["group-sha-1"][0].ID = 12345
+	v.gh.checks["group-sha-1"][0].URL = "https://ci.invalid/untrusted-check-url"
+	v.gh.statuses["group-sha-1"][0].URL = "https://ci.invalid/untrusted-status-url"
 	v.gh.checks["group-sha-1"] = append(v.gh.checks["group-sha-1"], github.CheckRun{
 		Name: "test", AppID: 100, HeadSHA: "old-group", Status: "completed", Conclusion: "failure", URL: "stale-check-link",
 	})
@@ -1005,14 +1018,14 @@ func TestMergeQueueFailureRevisesInTheMappedSessionWithGroupEvidence(t *testing.
 	text := last.msg.Parts[0].Text
 	for _, want := range []string{
 		"Review round 1 for HL-7", "merge queue ejected", "group-sha-1", "completed / failure",
-		"https://github.com/checks/group-sha-1/test", `Status "build": error`,
-		"https://ci.example/group-sha-1/build", "CI infrastructure flaked",
+		"https://github.com/jomcgi-org/homelab/runs/12345", `Status "build": error`,
+		"https://github.com/jomcgi-org/homelab/commit/group-sha-1/checks", "CI infrastructure flaked",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("revision lacks %q:\n%s", want, text)
 		}
 	}
-	for _, unwanted := range []string{"Untrusted check output", "semgrep-review", "unconfigured", "stale-check-link", "spoofed-status-link"} {
+	for _, unwanted := range []string{"Untrusted check output", "semgrep-review", "unconfigured", "stale-check-link", "spoofed-status-link", "ci.invalid"} {
 		if strings.Contains(text, unwanted) {
 			t.Errorf("revision contains untrusted evidence %q:\n%s", unwanted, text)
 		}
@@ -1135,7 +1148,21 @@ func TestEjectionEvidenceReadIsRetriedBeforeStartingARound(t *testing.T) {
 			if w := v.work(101); w.State != store.WorkMerging || w.ReviewRounds != 0 {
 				t.Fatalf("ejection consumed despite missing evidence: %+v", w)
 			}
+			var messageID string
+			var epoch int64
+			var attempts int
+			if err := v.st.DB.QueryRow(`SELECT message_id, writer_epoch, attempts FROM delivery_read WHERE operation = $1`,
+				"group-"+endpoint).Scan(&messageID, &epoch, &attempts); err != nil || attempts != 1 {
+				t.Fatalf("failed read attempt: count=%d, err=%v", attempts, err)
+			}
+			v.e.Release()
+			v.e = v.engine("connector-b")
 			v.poll()
+			var nextEpoch int64
+			if err := v.st.DB.QueryRow(`SELECT writer_epoch, attempts FROM delivery_read WHERE message_id = $1`,
+				messageID).Scan(&nextEpoch, &attempts); err != nil || attempts != 2 || nextEpoch <= epoch {
+				t.Fatalf("retry did not preserve its read ID across takeover: count=%d, epoch=%d, err=%v", attempts, nextEpoch, err)
+			}
 			if rounds := v.rounds(); len(rounds) != 1 || !strings.Contains(rounds[0].Prompt, "timed_out") {
 				t.Fatalf("rounds = %+v, want the retried evidence", rounds)
 			}
@@ -1157,8 +1184,10 @@ func TestEjectionHonorsHumanHoldsAndStops(t *testing.T) {
 			case "label":
 				v.gh.label(1, "needs-human")
 			case "reviewer":
+				v.gh.check("sha-1", "semgrep-review", 200, "failure")
+				v.gh.summarize("sha-1", "semgrep-review", humanHold)
 				v.gh.check("group-sha-1", "semgrep-review", 200, "failure")
-				v.gh.summarize("group-sha-1", "semgrep-review", humanHold)
+				v.gh.summarize("group-sha-1", "semgrep-review", "Queued PR no longer passes")
 			case "operator":
 				v.gh.onChecks = func() {
 					if _, err := v.st.StopIssue(v.ctx, "HL-7", "operator stopped during evidence read", "joe"); err != nil {
@@ -1181,6 +1210,273 @@ func TestEjectionHonorsHumanHoldsAndStops(t *testing.T) {
 				t.Fatalf("work item = %s, want %s", w.State, want)
 			}
 		})
+	}
+}
+
+func TestEjectionReadsHumanGateOnThePRHead(t *testing.T) {
+	for _, group := range []string{"", "group-sha-1"} {
+		t.Run("group="+group, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			if group != "" {
+				v.gh.mergeGroup(1, group)
+				v.poll()
+				v.gh.check(group, "semgrep-review", 200, "failure")
+				v.gh.summarize(group, "semgrep-review", "Queued PR no longer passes")
+			}
+			// The reviewer saw the label before the connector, and its head
+			// check stays held after the label is removed.
+			v.gh.label(1, "human")
+			v.gh.check("sha-1", "semgrep-review", 200, "failure")
+			v.gh.summarize("sha-1", "semgrep-review", humanHold)
+			v.gh.label(1)
+			v.gh.eject(1)
+			v.poll()
+			v.poll()
+			if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 0 || len(v.rounds()) != 0 {
+				t.Fatalf("head human gate was lost: %+v", w)
+			}
+		})
+	}
+}
+
+func TestEjectionWaitsForTheHeadReviewerRead(t *testing.T) {
+	for _, code := range []int{401, 403} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.eject(1) // the synthetic commit was never observed
+			v.gh.checkErr = []error{&github.HTTPError{Status: code}}
+			v.poll()
+			if w := v.work(101); w.State != store.WorkMerging || w.ReviewRounds != 0 {
+				t.Fatalf("failed head read started a revision: %+v", w)
+			}
+			v.gh.check("sha-1", "semgrep-review", 200, "failure")
+			v.gh.summarize("sha-1", "semgrep-review", humanHold)
+			v.poll()
+			if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 0 {
+				t.Fatalf("retry lost the head's human hold: %+v", w)
+			}
+		})
+	}
+}
+
+func TestEjectionHumanGateMustMatchTheHeadAndReviewer(t *testing.T) {
+	for _, wrong := range []string{"head", "app", "name"} {
+		t.Run(wrong, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			c := github.CheckRun{
+				HeadSHA: "sha-1", Name: "semgrep-review", AppID: 200,
+				Status: "completed", Conclusion: "failure", Summary: humanHold,
+			}
+			switch wrong {
+			case "head":
+				c.HeadSHA = "old-head"
+			case "app":
+				c.AppID = 999
+			case "name":
+				c.Name = "unconfigured"
+			}
+			v.gh.checks["sha-1"] = append(v.gh.checks["sha-1"], c)
+			v.gh.eject(1)
+			v.poll()
+			if len(v.rounds()) != 1 {
+				t.Fatalf("marker on wrong %s blocked the revision", wrong)
+			}
+		})
+	}
+}
+
+func TestEjectionRechecksLabelsAfterEvidenceReads(t *testing.T) {
+	for _, label := range []string{"human", "needs-human"} {
+		for _, when := range []string{"group-checks", "group-statuses", "head-checks"} {
+			t.Run(label+"/"+when, func(t *testing.T) {
+				v := newDeliveryEnv(t)
+				v.delivered()
+				v.gh.green("sha-1")
+				v.poll()
+				v.gh.mergeGroup(1, "group-sha-1")
+				v.poll()
+				v.gh.check("group-sha-1", "test", 100, "failure")
+				v.gh.eject(1)
+				observed := false
+				v.gh.onRead = func(operation, resource string) {
+					phase := "group-" + operation
+					if resource == "sha-1" {
+						phase = "head-" + operation
+					}
+					if phase == when {
+						observed = true
+						v.gh.label(1, label)
+					}
+				}
+				v.poll()
+				want := store.WorkReview
+				if label == "human" {
+					want = store.WorkStopped
+				}
+				if w := v.work(101); !observed || w.State != want || w.ReviewRounds != 0 || len(v.kg.Sends()) != 1 {
+					t.Fatalf("intervening %s label did not stop revision: %+v", label, w)
+				}
+			})
+		}
+	}
+}
+
+func TestNewHeadDoesNotSpendARoundOnTheOldQueueEntry(t *testing.T) {
+	for _, duringRead := range []bool{false, true} {
+		t.Run(fmt.Sprintf("during-read=%t", duringRead), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.mergeGroup(1, "group-sha-1")
+			v.poll()
+			v.gh.check("group-sha-1", "test", 100, "failure")
+			push := func() {
+				v.gh.push("factory/HL-7", "sha-2", "fix: already repaired")
+				v.gh.green("sha-2")
+			}
+			if duringRead {
+				v.gh.eject(1)
+				v.gh.onRead = func(operation, resource string) {
+					if operation == "statuses" && resource == "group-sha-1" {
+						push()
+					}
+				}
+			} else {
+				push() // the push itself removes the old queue entry
+			}
+			v.poll()
+			if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 0 || len(v.rounds()) != 0 {
+				t.Fatalf("old entry started a revision against the new head: %+v", w)
+			}
+			v.poll()
+			if q := v.gh.Enqueues(); len(q) != 2 || q[1] != "sha-2" {
+				t.Fatalf("normal review did not enqueue the corrected head: %v", q)
+			}
+		})
+	}
+}
+
+func TestEjectionRechecksPRDispositionAfterEvidence(t *testing.T) {
+	for _, state := range []string{"closed", "merged", "queued"} {
+		t.Run(state, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.mergeGroup(1, "group-sha-1")
+			v.poll()
+			v.gh.eject(1)
+			want := store.WorkMerging
+			v.gh.onRead = func(operation, resource string) {
+				if operation != "statuses" || resource != "group-sha-1" {
+					return
+				}
+				switch state {
+				case "closed":
+					v.gh.close(1)
+					want = store.WorkStopped
+				case "merged":
+					v.gh.merge(1, "merged-sha")
+					want = store.WorkDone
+				case "queued":
+					v.gh.mu.Lock()
+					v.gh.byNumber(1).queue = "QUEUED"
+					v.gh.mu.Unlock()
+				}
+			}
+			v.poll()
+			if w := v.work(101); w.State != want || w.ReviewRounds != 0 || len(v.rounds()) != 0 {
+				t.Fatalf("late %s did not prevent revision: %+v", state, w)
+			}
+		})
+	}
+}
+
+func TestEjectionReadsAreRecordedBeforeTheCall(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.mergeGroup(1, "group-sha-1")
+	v.poll()
+	v.gh.check("group-sha-1", "test", 100, "failure")
+	v.gh.eject(1)
+	pr, err := v.st.PullRequestFor(v.ctx, v.work(101).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := 0
+	checked := 0
+	v.gh.onRead = func(operation, resource string) {
+		switch operation {
+		case "detail":
+			details++
+			if details == 1 {
+				return // ordinary PR poll
+			}
+			operation = "confirm-entry"
+			if details == 3 {
+				operation = "confirm-revision"
+			}
+		case "checks":
+			operation = "group-checks"
+			if resource == "sha-1" {
+				operation = "head-checks"
+			}
+		case "statuses":
+			operation = "group-statuses"
+		}
+		messageID := fmt.Sprintf("ejection/%d/sha-1/%s/%s", pr.ID, operation, resource)
+		var attempts int
+		var epoch int64
+		if err := v.st.DB.QueryRow(`SELECT attempts, writer_epoch FROM delivery_read WHERE message_id = $1`, messageID).Scan(&attempts, &epoch); err != nil {
+			t.Errorf("read %s began without its persisted attempt: %v", messageID, err)
+		} else if attempts != 1 || epoch == 0 {
+			t.Errorf("read %s: attempts=%d, epoch=%d", messageID, attempts, epoch)
+		}
+		checked++
+	}
+	v.poll()
+	if checked != 5 || len(v.rounds()) != 1 {
+		t.Fatalf("checked %d external attempts, rounds=%d", checked, len(v.rounds()))
+	}
+	for _, operation := range []string{"issue", "columns"} {
+		var n int
+		if err := v.st.DB.QueryRow(`SELECT count(*) FROM delivery_read WHERE operation = $1`, operation).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("%s read was not recorded: count=%d, err=%v", operation, n, err)
+		}
+	}
+}
+
+func TestEjectionDoesNotReadWhenItsAttemptCannotBeRecorded(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.mergeGroup(1, "group-sha-1")
+	v.poll()
+	v.gh.eject(1)
+	if _, err := v.st.DB.Exec(`ALTER TABLE delivery_read ADD CONSTRAINT reject_read CHECK (operation <> 'group-checks')`); err != nil {
+		t.Fatal(err)
+	}
+	v.gh.onRead = func(operation, resource string) {
+		if operation == "checks" && resource == "group-sha-1" {
+			t.Error("unrecorded external read")
+		}
+	}
+	v.poll()
+	if w := v.work(101); w.State != store.WorkMerging || w.ReviewRounds != 0 {
+		t.Fatalf("unrecorded evidence advanced delivery: %+v", w)
 	}
 }
 
@@ -1677,7 +1973,7 @@ func TestHoldLabelKeepsAPassingHeadOutOfTheQueue(t *testing.T) {
 	}
 }
 
-func TestHoldLabelOnAQueuedPRLeavesItToTheQueue(t *testing.T) {
+func TestDecisionHoldOnAQueuedPRLeavesItToTheQueue(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.delivered()
 	v.gh.green("sha-1")
@@ -1687,10 +1983,31 @@ func TestHoldLabelOnAQueuedPRLeavesItToTheQueue(t *testing.T) {
 	}
 	// The reviewer fails the merge group's check, and the ALLGREEN queue
 	// drops the PR; the connector does not dequeue.
-	v.gh.label(1, "human")
+	v.gh.label(1, "needs-human")
 	v.poll()
 	if !v.gh.queued(1) || len(v.gh.Dequeues()) != 0 {
 		t.Fatalf("dequeues = %v, want the queue left to GitHub", v.gh.Dequeues())
+	}
+}
+
+func TestHumanOwnershipOnAQueuedPRSurvivesLabelRemoval(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.label(1, "Human")
+	v.poll()
+	if v.gh.queued(1) || len(v.gh.Dequeues()) != 1 || v.work(101).State != store.WorkStopped {
+		t.Fatal("observed human ownership did not stop and dequeue delivery")
+	}
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	v.gh.label(1)
+	v.gh.push("factory/HL-7", "sha-2", "fix: human follow-up")
+	v.gh.green("sha-2")
+	v.poll()
+	if v.work(101).State != store.WorkStopped || len(v.rounds()) != 0 || len(v.gh.Enqueues()) != 1 {
+		t.Fatal("label removal or a push resumed human-owned delivery")
 	}
 }
 

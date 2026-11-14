@@ -439,22 +439,38 @@ links on the issue and moves it to the project's first `completed` column
 (or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
 WIP limit, is reported on the issue and retried with backoff. A move the
 connector gives up on is also reported on the issue, unless a person
-canceled the issue since the merge. A PR that
-leaves the queue unmerged, after a second read confirms it did not merge,
-starts a revision in the mapped session, counting against `maxReviewRounds`.
+canceled the issue since the merge.
+
+A PR that leaves the queue unmerged, after a second read confirms it did
+not merge, starts a revision in the mapped session, counting against
+`maxReviewRounds`.
 The connector saves the queue entry's synthetic commit while queued, then
-reads its failing checks and statuses for the revision, including names,
-states and links from configured App IDs and status creators. Check summaries
-and status descriptions are omitted. If the queue entry disappeared before
-its commit was observed, the prompt says the evidence is unavailable.
+reads its failing checks and statuses, matched against configured names,
+App IDs and status creators. The prompt uses the configured names and fixed
+failure states. Check links are built from the
+repository and numeric check ID; statuses link to the merge-group commit's
+checks page. CI-provided URLs, summaries and descriptions are omitted. If the
+queue entry disappeared before its commit was observed, the prompt says the
+evidence is unavailable.
 GitHub's `CONFLICTING` mergeability asks the agent to rebase on the bound
 `origin/<base>` and resolve. A CI infrastructure flake may be repaired by
 rebasing and re-pushing the same change; the new head needs the usual checks
-and independent review. The ejection and round start commit together and are
-announced on the issue. An ejected head is never re-enqueued. Human holds and
-the round bound leave the work item in review for a person. Deployment health
-is a separate record. After the handover in "Merge authority" (#7919) the connector still
-enqueues the factory's PRs, since it sees their stops, and GitHub's required
+and independent review.
+
+The ejection and round start commit together and are announced on the issue.
+An ejected head is never re-enqueued. A new head
+returns to ordinary review without spending a round on the previous entry.
+Before starting a revision the connector reads the PR head's reviewer check
+for its human-gate marker, even when the synthetic commit was not observed,
+then refreshes the issue and PR stops. A `human` label observed while queued
+stops delivery durably; removing it does not resume the work item. Other
+human holds and the round bound leave the work item in review for a person.
+Ejection reads are recorded in `delivery_read` before each external call,
+with a stable message ID, writer epoch and attempt count. Retries share the
+read ID and always fetch fresh state, including after a writer takeover.
+Deployment health is a separate record. After the handover in "Merge
+authority" (#7919) the connector still enqueues the factory's PRs, since it
+sees their stops, and GitHub's required
 `factory review` check gates them.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
@@ -795,7 +811,9 @@ previews).
   Joe's approval, which turns the check green. A `human` or `needs-human`
   label holds a PR at the connector too: labels are read at enqueue, so a
   hold placed after a passing review cannot race the reviewer's next poll.
-  A hold on a queued PR is the reviewer's: on its next poll it fails the
+  A `human` label observed by the connector while queued stops delivery and
+  dequeues the PR; label removal does not resume it. A decision hold on a
+  queued PR is also the reviewer's: on its next poll it fails the
   merge group's required check, and the queue drops the PR. The queue's
   `ALLGREEN` grouping keeps the PR from merging inside a later group that
   contains it. Joe's approval of the head clears the reviewer's hold. The
