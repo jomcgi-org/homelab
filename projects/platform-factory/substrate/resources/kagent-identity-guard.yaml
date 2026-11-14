@@ -7,10 +7,12 @@
 # Deployment (Deployment to ReplicaSet to Pod). k3s runs kube-controller-manager
 # with --use-service-account-credentials, so those are per-controller
 # ServiceAccounts.
+#
+# One policy per object shape, so each expression type-checks against its kind.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
-  name: kagent-controller-identity
+  name: kagent-controller-serviceaccount
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -21,7 +23,80 @@ spec:
       - apiGroups: [""]
         apiVersions: ["v1"]
         operations: [CREATE, UPDATE]
-        resources: [serviceaccounts, pods]
+        resources: [serviceaccounts]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:deployment-controller',
+          'system:serviceaccount:kube-system:replicaset-controller'
+        ])
+  validations:
+    - expression: >-
+        object.metadata.name != 'kagent-controller'
+      message: >-
+        Only ArgoCD may create the kagent-controller ServiceAccount or run a
+        workload as it; Substrate trusts that identity as a global owner.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kagent-controller-serviceaccount
+spec:
+  policyName: kagent-controller-serviceaccount
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kagent-controller-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kagent
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:deployment-controller',
+          'system:serviceaccount:kube-system:replicaset-controller'
+        ])
+  validations:
+    - expression: >-
+        object.spec.?serviceAccountName.orValue('') != 'kagent-controller' &&
+        object.spec.?serviceAccount.orValue('') != 'kagent-controller'
+      message: >-
+        Only ArgoCD may create the kagent-controller ServiceAccount or run a
+        workload as it; Substrate trusts that identity as a global owner.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kagent-controller-pods
+spec:
+  policyName: kagent-controller-pods
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kagent-controller-workloads
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kagent
+    resourceRules:
       - apiGroups: [apps]
         apiVersions: ["v1"]
         operations: [CREATE, UPDATE]
@@ -36,12 +111,8 @@ spec:
         ])
   validations:
     - expression: >-
-        request.kind.kind == 'ServiceAccount'
-        ? object.metadata.name != 'kagent-controller'
-        : (request.kind.kind == 'Pod' ? object.spec : object.spec.template.spec)
-          .?serviceAccountName.orValue('') != 'kagent-controller'
-          && (request.kind.kind == 'Pod' ? object.spec : object.spec.template.spec)
-          .?serviceAccount.orValue('') != 'kagent-controller'
+        object.spec.template.spec.?serviceAccountName.orValue('') != 'kagent-controller' &&
+        object.spec.template.spec.?serviceAccount.orValue('') != 'kagent-controller'
       message: >-
         Only ArgoCD may create the kagent-controller ServiceAccount or run a
         workload as it; Substrate trusts that identity as a global owner.
@@ -49,7 +120,7 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
-  name: kagent-controller-identity
+  name: kagent-controller-workloads
 spec:
-  policyName: kagent-controller-identity
+  policyName: kagent-controller-workloads
   validationActions: [Deny]
