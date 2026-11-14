@@ -61,6 +61,8 @@ type fakeItsaplan struct {
 	// issueErr and runErr fail every GetIssue and GetRun while set.
 	issueErr error
 	runErr   error
+	// columnsErr fails every ProjectColumns while set.
+	columnsErr error
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -338,6 +340,9 @@ func (f *fakeItsaplan) ProjectColumns(_ context.Context, _ string) ([]itsaplan.C
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.columnsErr != nil {
+		return nil, f.columnsErr
+	}
 	return append([]itsaplan.Column(nil), f.columns...), nil
 }
 

@@ -1723,7 +1723,9 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 				return err
 			}
 			if it.Tries+1 >= outboxMaxTries {
-				_ = e.abandonItem(ctx, it, err)
+				if aerr := e.abandonItem(ctx, it, err); aerr != nil {
+					e.log.ErrorContext(ctx, "abandoning outbox item failed", "outbox", it.ID, "kind", it.Kind, "error", aerr)
+				}
 			} else {
 				backoff := min(time.Duration(1<<min(it.Tries, 10))*time.Second, 10*time.Minute)
 				_ = e.st.OutboxFailed(ctx, it.ID, clip(err.Error(), maxErrorText), e.cfg.Now().Add(backoff))
