@@ -725,7 +725,9 @@ func encodeState(st State) string {
 		}
 		small := State{Blocking: shrink(st.Blocking)}
 		if g := st.Gate; g != nil {
-			small.Gate = &Gate{Labels: g.Labels, Findings: shrink(g.Findings), Approver: g.Approver}
+			gate := *g // Keep approval freshness and label observations through trimming.
+			gate.Paths, gate.Findings = nil, shrink(g.Findings)
+			small.Gate = &gate
 			for _, p := range g.Paths {
 				small.Gate.Paths = append(small.Gate.Paths, clip(p, max(lim.path, 80)))
 			}

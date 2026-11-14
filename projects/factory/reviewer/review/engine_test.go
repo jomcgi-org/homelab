@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -123,8 +124,8 @@ func TestPassEnqueuesOnlyWhenRequiredChecksGreenAndHeadCurrent(t *testing.T) {
 	e.Tick(ctx) // pr-checks has not reported
 	h.gh.setStatus(shaA, "pr-checks", "success", "someone-else")
 	e.Tick(ctx) // green, but not from the trusted creator
-	if n := h.gh.graphqlCalls("pull_request"); n != 0 {
-		t.Fatalf("read the PR's queue state %d times before CI was green", n)
+	if n := h.gh.graphqlCalls("pull_request"); n != 1 {
+		t.Fatalf("PR reads = %d; only review completion reads it before CI is green", n)
 	}
 
 	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
@@ -388,12 +389,12 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 	}
 }
 
-// TestSharedHeadKeepsItsReview keys reviews by commit: a second PR at the
-// same head shares the review, and one PR moving on does not cancel it.
-func TestSharedHeadKeepsItsReview(t *testing.T) {
+// A shared commit still needs current PR context: labels and approvals on
+// the PR that moved away cannot authorize the PR that remains on the head.
+func TestSharedHeadIsReviewedInItsRemainingPR(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
-	h.gh.addPR(&fakePR{Number: 8, Title: "same commit", Head: shaA})
+	h.gh.addPR(&fakePR{Number: 8, Title: "same commit", Head: shaA, Labels: []string{"human"}})
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	shaB := strings.Repeat("b", 40)
@@ -407,9 +408,18 @@ func TestSharedHeadKeepsItsReview(t *testing.T) {
 		t.Fatal("cancelled a task another open PR's head needs")
 	}
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
-	eventually(t, "the shared check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	if n := len(h.gh.checksOn(shaA)); n != 1 {
+	eventually(t, "the stale PR context to be cancelled", func() bool { return h.gh.check(shaA).Conclusion == ConclusionCancelled })
+	eventually(t, "the original slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 1 })
+	h.k.finish(runReview(t, h, e, ctx, 8, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the remaining PR's hold", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	if n := len(h.gh.checksOn(shaA)); n != 2 {
 		t.Fatalf("checks on the shared head = %d", n)
+	}
+	eventually(t, "the remaining PR's slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 1 })
+	h.gh.review(8, "jomcgi", "APPROVED", shaA, "")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("the remaining PR could not clear its own hold")
 	}
 }
 
@@ -843,6 +853,332 @@ func TestGateLabelAfterAPassHoldsTheHead(t *testing.T) {
 	}
 }
 
+// approvedQueuedHead starts with a human-approved gated head and a passing
+// merge group, so a later revocation must replace both passes in one poll.
+func approvedQueuedHead(t *testing.T) (*harness, *Engine, context.Context) {
+	t.Helper()
+	h := newHarness(t)
+	h.gh.addPR(&fakePR{Number: 7, Head: shaA, Files: []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}})
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the approved head", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.mu.Lock()
+	h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionSuccess {
+		t.Fatalf("initial merge group = %+v", c)
+	}
+	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+	return h, e, ctx
+}
+
+func TestApprovedGateIsRevalidatedUntilMerge(t *testing.T) {
+	for _, decision := range []string{"DISMISSED", "CHANGES_REQUESTED"} {
+		t.Run(decision, func(t *testing.T) {
+			h, e, ctx := approvedQueuedHead(t)
+			if decision == "DISMISSED" {
+				h.gh.mu.Lock()
+				h.gh.prs[7].Reviews[0].State = decision // GitHub changes the original review.
+				h.gh.mu.Unlock()
+			} else {
+				h.gh.review(7, "jomcgi", decision, shaA, "")
+			}
+			e.Tick(ctx)
+			for _, sha := range []string{shaA, "mg-7"} {
+				if c := h.gh.check(sha); c == nil || c.Conclusion != ConclusionFailure {
+					t.Errorf("%s after revocation = %+v", sha, c)
+				}
+			}
+			if len(h.gh.enqueues()) != 0 {
+				t.Fatal("enqueued a revoked approval")
+			}
+			n := h.gh.checkCount()
+			e.Tick(ctx)
+			if h.gh.checkCount() != n {
+				t.Fatal("unchanged revoked approval created another check")
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+			e.Tick(ctx)
+			if c := h.gh.check(shaA); c.Conclusion != ConclusionSuccess {
+				t.Fatalf("fresh approval left the head held: %+v", c)
+			}
+			if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure {
+				t.Fatal("revived a failed merge group without requeueing")
+			}
+		})
+	}
+}
+
+func TestLateHoldNeedsFreshApprovalAcrossRestart(t *testing.T) {
+	h, e, ctx := approvedQueuedHead(t)
+	h.gh.label(7, "needs-human")
+	e.Tick(ctx)
+	for _, sha := range []string{shaA, "mg-7"} {
+		if c := h.gh.check(sha); c == nil || c.Conclusion != ConclusionFailure {
+			t.Fatalf("%s after a later hold = %+v", sha, c)
+		}
+	}
+	n := h.gh.checkCount()
+	e = h.engine() // state must survive a process restart.
+	e.Tick(ctx)
+	if h.gh.checkCount() != n || len(h.gh.enqueues()) != 0 {
+		t.Fatal("restart reused the approval before the hold or rewrote the same hold")
+	}
+	h.gh.label(7) // Removing a hold never clears it by itself.
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("removing the label cleared the hold")
+	}
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "I accept the hold")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("fresh approval did not clear the hold")
+	}
+	h.gh.label(7, "Needs-Human") // Reapplying the same label is a new decision.
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("reapplied hold reused the previous approval")
+	}
+	n = h.gh.checkCount()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("unchanged labels produced another check")
+	}
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "I accept the new hold")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("fresh approval did not clear the reapplied hold")
+	}
+	n = h.gh.checkCount()
+	e.Tick(ctx)
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("unchanged approval produced another check")
+	}
+	if n, _ := h.k.state(); n != 1 {
+		t.Fatalf("gate changes started %d model executions, want 1", n)
+	}
+}
+
+func TestHoldAddedDuringReviewNeedsFreshApproval(t *testing.T) {
+	for _, gatedPath := range []bool{false, true} {
+		t.Run(fmt.Sprint("gated path ", gatedPath), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			if gatedPath {
+				h.gh.prs[7].Files = []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "approved before the hold")
+			e, ctx, _ := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			h.gh.label(7, "needs-human")
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
+			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, gateOnlyMarker) {
+				t.Fatalf("review completed from stale labels: %s:\n%s", c.Conclusion, c.Summary)
+			}
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "approved after the hold")
+			e.Tick(ctx)
+			if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+				t.Fatal("fresh approval did not clear the hold")
+			}
+		})
+	}
+}
+
+func TestCompletionRetriesCurrentGateReadWithoutAnotherTask(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.gh.failGraphQL("pull_request", true)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "failed current PR read", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	if c := h.gh.check(shaA); c.Status != "in_progress" || RecordedTask(c.Summary).ID != task {
+		t.Fatalf("failed read lost the attached task: %+v", c)
+	}
+	h.gh.label(7, "needs-human")
+	h.gh.failGraphQL("pull_request", false)
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	eventually(t, "the held check after reattach", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("reattach forgot that the hold followed the approval")
+	}
+	if n, _ := h.k.state(); n != 1 {
+		t.Fatalf("final metadata retry started %d tasks, want 1", n)
+	}
+}
+
+func TestReattachedLegacyProgressRequiresFreshHoldApproval(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "the task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
+	stop()
+	h.gh.mu.Lock()
+	h.gh.checks[0].Text = "" // A progress check written before snapshots existed.
+	h.gh.mu.Unlock()
+	h.gh.label(7, "human")
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	eventually(t, "the legacy task to finish held", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("legacy progress assumed the approval followed the hold")
+	}
+}
+
+func TestReattachedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.label(7, "human")
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "PR 7's task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
+	h.gh.addPR(&fakePR{Number: 8, Title: "same commit", Head: shaA})
+	h.gh.review(8, "jomcgi", "APPROVED", shaA, "before PR 8's hold")
+	h.gh.push(7, strings.Repeat("b", 40))
+	h.gh.label(8, "human")
+	stop()
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	eventually(t, "the reattached shared-head check", func() bool { return h.gh.check(shaA).Status == "completed" })
+	c := h.gh.check(shaA)
+	if c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, gateOnlyMarker) {
+		t.Fatalf("PR 8 borrowed PR 7's preexisting hold snapshot: %s:\n%s", c.Conclusion, c.Summary)
+	}
+	eventually(t, "the shared-head slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 1 })
+	h.gh.review(8, "jomcgi", "APPROVED", shaA, "after PR 8's hold")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("PR 8 could not clear its own hold with a fresh approval")
+	}
+}
+
+func TestGateRevalidationErrorsCannotPropagateAnOldPass(t *testing.T) {
+	for _, failure := range []string{"reviews", "check read", "check write"} {
+		t.Run(failure, func(t *testing.T) {
+			h, e, ctx := approvedQueuedHead(t)
+			if failure == "reviews" {
+				h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 502)
+			} else if failure == "check read" {
+				h.gh.failWith("GET /repos/"+testRepo+"/commits/"+shaA+"/check-runs", 502)
+			} else {
+				h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")
+				h.gh.mu.Lock()
+				h.gh.failCheckSHA = shaA
+				h.gh.mu.Unlock()
+			}
+			e.Tick(ctx)
+			if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure {
+				t.Fatalf("merge group retained an unverified pass: %+v", c)
+			}
+			if len(h.gh.enqueues()) != 0 {
+				t.Fatal("enqueued an unverified approval")
+			}
+			if failure == "reviews" && h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("review read error left the head passing")
+			}
+			if failure == "reviews" {
+				n := h.gh.checkCount()
+				e.Tick(ctx)
+				if h.gh.checkCount() != n {
+					t.Fatal("repeated read error created another check")
+				}
+				h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 0)
+				e.Tick(ctx)
+				if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+					t.Fatal("read recovery did not restore the still-valid approval")
+				}
+			} else if failure == "check write" {
+				h.gh.mu.Lock()
+				h.gh.failCheckSHA = ""
+				h.gh.mu.Unlock()
+				e.Tick(ctx)
+				if h.gh.check(shaA).Conclusion != ConclusionFailure {
+					t.Fatal("write recovery did not persist the revoked approval")
+				}
+			}
+		})
+	}
+}
+
+func TestLegacyGateStateKeepsItsBaselineAndRevalidates(t *testing.T) {
+	h, e, ctx := approvedQueuedHead(t)
+	h.gh.label(7, "needs-human", "HUMAN")
+	legacy := statePrefix + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"gate":{"paths":["REVIEW.md"],"labels":["human","needs-human"],"approver":"jomcgi"}}`)) + stateSuffix
+	h.gh.mu.Lock()
+	for _, c := range h.gh.checks {
+		if c.SHA == shaA {
+			c.Text = legacy
+		}
+	}
+	h.gh.mu.Unlock()
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	h.gh.label(7, "human", "Needs-Human") // Order and case do not create a hold.
+	e.Tick(ctx)
+	if h.gh.checkCount() != n || h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("legacy label baseline or label order invalidated an approval")
+	}
+	h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure {
+		t.Fatal("legacy state skipped approval revalidation")
+	}
+}
+
+func TestGateChangesPreserveAnEnqueuedHeadsHistory(t *testing.T) {
+	for _, change := range []string{"label removed", "approval revoked", "reviews unavailable"} {
+		t.Run(change, func(t *testing.T) {
+			h := newHarness(t)
+			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Labels: []string{"human"}, Files: []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}})
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			eventually(t, "the approved head", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			e.Tick(ctx)
+			if len(h.gh.enqueues()) != 1 || !strings.Contains(h.gh.check(shaA).Summary, enqueuedMarker) {
+				t.Fatal("the head was not initially enqueued and recorded")
+			}
+			h.gh.mu.Lock()
+			delete(h.gh.queued, 7) // The queue ejected this head.
+			h.gh.mu.Unlock()
+			switch change {
+			case "label removed":
+				h.gh.label(7)
+			case "approval revoked":
+				h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")
+			case "reviews unavailable":
+				h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 502)
+			}
+			e.Tick(ctx)
+			if !strings.Contains(h.gh.check(shaA).Summary, enqueuedMarker) {
+				t.Fatal("gate replacement lost the enqueue history")
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+			h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 0)
+			e.Tick(ctx)
+			e = h.engine()
+			e.Tick(ctx)
+			if h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1 {
+				t.Fatal("restart re-enqueued a returned head after the gate cleared")
+			}
+		})
+	}
+}
+
 func TestOversizedDiffAsksForASplitWithoutATask(t *testing.T) {
 	h := newHarness(t)
 	h.gh.addPR(&fakePR{Number: 7, Head: shaA, Files: []github.PullRequestFile{
@@ -910,7 +1246,7 @@ func TestOnlyListedAuthorsAreEnqueued(t *testing.T) {
 			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 			e.Tick(ctx)
 			e.Tick(ctx)
-			if q := h.gh.enqueues(); len(q) != 0 || h.gh.graphqlCalls("pull_request") != 0 {
+			if q := h.gh.enqueues(); len(q) != 0 || h.gh.graphqlCalls("pull_request") != 1 {
 				t.Fatalf("enqueued a PR by %s: %v", author, q)
 			}
 		})
@@ -1017,6 +1353,14 @@ func TestApprovedHeadPassesWithItsGateFindingsListed(t *testing.T) {
 	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
 	if c := h.gh.check(shaA); !strings.Contains(c.Summary, "### Approved by jomcgi") {
 		t.Fatalf("summary = %s", c.Summary)
+	}
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")
+	e.Tick(ctx)
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, "unresolved human-gate findings") || st.Gate == nil || len(st.Gate.Findings) != 1 {
+		t.Fatalf("revoked agent gate = %s:\n%s", c.Conclusion, c.Summary)
 	}
 }
 
@@ -1130,7 +1474,7 @@ func TestGatePathFailsClosed(t *testing.T) {
 		eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
 		eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 		e.Tick(ctx)
-		if len(h.gh.enqueues()) != 0 || h.gh.graphqlCalls("pull_request") != 0 {
+		if len(h.gh.enqueues()) != 0 || h.gh.graphqlCalls("pull_request") != 1 {
 			t.Fatal("enqueued without reading the required statuses")
 		}
 		if got := testutil.ToFloat64(h.m.GitHubErrors.WithLabelValues("homelab", "statuses")); got == 0 {
