@@ -20,6 +20,18 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- if and (include "factory.kagentInstall" .) (not ($kagentAuth.serviceAccount | default dict).authority) }}
 {{- fail "connector.enabled needs kagent.config.server.auth.serviceAccount.authority: kagent authenticates the connector's ServiceAccount token only with it" }}
 {{- end }}
+{{- /* The peers' policies admit the connector by networkPolicy.connector. */}}
+{{- $peer := .Values.networkPolicy.connector }}
+{{- $podLabels := include "factory.connectorSelector" . | fromYaml }}
+{{- $_ := set $podLabels "app.kubernetes.io/part-of" "factory" }}
+{{- if ne $peer.namespace $ns }}
+{{- fail (printf "networkPolicy.connector.namespace must be broker.namespace (%s), where the connector runs" $ns) }}
+{{- end }}
+{{- range $k, $v := $peer.matchLabels }}
+{{- if ne (toString (index $podLabels $k | default "")) (toString $v) }}
+{{- fail (printf "networkPolicy.connector.matchLabels %s=%s does not match the connector's pod labels" $k $v) }}
+{{- end }}
+{{- end }}
 {{- $itsaplanAgents := list }}
 {{- range .Values.itsaplan.bootstrap.agents }}
 {{- $itsaplanAgents = append $itsaplanAgents .username }}
@@ -178,6 +190,14 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ $c.metricsPort }}
+          # Health is served before the key wait and the migrations; the
+          # startup probe still allows five minutes before liveness counts.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /healthz
@@ -215,13 +235,18 @@ spec:
           configMap:
             name: {{ $name }}
         # Each itsaplan agent's key, from the Secret the itsaplan bootstrap
-        # writes; the pod waits for a key the bootstrap has not written yet.
+        # writes. The bootstrap is a PostSync hook that runs only once this
+        # Deployment is healthy, so on a fresh install or a restore the keys
+        # are optional here: the connector starts, reports ready and waits
+        # for the files, and reads each key per call, so a rotation needs no
+        # restart.
         - name: itsaplan-keys
           projected:
             sources:
               {{- range $keys }}
               - secret:
                   name: {{ include "factory.itsaplanAgentSecret" . }}
+                  optional: true
                   items:
                     - key: apiKey
                       path: {{ . }}

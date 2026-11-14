@@ -719,8 +719,9 @@ the instance admin.
 ## Connector
 
 The connector (`projects/factory/ARCHITECTURE.md`, "Connector") runs as
-`factory/factory-connector` once the deploy values set `connector.enabled`,
-after itsaplan's bootstrap has written the agents' keys. Turning it on also
+`factory/factory-connector` once the deploy values set `connector.enabled`.
+Until itsaplan's bootstrap has written the agents' keys it reports ready and
+logs `waiting for itsaplan API keys`. Turning it on also
 sets `kagent.config.server.auth.serviceAccount.authority`; never change that
 value afterwards, since kagent identifies the connector by it and a changed
 principal loses every session. Delivery (pull requests, review rounds and the

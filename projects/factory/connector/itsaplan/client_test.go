@@ -158,3 +158,27 @@ func TestProjectColumnsAndMoveIssueUseTheCoordinator(t *testing.T) {
 		t.Fatalf("request = %+v", got)
 	}
 }
+
+func TestKeyFuncIsAskedPerCall(t *testing.T) {
+	var got seen
+	c := server(t, http.StatusOK, `{"run":null}`, &got)
+	key := "k-1"
+	c.KeyFunc = func(agent string) (string, error) {
+		if agent != "coder" {
+			return "", errors.New("unknown agent")
+		}
+		return key, nil
+	}
+	for _, want := range []string{"k-1", "k-2"} {
+		key = want
+		if _, err := c.Claim(context.Background(), "coder"); err != nil {
+			t.Fatal(err)
+		}
+		if got.key != want {
+			t.Fatalf("key = %q, want %q", got.key, want)
+		}
+	}
+	if _, err := c.Claim(context.Background(), "stranger"); err == nil {
+		t.Fatal("claim without a key succeeded")
+	}
+}
