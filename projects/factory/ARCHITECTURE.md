@@ -688,7 +688,9 @@ and public previews).
   path) fails with "split this PR" and sends no task. The prompt carries the
   PR's text and file names from any author, quoted inside delimited
   untrusted blocks (`REVIEW.md` "What the agent sees"). Each delimiter names
-  the head and a digest of its block's text, which the text cannot contain.
+  the head and a 128-bit digest of its block's text: holding its own closer
+  would take a SHA-256 preimage search, so even a look-alike delimiter the
+  sanitizer misses cannot close a block in practice.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211)). A PR touching `REVIEW.md`,
   `**/REVIEW.md`, `projects/factory/reviewer/**`,

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
@@ -152,7 +153,7 @@ func TestLoadRulesReadsTheBaseBranch(t *testing.T) {
 	}
 }
 
-var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|content)-([0-9a-f]{12})-([0-9a-f]{12})>\n`)
+var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|content)-([0-9a-f]{12})-([0-9a-f]{32})>\n`)
 
 // untrustedBlocks checks the prompt's delimiters: "untrusted-pr-" appears
 // only in one opener and one closer per block, each naming the head and the
@@ -176,7 +177,7 @@ func untrustedBlocks(t *testing.T, p string) (inside map[string]string, outside 
 			t.Fatalf("block %d is not one opener and its closer:\n%s", i/2, p)
 		}
 		text := strings.TrimSuffix(p[open[1]:end[0]], "\n")
-		if got := sha256.Sum256([]byte(text)); sha != shaA[:12] || hex.EncodeToString(got[:6]) != sum {
+		if got := sha256.Sum256([]byte(text)); sha != shaA[:12] || hex.EncodeToString(got[:16]) != sum {
 			t.Fatalf("the %s block is named %s-%s, not by the head and its text's digest", kind, sha, sum)
 		}
 		inside[kind] = text
@@ -312,5 +313,29 @@ func TestPromptSendsTheInterdiffAfterACleanReview(t *testing.T) {
 	})
 	if !strings.Contains(p, "was rebased since prev-1 (diverged)") {
 		t.Errorf("rebased prompt:\n%s", p)
+	}
+}
+
+// safe removes a whole run of "pr-" after "untrusted-" in one pass: nothing
+// re-forms across the join, and a long run costs linear time.
+func TestSafeStripsRunsInOnePass(t *testing.T) {
+	for in, want := range map[string]string{
+		"untrusted-pr-pr-pr-description":   "untrusted-description",
+		"Untrusted-PR-pr-Pr-x":             "untrusted-x",
+		"untrusteduntrusted-pr-pr-":        "untrusteduntrusted-",
+		"a untrusted-pr- b untrusted-pr-c": "a untrusted- b untrusted-c",
+	} {
+		if got := safe(in); got != want {
+			t.Errorf("safe(%q) = %q, want %q", in, got, want)
+		}
+	}
+	long := "untrusted-" + strings.Repeat("pr-", 200000) + "x"
+	start := time.Now()
+	got := safe(long)
+	if got != "untrusted-x" || untrustedTag.MatchString(got) {
+		t.Fatalf("safe(long run) = %.40q", got)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("safe took %v on a 600 KB run; it must be linear", d)
 	}
 }
