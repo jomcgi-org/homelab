@@ -249,6 +249,7 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 			"id":"PR_5","number":5,"url":"https://github.com/example-org/homelab/pull/5","state":"MERGED","merged":true,
 			"mergedAt":"2026-11-14T12:00:00Z","headRefOid":"b","headRefName":"factory/HL-1","baseRefName":"main",
 			"mergeCommit":{"oid":"m"},"mergeQueueEntry":null,
+			"labels":{"nodes":[{"name":"human"},{"name":"factory"}]},
 			"reviews":{"nodes":[
 				{"id":"R_2","state":"APPROVED","submittedAt":"2026-11-14T11:00:00Z","author":{"login":"reviewer"},"commit":{"oid":"b"}},
 				{"id":"R_1","state":"CHANGES_REQUESTED","body":"fix","submittedAt":"2026-11-14T10:00:00Z","author":{"login":"reviewer"},"commit":{"oid":"a"}}
@@ -266,6 +267,9 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 	}
 	if !d.Merged || d.State != "closed" || d.MergeCommitSHA != "m" || d.MergeQueueState != "" || d.HeadSHA != "b" {
 		t.Fatalf("detail = %+v", d.PullRequest)
+	}
+	if strings.Join(d.Labels, ",") != "human,factory" {
+		t.Fatalf("labels = %v", d.Labels)
 	}
 	if len(d.Reviews) != 2 || d.Reviews[0].NodeID != "R_1" || d.Reviews[0].CommitSHA != "a" {
 		t.Fatalf("reviews = %+v, want oldest first", d.Reviews)

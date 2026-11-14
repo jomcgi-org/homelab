@@ -156,6 +156,7 @@ func run(log *slog.Logger) error {
 	for _, b := range cfg.File.Bindings {
 		review := dispatch.ReviewPolicy{
 			TrustedReviewers: b.TrustedReviewers, MaxReviewRounds: *b.MaxReviewRounds, DoneColumn: b.DoneColumn,
+			HoldLabels: dispatch.DefaultHoldLabels,
 		}
 		for _, c := range b.RequiredChecks {
 			review.RequiredChecks = append(review.RequiredChecks, dispatch.Check(c))

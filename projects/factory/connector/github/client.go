@@ -64,7 +64,8 @@ type PullRequest struct {
 	HeadRef string
 	BaseRef string
 	Title   string
-	// Body, Author, Labels and UpdatedAt are filled from REST reads only.
+	// Body, Author and UpdatedAt are filled from REST reads only; Labels
+	// from REST reads and PullRequestDetail.
 	Body      string
 	Author    string
 	Labels    []string
@@ -459,6 +460,7 @@ const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) 
       id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName
       mergeCommit { oid }
       mergeQueueEntry { state }
+      labels(first: 100) { nodes { name } }
       reviews(last: 100) {
         nodes { id state body submittedAt author { login } commit { oid } }
       }
@@ -480,8 +482,8 @@ type oid struct {
 	OID string `json:"oid"`
 }
 
-// PullRequestDetail reads a PR's state, merge queue entry, reviews and
-// review threads with GraphQL.
+// PullRequestDetail reads a PR's state, merge queue entry, labels, reviews
+// and review threads with GraphQL.
 func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int) (*PullRequestDetail, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	var out struct {
@@ -502,6 +504,11 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 				MergeQueueEntry *struct {
 					State string `json:"state"`
 				} `json:"mergeQueueEntry"`
+				Labels struct {
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
 				Reviews struct {
 					Nodes []struct {
 						ID          string     `json:"id"`
@@ -555,6 +562,9 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	}
 	if p.MergeQueueEntry != nil {
 		d.MergeQueueState = p.MergeQueueEntry.State
+	}
+	for _, l := range p.Labels.Nodes {
+		d.Labels = append(d.Labels, l.Name)
 	}
 	for _, r := range p.Reviews.Nodes {
 		rv := Review{NodeID: r.ID, State: r.State, Body: r.Body}

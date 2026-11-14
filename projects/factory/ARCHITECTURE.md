@@ -777,7 +777,10 @@ previews).
   (`reviewerCheck {name, appId}`), with its summary in full (at most 60,000
   characters, so the findings after the overview survive). A failure that
   the reviewer App marks `human-gate-only` starts no round: the PR waits for
-  Joe's approval, which turns the check green.
+  Joe's approval, which turns the check green. A `human` or `needs-human`
+  label holds a PR at the connector too: it is not enqueued, and a queued
+  one is dequeued and returns to review with that head ejected, so a hold
+  placed after a passing review cannot race the reviewer's next poll.
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the

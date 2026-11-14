@@ -46,6 +46,9 @@ type ReviewPolicy struct {
 	// ReviewerCheck is the independent reviewer's check. Without one, a
 	// trusted reviewer's approval of the head stands in for it.
 	ReviewerCheck *Check
+	// HoldLabels hold a PR for a person: it is not enqueued, and a queued
+	// one leaves the queue.
+	HoldLabels []string
 	// MaxReviewRounds bounds the connector's review rounds per work item.
 	MaxReviewRounds int
 	// DoneColumn names the itsaplan column a merged issue moves to; empty
@@ -62,7 +65,24 @@ type Links struct {
 	Session string
 }
 
+// DefaultHoldLabels are the labels that hold a PR for a person, as the
+// factory-reviewer's human gate reads them: `human` marks human-owned work,
+// `needs-human` a requested decision.
+var DefaultHoldLabels = []string{"human", "needs-human"}
+
 func (b *Binding) repo() string { return b.Owner + "/" + b.Repo }
+
+// held reports the first of the PR's labels that holds it for a person.
+func (p *ReviewPolicy) held(labels []string) string {
+	for _, l := range labels {
+		for _, h := range p.HoldLabels {
+			if strings.EqualFold(l, h) {
+				return l
+			}
+		}
+	}
+	return ""
+}
 
 func (p *ReviewPolicy) trustedReviewer(login string) bool {
 	for _, l := range p.TrustedReviewers {
@@ -548,6 +568,18 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		// Closed by a person, queued or not: delivery stops until a new run.
 		return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed without merging", pr.Number, pr.URL))
 	case wi.State == store.WorkMerging && d.MergeQueueState != "":
+		if l := b.Review.held(d.Labels); l != "" {
+			// A hold placed after the enqueue: leave the queue. The next poll
+			// sees the PR out of the queue and returns it to review.
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			if err := e.gh.DequeuePullRequest(ctx, repo, pr.NodeID); err != nil {
+				return fmt.Errorf("dequeue held PR %d: %w", pr.Number, err)
+			}
+			e.m.MergeQueue.WithLabelValues("dequeued").Inc()
+			e.log.InfoContext(ctx, "PR dequeued: held for a person", "work_item", wi.ID, "pr", pr.Number, "label", l)
+		}
 		return nil
 	case wi.State == store.WorkMerging:
 		// The queue entry can go before the merge shows; look again before
@@ -876,12 +908,12 @@ func writeThreads(s *strings.Builder, threads []github.ReviewThread, p *ReviewPo
 	}
 }
 
-// gateOpen reports whether the head may enter the merge queue: every
-// required check and the reviewer succeeded on it from trusted sources, no
-// trusted reviewer's latest decision requests changes, and the queue has not
-// already sent this head back.
+// gateOpen reports whether the head may enter the merge queue: no hold label
+// is on the PR, every required check and the reviewer succeeded on it from
+// trusted sources, no trusted reviewer's latest decision requests changes,
+// and the queue has not already sent this head back.
 func gateOpen(p *ReviewPolicy, base string, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status) bool {
-	if d.Draft || d.HeadSHA == "" || d.HeadSHA == pr.EjectedHeadSHA || d.BaseRef != base {
+	if d.Draft || d.HeadSHA == "" || d.HeadSHA == pr.EjectedHeadSHA || d.BaseRef != base || p.held(d.Labels) != "" {
 		return false
 	}
 	if p.ReviewerCheck == nil && len(p.TrustedReviewers) == 0 {
