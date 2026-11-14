@@ -165,6 +165,9 @@ networkPolicy:
     endpoints: []
     port: 4317
 
+# The cluster's DNS domain. Actor destinations must be fully qualified names.
+clusterDomain: cluster.local
+
 # Credential broker, projects/factory/broker (ARCHITECTURE.md, "Credential
 # broker"). It relays the Codex harness's model calls with its own ChatGPT
 # grant, and mints GitHub App tokens per repository binding once the App
@@ -182,7 +185,7 @@ broker:
     digest: ""
     pullPolicy: IfNotPresent
   # The relay, for actors through Substrate's egress gateway. ModelConfigs use
-  # http://factory-broker.<namespace>.svc/v1 (Service port 80).
+  # http://factory-broker.<namespace>.svc.<clusterDomain>/v1 (Service port 80).
   relayPort: 8080
   # Device login, forced refresh, connector tokens and metrics.
   adminPort: 8081

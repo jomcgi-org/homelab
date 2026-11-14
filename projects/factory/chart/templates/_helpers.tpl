@@ -47,9 +47,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if $i.digest -}}{{ $i.repository }}@{{ $i.digest }}{{- else -}}{{ $i.repository }}:{{ $i.tag }}{{- end -}}
 {{- end }}
 
-{{/* The relay's base URL for ModelConfigs: a DNS name, cleartext through Substrate's egress gateway. */}}
+{{/*
+The relay's base URL for ModelConfigs: a DNS name, cleartext through
+Substrate's egress gateway. Fully qualified: Substrate resolves actor
+destinations as absolute names, so a search-domain name such as
+<svc>.<ns>.svc gets NXDOMAIN.
+*/}}
 {{- define "factory.brokerRelayURL" -}}
-http://{{ include "factory.brokerName" . }}.{{ .Values.broker.namespace }}.svc/v1
+http://{{ include "factory.brokerName" . }}.{{ .Values.broker.namespace }}.svc.{{ .Values.clusterDomain }}/v1
 {{- end }}
 
 {{/* The broker's grant Secret and quota ConfigMap names. */}}
