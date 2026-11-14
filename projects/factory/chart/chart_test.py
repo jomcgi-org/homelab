@@ -169,7 +169,19 @@ def test_rbac_is_namespaced() -> None:
         for d in docs
         if d["kind"] in ("ClusterRole", "ClusterRoleBinding")
     }
-    assert set(cluster_scoped) == {"kagent-kagent-crds", "factory-broker-tokenreview"}
+    assert set(cluster_scoped) == {
+        "kagent-kagent-crds",
+        "factory-broker-tokenreview",
+        "kagent-kagent-invocation-auth",
+    }
+    # kagent reviews the connector's ServiceAccount token, and nothing else.
+    assert _one(docs, "ClusterRole", "kagent-kagent-invocation-auth")["rules"] == [
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["tokenreviews"],
+            "verbs": ["create"],
+        }
+    ]
     kagent_roles = {
         (d["metadata"]["namespace"], d["metadata"]["name"])
         for d in docs
@@ -318,12 +330,9 @@ def test_existing_kagent_renders_only_crds() -> None:
     ("override", "message"),
     [
         ("kagent.enabled=false", "kagent.enabled must be true for kagent.mode install"),
+        ("itsaplan.enabled=false", r"connector\.enabled needs itsaplan\.enabled"),
         (
-            "connector.enabled=true,itsaplan.enabled=false",
-            r"connector\.enabled needs itsaplan\.enabled",
-        ),
-        (
-            "connector.enabled=true",
+            "kagent.config.server.auth.serviceAccount.authority=",
             r"connector\.enabled needs kagent\.config\.server\.auth\.serviceAccount\.authority",
         ),
         (

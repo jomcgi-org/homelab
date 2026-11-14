@@ -121,25 +121,23 @@ def _broker_subjects(docs: list[dict[str, Any]]) -> list[str]:
     return yaml.safe_load(cm["data"]["config.yaml"])["tokenReview"]["connectorSubjects"]
 
 
-def test_deploy_values_render_no_connector() -> None:
-    # The published chart and the deploy values move separately: main's values
-    # must not turn anything connector-related on, here or in kagent and the
-    # broker.
+def test_deploy_values_turn_the_connector_on() -> None:
+    # The factory cluster's install, with the same bindings as _ENABLE_VALUES.
     docs = _render(enable=False)
-    assert not _ours(docs)
-    assert _broker_subjects(docs) == []
-    assert not [d for d in docs if d["metadata"]["name"].endswith("-invocation-auth")]
+    assert _broker_subjects(docs) == [_SUBJECT]
+    assert _config(docs) == _config(_render())
+    _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
 
 
-def test_deploy_values_render_byte_for_byte_without_the_connector() -> None:
-    # The chart without its connector templates is what was published before
-    # them; with main's deploy values both must render the same bytes.
+def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
+    # Off, the connector's templates render nothing at all.
     with tempfile.TemporaryDirectory() as tmp:
         bare = Path(tmp) / "chart"
         shutil.copytree(_CHART_DIR, bare)
         for f in ("connector.yaml", "connector-network-policy.yaml"):
             (bare / "templates" / f).unlink()
-        assert _helm(_CHART_DIR, []) == _helm(bare, [])
+        off = ["--set", "connector.enabled=false"]
+        assert _helm(_CHART_DIR, off) == _helm(bare, off)
 
 
 def test_deploy_values_render_is_locked() -> None:
