@@ -1,7 +1,8 @@
 # The software factory umbrella chart (projects/factory/ARCHITECTURE.md,
 # "Umbrella chart"). This version installs kagent with its CRD hook, namespace,
-# Substrate credential grant and Cilium policies. The sections at the end are
-# placeholders for later steps of the delivery plan and render nothing.
+# Substrate credential grant and Cilium policies, the credential broker, and
+# the repository bindings' agents. The sections at the end are placeholders for
+# later steps of the delivery plan and render nothing.
 
 # kagent: agent definitions, execution and sessions. Everything under this key
 # except `enabled` and `mode` is passed to the vendored kagent 1.0.1 subchart
@@ -41,6 +42,12 @@ kagent:
   providers: null
 
   config:
+    # Every agent runtime's CPU and memory limits. kagent 1.0.1 sets these for
+    # all Agents at once, so templates/validate.yaml requires each agent's
+    # `resources.limits` to match them.
+    runtimeDefaults:
+      cpu: "4"
+      memory: 8Gi
     server:
       auth:
         # The edge authenticates people and forwards their access token;
@@ -158,6 +165,97 @@ networkPolicy:
     endpoints: []
     port: 4317
 
+# Credential broker, projects/factory/broker (ARCHITECTURE.md, "Credential
+# broker"). It relays the Codex harness's model calls with its own ChatGPT
+# grant, and mints GitHub App tokens per repository binding once the App
+# exists. Provider credentials exist only in its pod.
+broker:
+  enabled: true
+  # The connector's namespace too (networkPolicy.connector). This chart owns
+  # it and keeps it.
+  namespace: factory
+  # Overwritten at build time by helm_chart(images = ...): the published chart
+  # deploys by digest, never by tag.
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/broker
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  # The relay, for actors through Substrate's egress gateway. ModelConfigs use
+  # http://factory-broker.<namespace>.svc/v1 (Service port 80).
+  relayPort: 8080
+  # Device login, forced refresh, connector tokens and metrics.
+  adminPort: 8081
+  # The one Codex grant the relay serves: Secret factory-broker-grant-<grant>,
+  # pre-created empty; the broker's device login fills it.
+  grant: codex-primary
+  # Projected ServiceAccount token subjects (TokenReview usernames,
+  # system:serviceaccount:<ns>:<name>) allowed to log in or refresh the grant,
+  # and to fetch connector GitHub tokens. Empty: nobody yet.
+  adminSubjects: []
+  connectorSubjects: []
+  # The factory GitHub App (jomcgi-factory) from 1Password item
+  # k8s-homelab/factory-github-app (app-id, installation-id, private-key).
+  # Off until that item exists: the broker then mints no GitHub tokens and the
+  # agents' git egress has no credential.
+  githubApp:
+    enabled: false
+    itemPath: vaults/k8s-homelab/items/factory-github-app
+  # Settings passed to the broker's config file over its defaults
+  # (projects/factory/broker/config).
+  config: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Agent profiles a repository binding instantiates, one Agent per binding.
+agents:
+  codex:
+    # The Codex harness through the broker's relay (provider `broker`, the only
+    # provider so far): ModelConfig provider OpenAI, apiFormat responses, an
+    # actor JWT for audience factory-broker.
+    harness: codex
+    provider: broker
+    model: gpt-6.1-terra
+    # The worker pod's resources. Its limits are also the actor's, which
+    # kagent takes from kagent.config.runtimeDefaults (they must match).
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "4"
+        memory: 8Gi
+    # Actors running at once: one Substrate worker each.
+    concurrency: 1
+    # Egress grants (EgressPolicies rendered in the binding's namespace).
+    # github-git: https://github.com with the broker-minted token injected as
+    # Authorization: Basic.
+    egress: [github-git]
+    systemPrompt: |
+      You are a software engineer working on one GitHub repository. Make the
+      requested change on the branch you are given, run the checks the
+      repository documents, and push the branch. Never print credentials.
+
+# Repository bindings: the access boundary. Each gets one namespace (its
+# Substrate atespace) holding one Agent, its ModelConfig, Harness,
+# EgressPolicies and Substrate WorkerPool, plus the broker's git token. Each
+# namespace must also be in kagent.rbac.namespaces and in Substrate's
+# credentialProvider.namespacePolicies. Each entry: name, owner, repo,
+# baseBranch, namespace, agent (a key of `agents`).
+repositories: []
+
+# The Substrate worker image for binding WorkerPools, matching Substrate's
+# release and its gVisor SandboxConfig.
+workers:
+  image: ghcr.io/kagent-dev/substrate/ateworker-gvisor:v1.0.1@sha256:97ca74cd2cabc3fd28ac67790ed3b1f25b7b4247709a316ff374a428822c420e
+  sandboxConfig: gvisor-default
+  # Harness snapshots go to <prefix><namespace>/ in Substrate's snapshot store.
+  snapshotLocationPrefix: s3://ate-snapshots/
+
 # ---------------------------------------------------------------------------
 # Later steps of the delivery plan. Nothing below renders yet, and setting any
 # of it fails the render (templates/validate.yaml) rather than doing nothing.
@@ -166,19 +264,8 @@ networkPolicy:
 # itsaplan Community: own templates against the upstream images (step 6).
 itsaplan:
   enabled: false
-# Credential broker, projects/factory/broker (step 7).
-broker:
-  enabled: false
 # Connector, projects/factory/connector (steps 9 and 10).
 connector:
   enabled: false
-# Model providers (step 7).
+# Model providers beyond the broker's relay.
 providers: {}
-# Agents: harness, provider, resources, concurrency, egress grants, tools.
-agents: {}
-# Repository bindings (step 8): owner, repo, base branch, itsaplan project,
-# agent, namespace, branch prefix, concurrency, checks, merge policy,
-# retention. One Agent and namespace per repository; each namespace also needs
-# the credential provider's RoleBinding and a Substrate namespacePolicies
-# entry (see `substrate.credentialProvider`).
-repositories: []

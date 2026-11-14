@@ -38,6 +38,21 @@ spec:
     server: https://kubernetes.default.svc
     # The CRD hook runs here before the chart's own Namespace is applied.
     namespace: kagent
+  # The credential broker owns its grant Secret's and quota ConfigMap's data:
+  # the chart declares them empty so its RBAC can name them, and the broker
+  # writes the rotating grant at login and every refresh. Diffing /data would
+  # let self-heal revert the grant to empty, revoking it.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-broker-grant-codex-primary
+      jsonPointers: [/data]
+    - group: ""
+      kind: ConfigMap
+      namespace: factory
+      name: factory-broker-quota
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true
@@ -47,6 +62,8 @@ spec:
       - ServerSideApply=true
       # kagent CRs are applied in the sync that first creates their CRDs.
       - SkipDryRunOnMissingResource=true
+      # Without this a sync still applies the ignored /data above.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

@@ -3,6 +3,9 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
     name = "chart",
+    images = {
+        "broker.image": "//projects/factory/broker/image:image.info",
+    },
     # The vendored kagent subcharts are linted by their own repository.
     lint = False,
     publish = True,

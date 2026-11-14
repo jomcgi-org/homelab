@@ -1,0 +1,324 @@
+{{- if .Values.broker.enabled }}
+{{- /*
+The credential broker (ARCHITECTURE.md, "Credential broker"): one replica,
+Recreate. The relay port takes actors' model calls through Substrate's egress
+gateway; the admin port serves device login, forced refresh, connector tokens
+and metrics. Provider and GitHub credentials exist only in this pod.
+*/}}
+{{- $b := .Values.broker }}
+{{- $ns := $b.namespace }}
+{{- $name := include "factory.brokerName" . }}
+{{- $github := $b.githubApp.enabled }}
+{{- $bindings := list }}
+{{- $atespaces := list }}
+{{- range .Values.repositories }}
+{{- $bindings = append $bindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" .namespace) }}
+{{- $atespaces = append $atespaces .namespace }}
+{{- end }}
+{{- $config := dict
+  "namespace" $ns
+  "listenAddr" (printf ":%d" (int $b.relayPort))
+  "adminListenAddr" (printf ":%d" (int $b.adminPort))
+  "codex" (dict "grant" $b.grant "secretPrefix" "factory-broker-grant-" "quotaConfigMap" (include "factory.brokerQuotaConfigMap" .))
+  "actorJwt" (dict
+    "issuer" .Values.kagent.config.substrate.actorJwtIssuer
+    "audience" "factory-broker"
+    "caFile" "/run/substrate-servicedns/trust-bundle.pem"
+    "allowedAtespaces" $atespaces)
+  "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $b.adminSubjects "connectorSubjects" $b.connectorSubjects)
+  "bindings" $bindings
+}}
+{{- if $github }}
+{{- $_ := set $config "github" (dict
+  "appIdFile" "/etc/factory-github-app/app-id"
+  "installationIdFile" "/etc/factory-github-app/installation-id"
+  "privateKeyFile" "/etc/factory-github-app/private-key") }}
+{{- end }}
+{{- $config = mustMergeOverwrite $config (deepCopy $b.config) }}
+{{- $configYAML := toYaml $config }}
+# The broker's namespace, shared with the connector. Kept: it holds the Codex
+# grant, the only copy of a rotating refresh token.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+# The grant Secret, empty until the broker's device login. The broker only
+# updates it, so a missing Secret is a deployment fault (state `missing`). Its
+# data is the broker's: the Application ignores /data and never prunes or
+# deletes it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "factory.brokerGrantSecret" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    {{- include "factory.keep" . | nindent 4 }}
+type: Opaque
+---
+# Quota observations, latest only; the broker updates /data.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "factory.brokerQuotaConfigMap" . }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    {{- include "factory.keep" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  config.yaml: |
+    {{- $configYAML | nindent 4 }}
+{{- if $github }}
+---
+# app-id, installation-id and private-key of the factory GitHub App.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-github-app
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $b.githubApp.itemPath | quote }}
+{{- end }}
+---
+# TokenReview for the admin and connector endpoints.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-tokenreview
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-tokenreview
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $ns }}
+---
+# Its own grant Secret and quota ConfigMap, by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ include "factory.brokerGrantSecret" . }}]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ include "factory.brokerQuotaConfigMap" . }}]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $ns }}
+{{- range .Values.repositories }}
+---
+# The binding's git token Secret. RBAC cannot narrow create by name; the
+# broker only updates a github-git it labelled itself.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [github-git]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $ns }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.brokerSelector" . | nindent 4 }}
+  ports:
+    - name: relay
+      port: 80
+      targetPort: relay
+    - name: admin
+      port: {{ $b.adminPort }}
+      targetPort: admin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  # One writer for the grant; a brief overlap during a rollout is still safe
+  # (newer-only writes, refresh_token_reused rereads).
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "factory.brokerSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.brokerSelector" . | nindent 8 }}
+        app.kubernetes.io/part-of: factory
+      annotations:
+        checksum/config: {{ $configYAML | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broker
+          image: {{ include "factory.brokerImage" . | quote }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          env:
+            - name: BROKER_CONFIG
+              value: /etc/factory-broker/config.yaml
+          ports:
+            - name: relay
+              containerPort: {{ $b.relayPort }}
+            - name: admin
+              containerPort: {{ $b.adminPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 30
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/factory-broker
+              readOnly: true
+            - name: substrate-servicedns
+              mountPath: /run/substrate-servicedns
+              readOnly: true
+            {{- if $github }}
+            - name: github-app
+              mountPath: /etc/factory-github-app
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        # Substrate's service-DNS trust bundle, to verify the actor JWT
+        # issuer (idp.<substrate>.svc).
+        - name: substrate-servicedns
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+        {{- if $github }}
+        - name: github-app
+          secret:
+            secretName: factory-github-app
+        {{- end }}
+{{- end }}

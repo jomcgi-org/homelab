@@ -9,11 +9,37 @@ instead of silently rendering nothing.
 {{- if ne .Values.postgres.mode "existing" }}
 {{- fail "postgres.mode install arrives with the CNPG operator (delivery plan step 3); use existing" }}
 {{- end }}
-{{- range $section := list "itsaplan" "broker" "connector" }}
+{{- range $section := list "itsaplan" "connector" }}
 {{- if (index $.Values $section).enabled }}
 {{- fail (printf "%s is not implemented in this chart version" $section) }}
 {{- end }}
 {{- end }}
-{{- if or .Values.repositories .Values.agents .Values.providers }}
-{{- fail "repositories, agents and providers are not implemented in this chart version" }}
+{{- if .Values.providers }}
+{{- fail "providers are not implemented in this chart version; agents use the broker's relay" }}
+{{- end }}
+{{- $runtime := .Values.kagent.config.runtimeDefaults }}
+{{- $watched := .Values.kagent.rbac.namespaces }}
+{{- $seen := dict }}
+{{- range $r := .Values.repositories }}
+{{- $a := index $.Values.agents $r.agent }}
+{{- if not $a }}
+{{- fail (printf "repositories %s: agent %q is not in agents" $r.name $r.agent) }}
+{{- end }}
+{{- if hasKey $seen $r.namespace }}
+{{- fail (printf "repositories %s: namespace %s is already bound; one namespace per repository" $r.name $r.namespace) }}
+{{- end }}
+{{- $_ := set $seen $r.namespace true }}
+{{- if or (eq $r.namespace (include "factory.kagentNamespace" $)) (eq $r.namespace $.Values.broker.namespace) }}
+{{- fail (printf "repositories %s: namespace %s is not a binding namespace" $r.name $r.namespace) }}
+{{- end }}
+{{- if not (has $r.namespace $watched) }}
+{{- fail (printf "repositories %s: add namespace %s to kagent.rbac.namespaces so the controller watches it" $r.name $r.namespace) }}
+{{- end }}
+{{- if not $.Values.broker.enabled }}
+{{- fail (printf "repositories %s: agent provider broker needs broker.enabled" $r.name) }}
+{{- end }}
+{{- /* kagent 1.0.1 applies one CPU and memory limit to every runtime. */}}
+{{- if or (ne (toString $a.resources.limits.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.limits.memory) (toString $runtime.memory)) }}
+{{- fail (printf "agents %s: resources.limits must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $r.agent $runtime.cpu $runtime.memory) }}
+{{- end }}
 {{- end }}

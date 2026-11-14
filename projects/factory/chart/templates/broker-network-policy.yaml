@@ -1,0 +1,64 @@
+{{- if and .Values.broker.enabled .Values.networkPolicy.cilium }}
+{{- /*
+The broker's allowlist under the cluster-wide default-deny. Actors reach the
+relay port only through Substrate's egress gateway, which injects their actor
+JWT. The admin port (device login, refresh, connector tokens, metrics) admits
+only the connector; operators use a port-forward. Substrate's atenet-egress
+policy needs the matching egress rule (projects/platform-factory/substrate).
+*/}}
+{{- $b := .Values.broker }}
+{{- $np := .Values.networkPolicy }}
+{{- $sub := .Values.substrate.namespace }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "factory.brokerName" . }}
+  namespace: {{ $b.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.brokerSelector" . | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $sub }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: {{ $b.relayPort | quote }}
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
+            {{- toYaml $np.connector.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $b.adminPort | quote }}
+              protocol: TCP
+  egress:
+    # TokenReview, and the grant, quota and github-git objects.
+    - toEntities: [kube-apiserver]
+    # The actor JWT issuer's discovery and keys (idp.<substrate>.svc:443).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $sub }}
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    # OpenAI device login and refresh, the Codex backend, and GitHub App
+    # token mints.
+    - toFQDNs:
+        - matchName: auth.openai.com
+        - matchName: chatgpt.com
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}
