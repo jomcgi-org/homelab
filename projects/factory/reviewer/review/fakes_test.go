@@ -32,20 +32,23 @@ const (
 )
 
 type fakePR struct {
-	Number int
-	Title  string
-	Body   string
-	Author string
-	Head   string
-	Base   string
-	Draft  bool
-	Labels []string
-	Files  []github.PullRequestFile
+	Number  int
+	Title   string
+	Body    string
+	Author  string
+	Head    string
+	Base    string
+	Draft   bool
+	Labels  []string
+	Updated time.Time
+	Files   []github.PullRequestFile
 	// Heads is the timeline's head history, oldest first; the current head
 	// is appended when it changes.
 	Heads    []string
 	Reviews  []github.PullRequestReview
 	Comments []github.Comment
+	// TimelineTruncated reports older timeline events than GitHub lists.
+	TimelineTruncated bool
 }
 
 type fakeCheck struct {
@@ -81,17 +84,25 @@ type fakeGitHub struct {
 	enqueued    []string
 	calls       []string
 	gql         []string // GraphQL calls by kind
-	contentRefs []string
+	contentRefs []string // ref:path of each file read, tree:ref of each tree read
 	notModified int
 	// refuseAnnotations answers a check run write with annotations 422.
 	refuseAnnotations bool
-	nextID            int64
+	// ignoreAppFilter lists every App's check runs, as if GitHub dropped the
+	// app_id filter, so only the reviewer's own matching keeps them apart.
+	ignoreAppFilter bool
+	// fail answers "METHOD /path" with a status code; failGQL fails a
+	// GraphQL call by kind.
+	fail    map[string]int
+	failGQL map[string]bool
+	nextID  int64
 }
 
 func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
 	f := &fakeGitHub{
 		t: t, prs: map[int]*fakePR{}, statuses: map[string][]map[string]any{}, baseHead: "base-1",
 		baseFiles: map[string]string{}, queued: map[int]string{}, queueHead: map[int]string{},
+		fail: map[string]int{}, failGQL: map[string]bool{},
 	}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
@@ -105,7 +116,7 @@ func (f *fakeGitHub) addPR(pr *fakePR) {
 		pr.Base = "main"
 	}
 	if pr.Author == "" {
-		pr.Author = "jomcgi-factory[bot]"
+		pr.Author = "jomcgi"
 	}
 	if len(pr.Heads) == 0 {
 		pr.Heads = []string{pr.Head}
@@ -134,17 +145,50 @@ func (f *fakeGitHub) label(number int, labels ...string) {
 	f.prs[number].Labels = labels
 }
 
-// checks lists copies of every review check on sha, oldest first.
+// checksOn lists copies of every review check on sha, oldest first.
 func (f *fakeGitHub) checksOn(sha string) []fakeCheck {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []fakeCheck
 	for _, c := range f.checks {
-		if c.SHA == sha {
+		if c.SHA == sha && c.Name == "factory review" && c.AppID == testAppID {
 			out = append(out, *c)
 		}
 	}
 	return out
+}
+
+// addCheck adds a completed check run from any App.
+func (f *fakeGitHub) addCheck(sha, name string, appID int64, conclusion string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	f.checks = append(f.checks, &fakeCheck{
+		ID: f.nextID, Name: name, SHA: sha, AppID: appID, Status: "completed", Conclusion: conclusion,
+		Title: "t", Summary: "s",
+	})
+}
+
+func (f *fakeGitHub) failWith(call string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if status == 0 {
+		delete(f.fail, call)
+	} else {
+		f.fail[call] = status
+	}
+}
+
+func (f *fakeGitHub) failGraphQL(kind string, fail bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failGQL[kind] = fail
+}
+
+func (f *fakeGitHub) setBaseFile(path, content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.baseFiles[path] = content
 }
 
 func (f *fakeGitHub) setStatus(sha, context, state, creator string) {
@@ -163,7 +207,7 @@ func (f *fakeGitHub) check(sha string) *fakeCheck {
 	defer f.mu.Unlock()
 	var latest *fakeCheck
 	for _, c := range f.checks {
-		if c.SHA == sha && c.Name == "factory review" && (latest == nil || c.ID > latest.ID) {
+		if c.SHA == sha && c.Name == "factory review" && c.AppID == testAppID && (latest == nil || c.ID > latest.ID) {
 			latest = c
 		}
 	}
@@ -218,6 +262,11 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if code := f.fail[r.Method+" "+r.URL.Path]; code != 0 {
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(`{"message":"injected failure"}`))
+		return
+	}
 	prefix := "/repos/" + testRepo
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	q := r.URL.Query()
@@ -225,7 +274,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 		f.graphql(w, r)
 	case r.Method == http.MethodGet && path == "/pulls":
-		var out []map[string]any
+		out := []map[string]any{}
 		for _, pr := range f.sortedPRs() {
 			if q.Get("state") != "open" || pr.Base != q.Get("base") {
 				continue
@@ -237,22 +286,24 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, map[string]any{
 				"number": pr.Number, "node_id": fmt.Sprintf("PR_%d", pr.Number), "state": "open", "draft": pr.Draft,
 				"title": pr.Title, "body": pr.Body, "user": map[string]string{"login": pr.Author}, "labels": labels,
-				"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", testRepo, pr.Number),
-				"head":     map[string]string{"ref": fmt.Sprintf("branch-%d", pr.Number), "sha": pr.Head},
-				"base":     map[string]string{"ref": pr.Base},
+				"html_url":   fmt.Sprintf("https://github.com/%s/pull/%d", testRepo, pr.Number),
+				"updated_at": pr.Updated.UTC().Format(time.RFC3339),
+				"head":       map[string]string{"ref": fmt.Sprintf("branch-%d", pr.Number), "sha": pr.Head},
+				"base":       map[string]string{"ref": pr.Base},
 			})
 		}
-		f.get(w, r, out)
+		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/commits/") && strings.HasSuffix(path, "/check-runs"):
 		sha := strings.TrimSuffix(strings.TrimPrefix(path, "/commits/"), "/check-runs")
 		latest := map[string]*fakeCheck{}
 		for _, c := range f.checks {
 			if c.SHA != sha || (q.Get("check_name") != "" && c.Name != q.Get("check_name")) ||
-				(q.Get("app_id") != "" && strconv.FormatInt(c.AppID, 10) != q.Get("app_id")) {
+				(!f.ignoreAppFilter && q.Get("app_id") != "" && strconv.FormatInt(c.AppID, 10) != q.Get("app_id")) {
 				continue
 			}
-			if l := latest[c.Name]; l == nil || c.ID > l.ID {
-				latest[c.Name] = c
+			key := fmt.Sprintf("%s/%d", c.Name, c.AppID)
+			if l := latest[key]; l == nil || c.ID > l.ID {
+				latest[key] = c
 			}
 		}
 		var ids []*fakeCheck
@@ -315,7 +366,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, rv := range f.prs[n].Reviews {
 			out = append(out, map[string]any{"user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body})
 		}
-		f.get(w, r, out)
+		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
 		out := []map[string]any{}
@@ -338,6 +389,26 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.get(w, r, map[string]any{"status": "ahead", "files": []github.PullRequestFile{{Path: "interdiff-" + head[:4] + ".go", Status: "modified", Additions: 1}}})
 	case r.Method == http.MethodGet && path == "/git/ref/heads/main":
 		f.get(w, r, map[string]any{"ref": "refs/heads/main", "object": map[string]string{"sha": f.baseHead, "type": "commit"}})
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/git/trees/"):
+		ref := strings.TrimPrefix(path, "/git/trees/")
+		f.contentRefs = append(f.contentRefs, "tree:"+ref)
+		if ref != f.baseHead || q.Get("recursive") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		var entries []map[string]string
+		dirs := map[string]bool{}
+		for p := range f.baseFiles {
+			entries = append(entries, map[string]string{"path": p, "type": "blob"})
+			for d := p; strings.Contains(d, "/"); {
+				d = d[:strings.LastIndex(d, "/")]
+				dirs[d] = true
+			}
+		}
+		for d := range dirs {
+			entries = append(entries, map[string]string{"path": d, "type": "tree"})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sha": ref, "tree": entries, "truncated": false})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/contents/"):
 		p := strings.TrimPrefix(path, "/contents/")
 		f.contentRefs = append(f.contentRefs, q.Get("ref")+":"+p)
@@ -427,6 +498,24 @@ func (f *fakeGitHub) sortedPRs() []*fakePR {
 	return out
 }
 
+// page cuts a listing to the page and per_page a request names.
+func page(all []map[string]any, q map[string][]string) []map[string]any {
+	n, _ := strconv.Atoi(first(q["page"]))
+	per, _ := strconv.Atoi(first(q["per_page"]))
+	if n < 1 || per < 1 {
+		return all
+	}
+	lo := min((n-1)*per, len(all))
+	return all[lo:min(lo+per, len(all))]
+}
+
+func first(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
+}
+
 // get answers a GET with an ETag over the body.
 func (f *fakeGitHub) get(w http.ResponseWriter, r *http.Request, v any) {
 	b, _ := json.Marshal(v)
@@ -454,6 +543,15 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := ""
 	defer func() { f.gql = append(f.gql, kind) }()
+	for k, fail := range f.failGQL {
+		if fail && strings.Contains(req.Query, map[string]string{
+			"enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch",
+		}[k]) {
+			kind = k
+			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
+			return
+		}
+	}
 	switch {
 	case strings.Contains(req.Query, "enqueuePullRequest"):
 		kind = "enqueue"
@@ -477,11 +575,27 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(req.Query, "timelineItems"):
 		kind = "heads"
 		pr := f.prs[number]
+		appID, _ := req.Variables["appId"].(float64)
+		check, _ := req.Variables["check"].(string)
 		var nodes []map[string]any
 		for _, h := range pr.Heads {
-			nodes = append(nodes, map[string]any{"__typename": "PullRequestCommit", "commit": map[string]any{"oid": h}})
+			suites := map[int64][]map[string]any{}
+			for _, c := range f.checks {
+				if c.SHA == h && c.AppID == int64(appID) && c.Name == check && c.Status == "completed" {
+					suites[c.AppID] = append(suites[c.AppID], map[string]any{"name": c.Name, "conclusion": strings.ToUpper(c.Conclusion)})
+				}
+			}
+			var sn []map[string]any
+			for app, runs := range suites {
+				sn = append(sn, map[string]any{"app": map[string]any{"databaseId": app}, "checkRuns": map[string]any{"nodes": runs}})
+			}
+			nodes = append(nodes, map[string]any{"__typename": "PullRequestCommit", "commit": map[string]any{
+				"oid": h, "checkSuites": map[string]any{"nodes": sn},
+			}})
 		}
-		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"timelineItems": map[string]any{"nodes": nodes}}}})
+		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"timelineItems": map[string]any{
+			"pageInfo": map[string]any{"hasPreviousPage": pr.TimelineTruncated}, "nodes": nodes,
+		}}}})
 	case strings.Contains(req.Query, "mergeQueueEntry"):
 		kind = "pull_request"
 		pr := f.prs[number]
@@ -508,18 +622,23 @@ func (reviewerTokens) Token(context.Context, string) (string, error) { return "g
 func (reviewerTokens) Invalidate(string)                             {}
 
 // fakeKagent models the gateway's handling of a task-opening message: a
-// repeated message ID is answered with the task holding it.
+// repeated message ID is answered with the task holding it, and rejected
+// when its content differs.
 type fakeKagent struct {
 	mu         sync.Mutex
 	tasks      map[string]*fakeTask
 	initial    map[string]string // message ID -> task ID
+	texts      map[string]string // message ID -> first text sent
 	sends      []kagent.Message
 	executions int
 	cancels    []string
+	rejected   int
 	// sendErr fails the next sends before anything is dispatched.
 	sendErr []error
 	// loseResponse accepts the next send but loses its answer.
 	loseResponse bool
+	// afterSend runs after each send, outside the lock.
+	afterSend func()
 }
 
 type fakeTask struct {
@@ -529,7 +648,7 @@ type fakeTask struct {
 }
 
 func newFakeKagent() *fakeKagent {
-	return &fakeKagent{tasks: map[string]*fakeTask{}, initial: map[string]string{}}
+	return &fakeKagent{tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}}
 }
 
 func copyTask(t *kagent.Task) *kagent.Task {
@@ -540,13 +659,28 @@ func copyTask(t *kagent.Task) *kagent.Task {
 
 func (k *fakeKagent) Send(_ context.Context, agent kagent.AgentRef, msg kagent.Message) (*kagent.Task, error) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
+	hook := k.afterSend
+	t, err := k.send(agent, msg)
+	k.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return t, err
+}
+
+func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Task, error) {
 	k.sends = append(k.sends, msg)
 	if len(k.sendErr) > 0 {
 		err := k.sendErr[0]
 		k.sendErr = k.sendErr[1:]
 		return nil, err
 	}
+	text := msg.Parts[0].Text
+	if first, ok := k.texts[msg.MessageID]; ok && first != text {
+		k.rejected++
+		return nil, fmt.Errorf("%w: message ID reused with different content", kagent.ErrRejected)
+	}
+	k.texts[msg.MessageID] = text
 	if id, ok := k.initial[msg.MessageID]; ok {
 		return copyTask(&k.tasks[id].task), nil
 	}
@@ -603,6 +737,27 @@ func (k *fakeKagent) finish(id, state, text string) {
 	t.task.Status = kagent.TaskStatus{State: state, Message: reply}
 }
 
+// finishOpen ends every task still working with the same reply.
+func (k *fakeKagent) finishOpen(state, text string) {
+	k.mu.Lock()
+	var open []string
+	for id, t := range k.tasks {
+		if !kagent.Quiescent(t.task.Status.State) && !t.cancelRequested {
+			open = append(open, id)
+		}
+	}
+	k.mu.Unlock()
+	for _, id := range open {
+		k.finish(id, state, text)
+	}
+}
+
+func (k *fakeKagent) rejections() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.rejected
+}
+
 func (k *fakeKagent) taskFor(msgID string) string {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -657,12 +812,13 @@ func newHarness(t *testing.T) *harness {
 		cfg: Config{
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
+			RetryBackoff: 2 * time.Millisecond, MaxSends: 3, DispatchWindow: 5 * time.Millisecond,
 			RuleIDs: []string{"nil-deref"},
 			Bindings: []Binding{{
 				Name: "homelab", Owner: "example-org", Repo: "homelab", BaseBranch: "main", Agent: testAgent,
 				RequiredChecks:    []Check{{Name: "pr-checks", StatusCreator: ciCreator}},
 				SkipLabels:        []string{"no-review"},
-				EnqueueAuthors:    []string{"jomcgi-factory[bot]", "jomcgi"},
+				EnqueueAuthors:    []string{"jomcgi"},
 				HumanGatePaths:    []string{"REVIEW.md", "**/REVIEW.md", "projects/factory/reviewer/**", ".github/CODEOWNERS"},
 				HumanGateLabels:   []string{"human", "needs-human"},
 				HumanApprovers:    []string{"jomcgi"},
@@ -704,6 +860,24 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+// msgID is the message ID of an attempt of the review the head's latest
+// review check holds, or empty before it exists.
+func (h *harness) msgID(number int, sha string, attempt int) string {
+	c := h.gh.check(sha)
+	if c == nil {
+		return ""
+	}
+	return AttemptMessageID(testRepo, number, sha, c.ID, attempt)
+}
+
+// taskOn is the task of an attempt of the head's latest review, or empty.
+func (h *harness) taskOn(number int, sha string, attempt int) string {
+	if m := h.msgID(number, sha, attempt); m != "" {
+		return h.k.taskFor(m)
+	}
+	return ""
 }
 
 // report renders an agent reply ending in a fenced findings report.

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,22 +16,31 @@ import (
 // hold more than was read.
 const MaxListed = 100
 
-// ListPullRequests lists the open PRs into base, oldest first, the first
-// MaxListed.
-func (c *Client) ListPullRequests(ctx context.Context, repo, base string) ([]PullRequest, error) {
-	q := url.Values{
-		"state": {"open"}, "base": {base}, "sort": {"created"}, "direction": {"asc"},
-		"per_page": {strconv.Itoa(MaxListed)},
+// MaxPullPages bounds an open PR listing: 10,000 PRs.
+const MaxPullPages = 100
+
+// ListPullRequests lists every open PR into base, oldest first, page by
+// page. Pages are sorted by creation, so a new PR or push changes one page
+// and the others stay answered by 304. complete is false only past
+// MaxPullPages full pages.
+func (c *Client) ListPullRequests(ctx context.Context, repo, base string) (prs []PullRequest, complete bool, err error) {
+	for page := 1; page <= MaxPullPages; page++ {
+		q := url.Values{
+			"state": {"open"}, "base": {base}, "sort": {"created"}, "direction": {"asc"},
+			"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)},
+		}
+		var pulls []restPull
+		if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
+			return nil, false, err
+		}
+		for _, p := range pulls {
+			prs = append(prs, *p.pr())
+		}
+		if len(pulls) < MaxListed {
+			return prs, true, nil
+		}
 	}
-	var pulls []restPull
-	if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
-		return nil, err
-	}
-	out := make([]PullRequest, 0, len(pulls))
-	for _, p := range pulls {
-		out = append(out, *p.pr())
-	}
-	return out, nil
+	return prs, false, nil
 }
 
 // PullRequestFile is one file a PR changes. PreviousPath is set for a
@@ -92,6 +102,41 @@ func (c *Client) BranchHead(ctx context.Context, repo, branch string) (string, e
 
 // ErrTooLarge is a file the contents API does not return inline (over 1 MB).
 var ErrTooLarge = errors.New("github: file too large to read inline")
+
+// Tree is the files of a commit's tree.
+type Tree struct {
+	Files map[string]bool
+	// Truncated is set when GitHub listed only part of the tree (over
+	// 100,000 entries or 7 MB); a path missing from Files may then exist.
+	Truncated bool
+}
+
+// Has reports whether path is a file in the tree, or may be one when the
+// listing was truncated.
+func (t *Tree) Has(path string) bool { return t.Truncated || t.Files[path] }
+
+// Tree lists every file at ref in one read. The answer is large and the
+// tree of a commit never changes, so it bypasses the ETag cache.
+func (c *Client) Tree(ctx context.Context, repo, ref string) (*Tree, error) {
+	var out struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+		Truncated bool `json:"truncated"`
+	}
+	p := repoPath(repo) + "/git/trees/" + url.PathEscape(ref) + "?recursive=1"
+	if err := c.doUncached(ctx, repo, http.MethodGet, p, nil, &out); err != nil {
+		return nil, err
+	}
+	t := &Tree{Files: make(map[string]bool, len(out.Tree)), Truncated: out.Truncated}
+	for _, e := range out.Tree {
+		if e.Type == "blob" {
+			t.Files[e.Path] = true
+		}
+	}
+	return t, nil
+}
 
 // FileContent reads a file at ref. A missing file, or a path that is a
 // directory, is ErrNotFound.
@@ -238,55 +283,111 @@ func (c *Client) MergeQueueEntries(ctx context.Context, repo, branch string) ([]
 	return entries, nil
 }
 
-const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+        pageInfo { hasPreviousPage }
         nodes {
           __typename
-          ... on PullRequestCommit { commit { oid } }
-          ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } }
+          ... on PullRequestCommit { commit { ...checked } }
+          ... on HeadRefForcePushedEvent { beforeCommit { ...checked } afterCommit { ...checked } }
         }
       }
     }
   }
+}
+
+fragment checked on Commit {
+  oid
+  checkSuites(first: 5, filterBy: {appId: $appId}) {
+    nodes { app { databaseId } checkRuns(first: 5, filterBy: {checkName: $check, status: COMPLETED}) { nodes { name conclusion } } }
+  }
 }`
 
+// Head is a commit that may have been a PR's head. Checked is set when it
+// carries a completed, uncancelled check run of the filter's name and App.
+type Head struct {
+	SHA     string
+	Checked bool
+}
+
+// HeadHistory lists a PR's possible heads, oldest first. Truncated is set
+// when its timeline holds older events than were read.
+type HeadHistory struct {
+	Heads     []Head
+	Truncated bool
+}
+
 // PullRequestHeads lists commits that may have been a PR's head, oldest
-// first, from the last 100 commit and force-push events of its timeline: a
-// pushed commit, and both sides of a force push.
-func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int) ([]string, error) {
+// first, from the last 100 commit and force-push events of its timeline (a
+// pushed commit, and both sides of a force push), each marked by whether it
+// carries a completed check run matching f. One GraphQL read finds the
+// checked heads, however many commits each push added.
+func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, f CheckRunFilter) (*HeadHistory, error) {
 	owner, name, _ := strings.Cut(repo, "/")
+	type commit struct {
+		OID         string `json:"oid"`
+		CheckSuites struct {
+			Nodes []struct {
+				App *struct {
+					DatabaseID int64 `json:"databaseId"`
+				} `json:"app"`
+				CheckRuns struct {
+					Nodes []struct {
+						Name       string `json:"name"`
+						Conclusion string `json:"conclusion"`
+					} `json:"nodes"`
+				} `json:"checkRuns"`
+			} `json:"nodes"`
+		} `json:"checkSuites"`
+	}
 	var out struct {
 		Repository struct {
 			PullRequest *struct {
 				TimelineItems struct {
+					PageInfo struct {
+						HasPreviousPage bool `json:"hasPreviousPage"`
+					} `json:"pageInfo"`
 					Nodes []struct {
-						Type         string `json:"__typename"`
-						Commit       *oid   `json:"commit"`
-						BeforeCommit *oid   `json:"beforeCommit"`
-						AfterCommit  *oid   `json:"afterCommit"`
+						Type         string  `json:"__typename"`
+						Commit       *commit `json:"commit"`
+						BeforeCommit *commit `json:"beforeCommit"`
+						AfterCommit  *commit `json:"afterCommit"`
 					} `json:"nodes"`
 				} `json:"timelineItems"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if err := c.graphql(ctx, repo, pullRequestHeadsQuery, map[string]any{"owner": owner, "name": name, "number": number}, &out); err != nil {
+	vars := map[string]any{"owner": owner, "name": name, "number": number, "appId": f.AppID, "check": f.Name}
+	if err := c.graphql(ctx, repo, pullRequestHeadsQuery, vars, &out); err != nil {
 		return nil, err
 	}
 	p := out.Repository.PullRequest
 	if p == nil {
 		return nil, ErrNotFound
 	}
-	var heads []string
+	h := &HeadHistory{Truncated: p.TimelineItems.PageInfo.HasPreviousPage}
 	for _, n := range p.TimelineItems.Nodes {
-		for _, o := range []*oid{n.Commit, n.BeforeCommit, n.AfterCommit} {
-			if o != nil && o.OID != "" {
-				heads = append(heads, o.OID)
+		for _, cm := range []*commit{n.Commit, n.BeforeCommit, n.AfterCommit} {
+			if cm == nil || cm.OID == "" {
+				continue
 			}
+			head := Head{SHA: cm.OID}
+			for _, s := range cm.CheckSuites.Nodes {
+				if s.App == nil || s.App.DatabaseID != f.AppID {
+					continue
+				}
+				for _, r := range s.CheckRuns.Nodes {
+					if r.Name == f.Name && r.Conclusion != "" && !strings.EqualFold(r.Conclusion, "CANCELLED") {
+						head.Checked = true
+					}
+				}
+			}
+			h.Heads = append(h.Heads, head)
 		}
 	}
-	return heads, nil
+	return h, nil
 }
 
 // PullRequestReview is a submitted PR review, from REST.
@@ -297,23 +398,38 @@ type PullRequestReview struct {
 	Body      string
 }
 
-// PullRequestReviews lists a PR's first 100 reviews, oldest first.
+// MaxReviewPages bounds a PR's review listing: 3000 reviews.
+const MaxReviewPages = 30
+
+// ErrTooMany is a listing longer than the client reads; the caller must not
+// act on the part it has.
+var ErrTooMany = errors.New("github: listing longer than the client reads")
+
+// PullRequestReviews lists every review of a PR, oldest first, page by
+// page. Past MaxReviewPages full pages it fails with ErrTooMany, since the
+// newest reviews would be the ones left out.
 func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int) ([]PullRequestReview, error) {
-	var out []struct {
-		User     login  `json:"user"`
-		State    string `json:"state"`
-		CommitID string `json:"commit_id"`
-		Body     string `json:"body"`
+	var reviews []PullRequestReview
+	for page := 1; page <= MaxReviewPages; page++ {
+		var out []struct {
+			User     login  `json:"user"`
+			State    string `json:"state"`
+			CommitID string `json:"commit_id"`
+			Body     string `json:"body"`
+		}
+		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		path := repoPath(repo) + "/pulls/" + strconv.Itoa(number) + "/reviews?" + q.Encode()
+		if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
+			return nil, err
+		}
+		for _, r := range out {
+			reviews = append(reviews, PullRequestReview{Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body})
+		}
+		if len(out) < MaxListed {
+			return reviews, nil
+		}
 	}
-	path := repoPath(repo) + "/pulls/" + strconv.Itoa(number) + "/reviews?per_page=" + strconv.Itoa(MaxListed)
-	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	reviews := make([]PullRequestReview, 0, len(out))
-	for _, r := range out {
-		reviews = append(reviews, PullRequestReview{Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body})
-	}
-	return reviews, nil
+	return nil, fmt.Errorf("%w: more than %d reviews on PR %d", ErrTooMany, MaxReviewPages*MaxListed, number)
 }
 
 // Comment is a PR conversation comment.
@@ -340,11 +456,18 @@ func (c *Client) PullRequestComments(ctx context.Context, repo string, number in
 	return comments, nil
 }
 
+// MaxCompareFiles is how many files GitHub lists in a comparison; it lists
+// no more on later pages.
+const MaxCompareFiles = 300
+
 // CommitComparison is what changed from one commit to another.
 type CommitComparison struct {
 	// Status is ahead when head descends from base, diverged after a rebase.
 	Status string
 	Files  []PullRequestFile
+	// Truncated is set when GitHub listed MaxCompareFiles files, so more may
+	// differ.
+	Truncated bool
 }
 
 // CompareCommits lists the files that differ between two commits (the first
@@ -358,5 +481,5 @@ func (c *Client) CompareCommits(ctx context.Context, repo, base, head string) (*
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
-	return &CommitComparison{Status: out.Status, Files: out.Files}, nil
+	return &CommitComparison{Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles}, nil
 }

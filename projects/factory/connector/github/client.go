@@ -64,10 +64,11 @@ type PullRequest struct {
 	HeadRef string
 	BaseRef string
 	Title   string
-	// Body, Author and Labels are filled from REST reads only.
-	Body   string
-	Author string
-	Labels []string
+	// Body, Author, Labels and UpdatedAt are filled from REST reads only.
+	Body      string
+	Author    string
+	Labels    []string
+	UpdatedAt time.Time
 }
 
 // NewPullRequest opens a PR.
@@ -171,8 +172,18 @@ func (c *Client) base() string {
 // do sends one call with the repository's token. A 401 drops the cached
 // token and tries once more with a fresh one.
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
+	return c.send(ctx, repo, method, path, body, out, true)
+}
+
+// doUncached is do without the ETag cache, for large reads of immutable
+// resources that would only crowd it.
+func (c *Client) doUncached(ctx context.Context, repo, method, path string, body, out any) error {
+	return c.send(ctx, repo, method, path, body, out, false)
+}
+
+func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool) error {
 	for try := 0; ; try++ {
-		err := c.once(ctx, repo, method, path, body, out)
+		err := c.once(ctx, repo, method, path, body, out, cache)
 		var h *HTTPError
 		if try == 0 && errors.As(err, &h) && h.Status == http.StatusUnauthorized {
 			c.Tokens.Invalidate(repo)
@@ -182,7 +193,7 @@ func (c *Client) do(ctx context.Context, repo, method, path string, body, out an
 	}
 }
 
-func (c *Client) once(ctx context.Context, repo, method, path string, body, out any) error {
+func (c *Client) once(ctx context.Context, repo, method, path string, body, out any, cache bool) error {
 	tok, err := c.Tokens.Token(ctx, repo)
 	if err != nil {
 		return err
@@ -206,7 +217,7 @@ func (c *Client) once(ctx context.Context, repo, method, path string, body, out 
 		req.Header.Set("Content-Type", "application/json")
 	}
 	var cached []byte
-	conditional := method == http.MethodGet && c.ETags != nil
+	conditional := cache && method == http.MethodGet && c.ETags != nil
 	if conditional {
 		if etag, b, ok := c.ETags.get(path); ok {
 			req.Header.Set("If-None-Match", etag)
@@ -262,17 +273,18 @@ func repoPath(repo string) string {
 }
 
 type restPull struct {
-	Number   int     `json:"number"`
-	NodeID   string  `json:"node_id"`
-	HTMLURL  string  `json:"html_url"`
-	State    string  `json:"state"`
-	Draft    bool    `json:"draft"`
-	Title    string  `json:"title"`
-	Body     *string `json:"body"`
-	MergedAt *string `json:"merged_at"`
-	Merged   bool    `json:"merged"`
-	User     login   `json:"user"`
-	Labels   []struct {
+	Number    int        `json:"number"`
+	NodeID    string     `json:"node_id"`
+	HTMLURL   string     `json:"html_url"`
+	State     string     `json:"state"`
+	Draft     bool       `json:"draft"`
+	Title     string     `json:"title"`
+	Body      *string    `json:"body"`
+	MergedAt  *string    `json:"merged_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	Merged    bool       `json:"merged"`
+	User      login      `json:"user"`
+	Labels    []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	Head struct {
@@ -292,6 +304,9 @@ func (p restPull) pr() *PullRequest {
 	}
 	if p.Body != nil {
 		pr.Body = *p.Body
+	}
+	if p.UpdatedAt != nil {
+		pr.UpdatedAt = *p.UpdatedAt
 	}
 	for _, l := range p.Labels {
 		pr.Labels = append(pr.Labels, l.Name)

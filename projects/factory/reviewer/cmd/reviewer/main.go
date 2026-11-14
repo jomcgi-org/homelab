@@ -120,14 +120,15 @@ func run(log *slog.Logger) error {
 		names = append(names, b.Name)
 	}
 	eng := review.New(review.Config{
-		CheckName:   cfg.CheckName,
-		AppID:       cfg.AppID,
-		Concurrency: cfg.Concurrency,
-		TaskPoll:    time.Duration(cfg.Intervals.TaskPoll),
-		Reissue:     time.Duration(cfg.Intervals.Reissue),
-		Timeout:     time.Duration(cfg.Intervals.Timeout),
-		RuleIDs:     cfg.RuleIDs,
-		Bindings:    bindings,
+		CheckName:    cfg.CheckName,
+		AppID:        cfg.AppID,
+		Concurrency:  cfg.Concurrency,
+		TaskPoll:     time.Duration(cfg.Intervals.TaskPoll),
+		Reissue:      time.Duration(cfg.Intervals.Reissue),
+		Timeout:      time.Duration(cfg.Intervals.Timeout),
+		RetryBackoff: time.Duration(cfg.Intervals.RetryBackoff),
+		RuleIDs:      cfg.RuleIDs,
+		Bindings:     bindings,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

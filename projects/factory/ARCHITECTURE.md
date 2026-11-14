@@ -443,7 +443,9 @@ canceled the issue since the merge. A PR that
 leaves the queue unmerged, after a second read confirms it did not merge,
 returns the work item to review, the ejection is announced, and that head
 is not enqueued again; a new push or review moves it on. Deployment health is a separate
-record. Under the planned handover in "Merge authority" (#7919), the reviewer App enqueues instead.
+record. After the handover in "Merge authority" (#7919) the connector still
+enqueues the factory's PRs, since it sees their stops, and GitHub's required
+`factory review` check gates them.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
 reports the task in a terminal state. A cancellation never sends a message.
@@ -589,7 +591,9 @@ and retries once, so a brief overlap during a rollout is safe.
   in each `reviewBindings` namespace, which must not be a coding binding's,
   and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
   only, with checks and merge queues write, pull requests, contents and
-  statuses read. The chart wiring follows (#7919). The config refuses the same App as `github`, a writable
+  statuses read. That `merge_queues: write` lets this token enqueue is [I]:
+  no reviewer token has enqueued yet, and a live enqueue at rollout checks
+  it. The chart wiring follows (#7919). The config refuses the same App as `github`, a writable
   agent token, any reviewer write besides checks and merge queues, and a
   subject that is also a connector or admin subject.
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
@@ -639,22 +643,27 @@ App, service and required check), #7920 (connector authorship check), #7921
 and public previews).
 
 - **Author.** `jomcgi-factory` pushes branches and opens PRs: contents and
-  pull requests write, checks and statuses read. It loses merge queue write
-  once the reviewer takes over enqueueing. The agent's token is contents
-  write on its own repository only. Neither can post the review check.
+  pull requests write, checks and statuses read, and merge queue write for
+  now. The connector enqueues the factory's PRs with it, because the
+  connector sees their stops; GitHub's required `factory review` check gates
+  them as it gates every PR. The agent's token is contents write on its own
+  repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
   merge queues write, and contents, pull requests and commit statuses read.
   `projects/factory/reviewer` posts the `factory review` check run on every
   head of every open PR into the base branch, whatever its author, and on
-  each merge group commit
-  (success when the queued PR's head passed, since GitHub checks the group
-  again). It enqueues a passing head once, with required CI green, and only
-  for `enqueueAuthors` (`jomcgi-factory[bot]`, `jomcgi`); other authors'
-  PRs get the check only. It never posts a PR approval, so it can never
-  count toward an approval or code-owner rule. Check runs are its only
-  state: the in-progress run names its kagent task, and a completed one
-  keeps its blocking findings and human gate in a hidden block for the next
-  head.
+  each merge group commit (success when the queued PR's head passed, since
+  GitHub checks the group again). It enqueues a passing head once, with
+  required CI green, and only for `enqueueAuthors` (default `jomcgi`); the
+  connector enqueues the factory's PRs, and other authors' PRs get the check
+  only. Enqueueing with the reviewer's token is unverified until rollout
+  ("Credential broker"). It never posts a PR approval, so it can never count
+  toward an approval or code-owner rule. Check runs are its only state: the
+  in-progress run names its attempt and kagent task, and a completed one
+  keeps its blocking findings and human gate in a hidden block, at most
+  48,000 characters, for the next head. Reviews are keyed by commit: PRs
+  that share a head share its review, and a cancelled check on a current
+  head is reviewed again.
 - **Review contract.** The agent reviews the exact head against the root
   `REVIEW.md` and every `REVIEW.md` on both sides of the diff, with their
   `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
@@ -663,26 +672,40 @@ and public previews).
   `findings[{id, severity, path, line, title, detail, defer}]`,
   `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
   decides: success only when no critical, high or medium finding blocks.
-  Unparseable output, an unknown severity, a failed task or two timed-out
-  attempts fail the check. A later head's prompt carries the previous
-  blocking findings and the interdiff; each comes back `fixed`, `justified`
-  (a medium with a note, or any severity with a note starting `withdrawn`)
-  or `open`, and one left out stays open. A diff over budget (2500 lines or
-  150 files, generated files excluded) fails with "split this PR" and sends
-  no task.
-- **Human gate.** A PR touching `REVIEW.md`, `**/REVIEW.md`,
-  `projects/factory/reviewer/**` or `.github/CODEOWNERS`, or labelled
-  `human` or `needs-human`, gets a `human-gate` high finding from the
-  service; the agent reports the rest of `REVIEW.md` "Joe decides" under the
-  same rule. Either blocks until `jomcgi` approves that exact head, and the
-  approval posts a passing check run. A hold is logged once as `human gate`
+  An attempt without a usable report (unparseable output, an unknown
+  severity, a failed task such as a quota or login error, a rejected send or
+  a timeout) is retried on the same head after `retryBackoff` (5m); the
+  third such attempt fails the check. A later head's prompt carries the
+  previous blocking findings and the interdiff; each comes back `fixed`,
+  `justified` (a medium with a note, or any severity with a note starting
+  `withdrawn`) or `open`, and one left out stays open. One reported again
+  keeps the higher of its two severities unless it is fixed or withdrawn.
+  When the earlier review cannot be found within the search bounds, the
+  prompt and the check say so and the head is reviewed in full. A diff over
+  budget (2500 lines or 150 files, generated files excluded by their new
+  path) fails with "split this PR" and sends no task. The prompt carries the
+  PR's text and file names from any author, quoted inside a delimited
+  untrusted block (`REVIEW.md` "What the agent sees").
+- **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
+  [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211)). A PR touching `REVIEW.md`,
+  `**/REVIEW.md`, `projects/factory/reviewer/**`,
+  `projects/factory/connector/github/**`, `projects/factory/connector/kagent/**`,
+  `projects/factory/broker/**`, `projects/factory/chart/templates/*reviewer*`
+  or `.github/CODEOWNERS`, or labelled `human` or `needs-human`, gets a
+  `human-gate` high finding from the service; the agent reports the rest of
+  `REVIEW.md` "Joe decides" under the same rule, matched by any rule segment
+  of the ID that starts `human-gate`, at any severity. Either blocks until
+  `jomcgi` approves that exact head, and the approval posts a passing check
+  run. GitHub refuses an approval from a PR's own author, so the factory App
+  authors gate-touching changes; a gated PR that `jomcgi` authored lands
+  only through Joe's ruleset bypass. A hold is logged once as `human gate`
   and marked so the connector can skip its revision round.
 - **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
   a passing review on that head, including PRs from Joe, interactive
   sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
-  Third-party Apps may open PRs but merge only through this gate, and the
-  service enqueues only factory and Joe's PRs. The ruleset's only bypass
+  Third-party Apps may open PRs but merge only through this gate; the
+  reviewer enqueues only Joe's PRs and the connector the factory's. The ruleset's only bypass
   actor is the organization admin role: Joe, for emergencies, and today the
   chart version write-back, which pushes to main with an identity holding
   that bypass (`bazel/helm/write-back-versions.sh`); in-cluster CI (#7922)
@@ -695,18 +718,22 @@ and public previews).
   ServiceAccount, polls open PRs into main every ~30 s. It uses ETag
   conditional requests on the reviewer App's rate pool and needs no public
   webhook endpoint. For a new head SHA it creates the `factory review` check
-  as in progress and sends the kagent `reviewer` agent an A2A task with
-  message ID `factory-review/<owner>/<repo>/<pr>/<sha>`, idempotent like
-  coding runs, in a fresh session; a retry after the time limit adds
-  `/attempt-2`. A newer head cancels the older head's task and check. The
+  as in progress, with external ID `factory-review/<owner>/<repo>/<pr>/<sha>`,
+  and sends the kagent `reviewer` agent an A2A task with message ID
+  `factory-review/<owner>/<repo>/<pr>/<sha>/<check run ID>`, idempotent like
+  coding runs, in a fresh session; a retry adds `/attempt-<n>`. Each
+  attempt's message is built once and resent byte for byte: at most 20
+  sends, then one more after a dispatch window, as the connector does. When
+  no open PR still has a head, its task and check are cancelled. The
   agent has its own binding, a read-only repository token and no push. The
   service then completes the check on that exact SHA from the agent's
-  findings and, on a pass with required CI green, enqueues. The agent never
+  findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never
   holds the reviewer App's credentials, and the broker mints the author's and
   the reviewer's tokens only for their own ServiceAccounts.
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
-  status. It holds no merge authority: the reviewer's failing check becomes
-  the revision round's feedback (`reviewerCheck {name, appId}`).
+  status, and enqueues the factory's PRs once the required checks pass; the
+  reviewer's failing check becomes the revision round's feedback
+  (`reviewerCheck {name, appId}`).
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the
@@ -766,6 +793,8 @@ Each step is its own PR with live evidence recorded on #7817.
   queues write, contents, pull requests and commit statuses read) owns
   review and enqueueing ("Merge authority"). Its 1Password item is
   `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
+  For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
+  PRs and the connector the factory's, since it sees their stops.
 - **Third-party Apps.** Remove or reduce Apps with write access that are not
   the factory's (Polylane, the Codex connector, Semgrep, Claude), and remove
   `administration` from BuildBuddy, which posts `pr-checks` until in-cluster

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -92,16 +94,45 @@ var ContractRules = []string{
 	"unverified", "unreviewed", "review-injection", HumanGateID,
 }
 
-// ruleOf is a finding ID's rule, the part after its last ':'.
-func ruleOf(id string) string {
-	if i := strings.LastIndex(id, ":"); i >= 0 {
-		id = id[i+1:]
+// ruleSegments are the parts of a finding ID that may name its rule,
+// lowercased: every ':'-separated part after the path, or the whole ID when
+// it has no ':'. A rule may carry a symbol suffix (REVIEW.md "Report").
+func ruleSegments(id string) []string {
+	parts := strings.Split(strings.ToLower(id), ":")
+	if len(parts) > 1 {
+		parts = parts[1:]
 	}
-	return strings.ToLower(strings.TrimSpace(id))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
-// isGate reports a finding only Joe's approval of the head clears.
-func isGate(f Finding) bool { return ruleOf(f.ID) == HumanGateID }
+// ruleName cuts a symbol suffix from a rule segment: the rule is the
+// leading run of letters, digits and dashes.
+func ruleName(seg string) string {
+	if i := strings.IndexFunc(seg, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-'
+	}); i >= 0 {
+		return seg[:i]
+	}
+	return seg
+}
+
+// isGate reports a finding only Joe's approval of the head clears: any rule
+// segment of its ID starting with human-gate, whatever symbol follows. It
+// matches generously, since a missed gate is a merge without Joe.
+func isGate(f Finding) bool {
+	for _, s := range ruleSegments(f.ID) {
+		if strings.HasPrefix(s, HumanGateID) {
+			return true
+		}
+	}
+	return false
+}
 
 // ParseReport reads the last fenced block of the agent's reply as a report.
 // No block, a block in another language, invalid JSON, a report without a
@@ -191,9 +222,12 @@ type Blocked struct {
 // previous round's blocking findings.
 type Assessment struct {
 	Conclusion string
-	Blocking   []Blocked
-	Accepted   []Blocked
-	Fixed      []Finding
+	// Gated are the agent's human-gate findings, at any severity; they block
+	// or clear with the head's human gate and never count as low.
+	Gated    []Finding
+	Blocking []Blocked
+	Accepted []Blocked
+	Fixed    []Finding
 	// Withdrawn are previous findings the agent withdrew as mistaken.
 	Withdrawn []Blocked
 	// Approved are human-gate findings Approver cleared on this head.
@@ -214,11 +248,14 @@ func withdrawn(note string) bool {
 const MaxLow = 5
 
 // Assess decides a review: success only when no critical, high or medium
-// finding blocks. A previous blocking finding is resolved when the agent
-// reports it fixed, or marks it justified with a note starting "withdrawn"
-// (any severity: the finding was wrong); a medium one is also accepted when
+// finding blocks. Human-gate findings are set apart first, whatever their
+// severity. A previous blocking finding is resolved when the agent reports
+// it fixed, or marks it justified with a note starting "withdrawn" (any
+// severity: the finding was wrong); a medium one is also accepted when
 // justified with any note. Anything else (open, unaccounted for, a justified
-// critical or high, a justification without a note) still blocks.
+// critical or high, a justification without a note) still blocks. A previous
+// finding reported again keeps the higher of its two severities unless it
+// is marked fixed or withdrawn.
 func Assess(r *Report, prior []Finding) Assessment {
 	var a Assessment
 	status := map[string]Previous{}
@@ -237,14 +274,27 @@ func Assess(r *Report, prior []Finding) Assessment {
 		note := strings.TrimSpace(s.Note)
 		return note, wasPrior && ok && p.Severity == SeverityMedium && s.Status == StatusJustified && note != ""
 	}
+	cleared := func(id string) bool {
+		s, ok := status[id]
+		return ok && (s.Status == StatusFixed || (s.Status == StatusJustified && withdrawn(s.Note)))
+	}
+	reason := map[string]string{}
 	repeated := func(f Finding) Blocked {
 		_, was := priorByID[f.ID]
-		return Blocked{Finding: f, Repeated: was, Note: strings.TrimSpace(status[f.ID].Note)}
+		return Blocked{Finding: f, Repeated: was, Note: strings.TrimSpace(status[f.ID].Note), Reason: reason[f.ID]}
 	}
 	current := map[string]bool{}
 	low := 0
 	for _, f := range r.Findings {
+		if isGate(f) {
+			a.Gated = append(a.Gated, f)
+			continue
+		}
 		current[f.ID] = true
+		if p, was := priorByID[f.ID]; was && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
+			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
+			f.Severity = p.Severity
+		}
 		switch {
 		case f.Severity == SeverityLow:
 			if low++; low > MaxLow {
@@ -265,11 +315,15 @@ func Assess(r *Report, prior []Finding) Assessment {
 		}
 	}
 	for _, p := range prior {
-		if current[p.ID] {
-			continue // reported again and judged above
-		}
 		s, ok := status[p.ID]
 		note := strings.TrimSpace(s.Note)
+		if current[p.ID] {
+			// Reported again and judged above; a withdrawal is still recorded.
+			if ok && s.Status == StatusJustified && withdrawn(note) {
+				a.Withdrawn = append(a.Withdrawn, Blocked{Finding: p, Note: note})
+			}
+			continue
+		}
 		if ok && s.Status == StatusJustified && withdrawn(note) {
 			a.Withdrawn = append(a.Withdrawn, Blocked{Finding: p, Carried: true, Note: note})
 			continue
@@ -326,17 +380,22 @@ const (
 	maxMessage      = 4000
 	maxStored       = 40
 	maxStoredDetail = 500
+	maxStoredPath   = 300
+	// maxState bounds the encoded State, well under GitHub's limit.
+	maxState = 48000
 )
 
 // enqueuedMarker records on a review check run that its head was enqueued
 // once. The state marker holds a completed review's State for the next
-// round. gateOnlyMarker marks a check whose only blocking finding is the
-// human gate, which no revision round can fix. All are stripped from
-// anything the agent wrote.
+// round, and the task marker an in-progress review's attempt and task.
+// gateOnlyMarker marks a check whose only blocking finding is the human
+// gate, which no revision round can fix. Every marker starts with
+// markerStart, which is stripped from anything the agent or the PR wrote.
 const (
-	enqueuedMarker = "<!-- factory-review:enqueued -->"
-	gateOnlyMarker = "<!-- factory-review:human-gate-only -->"
-	statePrefix    = "<!-- factory-review:state v1 "
+	markerStart    = "<!-- factory-review:"
+	enqueuedMarker = markerStart + "enqueued -->"
+	gateOnlyMarker = markerStart + "human-gate-only -->"
+	statePrefix    = markerStart + "state v1 "
 	stateSuffix    = " -->"
 )
 
@@ -388,6 +447,8 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 			switch {
 			case b.Carried:
 				fmt.Fprintf(&s, "  From the previous review: %s.", b.Reason)
+			case b.Repeated && b.Reason != "":
+				fmt.Fprintf(&s, "  Raised in the previous review and still present; %s.", b.Reason)
 			case b.Repeated:
 				s.WriteString("  Raised in the previous review and still present.")
 			}
@@ -503,42 +564,24 @@ func stateOf(a Assessment, gate *Gate) State {
 	return st
 }
 
+// storable bounds a finding for the hidden State: every field is one line
+// of printable text, clipped.
 func storable(f Finding) Finding {
-	f.ID, f.Title = clip(f.ID, maxTitle), clip(f.Title, maxTitle)
-	f.Detail = clip(f.Detail, maxStoredDetail)
+	f.ID, f.Title = storeText(f.ID, maxTitle), storeText(f.Title, maxTitle)
+	f.Path = storeText(f.Path, maxStoredPath)
+	f.Detail = storeText(f.Detail, maxStoredDetail)
 	f.Defer = false
 	return f
 }
 
-// takeGate removes the agent's human-gate findings from an assessment;
-// they block or clear with the head's human gate, whatever their severity.
-func takeGate(a *Assessment) []Finding {
-	var out []Finding
-	keep := func(bs []Blocked) []Blocked {
-		var kept []Blocked
-		for _, b := range bs {
-			if isGate(b.Finding) {
-				out = append(out, b.Finding)
-			} else {
-				kept = append(kept, b)
-			}
+func storeText(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			return ' '
 		}
-		return kept
-	}
-	a.Blocking, a.Accepted = keep(a.Blocking), keep(a.Accepted)
-	findings := func(fs []Finding) []Finding {
-		var kept []Finding
-		for _, f := range fs {
-			if isGate(f) {
-				out = append(out, f)
-			} else {
-				kept = append(kept, f)
-			}
-		}
-		return kept
-	}
-	a.Optional, a.Deferred = findings(a.Optional), findings(a.Deferred)
-	return out
+		return r
+	}, s)
+	return oneLine(s, n)
 }
 
 func writeFinding(s *strings.Builder, f Finding) {
@@ -558,10 +601,52 @@ func writeFinding(s *strings.Builder, f Finding) {
 }
 
 // encodeState hides a State in one HTML comment that GitHub does not
-// render; base64 keeps the JSON from closing it.
+// render; base64 keeps the JSON from closing it. Past maxState it shortens
+// the stored text, never the findings or the gate: titles and details
+// first, then paths, until only IDs and severities are left.
 func encodeState(st State) string {
-	b, _ := json.Marshal(st)
-	return statePrefix + base64.StdEncoding.EncodeToString(b) + stateSuffix
+	enc := func(st State) string {
+		var b strings.Builder
+		e := json.NewEncoder(&b)
+		e.SetEscapeHTML(false)
+		_ = e.Encode(st)
+		return statePrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(b.String()))) + stateSuffix
+	}
+	out := enc(st)
+	for _, lim := range []struct{ text, detail, path, id int }{
+		{120, 120, maxStoredPath, maxTitle}, {0, 0, 120, 120}, {0, 0, 0, 80},
+	} {
+		if len(out) <= maxState {
+			break
+		}
+		cut := func(s string, n int) string {
+			if n == 0 {
+				return ""
+			}
+			return clip(s, n)
+		}
+		shrink := func(fs []Finding) []Finding {
+			out := make([]Finding, len(fs))
+			for i, f := range fs {
+				f.Title, f.Detail = cut(f.Title, lim.text), cut(f.Detail, lim.detail)
+				f.Path, f.ID = cut(f.Path, lim.path), clip(f.ID, lim.id)
+				if f.Path == "" {
+					f.Line = 0
+				}
+				out[i] = f
+			}
+			return out
+		}
+		small := State{Blocking: shrink(st.Blocking)}
+		if g := st.Gate; g != nil {
+			small.Gate = &Gate{Labels: g.Labels, Findings: shrink(g.Findings), Approver: g.Approver}
+			for _, p := range g.Paths {
+				small.Gate.Paths = append(small.Gate.Paths, clip(p, max(lim.path, 80)))
+			}
+		}
+		out = enc(small)
+	}
+	return out
 }
 
 // LoadState reads the State a completed review kept in its check run text.
@@ -579,16 +664,39 @@ func LoadState(text string) (st State, ok bool) {
 	return st, true
 }
 
-// NoReport is the completion of a review that produced no usable report:
-// it fails the check. The reason is written by the reviewer service.
+// NoReport is the completion of a review that produced no usable report in
+// any of its attempts: it fails the check. The reason is written by the
+// reviewer service.
 func NoReport(reason, footer string) Outcome {
 	return Outcome{Conclusion: ConclusionFailure, Output: github.CheckRunOutput{
-		Title:   "No review report",
-		Summary: clip(reason+"\n\nPush a new commit to review again.\n\n"+footer, maxSummary),
+		Title: "No review report",
+		Summary: clip(untrusted(reason)+fmt.Sprintf("\n\nThe reviewer gave up after %d attempts; push a new commit to review again.\n\n", MaxAttempts)+
+			footer, maxSummary),
 	}}
 }
 
-// cleanPath is a repository-relative path, or empty when p cannot be one.
+// lookupPath is p as a path that rules and gates are looked up for. Any
+// character counts; only an empty or ".." segment makes it unusable.
+func lookupPath(p string) (string, bool) {
+	if p == "" {
+		return "", false
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || seg == ".." {
+			return "", false
+		}
+	}
+	return p, true
+}
+
+// quotePath writes a path from the PR or the agent as a quoted string: no
+// newline, backtick or service marker survives in it.
+func quotePath(p string) string {
+	return untrusted(strings.ReplaceAll(strconv.Quote(p), "`", `\x60`))
+}
+
+// cleanPath is a repository-relative path fit for an annotation or a code
+// span, or empty when p cannot be one.
 func cleanPath(p string) string {
 	p = strings.TrimPrefix(strings.TrimSpace(p), "./")
 	p = strings.TrimLeft(p, "/")
@@ -603,10 +711,11 @@ func cleanPath(p string) string {
 	return p
 }
 
-// untrusted strips the service's markers from text the agent wrote.
+// untrusted strips the start of every service marker from text the agent or
+// the PR wrote, until none is left: removing one cannot form another.
 func untrusted(s string) string {
-	for _, m := range []string{enqueuedMarker, gateOnlyMarker, statePrefix} {
-		s = strings.ReplaceAll(s, m, "")
+	for strings.Contains(s, markerStart) {
+		s = strings.ReplaceAll(s, markerStart, "")
 	}
 	return s
 }
