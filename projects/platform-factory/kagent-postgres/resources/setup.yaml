@@ -36,12 +36,16 @@ metadata:
 type: Opaque
 ---
 # kagent-pg's Garage key, filled by garage-init
-# (projects/platform-factory/garage).
+# (projects/platform-factory/garage). The Cluster usually starts before the
+# key exists; the reload label makes the operator pass the filled key to the
+# instances, which otherwise keep the empty one they cached.
 apiVersion: v1
 kind: Secret
 metadata:
   name: kagent-pg-s3
   namespace: kagent-pg
+  labels:
+    cnpg.io/reload: "true"
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
