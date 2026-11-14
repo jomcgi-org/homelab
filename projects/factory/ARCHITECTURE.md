@@ -108,6 +108,17 @@ Application and values. It installs:
 Substrate, Authentik, the Envoy edge, the OTel collectors and Garage stay
 separate installations that the chart references.
 
+**Repository bindings.** [V] kagent runs an Agent's actors in the atespace
+named after its namespace, so the binding namespace is also the atespace that
+Substrate's credential provider grants. A Harness needs a Substrate
+WorkerPool in its own namespace, so each binding has one. Its replicas
+are the agent's concurrency, with one actor per worker. kagent 1.0.1 sets
+one CPU and memory limit for every runtime (`config.runtimeDefaults`), so
+each agent's resource limits must equal it, and the chart refuses others.
+Substrate's egress gateway admits actors to the broker's relay and to
+`github.com`. Its credential provider reads a binding namespace only through
+the chart's RoleBinding and the namespace's `namespacePolicies` entry.
+
 **Ordering.** kagent CRDs are vendored in `crds/`; a PreSync/pre-upgrade
 Job server-side-applies them so upgrades update CRDs. Waves: namespaces,
 ServiceAccounts, 1Password items and the database (-2); secret-init and a
@@ -301,6 +312,11 @@ and retries once, so a brief overlap during a rollout is safe.
   `metadata: read`); any other token is revoked and the mint fails. The
   broker only updates a `github-git` Secret labelled
   `app.kubernetes.io/managed-by=factory-broker`.
+- **Listeners.** The relay port admits only Substrate's egress gateway; a
+  second port serves the admin endpoints, connector tokens and metrics, and
+  admits only the connector, so no actor can reach them. Operators use a
+  port-forward. Cilium L7 rules could split one port instead, but Hubble
+  would then record each relayed request's actor JWT.
 - **RBAC** the chart grants the broker: `create` on `tokenreviews`; in its
   own namespace `get`/`update` on the grant Secret and the quota ConfigMap
   by `resourceNames`; in each binding namespace `create` on Secrets (RBAC

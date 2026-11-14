@@ -1,7 +1,9 @@
-"""Pins for the factory chart's kagent install: the CRDs in crds/ are the
-vendored kagent-crds chart's, the controller's identity and namespace are kept,
-the namespace may call Substrate, the controller admits only its bearer paths,
-and later steps of the delivery plan fail the render instead of doing nothing."""
+"""Pins for the factory chart: the CRDs in crds/ are the vendored kagent-crds
+chart's, the controller's identity and namespace are kept, the namespace may
+call Substrate, the controller admits only its bearer paths, the credential
+broker holds every provider credential with only the access ARCHITECTURE.md
+lists, each repository binding's workspace gets placeholders only, and later
+steps of the delivery plan fail the render instead of doing nothing."""
 
 from __future__ import annotations
 
@@ -100,25 +102,43 @@ def test_controller_identity_is_kept() -> None:
     )
 
 
-def test_credential_provider_reads_only_this_namespace() -> None:
+def test_credential_provider_reads_only_granted_namespaces() -> None:
     docs = _render()
-    binding = _one(docs, "RoleBinding", "substrate-credential-provider")
-    assert binding["metadata"]["namespace"] == "kagent"
-    assert binding["roleRef"] == {
-        "apiGroup": "rbac.authorization.k8s.io",
-        "kind": "ClusterRole",
-        "name": "k8s-credential-provider-secret-reader",
-    }
-    assert binding["subjects"] == [
-        {
-            "kind": "ServiceAccount",
-            "name": "k8s-credential-provider",
-            "namespace": "ate-system",
-        }
+    bindings = [
+        d
+        for d in docs
+        if d["kind"] == "RoleBinding"
+        and d["metadata"]["name"] == "substrate-credential-provider"
     ]
-    # The chart ships no Secret, so it offers nothing for egress injection;
-    # kagent's database Secrets come from outside and stay unlabelled.
-    assert not [d for d in docs if d["kind"] == "Secret"]
+    assert {b["metadata"]["namespace"] for b in bindings} == {
+        "kagent",
+        "factory-r-homelab",
+    }
+    for binding in bindings:
+        assert binding["roleRef"] == {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "k8s-credential-provider-secret-reader",
+        }
+        assert binding["subjects"] == [
+            {
+                "kind": "ServiceAccount",
+                "name": "k8s-credential-provider",
+                "namespace": "ate-system",
+            }
+        ]
+    # The only Secret the chart ships is the broker's empty grant, outside
+    # every granted namespace; nothing it renders is injectable.
+    secrets = [d for d in docs if d["kind"] == "Secret"]
+    assert [(d["metadata"]["namespace"], d["metadata"]["name"]) for d in secrets] == [
+        ("factory", "factory-broker-grant-codex-primary")
+    ]
+    assert "data" not in secrets[0] and "stringData" not in secrets[0]
+    assert not [
+        d
+        for d in docs
+        if d.get("metadata", {}).get("labels", {}).get("substrate.ate.dev/injectable")
+    ]
 
 
 def test_rbac_is_namespaced() -> None:
@@ -126,18 +146,25 @@ def test_rbac_is_namespaced() -> None:
     # controller behind unverified trusted-proxy auth.
     docs = _render()
     cluster_scoped = {
-        d["metadata"]["name"]
+        d["metadata"]["name"]: d
         for d in docs
         if d["kind"] in ("ClusterRole", "ClusterRoleBinding")
     }
-    assert cluster_scoped == {"kagent-kagent-crds"}
-    roles = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Role"}
-    assert {r["metadata"]["namespace"] for r in roles.values()} == {"kagent"}
-    assert "kagent-reconciliation-role" in roles
+    assert set(cluster_scoped) == {"kagent-kagent-crds", "factory-broker-tokenreview"}
+    kagent_roles = {
+        (d["metadata"]["namespace"], d["metadata"]["name"])
+        for d in docs
+        if d["kind"] == "Role" and d["metadata"]["name"].startswith("kagent-")
+    }
+    assert {ns for ns, _ in kagent_roles} == {"kagent", "factory-r-homelab"}
+    assert ("factory-r-homelab", "kagent-reconciliation-role") in kagent_roles
     config = yaml.safe_load(
         _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
     )
-    assert config["kubernetes"]["watchNamespaces"] == ["kagent"]
+    assert sorted(config["kubernetes"]["watchNamespaces"]) == [
+        "factory-r-homelab",
+        "kagent",
+    ]
 
 
 def test_identity_lands_with_the_namespace() -> None:
@@ -152,8 +179,10 @@ def test_trusted_proxy_without_tool_server_or_default_model() -> None:
     )
     assert config["server"]["auth"]["mode"] == "trusted-proxy"
     assert config["substrate"]["clientCertFile"]
-    kinds = {d["kind"] for d in docs}
-    assert "ModelConfig" not in kinds
+    # The only ModelConfigs are the bindings' relay configs.
+    assert {d["metadata"]["namespace"] for d in docs if d["kind"] == "ModelConfig"} == {
+        "factory-r-homelab"
+    }
     assert not [
         d
         for d in docs
@@ -262,7 +291,14 @@ def test_ui_admits_only_the_edge() -> None:
 def test_existing_kagent_renders_only_crds() -> None:
     # Helm cannot make crds/ conditional. The factory Application sets
     # helm.skipCrds, so under ArgoCD an existing install renders nothing.
-    docs = _render(["kagent.mode=existing", "kagent.enabled=false"])
+    docs = _render(
+        [
+            "kagent.mode=existing",
+            "kagent.enabled=false",
+            "broker.enabled=false",
+            "repositories=null",
+        ]
+    )
     assert {d["kind"] for d in docs} == {"CustomResourceDefinition"}
 
 
@@ -275,22 +311,278 @@ def test_existing_kagent_renders_only_crds() -> None:
             r"itsaplan\.enabled must be one of|itsaplan is not implemented",
         ),
         (
-            "broker.enabled=true",
-            r"broker\.enabled must be one of|broker is not implemented",
-        ),
-        (
             "connector.enabled=true",
             r"connector\.enabled must be one of|connector is not implemented",
         ),
         (
-            "repositories[0].repo=homelab",
-            r"repositories: Array must have at most 0|repositories, agents and providers",
+            "providers.openai.kind=x",
+            r"providers: Must have at most 0 properties|providers are not implemented",
         ),
+        ("repositories[0].agent=missing", 'agent "missing" is not in agents'),
+        ("repositories[0].namespace=kagent", "not a binding namespace"),
+        ("kagent.rbac.namespaces={kagent}", "add namespace factory-r-homelab"),
+        ("broker.enabled=false", "needs broker.enabled"),
+        (
+            "kagent.config.runtimeDefaults.cpu=2",
+            "must equal kagent.config.runtimeDefaults",
+        ),
+        ("agents.codex.provider=openai", r"agents\.codex\.provider"),
         ("postgres.mode=install", "postgres.mode"),
     ],
 )
-# The schema rejects most of these before templates/validate.yaml does; the
+# The schema rejects some of these before templates/validate.yaml does; the
 # pattern accepts either layer's message.
 def test_unimplemented_or_inconsistent_values_fail(override: str, message: str) -> None:
     with pytest.raises(RuntimeError, match=message):
         _render([override])
+
+
+def _in(docs: list[dict[str, Any]], kind: str, ns: str, name: str) -> dict[str, Any]:
+    found = [
+        d
+        for d in docs
+        if d["kind"] == kind
+        and d["metadata"]["name"] == name
+        and d["metadata"].get("namespace") == ns
+    ]
+    assert len(found) == 1, f"expected one {kind} {ns}/{name}, found {len(found)}"
+    return found[0]
+
+
+def test_broker_runs_one_replica_from_its_config() -> None:
+    docs = _render(["broker.image.digest=sha256:" + "a" * 64])
+    deploy = _in(docs, "Deployment", "factory", "factory-broker")
+    assert deploy["spec"]["replicas"] == 1
+    assert deploy["spec"]["strategy"] == {"type": "Recreate"}
+    pod = deploy["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "factory-broker"
+    (container,) = pod["containers"]
+    assert container["image"] == (
+        "ghcr.io/jomcgi/homelab/projects/factory/broker@sha256:" + "a" * 64
+    )
+    # No GitHub App yet: no key volume, no 1Password item, minting off.
+    assert "github-app" not in {v["name"] for v in pod["volumes"]}
+    assert not [d for d in docs if d["kind"] == "OnePasswordItem"]
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert "github" not in config
+    assert config["listenAddr"] == ":8080" and config["adminListenAddr"] == ":8081"
+    assert config["actorJwt"] == {
+        "issuer": "https://idp.ate-system.svc",
+        "audience": "factory-broker",
+        "caFile": "/run/substrate-servicedns/trust-bundle.pem",
+        "allowedAtespaces": ["factory-r-homelab"],
+    }
+    assert config["bindings"] == [
+        {
+            "name": "homelab",
+            "repository": "jomcgi-org/homelab",
+            "namespace": "factory-r-homelab",
+        }
+    ]
+
+
+def test_github_app_is_optional() -> None:
+    docs = _render(["broker.githubApp.enabled=true"])
+    item = _in(docs, "OnePasswordItem", "factory", "factory-github-app")
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-github-app"
+    pod = _in(docs, "Deployment", "factory", "factory-broker")["spec"]["template"]
+    volumes = {v["name"]: v for v in pod["spec"]["volumes"]}
+    assert volumes["github-app"]["secret"]["secretName"] == "factory-github-app"
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert config["github"]["privateKeyFile"] == "/etc/factory-github-app/private-key"
+
+
+def test_broker_state_is_kept_and_pre_created() -> None:
+    docs = _render()
+    for kind, name in (
+        ("Secret", "factory-broker-grant-codex-primary"),
+        ("ConfigMap", "factory-broker-quota"),
+        ("Namespace", "factory"),
+    ):
+        obj = [d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name][
+            0
+        ]
+        assert _KEEP.items() <= obj["metadata"]["annotations"].items()
+
+
+def test_broker_rbac_is_by_name() -> None:
+    docs = _render()
+    own = _in(docs, "Role", "factory", "factory-broker")
+    assert own["rules"] == [
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": ["factory-broker-grant-codex-primary"],
+            "verbs": ["get", "update"],
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["configmaps"],
+            "resourceNames": ["factory-broker-quota"],
+            "verbs": ["get", "update"],
+        },
+    ]
+    binding = _in(docs, "Role", "factory-r-homelab", "factory-broker")
+    assert binding["rules"] == [
+        {"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]},
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": ["github-git"],
+            "verbs": ["get", "update"],
+        },
+    ]
+    tokenreview = _one(docs, "ClusterRole", "factory-broker-tokenreview")
+    assert tokenreview["rules"] == [
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["tokenreviews"],
+            "verbs": ["create"],
+        }
+    ]
+
+
+def test_broker_policy() -> None:
+    docs = _render()
+    spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-broker")["spec"]
+    pod = _in(docs, "Deployment", "factory", "factory-broker")["spec"]["template"]
+    assert (
+        spec["endpointSelector"]["matchLabels"].items()
+        <= pod["metadata"]["labels"].items()
+    )
+    ns = "k8s:io.kubernetes.pod.namespace"
+    assert spec["ingress"] == [
+        {
+            "fromEndpoints": [
+                {"matchLabels": {ns: "ate-system", "app": "atenet-egress"}}
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        },
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        ns: "factory",
+                        "app.kubernetes.io/name": "factory-connector",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8081", "protocol": "TCP"}]}],
+        },
+    ]
+    assert spec["egress"] == [
+        {"toEntities": ["kube-apiserver"]},
+        {
+            "toEndpoints": [
+                {"matchLabels": {ns: "ate-system", "app": "ate-idp-server"}}
+            ],
+            "toPorts": [{"ports": [{"port": "8443", "protocol": "TCP"}]}],
+        },
+        {
+            "toFQDNs": [
+                {"matchName": "auth.openai.com"},
+                {"matchName": "chatgpt.com"},
+                {"matchName": "api.github.com"},
+            ],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        },
+    ]
+
+
+def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
+    docs = _render()
+    ns = "factory-r-homelab"
+    assert _in(docs, "ModelConfig", ns, "codex")["spec"] == {
+        "provider": "OpenAI",
+        "model": "gpt-6.1-terra",
+        "openAI": {
+            "baseUrl": "http://factory-broker.factory.svc/v1",
+            "apiFormat": "responses",
+        },
+        "actorJwt": {"audiences": ["factory-broker"]},
+    }
+    agent = _in(docs, "Agent", ns, "homelab-codex")["spec"]
+    assert agent["harnessRef"] == {"name": "codex"}
+    assert agent["template"]["inline"]["modelConfig"] == {"name": "codex"}
+    assert agent["egressPolicyRefs"] == [{"name": "github-git"}]
+    harness = _in(docs, "Harness", ns, "codex")["spec"]
+    assert harness["codex"] == {}
+    assert harness["substrate"] == {
+        "workerPoolRef": {"name": "homelab-codex"},
+        "snapshotPolicy": {"location": "s3://ate-snapshots/factory-r-homelab/"},
+    }
+
+
+def test_binding_workspace_holds_only_placeholders() -> None:
+    docs = _render()
+    ns = "factory-r-homelab"
+    env = {
+        e["name"]: e["value"] for e in _in(docs, "Harness", ns, "codex")["spec"]["env"]
+    }
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+    assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic factory-placeholder"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert _in(docs, "EgressPolicy", ns, "github-git")["spec"] == {
+        "destinations": [
+            {
+                "origin": "https://github.com",
+                "authentication": {
+                    "header": "Authorization",
+                    "prefix": "Basic ",
+                    "secretKeyRef": {"name": "github-git", "key": "basic"},
+                },
+            }
+        ]
+    }
+    sa = _in(docs, "ServiceAccount", ns, "homelab-codex-worker")
+    assert sa["automountServiceAccountToken"] is False
+
+
+def test_binding_worker_pool_sets_resources_and_concurrency() -> None:
+    docs = _render()
+    pool = _in(docs, "WorkerPool", "factory-r-homelab", "homelab-codex")
+    labels = pool["metadata"]["labels"]
+    assert labels["kagent.dev/worker-pool-name"] == "homelab-codex"
+    assert labels["kagent.dev/worker-pool-namespace"] == "factory-r-homelab"
+    assert pool["spec"]["replicas"] == 1
+    assert pool["spec"]["template"]["serviceAccountName"] == "homelab-codex-worker"
+    assert pool["spec"]["template"]["resources"]["limits"] == {
+        "cpu": "4",
+        "memory": "8Gi",
+    }
+    assert pool["spec"]["sandboxClasses"] == [
+        {"name": "gvisor", "configRef": {"name": "gvisor-default"}}
+    ]
+    config = yaml.safe_load(
+        _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
+    )
+    assert config["runtimeDefaults"]["cpu"] == "4"
+    assert config["runtimeDefaults"]["memory"] == "8Gi"
+
+
+def test_binding_namespace_policy_admits_only_substrate() -> None:
+    docs = _render()
+    spec = _in(docs, "CiliumNetworkPolicy", "factory-r-homelab", "substrate-workers")[
+        "spec"
+    ]
+    ns = "k8s:io.kubernetes.pod.namespace"
+    assert spec["ingress"] == [
+        {
+            "fromEndpoints": [
+                {"matchLabels": {ns: "ate-system", "app": "atenet-router"}}
+            ],
+            "toPorts": [{"ports": [{"port": "8443", "protocol": "TCP"}]}],
+        }
+    ]
+    assert spec["egress"] == [
+        {
+            "toEndpoints": [
+                {"matchLabels": {ns: "ate-system", "app": "atenet-egress"}}
+            ],
+            "toPorts": [{"ports": [{"port": "8443", "protocol": "TCP"}]}],
+        }
+    ]
