@@ -28,9 +28,9 @@ defmodule Embervm.OpLog.SQLite do
   use GenServer
   require Logger
 
-  alias Embervm.OpLog.RowDecoder
   alias Embervm.OpLog.Codec
   alias Embervm.OpLog.Op
+  alias Embervm.OpLog.RowDecoder
   alias Exqlite.Sqlite3
 
   # Retention and compaction key off the PROJECTION's state strings, which are

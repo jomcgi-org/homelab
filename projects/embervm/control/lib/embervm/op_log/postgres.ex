@@ -33,9 +33,9 @@ defmodule Embervm.OpLog.Postgres do
   use GenServer
   require Logger
 
-  alias Embervm.OpLog.RowDecoder
   alias Embervm.OpLog.Codec
   alias Embervm.OpLog.Op
+  alias Embervm.OpLog.RowDecoder
 
   # Retention and compaction key off the PROJECTION's state strings, which are
   # not the FSM atoms one for one (the group projection writes "starting" for the
@@ -2231,7 +2231,6 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
-
   defp do_load_tasks(conn, query_fun) do
     sql = """
     SELECT task_id, tenant, principal, workload, state, attempt, idempotency_key, submitted_at, updated_at, expires_at
@@ -2243,7 +2242,6 @@ defmodule Embervm.OpLog.Postgres do
       {:error, reason} -> {:error, reason}
     end
   end
-
 
   defp project_recovery_fence(conn, op) do
     fence = op.payload[:recovery_fence]
@@ -2291,7 +2289,6 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
-
   defp do_load_serving_instances(conn) do
     sql = """
     SELECT instance_id, tenant, principal, workload, state, node_id, vm_id, ip, port,
@@ -2306,7 +2303,6 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
-
   defp do_load_stateful_instances(conn) do
     sql = """
     SELECT instance_id, tenant, principal, workload, state, node_id, vm_id, ip, port,
@@ -2320,7 +2316,6 @@ defmodule Embervm.OpLog.Postgres do
       {:error, reason} -> {:error, reason}
     end
   end
-
 
   defp do_load_volumes(conn) do
     sql = """
@@ -2446,7 +2441,6 @@ defmodule Embervm.OpLog.Postgres do
       {:error, reason} -> {:error, reason}
     end
   end
-
 
   defp do_load_group_members(conn) do
     sql = """
