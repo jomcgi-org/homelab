@@ -39,6 +39,11 @@ Live acceptance after rollout: an anonymous `/` redirects to Authentik;
 sign-in shows HOME-20 to HOME-23 under Needs you, current factory work under
 In flight, recent merges under Shipped recently, and the five tool cards.
 The ArgoCD link signs in at its hostname.
+Before accepting the status sections, confirm that the coordinator's project
+scaffold contains `username: joe` with `kind: member`, and that HOME-20 to
+HOME-23 have that `userId` as assignee and a null delegate. The upstream API
+contract is linked in [the factory architecture](../factory/ARCHITECTURE.md#factory-front-page);
+source inspection does not verify deployed membership.
 Keep the Authentik admin/setup 403/404 probes and the edge's
 `/oauth2-sentinel` 404 unchanged.
 
