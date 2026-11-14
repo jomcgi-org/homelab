@@ -1,0 +1,208 @@
+// Package config loads the connector's settings: endpoints and secret paths
+// from the environment, bindings and intervals from a YAML file.
+package config
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the connector's whole configuration.
+type Config struct {
+	// From the environment.
+	DatabaseURL      string // FACTORY_CONNECTOR_DATABASE_URL
+	ItsaplanURL      string // FACTORY_CONNECTOR_ITSAPLAN_URL
+	KagentURL        string // FACTORY_CONNECTOR_KAGENT_URL (A2A over HTTP)
+	KagentGRPCTarget string // FACTORY_CONNECTOR_KAGENT_GRPC (host:port)
+	KagentTokenFile  string // FACTORY_CONNECTOR_KAGENT_TOKEN_FILE
+	MetricsAddr      string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
+	Holder           string // POD_NAME, default hostname
+
+	File File
+}
+
+// File is the YAML configuration file.
+type File struct {
+	Intervals   Intervals   `yaml:"intervals"`
+	Coordinator Coordinator `yaml:"coordinator"`
+	Agents      []Agent     `yaml:"agents"`
+	Bindings    []Binding   `yaml:"bindings"`
+}
+
+// Intervals are the loop timings.
+type Intervals struct {
+	Poll           Duration `yaml:"poll"`
+	Heartbeat      Duration `yaml:"heartbeat"`
+	DispatchWindow Duration `yaml:"dispatchWindow"`
+	AcquireRetry   Duration `yaml:"acquireRetry"`
+}
+
+// Coordinator is the itsaplan agent that reads runs and comments.
+type Coordinator struct {
+	Key        string `yaml:"key"`
+	APIKeyFile string `yaml:"apiKeyFile"`
+}
+
+// Agent is an itsaplan external agent whose runs the connector claims.
+type Agent struct {
+	Key         string `yaml:"key"`
+	APIKeyFile  string `yaml:"apiKeyFile"`
+	Concurrency int    `yaml:"concurrency"`
+}
+
+// Binding is one repository binding.
+type Binding struct {
+	Name                  string   `yaml:"name"`
+	Owner                 string   `yaml:"owner"`
+	Repo                  string   `yaml:"repo"`
+	BaseBranch            string   `yaml:"baseBranch"`
+	ItsaplanProject       string   `yaml:"itsaplanProject"`
+	BranchPrefix          string   `yaml:"branchPrefix"`
+	Agents                []string `yaml:"agents"`
+	KagentNamespace       string   `yaml:"kagentNamespace"`
+	KagentAgent           string   `yaml:"kagentAgent"`
+	MaxEngineeringRetries *int     `yaml:"maxEngineeringRetries"`
+}
+
+// Duration parses Go duration strings in YAML.
+type Duration time.Duration
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
+	v, err := time.ParseDuration(n.Value)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// Load reads the environment and the file it names.
+func Load(getenv func(string) string) (*Config, error) {
+	c := &Config{
+		DatabaseURL:      getenv("FACTORY_CONNECTOR_DATABASE_URL"),
+		ItsaplanURL:      strings.TrimSuffix(getenv("FACTORY_CONNECTOR_ITSAPLAN_URL"), "/"),
+		KagentURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_KAGENT_URL"), "/"),
+		KagentGRPCTarget: getenv("FACTORY_CONNECTOR_KAGENT_GRPC"),
+		KagentTokenFile:  getenv("FACTORY_CONNECTOR_KAGENT_TOKEN_FILE"),
+		MetricsAddr:      getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
+		Holder:           getenv("POD_NAME"),
+	}
+	if c.MetricsAddr == "" {
+		c.MetricsAddr = ":9090"
+	}
+	if c.KagentTokenFile == "" {
+		c.KagentTokenFile = "/var/run/secrets/kagent/token"
+	}
+	if c.Holder == "" {
+		c.Holder, _ = os.Hostname()
+	}
+	path := getenv("FACTORY_CONNECTOR_CONFIG")
+	if path == "" {
+		path = "/etc/factory-connector/config.yaml"
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	c.File = *f
+	for name, v := range map[string]string{
+		"FACTORY_CONNECTOR_DATABASE_URL": c.DatabaseURL,
+		"FACTORY_CONNECTOR_ITSAPLAN_URL": c.ItsaplanURL,
+		"FACTORY_CONNECTOR_KAGENT_URL":   c.KagentURL,
+		"FACTORY_CONNECTOR_KAGENT_GRPC":  c.KagentGRPCTarget,
+	} {
+		if v == "" {
+			return nil, fmt.Errorf("config: %s is required", name)
+		}
+	}
+	return c, nil
+}
+
+// Parse decodes and validates a configuration file, applying defaults.
+func Parse(b []byte) (*File, error) {
+	var f File
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if f.Intervals.Poll == 0 {
+		f.Intervals.Poll = Duration(5 * time.Second)
+	}
+	if f.Intervals.Heartbeat == 0 {
+		f.Intervals.Heartbeat = Duration(60 * time.Second)
+	}
+	if f.Intervals.DispatchWindow == 0 {
+		f.Intervals.DispatchWindow = Duration(150 * time.Second)
+	}
+	if f.Intervals.AcquireRetry == 0 {
+		f.Intervals.AcquireRetry = Duration(5 * time.Second)
+	}
+	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {
+		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")
+	}
+	agents := map[string]bool{}
+	for i := range f.Agents {
+		a := &f.Agents[i]
+		if a.Key == "" || a.APIKeyFile == "" {
+			return nil, fmt.Errorf("config: agent %d needs key and apiKeyFile", i)
+		}
+		if agents[a.Key] {
+			return nil, fmt.Errorf("config: duplicate agent %q", a.Key)
+		}
+		agents[a.Key] = true
+		if a.Concurrency <= 0 {
+			a.Concurrency = 1
+		}
+	}
+	projects := map[string]bool{}
+	for i := range f.Bindings {
+		b := &f.Bindings[i]
+		for field, v := range map[string]string{
+			"name": b.Name, "owner": b.Owner, "repo": b.Repo, "baseBranch": b.BaseBranch,
+			"itsaplanProject": b.ItsaplanProject, "kagentNamespace": b.KagentNamespace, "kagentAgent": b.KagentAgent,
+		} {
+			if v == "" {
+				return nil, fmt.Errorf("config: binding %d: %s is required", i, field)
+			}
+		}
+		if projects[b.ItsaplanProject] {
+			return nil, fmt.Errorf("config: project %s has two bindings", b.ItsaplanProject)
+		}
+		projects[b.ItsaplanProject] = true
+		if b.BranchPrefix == "" {
+			b.BranchPrefix = "factory/"
+		}
+		if b.MaxEngineeringRetries == nil {
+			two := 2
+			b.MaxEngineeringRetries = &two
+		}
+		if len(b.Agents) == 0 {
+			return nil, fmt.Errorf("config: binding %s names no agents", b.Name)
+		}
+		for _, a := range b.Agents {
+			if !agents[a] {
+				return nil, fmt.Errorf("config: binding %s names unknown agent %q", b.Name, a)
+			}
+		}
+	}
+	return &f, nil
+}
+
+// ReadKey reads an API key file.
+func ReadKey(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
