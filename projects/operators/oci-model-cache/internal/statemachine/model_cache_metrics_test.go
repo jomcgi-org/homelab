@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -109,42 +108,61 @@ func metricsRegistry(t *testing.T) *prometheus.Registry {
 	return registry
 }
 
-func gatherMetrics(t *testing.T, registry *prometheus.Registry) []*dto.MetricFamily {
+type metricSample struct {
+	labels              map[string]string
+	counter, gauge, sum float64
+	count               uint64
+}
+
+type metricSnapshot map[string][]metricSample
+
+func gatherMetrics(t *testing.T, registry *prometheus.Registry) metricSnapshot {
 	t.Helper()
 	families, err := registry.Gather()
 	if err != nil {
 		t.Fatalf("gather metrics: %v", err)
 	}
-	return families
+	snapshot := make(metricSnapshot)
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			labels := make(map[string]string)
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			snapshot[family.GetName()] = append(snapshot[family.GetName()], metricSample{
+				labels:  labels,
+				counter: metric.GetCounter().GetValue(),
+				gauge:   metric.GetGauge().GetValue(),
+				count:   metric.GetHistogram().GetSampleCount(),
+				sum:     metric.GetHistogram().GetSampleSum(),
+			})
+		}
+	}
+	return snapshot
 }
 
 // findMetric preserves the distinction between absent and present zero samples.
-func findMetric(families []*dto.MetricFamily, name string, labels map[string]string) (*dto.Metric, bool) {
-	for _, family := range families {
-		if family.GetName() != name {
+func findMetric(snapshot metricSnapshot, name string, labels map[string]string) (metricSample, bool) {
+	for _, metric := range snapshot[name] {
+		if len(metric.labels) != len(labels) {
 			continue
 		}
-		for _, metric := range family.GetMetric() {
-			if len(metric.GetLabel()) != len(labels) {
-				continue
-			}
-			matches := true
-			for _, label := range metric.GetLabel() {
-				value, ok := labels[label.GetName()]
-				if !ok || value != label.GetValue() {
-					matches = false
-					break
-				}
-			}
-			if matches {
-				return metric, true
+		matches := true
+		for key, value := range labels {
+			actual, ok := metric.labels[key]
+			if !ok || actual != value {
+				matches = false
+				break
 			}
 		}
+		if matches {
+			return metric, true
+		}
 	}
-	return nil, false
+	return metricSample{}, false
 }
 
-func assertCounterDeltas(t *testing.T, before, after []*dto.MetricFamily, family, label string, values []string, selected string) {
+func assertCounterDeltas(t *testing.T, before, after metricSnapshot, family, label string, values []string, selected string) {
 	t.Helper()
 	for _, value := range values {
 		labels := map[string]string{label: value}
@@ -157,7 +175,7 @@ func assertCounterDeltas(t *testing.T, before, after []*dto.MetricFamily, family
 				t.Errorf("%s{%s=%q} absent after increment", family, label, value)
 			}
 		}
-		if delta := current.GetCounter().GetValue() - previous.GetCounter().GetValue(); delta != want {
+		if delta := current.counter - previous.counter; delta != want {
 			t.Errorf("%s{%s=%q} counter delta = %g, want %g", family, label, value, delta, want)
 		}
 	}
@@ -199,10 +217,10 @@ func TestRecordReconcile_Metrics(t *testing.T) {
 				if !present {
 					t.Fatal("reconciliation duration histogram absent after observation")
 				}
-				if delta := current.GetHistogram().GetSampleCount() - previous.GetHistogram().GetSampleCount(); delta != 1 {
+				if delta := current.count - previous.count; delta != 1 {
 					t.Errorf("reconciliation duration count delta = %d, want 1", delta)
 				}
-				if delta := current.GetHistogram().GetSampleSum() - previous.GetHistogram().GetSampleSum(); math.Abs(delta-duration.Seconds()) > 1e-9 {
+				if delta := current.sum - previous.sum; math.Abs(delta-duration.Seconds()) > 1e-9 {
 					t.Errorf("reconciliation duration sum delta = %g, want %g seconds", delta, duration.Seconds())
 				}
 			})
@@ -245,7 +263,7 @@ func TestCleanupResourceMetrics_AfterPhaseGauge(t *testing.T) {
 			})
 		}
 	}
-	assertGauges := func(families []*dto.MetricFamily, cleaned bool) {
+	assertGauges := func(families metricSnapshot, cleaned bool) {
 		t.Helper()
 		for index, resource := range resources {
 			for i, phase := range phases {
@@ -257,7 +275,7 @@ func TestCleanupResourceMetrics_AfterPhaseGauge(t *testing.T) {
 					}
 				} else if !present {
 					t.Errorf("phase gauge %v absent, want present with value %d", labels, i)
-				} else if got := metric.GetGauge().GetValue(); got != float64(i) {
+				} else if got := metric.gauge; got != float64(i) {
 					t.Errorf("phase gauge %v = %g, want %d", labels, got, i)
 				}
 			}
