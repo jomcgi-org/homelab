@@ -24,6 +24,9 @@ postgres:
 # with text fields app-id and installation-id.
 broker:
   enabled: true
+  # Operators log in to Codex and force refreshes as factory/factory-operator
+  # (projects/factory-cluster/README.md, "Codex login").
+  operatorServiceAccount: factory-operator
   githubApp:
     enabled: true
     itemPath: vaults/k8s-homelab/items/factory-gh-app

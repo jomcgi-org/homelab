@@ -793,6 +793,29 @@ run and chat feeds' `claim`, and their per-run `heartbeat`, `events` and
 God mode stays public, behind both sign-ins, because the web app calls it for
 the instance admin.
 
+## Codex login
+
+The broker holds the factory's one Codex grant
+(`factory/factory-broker-grant-codex-primary`), filled by its own device
+login. Operators call its admin port as `factory/factory-operator`, which no
+Pod may run as:
+
+```bash
+export KUBECONFIG=~/.kube/factory.yaml
+kubectl -n factory port-forward deploy/factory-broker 8081:8081 &
+TOKEN=$(kubectl -n factory create token factory-operator --audience factory-broker --duration 10m)
+# Prints verification_url and user_code: open the URL, sign in to the
+# ChatGPT account the factory uses, and enter the code.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" localhost:8081/admin/codex/login
+# login "succeeded" and grant_state "present" once approved.
+curl -s -H "Authorization: Bearer $TOKEN" localhost:8081/admin/codex/login
+# Force a refresh, e.g. to check the grant after an account change.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" localhost:8081/admin/codex/refresh
+```
+
+The ChatGPT account needs device-code sign-in for Codex enabled in its
+security settings.
+
 ## Connector
 
 The connector (`projects/factory/ARCHITECTURE.md`, "Connector") runs as
