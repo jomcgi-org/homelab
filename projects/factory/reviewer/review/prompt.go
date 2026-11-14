@@ -72,26 +72,26 @@ const (
 	maxComments      = 20
 )
 
-var untrustedTag = regexp.MustCompile(`(?i)untrusted-pr-`)
+// untrustedTag matches "untrusted-" followed by any run of "pr-", so one pass
+// removes a whole run: the remainder cannot start with "pr-", and no new
+// "untrusted-pr-" forms across the join.
+var untrustedTag = regexp.MustCompile(`(?i)untrusted-(?:pr-)+`)
 
-// safe strips every "untrusted-pr-" from text the PR's author wrote, until
-// none is left: removing one cannot form another, so the text names no
-// block delimiter.
+// safe strips every "untrusted-pr-" from text the PR's author wrote in one
+// linear pass, so the text names no block delimiter.
 func safe(s string) string {
-	for untrustedTag.MatchString(s) {
-		s = untrustedTag.ReplaceAllString(s, "untrusted-")
-	}
-	return s
+	return untrustedTag.ReplaceAllString(s, "untrusted-")
 }
 
 // writeUntrusted writes text the PR's author wrote between delimiters named
-// for the head and a digest of the block's own text. The text cannot carry
-// the digest of a whole that contains it, so even a delimiter the sanitizer
-// missed (a look-alike character, say) cannot close the block.
+// for the head and a 128-bit digest of the block's own text. Text that holds
+// its own block's closer would need a SHA-256 preimage search on that scale,
+// so even a delimiter the sanitizer missed (a look-alike character, say)
+// cannot close the block in practice.
 func writeUntrusted(b *strings.Builder, kind, sha, text string) {
 	text = strings.TrimRight(safe(text), "\n")
 	sum := sha256.Sum256([]byte(text))
-	tag := fmt.Sprintf("untrusted-pr-%s-%s-%s", kind, sha[:min(12, len(sha))], hex.EncodeToString(sum[:6]))
+	tag := fmt.Sprintf("untrusted-pr-%s-%s-%s", kind, sha[:min(12, len(sha))], hex.EncodeToString(sum[:16]))
 	fmt.Fprintf(b, "<%s>\n%s\n</%s>\n\n", tag, text, tag)
 }
 
