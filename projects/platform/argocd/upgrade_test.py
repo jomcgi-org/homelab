@@ -131,3 +131,24 @@ def test_application_set_lease_permissions_do_not_expand(resources):
             "verbs": ["get", "update", "create"],
         },
     ]
+
+
+def test_factory_hostname_and_oidc():
+    chart = Path(__file__).resolve().parent
+    result = subprocess.run(
+        [os.environ.get("HELM_BIN", "helm"), "template", "argocd", str(chart),
+         "--namespace", "argocd", "-f", str(chart / "values.yaml"),
+         "-f", str(chart / "values-factory.yaml")],
+        capture_output=True, text=True, timeout=120, check=True,
+    )
+    docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    route = next(doc for doc in docs if doc["kind"] == "HTTPRoute")
+    assert route["spec"]["hostnames"] == ["factory-argocd.jomcgi.dev"]
+    assert route["spec"]["parentRefs"][0]["namespace"] == "edge"
+    cm = next(doc for doc in docs if doc["kind"] == "ConfigMap"
+              and doc["metadata"]["name"] == "argocd-cm")
+    assert cm["data"]["url"] == "https://factory-argocd.jomcgi.dev"
+    oidc = yaml.safe_load(cm["data"]["oidc.config"])
+    assert oidc["clientID"] == "factory-argocd"
+    assert oidc["issuer"] == "https://factory-auth.jomcgi.dev/application/o/factory-argocd/"
+    assert oidc["clientSecret"] == "$argocd-authentik-oidc:client-secret"

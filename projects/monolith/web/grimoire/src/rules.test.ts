@@ -18,7 +18,7 @@ function files(dir: string): string[] {
   });
 }
 
-const sources = [...files(join(root, "src")), ...files(join(root, "preview"))]
+const sources = [...files(join(root, "src")), ...files(join(root, "preview")), ...files(join(root, "factory"))]
   .map((path) => relative(root, path))
   .filter(
     (path) =>

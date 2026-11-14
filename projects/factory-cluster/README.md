@@ -8,7 +8,7 @@ Application per shared component.
 
 Status (2026-11-13): nodes rebuilt as three k3s servers on Cilium; 1Password
 Connect and ArgoCD run and sync `factory-root`. ArgoCD is published at
-factory.jomcgi.dev behind Authentik (factory-auth.jomcgi.dev).
+factory-argocd.jomcgi.dev behind Authentik (factory-auth.jomcgi.dev).
 
 ## Nodes
 
@@ -149,6 +149,11 @@ That shows one node; run it against each agent pod for the whole cluster.
 
 ## factory.jomcgi.dev
 
+The private entry point is a static Astryx landing page
+(`projects/factory-landing/`). It links to itsaplan, Grafana, ArgoCD and
+GitHub, including open factory PRs. kagent is marked coming soon until its
+hostname is routed. The page makes no API calls and holds no credentials.
+
 The only path in from the internet:
 
 1. Cloudflare terminates TLS and sends the request down the `factory`
@@ -163,13 +168,14 @@ The only path in from the internet:
    every request in through Authentik with a gateway-wide OIDC
    SecurityPolicy, then routes it. Routes attach only from the namespaces
    listed in the chart's `routeNamespaces` (`edge`, `argocd`, `factory`,
-   `grafana`),
+   `grafana`, `factory-landing`),
    matched by name.
 4. The application can run its own Authentik login too; ArgoCD does.
 
 | Hostname | Route | Sign-in |
 | --- | --- | --- |
-| factory.jomcgi.dev | `argocd/argocd-server` | Envoy OIDC (client `factory-edge`), then ArgoCD's OIDC (client `factory-argocd`); both admit only `authentik Admins` |
+| factory.jomcgi.dev | `factory-landing/factory-landing` | Envoy OIDC (client `factory-edge`), only `authentik Admins` |
+| factory-argocd.jomcgi.dev | `argocd/argocd-server` | Envoy OIDC (client `factory-edge`), then ArgoCD's OIDC (client `factory-argocd`); both admit only `authentik Admins` |
 | factory-auth.jomcgi.dev | `edge/authentik` | Authentik itself, with MFA required |
 | factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
 | factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |

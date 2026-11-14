@@ -230,6 +230,16 @@ spec:
          object.spec.hostnames.all(h, h == 'factory-grafana.jomcgi.dev'))
       message: >-
         Routes in the grafana namespace must name only factory-grafana.jomcgi.dev.
+    - expression: >-
+        request.namespace != 'factory-landing' ||
+        (has(object.spec.hostnames) && size(object.spec.hostnames) > 0 &&
+         object.spec.hostnames.all(h, h == 'factory.jomcgi.dev'))
+      message: Routes in factory-landing must name only factory.jomcgi.dev.
+    - expression: >-
+        request.namespace != 'argocd' ||
+        (has(object.spec.hostnames) && size(object.spec.hostnames) > 0 &&
+         object.spec.hostnames.all(h, h == 'factory-argocd.jomcgi.dev'))
+      message: Routes in argocd must name only factory-argocd.jomcgi.dev.
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

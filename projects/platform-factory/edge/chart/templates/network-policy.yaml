@@ -126,3 +126,12 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+    # Static operator landing page.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-landing
+            app.kubernetes.io/name: factory-landing
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

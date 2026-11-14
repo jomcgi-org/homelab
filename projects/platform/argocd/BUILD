@@ -71,6 +71,7 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "values-gke.yaml",
+        "values-factory.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",

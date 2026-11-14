@@ -43,6 +43,8 @@ entries:
         - matching_mode: strict
           url: https://factory.jomcgi.dev/oauth2/callback
         - matching_mode: strict
+          url: https://factory-argocd.jomcgi.dev/oauth2/callback
+        - matching_mode: strict
           url: https://factory-plan.jomcgi.dev/oauth2/callback
         - matching_mode: strict
           url: https://factory-grafana.jomcgi.dev/oauth2/callback
@@ -98,7 +100,7 @@ entries:
         ]
       redirect_uris:
         - matching_mode: strict
-          url: https://factory.jomcgi.dev/auth/callback
+          url: https://factory-argocd.jomcgi.dev/auth/callback
       authorization_flow:
         !Find [
           authentik_flows.flow,
@@ -127,7 +129,7 @@ entries:
     attrs:
       name: Factory ArgoCD
       provider: !KeyOf argocd-provider
-      meta_launch_url: https://factory.jomcgi.dev/
+      meta_launch_url: https://factory-argocd.jomcgi.dev/
       meta_description: ArgoCD on the factory home cluster.
 
   # ── 3. Who may sign in ───────────────────────────────────────────────────
