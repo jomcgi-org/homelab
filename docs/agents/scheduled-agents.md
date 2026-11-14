@@ -262,7 +262,7 @@ start another model. Read-only Git and issue/deployment evidence suffice.
 Fingerprint `docs:<path>:<claim-or-symbol>`; at most two proposals, each
 grouping one cause across affected files. Include obsolete decision/status
 links. The repo retired ADRs in
-[#4667](https://github.com/jomcgi-org/homelab/pull/4667); maintain the
+[#4667](https://github.com/jomcgi-org/homelab/issues/4667); maintain the
 ARCHITECTURE decision history and Direction rows instead of rebuilding an
 ADR registry ([reference](reference.md#where-to-look-next)).
 
