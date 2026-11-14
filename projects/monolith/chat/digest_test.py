@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from chat import digest
 from chat.digest import digest_window
 from chat.models import Message
 
@@ -124,28 +125,96 @@ class TestChunkedWindow:
         assert "final digest" in result
 
 
-class TestDecisionsMode:
-    @pytest.mark.asyncio
-    async def test_prompt_asks_for_decisions_actions_and_open_questions(
-        self, base_time
-    ):
-        messages = [
-            _make_message(
-                username="Alice",
-                content="let's ship it Friday",
-                minutes_ago=1,
-                base=base_time,
-            )
-        ]
-        caller = _FakeCaller()
-        await digest_window(messages, "decisions", caller)
-        prompt = caller.prompts[0]
-        assert "decisions" in prompt.lower()
-        assert "action item" in prompt.lower()
-        assert "who" in prompt.lower()
-        assert "open question" in prompt.lower()
-        assert "unattributed" in prompt.lower()
-        assert "guess" in prompt.lower()
+@pytest.fixture(params=["single", "chunked"])
+def routing_window(request, base_time):
+    # Three distinct chronological messages split 2/1 at the real 8000-char
+    # budget. Expected payloads are independent of digest's formatting helpers.
+    chunked = request.param == "chunked"
+    contents = ["launch-" + "a" * 3000, "owner-" + "b" * 3000, "date-" + "c" * 3000]
+    if not chunked:
+        contents = ["launch approved", "owner is Bob", "date still open"]
+    messages = [
+        _make_message(
+            username=name, content=content, minutes_ago=minutes, base=base_time
+        )
+        for name, content, minutes in zip(
+            ["Alice", "Bob", "Carol"], contents, [9, 5, 1], strict=True
+        )
+    ]
+    lines = [
+        "[11:51] Alice: " + contents[0],
+        "[11:55] Bob: " + contents[1],
+        "[11:59] Carol: " + contents[2],
+    ]
+    payloads = ["\n".join(lines)]
+    responses = ["final caller output"]
+    if chunked:
+        payloads = ["\n".join(lines[:2]), lines[2]]
+        responses = ["launch partial alpha", "ownership partial beta", *responses]
+    return messages, payloads, responses
+
+
+@pytest.mark.parametrize("mode", ["summary", "decisions"])
+@pytest.mark.asyncio
+async def test_prompt_routing(mode, routing_window, monkeypatch):
+    # Patch every mode/stage, including unused alternatives, so wrong routing
+    # cannot accidentally select an equivalent template. pytest restores them.
+    monkeypatch.setattr(
+        digest,
+        "_MODE_PROMPTS",
+        {
+            name: {
+                "single": f"{name}/single<{{messages}}>",
+                "chunk": f"{name}/chunk<{{messages}}>",
+                "reduce": f"{name}/reduce<{{chunks}}>",
+            }
+            for name in ("summary", "decisions")
+        },
+    )
+    messages, payloads, responses = routing_window
+    caller = _FakeCaller(responses=responses)
+    result = await digest_window(messages, mode, caller)
+
+    if len(payloads) == 1:
+        expected = [f"{mode}/single<{payloads[0]}>"]
+    else:
+        expected = [f"{mode}/chunk<{payload}>" for payload in payloads]
+        expected.append(
+            f"{mode}/reduce<--- Piece 1 ---\nlaunch partial alpha"
+            "\n\n--- Piece 2 ---\nownership partial beta>"
+        )
+    assert len(caller.prompts) == len(expected)
+    assert caller.prompts == expected
+    assert result == (
+        "(window: 3 messages, back to 2026-07-04T11:51:00+00:00)\n\nfinal caller output"
+    )
+
+
+@pytest.mark.parametrize("mode", ["summary", "decisions"])
+@pytest.mark.asyncio
+async def test_production_templates_preserve_payloads(mode, routing_window):
+    # Keep the real templates: sentinel substitution alone hides missing real
+    # placeholders. Assert data flow without copying or pinning prompt prose.
+    messages, payloads, responses = routing_window
+    caller = _FakeCaller(responses=responses)
+    result = await digest_window(messages, mode, caller)
+
+    chunked = len(payloads) == 2
+    assert len(caller.prompts) == (3 if chunked else 1)
+    for index, payload in enumerate(payloads):
+        assert payload in caller.prompts[index]
+        for other in payloads[:index] + payloads[index + 1 :]:
+            assert other not in caller.prompts[index]
+    if chunked:
+        assert (
+            "--- Piece 1 ---\nlaunch partial alpha"
+            "\n\n--- Piece 2 ---\nownership partial beta"
+        ) in caller.prompts[2]
+        for payload in payloads:
+            assert payload not in caller.prompts[2]
+    assert result == (
+        "(window: 3 messages, back to 2026-07-04T11:51:00+00:00)\n\nfinal caller output"
+    )
 
 
 class TestInvalidMode:
