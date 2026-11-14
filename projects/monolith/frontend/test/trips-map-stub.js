@@ -2,6 +2,7 @@
 // components still mount, create layers, register handlers and own cleanup.
 import { vi } from "vitest";
 export const maps = [];
+export const markers = [];
 export class Map {
   constructor(options) {
     this.options = options;
@@ -11,6 +12,7 @@ export class Map {
     this.canvas = document.createElement("canvas");
     this.setPaintProperty = vi.fn();
     this.easeTo = vi.fn();
+    this.fitBounds = vi.fn();
     this.remove = vi.fn();
     this.addControl = vi.fn();
     maps.push(this);
@@ -37,7 +39,13 @@ export class Map {
     return true;
   }
   addSource(id, source) {
+    source.setData = vi.fn((data) => {
+      source.data = data;
+    });
     this.sources[id] = source;
+  }
+  getSource(id) {
+    return this.sources[id];
   }
   addLayer(layer) {
     this.layers.push(layer);
@@ -47,6 +55,8 @@ export class NavigationControl {}
 export class Marker {
   constructor({ element }) {
     this.element = element;
+    this.remove = vi.fn();
+    markers.push(this);
   }
   setLngLat(coords) {
     this.coords = coords;
@@ -55,8 +65,10 @@ export class Marker {
   getLngLat() {
     return { lng: this.coords[0], lat: this.coords[1] };
   }
+  getElement() {
+    return this.element;
+  }
   addTo() {
     return this;
   }
-  remove() {}
 }
