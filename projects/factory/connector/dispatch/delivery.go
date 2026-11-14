@@ -250,33 +250,27 @@ func (e *Engine) issueStopped(ctx context.Context, wi *store.WorkItem, b *Bindin
 	if err := e.guard(ctx); err != nil {
 		return "", err
 	}
+	// A 401 or 403 is returned like any error: delivery waits, holding no
+	// slot, and carries on once the key works again.
 	is, err := e.its.GetIssue(ctx, wi.IssueID)
-	if why := e.lookupRefused(ctx, lookupIssue, wi.ID, err); why != "" {
-		// Delivery cannot confirm a person has not canceled the issue.
-		return why, nil
-	}
+	e.countRefusal(roleCoordinator, lookupIssue, err)
 	switch {
 	case errors.Is(err, itsaplan.ErrNotFound):
-		e.refusals.Delete(refusalKey{lookupIssue, wi.ID})
 		return "the issue is no longer visible in project " + b.ItsaplanProject, nil
 	case err != nil:
 		return "", err
 	}
 	if i := strings.LastIndex(is.Identifier, "-"); i > 0 && is.Identifier[:i] != b.ItsaplanProject {
-		e.refusals.Delete(refusalKey{lookupIssue, wi.ID})
 		return "the issue moved to another project", nil
 	}
 	if err := e.guard(ctx); err != nil {
 		return "", err
 	}
 	cols, err := e.its.ProjectColumns(ctx, b.ItsaplanProject)
-	if why := e.lookupRefused(ctx, lookupIssue, wi.ID, err); why != "" {
-		return why, nil
-	}
 	if err != nil {
+		e.countRefusal(roleCoordinator, lookupIssue, err)
 		return "", err
 	}
-	e.refusals.Delete(refusalKey{lookupIssue, wi.ID})
 	for _, c := range cols {
 		if c.ID == is.ColumnID && (c.StateType == "completed" || c.StateType == "canceled") {
 			return fmt.Sprintf("the issue is in the %s column %q", c.StateType, c.Name), nil
@@ -1009,12 +1003,24 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	case err != nil:
 		return err
 	}
-	if is, err := e.its.GetIssue(ctx, p.IssueID); err == nil {
-		for _, c := range cols {
-			if c.ID == is.ColumnID && c.StateType == "canceled" {
-				// Canceled since the merge: a person's decision stands.
-				return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is canceled; not moved to Done")
-			}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	// The move waits until the issue can be read: a person may have
+	// canceled it since the merge.
+	is, err := e.its.GetIssue(ctx, p.IssueID)
+	switch {
+	case errors.Is(err, itsaplan.ErrNotFound):
+		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is no longer visible; not moved to Done")
+	case e.refused(ctx, it, err):
+		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+	case err != nil:
+		return err
+	}
+	for _, c := range cols {
+		if c.ID == is.ColumnID && c.StateType == "canceled" {
+			// Canceled since the merge: a person's decision stands.
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is canceled; not moved to Done")
 		}
 	}
 	var done *itsaplan.Column
@@ -1064,7 +1070,7 @@ func (e *Engine) doneRefused(ctx context.Context, p issueDonePayload, column, wh
 
 // replacementContext is what a replacement session starts from: the issue,
 // the PR, the branch head and the open review threads.
-func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *Binding, old, why string) (string, error) {
+func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, old, why string) (string, error) {
 	var s strings.Builder
 	fmt.Fprintf(&s, "## Replacement session\nThe factory replaced kagent session %s (%s). Nothing from it carries over: "+
 		"continue the work from this context and the repository.\n", old, why)
@@ -1072,13 +1078,11 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 		return "", err
 	}
 	issue, err := e.its.GetIssue(ctx, wi.IssueID)
-	gaveUp := e.lookupRefused(ctx, lookupReplacement, wi.ID, err)
+	gaveUp := e.lookupRefused(ctx, refusalKey{lookupReplacement, a.ID, 0}, err)
 	switch {
 	case err == nil:
-		e.refusals.Delete(refusalKey{lookupReplacement, wi.ID})
 		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
 	case terminalHTTP(err):
-		e.refusals.Delete(refusalKey{lookupReplacement, wi.ID})
 		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %v)\n", wi.IssueKey, err)
 	case gaveUp != "":
 		// Past the bound the session starts without the issue rather than

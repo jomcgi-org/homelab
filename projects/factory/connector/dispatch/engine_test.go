@@ -1424,6 +1424,7 @@ func TestOutboxCredentialRefusalsAreBoundedAndCounted(t *testing.T) {
 			for range 40 {
 				v.its.moveErr = append(v.its.moveErr, refusal)
 			}
+			v.its.commentErr = refusal
 			v.its.mu.Unlock()
 			v.gh.merge(1, "merge-sha-1")
 			v.poll()
@@ -1432,13 +1433,18 @@ func TestOutboxCredentialRefusalsAreBoundedAndCounted(t *testing.T) {
 			if moves := v.its.Moves(); len(moves) != 0 {
 				t.Fatalf("moves = %+v", moves)
 			}
+			// The same outage refuses the report; it waits in the outbox.
 			v.tick(v.e)
-			var said bool
-			for _, c := range v.its.Comments() {
-				said = said || strings.Contains(c.body, "itsaplan refused the move")
+			if c := v.its.Comments(); len(c) != 0 {
+				t.Fatalf("comments = %+v", c)
 			}
-			if !said {
-				t.Fatalf("comments = %+v, want the refused move reported", v.its.Comments())
+			var queued int
+			if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind = 'comment'
+				AND payload->>'body' LIKE '%itsaplan refused the move%'`).Scan(&queued); err != nil {
+				t.Fatal(err)
+			}
+			if queued != 1 {
+				t.Fatalf("queued refused-move reports = %d, want 1", queued)
 			}
 		},
 	}, {
@@ -1486,26 +1492,47 @@ func TestOutboxCredentialRefusalsAreBoundedAndCounted(t *testing.T) {
 	}
 }
 
+// setRunErr makes every GetRun fail with err, or succeed for nil.
+func (v *env) setRunErr(err error) {
+	v.its.mu.Lock()
+	v.its.runErr = err
+	v.its.mu.Unlock()
+}
+
 // TestRefusedRunLookupClosesRunAfterBound: the agent key's heartbeat gets
-// 404 and the coordinator key is refused when it reads why. The run waits
-// out a key rotation, then closes rather than holding its slot.
+// 404 and the coordinator key is refused when it reads why. Any other
+// answer restarts the clock; 30 minutes of refusals close the run rather
+// than hold its slot.
 func TestRefusedRunLookupClosesRunAfterBound(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
-	v.its.mu.Lock()
-	v.its.get(1).status = "failed"
-	v.its.runErr = &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
-	v.its.mu.Unlock()
-	start := v.clk.Now()
+	v.its.holdElsewhere(1) // the next heartbeat gets 404
+	forbidden := &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
+	v.setRunErr(forbidden)
+	for range 21 {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	// One answer that is not a refusal restarts the clock.
+	v.setRunErr(&itsaplan.HTTPError{Status: 503, Body: "unavailable"})
 	v.clk.Advance(61 * time.Second)
 	v.tick(v.e)
-	if cs := v.pendingCancellations(); len(cs) != 0 {
-		t.Fatalf("canceled after one refusal: %+v", cs)
+	v.setRunErr(forbidden)
+	restart := v.clk.Now()
+	for range 20 {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
 	}
-	v.tickUntil(61*time.Second, 40, func() bool { return len(v.pendingCancellations()) == 1 })
-	if waited := v.clk.Now().Sub(start); waited < 30*time.Minute {
-		t.Fatalf("canceled after %s, want the 30m bound", waited)
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("canceled within the bound: %+v", cs)
+	}
+	if r := v.run(1); r.State != store.RunDispatched {
+		t.Fatalf("run = %s (%s), want dispatched", r.State, r.ClosedReason)
+	}
+	v.tickUntil(61*time.Second, 20, func() bool { return len(v.pendingCancellations()) == 1 })
+	if waited := v.clk.Now().Sub(restart); waited < 30*time.Minute {
+		t.Fatalf("canceled %s after the clock restarted, want the 30m bound", waited)
 	}
 	if cs := v.pendingCancellations(); cs[0].Reason != store.CancelRunClosed {
 		t.Fatalf("cancellations = %+v", cs)
@@ -1513,8 +1540,36 @@ func TestRefusedRunLookupClosesRunAfterBound(t *testing.T) {
 	if r := v.run(1); r.State != store.RunCanceling || !strings.Contains(r.ClosedReason, "refused the coordinator key") {
 		t.Fatalf("run = %s (%s)", r.State, r.ClosedReason)
 	}
-	if n := v.refusals("coordinator", "run_check"); n < 30 {
+	if n := v.refusals("coordinator", "run_check"); n < 40 {
 		t.Fatalf("run_check refusals = %d", n)
+	}
+}
+
+// TestRefusedStaleRunLookupDoesNotCancel: a stale run holds no slot, so a
+// refused lookup waits for the key however long it takes.
+func TestRefusedStaleRunLookupDoesNotCancel(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.its.holdElsewhere(1)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if r := v.run(1); r.State != store.RunStale {
+		t.Fatalf("run = %s, want stale", r.State)
+	}
+	v.setRunErr(&itsaplan.HTTPError{Status: 401, Body: "invalid api key"})
+	for range 50 {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("cancellations = %+v", cs)
+	}
+	if r := v.run(1); r.State != store.RunStale {
+		t.Fatalf("run = %s (%s), want stale", r.State, r.ClosedReason)
+	}
+	if n := v.refusals("coordinator", "run_check"); n == 0 {
+		t.Fatal("the refused stale lookup was not counted")
 	}
 }
 

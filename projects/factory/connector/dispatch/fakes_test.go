@@ -61,6 +61,9 @@ type fakeItsaplan struct {
 	// issueErr and runErr fail every GetIssue and GetRun while set.
 	issueErr error
 	runErr   error
+	// issueErrs answers the next GetIssue calls first; a nil entry reads
+	// the issue.
+	issueErrs []error
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -183,6 +186,15 @@ func (f *fakeItsaplan) reclaimElsewhere(id int64) {
 	r.until = f.now().Add(f.lease)
 }
 
+// holdElsewhere is reclaimElsewhere with a lease that outlasts the test, so
+// the run is not redelivered here.
+func (f *fakeItsaplan) holdElsewhere(id int64) {
+	f.reclaimElsewhere(id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.get(id).until = f.now().Add(24 * time.Hour)
+}
+
 func (f *fakeItsaplan) Claim(_ context.Context, agent string) (*itsaplan.Run, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -303,7 +315,13 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	if f.issueErr != nil {
+	if len(f.issueErrs) > 0 {
+		err := f.issueErrs[0]
+		f.issueErrs = f.issueErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	} else if f.issueErr != nil {
 		return nil, f.issueErr
 	}
 	is := f.issues[issueID]
