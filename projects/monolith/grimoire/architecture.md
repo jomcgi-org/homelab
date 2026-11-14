@@ -1082,8 +1082,15 @@ its audience, any interrupted send's request id and the viewer's user id and
 role in the tab's `sessionStorage`, and the tab reloads at most once a minute;
 within that minute it shows a signed-out notice. Other screens show the
 signed-out notice and leave the reload to the player. A restored draft never
-widens its audience, and a draft kept for another viewer is dropped. A poll
-that answers for a different account, role or character reloads the session
-screen, because panels such as knowledge search keep their own state. The live
-check remains: hold a real login past the access-token lifetime and confirm
-the session stays Live without a reload.
+widens its audience, and a draft kept for another viewer is dropped.
+
+Every screen shares the lobby identity check through `ViewerBoundary`. A
+confirmed account change, removal of an existing campaign membership, change
+to its role, character or ownership, loss of account administration, or a
+lobby response denying access with 403 hides the previous view immediately.
+The boundary cancels queries, clears the query cache and saved message drafts,
+then reloads once.
+It also unmounts queued speech and toasts. Ordinary lobby refreshes, renamed
+campaigns, new memberships and temporary lobby failures preserve unsaved
+work. The live check remains: hold a real login past the access-token lifetime
+and confirm the session stays Live without a reload.

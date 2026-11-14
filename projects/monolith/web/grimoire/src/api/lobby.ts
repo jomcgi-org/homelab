@@ -12,11 +12,12 @@ export const keys = {
 };
 
 /** Also the viewer's identity: who is signed in and their role per campaign. */
-export const useLobby = () =>
+export const useLobby = (enabled = true) =>
   useQuery({
     queryKey: keys.lobby,
     queryFn: () => api("GET /lobby"),
     refetchInterval: 15_000,
+    enabled,
   });
 
 export const useMembers = (campaignId: string, enabled = true) =>

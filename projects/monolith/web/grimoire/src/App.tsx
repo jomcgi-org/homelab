@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
+import { useLobby } from "./api/lobby";
 import { ChunkBoundary } from "./app/ChunkBoundary";
 import { Page } from "./app/Page";
 import { NotFound } from "./screens/NotFound";
@@ -56,6 +57,8 @@ function Loading() {
 
 /** The route table. One screen per route; add a screen in `src/screens`. */
 export function App() {
+  // Keep the confirmed identity current on every route, including account pages.
+  useLobby();
   return (
     <ChunkBoundary>
       <Suspense fallback={<Loading />}>
