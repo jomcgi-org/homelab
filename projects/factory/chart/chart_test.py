@@ -552,7 +552,7 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
     ns = "factory-r-homelab"
     assert _in(docs, "ModelConfig", ns, "codex")["spec"] == {
         "provider": "OpenAI",
-        "model": "gpt-6.1-terra",
+        "model": "gpt-6.1-sol",
         "openAI": {
             "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",
             "apiFormat": "responses",
