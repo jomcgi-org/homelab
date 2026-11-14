@@ -434,7 +434,7 @@ current head, enqueue with GraphQL `enqueuePullRequest` and
 check, or without one a trusted reviewer's approval of the head; a trusted
 reviewer's standing change request blocks either way. A PR already in the
 queue is recorded as enqueued, never enqueued twice. A PR against another
-base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge
+base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge The reviewer App takes over enqueueing under "Merge authority" (#7919).
 links on the issue and moves it to the project's first `completed` column
 (or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
 WIP limit, is reported on the issue and retried with backoff. A move the
@@ -613,14 +613,21 @@ and retries once, so a brief overlap during a rollout is safe.
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
 | Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
-| Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards the reviewer App's required check ("Merge authority") |
+| Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards the reviewer App's required `factory review` check ("Merge authority") |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
 
 ## Merge authority
 
-Decided with Joe on 2026-11-14. Writing code, reviewing it and merging it
-are separate identities, and GitHub enforces the review rather than the
-factory's own code.
+Decided with Joe on 2026-11-14 as the target state. Writing code, reviewing
+it and merging it are separate identities, and GitHub enforces the review
+rather than the factory's own code.
+
+**Status (2026-11-14): planned.** Today local review agents approve as
+`jomcgi`, the connector enqueues with the factory App, and ruleset 9180009
+requires only `pr-checks` and the merge queue. The work is #7919 (reviewer
+App, service and required check), #7920 (connector authorship check), #7921
+(third-party Apps), #7922 (in-cluster CI and registry) and #7923 (fork PRs
+and public previews).
 
 - **Author.** `jomcgi-factory` pushes branches and opens PRs: contents and
   pull requests write, checks and statuses read. It loses merge queue write
@@ -628,11 +635,11 @@ factory's own code.
   write on its own repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
   merge queues write, and contents and pull requests read. A kagent reviewer
-  agent, in its own binding, reviews the exact head against `REVIEW.md` and
-  the repository's review guide. It posts the `factory review` check run and
+  agent, in its own binding, reviews the exact head against
+  `docs/agents/review.md`. It posts the `factory review` check run and
   enqueues when the check passes and required CI is green. It never posts a
   PR approval, so it can never count toward an approval or code-owner rule.
-- **GitHub enforces it.** Ruleset 9180009 requires `factory review`, bound to
+- **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
   a passing review on that head, including PRs from Joe, interactive
   sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
@@ -659,7 +666,8 @@ factory's own code.
   start a run. The connector adopts and enqueues only PRs whose author is the
   factory App and whose head branch is the bound repository's
   `<branchPrefix><issue key>`; a fork or other author is refused and
-  reported. Only `trustedReviewers` and the reviewer App reach an agent's
+  reported. Today adoption matches the bound repository's own head
+  (`<owner>:<branch>`), which excludes forks; the author check is #7920. Only `trustedReviewers` and the reviewer App reach an agent's
   prompt.
 - **No third-party writers in the trust path.** No other App holds
   `administration` (it can edit the ruleset) or bypass, and the required
