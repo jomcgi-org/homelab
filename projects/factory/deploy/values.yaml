@@ -115,9 +115,15 @@ connector:
     homelab:
       itsaplanProject: HOME
       agents: [homelab-codex]
-      # While the factory is being bootstrapped, local review agents approve
-      # its PRs as jomcgi. A kagent reviewer replaces this afterwards.
+      # The factory-reviewer's check is the review: the connector enqueues a
+      # head only once `factory review` from the reviewer App passes on it,
+      # and its findings start a revision round. jomcgi stays trusted, so
+      # Joe's "request changes" still blocks and starts a round
+      # (#7817 decision 6882698416).
       trustedReviewers: [jomcgi]
+      reviewerCheck:
+        name: factory review
+        appId: 5758326
       # The ruleset's required check, a commit status BuildBuddy posts: the
       # connector enqueues only once it passes, and a failure on the head
       # starts a revision round with its link, so CI failures reach the agent
@@ -133,15 +139,19 @@ connector:
           cnpg.io/cluster: factory-db
 
 # The factory-reviewer (projects/factory/reviewer; ARCHITECTURE.md "Merge
-# authority"): posts the `factory review` check on every PR into main and
-# enqueues passing PRs authored by jomcgi; the connector keeps enqueueing
-# the factory's own. Its agent runs in factory-r-homelab-review with a
-# read-only git token from the reviewer App (k8s-homelab/factory-review-gh-app).
+# authority"): posts the `factory review` check on every PR into main, which
+# the ruleset requires. It enqueues nothing: GitHub refuses enqueues from its
+# read-only token, and write access would let it push or approve. The
+# connector enqueues the factory's PRs; other authors use auto-merge
+# (#7817 decision 6882698416). Its agent runs in factory-r-homelab-review
+# with a read-only git token from the reviewer App
+# (k8s-homelab/factory-review-gh-app).
 reviewer:
   enabled: true
   bindings:
     homelab:
-      # Enqueue only once the ruleset's required check is green on the head.
+      enqueueAuthors: []
+      # Used only by enqueues, which are off; kept for when they return.
       requiredChecks:
         - name: pr-checks
           statusCreator: buildbuddy-io[bot]

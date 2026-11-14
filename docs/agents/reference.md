@@ -48,7 +48,11 @@ they do not launch their own planner, review or landing sequence.
 - Run `ci` before pushing when available, otherwise use PR CI. Read failed
   logs before retrying. Never push to a merged branch.
 - The landing owner checks required CI and independent approval against the
-  current PR head. Review guidance: `docs/agents/review.md`.
+  current PR head. On main, that is `pr-checks` and the reviewer App's
+  `factory review` check. A failing `factory review` lists its findings, so
+  fix and push. On a PR authored by `jomcgi`, a human-gate finding clears
+  only when Joe merges it with his bypass. Review guidance:
+  `docs/agents/review.md`.
 - `homelab pr land <n>` follows merge, chart writeback and rollout. Otherwise,
   `gh pr merge <n> --auto` enters the merge queue; pass no strategy flag.
   Rebase only for conflicts or CI's branch writeback, not because main moved.
