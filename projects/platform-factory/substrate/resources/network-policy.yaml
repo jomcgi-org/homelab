@@ -175,6 +175,17 @@ spec:
         - ports:
             - port: "50051"
               protocol: TCP
+    # Agent runtimes reach the kagent controller's task store through the
+    # gateway (the factory chart's kagent-controller policy admits it).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kagent
+            app.kubernetes.io/name: kagent
+            app.kubernetes.io/component: controller
+      toPorts:
+        - ports:
+            - port: "8083"
+              protocol: TCP
 ---
 # The k8s.io credential provider reads the Secrets each actor's atespace is
 # granted (credentialProvider.namespacePolicies in ../values/substrate.yaml).
