@@ -23,6 +23,17 @@ fi
 readonly HELM="$(rlocation "{{HELM}}")"
 readonly CHART_TGZ="$(rlocation "{{CHART_TGZ}}")"
 readonly CHECK_MISSED_BUMP="$(rlocation "{{CHECK_MISSED_BUMP}}")"
+
+# rlocation prints nothing for a runfile that is in the manifest but missing on
+# disk, and `readonly` swallows its exit status. Under --remote_download_minimal
+# that is a package action whose output Bazel still believes is remote: the
+# factory chart's first publish read an empty CHART_TGZ and died in tar after
+# announcing the release. Stop here, before any registry call, with the cause.
+if [[ ! -f "$CHART_TGZ" ]]; then
+  echo "ERROR: packaged chart {{CHART_TGZ}} is not in the runfiles on disk." >&2
+  echo "       Run with --experimental_check_output_files so Bazel fetches remote-only outputs." >&2
+  exit 1
+fi
 REPOSITORY="{{REPOSITORY}}"
 CHART_VERSION_SH="{{CHART_VERSION_SH}}"
 CHART_DIR="{{CHART_DIR}}"
