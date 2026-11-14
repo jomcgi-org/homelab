@@ -230,6 +230,19 @@ else
 	fail "first-party tag-only diagnostics" "$out"
 fi
 
+# A first-party image in a layout _image_pins cannot read still fails closed.
+setup first-party-bare-image
+printf 'sidecar:\n  image: "ghcr.io/jomcgi/homelab/tools/sidecar:main"\n' >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+printf 'sidecar:\n  image: "ghcr.io/jomcgi/homelab/tools/sidecar:main"\n' >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "first-party bare image string" "expected non-zero"
+elif [[ "$out" == *"expected image set is empty"* ]]; then
+	pass "first-party image in an unpinnable layout still fails"
+else
+	fail "first-party bare image diagnostics" "$out"
+fi
+
 echo ""
 if [[ "$FAILURES" -ne 0 ]]; then
 	echo "$FAILURES test(s) failed"
