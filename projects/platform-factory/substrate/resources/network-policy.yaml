@@ -148,9 +148,10 @@ spec:
               protocol: TCP
 ---
 # The egress gateway (agentgateway) checks each actor with ate-api-server and
-# fetches injected credentials from the credential provider. Actor traffic to
-# the internet is not allowed yet: opening it is a reviewed change here, with
-# the actors' own egress policy (EgressPolicy) as the finer control.
+# fetches injected credentials from the credential provider. Actor traffic
+# beyond the destinations below is not allowed: opening more is a reviewed
+# change here, with the actors' own egress policy (EgressPolicy) as the finer
+# control.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -185,6 +186,24 @@ spec:
       toPorts:
         - ports:
             - port: "8083"
+              protocol: TCP
+    # The factory credential broker's Codex relay, with the actor JWT the
+    # gateway injects (projects/factory/chart, broker-network-policy.yaml).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-broker
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # git over HTTPS for factory repository bindings, with the broker-minted
+    # token the gateway injects (EgressPolicy github-git).
+    - toFQDNs:
+        - matchName: github.com
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
 ---
 # The k8s.io credential provider reads the Secrets each actor's atespace is
