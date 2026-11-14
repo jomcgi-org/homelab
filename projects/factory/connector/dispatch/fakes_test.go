@@ -44,6 +44,12 @@ type fakeItsaplan struct {
 	// resultGone fails the run in itsaplan as its result arrives, as
 	// expireExhaustedRuns can.
 	resultGone bool
+	columns    []itsaplan.Column
+	moves      []fakeMove
+}
+
+type fakeMove struct {
+	issueID, columnID int64
 }
 
 type fakeRun struct {
@@ -65,7 +71,12 @@ type fakeComment struct {
 }
 
 func newFakeItsaplan(now func() time.Time) *fakeItsaplan {
-	return &fakeItsaplan{now: now, lease: 300 * time.Second, maxTries: 3}
+	return &fakeItsaplan{now: now, lease: 300 * time.Second, maxTries: 3, columns: []itsaplan.Column{
+		{ID: 1, Name: "Todo", StateType: "unstarted"},
+		{ID: 2, Name: "In progress", StateType: "started", Position: 1},
+		{ID: 3, Name: "Done", StateType: "completed", Position: 2},
+		{ID: 4, Name: "Canceled", StateType: "canceled", Position: 3},
+	}}
 }
 
 func (f *fakeItsaplan) add(id int64, agent string, issueID int64, key, prompt string) {
@@ -214,6 +225,43 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 	return nil
 }
 
+func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return &itsaplan.Issue{
+		ID: issueID, Title: fmt.Sprintf("Issue %d title", issueID),
+		Description: fmt.Sprintf("Issue %d description.", issueID),
+	}, nil
+}
+
+func (f *fakeItsaplan) ProjectColumns(_ context.Context, _ string) ([]itsaplan.Column, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return append([]itsaplan.Column(nil), f.columns...), nil
+}
+
+func (f *fakeItsaplan) MoveIssue(_ context.Context, issueID, columnID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.moves = append(f.moves, fakeMove{issueID, columnID})
+	return nil
+}
+
+func (f *fakeItsaplan) Moves() []fakeMove {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeMove(nil), f.moves...)
+}
+
+func (f *fakeItsaplan) Results(id int64) []itsaplan.Result {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]itsaplan.Result(nil), f.get(id).results...)
+}
+
 func (f *fakeItsaplan) Comments() []fakeComment {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -257,6 +305,9 @@ type fakeKagent struct {
 	sessionErr []error
 	sessions   map[string]*kagent.Session
 	reverts    int
+	// revertErr fails the next RevertSession calls.
+	revertErr []error
+	nctx      int
 }
 
 type fakeTask struct {
@@ -377,7 +428,8 @@ func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.
 		if id, ok := k.initial[msg.MessageID]; ok {
 			return copyTask(&k.tasks[id].task), nil
 		}
-		ctxID = fmt.Sprintf("ctx-%d", len(k.contexts)+1)
+		k.nctx++
+		ctxID = fmt.Sprintf("ctx-%d", k.nctx)
 		k.contexts[ctxID] = agent
 		k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, State: kagent.RuntimeReady}
 	} else {
@@ -492,13 +544,43 @@ func (k *fakeKagent) RevertSession(_ context.Context, id string) (*kagent.Sessio
 	defer k.mu.Unlock()
 	k.calls++
 	k.reverts++
+	if len(k.revertErr) > 0 {
+		err := k.revertErr[0]
+		k.revertErr = k.revertErr[1:]
+		return nil, err
+	}
 	s, ok := k.sessions[id]
 	if !ok {
 		return nil, kagent.ErrSessionNotFound
 	}
+	if s.Crashed() {
+		// Reverting fails the interrupted turn instead of replaying it.
+		for _, t := range k.tasks {
+			if t.task.ContextID == id && !kagent.Quiescent(t.task.Status.State) {
+				t.task.Status = kagent.TaskStatus{State: kagent.StateFailed}
+			}
+		}
+	}
 	s.State, s.Operation, s.FailureReason = kagent.RuntimeReady, 5, ""
 	c := *s
 	return &c, nil
+}
+
+// crash marks a session's runtime crashed; its running task keeps reporting
+// working until a revert.
+func (k *fakeKagent) crash(id string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	s := k.sessions[id]
+	s.State, s.Operation, s.FailureReason = kagent.RuntimeFailed, kagent.OperationRevert, kagent.ReasonRuntimeCrashed
+}
+
+// expire deletes a session, as kagent's idle expiration does.
+func (k *fakeKagent) expire(id string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	delete(k.sessions, id)
+	delete(k.contexts, id)
 }
 
 // finish ends a task with an agent reply, as the runtime would.

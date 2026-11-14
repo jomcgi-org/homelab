@@ -17,6 +17,12 @@ type Metrics struct {
 	Reassignments prometheus.Counter
 	WriterEpoch   prometheus.Gauge
 	TickErrors    *prometheus.CounterVec // phase
+
+	PullRequests      *prometheus.CounterVec // outcome
+	ReviewEvents      *prometheus.CounterVec // kind, disposition
+	ReviewRounds      prometheus.Counter
+	MergeQueue        *prometheus.CounterVec // outcome
+	SessionRecoveries *prometheus.CounterVec // kind
 }
 
 // New registers the metrics with reg; a nil reg leaves them unregistered.
@@ -64,12 +70,33 @@ func New(reg prometheus.Registerer) *Metrics {
 		}),
 		TickErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_tick_errors_total",
-			Help: "Errors by dispatch phase (runs, cancellations, claims, outbox).",
+			Help: "Errors by dispatch phase (heartbeats, claims, runs, cancellations, delivery, outbox).",
 		}, []string{"phase"}),
+		PullRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_pull_requests_total",
+			Help: "PR syncs after a finished turn by outcome (created, adopted, updated, no_commits).",
+		}, []string{"outcome"}),
+		ReviewEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_review_events_total",
+			Help: "Review events recorded by kind and disposition (acted, stale_head, untrusted, duplicate, round_limit).",
+		}, []string{"kind", "disposition"}),
+		ReviewRounds: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "factory_connector_review_rounds_total",
+			Help: "Review rounds the connector started.",
+		}),
+		MergeQueue: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_merge_queue_total",
+			Help: "Merge queue outcomes (enqueued, enqueue_error, ejected, merged).",
+		}, []string{"outcome"}),
+		SessionRecoveries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_session_recoveries_total",
+			Help: "kagent session recoveries by kind (revert, replace).",
+		}, []string{"kind"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
-			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors)
+			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.MergeQueue, m.SessionRecoveries)
 	}
 	return m
 }

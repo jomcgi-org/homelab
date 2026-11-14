@@ -204,6 +204,50 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 		"/issues/"+strconv.FormatInt(issueID, 10)+"/comments", map[string]string{"body": body}, nil)
 }
 
+// Issue is the part of an itsaplan issue the connector reads.
+type Issue struct {
+	ID          int64  `json:"id"`
+	Identifier  string `json:"identifier"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	ColumnID    int64  `json:"columnId"`
+}
+
+// GetIssue reads an issue with the coordinator's key.
+func (c *Client) GetIssue(ctx context.Context, issueID int64) (*Issue, error) {
+	var out Issue
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, "/issues/"+strconv.FormatInt(issueID, 10), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Column is a project's workflow state.
+type Column struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	StateType string `json:"stateType"` // backlog | unstarted | started | completed | canceled
+	Position  int    `json:"position"`
+}
+
+// ProjectColumns lists a project's columns, read with the coordinator's key.
+func (c *Client) ProjectColumns(ctx context.Context, projectKey string) ([]Column, error) {
+	var out struct {
+		Columns []Column `json:"columns"`
+	}
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, "/projects/"+url.PathEscape(projectKey), nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Columns, nil
+}
+
+// MoveIssue moves an issue to a column as the coordinator. It needs
+// work_items edit in the issue's project.
+func (c *Client) MoveIssue(ctx context.Context, issueID, columnID int64) error {
+	return c.do(ctx, c.Coordinator, http.MethodPatch, "/issues/"+strconv.FormatInt(issueID, 10),
+		map[string]int64{"columnId": columnID}, nil)
+}
+
 func runPath(id int64, op string) string {
 	return "/agent-runs/" + strconv.FormatInt(id, 10) + "/" + op
 }

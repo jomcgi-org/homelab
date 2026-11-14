@@ -24,6 +24,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
@@ -102,6 +103,19 @@ func run(log *slog.Logger) error {
 	}
 	var bindings []dispatch.Binding
 	for _, b := range cfg.File.Bindings {
+		review := dispatch.ReviewPolicy{
+			TrustedReviewers: b.TrustedReviewers, MaxReviewRounds: *b.MaxReviewRounds, DoneColumn: b.DoneColumn,
+		}
+		for _, c := range b.RequiredChecks {
+			review.RequiredChecks = append(review.RequiredChecks, dispatch.Check(c))
+		}
+		if b.ReviewerCheck != nil {
+			c := dispatch.Check(*b.ReviewerCheck)
+			review.ReviewerCheck = &c
+		}
+		if review.ReviewerCheck == nil && len(review.TrustedReviewers) == 0 {
+			log.Warn("binding has no reviewer check or trusted reviewers; its PRs are never enqueued", "binding", b.Name)
+		}
 		bindings = append(bindings, dispatch.Binding{
 			Binding: store.Binding{
 				Name: b.Name, Owner: b.Owner, Repo: b.Repo, BaseBranch: b.BaseBranch,
@@ -110,6 +124,7 @@ func run(log *slog.Logger) error {
 				MaxEngineeringRetries: *b.MaxEngineeringRetries,
 			},
 			Agents: b.Agents,
+			Review: review,
 		})
 	}
 
@@ -121,6 +136,16 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer sessions.Close()
+
+	// Delivery (PRs, review rounds, merge) needs the broker's GitHub tokens.
+	var gh dispatch.GitHub
+	if cfg.BrokerURL != "" {
+		gh = &github.Client{BaseURL: cfg.GitHubURL, Tokens: &github.BrokerTokens{
+			URL: cfg.BrokerURL, Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
+		}}
+	} else {
+		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
+	}
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -143,7 +168,9 @@ func run(log *slog.Logger) error {
 		Heartbeat:       time.Duration(cfg.File.Intervals.Heartbeat),
 		ReissueInterval: time.Duration(cfg.File.Intervals.ReissueInterval),
 		DispatchWindow:  time.Duration(cfg.File.Intervals.DispatchWindow),
-	}, st, its, a2a, sessions, m, log)
+		ReviewPoll:      time.Duration(cfg.File.Intervals.ReviewPoll),
+		Links:           dispatch.Links(cfg.File.Links),
+	}, st, its, a2a, sessions, gh, m, log)
 
 	// Wait for the writer lock: during a Recreate rollout the old pod may
 	// still hold it.

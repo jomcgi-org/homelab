@@ -87,6 +87,19 @@ records how they relate and routes results and feedback between them.
 12. **kagent reports usage per model call.** [V] Each call's usage sits in
     metadata key `kagent.dev/a2a/usage` (`promptTokenCount`,
     `candidatesTokenCount`).
+13. **An agent's comment starts no itsaplan run.** [V] At v1.10.0
+    `queueMentionRuns` returns early when the comment's author is an agent
+    user, so the coordinator cannot start a mention-run. A delegation run
+    starts only when the issue's delegate changes, with a fixed prompt, and
+    an agent cannot create a run any other way without Pro schedules.
+14. **kagent session recovery.** [V] `RevertSession` restores a crashed
+    runtime to its last durable snapshot without replaying the interrupted
+    turn, returns a session that is not crashed unchanged, and answers
+    `FAILED_PRECONDITION` when the runtime cannot be recovered (Session or
+    Actor deleted, Actor replaced or retemplated): the client must replace
+    the session. Idle expiration deletes a session, so later calls answer
+    `NOT_FOUND`. [I] A crashed runtime leaves its task working until the
+    revert fails it.
 
 ## Umbrella chart
 
@@ -222,8 +235,9 @@ connection, so a lost session also fails it. kagent guarantees one non-quiescent
 session and one execution per actor, which keeps one writer per worktree.
 
 **Data**, in its own database: repository bindings, work items (issue,
-binding, branch `factory/<KEY>`, kagent session and generation, state),
-runs, delivery attempts (unique per run and sequence number, A2A message ID,
+binding, branch `factory/<KEY>`, kagent session and generation, state,
+review rounds), runs (itsaplan's, and the connector's own review rounds),
+delivery attempts (unique per run and sequence number, A2A message ID,
 kagent task, error class, evidence URI, and the itsaplan attempt as
 `run_attempt`, since engineering retries add sends within one itsaplan
 attempt), pull requests (head SHA, merge-queue
@@ -276,8 +290,16 @@ sighting an empty lookup changes nothing. Progress is
 posted as itsaplan run events with a persisted offset.
 
 **Completion.** The connector opens or updates the one PR for the work
-item from the pushed branch. A run result means the turn finished; the
-issue becomes Done only from the observed merge. Engineering retries are
+item from the pushed branch. A completed turn records its attempt on the
+work item in the same transaction as the run's result; delivery then
+compares the branch with the base and, when it has commits, finds the
+branch's PR or opens it, titled with the head commit's subject. The body
+links the issue, run, session and delivery attempt of the latest turn. The
+connector always looks the branch up before opening a PR and again after a
+failed open, and GitHub holds one open PR per head, so a restart or a lost
+response never opens a second; a closed, unmerged PR is reopened. A turn
+without commits opens nothing and says so on the issue. A run result means
+the turn finished; the issue becomes Done only from the observed merge. Engineering retries are
 connector decisions bounded per work item; the retry and the attempt it
 sends commit together. Credential and quota failures block with the reason
 instead of retrying. The class comes from whole identifiers in the status
@@ -292,19 +314,53 @@ itsaplan run is never retried; after the unblock they resume within the
 agent key's concurrency. The reported
 usage is the last model call's, read from `kagent.dev/a2a/usage`.
 
-**Review.** Poll owned PRs every 60 s (no public webhook). An event acts only
-if its commit is the current head and its author is a trusted identity;
-duplicates and stale heads are recorded. Requested changes start a
-mention-run in the mapped session. A session whose runtime crashed is
-restored with kagent `RevertSession` to its last checkpoint; an expired or
-deleted one is replaced with context from the issue, PR and review threads,
-and the replacement is announced.
+**Review.** Poll owned PRs every 60 s (no public webhook): GraphQL for the
+PR, its reviews and review threads, REST for check runs and statuses on the
+head. Events that ask for changes are a `CHANGES_REQUESTED` review, or a
+failed run of a configured check or status. Each is recorded once by its
+GitHub node ID. It acts only if its commit is the current head and its
+author is trusted by the binding: a trusted reviewer login, a check run
+from the check's App ID, or a status from the check's creator login.
+Otherwise it is recorded `stale_head` or `untrusted`. A round acts once per
+head, kind and source (reviewer or check name); a later event with the same
+key, such as a re-run failing again on an unchanged head, is `duplicate`.
+Acting events start one review round with their text and the unresolved
+threads, and the start is announced on the issue. Rounds are bounded per
+work item (`maxReviewRounds`, default 3); past the bound events are
+`round_limit` and the PR waits for a person. Events are read only while
+the work item is in review, not while a turn runs.
+
+A review round is a connector-initiated continuation, not an itsaplan
+mention-run: itsaplan v1.10.0 starts no run for an agent's comment
+(finding 13). The round is a connector run (negative id, message IDs
+`factory-review/<n>/<decision>`) that dispatch sends like any other
+continuation in the mapped session, with no lease, transcript or result in
+itsaplan; its record lives in the connector database and on the issue. A
+failed round returns the work item to review.
+
+A session whose runtime crashed is reverted with kagent `RevertSession`.
+Before a continuation the connector checks the session; while a turn runs
+it checks every heartbeat interval, since a crashed runtime does not finish
+its task. A revert fails the interrupted turn, so its input is sent again
+in the same session (`resend-<seq>`, at most twice per run) without using
+the engineering-retry budget. A session kagent no longer has (`NOT_FOUND`)
+or tells the client to replace (`FAILED_PRECONDITION`) is replaced: the new
+session's first message carries context built from the issue, the PR, the
+branch head and the unresolved review threads, recorded with the attempt so
+every resend is identical, and the replacement is announced.
 
 **Merge.** When the required checks and the trusted reviewer succeed on the
-current head, enqueue with GraphQL `enqueuePullRequest`. When the merge is
-observed, mark the itsaplan issue Done with the issue, run, session, PR and
-merge links; a merge-queue failure returns the work item to review.
-Deployment health is a separate record.
+current head, enqueue with GraphQL `enqueuePullRequest` and
+`expectedHeadOid` set to that head. The reviewer is the binding's reviewer
+check, or without one a trusted reviewer's approval of the head; a trusted
+reviewer's standing change request blocks either way. A PR already in the
+queue is recorded as enqueued, never enqueued twice. When the merge is
+observed, the connector comments the issue, run, session, PR and merge
+links on the issue and moves it to the project's first `completed` column
+(or `doneColumn`). A PR that leaves the queue unmerged returns the work
+item to review, the ejection is announced, and that head is not enqueued
+again; a new push or review moves it on. Deployment health is a separate
+record.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
 reports the task in a terminal state. A cancellation never sends a message.
@@ -415,8 +471,8 @@ and retries once, so a brief overlap during a rollout is safe.
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
 | Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
-| Connector to itsaplan | A coordinator external agent for comments, issue state and run lookups (`work_items read` and `ai_agents read` in each bound project); the coding agent's key claims runs |
-| Connector and agents to GitHub | Broker-minted App tokens, one repository per binding |
+| Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
+| Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
 | Independent review | The Semgrep reviewer as a required check bound to its App ID in the ruleset |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
 
