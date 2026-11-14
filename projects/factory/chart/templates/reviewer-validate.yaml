@@ -1,0 +1,50 @@
+{{- if .Values.reviewer.enabled }}
+{{- if not .Values.broker.enabled }}
+{{- fail "reviewer.enabled needs broker.enabled" }}
+{{- end }}
+{{- if not .Values.repositories }}
+{{- fail "reviewer.enabled needs at least one repository binding" }}
+{{- end }}
+{{- $auth := ((.Values.kagent.config | default dict).server | default dict).auth | default dict }}
+{{- if and (include "factory.kagentInstall" .) (not ($auth.serviceAccount | default dict).authority) }}
+{{- fail "reviewer.enabled needs kagent.config.server.auth.serviceAccount.authority" }}
+{{- end }}
+{{- $a := .Values.agents.reviewer | default dict }}
+{{- if not $a }}
+{{- fail "reviewer.enabled needs agents.reviewer" }}
+{{- end }}
+{{- $runtime := .Values.kagent.config.runtimeDefaults }}
+{{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
+{{- fail "agents.reviewer: resources must equal kagent.config.runtimeDefaults" }}
+{{- end }}
+{{- $names := list }}
+{{- $seen := dict }}
+{{- range .Values.repositories }}
+{{- $names = append $names .name }}
+{{- $_ := set $seen .namespace true }}
+{{- end }}
+{{- range $k, $_ := .Values.reviewer.bindings }}
+{{- if not (has $k $names) }}
+{{- fail (printf "reviewer.bindings.%s names no repository in repositories" $k) }}
+{{- end }}
+{{- end }}
+{{- range $r := .Values.repositories }}
+{{- $ns := include "factory.reviewerNamespace" (dict "root" $ "binding" $r) }}
+{{- if or (gt (len $ns) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ns)) }}
+{{- fail (printf "reviewer.bindings.%s: namespace %s must be a DNS label of at most 63 characters; set namespace explicitly" $r.name $ns) }}
+{{- end }}
+{{- if or (hasKey $seen $ns) (eq $ns $.Values.broker.namespace) (eq $ns (include "factory.kagentNamespace" $)) }}
+{{- fail (printf "reviewer.bindings.%s: namespace %s must be separate from every coding binding, review binding and control namespace" $r.name $ns) }}
+{{- end }}
+{{- $_ := set $seen $ns true }}
+{{- if not (has $ns $.Values.kagent.rbac.namespaces) }}
+{{- fail (printf "reviewer.bindings.%s: add namespace %s to kagent.rbac.namespaces so the controller watches it" $r.name $ns) }}
+{{- end }}
+{{- $b := index ($.Values.reviewer.bindings | default dict) $r.name | default dict }}
+{{- range $b.requiredChecks }}
+{{- if eq (lower .name) (lower $.Values.reviewer.checkName) }}
+{{- fail (printf "reviewer.bindings.%s: the review check cannot also be a required check" $r.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

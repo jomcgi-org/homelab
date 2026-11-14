@@ -75,3 +75,8 @@ credentialProvider:
       secretSelector:
         matchLabels:
           substrate.ate.dev/injectable: "true"
+    - atespace: factory-r-homelab-review
+      allowedNamespaces: [factory-r-homelab-review]
+      secretSelector:
+        matchLabels:
+          substrate.ate.dev/injectable: "true"

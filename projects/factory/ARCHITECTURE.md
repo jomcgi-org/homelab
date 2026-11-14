@@ -52,8 +52,8 @@ records how they relate and routes results and feedback between them.
    itsaplan templates against the upstream images.
 5. **kagent's trusted-proxy mode decodes bearer JWTs without verifying
    them.** [V] Network policy must leave the edge, the kagent UI, the
-   connector, Substrate's `atenet-egress` (actors' calls, which carry a
-   verified actor JWT) and the controller itself (its own `kagent-api`
+   connector, the reviewer when enabled, Substrate's `atenet-egress`
+   (actors' calls, which carry a verified actor JWT) and the controller itself (its own `kagent-api`
    RemoteMCPServer) as the only bearer paths into the controller.
 6. **A kagent service-account principal includes the ServiceAccount UID.**
    [V] Recreating the connector's ServiceAccount changes its identity and
@@ -593,13 +593,16 @@ and retries once, so a brief overlap during a rollout is safe.
   only, with checks and merge queues write, pull requests, contents and
   statuses read. That `merge_queues: write` lets this token enqueue is [I]:
   no reviewer token has enqueued yet, and a live enqueue at rollout checks
-  it. The chart wiring follows (#7919). The config refuses the same App as `github`, a writable
+  it. With `reviewer.enabled`, the chart mounts the separate App from
+  `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
+  namespaces, and admits only `factory-reviewer` in `reviewerSubjects`.
+  The config refuses the same App as `github`, a writable
   agent token, any reviewer write besides checks and merge queues, and a
   subject that is also a connector or admin subject.
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
   second port serves the admin endpoints, connector tokens and metrics, and
-  admits only the connector, so no actor can reach them. Operators use a
-  port-forward. Cilium L7 rules could split one port instead, but Hubble
+  admits the connector and, when enabled, the reviewer, so no actor can reach
+  them. Operators use a port-forward. Cilium L7 rules could split one port instead, but Hubble
   would then record each relayed request's actor JWT.
 - **RBAC** the chart grants the broker: `create` on `tokenreviews`; in its
   own namespace `get`/`update` on the grant Secret and the quota ConfigMap
@@ -635,7 +638,8 @@ Decided with Joe on 2026-11-14 as the target state. Writing code, reviewing
 it and merging it are separate identities, and GitHub enforces the review
 rather than the factory's own code.
 
-**Status (2026-11-14): planned.** Today local review agents approve as
+**Status (2026-11-14): service and chart staged, disabled by default.**
+Today local review agents approve as
 `jomcgi`, the connector enqueues with the factory App, and ruleset 9180009
 requires only `pr-checks` and the merge queue. The work is #7919 (reviewer
 App, service and required check), #7920 (connector authorship check), #7921
@@ -664,6 +668,30 @@ and public previews).
   48,000 characters, for the next head. Reviews are keyed by commit: PRs
   that share a head share its review, and a cancelled check on a current
   head is reviewed again.
+- **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
+  one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
+  and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
+  and `kagent-invocation`; the pod mounts no App key. The chart pins the
+  reviewer image and supplies the namespace's GHCR pull secret. Its config
+  derives repositories and agents from each binding, uses App ID 5758326,
+  and defaults `enqueueAuthors` and `humanApprovers` to `[jomcgi]`.
+  Other policy and timing defaults come from the service.
+  Each binding gets `<name>-reviewer` using `agents.reviewer` (Codex,
+  broker relay, `gpt-6-astra`) in
+  `reviewer.bindings.<name>.namespace`, default `<coding namespace>-review`.
+  The shared binding template creates its ModelConfig with an actor JWT,
+  Harness, WorkerPool, git EgressPolicy and credential-provider RoleBinding.
+  The namespace cannot overlap any coding or review binding: both Apps
+  write `github-git`. The broker admits the review atespaces to its relay,
+  mounts the separate reviewer App's key files from 1Password and writes
+  their read-only git tokens. Network policy permits the reviewer service
+  only to the broker's admin port (8081), kagent A2A (8083) and
+  `api.github.com:443`, and admits it at both peers.
+  The enable PR follows CI's chart write-back, adding review namespaces to
+  `kagent.rbac.namespaces`. Substrate's policy values include
+  `factory-r-homelab-review`; regenerate its upstream manifests before
+  enabling. The connector's `reviewerCheck` and the
+  required-check ruleset follow separately.
 - **Review contract.** The agent reviews the exact head against the root
   `REVIEW.md` and every `REVIEW.md` on both sides of the diff, with their
   `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all

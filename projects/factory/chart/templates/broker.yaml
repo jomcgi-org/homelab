@@ -11,9 +11,15 @@ and metrics. Provider and GitHub credentials exist only in this pod.
 {{- $github := $b.githubApp.enabled }}
 {{- $bindings := list }}
 {{- $atespaces := list }}
+{{- $reviewBindings := list }}
 {{- range .Values.repositories }}
 {{- $bindings = append $bindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" .namespace) }}
 {{- $atespaces = append $atespaces .namespace }}
+{{- if $.Values.reviewer.enabled }}
+{{- $reviewNs := include "factory.reviewerNamespace" (dict "root" $ "binding" .) }}
+{{- $reviewBindings = append $reviewBindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" $reviewNs) }}
+{{- $atespaces = append $atespaces $reviewNs }}
+{{- end }}
 {{- end }}
 {{- /* The connector's own ServiceAccount fetches connector tokens. */}}
 {{- $connectorSubjects := $b.connectorSubjects }}
@@ -43,6 +49,14 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "appIdFile" "/etc/factory-github-app/app-id"
   "installationIdFile" "/etc/factory-github-app/installation-id"
   "privateKeyFile" "/etc/factory-github-app/private-key") }}
+{{- end }}
+{{- if .Values.reviewer.enabled }}
+{{- $_ := set $config "githubReview" (dict
+  "appIdFile" "/etc/factory-review-github-app/app-id"
+  "installationIdFile" "/etc/factory-review-github-app/installation-id"
+  "privateKeyFile" "/etc/factory-review-github-app/private-key") }}
+{{- $_ := set $config "reviewBindings" $reviewBindings }}
+{{- $_ := set $config.tokenReview "reviewerSubjects" (list (include "factory.reviewerSubject" .)) }}
 {{- end }}
 {{- $config = mustMergeOverwrite $config (deepCopy $b.config) }}
 {{- $configYAML := toYaml $config }}
@@ -179,6 +193,21 @@ metadata:
 spec:
   itemPath: {{ $b.githubApp.itemPath | quote }}
 {{- end }}
+{{- if .Values.reviewer.enabled }}
+---
+# The separate reviewer App; only the broker mounts its key files.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-review-github-app
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ .Values.reviewer.githubApp.itemPath | quote }}
+{{- end }}
 ---
 # TokenReview for the admin and connector endpoints.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -240,7 +269,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ $ns }}
-{{- range .Values.repositories }}
+{{- range concat $bindings $reviewBindings }}
 ---
 # The binding's git token Secret. RBAC cannot narrow create by name; the
 # broker only updates a github-git it labelled itself.
@@ -368,6 +397,11 @@ spec:
               mountPath: /etc/factory-github-app
               readOnly: true
             {{- end }}
+            {{- if .Values.reviewer.enabled }}
+            - name: review-github-app
+              mountPath: /etc/factory-review-github-app
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -383,6 +417,11 @@ spec:
                     matchLabels:
                       podcert.ate.dev/canarying: live
                   path: trust-bundle.pem
+        {{- if .Values.reviewer.enabled }}
+        - name: review-github-app
+          secret:
+            secretName: factory-review-github-app
+        {{- end }}
         {{- if $github }}
         - name: github-app
           secret:

@@ -866,3 +866,54 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-connector
 KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-connector -- \
   connector unblock kagent:factory-r-homelab/homelab-codex
 ```
+
+## Reviewer
+
+The chart stages `factory-reviewer` disabled. After CI publishes the chart
+and writes its version back, a separate deploy-values PR sets
+`reviewer.enabled: true` and adds `factory-r-homelab-review` to
+`kagent.rbac.namespaces`, keeping the existing namespaces. Substrate's
+`credentialProvider.namespacePolicies` values already list that namespace;
+a custom `reviewer.bindings.homelab.namespace` needs its own policy entry.
+Regenerate Substrate's checked-in manifests with
+`projects/platform-factory/substrate/render-upstream.sh` and sync that
+policy before enabling the reviewer.
+The broker must be enabled and kagent's ServiceAccount authority must be
+set; keep its existing value.
+
+Before enabling, install App `jomcgi-factory-review` (5758326) on the bound
+repository and populate `k8s-homelab/factory-review-gh-app` with `app-id`,
+`installation-id` and `private-key`. The broker alone mounts those keys.
+Set `reviewer.bindings.homelab.requiredChecks` to the required CI identities,
+currently `[{name: pr-checks, statusCreator: "buildbuddy-io[bot]"}]`.
+The default `enqueueAuthors: [jomcgi]` lets the reviewer enqueue Joe's
+passing PRs; the connector still enqueues the factory's PRs.
+The enable PR needs Joe's approval of its exact head. The connector's
+`reviewerCheck` switch and the ruleset requiring `factory review` are
+separate changes.
+
+On a PR's current head, open Checks and select `factory review` from the
+reviewer App. It starts in progress and completes with findings or success;
+a human gate waits for Joe's approval on that head. Read service logs and
+metrics with:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory logs deploy/factory-reviewer --tail=100
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory port-forward deploy/factory-reviewer 9090:9090
+# In another terminal:
+curl -fsS localhost:9090/metrics
+```
+
+`factory_reviewer_reviews_in_flight`,
+`factory_reviewer_reviews_completed_total`,
+`factory_reviewer_human_gates_total` and
+`factory_reviewer_enqueues_total` show progress; retries and GitHub/kagent
+error counters explain stalled checks. Metrics have no scraper ingress yet.
+
+Disable through a deploy-values PR setting `reviewer.enabled: false`.
+ArgoCD removes the service and its network grants; the ServiceAccount and
+review namespaces remain kept to preserve identity and state. Existing
+checks stay on GitHub, and disabling does not cancel a running kagent task.
+If a later ruleset requires the check, new heads stay blocked until review
+is restored. Preserve that gate. Never scale the Deployment above one
+replica: two instances review every head twice.
