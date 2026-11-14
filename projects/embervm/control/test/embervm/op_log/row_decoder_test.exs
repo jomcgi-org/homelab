@@ -154,9 +154,11 @@ defmodule Embervm.OpLog.RowDecoderTest do
   # decoder can return the right shape, but must still fail this wiring check.
   defp trace_decoder(server) do
     Code.ensure_loaded!(RowDecoder)
-    :erlang.trace_pattern({RowDecoder, :_, 1}, true, [:local])
+    for kind <- @kinds, do: :erlang.trace_pattern({RowDecoder, kind, 1}, true, [:local])
     :erlang.trace(server, true, [:call, {:tracer, self()}])
-    on_exit(fn -> :erlang.trace_pattern({RowDecoder, :_, 1}, false, [:local]) end)
+    on_exit(fn ->
+      for kind <- @kinds, do: :erlang.trace_pattern({RowDecoder, kind, 1}, false, [:local])
+    end)
   end
 
   defp read(backend, server, :read_from), do: backend.read_from(server, 0)
