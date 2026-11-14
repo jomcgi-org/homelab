@@ -298,3 +298,30 @@ func TestCachedAccessTokenNeverRefreshesOrMints(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshPolicy(t *testing.T) {
+	now := time.Now().UTC()
+	grant := func() *testStore {
+		return &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{AccessToken: "current", RefreshToken: "old", ExpiresAt: now.Add(20 * time.Hour)}}}}
+	}
+	adapter := &testAdapter{}
+	b := New(grant(), map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	if token, _, err := b.GetAccessToken("one", context.Background()); err != nil || token != "current" {
+		t.Fatalf("default policy GetAccessToken = %q, %v; want the stored token", token, err)
+	}
+	b = New(grant(), map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	b.SetRefreshPolicy(24*time.Hour, 0)
+	if token, _, err := b.GetAccessToken("one", context.Background()); err != nil || token == "current" {
+		t.Fatalf("24h policy GetAccessToken = %q, %v; want a refreshed token", token, err)
+	}
+	st := grant()
+	g := st.grants["one"]
+	g.TokenBundle.ExpiresAt = now.Add(10 * 24 * time.Hour)
+	g.LastRefresh = now.Add(-25 * time.Hour)
+	st.grants["one"] = g
+	b = New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	b.SetRefreshPolicy(0, 24*time.Hour)
+	if token, _, err := b.GetAccessToken("one", context.Background()); err != nil || token == "current" {
+		t.Fatalf("max-age policy GetAccessToken = %q, %v; want a refreshed token", token, err)
+	}
+}

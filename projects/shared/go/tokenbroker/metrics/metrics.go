@@ -14,13 +14,21 @@ type Metrics struct {
 	CodexUsage      *prometheus.CounterVec
 }
 
-func New() *Metrics {
+// DefaultPrefix is EmberVM's metric name prefix.
+const DefaultPrefix = "tokenbroker"
+
+// New returns the metrics under DefaultPrefix.
+func New() *Metrics { return NewWithPrefix(DefaultPrefix) }
+
+// NewWithPrefix names every metric prefix+"_"+suffix, so a second broker in
+// the same Prometheus keeps its own families.
+func NewWithPrefix(prefix string) *Metrics {
 	return &Metrics{
-		Refreshes:       prometheus.NewCounter(prometheus.CounterOpts{Name: "tokenbroker_refresh_total", Help: "Token refresh attempts."}),
-		RefreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Name: "tokenbroker_refresh_failures_total", Help: "Failed token refreshes."}),
-		ReusedRetries:   prometheus.NewCounter(prometheus.CounterOpts{Name: "tokenbroker_refresh_token_reused_total", Help: "Refresh token reuse retries."}),
+		Refreshes:       prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "_refresh_total", Help: "Token refresh attempts."}),
+		RefreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "_refresh_failures_total", Help: "Failed token refreshes."}),
+		ReusedRetries:   prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "_refresh_token_reused_total", Help: "Refresh token reuse retries."}),
 		CodexUsage: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "tokenbroker_codex_usage_total", Help: "Codex usage refresh outcomes.",
+			Name: prefix + "_codex_usage_total", Help: "Codex usage refresh outcomes.",
 		}, []string{"grant", "outcome"}),
 	}
 }
@@ -42,37 +50,43 @@ type quotaCollector struct {
 	grantExhausted *prometheus.Desc
 }
 
+// NewQuotaCollector exports quota observations under DefaultPrefix.
 func NewQuotaCollector(store *quota.Store, providers []string) prometheus.Collector {
+	return NewQuotaCollectorWithPrefix(DefaultPrefix, store, providers)
+}
+
+// NewQuotaCollectorWithPrefix exports quota observations as prefix+"_"+suffix.
+func NewQuotaCollectorWithPrefix(prefix string, store *quota.Store, providers []string) prometheus.Collector {
 	return &quotaCollector{
 		store:     store,
 		providers: append([]string(nil), providers...),
 		used: prometheus.NewDesc(
-			"tokenbroker_quota_used_percent",
+			prefix+"_quota_used_percent",
 			"Latest observed quota utilization percentage.",
 			[]string{"provider", "window"}, nil,
 		),
 		resetsAt: prometheus.NewDesc(
-			"tokenbroker_quota_resets_at_seconds",
+			prefix+"_quota_resets_at_seconds",
 			"Latest observed quota reset time as Unix seconds.",
 			[]string{"provider", "window"}, nil,
 		),
 		exhausted: prometheus.NewDesc(
-			"tokenbroker_quota_exhausted",
+			prefix+"_quota_exhausted",
 			"Whether the latest provider quota observation is exhausted.",
 			[]string{"provider"}, nil,
 		),
 		observed: prometheus.NewDesc(
-			"tokenbroker_quota_observed_at_seconds",
+			prefix+"_quota_observed_at_seconds",
 			"Latest quota observation time as Unix seconds.",
 			[]string{"provider"}, nil,
 		),
 		grantUsed: prometheus.NewDesc(
-			"tokenbroker_grant_quota_used_percent",
+			prefix+"_grant_quota_used_percent",
 			"Latest observed quota utilization percentage for one grant.",
 			[]string{"grant", "provider", "window"}, nil,
 		),
 		grantExhausted: prometheus.NewDesc(
-			"tokenbroker_grant_quota_exhausted",
+			prefix+"_grant_quota_exhausted",
 			"Whether the latest quota observation for one grant is exhausted.",
 			[]string{"grant", "provider"}, nil,
 		),

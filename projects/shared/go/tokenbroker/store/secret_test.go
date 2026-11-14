@@ -31,3 +31,21 @@ func TestSecretStorePerGrant(t *testing.T) {
 		t.Fatalf("stale SaveGrantIfNewer overwrote grant: %+v, %v", got, err)
 	}
 }
+
+func TestSecretStoreNamePrefix(t *testing.T) {
+	if got := (&SecretStore{}).SecretName("g"); got != "embervm-oauth-grant-g" {
+		t.Fatalf("default SecretName = %q", got)
+	}
+	client := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "factory-grant-g", Namespace: "factory"}})
+	s := &SecretStore{Client: client, Namespace: "factory", NamePrefix: "factory-grant-"}
+	if err := s.SaveGrant(Grant{Name: "g", LastRefresh: time.Unix(10, 0).UTC(), TokenBundle: TokenBundle{AccessToken: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadGrant("g")
+	if err != nil || got.TokenBundle.AccessToken != "a" {
+		t.Fatalf("LoadGrant() = %+v, %v", got, err)
+	}
+	if _, err := (&SecretStore{Client: client, Namespace: "factory"}).LoadGrant("g"); err == nil {
+		t.Fatal("default prefix found the prefixed Secret")
+	}
+}
