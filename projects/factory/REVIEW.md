@@ -4,10 +4,11 @@ Includes: projects/platform-factory/REVIEW.md
 
 Rules for `projects/factory/` on top of the root `REVIEW.md`.
 
-- **Chart and values together.** `chart/values-homelab.yaml` ships inside the
-  published factory chart and is selected by `deploy/application.yaml`.
-  Chart fields, broker settings and their homelab values change in one PR.
-  Keep reusable defaults in `chart/values.yaml`; CI owns image digest pins.
+- **Chart before values.** `deploy/values.yaml` names only fields rendered by
+  the chart version pinned in `deploy/application.yaml` on `main`, and the
+  broker rejects unknown config keys. A PR that adds a chart field or broker
+  setting does not also set it in deploy values; the values follow CI's
+  chart write-back (#7852 then #7853, #7913 then #7915).
 - **Render lock.** A changed `deploy/render.sha256` changes what the cluster
   runs. Name what changes from the chart and values diff, and check the PR
   says the same. CI checks the hash.

@@ -5,13 +5,9 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # targets, and a BUILD file there would take them out of :chart.
 # gazelle:exclude files
 
-# helm_chart's glob packages this as an optional values file. Keeping it in
-# the chart also makes values-only changes inputs to chart versioning.
-exports_files(
-    ["values-homelab.yaml"],
-    visibility = ["//projects/factory/deploy:__pkg__"],
-)
-
+# helm_chart's glob includes values-homelab.yaml as an optional values file.
+# package_test checks it matches deploy/values.yaml until the Application
+# switches to bundled values after a compatible release has published.
 helm_chart(
     name = "chart",
     images = {
@@ -51,12 +47,14 @@ py_test(
         ":chart",
         ":chart.package",
         "//projects/factory/deploy:application.yaml",
+        "//projects/factory/deploy:deploy_values",
         "//projects/factory/deploy:render_lock",
         "@multitool//tools/helm",
     ],
     env = {
         "APPLICATION": "$(rootpath //projects/factory/deploy:application.yaml)",
         "CHART_PACKAGE": "$(rootpath :chart.package)",
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
     },

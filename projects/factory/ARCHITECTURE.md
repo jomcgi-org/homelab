@@ -115,11 +115,10 @@ records how they relate and routes results and feedback between them.
 ## Umbrella chart
 
 `projects/factory/chart` is a published `helm_chart` (OCI
-`ghcr.io/jomcgi/homelab/charts/factory`). The broker, connector and reviewer
-images are in its `images` attr, pinned at build time.
-`chart/values-homelab.yaml` ships inside that artifact as an optional values
-file, selected by the Application in `projects/factory/deploy`.
-`chart/values.yaml` remains the reusable defaults. It installs:
+`ghcr.io/jomcgi/homelab/charts/factory`). The broker and connector images
+are in its `images` attr, pinned at build time.
+`projects/factory/deploy` holds the homelab
+Application and values. It installs:
 
 - kagent (subchart, `kagent.mode: install|existing`).
 - itsaplan (own templates), the broker, the connector.
@@ -133,21 +132,31 @@ file, selected by the Application in `projects/factory/deploy`.
 Substrate, Authentik, the Envoy edge, the OTel collectors and Garage stay
 separate installations that the chart references.
 
-**Why values ship with the chart (#7909).** Chart fields and their homelab
-settings change in one PR. `helm_chart` packages the extra file through its
-existing glob without merging it into defaults. Values-only edits also
-advance the chart version. The Application reads no values from git HEAD;
-CI's write-back advances the chart, values and image pins together.
-`deploy/render.sha256` locks the source render before image pinning.
-`package_test.py` renders the actual package with the Application's settings
-and checks the same output with CI's image pins applied.
+**Bundled values migration (#7909), preparation.** The chart also packages
+`chart/values-homelab.yaml` as an optional file, without merging it into
+`values.yaml`. For now the Application still reads `deploy/values.yaml`
+from git. Keep the two files identical; `package_test.py` checks the actual
+archive against the git values and renders both with CI's image pins. The
+source render remains covered by `deploy/render.sha256`. The Application,
+git values and chart defaults are unchanged in this preparation release.
 
-Lowering `targetRevision` to a release containing `values-homelab.yaml`
-restores that release's chart, values and images together. On the first
-migration, the old pin lacks this file: ArgoCD cannot render until CI's
-publish write-back advances it, and keeps the running resources. Missing
-values remain an error. Rolling back to a release from before this migration
-also requires restoring its git values and the old Application sources.
+**Why stage the switch.** The currently pinned chart predates the bundled
+file. Switching before publication breaks manifest generation, and removing
+the git source also breaks rollback to that old chart. First publish this
+compatible chart through CI and wait for its pin write-back. The follow-up
+cutover changes the Application to `valueFiles: [values-homelab.yaml]` and
+removes the git values source only once the previous release available for
+rollback also contains the file. Verify a render of both published archives
+with their own bundled values before landing that switch. Keep missing
+values an error. Do not enable new chart fields in the git values during
+preparation; the current split-PR rule still applies.
+
+The cutover also removes the duplicate `deploy/values.yaml`, points local
+render targets at the bundled file, updates the Application contract test,
+and retires the split-PR guidance through the required review. After that,
+chart and homelab values changes ship in one PR; lowering the pin restores
+both from the selected release. Before cutover, lowering the pin continues
+to use the existing git values, including for the pre-bundle release.
 
 **Repository bindings.** [V] kagent runs an Agent's actors in the atespace
 named after its namespace, so the binding namespace is also the atespace that
@@ -880,9 +889,9 @@ previews).
   their read-only git tokens. Network policy permits the reviewer service
   only to the broker's admin port (8081), kagent A2A (8083) and
   `api.github.com:443`, and admits it at both peers.
-  The bundled homelab values enable the reviewer and add review namespaces
-  to `kagent.rbac.namespaces` in the same release. Substrate's policy values
-  include `factory-r-homelab-review`; regenerate its upstream manifests before
+  The enable PR follows CI's chart write-back, adding review namespaces to
+  `kagent.rbac.namespaces`. Substrate's policy values include
+  `factory-r-homelab-review`; regenerate its upstream manifests before
   enabling. The connector's `reviewerCheck` followed the chart that carries
   #7940's connector, and the required-check ruleset follows that.
 - **Review contract.** The agent reviews the exact head against the root

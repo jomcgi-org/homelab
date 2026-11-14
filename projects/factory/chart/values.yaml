@@ -171,7 +171,7 @@ clusterDomain: cluster.local
 # exists. Provider credentials exist only in its pod.
 broker:
   # Off by default, so an install renders nothing new until its values turn
-  # it on (values-homelab.yaml for the homelab install).
+  # it on (projects/factory/deploy/values.yaml).
   enabled: false
   # The connector's namespace too (networkPolicy.connector). This chart owns
   # it and keeps it.
@@ -477,8 +477,8 @@ connector:
 
 # The independent reviewer. Enabling it needs the broker, kagent's fixed
 # serviceAccount.authority and each review namespace in kagent.rbac.namespaces
-# and Substrate credentialProvider.namespacePolicies. The homelab install
-# enables it in the bundled values-homelab.yaml.
+# and Substrate credentialProvider.namespacePolicies. Deploy values follow the
+# chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
 reviewer:
   enabled: false
   # Overwritten at build time by helm_chart(images = ...).

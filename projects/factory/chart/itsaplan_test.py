@@ -14,12 +14,15 @@ import pytest
 import yaml
 
 _CHART_DIR = Path(__file__).resolve().parent
-_DEPLOY_VALUES = Path(os.environ.get("DEPLOY_VALUES", _CHART_DIR / "values-homelab.yaml"))
+_DEPLOY_VALUES = Path(
+    os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
+)
 _APPLICATION = Path(
     os.environ.get("APPLICATION", _CHART_DIR.parent / "deploy" / "application.yaml")
 )
 _NS = "factory"
-# Explicit enablement overrides for tests of itsaplan's chart wiring.
+# The factory's deploy values, with itsaplan enabled as the follow-up
+# enablement will set it.
 _ENABLE = [
     "--set",
     "itsaplan.enabled=true",
