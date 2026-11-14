@@ -675,10 +675,10 @@ The generated `BETTER_AUTH_SECRET` and `APP_ENCRYPTION_KEY`
 `k8s-homelab/factory-itsaplan` once Postgres has off-site backups, as
 Authentik's secret key does.
 
-If those keys are lost while the database has accounts or settings,
-`factory-itsaplan-secret-init` fails the sync with `REFUSING to generate`
-rather than replace them. It counts the rows read-only with the api image's
-psql before it writes anything. Recover in this order:
+If those keys are lost while the database has accounts, settings or stored
+secrets, `factory-itsaplan-secret-init` fails the sync with `REFUSING to
+generate` rather than replace them. It counts the rows read-only with the api
+image's psql before it writes anything. Recover in this order:
 
 1. Restore the old values into `factory/factory-itsaplan`, from wherever a
    copy survives (1Password once it holds them, or an etcd snapshot), and
@@ -690,11 +690,15 @@ psql before it writes anything. Recover in this order:
      factory.jomcgi.dev/regenerate-itsaplan-keys=true
    ```
 
-   secret-init then generates new keys and removes the annotation. Every
-   session ends, so people sign in again. The stored OIDC client secret
-   becomes unreadable; the bootstrap notices it cannot read the settings back
-   and writes them again. Mail and SCIM credentials, if any were set in god
-   mode, must be entered again.
+   secret-init then deletes every `app_secret` row (the OIDC, Google, mail,
+   SCIM and bot settings, all encrypted with the lost key; itsaplan decrypts
+   the stored OIDC settings before it accepts new ones, so they cannot simply
+   be overwritten), generates new keys and removes the annotation. The
+   bootstrap then writes the OIDC settings afresh. Every session ends, so
+   people sign in again. Anything else encrypted with the old key stays
+   unreadable until it is entered again in the app: mail, Google, SCIM and
+   bot settings, workspace SCIM tokens, Git connections, integration
+   credentials and agent invocation secrets.
 
 The public route answers 404 for the agent-facing api: `/backend/mcp`, the
 run and chat feeds' `claim`, and their per-run `heartbeat`, `events` and

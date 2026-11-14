@@ -4,7 +4,9 @@ itsaplan's two Jobs, both idempotent standard-library Python from files/itsaplan
 
 - secret-init (wave -1, before the workloads) generates BETTER_AUTH_SECRET,
   APP_ENCRYPTION_KEY and the break-glass admin's password, each only when
-  absent, and refuses to replace lost keys for a database that has data.
+  absent. It refuses to replace lost keys for a database that has data
+  unless the operator accepts the loss, and then first deletes the stored
+  secrets encrypted with them.
 - bootstrap (PostSync) signs in as that admin through the api, creating it
   on a fresh database, where the first account is the instance admin; sets
   invite-only registration and the OIDC provider; and creates the team,
@@ -33,6 +35,10 @@ metadata:
 data:
   secret_init.py: |
     {{- .Files.Get "files/itsaplan/secret_init.py" | nindent 4 }}
+  db_state.sql: |
+    {{- .Files.Get "files/itsaplan/db_state.sql" | nindent 4 }}
+  purge.sql: |
+    {{- .Files.Get "files/itsaplan/purge.sql" | nindent 4 }}
   bootstrap.py: |
     {{- .Files.Get "files/itsaplan/bootstrap.py" | nindent 4 }}
   config.json: |
@@ -100,6 +106,8 @@ metadata:
     argocd.argoproj.io/sync-options: Replace=true,Force=true
 spec:
   backoffLimit: 6
+  # Bounds a database or API server that never answers.
+  activeDeadlineSeconds: 600
   template:
     metadata:
       labels:
@@ -109,65 +117,36 @@ spec:
       restartPolicy: OnFailure
       securityContext:
         {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
-      # Counts the database's accounts and settings rows, read-only, with the
-      # api image's psql; 0 before the first migration. secret-init refuses to
-      # replace lost keys for a database that has any.
+      # db-state, plan, purge and apply (files/itsaplan/secret_init.py): count
+      # the database's rows with the api image's psql, decide, delete the
+      # stored secrets only when lost keys are being replaced, then write.
       initContainers:
         - name: db-state
           image: {{ $i.images.api }}
           command:
             - sh
             - -c
-            - >-
-              psql "$DATABASE_URL" -XAtv ON_ERROR_STOP=1 -c "
-              select coalesce(sum(n), 0) from (
-              select case when to_regclass(t) is null then 0
-              else (xpath('/row/n/text()', query_to_xml('select count(*) as n from ' || t, false, true, '')))[1]::text::bigint
-              end as n from unnest(array['public."user"', 'public.app_setting']) as t) counts
-              " > /state/rows
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $i.database.secretName }}
-                  key: DATABASE_URL
-            - name: HOME
-              value: /tmp
-          securityContext:
-            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
-          resources:
-            {{- toYaml $i.resources.jobs | nindent 12 }}
-          volumeMounts:
-            - name: state
-              mountPath: /state
-            - name: tmp
-              mountPath: /tmp
-      containers:
-        - name: secret-init
+            - psql "$DATABASE_URL" -XAt -v ON_ERROR_STOP=1 -f /scripts/db_state.sql > /state/rows
+          {{- include "factory.itsaplanSecretInitDB" . | nindent 10 }}
+        - name: plan
           image: {{ $i.images.jobs }}
-          command: [python3, -I, -u, /scripts/secret_init.py]
-          env:
-            - name: NAMESPACE
-              value: {{ $ns }}
-            - name: DB_ROWS
-              value: /state/rows
-            - name: ITSAPLAN_SECRET
-              value: {{ $name }}
-            - name: ADMIN_SECRET
-              value: {{ $name }}-admin
-            - name: ADMIN_EMAIL
-              value: {{ $i.admin.email }}
-          securityContext:
-            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
-          resources:
-            {{- toYaml $i.resources.jobs | nindent 12 }}
-          volumeMounts:
-            - name: scripts
-              mountPath: /scripts
-              readOnly: true
-            - name: state
-              mountPath: /state
-              readOnly: true
+          command: [python3, -I, -u, /scripts/secret_init.py, plan]
+          {{- include "factory.itsaplanSecretInitEnv" . | nindent 10 }}
+        - name: purge
+          image: {{ $i.images.api }}
+          command:
+            - sh
+            - -c
+            - >-
+              if [ "$(cat /state/plan)" = purge ]; then
+              psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -1 -f /scripts/purge.sql;
+              else echo "nothing to purge"; fi
+          {{- include "factory.itsaplanSecretInitDB" . | nindent 10 }}
+      containers:
+        - name: apply
+          image: {{ $i.images.jobs }}
+          command: [python3, -I, -u, /scripts/secret_init.py, apply]
+          {{- include "factory.itsaplanSecretInitEnv" . | nindent 10 }}
       volumes:
         - name: scripts
           configMap:

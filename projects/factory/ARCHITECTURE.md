@@ -208,24 +208,28 @@ through the runner queue, and the connector step confirms its writes). Each
   agent's once-returned key goes to `factory-itsaplan-agent-<username>`. A
   Secret without a working key gets that agent a rotated key; an agent is
   never created twice. It signs out at the end.
-- **Key safety.** secret-init counts the database's accounts and settings
-  rows (read-only, the api image's psql) and refuses to replace a lost
-  `BETTER_AUTH_SECRET` or `APP_ENCRYPTION_KEY` for a database that has any:
-  new keys would end every session and make the stored credentials
-  unreadable. An annotation on the Secret accepts the loss (factory-cluster
-  README, "itsaplan").
+- **Key safety.** secret-init counts the database's accounts, settings and
+  stored secrets (read-only, the api image's psql) and refuses to replace a
+  lost `BETTER_AUTH_SECRET` or `APP_ENCRYPTION_KEY` for a database that has
+  any: new keys would end every session and make the stored credentials
+  unreadable. An annotation on the Secret accepts the loss; secret-init then
+  deletes the `app_secret` rows encrypted with the lost key, since itsaplan
+  decrypts the stored OIDC settings before it accepts new ones
+  (factory-cluster README, "itsaplan").
 - **Public api surface.** The route answers 404 for MCP and for the runner
-  feeds (`claim`, `heartbeat`, `events`, `result` of runs and chats), so an
-  agent key only works inside the cluster. God mode stays, since the web app
-  calls it for the instance admin.
+  feeds (`claim`, `heartbeat`, `events`, `result` of runs and chats), so
+  claiming and reporting runs happens only inside the cluster. An agent key
+  still authenticates on the api's other routes through the public origin,
+  for anyone past the edge's sign-in (`authentik Admins`). God mode stays,
+  since the web app calls it for the instance admin.
 - **Bootstrap coupling.** The bootstrap stays a PostSync hook of the factory
   Application: a run that cannot sign in or write agent keys leaves the
   factory unusable, and a failed sync is where that should show. Its waits
   are bounded (30 minutes), and it writes only what differs. The OIDC
   settings carry a client secret itsaplan never returns, so Secret
-  `factory-itsaplan-bootstrap` records a digest of what was last written;
-  they are rewritten when that digest, a visible field or the secret
-  changes, or when itsaplan cannot read them back.
+  `factory-itsaplan-bootstrap` records a digest of what was last written and
+  when; they are rewritten when that digest or a visible field changes, and
+  at least daily, which also undoes a client secret changed in god mode.
 - **Pods** run as UID 65532 with read-only root filesystems and no
   ServiceAccount token; the web app gets no Secret. Upstream's images run as
   root by default.

@@ -286,10 +286,21 @@ def test_application_ignores_every_generated_secret() -> None:
     assert declared <= ignored, f"not ignored: {sorted(declared - ignored)}"
 
 
-def test_secret_init_counts_rows_before_it_generates() -> None:
-    pod = _pods(_render())["factory-itsaplan-secret-init"]["spec"]
-    (db_state,) = pod["initContainers"]
+def test_secret_init_counts_plans_and_purges_before_it_writes() -> None:
+    docs = _render()
+    job = _one(docs, "Job", "factory-itsaplan-secret-init")
+    assert job["spec"]["activeDeadlineSeconds"] > 0
+    pod = job["spec"]["template"]["spec"]
+    steps = [c["name"] for c in pod["initContainers"]] + [
+        c["name"] for c in pod["containers"]
+    ]
+    assert steps == ["db-state", "plan", "purge", "apply"]
+    db_state, plan, purge = pod["initContainers"]
     assert db_state["image"].startswith("ghcr.io/croffasia/itsaplan-api:")
-    assert "/state/rows" in db_state["command"][-1]
-    env = {e["name"]: e.get("value") for e in pod["containers"][0]["env"]}
-    assert env["DB_ROWS"] == "/state/rows"
+    assert "/scripts/db_state.sql > /state/rows" in db_state["command"][-1]
+    assert plan["command"][-1] == "plan"
+    assert '"$(cat /state/plan)" = purge' in purge["command"][-1]
+    assert pod["containers"][0]["command"][-1] == "apply"
+    scripts = _one(docs, "ConfigMap", "factory-itsaplan-scripts")["data"]
+    assert "app_secret" in scripts["db_state.sql"]
+    assert "delete from app_secret;" in scripts["purge.sql"]

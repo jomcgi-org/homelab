@@ -75,3 +75,55 @@ missing value instead of starting without it.
       key: {{ $key }}
 {{- end }}
 {{- end }}
+
+{{/* The secret-init Job's psql steps: the database URL and a writable home. */}}
+{{- define "factory.itsaplanSecretInitDB" -}}
+env:
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: {{ .Values.itsaplan.database.secretName }}
+        key: DATABASE_URL
+  - name: HOME
+    value: /tmp
+securityContext:
+  {{- include "factory.itsaplanContainerSecurity" . | nindent 2 }}
+resources:
+  {{- toYaml .Values.itsaplan.resources.jobs | nindent 2 }}
+volumeMounts:
+  - name: scripts
+    mountPath: /scripts
+    readOnly: true
+  - name: state
+    mountPath: /state
+  - name: tmp
+    mountPath: /tmp
+{{- end }}
+
+{{/* The secret-init Job's Python steps (plan, apply). */}}
+{{- define "factory.itsaplanSecretInitEnv" -}}
+{{- $name := include "factory.itsaplanName" . -}}
+env:
+  - name: NAMESPACE
+    value: {{ .Values.itsaplan.namespace }}
+  - name: DB_ROWS
+    value: /state/rows
+  - name: PLAN
+    value: /state/plan
+  - name: ITSAPLAN_SECRET
+    value: {{ $name }}
+  - name: ADMIN_SECRET
+    value: {{ $name }}-admin
+  - name: ADMIN_EMAIL
+    value: {{ .Values.itsaplan.admin.email }}
+securityContext:
+  {{- include "factory.itsaplanContainerSecurity" . | nindent 2 }}
+resources:
+  {{- toYaml .Values.itsaplan.resources.jobs | nindent 2 }}
+volumeMounts:
+  - name: scripts
+    mountPath: /scripts
+    readOnly: true
+  - name: state
+    mountPath: /state
+{{- end }}
