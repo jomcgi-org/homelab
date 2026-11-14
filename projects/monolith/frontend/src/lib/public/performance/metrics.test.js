@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   cls,
   median,
   recordTransferBytes,
+  responseTransferSize,
   responseTransferTotals,
   percentile,
   summarize,
@@ -10,6 +11,67 @@ import {
 } from "./metrics.js";
 
 describe("public app measurement statistics", () => {
+  it.each([301, 302, 303, 307, 308])(
+    "keeps a %i redirect without Content-Length and its page total unknown",
+    async (status) => {
+      const request = {
+        response: async () => ({
+          status: () => status,
+          headerValue: async () => null,
+        }),
+        sizes: vi.fn(async () => ({
+          responseBodySize: 0,
+          responseHeadersSize: 150,
+        })),
+      };
+      const redirect = await responseTransferSize(request);
+      expect(redirect.transferBytes).toBeNull();
+      expect(redirect.sizeError).toContain("without Content-Length");
+      expect(request.sizes).not.toHaveBeenCalled();
+      const total = responseTransferTotals([
+        { type: "Document", complete: true, ...redirect },
+        { type: "Document", complete: true, transferBytes: 1000 },
+      ]);
+      expect(total.transferBytes).toBeNull();
+      expect(total.completedResponseBytes).toBe(1000);
+      expect(total.unknownSizeRequests).toBe(1);
+      expect(summarize([{ status: 200, ...total }]).transferBytes).toBeNull();
+    },
+  );
+
+  it("accepts a redirect's explicit zero body length and ordinary body sizes", async () => {
+    const redirect = await responseTransferSize({
+      response: async () => ({
+        status: () => 302,
+        headerValue: async () => "0",
+      }),
+      sizes: async () => ({ responseBodySize: 0, responseHeadersSize: 150 }),
+    });
+    const document = await responseTransferSize({
+      response: async () => ({ status: () => 200 }),
+      sizes: async () => ({ responseBodySize: 800, responseHeadersSize: 200 }),
+    });
+    expect(
+      responseTransferTotals([
+        { type: "Document", complete: true, ...redirect },
+        { type: "Document", complete: true, ...document },
+      ]).transferBytes,
+    ).toBe(1150);
+  });
+
+  it("preserves a failed sizing operation as unknown", async () => {
+    const result = await responseTransferSize({
+      response: async () => ({ status: () => 200 }),
+      sizes: async () => {
+        throw new Error("connection closed");
+      },
+    });
+    expect(result).toEqual({
+      transferBytes: null,
+      sizeError: "connection closed",
+    });
+  });
+
   it("does not turn unobservable metrics or failed runs into zero", () => {
     expect(median([null, undefined, NaN])).toBeNull();
     const result = summarize([

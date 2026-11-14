@@ -503,5 +503,184 @@
       "cache_hit_full_response_p95_ms": 17.494
     }
   ],
-  "deployed_revision": null
+  "deployed_revision": null,
+  "emitted_bundles": {
+    "measured_on": "2026-11-14",
+    "source_commit": "1f536d94934ccfef73aa3a2129f00be60f8a44ca",
+    "provenance": "Local public-only Vite production build of the inspected checkout. Values match the baseline in performance/BUNDLE_BUDGETS.md, introduced by PR #7969. This source revision was not verified as the deployed revision.",
+    "method": "Private routes, friends routes and src/lib/private excluded, matching :src_public. Initial JavaScript includes the SvelteKit runtime, router, layouts, page and recursively resolved static imports. Deferred JavaScript includes dynamic imports reachable from that route, excluding router imports of other pages. Each file is counted once per category and independently compressed with gzip level 9. External worker scripts are counted separately.",
+    "limitations": [
+      "These are emitted build artifact sizes, not observed browser wire bytes. Browser JavaScript transfer, total transfer, request count, LCP, CLS and INP remain unmeasured.",
+      "JavaScript closures exclude SSR HTML, inline data, CSS, fonts, images, map tiles and API responses. Runtime conditions decide which deferred assets are requested.",
+      "Grimoire bundles were inspected without fetching or server rendering protected corpus data. Its admission boundary remains intact.",
+      "The /app/firecracker row is the emitted page closure of a server redirect; navigation does not download that closure. Its destination is listed separately.",
+      "Trips uses the MapLibre library default worker, with no separately emitted worker asset in its closure. Zero external worker bytes does not assert that no worker runs.",
+      "Generated version strings and chunk names can vary across builds; the budget-only rebuild differed by 7 to 16 gzip bytes per route."
+    ],
+    "routes": [
+      {
+        "route": "/app/firecracker",
+        "initial_javascript_gzip_bytes": 51311,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire",
+        "initial_javascript_gzip_bytes": 89693,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/adventure/[id]",
+        "initial_javascript_gzip_bytes": 73761,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/book/[book]",
+        "initial_javascript_gzip_bytes": 79371,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/book/[book]/c/[chunk]",
+        "initial_javascript_gzip_bytes": 72467,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/chat",
+        "initial_javascript_gzip_bytes": 84328,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/chat/s/[id]",
+        "initial_javascript_gzip_bytes": 66099,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/entities",
+        "initial_javascript_gzip_bytes": 72363,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/entity/[id]",
+        "initial_javascript_gzip_bytes": 77065,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/explore",
+        "initial_javascript_gzip_bytes": 72363,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/library",
+        "initial_javascript_gzip_bytes": 75332,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/world",
+        "initial_javascript_gzip_bytes": 87302,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/hikes",
+        "initial_javascript_gzip_bytes": 72096,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 146653
+      },
+      {
+        "route": "/app/llm-leaderboard",
+        "initial_javascript_gzip_bytes": 72534,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/notes",
+        "initial_javascript_gzip_bytes": 91207,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/ships",
+        "initial_javascript_gzip_bytes": 68017,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 146653
+      },
+      {
+        "route": "/app/stars",
+        "initial_javascript_gzip_bytes": 72636,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 146653
+      },
+      {
+        "route": "/app/trips",
+        "initial_javascript_gzip_bytes": 62834,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/trips/[slug]",
+        "initial_javascript_gzip_bytes": 69684,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/trips/[slug]/day/[day]",
+        "initial_javascript_gzip_bytes": 72402,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/trips/[slug]/timeline",
+        "initial_javascript_gzip_bytes": 69555,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland",
+        "initial_javascript_gzip_bytes": 67463,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland/privacy",
+        "initial_javascript_gzip_bytes": 66832,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland/support",
+        "initial_javascript_gzip_bytes": 66831,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland/terms",
+        "initial_javascript_gzip_bytes": 66833,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/ember/firecracker",
+        "initial_javascript_gzip_bytes": 69345,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      }
+    ],
+    "documents": [
+      {
+        "route": "/app/frank",
+        "whole_document_gzip_bytes": 10080,
+        "method": "Static HTML with inline scripts, gzip level 9 for the complete document. It has no separate Svelte JavaScript closure."
+      }
+    ]
+  }
 }

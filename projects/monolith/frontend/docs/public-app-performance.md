@@ -66,7 +66,9 @@ response body and header sizes. Transfer and JavaScript totals sum those
 sizes for requests completed before the cutoff; connection overhead is
 excluded. If a request is unfinished, failed or unsized, the full total stays
 `null`. The JSON retains completed-response lower bounds and counts of the
-incomplete, failed and unsized requests.
+incomplete, failed and unsized requests. Chromium redirect responses without
+`Content-Length` remain unsized: Playwright substitutes a zero body size when
+that header is absent, so the runner cannot treat the result as measured.
 
 Detailed CDP initiator relationships cover the page target. When workers or
 child frames appear, `initiatorsBeforeLcp` stays `null`; the scoped
@@ -121,6 +123,11 @@ could not create its process socket in that environment, and automatic
 approval policy rejected the escalated launch. The available interactive
 browser had no throttling or performance interface. No LCP, CLS, INP or
 browser transfer result is inferred from HTTP.
+
+The baseline also records emitted JavaScript gzip sizes from a local
+public-only production build of the inspected source revision. Its method
+and source commit are recorded separately from the HTTP measurements. These
+artifact sizes do not replace the unavailable browser transfer metrics.
 
 Page curl requests opened fresh TLS connections through the managed proxy.
 That added roughly 3 to 5.6 seconds before the response, including on edge

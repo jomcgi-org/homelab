@@ -1,0 +1,138 @@
+name: Public app performance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - projects/monolith/frontend/scripts/public-app-performance.mjs
+      - projects/monolith/frontend/src/lib/public/performance/**
+      - .github/workflows/public-app-performance.yml
+  workflow_dispatch:
+
+# Production observations use an anonymous browser on a fresh hosted runner.
+# PR code receives no secrets, deployment credentials or repository write token.
+permissions:
+  contents: read
+
+# Avoid overlapping measurement traffic, including manually dispatched runs.
+concurrency:
+  group: public-app-performance
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      PERFORMANCE_OUTPUT: ${{ runner.temp }}/public-app-performance
+      PLAYWRIGHT_PREFIX: ${{ runner.temp }}/public-app-browser
+      HARNESS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.HARNESS_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Install the pinned browser without workspace build scripts
+        timeout-minutes: 10
+        run: |
+          npm install --prefix "$PLAYWRIGHT_PREFIX" --no-save --ignore-scripts playwright@1.62.1
+          "$PLAYWRIGHT_PREFIX/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Record runner and measurement provenance
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import os from 'node:os';
+          import path from 'node:path';
+          const output = process.env.PERFORMANCE_OUTPUT;
+          const prefix = process.env.PLAYWRIGHT_PREFIX;
+          const pkg = JSON.parse(await readFile(path.join(prefix, 'node_modules/playwright/package.json'), 'utf8'));
+          const browsers = JSON.parse(await readFile(path.join(prefix, 'node_modules/playwright-core/browsers.json'), 'utf8'));
+          await mkdir(output, { recursive: true });
+          await writeFile(path.join(output, 'provenance.json'), JSON.stringify({
+            measuredOrigin: 'https://jomcgi.dev',
+            harnessSha: process.env.HARNESS_SHA,
+            deployedSha: null,
+            representativeTripSlug: '2025-liard-hot-springs',
+            runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            startedAt: new Date().toISOString(),
+            nodeVersion: process.version,
+            playwrightVersion: pkg.version,
+            chromium: browsers.browsers.find(browser => browser.name === 'chromium'),
+            runner: {
+              os: process.env.RUNNER_OS,
+              arch: process.env.RUNNER_ARCH,
+              image: process.env.ImageOS,
+              imageVersion: process.env.ImageVersion,
+              cpu: os.cpus()[0]?.model,
+              logicalCpus: os.cpus().length,
+            },
+            note: 'The checkout identifies the measurement tool, not the deployed application. Verify rollout separately before comparing results.',
+          }, null, 2) + '\n');
+          NODE
+      - name: Measure the deployed public apps and core data endpoints
+        timeout-minutes: 28
+        run: |
+          timeout --signal=TERM --kill-after=30s 26m \
+            node projects/monolith/frontend/scripts/public-app-performance.mjs \
+              --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
+              --origin https://jomcgi.dev \
+              --route /app/hikes \
+              --route /app/ships \
+              --route /app/stars \
+              --route /app/trips \
+              --route /scotland \
+              --route /app/llm-leaderboard \
+              --route /app/notes \
+              --route /app/frank \
+              --route /app/firecracker \
+              --route /ember/firecracker \
+              --route /scotland/privacy \
+              --route /scotland/terms \
+              --route /scotland/support \
+              --route /app/trips/2025-liard-hot-springs \
+              --route /app/trips/2025-liard-hot-springs/timeline \
+              --route /app/trips/2025-liard-hot-springs/day/1 \
+              --endpoint /app/hikes/__data.json \
+              --endpoint /app/ships/__data.json \
+              --endpoint /app/stars/__data.json \
+              --endpoint /app/trips/__data.json \
+              --endpoint /app/stars/map \
+              --endpoint /app/stars/history-map \
+              --endpoint /app/ships/heat \
+              --endpoint /app/notes/graph \
+              --endpoint /app/notes/stats \
+              --endpoint /scotland/marketplace.json \
+              --runs 3 --samples 20 --settle-ms 15000 \
+              --output "$PERFORMANCE_OUTPUT" \
+            | tee "$PERFORMANCE_OUTPUT/measurement.log"
+      - name: Summarize completed observations
+        if: always()
+        run: |
+          {
+            echo '## Deployed public app observations'
+            echo
+            echo 'Production: https://jomcgi.dev. Harness revision:' "$HARNESS_SHA"'. This is not the deployed revision.'
+            echo
+            echo 'Three cold-browser loads per route; observed CDN state, no purge. INP remains unavailable. Worker pages do not certify the full mobile throttling profile.'
+            echo
+            if [[ -f "$PERFORMANCE_OUTPUT/table.md" ]]; then
+              cat "$PERFORMANCE_OUTPUT/table.md"
+            else
+              echo 'The run did not finish a summary table. Inspect the step failure and any partial JSON artifact; missing observations are not passes.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload observations, including partial failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-app-performance-${{ env.HARNESS_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PERFORMANCE_OUTPUT }}/
+          if-no-files-found: warn
+          retention-days: 90
