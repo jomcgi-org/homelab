@@ -301,7 +301,10 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			if cur, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
 				reviews[pr.Number] = cur
 			} else {
-				reviews[pr.Number] = nil // unknown: no group passes on it
+				// Unknown: the merge groups read the head again, and post
+				// nothing if that read fails too, rather than fail a group
+				// on a transient error.
+				delete(reviews, pr.Number)
 			}
 		case run.Conclusion == ConclusionSuccess:
 			e.maybeEnqueue(ctx, b, pr, run)

@@ -724,11 +724,15 @@ previews).
   would take a SHA-256 preimage search, so even a look-alike delimiter the
   sanitizer misses cannot close a block in practice.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
-  [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211)). A PR touching `REVIEW.md`,
-  `**/REVIEW.md`, `projects/factory/reviewer/**`,
-  `projects/factory/connector/github/**`, `projects/factory/connector/kagent/**`,
-  `projects/factory/broker/**`, `projects/factory/chart/templates/*reviewer*`
-  or `.github/CODEOWNERS`, or labelled `human` or `needs-human`, gets a
+  [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
+  and narrowed it the same day to what could weaken the gate itself
+  ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635)):
+  under the first scope almost every factory PR needed his bypass, which
+  skips CI and the review. A PR touching `REVIEW.md`, `**/REVIEW.md`,
+  `.github/CODEOWNERS`, `projects/factory/reviewer/config/**`, the
+  reviewer's `review/report.go`, `review/gate.go` or `review/rules.go`, or
+  `projects/factory/broker/config/**`, or labelled `human` or
+  `needs-human`, gets a
   `human-gate` high finding from the service; the agent reports the rest of
   `REVIEW.md` "Joe decides" under the same rule, matched by any rule segment
   of the ID that starts `human-gate`, at any severity. Either blocks until
@@ -784,9 +788,9 @@ previews).
   A hold on a queued PR is the reviewer's: on its next poll it fails the
   merge group's required check, and the queue drops the PR. The queue's
   `ALLGREEN` grouping keeps the PR from merging inside a later group that
-  contains it. Joe's approval of the head clears the reviewer's hold; a
-  factory PR also needs the label removed, since the connector holds it
-  while labelled and does not re-enqueue an ejected head (Joe can).
+  contains it. Joe's approval of the head clears the reviewer's hold. The
+  connector never re-enqueues an ejected head, so Joe requeues it; the
+  label still holds the factory's enqueue of any new head.
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the
