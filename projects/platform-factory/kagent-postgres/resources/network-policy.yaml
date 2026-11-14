@@ -1,7 +1,7 @@
 # The kagent-pg namespace's allowlist under the cluster-wide default-deny
 # (projects/platform-factory/network-policy/). The kagent controller's egress
 # rule is in the factory chart (postgres.existing.endpoints in
-# projects/factory/chart/values-homelab.yaml).
+# projects/factory/deploy/values.yaml).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

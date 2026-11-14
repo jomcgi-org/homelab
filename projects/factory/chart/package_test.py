@@ -1,4 +1,4 @@
-"""The OCI package and ArgoCD must use the same locked homelab configuration."""
+"""Prepare bundled values while ArgoCD keeps using the compatible git values."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ _CHART = Path(__file__).resolve().parent
 _APPLICATION = Path(
     os.environ.get("APPLICATION", _CHART.parent / "deploy/application.yaml")
 )
+_DEPLOY = Path(os.environ.get("DEPLOY_VALUES", _CHART.parent / "deploy/values.yaml"))
 _LOCK = Path(os.environ.get("RENDER_LOCK", _CHART.parent / "deploy/render.sha256"))
 _IMAGES = ("broker", "connector", "reviewer")
 
@@ -36,16 +37,30 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     return archive, values
 
 
-def _render(chart: Path, values: Path, *overrides: str) -> str:
+def test_application_keeps_git_values_until_a_compatible_release_exists() -> None:
+    # This preparation release must still render with the pre-bundle chart
+    # pin, including when an operator lowers the pin after publication.
+    # The cutover PR changes this contract only after a bundled release is
+    # published and available as its previous-release rollback target.
     app = yaml.safe_load(_APPLICATION.read_text())
-    (source,) = app["spec"]["sources"]
+    source, git_values = app["spec"]["sources"]
     helm = source["helm"]
     assert source["repoURL"] == "ghcr.io/jomcgi/homelab/charts"
     assert source["chart"] == "factory"
-    assert helm["valueFiles"] == ["values-homelab.yaml"]
+    assert helm["valueFiles"] == ["$values/projects/factory/deploy/values.yaml"]
     assert helm["skipCrds"] is True
-    assert not helm.get("ignoreMissingValueFiles", False)
     assert set(helm) == {"releaseName", "skipCrds", "valueFiles"}
+    assert git_values == {
+        "repoURL": "https://github.com/jomcgi-org/homelab.git",
+        "targetRevision": "HEAD",
+        "ref": "values",
+    }
+    assert _DEPLOY.is_file()
+
+
+def _render(chart: Path, values: Path, *overrides: str) -> str:
+    app = yaml.safe_load(_APPLICATION.read_text())
+    helm = app["spec"]["sources"][0]["helm"]
     return subprocess.run(
         [
             os.environ.get("HELM_BIN", "helm"),
@@ -55,7 +70,7 @@ def _render(chart: Path, values: Path, *overrides: str) -> str:
             "--namespace",
             app["spec"]["destination"]["namespace"],
             "--values",
-            str(values / helm["valueFiles"][0]),
+            str(values),
             *overrides,
         ],
         capture_output=True,
@@ -68,9 +83,9 @@ def test_homelab_values_are_packaged_without_becoming_defaults(
     package: tuple[Path, Path],
 ) -> None:
     _, values = package
-    assert (values / "values-homelab.yaml").read_bytes() == (
-        _CHART / "values-homelab.yaml"
-    ).read_bytes()
+    # Both paths remain checked in during preparation. This fails if a later
+    # edit updates the live git values without updating the bundled copy.
+    assert (values / "values-homelab.yaml").read_bytes() == _DEPLOY.read_bytes()
     expected = yaml.safe_load((_CHART / "values.yaml").read_text())
     published = yaml.safe_load((values / "values.yaml").read_text())
     for service in _IMAGES:
@@ -88,7 +103,7 @@ def test_packaged_render_matches_the_lock_with_published_images(
     package: tuple[Path, Path],
 ) -> None:
     archive, values = package
-    source_render = _render(_CHART, _CHART)
+    source_render = _render(_CHART, _DEPLOY)
     normalized = re.sub(r"(helm\.sh/chart: factory-)\S+", r"\g<1>VERSION", source_render)
     assert hashlib.sha256(normalized.encode()).hexdigest() == _LOCK.read_text().strip()
 
@@ -101,8 +116,8 @@ def test_packaged_render_matches_the_lock_with_published_images(
         ]
     # Compare all rendered bytes, including ConfigMaps and hooks. Only CI's
     # generated image values may differ from the source render under the lock.
-    rendered = _render(archive, values)
-    assert rendered == _render(_CHART, _CHART, *overrides)
+    rendered = _render(archive, values / "values-homelab.yaml")
+    assert rendered == _render(_CHART, _DEPLOY, *overrides)
     docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
     for service in _IMAGES:
         (deployment,) = [

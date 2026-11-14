@@ -59,7 +59,7 @@ atenetRouter:
 # Which Secrets each atespace may inject at the egress gateway. kagent runs each
 # Agent in the atespace named after its namespace and reads credentials from
 # that namespace: kagent's own, and each factory repository binding's
-# (projects/factory/chart/values-homelab.yaml `repositories`). Only Secrets labelled
+# (projects/factory/deploy/values.yaml `repositories`). Only Secrets labelled
 # substrate.ate.dev/injectable=true are granted. The
 # provider can read only namespaces it has a RoleBinding in (its ClusterRole's
 # cluster-wide binding is removed in ../resources/kustomization.yaml).

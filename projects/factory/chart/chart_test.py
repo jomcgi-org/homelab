@@ -19,7 +19,9 @@ import pytest
 import yaml
 
 _CHART_DIR = Path(__file__).resolve().parent
-_DEPLOY_VALUES = Path(os.environ.get("DEPLOY_VALUES", _CHART_DIR / "values-homelab.yaml"))
+_DEPLOY_VALUES = Path(
+    os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
+)
 _KEEP = {
     "argocd.argoproj.io/sync-options": "Prune=false,Delete=false",
     "helm.sh/resource-policy": "keep",

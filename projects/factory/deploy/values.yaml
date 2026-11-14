@@ -1,0 +1,169 @@
+# The factory home cluster's values for the factory chart
+# (projects/factory/chart). The cluster has one install, so there is no
+# overlay.
+
+# kagent's database is the CNPG Cluster kagent-pg in its own namespace,
+# kagent-pg (projects/platform-factory/kagent-postgres), prepared with
+# kagent's setup script. Its setup Job writes the connection-string Secrets
+# kagent-postgres-owner and kagent-postgres-readwrite (the chart's defaults)
+# into kagent; the superuser and backup credentials stay in kagent-pg, out of
+# the controller's reach.
+postgres:
+  mode: existing
+  existing:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: kagent-pg
+          cnpg.io/cluster: kagent-pg
+    port: 5432
+
+# The credential broker (projects/factory/broker): relays the Codex harness's
+# model calls with its own grant, and mints tokens from the jomcgi-factory
+# GitHub App (installed on jomcgi-org/homelab only). Its 1Password item is an
+# SSH Key item whose `private key` field the operator writes as private-key,
+# with text fields app-id and installation-id.
+broker:
+  enabled: true
+  # Operators log in to Codex and force refreshes as factory/factory-operator
+  # (projects/factory-cluster/README.md, "Codex login").
+  operatorServiceAccount: factory-operator
+  githubApp:
+    enabled: true
+    itemPath: vaults/k8s-homelab/items/factory-gh-app
+  # kagent's Codex harness sends no reasoning effort, so the relay sets it on
+  # every model call (projects/factory/broker, codex.reasoningEffort).
+  config:
+    codex:
+      reasoningEffort: xhigh
+
+kagent:
+  # Agents and the controller's watch: kagent's own namespace plus each
+  # repository binding's.
+  rbac:
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review]
+  # The controller's metrics for Prometheus
+  # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
+  # whose subject may GET /metrics.
+  controller:
+    metrics:
+      enabled: true
+  # Every agent runtime's limits, the codex agent's size (kagent 1.0.1 sets
+  # one for all Agents).
+  config:
+    runtimeDefaults:
+      cpu: "4"
+      memory: 8Gi
+    # kagent reviews the connector's ServiceAccount token under this
+    # authority, which is part of its principal ID: changing it loses the
+    # connector's sessions.
+    server:
+      auth:
+        serviceAccount:
+          authority: factory-home
+
+# The Codex agent's model: gpt-6-astra, the frontier model, at the broker's
+# xhigh reasoning effort (Joe, 2026-11-14). kagent v1.0.1 pins Codex 0.161.0,
+# which gives a model its apply_patch edit tool only when it is in its
+# bundled catalogue (codex-rs/models-manager/models.json); gpt-6.1-terra is
+# not there, so with it the first run (HOME-1) had no way to edit files.
+agents:
+  codex:
+    model: gpt-6-astra
+    # Coding actors at once, each its own Substrate worker (requests 1 CPU,
+    # 2Gi). The nodes idle at ~4% CPU, so the queue and merge contention bound
+    # throughput, not compute. Matches connector.agents below.
+    concurrency: 4
+  # The reviewer reads and never edits, so it needs no apply_patch and runs on
+  # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14:
+  # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
+  # Codex 0.161.0 gives terra fallback metadata: tool output is cut at
+  # 10,000 bytes. The broker's reasoningEffort (xhigh) applies to it as to
+  # the coder.
+  reviewer:
+    model: gpt-6.1-terra
+    # One worker per concurrent review (reviewer.concurrency).
+    concurrency: 3
+
+# jomcgi-org/homelab. Its namespace is also granted in Substrate's
+# credentialProvider.namespacePolicies
+# (projects/platform-factory/substrate/values/substrate.yaml).
+repositories:
+  - name: homelab
+    owner: jomcgi-org
+    repo: homelab
+    baseBranch: main
+    namespace: factory-r-homelab
+    agent: codex
+
+# itsaplan at factory-plan.jomcgi.dev, behind the edge's Authentik sign-in.
+# Its database is factory-db (projects/platform-factory/factory-db), whose
+# setup Job writes factory/factory-itsaplan-db; its S3 key is
+# factory/factory-itsaplan-s3 and its OIDC client secret
+# factory/factory-itsaplan-oidc, both from factory-buckets.
+itsaplan:
+  enabled: true
+  database:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: factory-db
+          cnpg.io/cluster: factory-db
+  s3:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: garage
+          app.kubernetes.io/name: garage
+
+# The connector (projects/factory/connector) as factory/factory-connector,
+# for the homelab binding.
+connector:
+  enabled: true
+  # homelab-codex claims up to agents.codex.concurrency runs at once.
+  agents:
+    - username: homelab-codex
+      concurrency: 4
+  bindings:
+    homelab:
+      itsaplanProject: HOME
+      agents: [homelab-codex]
+      # The factory-reviewer's check is the review: the connector enqueues a
+      # head only once `factory review` from the reviewer App passes on it,
+      # and its findings start a revision round (a human-gate-only hold waits
+      # for Joe instead). jomcgi stays trusted, so Joe's "request changes"
+      # still blocks and starts a round (#7817 decision 6882698416).
+      trustedReviewers: [jomcgi]
+      reviewerCheck:
+        name: factory review
+        appId: 5758326
+      # The ruleset's required check, a commit status BuildBuddy posts: the
+      # connector enqueues only once it passes, and a failure on the head
+      # starts a revision round with its link, so CI failures reach the agent
+      # without waiting for a review. Status creators come from the
+      # statuses list endpoint (#7900).
+      requiredChecks:
+        - name: pr-checks
+          statusCreator: buildbuddy-io[bot]
+  database:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: factory-db
+          cnpg.io/cluster: factory-db
+
+# The factory-reviewer (projects/factory/reviewer; ARCHITECTURE.md "Merge
+# authority"): posts the `factory review` check on every PR into main, which
+# the connector waits for and the ruleset is to require. It enqueues nothing: GitHub refuses enqueues from its
+# read-only token, and write access would let it push or approve. The
+# connector enqueues the factory's PRs; other authors use auto-merge
+# (#7817 decision 6882698416). Its agent runs in factory-r-homelab-review
+# with a read-only git token from the reviewer App
+# (k8s-homelab/factory-review-gh-app).
+reviewer:
+  enabled: true
+  # Reviews at once; agents.reviewer.concurrency gives each a worker.
+  concurrency: 3
+  bindings:
+    homelab:
+      enqueueAuthors: []
+      # Used only by enqueues, which are off; kept for when they return.
+      requiredChecks:
+        - name: pr-checks
+          statusCreator: buildbuddy-io[bot]
