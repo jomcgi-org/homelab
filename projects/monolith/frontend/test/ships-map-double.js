@@ -4,8 +4,10 @@ import { vi } from "vitest";
 // after remove. Rendering and provider loading are checked in the real browser.
 export const maps = [];
 export const setWorkerUrl = vi.fn();
+export const initialization = { error: null };
 export class Map {
   constructor(options) {
+    if (initialization.error) throw initialization.error;
     this.options = options;
     this.sources = new globalThis.Map();
     this.images = new globalThis.Map();
@@ -54,6 +56,9 @@ export class Map {
   emit(event, data = {}, layer = null) {
     for (const l of this.listeners)
       if (l.event === event && l.layer === layer) l.handler(data);
+  }
+  isSourceLoaded() {
+    return this.sourceLoaded !== false;
   }
   addControl() {}
   getCanvas() {

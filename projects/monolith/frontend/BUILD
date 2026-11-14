@@ -606,6 +606,7 @@ js_library(
         "src/lib/global.css",
         "src/lib/public/apps.js",
         "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/MapSnapshot.svelte",
         "src/lib/public/components/SchemePreference.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
         "src/lib/public/components/Seo.svelte",

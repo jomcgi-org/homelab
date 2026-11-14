@@ -3,13 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import Route from "../../../../../test/ProfileRoute.svelte";
 import { setPage, page } from "../../../../../test/profile-page.svelte.js";
-import { maps } from "../../../../../test/ships-map-double.js";
+import { maps, initialization } from "../../../../../test/ships-map-double.js";
 import {
   snapshot,
   heat,
   vesselTrack,
 } from "../../../../../test/ships-fixtures.js";
 import { goto, invalidateAll } from "$app/navigation";
+import mapSource from "$lib/public/components/ships/ShipsMap.svelte?raw";
+import snapshotSource from "$lib/public/components/MapSnapshot.svelte?raw";
 
 vi.mock("$app/environment", () => ({
   browser: true,
@@ -27,7 +29,7 @@ vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
 }));
 vi.mock("$app/navigation", () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
-let instance, target, media, fetchMock, idle;
+let instance, target, media, fetchMock, idle, styles;
 const settle = async () => {
   await vi.dynamicImportSettled();
   await tick();
@@ -48,8 +50,10 @@ const deferred = () => {
 };
 
 beforeEach(() => {
+  initialization.error = null;
   vi.useFakeTimers();
   maps.length = 0;
+  idle = undefined;
   window.happyDOM.settings.disableCSSFileLoading = true;
   window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
   document.documentElement.dataset.theme = "light";
@@ -123,6 +127,8 @@ afterEach(async () => {
   if (instance) await unmount(instance);
   instance = null;
   target.remove();
+  styles?.remove();
+  styles = null;
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -230,6 +236,7 @@ describe("ships production browser route", () => {
     expect(page.url.searchParams.get("types")).toBe("passenger,cargo");
     expect(page.url.searchParams.get("other")).toBe("kept");
     button("Heat").click();
+    map.emit("render");
     idle();
     await settle();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -252,10 +259,61 @@ describe("ships production browser route", () => {
     expect(target.querySelector(".heat-scale").textContent).toContain("1-2");
   });
 
+  it.each(["HTTP error", "network error"])(
+    "keeps controls above the snapshot after a shared heat view fails with %s",
+    async (failure) => {
+      if (failure === "HTTP error")
+        fetchMock.mockResolvedValueOnce({ ok: false });
+      else fetchMock.mockRejectedValueOnce(new Error("offline"));
+      const map = await render("?mode=heat");
+      map.emit("render");
+      await settle();
+      const preview = target.querySelector(".map-snapshot");
+      expect(preview.textContent).toContain("Fixture vessel 1");
+      expect(preview.querySelectorAll("li")).toHaveLength(6);
+
+      // Happy DOM cannot hit-test a pointer. Load the actual component styles
+      // and verify the positioned controls stack above the retained snapshot;
+      // a programmatic click alone would miss the original blocked-control bug.
+      styles = document.createElement("style");
+      styles.textContent = [mapSource, snapshotSource]
+        .map((source) => source.match(/<style>([\s\S]*?)<\/style>/)[1])
+        .join("\n");
+      document.head.append(styles);
+      const snapshotZ = Number(getComputedStyle(preview).zIndex);
+      for (const selector of [".mode-toggle", ".legend"]) {
+        const style = getComputedStyle(target.querySelector(selector));
+        expect(style.position).toBe("absolute");
+        expect(Number(style.zIndex)).toBeGreaterThan(snapshotZ);
+        expect(style.pointerEvents).not.toBe("none");
+      }
+
+      button("Vessels").click();
+      await settle();
+      expect(map.layers.get("vessels").layout.visibility).toBe("visible");
+      expect(map.layers.get("heat-fill").layout.visibility).toBe("none");
+      expect(page.url.searchParams.has("mode")).toBe(false);
+      button("Passenger").click();
+      await settle();
+      expect(preview.textContent).toContain("40 vessels");
+      expect(preview.querySelector("li").textContent).toContain(
+        "Fixture vessel 2",
+      );
+      map.emit("render");
+      await settle();
+      expect(target.querySelector(".map-snapshot")).toBeNull();
+      button("Heat").click();
+      await settle();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(map.getSource("heat-cells").data.features).toHaveLength(180);
+    },
+  );
+
   it("deduplicates pending heat fetches and aborts them with the idle callback, RAF and poller on teardown", async () => {
     const pending = deferred();
     fetchMock.mockReturnValue(pending.promise);
-    const map = await render("?mode=heat");
+    const map = await render();
+    map.emit("render");
     idle();
     button("Vessels").click();
     button("Heat").click();
@@ -334,7 +392,8 @@ describe("ships production browser route", () => {
 
   it("cancels the timeout warmup fallback before it can fetch", async () => {
     vi.stubGlobal("requestIdleCallback", undefined);
-    await render();
+    const map = await render();
+    map.emit("render");
     await unmount(instance);
     instance = null;
     await vi.advanceTimersByTimeAsync(1500);
@@ -352,5 +411,52 @@ describe("ships production browser route", () => {
     instance = null;
     await settle();
     expect(maps).toHaveLength(0);
+  });
+
+  it("keeps the snapshot until a frame contains its data", async () => {
+    const map = await render();
+    const preview = target.querySelector(".map-snapshot");
+    expect(preview.textContent).toContain("Fixture vessel 1");
+    expect(preview.querySelectorAll("li")).toHaveLength(6);
+    map.sourceLoaded = false;
+    map.emit("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBe(preview);
+    map.sourceLoaded = true;
+    map.emit("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBeNull();
+  });
+
+  it("retains snapshot data when WebGL initialization fails", async () => {
+    initialization.error = new Error("WebGL unavailable");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    setPage("https://jomcgi.dev/app/ships", { snapshot });
+    instance = mount(Route, {
+      target,
+      props: { surface: "ships", data: { snapshot } },
+    });
+    await vi.waitFor(() => expect(log).toHaveBeenCalled());
+    await settle();
+    expect(target.querySelector(".map-snapshot").textContent).toContain(
+      "Fixture vessel 1",
+    );
+    expect(target.querySelector(".snapshot-note").textContent).toContain(
+      "map is unavailable",
+    );
+    expect(maps).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("defers optional heat warming until vessel data paints", async () => {
+    const map = await render();
+    expect(requestIdleCallback).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    map.emit("render");
+    expect(requestIdleCallback).toHaveBeenCalledOnce();
+    idle();
+    await settle();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe("/app/ships/heat");
   });
 });

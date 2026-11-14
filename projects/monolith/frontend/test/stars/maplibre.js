@@ -2,8 +2,10 @@ import { vi } from "vitest";
 
 export const instances = [];
 export const setWorkerUrl = vi.fn();
+export const initialization = { error: null };
 export class Map {
   constructor({ container }) {
+    if (initialization.error) throw initialization.error;
     this.canvas = document.createElement("canvas");
     this.canvas.tabIndex = 0;
     container.append(this.canvas);
@@ -35,6 +37,9 @@ export class Map {
     this.handlers
       .filter((h) => h.event === event && h.layer === layer)
       .forEach((h) => h.handler(detail));
+  }
+  isSourceLoaded() {
+    return this.sourceLoaded !== false;
   }
   addControl() {}
   addSource(id, data) {

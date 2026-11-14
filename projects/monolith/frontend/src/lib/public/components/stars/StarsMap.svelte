@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import MapSnapshot from "$lib/public/components/MapSnapshot.svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import Button from "@homelab/design-system/components/Button.svelte";
@@ -38,7 +39,10 @@
   // marker/cell value falls back to the wider clear_twilight_hours so the map
   // still has a meaningful field to colour. LIVE only; ignored in historical.
   let {
+    onMapPaint = () => {},
+    dataReady = true,
     sites = [],
+    snapshotSites = sites,
     activeNights = new Set(),
     nowMs = Date.now(),
     mode = "live",
@@ -74,6 +78,8 @@
   let mapContainer; // bound <div>
   let map = null;
   let layerReady = false;
+  let mapPainted = $state(false);
+  let mapError = $state(false);
   let didFit = false;
   // Keep prepared GeoJSON by input array and visual state. Mode switches should
   // swap already-built features, not synchronously walk every site again.
@@ -89,6 +95,38 @@
   const index = new Map();
 
   let selected = $state(null); // selected site row, or null
+
+  // A historical deep link still has the forecast snapshot in its HTML while
+  // its heavier historical layer arrives. Label that fallback explicitly.
+  let previewSites = $derived(
+    mode === "historical" && !dataReady ? snapshotSites : sites,
+  );
+  let previewIsHistory = $derived(mode === "historical" && dataReady);
+  let previewRows = $derived.by(() => {
+    const rows = [];
+    for (const site of previewSites) {
+      if (
+        mode === "live" &&
+        !liveWindows(site, nowMs).some((hour) =>
+          activeNights.has(nightKey(hour.time)),
+        )
+      )
+        continue;
+      rows.push({
+        name:
+          site.name ||
+          (Number.isFinite(site.lat) && Number.isFinite(site.lon)
+            ? `${site.lat.toFixed(3)}°, ${site.lon.toFixed(3)}°`
+            : String(site.id)),
+        detail:
+          mode === "live" && darknessMode === "twilight"
+            ? `${Number((site.clear_twilight_hours ?? 0).toFixed(1))} clear twilight hours`
+            : `${Number((site.clear_dark_hours ?? 0).toFixed(1))} clear dark hours`,
+      });
+      if (rows.length === 6) break;
+    }
+    return rows;
+  });
 
   // The legend follows what is actually drawn. The field is always a relative
   // clear-dark-hour percentile, so it reads low/medium/high either way: the cell
@@ -470,6 +508,20 @@
         zoom: 6,
         attributionControl: { compact: true },
       });
+      // Keep the HTML snapshot until a frame includes the populated source.
+      // The style's load event alone can precede the GeoJSON worker response.
+      map.on("render", () => {
+        if (
+          !destroyed &&
+          !mapPainted &&
+          layerReady &&
+          dataReady &&
+          map.isSourceLoaded(heatVisible ? CELL_SOURCE : SOURCE_ID)
+        ) {
+          mapPainted = true;
+          onMapPaint();
+        }
+      });
       map.addControl(
         new maplibregl.NavigationControl({ showCompass: false }),
         "bottom-right",
@@ -610,17 +662,37 @@
         layerReady = false;
         didFit = false;
       };
-    })();
+    })().catch((error) => {
+      if (destroyed) return;
+      console.error("stars map failed to initialise", error);
+      mapError = true;
+    });
 
     return () => {
       destroyed = true;
       cleanup();
+      map?.remove();
+      map = null;
     };
   });
 </script>
 
 <div class="map-wrap" class:panel-open={selected}>
   <div class="map" bind:this={mapContainer}></div>
+
+  {#if !mapPainted}
+    <MapSnapshot
+      title={previewIsHistory
+        ? "Historical dark-sky snapshot"
+        : "Dark-sky forecast snapshot"}
+      summary={`${previewSites.length} dark-sky sites. Showing ${previewRows.length} sites${mode === "live" ? " with a window on the selected nights" : ""}.`}
+      rows={previewRows}
+      empty={previewIsHistory
+        ? "No sites have historical data for this selection."
+        : "No sites have a viewing window on the selected nights."}
+      failed={mapError}
+    />
+  {/if}
 
   {#if selected}
     <aside

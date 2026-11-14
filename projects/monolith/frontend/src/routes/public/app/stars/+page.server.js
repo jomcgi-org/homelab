@@ -6,7 +6,6 @@ import { error } from "@sveltejs/kit";
 import {
   cloudflareCacheHeaders,
   STARS_SITES_CACHE_CONTROL,
-  versionedEtag,
 } from "../../../../lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
@@ -48,11 +47,9 @@ export async function load({ fetch, setHeaders }) {
   }
 
   const headers = cloudflareCacheHeaders(STARS_SITES_CACHE_CONTROL);
-  const etag = versionedEtag(res.headers?.get?.("etag"));
-  if (etag) headers.etag = etag;
-  const lastModified = res.headers?.get?.("last-modified");
-  if (lastModified) headers["last-modified"] = lastModified;
+  // HTML includes a render clock and time-filtered controls. Let SvelteKit
+  // validate the complete rendered response; the data ETag cannot represent it.
   setHeaders(headers);
 
-  return { snapshot: await res.json() };
+  return { snapshot: await res.json(), renderedAt: Date.now() };
 }

@@ -1,5 +1,4 @@
 <script>
-  import { browser } from "$app/environment";
   import StarsApp from "./StarsApp.svelte";
 
   let { data } = $props();
@@ -18,9 +17,7 @@
 <h1 class="sr-only">Dark-sky stargazing map, Scotland viewing windows</h1>
 <p class="sr-only">{description}</p>
 
-{#if browser}
-  <StarsApp {data} />
-{/if}
+<StarsApp {data} />
 
 <style>
   .sr-only {

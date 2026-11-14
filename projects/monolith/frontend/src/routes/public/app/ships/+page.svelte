@@ -1,5 +1,4 @@
 <script>
-  import { browser } from "$app/environment";
   import ShipsApp from "./ShipsApp.svelte";
   import TechnicalDrawingChrome from "$lib/public/components/TechnicalDrawingChrome.svelte";
   import Trail from "$lib/public/components/Trail.svelte";
@@ -28,9 +27,7 @@
     Live vessel positions from AIS, the position broadcasts ships transmit.
   </p>
 
-  {#if browser}
-    <ShipsApp {data} />
-  {/if}
+  <ShipsApp {data} />
 </main>
 
 <style>
