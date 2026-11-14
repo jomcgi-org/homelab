@@ -127,6 +127,82 @@ async function loaded() {
 }
 
 describe("public notes sheet DOM", () => {
+  const overviewData = (expiresAt = Date.now() + 60_000) => ({
+    overview: {
+      nodeCount: 7,
+      edgeCount: 6,
+      titles: [{ id: "sheet-note", title: "First-paint public title" }],
+      expiresAt,
+    },
+  });
+
+  it("keeps real titles visible until the canvas has painted", async () => {
+    let release;
+    fetchMock.mockImplementationOnce(
+      () => new Promise((resolve) => (release = resolve)),
+    );
+    await render(Page, { data: overviewData() });
+    const overview = target.querySelector(".graph-overview");
+    expect(overview.hidden).toBe(false);
+    expect(overview.textContent).toContain("First-paint public title");
+    expect(overview.textContent).toContain("7 notes");
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(
+      target.querySelector(".interactive-graph").classList.contains("ready"),
+    ).toBe(false);
+    release({
+      ok: true,
+      headers: freshHeaders(),
+      json: async () => graphFixture,
+    });
+    await loaded();
+    await vi.waitFor(() => expect(overview.hidden).toBe(true));
+    expect(
+      target.querySelector(".interactive-graph").classList.contains("ready"),
+    ).toBe(true);
+  });
+
+  it("retains the overview on graph failure, then removes titles at their deadline", async () => {
+    fetchMock.mockResolvedValue({ ok: false });
+    await render(Page, { data: overviewData(Date.now() + 1000) });
+    await vi.waitFor(() =>
+      expect(target.textContent).toContain(
+        "The graph is unavailable right now.",
+      ),
+    );
+    const overview = target.querySelector(".graph-overview");
+    expect(overview.hidden).toBe(false);
+    expect(overview.textContent).toContain("First-paint public title");
+    await vi.waitFor(
+      () =>
+        expect(overview.textContent).not.toContain("First-paint public title"),
+      { timeout: 1500 },
+    );
+    expect(overview.textContent).toContain("No current snapshot is available.");
+  });
+
+  it("rejects an expired overview on hydration and preserves a fresh one when canvas is unavailable", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    await render(Page, { data: overviewData(Date.now() - 1) });
+    expect(target.textContent).not.toContain("First-paint public title");
+    await vi.waitFor(() =>
+      expect(target.textContent).toContain(
+        "The graph is unavailable right now.",
+      ),
+    );
+    await unmount(instance);
+    instance = undefined;
+    await render(Page, { data: overviewData() });
+    await vi.waitFor(() =>
+      expect(target.textContent).toContain(
+        "The graph is unavailable right now.",
+      ),
+    );
+    expect(target.querySelector(".graph-overview").hidden).toBe(false);
+    expect(target.textContent).toContain("First-paint public title");
+  });
+
   it("mounts real loaded graph data, sheet chrome, and unchanged keyboard controls", async () => {
     await render();
     await loaded();
@@ -278,7 +354,8 @@ describe("public notes sheet DOM", () => {
         }),
     );
     await render();
-    expect(target.textContent).toContain("loading the graph");
+    expect(target.textContent).toContain("No current snapshot is available.");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     release({ ok: false });
     await vi.waitFor(() =>
       expect(target.textContent).toContain(
