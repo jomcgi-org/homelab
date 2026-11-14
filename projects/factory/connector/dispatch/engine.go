@@ -113,7 +113,7 @@ type Engine struct {
 	w        *store.Writer
 	locks    sync.Map // run ID -> *sync.Mutex
 	// checked holds when each running attempt's session was last checked.
-	checked sync.Map // attempt ID -> time.Time
+	checked sync.Map // attempt ID -> sessionCheck
 }
 
 // New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
@@ -240,6 +240,12 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 		}
 		return true
 	})
+	e.checked.Range(func(k, v any) bool {
+		if !open[v.(sessionCheck).run] {
+			e.checked.Delete(k)
+		}
+		return true
+	})
 }
 
 func fatal(err error) bool {
@@ -308,9 +314,6 @@ func (e *Engine) Heartbeats(ctx context.Context) error {
 		default:
 			continue
 		}
-		if r.Connector() {
-			continue // no itsaplan lease
-		}
 		if e.cfg.Now().Sub(r.LastHeartbeatAt) < e.cfg.Heartbeat {
 			continue
 		}
@@ -344,6 +347,11 @@ func (e *Engine) heartbeatRun(ctx context.Context, id int64) error {
 	now := e.cfg.Now()
 	if now.Sub(r.LastHeartbeatAt) < e.cfg.Heartbeat {
 		return nil
+	}
+	if r.Connector() {
+		// A review round has no itsaplan lease; its heartbeat is the check
+		// that its issue and PR still want it.
+		return e.checkRound(ctx, r)
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -498,6 +506,17 @@ func (e *Engine) stepLocked(ctx context.Context, id int64) error {
 
 // step advances one open run. The caller holds the run's lock.
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
+	if r.Connector() && (r.State == store.RunClaimed || r.State == store.RunWaiting || r.State == store.RunDispatched) {
+		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if wi.State == store.WorkStopped {
+			// Cancellation reaches execution: the round's task is canceled
+			// and the run stays canceling until kagent confirms.
+			return e.startCancel(ctx, r, store.CancelRoundStopped, "delivery stopped: "+wi.StoppedReason)
+		}
+	}
 	switch r.State {
 	case store.RunClaimed:
 		return e.dispatch(ctx, r)
@@ -1040,6 +1059,11 @@ func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.Wor
 	return true, nil
 }
 
+type sessionCheck struct {
+	run int64
+	at  time.Time
+}
+
 // sessionLost reports a session kagent no longer has (NOT_FOUND) or tells
 // the client to replace (FAILED_PRECONDITION).
 func sessionLost(err error) bool {
@@ -1055,11 +1079,11 @@ func (e *Engine) watchSession(ctx context.Context, r *store.Run, wi *store.WorkI
 		return nil
 	}
 	now := e.cfg.Now()
-	last, seen := e.checked.LoadOrStore(a.ID, now)
-	if !seen || now.Sub(last.(time.Time)) < e.cfg.SessionCheck {
+	last, seen := e.checked.LoadOrStore(a.ID, sessionCheck{run: r.ID, at: now})
+	if !seen || now.Sub(last.(sessionCheck).at) < e.cfg.SessionCheck {
 		return nil
 	}
-	e.checked.Store(a.ID, now)
+	e.checked.Store(a.ID, sessionCheck{run: r.ID, at: now})
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
@@ -1488,7 +1512,7 @@ func (e *Engine) confirmCancel(ctx context.Context, c *store.Cancellation, a *st
 			if err := abandonResult(ctx, tx, c.RunID); err != nil {
 				return err
 			}
-			return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "ended in itsaplan; kagent task "+outcome)
+			return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "canceled ("+c.Reason+"); kagent task "+outcome)
 		}
 		// Reassignment: the superseded run reports that another agent took over.
 		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"})

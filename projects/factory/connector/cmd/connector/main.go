@@ -4,6 +4,8 @@
 //	connector                  run the loop
 //	connector unblock SCOPE    clear a credential or quota block, for example
 //	                           kagent:factory-homelab/coder
+//	connector cancel ISSUE     stop delivery for an issue, for example HL-7: the
+//	                           running connector cancels its review round
 package main
 
 import (
@@ -35,9 +37,12 @@ import (
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	var err error
-	if len(os.Args) == 3 && os.Args[1] == "unblock" {
+	switch {
+	case len(os.Args) == 3 && os.Args[1] == "unblock":
 		err = unblock(os.Args[2])
-	} else {
+	case len(os.Args) == 3 && os.Args[1] == "cancel":
+		err = cancelIssue(os.Args[2])
+	default:
 		err = run(log)
 	}
 	// A SIGTERM ends the loop with context.Canceled: a clean exit.
@@ -47,13 +52,38 @@ func main() {
 	}
 }
 
-// unblock is the operator's action that clears a grant block.
-func unblock(scope string) error {
+// operatorStore opens the database for an operator command.
+func operatorStore() (*store.Store, error) {
 	dsn := os.Getenv("FACTORY_CONNECTOR_DATABASE_URL")
 	if dsn == "" {
-		return errors.New("FACTORY_CONNECTOR_DATABASE_URL is required")
+		return nil, errors.New("FACTORY_CONNECTOR_DATABASE_URL is required")
 	}
-	st, err := store.Open(dsn)
+	return store.Open(dsn)
+}
+
+// cancelIssue is the operator's cancel: it stops delivery for the issue's
+// work item. The running connector then cancels its review round through
+// kagent and keeps it pending until kagent confirms.
+func cancelIssue(issueKey string) error {
+	st, err := operatorStore()
+	if err != nil {
+		return err
+	}
+	defer st.DB.Close()
+	stopped, err := st.StopIssue(context.Background(), issueKey, "an operator canceled it with `connector cancel`")
+	if err != nil {
+		return err
+	}
+	if !stopped {
+		return fmt.Errorf("%s is already stopped or done", issueKey)
+	}
+	fmt.Println("stopped", issueKey)
+	return nil
+}
+
+// unblock is the operator's action that clears a grant block.
+func unblock(scope string) error {
+	st, err := operatorStore()
 	if err != nil {
 		return err
 	}

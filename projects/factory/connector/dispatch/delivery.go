@@ -113,6 +113,9 @@ func (e *Engine) deliverWork(ctx context.Context, wi *store.WorkItem) error {
 	if err != nil {
 		return err
 	}
+	if wi.State == store.WorkDone {
+		return e.followUp(ctx, wi, b, pr)
+	}
 	if wi.TurnAttemptID != 0 && wi.TurnAttemptID != wi.SyncedAttemptID {
 		if pr, err = e.syncPR(ctx, wi, b, pr); err != nil {
 			return err
@@ -139,20 +142,17 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return pr, e.st.MarkSynced(ctx, e.st.DB, wi.ID, a.ID)
 	}
 	if pr != nil {
-		u := github.PullRequestUpdate{Body: &body}
-		if pr.State == "closed" {
-			open := "open"
-			u.State = &open
-		}
+		// Only the body changes. A PR a person closed stays closed: the
+		// connector never reopens it against their decision.
 		if err := e.guard(ctx); err != nil {
 			return nil, err
 		}
-		got, err := e.gh.UpdatePullRequest(ctx, repo, pr.Number, u)
+		got, err := e.gh.UpdatePullRequest(ctx, repo, pr.Number, github.PullRequestUpdate{Body: &body})
 		if err != nil {
 			return nil, err
 		}
 		e.m.PullRequests.WithLabelValues("updated").Inc()
-		return e.recordPR(ctx, wi, a, got)
+		return e.settlePR(ctx, wi, b, a, got)
 	}
 	if err := e.guard(ctx); err != nil {
 		return nil, err
@@ -180,7 +180,148 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil {
 		return nil, err
 	}
-	return e.recordPR(ctx, wi, a, got)
+	return e.settlePR(ctx, wi, b, a, got)
+}
+
+// settlePR records the PR a turn was synced to. A PR against another base
+// branch is not the factory's, and a closed, unmerged one was closed by a
+// person; either stops delivery for the work item, with a comment, and it
+// is not polled.
+func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, got *github.PullRequest) (*store.PullRequest, error) {
+	if got.BaseRef != "" && got.BaseRef != b.BaseBranch {
+		e.m.PullRequests.WithLabelValues("stopped").Inc()
+		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) targets %s, not %s", got.Number, got.URL, got.BaseRef, b.BaseBranch))
+	}
+	pr, err := e.recordPR(ctx, wi, a, got)
+	if err != nil {
+		return nil, err
+	}
+	if got.State == "closed" && !got.Merged {
+		e.m.PullRequests.WithLabelValues("stopped").Inc()
+		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed; reopen it and start a new run to resume", got.Number, got.URL))
+	}
+	return pr, nil
+}
+
+// stopWork stops delivery for a work item; dispatch then cancels its review
+// rounds, each pending until kagent confirms.
+func (e *Engine) stopWork(ctx context.Context, wi *store.WorkItem, reason string) error {
+	stopped, err := e.st.StopWork(ctx, wi.ID, reason)
+	if err == nil && stopped {
+		e.log.InfoContext(ctx, "delivery stopped", "work_item", wi.ID, "reason", reason)
+	}
+	return err
+}
+
+// issueStopped reports why the work item's issue no longer wants delivery:
+// it left the binding's project, or sits in a completed or canceled column.
+// Moving the issue is how a person cancels a review round in itsaplan.
+func (e *Engine) issueStopped(ctx context.Context, wi *store.WorkItem, b *Binding) (string, error) {
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	is, err := e.its.GetIssue(ctx, wi.IssueID)
+	switch {
+	case errors.Is(err, itsaplan.ErrNotFound):
+		return "the issue is no longer visible in project " + b.ItsaplanProject, nil
+	case err != nil:
+		return "", err
+	}
+	if i := strings.LastIndex(is.Identifier, "-"); i > 0 && is.Identifier[:i] != b.ItsaplanProject {
+		return "the issue moved to another project", nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	cols, err := e.its.ProjectColumns(ctx, b.ItsaplanProject)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range cols {
+		if c.ID == is.ColumnID && (c.StateType == "completed" || c.StateType == "canceled") {
+			return fmt.Sprintf("the issue is in the %s column %q", c.StateType, c.Name), nil
+		}
+	}
+	return "", nil
+}
+
+// checkRound is a review round's heartbeat: its issue must still want
+// delivery and its PR must be open, or delivery stops and the round is
+// canceled.
+func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
+	now := e.cfg.Now()
+	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	b := e.binding(wi.BindingName)
+	if wi.State == store.WorkStopped || b == nil {
+		return e.st.SetHeartbeat(ctx, r.ID, now) // step cancels or fails the round
+	}
+	reason, err := e.issueStopped(ctx, wi, b)
+	if err != nil {
+		return err
+	}
+	if reason == "" && e.gh != nil {
+		pr, err := e.st.PullRequestFor(ctx, wi.ID)
+		if err != nil {
+			return err
+		}
+		if pr != nil {
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+			if err != nil {
+				return err
+			}
+			if d.State != "open" && !d.Merged {
+				reason = fmt.Sprintf("PR #%d (%s) was closed", pr.Number, pr.URL)
+			}
+		}
+	}
+	if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
+		return err
+	}
+	if reason == "" {
+		return nil
+	}
+	return e.stopWork(ctx, wi, reason)
+}
+
+// followUp handles a turn that finished after the work item's PR merged. Its
+// commits are not delivered: the issue says that follow-up work needs a new
+// issue, so one issue maps to one merged PR.
+func (e *Engine) followUp(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {
+	a, _, err := e.st.LatestTurn(ctx, wi.ID)
+	if err != nil || a == nil {
+		return err
+	}
+	ahead := 0
+	if pr != nil && pr.HeadSHA != "" {
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+		cmp, err := e.gh.Compare(ctx, b.repo(), pr.HeadSHA, wi.Branch)
+		switch {
+		case errors.Is(err, github.ErrNotFound):
+		case err != nil:
+			return err
+		default:
+			ahead = cmp.AheadBy
+		}
+	}
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if ahead > 0 {
+			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/follow-up/%d/%d", wi.ID, a.ID), 0, "",
+				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+					"%s already merged in PR #%d (%s). The %d commits a later turn pushed to %s are not delivered: "+
+						"open a new issue for follow-up work.", wi.IssueKey, pr.Number, pr.URL, ahead, wi.Branch)}); err != nil {
+				return err
+			}
+		}
+		return e.st.MarkSynced(ctx, tx, wi.ID, a.ID)
+	})
 }
 
 // findOrOpenPR returns the branch's PR, opening it when GitHub has none. A
@@ -194,7 +335,7 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 		return nil, err
 	}
 	if found != nil {
-		return e.adoptPR(ctx, repo, found, body)
+		return e.adoptPR(ctx, repo, b, found, body)
 	}
 	title := cmp.HeadSubject
 	if title == "" {
@@ -218,25 +359,21 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	if ferr != nil || found == nil {
 		return nil, err
 	}
-	return e.adoptPR(ctx, repo, found, body)
+	return e.adoptPR(ctx, repo, b, found, body)
 }
 
-// adoptPR takes a PR the connector did not just open: its body is brought
-// up to date, and a closed, unmerged one is reopened.
-func (e *Engine) adoptPR(ctx context.Context, repo string, pr *github.PullRequest, body string) (*github.PullRequest, error) {
+// adoptPR takes a PR the connector did not just open: an open one against
+// the binding's base gets the current body. A merged, closed or foreign one
+// is returned as found, for settlePR to judge.
+func (e *Engine) adoptPR(ctx context.Context, repo string, b *Binding, pr *github.PullRequest, body string) (*github.PullRequest, error) {
 	e.m.PullRequests.WithLabelValues("adopted").Inc()
-	if pr.Merged {
+	if pr.Merged || pr.State != "open" || (pr.BaseRef != "" && pr.BaseRef != b.BaseBranch) {
 		return pr, nil
-	}
-	u := github.PullRequestUpdate{Body: &body}
-	if pr.State == "closed" {
-		open := "open"
-		u.State = &open
 	}
 	if err := e.guard(ctx); err != nil {
 		return nil, err
 	}
-	return e.gh.UpdatePullRequest(ctx, repo, pr.Number, u)
+	return e.gh.UpdatePullRequest(ctx, repo, pr.Number, github.PullRequestUpdate{Body: &body})
 }
 
 func (e *Engine) recordPR(ctx context.Context, wi *store.WorkItem, a *store.Attempt, got *github.PullRequest) (*store.PullRequest, error) {
@@ -329,10 +466,25 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	case d.Merged:
 		return e.merged(ctx, wi, b, pr, d)
 	case d.State != "open":
-		return nil // closed by a person; nothing acts on it until a new turn
+		// Closed by a person, queued or not: delivery stops until a new run.
+		return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed without merging", pr.Number, pr.URL))
 	case wi.State == store.WorkMerging && d.MergeQueueState != "":
 		return nil
 	case wi.State == store.WorkMerging:
+		// The queue entry can go before the merge shows; look again before
+		// calling it an ejection.
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+		again, err := e.gh.PullRequestDetail(ctx, repo, pr.Number)
+		switch {
+		case err != nil:
+			return err
+		case again.Merged:
+			return e.merged(ctx, wi, b, pr, again)
+		case again.MergeQueueState != "":
+			return nil
+		}
 		return e.ejected(ctx, wi, pr)
 	case d.MergeQueueState != "":
 		// Queued although the enqueue's answer was lost.
@@ -356,7 +508,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil || started {
 		return err
 	}
-	if !gateOpen(&b.Review, pr, d, checks, statuses) {
+	if !gateOpen(&b.Review, b.BaseBranch, pr, d, checks, statuses) {
 		return nil
 	}
 	if err := e.guard(ctx); err != nil {
@@ -502,7 +654,15 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	}
 	var prompt string
 	if len(acting) > 0 && !limited {
-		prompt = roundPrompt(wi, pr, d, acting)
+		// The issue must still want delivery before a round starts.
+		reason, err := e.issueStopped(ctx, wi, b)
+		if err != nil {
+			return false, err
+		}
+		if reason != "" {
+			return false, e.stopWork(ctx, wi, reason)
+		}
+		prompt = roundPrompt(p, wi, pr, d, acting)
 	}
 	var round *store.Run
 	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
@@ -551,8 +711,8 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 }
 
 // roundPrompt asks for a revision: what requested changes, and the PR's
-// unresolved review threads.
-func roundPrompt(wi *store.WorkItem, pr *store.PullRequest, d *github.PullRequestDetail, acting []*candidate) string {
+// unresolved review threads from trusted authors.
+func roundPrompt(p *ReviewPolicy, wi *store.WorkItem, pr *store.PullRequest, d *github.PullRequestDetail, acting []*candidate) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "Review round %d for %s. Pull request #%d (%s) at %s on %s needs changes. "+
 		"Address the feedback below, push the fixes to %s, and say what you changed or why you did not.\n",
@@ -561,15 +721,29 @@ func roundPrompt(wi *store.WorkItem, pr *store.PullRequest, d *github.PullReques
 	for _, c := range acting {
 		fmt.Fprintf(&s, "\n%s\n", c.text)
 	}
-	writeThreads(&s, d.Threads)
+	writeThreads(&s, d.Threads, p)
 	return s.String()
 }
 
-// writeThreads appends the unresolved review threads.
-func writeThreads(s *strings.Builder, threads []github.ReviewThread) {
-	n := 0
+// writeThreads appends the unresolved review threads, keeping only comments
+// by trusted reviewer logins. The repository is public, so anyone can
+// comment; the rest never reaches an agent holding a write token, and the
+// text says how many comments were left out.
+func writeThreads(s *strings.Builder, threads []github.ReviewThread, p *ReviewPolicy) {
+	n, omitted := 0, 0
 	for _, t := range threads {
-		if t.Resolved || len(t.Comments) == 0 {
+		if t.Resolved {
+			continue
+		}
+		var kept []github.ReviewComment
+		for _, c := range t.Comments {
+			if p.trustedReviewer(c.Author) {
+				kept = append(kept, c)
+			} else {
+				omitted++
+			}
+		}
+		if len(kept) == 0 {
 			continue
 		}
 		if n == 0 {
@@ -584,9 +758,12 @@ func writeThreads(s *strings.Builder, threads []github.ReviewThread) {
 			where += " (outdated)"
 		}
 		fmt.Fprintf(s, "\n- %s\n", where)
-		for _, c := range t.Comments {
+		for _, c := range kept {
 			fmt.Fprintf(s, "  - %s: %s\n", c.Author, strings.ReplaceAll(clip(c.Body, 2000), "\n", "\n    "))
 		}
+	}
+	if omitted > 0 {
+		fmt.Fprintf(s, "\n%d review comments from authors this repository binding does not trust were omitted.\n", omitted)
 	}
 }
 
@@ -594,8 +771,8 @@ func writeThreads(s *strings.Builder, threads []github.ReviewThread) {
 // required check and the reviewer succeeded on it from trusted sources, no
 // trusted reviewer's latest decision requests changes, and the queue has not
 // already sent this head back.
-func gateOpen(p *ReviewPolicy, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status) bool {
-	if d.Draft || d.HeadSHA == "" || d.HeadSHA == pr.EjectedHeadSHA {
+func gateOpen(p *ReviewPolicy, base string, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status) bool {
+	if d.Draft || d.HeadSHA == "" || d.HeadSHA == pr.EjectedHeadSHA || d.BaseRef != base {
 		return false
 	}
 	if p.ReviewerCheck == nil && len(p.TrustedReviewers) == 0 {
@@ -746,10 +923,28 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	switch {
 	case err == nil:
 		return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+	case errors.Is(err, itsaplan.ErrConflict):
+		// The Done column is at a hard WIP limit. Say so once and keep
+		// trying with the outbox's backoff.
+		if cerr := e.doneRefused(ctx, p, done.Name, "its WIP limit is reached; the factory keeps trying"); cerr != nil {
+			return cerr
+		}
+		return err
 	case terminalHTTP(err):
+		if cerr := e.doneRefused(ctx, p, done.Name, "itsaplan refused the move: "+clip(err.Error(), 200)); cerr != nil {
+			return cerr
+		}
 		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
 	}
 	return err
+}
+
+// doneRefused says on the issue, once, that it could not be moved to Done.
+func (e *Engine) doneRefused(ctx context.Context, p issueDonePayload, column, why string) error {
+	return e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/done-refused/%d", p.IssueID), 0, "",
+		commentPayload{IssueID: p.IssueID, Body: fmt.Sprintf(
+			"The pull request merged, but the factory could not move this issue to %q: %s. Move it by hand if it stays.",
+			column, why)})
 }
 
 // replacementContext is what a replacement session starts from: the issue,
@@ -802,7 +997,7 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 	}
 	fmt.Fprintf(&s, "\n### Pull request\n\n#%d %s (%s, %s). Branch %s is at %s.\n",
 		d.Number, d.URL, d.Title, d.State, wi.Branch, d.HeadSHA)
-	writeThreads(&s, d.Threads)
+	writeThreads(&s, d.Threads, &b.Review)
 	return s.String(), nil
 }
 

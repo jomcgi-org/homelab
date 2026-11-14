@@ -46,6 +46,9 @@ type fakeItsaplan struct {
 	resultGone bool
 	columns    []itsaplan.Column
 	moves      []fakeMove
+	issues     map[int64]*itsaplan.Issue
+	// moveErr fails the next MoveIssue calls.
+	moveErr []error
 }
 
 type fakeMove struct {
@@ -83,6 +86,15 @@ func (f *fakeItsaplan) add(id int64, agent string, issueID int64, key, prompt st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	iid := issueID
+	if f.issues == nil {
+		f.issues = map[int64]*itsaplan.Issue{}
+	}
+	if f.issues[issueID] == nil {
+		f.issues[issueID] = &itsaplan.Issue{
+			ID: issueID, Identifier: key, ColumnID: 2,
+			Title: fmt.Sprintf("Issue %d title", issueID), Description: fmt.Sprintf("Issue %d description.", issueID),
+		}
+	}
 	f.runs = append(f.runs, &fakeRun{
 		run: itsaplan.Run{
 			ID: id, Trigger: "mention", Prompt: prompt, SystemPrompt: "You are a coding agent.",
@@ -229,10 +241,23 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return &itsaplan.Issue{
-		ID: issueID, Title: fmt.Sprintf("Issue %d title", issueID),
-		Description: fmt.Sprintf("Issue %d description.", issueID),
-	}, nil
+	is := f.issues[issueID]
+	if is == nil {
+		return nil, itsaplan.ErrNotFound
+	}
+	c := *is
+	return &c, nil
+}
+
+// moveTo puts an issue in a column, or in another project's.
+func (f *fakeItsaplan) moveTo(issueID, columnID int64, identifier string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	is := f.issues[issueID]
+	is.ColumnID = columnID
+	if identifier != "" {
+		is.Identifier = identifier
+	}
 }
 
 func (f *fakeItsaplan) ProjectColumns(_ context.Context, _ string) ([]itsaplan.Column, error) {
@@ -246,7 +271,15 @@ func (f *fakeItsaplan) MoveIssue(_ context.Context, issueID, columnID int64) err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if len(f.moveErr) > 0 {
+		err := f.moveErr[0]
+		f.moveErr = f.moveErr[1:]
+		return err
+	}
 	f.moves = append(f.moves, fakeMove{issueID, columnID})
+	if is := f.issues[issueID]; is != nil {
+		is.ColumnID = columnID
+	}
 	return nil
 }
 
