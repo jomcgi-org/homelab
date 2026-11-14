@@ -1,8 +1,9 @@
-// Package github is the connector's GitHub client: REST and GraphQL calls on
-// one repository at a time, with installation tokens the broker mints for
-// that repository. It finds, opens and updates the one PR per work item,
-// reads reviews, review threads, check runs and statuses, enqueues PRs in the
-// merge queue and observes their merge.
+// Package github is the factory's GitHub client, shared by the connector and
+// the reviewer: REST and GraphQL calls on one repository at a time, with
+// installation tokens the broker mints for that repository. It finds, opens
+// and updates PRs, reads reviews, review threads, check runs and statuses,
+// writes check runs, enqueues PRs in the merge queue and observes their
+// merge.
 package github
 
 import (
@@ -47,9 +48,11 @@ type Client struct {
 	BaseURL string
 	HTTP    *http.Client
 	Tokens  Tokens
+	// ETags, when set, makes every REST GET conditional (etag.go).
+	ETags *ETagCache
 }
 
-// PullRequest is the part of a PR the connector records.
+// PullRequest is the part of a PR the factory reads.
 type PullRequest struct {
 	Number  int
 	NodeID  string
@@ -61,6 +64,10 @@ type PullRequest struct {
 	HeadRef string
 	BaseRef string
 	Title   string
+	// Body, Author and Labels are filled from REST reads only.
+	Body   string
+	Author string
+	Labels []string
 }
 
 // NewPullRequest opens a PR.
@@ -128,15 +135,19 @@ type PullRequestDetail struct {
 
 // CheckRun is a check run on a commit.
 type CheckRun struct {
+	ID         int64
 	NodeID     string
 	Name       string
 	Status     string // queued | in_progress | completed
 	Conclusion string // success | failure | neutral | cancelled | skipped | timed_out | action_required
 	HeadSHA    string
 	AppID      int64
+	ExternalID string
+	StartedAt  time.Time
 	URL        string
 	Title      string
 	Summary    string
+	Text       string
 }
 
 // Status is a commit status, the latest per context.
@@ -194,6 +205,14 @@ func (c *Client) once(ctx context.Context, repo, method, path string, body, out 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	var cached []byte
+	conditional := method == http.MethodGet && c.ETags != nil
+	if conditional {
+		if etag, b, ok := c.ETags.get(path); ok {
+			req.Header.Set("If-None-Match", etag)
+			cached = b
+		}
+	}
 	hc := c.HTTP
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
@@ -207,13 +226,29 @@ func (c *Client) once(ctx context.Context, repo, method, path string, body, out 
 	if err != nil {
 		return err
 	}
+	status := resp.StatusCode
+	if conditional {
+		switch {
+		case status == http.StatusNotModified && cached != nil:
+			// Unchanged since the cached read; GitHub charges no rate limit.
+			c.ETags.observe(true)
+			data, status = cached, http.StatusOK
+		case status == http.StatusOK:
+			if cached != nil {
+				c.ETags.observe(false)
+			}
+			if etag := resp.Header.Get("ETag"); etag != "" {
+				c.ETags.put(path, etag, data)
+			}
+		}
+	}
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		return ErrNotFound
-	case resp.StatusCode == http.StatusUnprocessableEntity && bytes.Contains(data, []byte("already exists")):
+	case status == http.StatusUnprocessableEntity && bytes.Contains(data, []byte("already exists")):
 		return ErrPRExists
-	case resp.StatusCode < 200 || resp.StatusCode > 299:
-		return &HTTPError{Status: resp.StatusCode, Body: truncate(string(data), 300)}
+	case status < 200 || status > 299:
+		return &HTTPError{Status: status, Body: truncate(string(data), 300)}
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
@@ -233,9 +268,14 @@ type restPull struct {
 	State    string  `json:"state"`
 	Draft    bool    `json:"draft"`
 	Title    string  `json:"title"`
+	Body     *string `json:"body"`
 	MergedAt *string `json:"merged_at"`
 	Merged   bool    `json:"merged"`
-	Head     struct {
+	User     login   `json:"user"`
+	Labels   []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	Head struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
@@ -245,10 +285,18 @@ type restPull struct {
 }
 
 func (p restPull) pr() *PullRequest {
-	return &PullRequest{
+	pr := &PullRequest{
 		Number: p.Number, NodeID: p.NodeID, URL: p.HTMLURL, State: p.State, Draft: p.Draft, Title: p.Title,
 		Merged: p.Merged || p.MergedAt != nil, HeadSHA: p.Head.SHA, HeadRef: p.Head.Ref, BaseRef: p.Base.Ref,
+		Author: p.User.Login,
 	}
+	if p.Body != nil {
+		pr.Body = *p.Body
+	}
+	for _, l := range p.Labels {
+		pr.Labels = append(pr.Labels, l.Name)
+	}
+	return pr
 }
 
 // FindPullRequest returns the PR whose head is branch in repo, or nil. An
@@ -329,35 +377,7 @@ func (c *Client) Compare(ctx context.Context, repo, base, head string) (*Compari
 
 // CheckRuns lists the latest check run per name on a commit.
 func (c *Client) CheckRuns(ctx context.Context, repo, sha string) ([]CheckRun, error) {
-	var out struct {
-		CheckRuns []struct {
-			NodeID     string `json:"node_id"`
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-			HeadSHA    string `json:"head_sha"`
-			HTMLURL    string `json:"html_url"`
-			App        struct {
-				ID int64 `json:"id"`
-			} `json:"app"`
-			Output struct {
-				Title   string `json:"title"`
-				Summary string `json:"summary"`
-			} `json:"output"`
-		} `json:"check_runs"`
-	}
-	path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/check-runs?filter=latest&per_page=100"
-	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	runs := make([]CheckRun, 0, len(out.CheckRuns))
-	for _, r := range out.CheckRuns {
-		runs = append(runs, CheckRun{
-			NodeID: r.NodeID, Name: r.Name, Status: r.Status, Conclusion: r.Conclusion, HeadSHA: r.HeadSHA,
-			AppID: r.App.ID, URL: r.HTMLURL, Title: r.Output.Title, Summary: r.Output.Summary,
-		})
-	}
-	return runs, nil
+	return c.ListCheckRuns(ctx, repo, sha, CheckRunFilter{})
 }
 
 // Statuses lists the latest commit status per context. It reads the list

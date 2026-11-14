@@ -43,6 +43,7 @@ multirun(
         "//projects/factory/broker/image:image.push",
         "//projects/factory/chart:chart.push",
         "//projects/factory/connector/image:image.push",
+        "//projects/factory/reviewer/image:image.push",
         "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.push",
         "//projects/firecracker/sandbox/javascript:image.push",

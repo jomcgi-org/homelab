@@ -17,10 +17,12 @@ type staticBearer string
 
 func (s staticBearer) Token() (string, error) { return string(s), nil }
 
-// fakeBroker mints a new token per request, valid for an hour from now().
+// fakeBroker mints a new token per request, valid for an hour from now(),
+// at path (the connector's endpoint when empty).
 type fakeBroker struct {
 	mu      sync.Mutex
 	now     func() time.Time
+	path    string
 	mints   int
 	bearers []string
 	repos   []string
@@ -29,7 +31,11 @@ type fakeBroker struct {
 func (b *fakeBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if r.URL.Path != "/github/connector-token" {
+	want := b.path
+	if want == "" {
+		want = "/github/connector-token"
+	}
+	if r.URL.Path != want {
 		http.NotFound(w, r)
 		return
 	}
@@ -75,6 +81,28 @@ func TestBrokerTokenIsCachedUntilFifteenMinutesBeforeExpiry(t *testing.T) {
 	}
 	if tok, _ := toks.Token(ctx, "example-org/other"); tok != "ghs_3" {
 		t.Fatalf("another repository shares a token: %q", tok)
+	}
+}
+
+func TestBrokerTokenPathIsConfigurable(t *testing.T) {
+	now := time.Now()
+	ctx := context.Background()
+	// The reviewer's endpoint answers with the connector's JSON shape.
+	reviewer := &fakeBroker{now: func() time.Time { return now }, path: "/github/reviewer-token"}
+	srv := httptest.NewServer(reviewer)
+	defer srv.Close()
+	toks := &BrokerTokens{URL: srv.URL + "/", Path: "/github/reviewer-token", Bearer: staticBearer("t")}
+	if tok, err := toks.Token(ctx, "example-org/homelab"); err != nil || tok != "ghs_1" {
+		t.Fatalf("reviewer token = %q, %v", tok, err)
+	}
+	// Without a path the connector's endpoint is asked, which this broker
+	// does not serve.
+	if _, err := (&BrokerTokens{URL: srv.URL, Bearer: staticBearer("t")}).Token(ctx, "example-org/homelab"); err == nil ||
+		!strings.Contains(err.Error(), "/github/connector-token") {
+		t.Fatalf("default path err = %v, want a 404 from /github/connector-token", err)
+	}
+	if reviewer.Mints() != 1 || reviewer.repos[0] != "example-org/homelab" {
+		t.Fatalf("reviewer endpoint minted %d for %v", reviewer.Mints(), reviewer.repos)
 	}
 }
 
@@ -306,5 +334,231 @@ func TestConcurrentCallersShareOneFetchPerRepository(t *testing.T) {
 		if tok != got[0] || tok == "" {
 			t.Fatalf("tokens = %v, want one shared token", got)
 		}
+	}
+}
+
+// conditionalServer serves body with an ETag naming its version and answers
+// a matching If-None-Match with 304, counting each kind.
+type conditionalServer struct {
+	mu          sync.Mutex
+	body        string
+	version     int
+	full, unmod int
+	paths       []string
+}
+
+func (s *conditionalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paths = append(s.paths, r.URL.String())
+	etag := fmt.Sprintf(`W/"v%d"`, s.version)
+	if r.Header.Get("If-None-Match") == etag {
+		s.unmod++
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	s.full++
+	w.Header().Set("ETag", etag)
+	_, _ = w.Write([]byte(s.body))
+}
+
+func TestConditionalGetReusesTheCachedBodyOn304(t *testing.T) {
+	srv := &conditionalServer{body: `[{"number": 7, "node_id": "PR_7", "state": "open", "title": "t", "body": "b",
+		"user": {"login": "renovate[bot]"}, "labels": [{"name": "deps"}],
+		"head": {"ref": "renovate/x", "sha": "sha-1"}, "base": {"ref": "main"}}]`}
+	gh := httptest.NewServer(srv)
+	defer gh.Close()
+	var hits, misses int
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}, ETags: &ETagCache{Observe: func(nm bool) {
+		if nm {
+			hits++
+		} else {
+			misses++
+		}
+	}}}
+	ctx := context.Background()
+	for i := range 3 {
+		prs, err := c.ListPullRequests(ctx, "example-org/homelab", "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := PullRequest{
+			Number: 7, NodeID: "PR_7", State: "open", Title: "t", Body: "b", Author: "renovate[bot]",
+			Labels: []string{"deps"}, HeadSHA: "sha-1", HeadRef: "renovate/x", BaseRef: "main",
+		}
+		if len(prs) != 1 || fmt.Sprint(prs[0]) != fmt.Sprint(want) {
+			t.Fatalf("read %d: prs = %+v", i, prs)
+		}
+	}
+	if srv.full != 1 || srv.unmod != 2 || hits != 2 || misses != 0 {
+		t.Fatalf("full = %d, 304s = %d, observed %d/%d; want one full read then 304s", srv.full, srv.unmod, hits, misses)
+	}
+	if !strings.Contains(srv.paths[0], "state=open") || !strings.Contains(srv.paths[0], "base=main") {
+		t.Fatalf("query = %s", srv.paths[0])
+	}
+	srv.mu.Lock()
+	srv.body, srv.version = `[]`, srv.version+1
+	srv.mu.Unlock()
+	if prs, err := c.ListPullRequests(ctx, "example-org/homelab", "main"); err != nil || len(prs) != 0 || srv.full != 2 || misses != 1 {
+		t.Fatalf("changed body: prs = %v, err = %v, full = %d, misses = %d", prs, err, srv.full, misses)
+	}
+}
+
+func TestETagCacheEvictsTheLeastRecentlyUsed(t *testing.T) {
+	c := &ETagCache{Max: 2}
+	c.put("a", "1", nil)
+	c.put("b", "2", nil)
+	c.get("a")
+	c.put("c", "3", nil)
+	if _, _, ok := c.get("b"); ok || c.Len() != 2 {
+		t.Fatalf("b kept or len %d; want b evicted", c.Len())
+	}
+	if _, _, ok := c.get("a"); !ok {
+		t.Fatal("recently read a was evicted")
+	}
+}
+
+func TestCheckRunsFilterCreateAndUpdate(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	var bodies []map[string]any
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, r.Method+" "+r.URL.String())
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		switch {
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"total_count": 1, "check_runs": [{"id": 42, "name": "factory review", "status": "in_progress",
+				"head_sha": "sha-1", "external_id": "factory-review/example-org/homelab/7/sha-1",
+				"started_at": "2026-11-14T12:00:00Z", "app": {"id": 5758326},
+				"output": {"title": "Review in progress", "summary": "s", "text": "x"}}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"id": 42, "name": "factory review", "status": "completed", "conclusion": "success", "head_sha": "sha-1", "app": {"id": 5758326}}`))
+		}
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	ctx := context.Background()
+	runs, err := c.ListCheckRuns(ctx, "example-org/homelab", "sha-1", CheckRunFilter{Name: "factory review", AppID: 5758326})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != 42 || runs[0].ExternalID != "factory-review/example-org/homelab/7/sha-1" ||
+		runs[0].StartedAt.IsZero() || runs[0].Text != "x" || runs[0].AppID != 5758326 {
+		t.Fatalf("runs = %+v", runs)
+	}
+	started := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	if _, err := c.CreateCheckRun(ctx, "example-org/homelab", CheckRunWrite{
+		Name: "factory review", HeadSHA: "sha-1", Status: "in_progress", StartedAt: &started,
+		Output: &CheckRunOutput{Title: "t", Summary: "s"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := c.UpdateCheckRun(ctx, "example-org/homelab", 42, CheckRunWrite{
+		Status: "completed", Conclusion: "success",
+		Output: &CheckRunOutput{Title: "t", Summary: "s", Annotations: []Annotation{{Path: "a.go", StartLine: 3, EndLine: 3, Level: "warning", Message: "m"}}},
+	})
+	if err != nil || run.Conclusion != "success" {
+		t.Fatalf("update = %+v, %v", run, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"GET /repos/example-org/homelab/commits/sha-1/check-runs?app_id=5758326&check_name=factory+review&filter=latest&per_page=100",
+		"POST /repos/example-org/homelab/check-runs",
+		"PATCH /repos/example-org/homelab/check-runs/42",
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("requests = %v, want %v", seen, want)
+	}
+	if bodies[1]["head_sha"] != "sha-1" || bodies[1]["started_at"] != "2026-11-14T12:00:00Z" || bodies[1]["conclusion"] != nil {
+		t.Fatalf("create body = %v", bodies[1])
+	}
+	if _, ok := bodies[2]["name"]; ok || bodies[2]["conclusion"] != "success" {
+		t.Fatalf("update body = %v, want no name and a conclusion", bodies[2])
+	}
+	ann := bodies[2]["output"].(map[string]any)["annotations"].([]any)[0].(map[string]any)
+	if ann["annotation_level"] != "warning" || ann["start_line"] != float64(3) {
+		t.Fatalf("annotation = %v", ann)
+	}
+}
+
+func TestPullRequestQueueAndMergeQueueEntries(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch {
+		case strings.Contains(req.Query, "mergeQueue(branch"):
+			if req.Variables["branch"] != "main" {
+				t.Errorf("branch = %v", req.Variables["branch"])
+			}
+			_, _ = w.Write([]byte(`{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[
+				{"state":"AWAITING_CHECKS","headCommit":{"oid":"mg-1"},"pullRequest":{"number":7,"headRefOid":"sha-1"}},
+				{"state":"QUEUED","headCommit":null,"pullRequest":{"number":8,"headRefOid":"sha-2"}}
+			]}}}}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"id":"PR_7","state":"OPEN","isDraft":false,
+				"headRefOid":"sha-1","baseRefName":"main","mergeQueueEntry":{"state":"QUEUED"}}}}}`))
+		}
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	ctx := context.Background()
+	q, err := c.PullRequestQueue(ctx, "example-org/homelab", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *q != (PullRequestQueue{NodeID: "PR_7", State: "open", HeadSHA: "sha-1", BaseRef: "main", MergeQueueState: "QUEUED"}) {
+		t.Fatalf("queue = %+v", q)
+	}
+	entries, err := c.MergeQueueEntries(ctx, "example-org/homelab", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []MergeQueueEntry{
+		{State: "AWAITING_CHECKS", HeadCommit: "mg-1", Number: 7, PRHeadSHA: "sha-1"},
+		{State: "QUEUED", Number: 8, PRHeadSHA: "sha-2"},
+	}
+	if fmt.Sprint(entries) != fmt.Sprint(want) {
+		t.Fatalf("entries = %+v", entries)
+	}
+}
+
+func TestReviewsCommentsAndCompare(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/example-org/homelab/pulls/7/reviews":
+			_, _ = w.Write([]byte(`[{"user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok"}]`))
+		case "/repos/example-org/homelab/issues/7/comments":
+			_, _ = w.Write([]byte(`[{"user": {"login": "someone"}, "body": "hi"}]`))
+		case "/repos/example-org/homelab/compare/sha-0...sha-1":
+			_, _ = w.Write([]byte(`{"status": "ahead", "files": [{"filename": "a.go", "status": "modified", "additions": 2, "deletions": 1}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	ctx := context.Background()
+	rv, err := c.PullRequestReviews(ctx, "example-org/homelab", 7)
+	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok"}) {
+		t.Fatalf("reviews = %+v, %v", rv, err)
+	}
+	cm, err := c.PullRequestComments(ctx, "example-org/homelab", 7)
+	if err != nil || len(cm) != 1 || cm[0].Author != "someone" {
+		t.Fatalf("comments = %+v, %v", cm, err)
+	}
+	cmp, err := c.CompareCommits(ctx, "example-org/homelab", "sha-0", "sha-1")
+	if err != nil || cmp.Status != "ahead" || len(cmp.Files) != 1 || cmp.Files[0].Additions != 2 {
+		t.Fatalf("compare = %+v, %v", cmp, err)
+	}
+	if _, err := c.CompareCommits(ctx, "example-org/homelab", "gone", "sha-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("compare with a missing commit = %v", err)
 	}
 }

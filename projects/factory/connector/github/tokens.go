@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,12 +21,17 @@ type Bearer interface {
 // replaced. The broker also hands out only tokens with more life than this.
 const RefreshBefore = 15 * time.Minute
 
-// BrokerTokens fetches the connector's installation tokens from the broker's
-// GET /github/connector-token, one repository each, and caches each until
-// RefreshBefore its expiry.
+// DefaultTokenPath is the broker endpoint that mints the connector's tokens.
+const DefaultTokenPath = "/github/connector-token"
+
+// BrokerTokens fetches installation tokens from a broker endpoint, one
+// repository each, and caches each until RefreshBefore its expiry.
 type BrokerTokens struct {
 	// URL is the broker's base URL.
-	URL    string
+	URL string
+	// Path is the endpoint, DefaultTokenPath when empty. The reviewer uses
+	// /github/reviewer-token; both answer the same JSON.
+	Path   string
 	Bearer Bearer
 	HTTP   *http.Client
 	Now    func() time.Time
@@ -103,7 +107,11 @@ func (b *BrokerTokens) fetch(ctx context.Context, repository string) (cachedToke
 	if err != nil {
 		return cachedToken{}, err
 	}
-	u := strings.TrimSuffix(b.URL, "/") + "/github/connector-token?" + url.Values{"repository": {repository}}.Encode()
+	path := b.Path
+	if path == "" {
+		path = DefaultTokenPath
+	}
+	u := strings.TrimSuffix(b.URL, "/") + path + "?" + url.Values{"repository": {repository}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return cachedToken{}, err
@@ -123,7 +131,7 @@ func (b *BrokerTokens) fetch(ctx context.Context, repository string) (cachedToke
 		return cachedToken{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return cachedToken{}, fmt.Errorf("broker: connector token for %s: HTTP %d: %.200s", repository, resp.StatusCode, data)
+		return cachedToken{}, fmt.Errorf("broker: %s for %s: HTTP %d: %.200s", path, repository, resp.StatusCode, data)
 	}
 	var out struct {
 		Token      string    `json:"token"`
@@ -131,10 +139,10 @@ func (b *BrokerTokens) fetch(ctx context.Context, repository string) (cachedToke
 		Repository string    `json:"repository"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return cachedToken{}, fmt.Errorf("broker: decode connector token: %w", err)
+		return cachedToken{}, fmt.Errorf("broker: decode %s: %w", path, err)
 	}
 	if out.Token == "" || out.ExpiresAt.IsZero() {
-		return cachedToken{}, errors.New("broker: connector token without token or expiry")
+		return cachedToken{}, fmt.Errorf("broker: %s answered without token or expiry", path)
 	}
 	if !strings.EqualFold(out.Repository, repository) {
 		return cachedToken{}, fmt.Errorf("broker: asked for %s, got a token for %q", repository, out.Repository)
