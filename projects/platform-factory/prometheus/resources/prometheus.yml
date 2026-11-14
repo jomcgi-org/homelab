@@ -1,0 +1,264 @@
+# Prometheus's scrape configuration (prometheus.yaml mounts it). Every target
+# is listed here and admitted by name in network-policy.yaml (egress) and
+# scrape-ingress.yaml (ingress at the target); a new target needs all three.
+#
+# Pod discovery keeps one declared container port per job, so __address__ is
+# that pod IP and port. Host-network pods (Cilium) carry their node's IP.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  # Each kubelet: pod and node CPU and memory (/metrics/resource), the root
+  # filesystem and pod network bytes (/metrics/cadvisor), and running pods
+  # (/metrics). Only nodes/metrics is granted, never nodes/proxy.
+  - job_name: kubelet-resource
+    scheme: https
+    metrics_path: /metrics/resource
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: (node|pod|container)_(cpu_usage_seconds_total|memory_working_set_bytes)
+        action: keep
+  - job_name: kubelet-cadvisor
+    scheme: https
+    metrics_path: /metrics/cadvisor
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: container_fs_(usage|limit)_bytes|container_network_(receive|transmit)_(bytes|packets_dropped)_total|container_cpu_cfs_(throttled_)?periods_total|container_oom_events_total|machine_(cpu_cores|memory_bytes)
+        action: keep
+      # Filesystem series for the node's root cgroup only.
+      - source_labels: [__name__, id]
+        regex: container_fs_.+;/.+
+        action: drop
+  - job_name: kubelet
+    scheme: https
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: kubelet_running_(pods|containers)|kubelet_volume_stats_(used|capacity|available)_bytes|kubernetes_build_info
+        action: keep
+
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets: [kube-state-metrics:8080]
+
+  # Cilium on the host network of each node: the agent, Hubble's flow and
+  # drop counters, and both operator replicas.
+  - job_name: cilium-agent
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [kube-system]
+        selectors:
+          - role: pod
+            label: k8s-app=cilium
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "9962"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+  - job_name: hubble
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [kube-system]
+        selectors:
+          - role: pod
+            label: k8s-app=cilium
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "9965"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+  - job_name: cilium-operator
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [kube-system]
+        selectors:
+          - role: pod
+            label: io.cilium/app=operator
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "9963"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
+  # controller-runtime's secure metrics: a TokenReview of this ServiceAccount's
+  # token and a SubjectAccessReview for GET /metrics (ClusterRole
+  # prometheus). Its serving certificate is self-signed.
+  - job_name: kagent-controller
+    scheme: https
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      insecure_skip_verify: true
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [kagent]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=kagent,app.kubernetes.io/component=controller
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "8443"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
+  # The broker's admin port; every path there but /healthz and /metrics needs
+  # a reviewed ServiceAccount token this Prometheus does not hold.
+  - job_name: factory-broker
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [factory]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=factory-broker
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "8081"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+  - job_name: factory-connector
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [factory]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=factory-connector
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "9090"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
+  # Every CloudNativePG instance's exporter.
+  - job_name: cnpg
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [kagent-pg, factory-db, authentik]
+        selectors:
+          - role: pod
+            label: cnpg.io/podRole=instance
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "9187"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      - source_labels: [__meta_kubernetes_pod_label_cnpg_io_cluster]
+        target_label: cluster
+
+  # Garage's admin API serves /metrics without a token (no metrics_token is
+  # set); every other admin path needs the admin token.
+  - job_name: garage
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [garage]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=garage
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "3903"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
