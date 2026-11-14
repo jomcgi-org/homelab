@@ -49,6 +49,42 @@ type fakeItsaplan struct {
 	issues     map[int64]*itsaplan.Issue
 	// moveErr fails the next MoveIssue calls.
 	moveErr []error
+	// resultErr fails the next Result calls.
+	resultErr []error
+	// keyFor, when set, is the connector's key lookup, asked on every
+	// agent call as itsaplan.Client.KeyFunc is; validKeys is what itsaplan
+	// accepts. A mismatch answers 401.
+	keyFor    func(agent string) (string, error)
+	validKeys map[string]string
+	// beforeResult runs, with f.mu held, as a Result call arrives.
+	beforeResult func(f *fakeItsaplan)
+}
+
+// authorize checks the key the connector would send for agent. The caller
+// holds f.mu.
+func (f *fakeItsaplan) authorize(agent string) error {
+	if f.keyFor == nil {
+		return nil
+	}
+	k, err := f.keyFor(agent)
+	if err != nil {
+		return err
+	}
+	if k != f.validKeys[agent] {
+		return &itsaplan.HTTPError{Status: 401, Body: `{"error":"invalid api key"}`}
+	}
+	return nil
+}
+
+// rotate makes itsaplan accept only key for agent, as the bootstrap's
+// rotation does.
+func (f *fakeItsaplan) rotate(agent, key string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.validKeys == nil {
+		f.validKeys = map[string]string{}
+	}
+	f.validKeys[agent] = key
 }
 
 type fakeMove struct {
@@ -148,6 +184,9 @@ func (f *fakeItsaplan) Claim(_ context.Context, agent string) (*itsaplan.Run, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if err := f.authorize(agent); err != nil {
+		return nil, err
+	}
 	now := f.now()
 	for _, r := range f.runs {
 		if r.agent != agent || r.status != "pending" || now.Before(r.until) {
@@ -170,6 +209,9 @@ func (f *fakeItsaplan) Heartbeat(_ context.Context, agent string, id int64, atte
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if err := f.authorize(agent); err != nil {
+		return err
+	}
 	r := f.get(id)
 	if r == nil || r.agent != agent || r.status != "pending" || r.attempts != attempt {
 		return itsaplan.ErrNotFound
@@ -183,6 +225,9 @@ func (f *fakeItsaplan) Events(_ context.Context, agent string, id int64, attempt
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if err := f.authorize(agent); err != nil {
+		return 0, err
+	}
 	r := f.get(id)
 	if r == nil || r.agent != agent || r.status != "pending" || r.attempts != attempt || !f.now().Before(r.until) {
 		return 0, itsaplan.ErrNotFound
@@ -203,6 +248,17 @@ func (f *fakeItsaplan) Result(_ context.Context, agent string, id int64, res its
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.beforeResult != nil {
+		f.beforeResult(f)
+	}
+	if len(f.resultErr) > 0 {
+		err := f.resultErr[0]
+		f.resultErr = f.resultErr[1:]
+		return err
+	}
+	if err := f.authorize(agent); err != nil {
+		return err
+	}
 	r := f.get(id)
 	if f.resultGone {
 		r.status = "failed"

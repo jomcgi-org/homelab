@@ -994,7 +994,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	}
 	cols, err := e.its.ProjectColumns(ctx, p.Project)
 	switch {
-	case terminalHTTP(err):
+	case e.refused(ctx, it, err):
 		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
 	case err != nil:
 		return err
@@ -1035,7 +1035,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 			return cerr
 		}
 		return err
-	case terminalHTTP(err):
+	case e.refused(ctx, it, err):
 		if cerr := e.doneRefused(ctx, p, done.Name, "itsaplan refused the move: "+clip(err.Error(), 200)); cerr != nil {
 			return cerr
 		}

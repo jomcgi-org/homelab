@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -1354,6 +1356,122 @@ func TestFailingCommentBacksOffWithoutBlockingResults(t *testing.T) {
 	}
 	if tries != 1 || !next.After(v.clk.Now()) {
 		t.Fatalf("comment tries = %d next = %s, want one try and a later retry", tries, next)
+	}
+}
+
+// resultOutbox reads the result's outbox row.
+func (v *env) resultOutbox() (tries int, abandoned bool, lastErr string) {
+	v.t.Helper()
+	if err := v.st.DB.QueryRow(`SELECT tries, abandoned_at IS NOT NULL, coalesce(last_error, '')
+		FROM outbox WHERE kind = 'result'`).Scan(&tries, &abandoned, &lastErr); err != nil {
+		v.t.Fatal(err)
+	}
+	return tries, abandoned, lastErr
+}
+
+func TestResultUnauthorizedIsRetried(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.its.mu.Lock()
+	v.its.resultErr = []error{&itsaplan.HTTPError{Status: 401, Body: "invalid api key"}}
+	v.its.mu.Unlock()
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if r := v.run(1); r.State == store.RunClosed {
+		t.Fatalf("run closed after one 401: %s", r.ClosedReason)
+	}
+	if tries, abandoned, _ := v.resultOutbox(); tries != 1 || abandoned {
+		t.Fatalf("result tries = %d abandoned = %t, want one try and a retry", tries, abandoned)
+	}
+	v.tickUntil(time.Second, 5, func() bool { return len(v.its.Run(1).results) == 1 })
+	if res := v.its.Run(1).results; res[0].Status != "success" {
+		t.Fatalf("results = %+v", res)
+	}
+	if r := v.run(1); r.State != store.RunClosed || r.ClosedReason != "reported success" {
+		t.Fatalf("run = %s (%s)", r.State, r.ClosedReason)
+	}
+}
+
+func TestResultForbiddenIsAbandonedAfterBound(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	const queued = 40
+	v.its.mu.Lock()
+	for range queued {
+		v.its.resultErr = append(v.its.resultErr, &itsaplan.HTTPError{Status: 403, Body: "forbidden"})
+	}
+	v.its.mu.Unlock()
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if _, abandoned, _ := v.resultOutbox(); abandoned {
+		t.Fatal("result abandoned after one 403")
+	}
+	v.tickUntil(time.Minute, 120, func() bool {
+		_, abandoned, _ := v.resultOutbox()
+		return abandoned
+	})
+	v.its.mu.Lock()
+	sent := queued - len(v.its.resultErr)
+	v.its.mu.Unlock()
+	// The default bound is 20 tries; 401 and 403 have their own.
+	if sent != 12 {
+		t.Fatalf("result sent %d times before it was abandoned, want 12", sent)
+	}
+	if _, _, lastErr := v.resultOutbox(); !strings.Contains(lastErr, "403") {
+		t.Fatalf("last error = %q", lastErr)
+	}
+	if r := v.run(1); r.State != store.RunClosed || r.ClosedReason != "result refused" {
+		t.Fatalf("run = %s (%s)", r.State, r.ClosedReason)
+	}
+	if res := v.its.Run(1).results; len(res) != 0 {
+		t.Fatalf("results = %+v", res)
+	}
+}
+
+func TestRotatedKeyIsPickedUpOnRetry(t *testing.T) {
+	v := newEnv(t)
+	dir := t.TempDir()
+	keys := config.KeyFiles{"coder": filepath.Join(dir, "coder"), "coder-b": filepath.Join(dir, "coder-b")}
+	writeKey := func(agent, key string) {
+		t.Helper()
+		if err := os.WriteFile(keys[agent], []byte(key+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeKey("coder", "key-1")
+	writeKey("coder-b", "key-b")
+	v.its.rotate("coder", "key-1")
+	v.its.rotate("coder-b", "key-b")
+	v.its.keyFor = keys.Key
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	// The bootstrap rotates the key just as the result goes out; the
+	// projected file still holds the old one.
+	v.its.beforeResult = func(f *fakeItsaplan) {
+		f.validKeys["coder"] = "key-2"
+		f.beforeResult = nil
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.clk.Advance(2 * time.Second)
+	v.tick(v.e)
+	tries, abandoned, lastErr := v.resultOutbox()
+	if tries != 2 || abandoned || !strings.Contains(lastErr, "401") {
+		t.Fatalf("result tries = %d abandoned = %t last error = %q, want two refused tries", tries, abandoned, lastErr)
+	}
+	if r := v.run(1); r.State == store.RunClosed {
+		t.Fatalf("run closed with a stale key: %s", r.ClosedReason)
+	}
+	// The kubelet refreshes the projected file.
+	writeKey("coder", "key-2")
+	v.tickUntil(time.Second, 10, func() bool { return len(v.its.Run(1).results) == 1 })
+	if r := v.run(1); r.State != store.RunClosed || r.ClosedReason != "reported success" {
+		t.Fatalf("run = %s (%s)", r.State, r.ClosedReason)
 	}
 }
 
