@@ -124,6 +124,7 @@ type Config struct {
 	RuleIDs  []string
 	Bindings []Binding
 	Now      func() time.Time
+	Semgrep  *SemgrepClient
 }
 
 // Engine runs the reviewer.
@@ -462,11 +463,12 @@ type recorded struct {
 	Attempt int
 	ID      string
 	Sent    time.Time
+	Semgrep string
 }
 
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
-var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*) -->`)
+var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: semgrep=([a-f0-9]{64}))? -->`)
 
 // RecordedTask is the attempt and kagent task an in-progress review check
 // run records.
@@ -477,7 +479,7 @@ func RecordedTask(summary string) recorded {
 	}
 	m := all[len(all)-1]
 	n, _ := strconv.Atoi(m[1])
-	rec := recorded{Attempt: max(n, 1), ID: m[2]}
+	rec := recorded{Attempt: max(n, 1), ID: m[2], Semgrep: m[4]}
 	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
 		rec.Sent = time.Unix(sec, 0)
 	}
@@ -503,7 +505,11 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 		if !rec.Sent.IsZero() {
 			sent = rec.Sent.Unix()
 		}
-		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d -->", rec.Attempt, rec.ID, sent)
+		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d", rec.Attempt, rec.ID, sent)
+		if rec.Semgrep != "" {
+			s += " semgrep=" + rec.Semgrep
+		}
+		s += " -->"
 	}
 	return s
 }
@@ -517,6 +523,7 @@ type inputs struct {
 	priorHead string
 	// priorUnknown says why an earlier head's review could not be found.
 	priorUnknown string
+	semgrep      *SemgrepEvidence
 }
 
 // review drives one head's review to a completed check run. It makes at
@@ -548,6 +555,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	next := func(reason string) bool {
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
+			if in != nil && in.semgrep != nil && in.semgrep.Unavailable != "" {
+				reason += "\n\n**medium** `" + semgrepUnverified + "`: " + in.semgrep.Unavailable + "."
+			}
 			e.complete(ctx, b, run, NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason),
 				e.footer(b, pr, rec.ID)), l)
 			return true
@@ -576,6 +586,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				in = got
+				// A resumed task saw the evidence whose digest was recorded at
+				// dispatch. Fresh evidence cannot silently bless its old reply.
+				if in.semgrep != nil && rec.ID != "" && rec.Semgrep != in.semgrep.digest() {
+					in.semgrep.Unavailable = "Semgrep evidence changed or was not recorded before this resumed task; rerun the review"
+				}
 			case late:
 				if next("the reviewer could not read the PR from GitHub.") {
 					return
@@ -626,7 +641,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			lastSend = e.cfg.Now()
 			switch {
 			case err == nil:
-				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend}
+				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, Semgrep: in.semgrep.digest()}
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends)
 				e.recordProgress(ctx, b, run, in.gate, rec, "", l)
 			case errors.Is(err, kagent.ErrRejected):
@@ -700,9 +715,13 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if unknown != "" {
 		l.WarnContext(ctx, "the previous review could not be found; asking for a full review", "reason", unknown)
 	}
+	var evidence *SemgrepEvidence
+	if e.cfg.Semgrep != nil {
+		evidence = e.cfg.Semgrep.fetch(ctx, e.gh, b.repo(), pr.HeadRef, pr.HeadSHA)
+	}
 	return &inputs{
 		files: files, size: measure(b, files), gate: humanGate(b, changedPaths(files), pr.Labels),
-		prior: prior, priorHead: head, priorUnknown: unknown,
+		prior: prior, priorHead: head, priorUnknown: unknown, semgrep: evidence,
 	}, nil
 }
 
@@ -808,6 +827,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Comments: comments, DroppedComments: dropped, Gate: in.gate, Attempt: attempt,
+		Semgrep: in.semgrep,
 	})
 	msg := &kagent.Message{
 		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
@@ -865,7 +885,26 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		a := Assess(r, in.prior.Previous())
+		prior := in.prior.Previous()
+		var resolvedEvidence []Finding
+		if in.semgrep != nil {
+			// Only the service can create or clear its evidence-availability
+			// finding. The agent still rates every actual Semgrep finding.
+			prior = slices.DeleteFunc(prior, func(f Finding) bool {
+				if f.ID != semgrepUnverified {
+					return false
+				}
+				if in.semgrep.Unavailable == "" {
+					resolvedEvidence = append(resolvedEvidence, f)
+				}
+				return true
+			})
+			r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return f.ID == semgrepUnverified })
+		}
+		a := Assess(r, prior)
+		a.Fixed = append(a.Fixed, resolvedEvidence...)
+		enforceSemgrep(&a, in.semgrep)
+		sortBlocked(a.Blocking)
 		gate := &Gate{}
 		if in.gate != nil {
 			*gate = *in.gate
@@ -965,6 +1004,9 @@ func (e *Engine) observe(ctx context.Context, b *Binding, r *Report, a *Assessme
 	for _, bl := range a.Blocking {
 		if bl.ID == HumanGateID {
 			e.m.Findings.WithLabelValues(b.Name, SeverityHigh, HumanGateID).Inc()
+		}
+		if e.cfg.Semgrep != nil && bl.ID == semgrepUnverified {
+			e.m.Findings.WithLabelValues(b.Name, SeverityMedium, "unverified").Inc()
 		}
 	}
 	if slices.ContainsFunc(a.Blocking, func(x Blocked) bool { return isGate(x.Finding) }) {

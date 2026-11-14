@@ -101,6 +101,11 @@ spec:
             - name: broker-token
               mountPath: /var/run/secrets/factory-broker
               readOnly: true
+            {{- with $c.semgrep }}
+            - name: semgrep
+              mountPath: /var/run/secrets/semgrep
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -112,6 +117,17 @@ spec:
                   audience: kagent-invocation
                   expirationSeconds: 3600
                   path: token
+        {{- with $c.semgrep }}
+        - name: semgrep
+          secret:
+            secretName: factory-reviewer-semgrep
+            # Keep the service running so it records unverified if the
+            # operator has not produced the token (or API_KEY) yet.
+            optional: true
+            items:
+              - key: API_KEY
+                path: API_KEY
+        {{- end }}
         - name: broker-token
           projected:
             sources:

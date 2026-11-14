@@ -487,6 +487,15 @@ reviewer:
   githubApp:
     # app-id, installation-id and private-key, mounted only by the broker.
     itemPath: vaults/k8s-homelab/items/factory-review-gh-app
+  # Optional; omitted until a follow-up PR after this chart is published.
+  # semgrep:
+  #   itemPath: vaults/k8s-homelab/items/semgrep
+  #   apiURL: https://semgrep.dev/api/agent/deployments/DEPLOYMENT_ID/issues/v2
+  #   scanCheck: {name: SCAN_COMPLETION_CHECK, appId: SEMGREP_APP_ID}
+  # scanCheck identifies Semgrep's scan of the exact PR head. A failed check
+  # also needs findings with matching scan metadata; empty findings need a
+  # successful check. API_KEY mounts in this service
+  # only. Fetch bounds: 20 seconds, 100 findings, 1 MiB per response.
   appId: 5758326
   checkName: factory review
   concurrency: 2

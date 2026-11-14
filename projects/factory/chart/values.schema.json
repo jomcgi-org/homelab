@@ -421,6 +421,31 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "semgrep": {
+          "description": "Optional service-only Semgrep evidence. Enable after chart publication; scanCheck proves a scan completed for this head even when there are no findings.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["itemPath", "apiURL", "scanCheck"],
+          "properties": {
+            "itemPath": {
+              "type": "string",
+              "pattern": "^vaults/[^/]+/items/[^/]+$"
+            },
+            "apiURL": {
+              "type": "string",
+              "pattern": "^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:443)?/api/agent/deployments/[0-9]+/issues/v2$"
+            },
+            "scanCheck": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "appId"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "appId": { "type": "integer", "minimum": 1 }
+              }
+            }
+          }
+        },
         "enabled": {
           "type": "boolean"
         },

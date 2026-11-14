@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -42,6 +43,17 @@ type Config struct {
 	// counts as "other", which keeps the metric's labels bounded.
 	RuleIDs  []string  `yaml:"ruleIds"`
 	Bindings []Binding `yaml:"bindings"`
+	// Semgrep is absent until the chart's follow-up enablement. The API
+	// credential is read by this service only, never by the review agent.
+	Semgrep *Semgrep `yaml:"semgrep"`
+}
+
+// Semgrep configures the deployment's findings API and the scan completion
+// check. An empty findings response alone does not prove a scan ran.
+type Semgrep struct {
+	APIURL    string `yaml:"apiURL"`
+	TokenFile string `yaml:"tokenFile"`
+	ScanCheck Check  `yaml:"scanCheck"`
 }
 
 // Intervals are the loop timings.
@@ -173,6 +185,22 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.AppID <= 0 {
 		return nil, fmt.Errorf("config: appId is required: only the reviewer App's check runs count")
+	}
+	if s := c.Semgrep; s != nil {
+		u, err := url.Parse(s.APIURL)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Port() != "" && u.Port() != "443") {
+			return nil, fmt.Errorf("config: semgrep.apiURL must be an HTTPS URL without credentials, query or fragment, on port 443")
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) != 6 || strings.Join(parts[:3], "/") != "api/agent/deployments" || parts[3] == "" || strings.Join(parts[4:], "/") != "issues/v2" {
+			return nil, fmt.Errorf("config: semgrep.apiURL must name /api/agent/deployments/<id>/issues/v2")
+		}
+		if s.ScanCheck.Name == "" || s.ScanCheck.AppID <= 0 || s.ScanCheck.StatusCreator != "" || strings.EqualFold(s.ScanCheck.Name, c.CheckName) || strings.EqualFold(s.ScanCheck.Name, DefaultCheckName) {
+			return nil, fmt.Errorf("config: semgrep.scanCheck needs the scan check name and appId, separate from the review check")
+		}
+		if s.TokenFile == "" {
+			s.TokenFile = "/var/run/secrets/semgrep/API_KEY"
+		}
 	}
 	if c.BrokerTokenFile == "" {
 		c.BrokerTokenFile = "/var/run/secrets/factory-broker/token"

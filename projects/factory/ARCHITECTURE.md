@@ -723,6 +723,47 @@ previews).
   the head and a 128-bit digest of its block's text: holding its own closer
   would take a SHA-256 preimage search, so even a look-alike delimiter the
   sanitizer misses cannot close a block in practice.
+- **Semgrep evidence (#7928, part 1).** Optional `reviewer.semgrep` adds a
+  deterministic service fetch before the review task. It uses the deployment
+  findings query used by [Semgrep's official client](https://github.com/semgrep/semgrep/blob/06d9993409f6698f78f6956cd39d968e7f4d7b6a/cli/src/semgrep/mcp/server.py):
+  `POST /api/agent/deployments/<id>/issues/v2`, a read query filtered by
+  repository name and the PR head ref. It includes Code and Supply Chain
+  findings, including ignored findings, without severity or AI-verdict
+  filtering. Fetching is bounded to 20 seconds, 100 findings and 1 MiB per
+  response, with 64,000 bytes of quoted evidence in the prompt; 429 backs off
+  with `Retry-After` and at most two retries. An
+  overflow, malformed response, API failure or absent token is unavailable
+  evidence, never an empty successful result.
+
+  **Why.** Findings alone cannot distinguish a clean scan from no scan. The
+  configured `scanCheck {name, appId}` must also report success on the exact
+  head before an empty response counts as a clean scan. A completed failure
+  can mean findings: accept that only with nonempty findings whose
+  `lastSeenScan.meta.commit` all match this head. API errors, pending,
+  skipped and missing scans stay unverified. Match the check's App, not
+  just its name. The agent sees
+  allowlisted finding fields as JSON in a separate delimited tool-output
+  block. Newlines, controls and HTML are escaped and delimiter names are
+  sanitized. It accounts for each introduced finding as fixed, false positive
+  with evidence, or at its real `REVIEW.md` severity. The service adds
+  `semgrep:unverified` at medium for unavailable evidence after assessing the
+  agent's reply, so an agent cannot waive it. The task marker records the
+  evidence digest: a resumed task cannot pass with changed evidence it never
+  saw. Rerun the review when the scan or API becomes available.
+
+  `semgrep {itemPath, apiURL, scanCheck}` is omitted by default. It creates
+  `factory-reviewer-semgrep` in the broker namespace from
+  `vaults/k8s-homelab/items/semgrep`; only the reviewer service mounts its
+  `API_KEY`, read-only. The optional projection lets the service report a
+  missing key rather than preventing its pod from starting. The token is
+  reread on each fetch, redirects are refused, and errors contain fixed
+  classes rather than response bodies or transport text. Cilium adds only
+  the configured API hostname on TCP 443 to this service's egress.
+  Enablement belongs to a separate PR after chart publication. That PR must
+  supply the deployment ID and Semgrep scan-check identity, confirm the
+  token's Web API read-findings scope with a live request, and demonstrate
+  finding evidence and a missing-head scan. This staged change does not
+  claim those live checks. The agent MCP server is part 2.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
   and narrowed it the same day to what could weaken the gate itself

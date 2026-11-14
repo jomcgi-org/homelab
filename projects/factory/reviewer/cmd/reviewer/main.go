@@ -129,8 +129,19 @@ func run(log *slog.Logger) error {
 		RetryBackoff: time.Duration(cfg.Intervals.RetryBackoff),
 		RuleIDs:      cfg.RuleIDs,
 		Bindings:     bindings,
+		Semgrep:      semgrepClient(cfg.Semgrep),
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())
 	return eng.Run(ctx, time.Duration(cfg.Intervals.Poll))
+}
+
+func semgrepClient(cfg *config.Semgrep) *review.SemgrepClient {
+	if cfg == nil {
+		return nil
+	}
+	return &review.SemgrepClient{
+		APIURL: cfg.APIURL, TokenFile: cfg.TokenFile,
+		ScanCheck: github.CheckRunFilter{Name: cfg.ScanCheck.Name, AppID: cfg.ScanCheck.AppID},
+	}
 }

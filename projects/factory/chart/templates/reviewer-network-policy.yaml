@@ -37,4 +37,12 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    {{- with .Values.reviewer.semgrep }}
+    - toFQDNs:
+        - matchName: {{ (urlParse .apiURL).hostname | quote }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- end }}
 {{- end }}

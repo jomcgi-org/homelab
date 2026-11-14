@@ -1,0 +1,13 @@
+{{- if and .Values.reviewer.enabled .Values.reviewer.semgrep }}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-reviewer-semgrep
+  namespace: {{ .Values.broker.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ .Values.reviewer.semgrep.itemPath | quote }}
+{{- end }}

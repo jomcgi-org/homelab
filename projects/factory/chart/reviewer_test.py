@@ -18,6 +18,13 @@ _CHART = Path(__file__).resolve().parent
 _DEPLOY = Path(os.environ.get("DEPLOY_VALUES", _CHART.parent / "deploy/values.yaml"))
 _LOCK = Path(os.environ.get("RENDER_LOCK", _CHART.parent / "deploy/render.sha256"))
 _REVIEW_NS = "factory-r-homelab-review"
+
+_SEMGREP = [
+    "reviewer.semgrep.itemPath=vaults/k8s-homelab/items/semgrep",
+    "reviewer.semgrep.apiURL=https://semgrep.dev/api/agent/deployments/17/issues/v2",
+    "reviewer.semgrep.scanCheck.name=Semgrep scan",
+    "reviewer.semgrep.scanCheck.appId=123",
+]
 _SUBJECT = "system:serviceaccount:factory:factory-reviewer"
 _KEEP = {
     "argocd.argoproj.io/sync-options": "Prune=false,Delete=false",
@@ -141,6 +148,77 @@ def test_deploy_values_enable_the_reviewer() -> None:
         "name": "factory review",
         "appId": 5758326,
     }
+
+
+def test_semgrep_is_absent_by_default_and_deploy_render_stays_locked() -> None:
+    assert "semgrep" not in yaml.safe_load((_CHART / "values.yaml").read_text())["reviewer"]
+    assert "semgrep" not in yaml.safe_load(_DEPLOY.read_text())["reviewer"]
+    docs = _render()
+    assert "semgrep" not in _config(docs, "factory-reviewer")
+    assert "factory-reviewer-semgrep" not in _helm()
+    # The existing connector render-lock test checks the complete deploy hash.
+    with tempfile.TemporaryDirectory() as tmp:
+        bare = Path(tmp) / "chart"
+        shutil.copytree(_CHART, bare)
+        (bare / "templates" / "reviewer-semgrep.yaml").unlink()
+        assert _helm() == _helm(chart=bare)
+
+
+def test_semgrep_secret_and_egress_belong_only_to_the_reviewer_service() -> None:
+    docs = _render(_SEMGREP)
+    item = _in(docs, "OnePasswordItem", "factory", "factory-reviewer-semgrep")
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/semgrep"
+    config = _config(docs, "factory-reviewer")
+    assert config["semgrep"] == {
+        "apiURL": "https://semgrep.dev/api/agent/deployments/17/issues/v2",
+        "tokenFile": "/var/run/secrets/semgrep/API_KEY",
+        "scanCheck": {"name": "Semgrep scan", "appId": 123},
+    }
+    pod = _pod(docs, "factory-reviewer")
+    volume = next(v for v in pod["volumes"] if v["name"] == "semgrep")
+    assert volume["secret"] == {
+        "secretName": "factory-reviewer-semgrep",
+        "optional": True,
+        "items": [{"key": "API_KEY", "path": "API_KEY"}],
+    }
+    mount = next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == "semgrep")
+    assert mount == {
+        "name": "semgrep", "mountPath": "/var/run/secrets/semgrep", "readOnly": True
+    }
+    rules = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]["egress"]
+    assert len(rules) == 4
+    assert rules[-1] == {
+        "toFQDNs": [{"matchName": "semgrep.dev"}],
+        "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+    }
+    # No other resource gains the token or API host, including agents,
+    # Harnesses, WorkerPools, broker, connector and sandbox configuration.
+    for doc in docs:
+        if doc["metadata"]["name"] not in ("factory-reviewer", "factory-reviewer-semgrep"):
+            assert "semgrep" not in json.dumps(doc).lower()
+    renamed = _render(_SEMGREP + [
+        "broker.namespace=other-factory",
+        "reviewer.semgrep.apiURL=https://api.semgrep.example:443/api/agent/deployments/17/issues/v2",
+    ])
+    _in(renamed, "OnePasswordItem", "other-factory", "factory-reviewer-semgrep")
+    policy = _in(renamed, "CiliumNetworkPolicy", "other-factory", "factory-reviewer")
+    assert policy["spec"]["egress"][-1]["toFQDNs"] == [{"matchName": "api.semgrep.example"}]
+    assert "factory-reviewer-semgrep" not in _helm(_SEMGREP, enable=False)
+
+
+@pytest.mark.parametrize("override", [
+    "reviewer.semgrep.apiURL=http://semgrep.dev/api/agent/deployments/17/issues/v2",
+    "reviewer.semgrep.apiURL=https://user:secret@semgrep.dev/api/agent/deployments/17/issues/v2",
+    "reviewer.semgrep.apiURL=https://*.semgrep.dev/api/agent/deployments/17/issues/v2",
+    "reviewer.semgrep.apiURL=https://semgrep.dev:8443/api/agent/deployments/17/issues/v2",
+    "reviewer.semgrep.apiURL=https://semgrep.dev/api/agent/deployments/17/issues/v2?token=secret",
+    "reviewer.semgrep.scanCheck.appId=0",
+    "reviewer.semgrep.scanCheck.name=factory review",
+    "reviewer.semgrep.itemPath=bad-path",
+])
+def test_invalid_semgrep_configuration_fails_render(override: str) -> None:
+    with pytest.raises(RuntimeError):
+        _render(_SEMGREP + [override])
 
 
 def test_one_kept_identity_and_private_image() -> None:
@@ -542,6 +620,7 @@ def test_long_default_namespace_requires_an_explicit_review_namespace() -> None:
     "overrides",
     [
         [],
+        _SEMGREP,
         [
             "reviewer.bindings.homelab.enqueueAuthors=[]",
             "reviewer.bindings.homelab.requiredChecks[0].name=pr-checks",

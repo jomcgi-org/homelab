@@ -1,4 +1,9 @@
 {{- if .Values.reviewer.enabled }}
+{{- with .Values.reviewer.semgrep }}
+{{- if eq (lower .scanCheck.name) (lower $.Values.reviewer.checkName) }}
+{{- fail "reviewer.semgrep.scanCheck must be separate from the review check" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.broker.enabled }}
 {{- fail "reviewer.enabled needs broker.enabled" }}
 {{- end }}
