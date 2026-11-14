@@ -10,6 +10,7 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/google/go-containerregistry v0.21.9
 	github.com/klauspost/compress v1.19.2
+	github.com/lib/pq v1.12.3
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	github.com/spf13/cobra v1.10.2
