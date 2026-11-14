@@ -100,12 +100,21 @@ records how they relate and routes results and feedback between them.
     the session. Idle expiration deletes a session, so later calls answer
     `NOT_FOUND`. [I] A crashed runtime leaves its task working until the
     revert fails it.
+15. **kagent authorizes no Agent per caller.** [V] The v1.0.1 controller
+    builds its authorizer from `app.Options.Authorizer`, which its `main`
+    leaves nil, so users and ServiceAccounts get `NoopAuthorizer`: any
+    authenticated principal may invoke any Agent the controller watches.
+    Only actors are confined, to their own session. Session ownership still
+    separates principals. ServiceAccount tokens are accepted only once
+    `config.server.auth.serviceAccount.authority` is set; kagent then reviews
+    them for the fixed audience `kagent-invocation`, and the principal ID is
+    `kubernetes:<authority>` with the ServiceAccount UID.
 
 ## Umbrella chart
 
 `projects/factory/chart` is a published `helm_chart` (OCI
 `ghcr.io/jomcgi/homelab/charts/factory`). The broker and connector images
-join its `images` attr, pinned at build time, when their templates land.
+are in its `images` attr, pinned at build time.
 `projects/factory/deploy` holds the homelab
 Application and values. It installs:
 
@@ -430,6 +439,42 @@ send, in the connector's sessions that no work item maps; with none, it
 confirms. A run that itsaplan ended closes once its cancellation is
 confirmed, whatever started that cancellation.
 
+**Deployment.** `templates/connector*.yaml` render with `connector.enabled`,
+which needs `itsaplan.enabled`, `broker.enabled` and kagent's
+`config.server.auth.serviceAccount.authority`. That authority is part of the
+connector's kagent principal (finding 15), so it never changes once set.
+
+- **Pod.** Deployment `factory/factory-connector`, one replica, `Recreate`,
+  wave 1, the image by digest with the GHCR pull secret. Its ServiceAccount
+  `factory-connector` is kept (finding 6) and mounts no API token: the
+  connector calls no Kubernetes API.
+- **Configuration.** Each binding takes owner, repository, base branch,
+  namespace and kagent Agent from `repositories`, and its itsaplan project,
+  agent keys and review policy from `connector.bindings.<name>`. The
+  connector's agent keys are itsaplan bootstrap agents: `homelab-codex`
+  claims runs and `factory-coordinator` reads and comments. Their keys are
+  mounted from the bootstrap's `factory-itsaplan-agent-<username>` Secrets,
+  so the pod waits until the bootstrap has written them. The database URL
+  comes from `factory-connector-db`, which `factory-db-secrets` declares and
+  `factory-db-setup` fills. Issue links default to itsaplan's
+  `/issue/{issueId}` redirect.
+- **Tokens.** Two projected ServiceAccount tokens, one per audience:
+  `kagent-invocation` for the controller's A2A gateway and SessionService
+  (`kagent-controller.kagent.svc:8083`), `factory-broker` for the broker's
+  admin port. The chart adds `system:serviceaccount:factory:factory-connector`
+  to the broker's `connectorSubjects`. kagent needs no grant for the
+  connector (finding 15); the controller's ingress policy is the boundary.
+- **Delivery** turns on with `broker.githubApp.enabled`: only then does the
+  connector get the broker URL, its token and egress to `api.github.com`.
+  Without the App it claims and dispatches runs and reports their results,
+  but opens no pull requests.
+- **Network.** Egress to itsaplan's api (3000), the kagent controller (8083),
+  the broker's admin port (8081), `factory-db` (`connector.database.endpoints`,
+  5432) and `api.github.com:443`. Each peer admits it by
+  `networkPolicy.connector`'s labels. Nothing connects to it: metrics on
+  9090 have no scraper on this cluster yet. It writes no evidence to
+  `factory-evidence` yet, so it has no Garage egress.
+
 ## Credential broker
 
 `projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
@@ -529,7 +574,7 @@ and retries once, so a brief overlap during a rollout is safe.
 | --- | --- |
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
 | Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
-| Connector to kagent | Projected ServiceAccount token, kept ServiceAccount |
+| Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
 | Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
 | Independent review | The Semgrep reviewer as a required check bound to its App ID in the ruleset |

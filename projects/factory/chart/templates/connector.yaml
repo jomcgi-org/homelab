@@ -1,0 +1,249 @@
+{{- if .Values.connector.enabled }}
+{{- /*
+The connector (ARCHITECTURE.md, "Connector"): one replica, Recreate, with a
+Postgres advisory lock as its writer fence. It claims itsaplan runs with the
+coding agents' keys, sends them to the repository binding's kagent Agent as
+its own ServiceAccount, and delivers the pushed branch as a pull request with
+GitHub tokens the broker mints for that ServiceAccount.
+*/}}
+{{- $c := .Values.connector }}
+{{- $ns := .Values.broker.namespace }}
+{{- $name := include "factory.connectorName" . }}
+{{- $delivers := include "factory.connectorDelivers" . }}
+{{- if not .Values.itsaplan.enabled }}
+{{- fail "connector.enabled needs itsaplan.enabled: the connector claims itsaplan runs with the keys its bootstrap writes" }}
+{{- end }}
+{{- if not .Values.broker.enabled }}
+{{- fail "connector.enabled needs broker.enabled: the connector shares its namespace and gets GitHub tokens from it" }}
+{{- end }}
+{{- $kagentAuth := ((.Values.kagent.config | default dict).server | default dict).auth | default dict }}
+{{- if and (include "factory.kagentInstall" .) (not ($kagentAuth.serviceAccount | default dict).authority) }}
+{{- fail "connector.enabled needs kagent.config.server.auth.serviceAccount.authority: kagent authenticates the connector's ServiceAccount token only with it" }}
+{{- end }}
+{{- $itsaplanAgents := list }}
+{{- range .Values.itsaplan.bootstrap.agents }}
+{{- $itsaplanAgents = append $itsaplanAgents .username }}
+{{- end }}
+{{- $keys := list $c.coordinator }}
+{{- $agents := list }}
+{{- range $c.agents }}
+{{- if has .username $keys }}
+{{- fail (printf "connector.agents: %s is listed twice or is the coordinator" .username) }}
+{{- end }}
+{{- $keys = append $keys .username }}
+{{- $agents = append $agents (dict "key" .username "apiKeyFile" (include "factory.connectorKeyPath" .username) "concurrency" (.concurrency | default 1 | int)) }}
+{{- end }}
+{{- range $keys }}
+{{- if not (has . $itsaplanAgents) }}
+{{- fail (printf "connector: itsaplan agent %s is not in itsaplan.bootstrap.agents, which writes its key" .) }}
+{{- end }}
+{{- end }}
+{{- $repoNames := list }}
+{{- $bindings := list }}
+{{- range $r := .Values.repositories }}
+{{- $repoNames = append $repoNames $r.name }}
+{{- $b := index ($c.bindings | default dict) $r.name }}
+{{- if not $b }}
+{{- fail (printf "connector.bindings.%s is required: every repository binding needs its itsaplan project and agents" $r.name) }}
+{{- end }}
+{{- range $b.agents }}
+{{- if or (not (has . $keys)) (eq . $c.coordinator) }}
+{{- fail (printf "connector.bindings.%s: agent %s is not in connector.agents" $r.name .) }}
+{{- end }}
+{{- end }}
+{{- $binding := dict
+  "name" $r.name
+  "owner" $r.owner
+  "repo" $r.repo
+  "baseBranch" $r.baseBranch
+  "kagentNamespace" $r.namespace
+  "kagentAgent" (include "factory.bindingAgentName" $r)
+}}
+{{- $bindings = append $bindings (mustMergeOverwrite $binding (deepCopy $b)) }}
+{{- end }}
+{{- range $k, $_ := $c.bindings | default dict }}
+{{- if not (has $k $repoNames) }}
+{{- fail (printf "connector.bindings.%s names no repository in repositories" $k) }}
+{{- end }}
+{{- end }}
+{{- $links := deepCopy $c.links }}
+{{- if not $links.issue }}
+{{- /* itsaplan's /issue/:issueId deep link redirects to the issue's page. */}}
+{{- $_ := set $links "issue" (printf "%s/issue/{issueId}" (include "factory.itsaplanAppURL" .)) }}
+{{- end }}
+{{- $config := dict
+  "intervals" $c.intervals
+  "coordinator" (dict "key" $c.coordinator "apiKeyFile" (include "factory.connectorKeyPath" $c.coordinator))
+  "agents" $agents
+  "bindings" $bindings
+  "links" $links
+}}
+{{- $configYAML := toYaml $config }}
+# The connector's identity to kagent and the broker. Kept: a kagent principal
+# includes the ServiceAccount's UID, so a recreated account loses its sessions
+# (ARCHITECTURE.md finding 6).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+# It calls no Kubernetes API; kagent and the broker get audience-bound tokens.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  config.yaml: |
+    {{- $configYAML | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # One writer: the advisory lock fences a second process, and Recreate keeps
+  # a rollout from waiting on it.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "factory.connectorSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.connectorSelector" . | nindent 8 }}
+        app.kubernetes.io/part-of: factory
+      annotations:
+        checksum/config: {{ $configYAML | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: connector
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          env:
+            - name: FACTORY_CONNECTOR_CONFIG
+              value: /etc/factory-connector/config.yaml
+            - name: FACTORY_CONNECTOR_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.database.secretName }}
+                  key: DATABASE_URL
+            - name: FACTORY_CONNECTOR_ITSAPLAN_URL
+              value: {{ include "factory.itsaplanInternalURL" . | quote }}
+            - name: FACTORY_CONNECTOR_KAGENT_URL
+              value: {{ printf "http://%s" (include "factory.kagentControllerAddress" .) | quote }}
+            - name: FACTORY_CONNECTOR_KAGENT_GRPC
+              value: {{ include "factory.kagentControllerAddress" . | quote }}
+            - name: FACTORY_CONNECTOR_KAGENT_TOKEN_FILE
+              value: /var/run/secrets/kagent/token
+            {{- if $delivers }}
+            - name: FACTORY_CONNECTOR_BROKER_URL
+              value: {{ printf "http://%s.%s.svc:%d" (include "factory.brokerName" .) $ns (int .Values.broker.adminPort) | quote }}
+            - name: FACTORY_CONNECTOR_BROKER_TOKEN_FILE
+              value: /var/run/secrets/factory-broker/token
+            {{- end }}
+            - name: FACTORY_CONNECTOR_METRICS_ADDR
+              value: {{ printf ":%d" (int $c.metricsPort) | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: metrics
+              containerPort: {{ $c.metricsPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 30
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/factory-connector
+              readOnly: true
+            - name: itsaplan-keys
+              mountPath: /var/run/secrets/factory-itsaplan
+              readOnly: true
+            - name: kagent-token
+              mountPath: /var/run/secrets/kagent
+              readOnly: true
+            {{- if $delivers }}
+            - name: broker-token
+              mountPath: /var/run/secrets/factory-broker
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        # Each itsaplan agent's key, from the Secret the itsaplan bootstrap
+        # writes; the pod waits for a key the bootstrap has not written yet.
+        - name: itsaplan-keys
+          projected:
+            sources:
+              {{- range $keys }}
+              - secret:
+                  name: {{ include "factory.itsaplanAgentSecret" . }}
+                  items:
+                    - key: apiKey
+                      path: {{ . }}
+              {{- end }}
+        # kagent reviews this token for its fixed invocation audience; the
+        # principal is the ServiceAccount's UID.
+        - name: kagent-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: kagent-invocation
+                  expirationSeconds: 3600
+                  path: token
+        {{- if $delivers }}
+        # The broker reviews this token (tokenReview.audience) and checks its
+        # subject against connectorSubjects.
+        - name: broker-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: factory-broker
+                  expirationSeconds: 3600
+                  path: token
+        {{- end }}
+{{- end }}

@@ -42,14 +42,19 @@
       "minimum": 1,
       "maximum": 65535
     },
-    "notYet": {
-      "description": "A later step of the delivery plan; not implemented in this chart version.",
+    "connectorCheck": {
       "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
       "properties": {
-        "enabled": {
-          "enum": [false]
-        }
-      }
+        "name": { "type": "string", "minLength": 1 },
+        "appId": { "type": "integer", "minimum": 1 },
+        "statusCreator": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        { "required": ["appId"], "not": { "required": ["statusCreator"] } },
+        { "required": ["statusCreator"], "not": { "required": ["appId"] } }
+      ]
     }
   },
   "properties": {
@@ -406,7 +411,127 @@
       }
     },
     "connector": {
-      "$ref": "#/definitions/notYet"
+      "description": "The connector (projects/factory/connector).",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "required": ["repository"],
+          "additionalProperties": false,
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" },
+            "digest": {
+              "type": "string",
+              "pattern": "^(|sha256:[0-9a-f]{64})$"
+            },
+            "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] }
+          }
+        },
+        "coordinator": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["username"],
+            "properties": {
+              "username": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" },
+              "concurrency": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "bindings": {
+          "description": "Per repository binding, by its repositories name.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["itsaplanProject", "agents"],
+            "properties": {
+              "itsaplanProject": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9]{0,9}$"
+              },
+              "agents": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" }
+              },
+              "branchPrefix": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._/-]+/$"
+              },
+              "maxEngineeringRetries": { "type": "integer", "minimum": 0 },
+              "maxReviewRounds": { "type": "integer", "minimum": 0 },
+              "doneColumn": { "type": "string", "minLength": 1 },
+              "trustedReviewers": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "requiredChecks": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/connectorCheck" }
+              },
+              "reviewerCheck": { "$ref": "#/definitions/connectorCheck" }
+            }
+          }
+        },
+        "intervals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "poll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "heartbeat": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "reissueInterval": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "dispatchWindow": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "acquireRetry": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "reviewPoll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            }
+          }
+        },
+        "links": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issue": { "type": "string" },
+            "run": { "type": "string" },
+            "session": { "type": "string" }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
+        "metricsPort": { "$ref": "#/definitions/port" },
+        "resources": { "type": "object" }
+      }
     },
     "providers": {
       "type": "object",

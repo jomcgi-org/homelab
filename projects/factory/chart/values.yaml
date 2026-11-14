@@ -213,8 +213,8 @@ broker:
     limits:
       memory: 256Mi
 
-# GHCR pull credentials for the factory's first-party images (the broker's,
-# and later the connector's and itsaplan bootstrap's), which are private. A
+# GHCR pull credentials for the factory's first-party images (the broker's and
+# the connector's), which are private. A
 # OnePasswordItem syncs a kubernetes.io/dockerconfigjson Secret into the
 # factory namespace (broker.namespace) whenever a workload there is enabled.
 imagePullSecret:
@@ -383,13 +383,71 @@ itsaplan:
       name: edge
       namespace: edge
 
+# The connector, projects/factory/connector (ARCHITECTURE.md, "Connector"):
+# claims itsaplan runs, sends them to the repository binding's kagent Agent and
+# delivers the pushed branch as a pull request through review and the merge
+# queue. One replica in the broker's namespace, as ServiceAccount
+# factory-connector, which the chart keeps.
+connector:
+  # Off by default. Turning it on needs itsaplan and the broker on, and kagent
+  # authenticating ServiceAccount tokens:
+  # kagent.config.server.auth.serviceAccount.authority, which is part of every
+  # kagent principal ID, so it never changes once set.
+  enabled: false
+  # Overwritten at build time by helm_chart(images = ...).
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/connector
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  # itsaplan external agents, by username in itsaplan.bootstrap.agents, whose
+  # bootstrap writes each key to Secret factory-itsaplan-agent-<username>. The
+  # coordinator reads runs and issues, comments and moves merged issues to
+  # Done; each of `agents` claims runs, at most `concurrency` at once.
+  coordinator: factory-coordinator
+  agents:
+    - username: homelab-codex
+      concurrency: 1
+  # Per repository binding, by its `repositories` name; every binding needs
+  # one. Owner, repository, base branch and the kagent Agent come from the
+  # binding. Keys: itsaplanProject and agents (required); branchPrefix
+  # (factory/), maxEngineeringRetries (2), maxReviewRounds (3), doneColumn;
+  # the review policy trustedReviewers (GitHub logins), requiredChecks and
+  # reviewerCheck (each {name, appId} or {name, statusCreator}). Without a
+  # reviewer check or trusted reviewers no PR is ever enqueued.
+  bindings: {}
+  # Loop timings as Go durations over the connector's defaults: poll (5s),
+  # heartbeat (60s, at most 2m), reissueInterval (15s), dispatchWindow (4m, at
+  # least 210s), acquireRetry (5s), reviewPoll (60s).
+  intervals: {}
+  # URL templates in PR bodies and Done comments: {issue}, {issueId}, {run},
+  # {namespace}, {agent} and {session} are replaced. An empty issue link is
+  # itsaplan's https://<itsaplan.host>/issue/{issueId}; other empty links stay
+  # plain text.
+  links:
+    issue: ""
+    run: ""
+    session: ""
+  # PostgreSQL, provided outside the chart: a Secret in the broker's namespace
+  # whose key DATABASE_URL owns the connector's database (it migrates it at
+  # startup). `endpoints` are Cilium selectors for the connector's egress.
+  database:
+    secretName: factory-connector-db
+    endpoints: []
+    port: 5432
+  # Metrics and /healthz.
+  metricsPort: 9090
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
 # ---------------------------------------------------------------------------
 # Later steps of the delivery plan. Nothing below renders yet, and setting any
 # of it fails the render (templates/validate.yaml) rather than doing nothing.
 # ---------------------------------------------------------------------------
 
-# Connector, projects/factory/connector (steps 9 and 10).
-connector:
-  enabled: false
 # Model providers beyond the broker's relay.
 providers: {}

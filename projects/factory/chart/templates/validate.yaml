@@ -9,11 +9,6 @@ instead of silently rendering nothing.
 {{- if ne .Values.postgres.mode "existing" }}
 {{- fail "postgres.mode install arrives with the CNPG operator (delivery plan step 3); use existing" }}
 {{- end }}
-{{- range $section := list "connector" }}
-{{- if (index $.Values $section).enabled }}
-{{- fail (printf "%s is not implemented in this chart version" $section) }}
-{{- end }}
-{{- end }}
 {{- if .Values.providers }}
 {{- fail "providers are not implemented in this chart version; agents use the broker's relay" }}
 {{- end }}

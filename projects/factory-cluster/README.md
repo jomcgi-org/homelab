@@ -411,9 +411,7 @@ restore it from the old prefix (`bootstrap.recovery` with an
 bump `serverName` to the next version in `resources/cluster.yaml`. The old
 prefix ages out only by hand.
 
-The itsaplan and connector databases come with the factory chart's
-`postgres.mode: install` (steps 6 and 9), which knows their roles and
-clients.
+The itsaplan and connector databases are in `factory-db` (below).
 
 ## Agent Substrate
 
@@ -640,8 +638,8 @@ These come from the #7817 step 1 checklist:
 ### factory-db
 
 `factory-db` (`projects/platform-factory/factory-db/`, namespace
-`factory-db`) holds itsaplan's database and, from step 9, the connector's
-(`factory_connector`, created empty now). It mirrors `kagent-pg`: three
+`factory-db`) holds itsaplan's database and the connector's
+(`factory_connector`, which the connector migrates at startup). It mirrors `kagent-pg`: three
 instances, the same sizing, WAL and daily base backups (02:45 UTC, 14 days)
 to `factory-db-backups`, and `factory-db-init` (wave -1) holding the Cluster
 back until garage-init fills its key. Unlike `kagent-pg` it has no superuser
@@ -717,3 +715,23 @@ run and chat feeds' `claim`, and their per-run `heartbeat`, `events` and
 `result`. Agents and the connector use the api's Service inside the cluster.
 God mode stays public, behind both sign-ins, because the web app calls it for
 the instance admin.
+
+## Connector
+
+The connector (`projects/factory/ARCHITECTURE.md`, "Connector") runs as
+`factory/factory-connector` once the deploy values set `connector.enabled`,
+after itsaplan's bootstrap has written the agents' keys. Turning it on also
+sets `kagent.config.server.auth.serviceAccount.authority`; never change that
+value afterwards, since kagent identifies the connector by it and a changed
+principal loses every session. Delivery (pull requests, review rounds and the
+merge queue) starts with `broker.githubApp.enabled`.
+
+Operators stop delivery for an issue, or clear a credential or quota block
+after fixing the grant, from the connector's own pod:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-connector -- \
+  connector cancel HOME-7 --by "$USER"
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-connector -- \
+  connector unblock kagent:factory-r-homelab/homelab-codex
+```
