@@ -65,12 +65,16 @@ func TestLoadRejects(t *testing.T) {
 		"http issuer":    "namespace: f\nactorJwt: {issuer: 'http://idp'}\n",
 		"no app id":      "namespace: f\ngithub: {privateKeyFile: /k}\n",
 		"shared listen":  "namespace: f\nadminListenAddr: ':8080'\n",
+		"bad effort":     "namespace: f\ncodex: {reasoningEffort: huge}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(write(t, "c.yaml", content), func(string) string { return "" }); err == nil {
 				t.Fatal("Load accepted invalid config")
 			}
 		})
+	}
+	if c, err := Load(write(t, "e.yaml", "namespace: f\ncodex: {reasoningEffort: xhigh}\n"), func(string) string { return "" }); err != nil || c.Codex.ReasoningEffort != "xhigh" {
+		t.Fatalf("xhigh effort = %q, %v", c.Codex.ReasoningEffort, err)
 	}
 	_, err := Load("", func(k string) string { return map[string]string{"POD_NAMESPACE": "factory"}[k] })
 	if err != nil {

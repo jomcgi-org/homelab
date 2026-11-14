@@ -74,7 +74,10 @@ type Relay struct {
 	StreamIdleTimeout time.Duration
 	// MaxConcurrent caps requests in flight to the backend.
 	MaxConcurrent int
-	Now           func() time.Time
+	// ReasoningEffort, when set, replaces reasoning.effort in every
+	// /responses request (withEffort).
+	ReasoningEffort string
+	Now             func() time.Time
 
 	initOnce sync.Once
 	slots    chan struct{}
@@ -208,6 +211,9 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 			return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 		}
 	}
+	if rt.suffix == "responses" {
+		body = rl.withEffort(r, body)
+	}
 	// The server's ReadTimeout bounds the body upload only. net/http
 	// already clears the read deadline when the body reaches EOF (its
 	// background read); clear it here too so a long stream never depends
@@ -300,6 +306,44 @@ func (rl *Relay) streamIdleTimeout() time.Duration {
 		return rl.StreamIdleTimeout
 	}
 	return DefaultStreamIdleTimeout
+}
+
+// withEffort sets reasoning.effort to ReasoningEffort in a /responses
+// request, keeping the request's other fields and reasoning settings.
+// kagent's Codex harness configures no effort, so without this every turn
+// runs at the model's default. A compressed or non-object body is forwarded
+// as sent.
+func (rl *Relay) withEffort(r *http.Request, body []byte) []byte {
+	if rl.ReasoningEffort == "" {
+		return body
+	}
+	if enc := r.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		return body
+	}
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil || req == nil {
+		return body
+	}
+	reasoning := map[string]json.RawMessage{}
+	if raw, ok := req["reasoning"]; ok {
+		// null or a non-object reasoning is replaced.
+		_ = json.Unmarshal(raw, &reasoning)
+		if reasoning == nil {
+			reasoning = map[string]json.RawMessage{}
+		}
+	}
+	effort, _ := json.Marshal(rl.ReasoningEffort)
+	reasoning["effort"] = effort
+	encoded, err := json.Marshal(reasoning)
+	if err != nil {
+		return body
+	}
+	req["reasoning"] = encoded
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func (rl *Relay) forward(ctx context.Context, r *http.Request, rt route, body []byte, tok grant.Token) (*http.Response, error) {

@@ -64,6 +64,11 @@ type Codex struct {
 	// QuotaConfigMap persists quota observations when set; otherwise they
 	// live in memory.
 	QuotaConfigMap string `json:"quotaConfigMap"`
+	// ReasoningEffort, when set, is the reasoning effort of every relayed
+	// /responses call. kagent's Codex harness sends none, so Codex uses the
+	// model's default (low for the gpt-6 models). Empty leaves requests as
+	// sent.
+	ReasoningEffort string `json:"reasoningEffort"`
 	// MaxRequestBytes bounds a buffered relay request body.
 	MaxRequestBytes int64 `json:"maxRequestBytes"`
 	// MaxConcurrentRequests caps relay requests in flight.
@@ -259,6 +264,11 @@ func (c Config) Validate() error {
 		if d.Duration <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be positive", name))
 		}
+	}
+	switch c.Codex.ReasoningEffort {
+	case "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
+	default:
+		errs = append(errs, fmt.Errorf("codex.reasoningEffort %q is not a reasoning effort", c.Codex.ReasoningEffort))
 	}
 	if c.Codex.MaxRequestBytes <= 0 || c.Codex.MaxConcurrentRequests <= 0 {
 		errs = append(errs, errors.New("codex.maxRequestBytes and codex.maxConcurrentRequests must be positive"))
