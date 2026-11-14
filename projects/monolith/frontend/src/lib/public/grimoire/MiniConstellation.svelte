@@ -1,5 +1,5 @@
 <script>
-  import { observeScheme } from "./observe-scheme.js";
+  import { observeScheme } from "$lib/styles/shared/observe-scheme.js";
   // Small, non-interactive, pre-settled canvas graph. Same simulation and
   // draw mechanics as explore/ExploreCanvas.svelte (deterministic id-hash
   // placement, synchronous settle before the first paint, fade+scale reveal

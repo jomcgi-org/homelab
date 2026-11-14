@@ -1,5 +1,5 @@
 <script>
-  import { observeScheme } from "../observe-scheme.js";
+  import { observeScheme } from "$lib/styles/shared/observe-scheme.js";
   // Force-directed EXPLORE canvas: ported from the interaction/render spec at
   // the grimoire reskin mockup (the EXPLORE view's
   // exTick/exDraw/exHit/pan/zoom code), swapped from globals to a Svelte 5

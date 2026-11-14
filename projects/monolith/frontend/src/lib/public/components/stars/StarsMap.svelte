@@ -1,4 +1,5 @@
 <script>
+  import { observeScheme } from "$lib/styles/shared/observe-scheme.js";
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
@@ -499,13 +500,7 @@
         if (map && layerReady)
           applyMapPalette(map, readMapPalette(mapContainer));
       };
-      const scheme = new MutationObserver(restyle);
-      scheme.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["data-theme"],
-      });
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      media.addEventListener("change", restyle);
+      const disposeScheme = observeScheme(restyle);
       const resize = new ResizeObserver(() => map?.resize());
       resize.observe(mapContainer);
 
@@ -599,8 +594,7 @@
       });
 
       cleanup = () => {
-        scheme.disconnect();
-        media.removeEventListener("change", restyle);
+        disposeScheme();
         resize.disconnect();
         canvas.removeEventListener("keydown", keyboard);
         mapContainer.removeEventListener("click", trackAttribution);

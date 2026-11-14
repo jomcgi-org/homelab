@@ -1,5 +1,5 @@
 <script>
-  import { observeScheme } from "../observe-scheme.js";
+  import { observeScheme } from "$lib/styles/shared/observe-scheme.js";
   // "From scan to query": the public Grimoire landing's scroll-scrubbed
   // explainer. A tall scroller wraps a position: sticky full-viewport stage;
   // one rAF loop maps scroll progress to a master fraction t in [0, 1], and the

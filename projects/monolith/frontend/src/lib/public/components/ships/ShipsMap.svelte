@@ -1,4 +1,5 @@
 <script>
+  import { observeScheme } from "$lib/styles/shared/observe-scheme.js";
   import { onMount } from "svelte";
   import { Button } from "@homelab/design-system/components";
   import {
@@ -747,17 +748,10 @@
         }
       });
 
-      const scheme = new MutationObserver(refreshPalette);
-      scheme.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["data-theme"],
-      });
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      media.addEventListener("change", refreshPalette);
+      const disposeScheme = observeScheme(refreshPalette);
 
       cleanup = () => {
-        scheme.disconnect();
-        media.removeEventListener("change", refreshPalette);
+        disposeScheme();
         mapContainer.removeEventListener("click", onAttributionClick);
         if (idleWarmup) cancelIdleCallback(warmup);
         else clearTimeout(warmup);

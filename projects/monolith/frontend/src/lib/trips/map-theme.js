@@ -1,3 +1,5 @@
+import { observeScheme } from "../styles/shared/observe-scheme.js";
+
 // MapLibre consumes resolved colours, not CSS custom-property expressions.
 // Read the sheet containing this map (the root still has legacy tier tokens).
 export function mapPalette(container) {
@@ -30,16 +32,7 @@ export function themeBasemap(map, palette) {
 }
 
 export function watchMapScheme(update) {
-  const media = window.matchMedia("(prefers-color-scheme: dark)");
-  const observer = new MutationObserver(update);
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme"],
-  });
-  media.addEventListener("change", update);
+  const dispose = observeScheme(update);
   update();
-  return () => {
-    observer.disconnect();
-    media.removeEventListener("change", update);
-  };
+  return dispose;
 }

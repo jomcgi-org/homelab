@@ -1,3 +1,4 @@
+import { observeScheme } from "../../styles/shared/observe-scheme.js";
 import { CLUSTER_COLORS, SHEET_CLUSTER_COLORS } from "./clusters.js";
 
 // The private consumer keeps the original paint values, independent of the
@@ -40,16 +41,5 @@ export function resolveGraphPalette(stage, sheet = false) {
 }
 
 export function watchGraphPalette(stage, update) {
-  const refresh = () => update(resolveGraphPalette(stage, true));
-  const observer = new MutationObserver(refresh);
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme"],
-  });
-  const media = window.matchMedia("(prefers-color-scheme: dark)");
-  media.addEventListener("change", refresh);
-  return () => {
-    observer.disconnect();
-    media.removeEventListener("change", refresh);
-  };
+  return observeScheme(() => update(resolveGraphPalette(stage, true)));
 }

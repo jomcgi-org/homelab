@@ -618,6 +618,7 @@ js_library(
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/map-palette.js",
         "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/observe-scheme.js",
         "src/lib/styles/shared/tokens.css",
         "src/routes/+error.svelte",
         "src/routes/+layout.svelte",
