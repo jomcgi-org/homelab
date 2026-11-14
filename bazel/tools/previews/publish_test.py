@@ -541,6 +541,73 @@ class HTTPDiagnosticTests(unittest.TestCase):
         error.fp.seek(0)
         self.assertEqual(error.read(), b"private response secret-body")
 
+    def test_pages_refusal_reports_only_bounded_numeric_metadata(self):
+        for status in (403, 429):
+            error = self.error(
+                status,
+                {
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "1794655500",
+                    "Retry-After": "60",
+                    "Authorization": "secret-header",
+                },
+            )
+            self.api.opener.open.side_effect = error
+            self.api.opener.open.reset_mock()
+            with (
+                self.subTest(status=status),
+                mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+            ):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    self.api.repo("/pages")
+                self.assertIs(raised.exception, error)
+                self.assertEqual(
+                    stderr.getvalue(),
+                    f"HTTP method=GET route=pages status={status}\n"
+                    "HTTP pages_limit remaining=0 reset=1794655500 retry_after=60\n",
+                )
+                self.api.opener.open.assert_called_once()
+                self.assertEqual(error.read(), b"private response secret-body")
+
+    def test_malformed_metadata_and_other_routes_never_echo_headers(self):
+        for value in (
+            "secret-token",
+            "0\nsecret-header",
+            "１２",
+            "-1",
+            "+1",
+            "1.0",
+            " 0",
+            "0 ",
+            "12345678901",
+            "",
+            "Wed, 21 Oct 2015 07:28:00 GMT",
+        ):
+            error = self.error(
+                headers={
+                    "X-RateLimit-Remaining": value,
+                    "X-RateLimit-Reset": value,
+                    "Retry-After": value,
+                }
+            )
+            self.api.opener.open.side_effect = error
+            with (
+                self.subTest(value=value),
+                mock.patch.object(sys, "stderr", io.StringIO()) as stderr,
+            ):
+                with self.assertRaises(urllib.error.HTTPError):
+                    self.api.repo("/pages")
+                self.assertEqual(
+                    stderr.getvalue(), "HTTP method=GET route=pages status=403\n"
+                )
+        self.api.opener.open.side_effect = self.error(headers={"Retry-After": "60"})
+        with mock.patch.object(sys, "stderr", io.StringIO()) as stderr:
+            with self.assertRaises(urllib.error.HTTPError):
+                self.api.repo("/pulls/42")
+            self.assertEqual(
+                stderr.getvalue(), "HTTP method=GET route=pull-request status=403\n"
+            )
+
     def test_routes_never_include_identifiers_queries_or_contents(self):
         routes = {
             "/pages": "pages",
@@ -704,6 +771,35 @@ class PrepareTests(unittest.TestCase):
             publish.prepare(
                 self.api, self.event, "workflow_run", Path(directory) / "site"
             )
+
+    def test_closed_event_cleans_preview_and_preserves_open_pr(self):
+        publish.add_preview(
+            self.state, self.files, 42, A, {"index.html": HTML}, self.now, 9
+        )
+        self.responses["/pulls/42"] = pr(state="closed")
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(publish, "load_state", self.loaded),
+            mock.patch.object(publish, "save_state", self.saved),
+            mock.patch.object(publish, "output", self.outputs),
+            mock.patch.object(publish.time, "time", return_value=self.now),
+        ):
+            publish.prepare(
+                self.api,
+                {
+                    "repository": {"full_name": publish.REPOSITORY},
+                    "action": "closed",
+                    "number": 42,
+                },
+                "pull_request_target",
+                Path(directory) / "site",
+            )
+        self.assertEqual(set(self.state["previews"]), {"43"})
+        self.assertFalse(any(path.startswith("site/pr/42/") for path in self.files))
+        self.saved.assert_called_once()
+        self.api.artifact.assert_not_called()
+        self.api.all.assert_not_called()
+        self.outputs.assert_any_call("ready", "true")
 
     def test_non_main_build_skips_artifacts_and_preserves_existing_previews(self):
         self.responses["/pulls/42"]["base"]["ref"] = "factory/held-stack"

@@ -248,10 +248,15 @@ and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
 and selectors fail closed. Reachability remains a separate workflow stage.
 Hook-versus-CI duplication remains intentional for fast feedback.
 
+## Fixture publisher refusals
+
+**Why.** The failing closed-PR run [43589747259](https://github.com/jomcgi-org/homelab/actions/runs/43589747259) reports GET Pages 403 despite `Pages: read`. Its workflow and trusted publisher match the successful run's code; scheduled run [43590695735](https://github.com/jomcgi-org/homelab/actions/runs/43590695735) later succeeded with the same permissions. Historical logs omit the response metadata needed to identify the refusal. The shared API reader now records only bounded decimal remaining/reset/retry-after values for Pages 403/429 responses. Prepare, both deployment guards and comment retain their Pages validation and fail on refusals. No retries or permission changes are justified by the available evidence. This diagnostic change is staged through repository review; it does not establish a repair of #7905.
+
 ## Direction
 
-Nothing is decided and unbuilt here at present; outstanding work is
-tracked in GitHub Issues.
+| Work | Remaining acceptance |
+|---|---|
+| [Pages refusal investigation #7905](https://github.com/jomcgi-org/homelab/issues/7905) | Identify the refusal from Actions-token evidence if it recurs. Within 72 hours after authorized landing, verify a naturally triggered closed-PR publisher run using the delivered protected-main revision succeeds through aggregate/prepare and required deploy, then read valid public state.json and confirm that closed PR is absent. Landing and validation remain with their authorized owners. |
 
 ## Decision history
 

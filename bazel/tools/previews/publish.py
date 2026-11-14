@@ -514,6 +514,21 @@ class API:
             print(
                 f"HTTP method={method} route={route} status={status}", file=sys.stderr
             )
+            # All Pages callers (prepare, guard and comment) share this path.
+            # Numeric metadata can distinguish rate-limit evidence on the next
+            # refusal without exposing response bodies or arbitrary headers.
+            if route == "pages" and status in {403, 429}:
+                fields = []
+                for header, label in (
+                    ("X-RateLimit-Remaining", "remaining"),
+                    ("X-RateLimit-Reset", "reset"),
+                    ("Retry-After", "retry_after"),
+                ):
+                    value = error.headers.get(header) if error.headers else None
+                    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,10}", value):
+                        fields.append(f"{label}={int(value)}")
+                if fields:
+                    print("HTTP pages_limit " + " ".join(fields), file=sys.stderr)
             raise
 
     def request(self, path, method="GET", payload=None, limit=MAX_SITE):
