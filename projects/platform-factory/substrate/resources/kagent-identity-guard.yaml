@@ -3,10 +3,12 @@
 # that proves it is issued to any pod running as that ServiceAccount. Until
 # kagent is installed, anyone who can create a namespace named kagent could
 # claim it. Only ArgoCD may create or change that ServiceAccount or run a
-# workload as it; the two controller-manager identities follow from ArgoCD's
-# Deployment (Deployment to ReplicaSet to Pod). k3s runs kube-controller-manager
-# with --use-service-account-credentials, so those are per-controller
-# ServiceAccounts.
+# workload as it. The controller-manager identities act for ArgoCD's
+# Deployment: deployment-controller and replicaset-controller create its
+# ReplicaSets and Pods, and generic-garbage-collector updates their finalizers
+# and ownerReferences when ArgoCD deletes it in the foreground. k3s runs
+# kube-controller-manager with --use-service-account-credentials, so those are
+# per-controller ServiceAccounts.
 #
 # One policy per object shape, so each expression type-checks against its kind.
 apiVersion: admissionregistration.k8s.io/v1
@@ -30,7 +32,8 @@ spec:
         !(request.userInfo.username in [
           'system:serviceaccount:argocd:argocd-application-controller',
           'system:serviceaccount:kube-system:deployment-controller',
-          'system:serviceaccount:kube-system:replicaset-controller'
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
         ])
   validations:
     - expression: >-
@@ -68,7 +71,8 @@ spec:
         !(request.userInfo.username in [
           'system:serviceaccount:argocd:argocd-application-controller',
           'system:serviceaccount:kube-system:deployment-controller',
-          'system:serviceaccount:kube-system:replicaset-controller'
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
         ])
   validations:
     - expression: >-
@@ -107,7 +111,8 @@ spec:
         !(request.userInfo.username in [
           'system:serviceaccount:argocd:argocd-application-controller',
           'system:serviceaccount:kube-system:deployment-controller',
-          'system:serviceaccount:kube-system:replicaset-controller'
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
         ])
   validations:
     - expression: >-
