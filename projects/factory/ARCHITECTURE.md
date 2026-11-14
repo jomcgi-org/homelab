@@ -589,9 +589,9 @@ and retries once, so a brief overlap during a rollout is safe.
   in each `reviewBindings` namespace, which must not be a coding binding's,
   and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
   only, with checks and merge queues write, pull requests, contents and
-  statuses read. The config refuses the same App as `github`, a writable
-  agent token, `pull_requests: write` (approval) and a subject that is also a
-  connector or admin subject.
+  statuses read. The chart wiring follows (#7919). The config refuses the same App as `github`, a writable
+  agent token, any reviewer write besides checks and merge queues, and a
+  subject that is also a connector or admin subject.
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
   second port serves the admin endpoints, connector tokens and metrics, and
   admits only the connector, so no actor can reach them. Operators use a
@@ -643,7 +643,7 @@ and public previews).
   once the reviewer takes over enqueueing. The agent's token is contents
   write on its own repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
-  merge queues write, and contents and pull requests read. A kagent reviewer
+  merge queues write, and contents, pull requests and commit statuses read. A kagent reviewer
   agent, in its own binding, reviews the exact head against
   `docs/agents/review.md`. It posts the `factory review` check run and
   enqueues when the check passes and required CI is green. It never posts a
