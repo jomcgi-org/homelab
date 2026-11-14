@@ -213,33 +213,44 @@ data:
       masked only when written key=value or as a quoted JSON key.
       */}}
       {{- $keys := `(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)` }}
+      {{- $headers := `(?:(?:proxy-)?authorization|x-api-key|x-auth-token|private-token|x-honeycomb-team)` }}
       {{- $rules := list
+        (list `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*)` `[REDACTED PRIVATE KEY]`)
         (list `([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s@"']*:)[^@/\s"']+@` `${1}[REDACTED]@`)
         (list `(?i)(\bpassword\s+)'(?:[^']|'')*'` `${1}'[REDACTED]'`)
-        (list `(?i)(\b(?:set-)?cookie["']?\s*[:=]\s*["']?)[^"'\r\n]+` `${1}[REDACTED]`)
-        (list `(?i)(\bauthorization["']?\s*[:=]\s*["']?(?:(?:basic|bearer|token|digest)\s+)?)[^"'\s,;}]+` `${1}[REDACTED]`)
+        (list `(?i)(--(?:[a-z0-9]+-)*(?:password|passwd|token|secret|api-key|access-key)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s"']+)` `${1}[REDACTED]`)
+        (list `(?i)(\b(?:set-)?cookie["']?\s*[:=]\s*\[?["']?)[A-Za-z0-9!#$%&*+.^_|~-]+=[^"'\r\n\]]*` `${1}[REDACTED]`)
+        (list (printf `(?i)(\b%s["']?\s*[:=]\s*\[?["']?(?:(?:basic|bearer|token|digest)\s+)?)[^"'\s,;}\]]+` $headers) `${1}[REDACTED]`)
         (list `(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+` `${1}[REDACTED]`)
-        (list `\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})` `[REDACTED]`)
-        (list `\bAKIA[0-9A-Z]{16}\b` `[REDACTED]`)
+        (list `\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,})` `[REDACTED]`)
+        (list `\b(?:AKIA|ASIA)[0-9A-Z]{16}\b` `[REDACTED]`)
         (list `\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}` `[REDACTED]`)
         (list `\bhc[ax]ik_[A-Za-z0-9]{20,}` `[REDACTED]`)
         (list `\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+` `[REDACTED]`)
-        (list (printf `(?i)(\\"[A-Za-z0-9_.-]*?%s\\"\s*:\s*\\")(?:[^"\\]|\\[^"])*` $keys) `${1}[REDACTED]`)
-        (list (printf `(?i)("[A-Za-z0-9_.-]*?%s"\s*:\s*")[^"]*` $keys) `${1}[REDACTED]`)
+        (list (printf `(?i)(\\"[A-Za-z0-9_.-]*?%s\\"\s*:\s*\\")(?:\\\\\\"|\\\\\\\\|\\[^"\\]|[^"\\])*` $keys) `${1}[REDACTED]`)
+        (list (printf `(?i)("[A-Za-z0-9_.-]*?%s"\s*:\s*")(?:\\.|[^"\\])*` $keys) `${1}[REDACTED]`)
         (list (printf `(?i)(\b[A-Za-z0-9_.-]*?%s["']?\s*=\s*["']?)[^"'\s&,;}]+` $keys) `${1}[REDACTED]`)
         (list `(?i)(\b(?:password|passwd|pwd)["']?\s*:\s*["']?)[^"'\s,;}]+` `${1}[REDACTED]`)
+        (list `(?i)^(\s*(?:-\s+)?[A-Za-z0-9_.-]*?(?:api[_-]?key|token|secret|access[_-]?key)\s*:\s*)["']?[^\s"']+["']?\s*$` `${1}[REDACTED]`)
       }}
 
       # After parsing, before anything leaves the node. Masks credentials in
-      # the body and in every attribute value: connection-string passwords,
-      # SQL PASSWORD literals, Cookie and Set-Cookie values, Authorization and
-      # bearer values, tokens recognisable by prefix (GitHub, AWS access key
-      # ids, sk- API keys, Honeycomb keys, JWTs), and values of
-      # credential-named keys in key=value, JSON and escaped-JSON form.
-      # Attributes are flattened first (record.message rather than a nested
-      # record map; Honeycomb shows the same column names either way) so
-      # nested values are covered, then attributes whose key names a
-      # credential are dropped.
+      # the body and in every attribute value: PEM private keys,
+      # connection-string passwords, SQL PASSWORD literals, --password style
+      # flags, cookie name=value pairs, credential headers (Authorization,
+      # X-Api-Key, X-Auth-Token, Private-Token, x-honeycomb-team, also in Go
+      # http.Header form), bearer values, tokens recognisable by prefix
+      # (GitHub, GitLab, AWS key ids, sk- API keys, Honeycomb keys, JWTs), and
+      # values of credential-named keys in key=value, JSON, escaped-JSON and
+      # single-token YAML form.
+      #
+      # Attributes are flattened first so nested values are covered: a nested
+      # map becomes record.message, the column Honeycomb would show anyway,
+      # but an array becomes one attribute per index (headers.Cookie.0), so
+      # each index is its own Honeycomb column rather than one JSON-string
+      # column. That costs columns for array-heavy logs and is the price of
+      # masking inside them. Attributes whose key names a credential or a
+      # credential header are then dropped, array indexes included.
       transform/redact:
         error_mode: ignore
         log_statements:
@@ -252,7 +263,7 @@ data:
               {{- range $rules }}
               - 'replace_all_patterns(log.attributes, "value", "{{ include "otel-collector.ottlString" (index . 0) }}", "{{ include "otel-collector.ottlString" (index . 1) }}")'
               {{- end }}
-              - 'delete_matching_keys(log.attributes, "{{ include "otel-collector.ottlString" (printf `(?i)^(?:.*[._-])?(?:%s|authorization|cookie)$` $keys) }}")'
+              - 'delete_matching_keys(log.attributes, "{{ include "otel-collector.ottlString" (printf `(?i)^(?:.*[._-])?(?:%s|%s|cookie|honeycomb-team)(?:\.\d+)*$` $keys $headers) }}")'
       {{- end }}
       {{- if .Values.logs.dedup.enabled }}
 
