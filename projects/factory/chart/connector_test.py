@@ -428,8 +428,7 @@ def test_peers_admit_the_connector_pod() -> None:
         ),
         ("connector.bindings.homelab.owner=x", "owner"),
         (
-            # The deploy values name an App; also naming a creator fails.
-            "connector.bindings.homelab.reviewerCheck.statusCreator=someone",
+            "connector.bindings.homelab.reviewerCheck.name=semgrep",
             r"reviewerCheck",
         ),
         ("connector.intervals.poll=soon", "poll"),
