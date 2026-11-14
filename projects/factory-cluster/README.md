@@ -704,7 +704,8 @@ image's psql before it writes anything. Recover in this order:
    the api and worker, whose running pods would otherwise keep using the old
    keys. The keys' generation ID is stored on the Secret with them and set on
    both pod templates on every run, so a restart interrupted by a failure
-   happens on the next sync. The bootstrap then writes the OIDC settings afresh through the new
+   completes when secret-init runs again: its container retries, and
+   otherwise the Job reruns at the first chart upgrade. The bootstrap then writes the OIDC settings afresh through the new
    pods. Every session ends, so people sign in again. Anything else encrypted
    with the old key stays unreadable until it is entered again in the app:
    mail, Google, SCIM and bot settings, workspace SCIM tokens, Git
