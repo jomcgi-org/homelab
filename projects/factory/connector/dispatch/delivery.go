@@ -251,22 +251,32 @@ func (e *Engine) issueStopped(ctx context.Context, wi *store.WorkItem, b *Bindin
 		return "", err
 	}
 	is, err := e.its.GetIssue(ctx, wi.IssueID)
+	if why := e.lookupRefused(ctx, lookupIssue, wi.ID, err); why != "" {
+		// Delivery cannot confirm a person has not canceled the issue.
+		return why, nil
+	}
 	switch {
 	case errors.Is(err, itsaplan.ErrNotFound):
+		e.refusals.Delete(refusalKey{lookupIssue, wi.ID})
 		return "the issue is no longer visible in project " + b.ItsaplanProject, nil
 	case err != nil:
 		return "", err
 	}
 	if i := strings.LastIndex(is.Identifier, "-"); i > 0 && is.Identifier[:i] != b.ItsaplanProject {
+		e.refusals.Delete(refusalKey{lookupIssue, wi.ID})
 		return "the issue moved to another project", nil
 	}
 	if err := e.guard(ctx); err != nil {
 		return "", err
 	}
 	cols, err := e.its.ProjectColumns(ctx, b.ItsaplanProject)
+	if why := e.lookupRefused(ctx, lookupIssue, wi.ID, err); why != "" {
+		return why, nil
+	}
 	if err != nil {
 		return "", err
 	}
+	e.refusals.Delete(refusalKey{lookupIssue, wi.ID})
 	for _, c := range cols {
 		if c.ID == is.ColumnID && (c.StateType == "completed" || c.StateType == "canceled") {
 			return fmt.Sprintf("the issue is in the %s column %q", c.StateType, c.Name), nil
@@ -1062,11 +1072,18 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 		return "", err
 	}
 	issue, err := e.its.GetIssue(ctx, wi.IssueID)
+	gaveUp := e.lookupRefused(ctx, lookupReplacement, wi.ID, err)
 	switch {
 	case err == nil:
+		e.refusals.Delete(refusalKey{lookupReplacement, wi.ID})
 		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
 	case terminalHTTP(err):
+		e.refusals.Delete(refusalKey{lookupReplacement, wi.ID})
 		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %v)\n", wi.IssueKey, err)
+	case gaveUp != "":
+		// Past the bound the session starts without the issue rather than
+		// hold the run's slot until the key works.
+		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %s)\n", wi.IssueKey, gaveUp)
 	default:
 		return "", err
 	}

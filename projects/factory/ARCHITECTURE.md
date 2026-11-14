@@ -471,7 +471,12 @@ connector's kagent principal (finding 15), so it never changes once set.
   try again next pass, and an outbox item (result, comment, Done move)
   backs off as for any other failure. After 12 tries, about 27 minutes, the
   connector abandons the item as it would a refused one and logs that
-  itsaplan keeps refusing its key. A startup probe allows
+  itsaplan keeps refusing its key. Coordinator lookups that a run or work
+  item waits on have a 30-minute bound, kept in memory: a replacement
+  session then starts without its issue, a run whose attempt itsaplan no
+  longer accepts closes, and delivery stops on an issue the connector cannot
+  check. `factory_connector_credential_refusals_total` counts every 401 and
+  403 by key role and kind. A startup probe allows
   five minutes before liveness counts. The database URL
   comes from `factory-connector-db`, which `factory-db-secrets` declares and
   `factory-db-setup` fills. Issue links default to itsaplan's

@@ -901,6 +901,32 @@ func TestIssueMovedToCanceledColumnCancelsRunningRound(t *testing.T) {
 	v.roundCanceled(round, task)
 }
 
+// TestRefusedIssueCheckStopsDeliveryAfterBound: a round's heartbeat reads
+// the issue with the coordinator key. A refusal is retried through a key
+// rotation; past the bound delivery stops, since the connector cannot
+// confirm that a person has not canceled the issue.
+func TestRefusedIssueCheckStopsDeliveryAfterBound(t *testing.T) {
+	v := newDeliveryEnv(t)
+	round, task := v.startRound()
+	v.its.mu.Lock()
+	v.its.issueErr = &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
+	v.its.mu.Unlock()
+	start := v.clk.Now()
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if w := v.work(101); w.State == store.WorkStopped {
+		t.Fatal("delivery stopped after one refusal")
+	}
+	v.tickUntil(61*time.Second, 40, func() bool { return v.work(101).State == store.WorkStopped })
+	if waited := v.clk.Now().Sub(start); waited < 30*time.Minute {
+		t.Fatalf("stopped after %s, want the 30m bound", waited)
+	}
+	if w := v.work(101); !strings.Contains(w.StoppedReason, "refused the coordinator key") {
+		t.Fatalf("stopped reason = %q", w.StoppedReason)
+	}
+	v.roundCanceled(round, task)
+}
+
 func TestIssueMovedToAnotherProjectCancelsRunningRound(t *testing.T) {
 	v := newDeliveryEnv(t)
 	round, task := v.startRound()
