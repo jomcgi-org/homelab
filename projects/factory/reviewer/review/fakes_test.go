@@ -92,6 +92,8 @@ type fakeGitHub struct {
 	// ignoreAppFilter lists every App's check runs, as if GitHub dropped the
 	// app_id filter, so only the reviewer's own matching keeps them apart.
 	ignoreAppFilter bool
+	// failCheckSHA rejects check creation for one head, leaving group writes available.
+	failCheckSHA string
 	// fail answers "METHOD /path" with a status code; failGQL fails a
 	// GraphQL call by kind.
 	fail    map[string]int
@@ -140,7 +142,7 @@ func (f *fakeGitHub) review(number int, author, state, sha, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	pr := f.prs[number]
-	pr.Reviews = append(pr.Reviews, github.PullRequestReview{Author: author, State: state, CommitSHA: sha, Body: body})
+	pr.Reviews = append(pr.Reviews, github.PullRequestReview{Author: author, State: state, CommitSHA: sha, Body: body, SubmittedAt: time.Now().UTC()})
 }
 
 func (f *fakeGitHub) label(number int, labels ...string) {
@@ -334,6 +336,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && path == "/check-runs":
 		var body checkWrite
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.HeadSHA == f.failCheckSHA && f.failCheckSHA != "" {
+			http.Error(w, "check creation failed", http.StatusBadGateway)
+			return
+		}
 		f.nextID++
 		c := &fakeCheck{ID: f.nextID, AppID: testAppID}
 		if !f.apply(w, c, body) {
@@ -372,7 +378,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/pulls/"), "/reviews"))
 		out := []map[string]any{}
 		for _, rv := range f.prs[n].Reviews {
-			out = append(out, map[string]any{"user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body})
+			out = append(out, map[string]any{"user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body, "submitted_at": rv.SubmittedAt})
 		}
 		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
@@ -615,9 +621,18 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		if s := f.queued[number]; s != "" {
 			entry = map[string]any{"state": s}
 		}
+		labels := []map[string]string{}
+		for _, label := range pr.Labels {
+			labels = append(labels, map[string]string{"name": label})
+		}
+		state := "OPEN"
+		if pr.Closed {
+			state = "CLOSED"
+		}
 		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
-			"id": fmt.Sprintf("PR_%d", number), "state": "OPEN", "isDraft": pr.Draft, "headRefOid": head,
+			"id": fmt.Sprintf("PR_%d", number), "state": state, "isDraft": pr.Draft, "headRefOid": head,
 			"baseRefName": pr.Base, "mergeQueueEntry": entry,
+			"labels": map[string]any{"nodes": labels, "pageInfo": map[string]bool{"hasNextPage": false}},
 		}}})
 	default:
 		f.t.Errorf("unexpected GraphQL query %s", req.Query)

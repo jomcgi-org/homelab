@@ -286,6 +286,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
 		if err != nil {
+			reviews[pr.Number] = nil // Unknown approval must also fail a queued group.
 			continue
 		}
 		reviews[pr.Number] = run
@@ -295,18 +296,14 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			start = append(start, candidate{pr, nil})
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
-		case e.reconcileGate(ctx, b, pr, run):
-			// Held for a person, or the check just changed: the merge groups
-			// below must see the head's current check, not the one listed.
-			if cur, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
-				reviews[pr.Number] = cur
-			} else {
-				// Unknown: fail closed. A queued group on this head gets a
-				// failing check (a person requeues it), never a stale pass.
-				reviews[pr.Number] = nil
+		default:
+			cur, held := e.reconcileGate(ctx, b, pr, run)
+			// Reconciliation returns nil on a failed write. Refetching here
+			// could recover the old success and pass a queued group with it.
+			reviews[pr.Number] = cur
+			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
+				e.maybeEnqueue(ctx, b, pr, cur)
 			}
-		case run.Conclusion == ConclusionSuccess:
-			e.maybeEnqueue(ctx, b, pr, run)
 		}
 	}
 	// Reviews already in progress (after a restart) go before new heads.
@@ -429,7 +426,8 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		created, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 			Status: "in_progress", StartedAt: &now,
-			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, nil, recorded{}, "")},
+			Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, nil, recorded{}, ""),
+				Text: encodeState(State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}})},
 		})
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
@@ -576,6 +574,18 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				in = got
+				if st, ok := LoadState(run.Text); ok && st.Gate != nil && run.ExternalID == MessageID(b.repo(), pr.Number, pr.HeadSHA) {
+					if in.gate == nil {
+						in.gate = &Gate{}
+					}
+					in.gate.Labels, in.gate.ObservedLabels = st.Gate.Labels, st.Gate.ObservedLabels
+					in.gate.ApprovalAfter = st.Gate.ApprovalAfter
+				} else if in.gate != nil && len(in.gate.Labels) > 0 {
+					// Older progress checks and another PR's shared-head check
+					// have no starting label snapshot for this PR. Require a
+					// fresh review rather than assume the hold predates it.
+					in.gate.ApprovalAfter = e.cfg.Now().UTC()
+				}
 			case late:
 				if next("the reviewer could not read the PR from GitHub.") {
 					return
@@ -643,7 +653,20 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		t, err := e.tasks.GetTask(ctx, b.Agent, rec.ID)
 		switch {
 		case err == nil && kagent.Quiescent(t.Status.State):
-			res := e.outcome(ctx, b, pr, t, in, l)
+			current, err := e.gh.PullRequestQueue(ctx, b.repo(), pr.Number)
+			if err != nil {
+				e.ghError(ctx, l, b, "pull_request", err)
+				return // Keep the completed task attached; the next poll retries this read.
+			}
+			if current.State != "open" || current.Draft || current.BaseRef != b.BaseBranch || current.HeadSHA != pr.HeadSHA {
+				e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
+					Title: "PR changed during review", Summary: "The PR is no longer open and ready on this head and base branch.",
+				}}, l)
+				return
+			}
+			currentPR := pr
+			currentPR.Labels = current.Labels
+			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if res.reason != "" {
 				if next(res.reason) {
 					return
@@ -828,8 +851,13 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 // in-progress check run, so a restart reads the task instead of sending a
 // message whose PR text may have changed.
 func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.CheckRun, gate *Gate, rec recorded, note string, l *slog.Logger) {
+	if gate == nil {
+		if st, ok := LoadState(run.Text); ok {
+			gate = st.Gate
+		}
+	}
 	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
-		Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, gate, rec, note)},
+		Output: &github.CheckRunOutput{Title: "Review in progress", Summary: progressSummary(b, gate, rec, note), Text: encodeState(State{Gate: gate})},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)
@@ -866,10 +894,11 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
 		a := Assess(r, in.prior.Previous())
-		gate := &Gate{}
+		gate := &Gate{ObservedLabels: []string{}}
 		if in.gate != nil {
 			*gate = *in.gate
 		}
+		gate.observeLabels(gateLabels(b, pr.Labels), e.cfg.Now())
 		for _, f := range a.Gated {
 			if len(gate.Findings) < maxGatePaths {
 				gate.Findings = append(gate.Findings, storable(f))
@@ -878,7 +907,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		if !gate.Needed() {
 			gate = nil
 		} else {
-			if gate.Approver, err = e.approval(ctx, b, pr); err != nil {
+			if gate.Approver, err = e.approval(ctx, b, pr, gate.ApprovalAfter); err != nil {
 				l.WarnContext(ctx, "could not read the PR's reviews; the human gate stays closed", "error", err)
 			}
 			if gate.Approver != "" {
@@ -918,13 +947,13 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 
 // approval is the configured human whose APPROVED review of the PR's head
 // clears its gate, or empty.
-func (e *Engine) approval(ctx context.Context, b *Binding, pr github.PullRequest) (string, error) {
+func (e *Engine) approval(ctx context.Context, b *Binding, pr github.PullRequest, after time.Time) (string, error) {
 	reviews, err := e.gh.PullRequestReviews(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "reviews", err)
 		return "", err
 	}
-	return approvedBy(b, reviews, pr.HeadSHA), nil
+	return approvedBy(b, reviews, pr.HeadSHA, after), nil
 }
 
 // rule is a finding ID's rule when REVIEW.md or the configuration names it:
@@ -981,66 +1010,70 @@ func (e *Engine) notifyGate(ctx context.Context, b *Binding, l *slog.Logger, by 
 // reconcileGate keeps a completed check in line with its head's human gate
 // once the model's findings no longer block: an APPROVED review from a
 // configured human on the head passes it, and a gate label added after a
-// pass fails it. Each change is a new check run on the head. It reports
-// true while the head is held for a person or its check just changed.
-func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) bool {
+// pass needs a later approval. Each changed decision or label snapshot is
+// persisted in a new check run. It returns the current check (nil when a
+// write fails) and whether to defer enqueueing this poll.
+func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool) {
 	st, ok := LoadState(run.Text)
-	if !ok || len(st.Blocking) > 0 || (st.Gate != nil && st.Gate.Approver != "") {
-		return false
+	if !ok || len(st.Blocking) > 0 {
+		return run, false
 	}
 	labels := gateLabels(b, pr.Labels)
 	if st.Gate == nil && len(labels) == 0 {
-		return false
+		return run, false
 	}
 	gate := &Gate{}
 	if st.Gate != nil {
 		*gate = *st.Gate
 	}
-	for _, lb := range labels {
-		if !slices.Contains(gate.Labels, lb) {
-			gate.Labels = append(gate.Labels, lb)
-		}
+	changed := gate.observeLabels(labels, e.cfg.Now())
+	// A read error means approval is unknown. Close a previous pass and
+	// keep retrying the read on later polls; the error creates no new hold.
+	approver, _ := e.approval(ctx, b, pr, gate.ApprovalAfter)
+	changed = changed || gate.Approver != approver
+	gate.Approver = approver
+	conclusion := ConclusionSuccess
+	title, summary := "Human gate cleared by "+approver, fmt.Sprintf("%s approved this exact head, which clears its human gate.", approver)
+	if approver == "" {
+		conclusion = ConclusionFailure
+		f := gateFinding(b, gate)
+		title, summary = "Waiting for a human review", f.Title+". "+f.Detail+"\n\n"+gateOnlyMarker
 	}
-	approver, err := e.approval(ctx, b, pr)
-	if err != nil {
-		return true
+	if !changed && conclusion == run.Conclusion {
+		return run, approver == ""
 	}
 	l := e.prLog(b, pr)
-	gate.Approver = approver
-	switch {
-	case approver != "" && run.Conclusion != ConclusionSuccess:
-		e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, ConclusionSuccess,
-			"Human gate cleared by "+approver,
-			fmt.Sprintf("%s approved this exact head, which clears its human gate.", approver), l)
-		return true
-	case approver == "" && run.Conclusion == ConclusionSuccess:
-		f := gateFinding(b, gate)
-		e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, ConclusionFailure,
-			"Waiting for a human review", f.Title+". "+f.Detail+"\n\n"+gateOnlyMarker, l)
-		e.notifyGate(ctx, b, l, "a gate label")
+	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, conclusion, title, summary, l)
+	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
+		e.notifyGate(ctx, b, l, "the current human gate")
 	}
-	return approver == ""
+	return cur, true
 }
 
 // gateCheck posts a new review check run on the head that changes only its
 // human gate; the earlier run keeps the review's findings.
-func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, st State, conclusion, title, summary string, l *slog.Logger) {
+func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, st State, conclusion, title, summary string, l *slog.Logger) *github.CheckRun {
 	now := e.cfg.Now().UTC()
 	summary += fmt.Sprintf("\n\nThe review's findings are on the earlier `%s` check run", e.cfg.CheckName)
 	if prev.URL != "" {
 		summary += " (" + prev.URL + ")"
 	}
-	_, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
+	summary += "."
+	if strings.Contains(prev.Summary, enqueuedMarker) {
+		summary += "\n\n" + enqueuedMarker + "This head was already in the merge queue."
+	}
+	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
-		Output: &github.CheckRunOutput{Title: title, Summary: summary + ".", Text: encodeState(st)},
+		Output: &github.CheckRunOutput{Title: title, Summary: summary, Text: encodeState(st)},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "create_check", err)
-		return
+		return nil
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, conclusion).Inc()
 	l.InfoContext(ctx, "human gate check posted", "conclusion", conclusion, "approver", st.Gate.Approver)
+	return run
 }
 
 // complete finishes the check run. GitHub refusing the annotations (an

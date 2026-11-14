@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -334,10 +335,10 @@ func TestGlobsGatesAndBudget(t *testing.T) {
 		{Author: "jomcgi", State: "APPROVED", CommitSHA: "h"},
 		{Author: "jomcgi", State: "COMMENTED", CommitSHA: "h"},
 	}
-	if got := approvedBy(b, reviews, "h"); got != "jomcgi" {
+	if got := approvedBy(b, reviews, "h", time.Time{}); got != "jomcgi" {
 		t.Fatalf("approval = %q; a later comment keeps it", got)
 	}
-	if got := approvedBy(b, append(reviews, github.PullRequestReview{Author: "JOMCGI", State: "CHANGES_REQUESTED", CommitSHA: "h"}), "h"); got != "" {
+	if got := approvedBy(b, append(reviews, github.PullRequestReview{Author: "JOMCGI", State: "CHANGES_REQUESTED", CommitSHA: "h"}), "h", time.Time{}); got != "" {
 		t.Fatalf("approval = %q after a change request", got)
 	}
 	// Generated is judged by the new path: a file renamed away from a
@@ -422,7 +423,7 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 			ID: fmt.Sprintf("%d:%s", i, huge), Severity: SeverityHigh, Path: huge, Line: 3, Title: huge, Detail: huge,
 		}))
 	}
-	g := &Gate{Labels: []string{"human"}}
+	g := &Gate{Labels: []string{"human"}, ObservedLabels: []string{}, ApprovalAfter: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), Approver: "jomcgi"}
 	for i := range maxGatePaths {
 		g.Paths = append(g.Paths, fmt.Sprintf("%d/%s", i, huge))
 		g.Findings = append(g.Findings, storable(Finding{ID: fmt.Sprintf("%d:human-gate:%s", i, huge), Severity: SeverityHigh, Title: huge}))
@@ -436,6 +437,10 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	if !ok || len(got.Blocking) != maxStored || len(got.Gate.Findings) != maxGatePaths || len(got.Gate.Paths) != maxGatePaths {
 		t.Fatalf("state lost findings: %v, %d blocking", ok, len(got.Blocking))
 	}
+	if got.Gate.ObservedLabels == nil || len(got.Gate.ObservedLabels) != 0 ||
+		!got.Gate.ApprovalAfter.Equal(g.ApprovalAfter) || got.Gate.Approver != g.Approver || !slices.Equal(got.Gate.Labels, g.Labels) {
+		t.Fatal("state trimming lost the approval cutoff, observed labels or approver")
+	}
 	for i, f := range got.Blocking {
 		if !strings.HasPrefix(f.ID, fmt.Sprintf("%d:", i)) || f.Severity != SeverityHigh {
 			t.Fatalf("finding %d = %+v", i, f)
@@ -445,6 +450,30 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	small := State{Blocking: []Finding{{ID: "a.go:x", Severity: SeverityMedium, Path: "a.go", Title: "T", Detail: "D <b>"}}}
 	if got, _ := LoadState(encodeState(small)); fmt.Sprint(got) != fmt.Sprint(small) {
 		t.Fatalf("small state = %+v", got)
+	}
+}
+
+func TestApprovalMustFollowTheLatestHold(t *testing.T) {
+	b := &Binding{HumanApprovers: []string{"jomcgi"}}
+	after := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name string
+		time time.Time
+		want string
+	}{
+		{"missing time", time.Time{}, ""},
+		{"before", after.Add(-time.Second), ""},
+		{"same instant", after, ""},
+		{"later", after.Add(time.Second), "jomcgi"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reviews := []github.PullRequestReview{{Author: "jomcgi", State: "APPROVED", CommitSHA: "h", SubmittedAt: tt.time}}
+			// Comments after a hold do not refresh an older approval.
+			reviews = append(reviews, github.PullRequestReview{Author: "jomcgi", State: "COMMENTED", CommitSHA: "h", SubmittedAt: after.Add(time.Minute)})
+			if got := approvedBy(b, reviews, "h", after); got != tt.want {
+				t.Fatalf("approval = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

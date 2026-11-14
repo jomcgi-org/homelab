@@ -3,8 +3,10 @@ package review
 import (
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
@@ -59,7 +61,17 @@ type Gate struct {
 	Labels   []string  `json:"labels,omitempty"`
 	Findings []Finding `json:"findings,omitempty"`
 	// Approver is the human whose APPROVED review of the head cleared it.
+	// It is revalidated every poll, never used as a cached authorization.
 	Approver string `json:"approver,omitempty"`
+	// Labels stays sticky; ObservedLabels records the latest label snapshot
+	// so removing and later reapplying a label creates a fresh hold. Empty
+	// arrays must survive JSON. Nil identifies older states whose Labels
+	// are the only available baseline.
+	ObservedLabels []string `json:"observed_labels"`
+	// ApprovalAfter is when a new label was observed after review started.
+	// Only reviews submitted after it clear that hold. Zero preserves old
+	// states and gates present when the original review started.
+	ApprovalAfter time.Time `json:"approval_after,omitzero"`
 }
 
 // Needed reports whether the gate applies.
@@ -67,6 +79,26 @@ func (g *Gate) Needed() bool { return g != nil && len(g.Paths)+len(g.Labels)+len
 
 // held reports whether the service itself holds the head, by path or label.
 func (g *Gate) held() bool { return g != nil && len(g.Paths)+len(g.Labels) > 0 }
+
+// observeLabels retains holds and fences approvals when a new label appears.
+// A legacy completed state uses its sticky labels as its initial snapshot.
+func (g *Gate) observeLabels(labels []string, now time.Time) bool {
+	observed := g.ObservedLabels
+	if observed == nil {
+		observed = g.Labels
+	}
+	changed := !slices.Equal(observed, labels)
+	for _, lb := range labels {
+		if !slices.Contains(observed, lb) {
+			g.ApprovalAfter = now.UTC()
+		}
+		if !slices.Contains(g.Labels, lb) {
+			g.Labels = append(g.Labels, lb)
+		}
+	}
+	g.ObservedLabels = labels
+	return changed
+}
 
 // humanGate finds the gated paths among a head's changed paths (both sides
 // of the diff) and the gate labels on its PR. A path of any characters is
@@ -90,6 +122,7 @@ func humanGate(b *Binding, paths, labels []string) *Gate {
 		g.Paths = g.Paths[:maxGatePaths]
 	}
 	g.Labels = gateLabels(b, labels)
+	g.ObservedLabels = g.Labels
 	if !g.held() {
 		return nil
 	}
@@ -97,7 +130,7 @@ func humanGate(b *Binding, paths, labels []string) *Gate {
 }
 
 func gateLabels(b *Binding, labels []string) []string {
-	var out []string
+	out := []string{}
 	for _, l := range labels {
 		for _, gl := range b.HumanGateLabels {
 			if strings.EqualFold(l, gl) {
@@ -105,12 +138,13 @@ func gateLabels(b *Binding, labels []string) []string {
 			}
 		}
 	}
-	return out
+	sort.Strings(out)
+	return slices.Compact(out)
 }
 
 // approvedBy is the configured human whose latest decision on the PR is an
-// APPROVED review of exactly head, or empty.
-func approvedBy(b *Binding, reviews []github.PullRequestReview, head string) string {
+// APPROVED review of exactly head, submitted after a nonzero cutoff, or empty.
+func approvedBy(b *Binding, reviews []github.PullRequestReview, head string, after time.Time) string {
 	latest := map[string]github.PullRequestReview{}
 	for _, r := range reviews { // oldest first
 		switch r.State {
@@ -119,7 +153,8 @@ func approvedBy(b *Binding, reviews []github.PullRequestReview, head string) str
 		}
 	}
 	for _, a := range b.HumanApprovers {
-		if r, ok := latest[strings.ToLower(a)]; ok && r.State == "APPROVED" && r.CommitSHA == head {
+		if r, ok := latest[strings.ToLower(a)]; ok && r.State == "APPROVED" && r.CommitSHA == head &&
+			(after.IsZero() || r.SubmittedAt.After(after)) {
 			return a
 		}
 	}
@@ -140,11 +175,18 @@ func gateFinding(b *Binding, g *Gate) Finding {
 	if len(g.Labels) > 0 {
 		why = append(why, "carries "+strings.Join(g.Labels, ", "))
 	}
+	if len(g.Findings) > 0 {
+		why = append(why, "has unresolved human-gate findings")
+	}
+	fresh := ""
+	if !g.ApprovalAfter.IsZero() {
+		fresh = " submitted after the hold was observed at " + g.ApprovalAfter.UTC().Format(time.RFC3339Nano)
+	}
 	return Finding{
 		ID: HumanGateID, Severity: SeverityHigh,
 		Title: "Needs an approving review from " + strings.Join(b.HumanApprovers, " or ") + " on this head",
-		Detail: fmt.Sprintf("This PR %s. Only an APPROVED review of this exact commit by %s clears it; no revision round fixes it.",
-			strings.Join(why, " and "), strings.Join(b.HumanApprovers, " or ")),
+		Detail: fmt.Sprintf("This PR %s. Only an APPROVED review of this exact commit by %s%s clears it; no revision round fixes it.",
+			strings.Join(why, " and "), strings.Join(b.HumanApprovers, " or "), fresh),
 	}
 }
 

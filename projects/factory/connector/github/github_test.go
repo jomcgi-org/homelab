@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -545,7 +546,7 @@ func TestPullRequestQueueAndMergeQueueEntries(t *testing.T) {
 			]}}}}}`))
 		default:
 			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"id":"PR_7","state":"OPEN","isDraft":false,
-				"headRefOid":"sha-1","baseRefName":"main","mergeQueueEntry":{"state":"QUEUED"}}}}}`))
+				"headRefOid":"sha-1","baseRefName":"main","mergeQueueEntry":{"state":"QUEUED"},"labels":{"nodes":[{"name":"human"}],"pageInfo":{"hasNextPage":false}}}}}}`))
 		}
 	}))
 	defer gh.Close()
@@ -555,7 +556,7 @@ func TestPullRequestQueueAndMergeQueueEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *q != (PullRequestQueue{NodeID: "PR_7", State: "open", HeadSHA: "sha-1", BaseRef: "main", MergeQueueState: "QUEUED"}) {
+	if !reflect.DeepEqual(*q, PullRequestQueue{NodeID: "PR_7", State: "open", HeadSHA: "sha-1", BaseRef: "main", MergeQueueState: "QUEUED", Labels: []string{"human"}}) {
 		t.Fatalf("queue = %+v", q)
 	}
 	entries, err := c.MergeQueueEntries(ctx, "example-org/homelab", "main")
@@ -575,7 +576,7 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/example-org/homelab/pulls/7/reviews":
-			_, _ = w.Write([]byte(`[{"user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok"}]`))
+			_, _ = w.Write([]byte(`[{"user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok", "submitted_at": "2026-11-14T12:00:00Z"}]`))
 		case "/repos/example-org/homelab/issues/7/comments":
 			_, _ = w.Write([]byte(`[{"user": {"login": "someone"}, "body": "hi"}]`))
 		case "/repos/example-org/homelab/compare/sha-0...sha-1":
@@ -588,7 +589,7 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
 	ctx := context.Background()
 	rv, err := c.PullRequestReviews(ctx, "example-org/homelab", 7)
-	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok"}) {
+	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok", SubmittedAt: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}) {
 		t.Fatalf("reviews = %+v, %v", rv, err)
 	}
 	cm, err := c.PullRequestComments(ctx, "example-org/homelab", 7)
@@ -601,6 +602,21 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	}
 	if _, err := c.CompareCommits(ctx, "example-org/homelab", "gone", "sha-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("compare with a missing commit = %v", err)
+	}
+}
+
+func TestPullRequestQueueRequiresCompleteLabels(t *testing.T) {
+	for _, labels := range []string{`null`, `{}`, `{"nodes":[],"pageInfo":{"hasNextPage":true}}`} {
+		t.Run(labels, func(t *testing.T) {
+			gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"data":{"repository":{"pullRequest":{"id":"PR_7","state":"OPEN","headRefOid":"sha-1","baseRefName":"main","labels":%s}}}}`, labels)
+			}))
+			defer gh.Close()
+			c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+			if _, err := c.PullRequestQueue(context.Background(), "example-org/homelab", 7); err == nil {
+				t.Fatal("accepted an incomplete label snapshot")
+			}
+		})
 	}
 }
 

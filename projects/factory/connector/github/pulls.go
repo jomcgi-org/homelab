@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MaxListed is the page size of one listing; a full page means GitHub may
@@ -175,6 +176,7 @@ type PullRequestQueue struct {
 	Draft   bool
 	HeadSHA string
 	BaseRef string
+	Labels  []string
 	// MergeQueueState is the entry's state, empty when the PR is not queued.
 	MergeQueueState string
 }
@@ -184,12 +186,13 @@ const pullRequestQueueQuery = `query($owner: String!, $name: String!, $number: I
     pullRequest(number: $number) {
       id state isDraft headRefOid baseRefName
       mergeQueueEntry { state }
+      labels(first: 100) { nodes { name } pageInfo { hasNextPage } }
     }
   }
 }`
 
-// PullRequestQueue reads a PR's head, draft state and merge queue entry with
-// one small GraphQL query.
+// PullRequestQueue reads a PR's head, state, labels and merge queue entry.
+// It fails when the label connection is absent or truncated.
 func (c *Client) PullRequestQueue(ctx context.Context, repo string, number int) (*PullRequestQueue, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	var out struct {
@@ -203,6 +206,14 @@ func (c *Client) PullRequestQueue(ctx context.Context, repo string, number int) 
 				MergeQueueEntry *struct {
 					State string `json:"state"`
 				} `json:"mergeQueueEntry"`
+				Labels *struct {
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+					PageInfo *struct {
+						HasNextPage bool `json:"hasNextPage"`
+					} `json:"pageInfo"`
+				} `json:"labels"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
@@ -213,11 +224,17 @@ func (c *Client) PullRequestQueue(ctx context.Context, repo string, number int) 
 	if p == nil {
 		return nil, ErrNotFound
 	}
+	if p.Labels == nil || p.Labels.PageInfo == nil || p.Labels.PageInfo.HasNextPage {
+		return nil, fmt.Errorf("github: PR %d labels are incomplete", number)
+	}
 	q := &PullRequestQueue{
 		NodeID: p.ID, State: strings.ToLower(p.State), Draft: p.IsDraft, HeadSHA: p.HeadRefOid, BaseRef: p.BaseRefName,
 	}
 	if p.MergeQueueEntry != nil {
 		q.MergeQueueState = p.MergeQueueEntry.State
+	}
+	for _, label := range p.Labels.Nodes {
+		q.Labels = append(q.Labels, label.Name)
 	}
 	return q, nil
 }
@@ -410,10 +427,11 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 
 // PullRequestReview is a submitted PR review, from REST.
 type PullRequestReview struct {
-	Author    string
-	State     string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
-	CommitSHA string
-	Body      string
+	Author      string
+	State       string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+	CommitSHA   string
+	Body        string
+	SubmittedAt time.Time
 }
 
 // MaxReviewPages bounds a PR's review listing: 3000 reviews.
@@ -430,10 +448,11 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 	var reviews []PullRequestReview
 	for page := 1; page <= MaxReviewPages; page++ {
 		var out []struct {
-			User     login  `json:"user"`
-			State    string `json:"state"`
-			CommitID string `json:"commit_id"`
-			Body     string `json:"body"`
+			User        login     `json:"user"`
+			State       string    `json:"state"`
+			CommitID    string    `json:"commit_id"`
+			Body        string    `json:"body"`
+			SubmittedAt time.Time `json:"submitted_at"`
 		}
 		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
 		path := repoPath(repo) + "/pulls/" + strconv.Itoa(number) + "/reviews?" + q.Encode()
@@ -441,7 +460,7 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 			return nil, err
 		}
 		for _, r := range out {
-			reviews = append(reviews, PullRequestReview{Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body})
+			reviews = append(reviews, PullRequestReview{Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body, SubmittedAt: r.SubmittedAt})
 		}
 		if len(out) < MaxListed {
 			return reviews, nil
