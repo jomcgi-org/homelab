@@ -34,11 +34,21 @@ The browser matches that token to its navigation or resource timing entry and
 starts the remaining lease at that request's monotonic start time. This
 conservatively subtracts origin work, transfer, hydration and any time spent in
 SvelteKit's preload cache. Missing timing uses document start, never a new lease.
-The absolute expiry is used only by server rendering; client wall-clock skew or
-adjustments cannot extend the overview. Its timer removes titles unconditionally.
-Page hide or tab backgrounding clears them before suspension or a back-forward
-cache restore. Missing, expired, private or no-store snapshot leases produce an
-unavailable overview.
+The absolute expiry is used only by server rendering. The browser also uses
+the document's original clock pair: `performance.timeOrigin` and monotonic zero.
+That pair predates the response, hydration and any data prefetch. Only elapsed
+client wall time is used, so a constant clock offset is harmless. Either elapsed
+clock can end the lease; neither can extend it. Clock reversal or divergence
+over 100ms fails closed, with that tolerance allowing timer precision rounding.
+A requestAnimationFrame check synchronously removes expired titles before
+paint, including after device sleep that paused monotonic time and timers
+without a visibility event. Sleep before hydration is detected against the
+same original pair. Missing clock-origin support fails closed; a document with
+a clock discontinuity needs a fresh navigation to display another overview.
+Focus and pageshow also revalidate. The expiry
+timer removes titles unconditionally. Page hide or tab backgrounding clears
+them before suspension or a back-forward cache restore. Missing, expired,
+private or no-store snapshot leases produce an unavailable overview.
 
 ## Budgets and evidence
 
@@ -81,6 +91,12 @@ before and after, one warmup and three renders. Component HTML remained
 from 772 to 864 bytes for the lease and timing token. Median component rendering
 was 0.435ms before and 0.276ms after. Its bundle size awaits the integrated build.
 
+The device-sleep guard adds no server data fields or first-view markup. Its
+additional 3,600 clock checks took 2.281ms at the median of three local Node
+runs (2.635ms, 1.158ms, 2.281ms), after one warmup. This measures the pure guard,
+excluding browser frame scheduling and mobile throttling; it is not a browser
+performance result. Checks stop when the lease expires or the page unmounts.
+
 The sub-millisecond timing difference is measurement noise. No production
 speedup is established by these local measurements.
 
@@ -89,6 +105,8 @@ Adjacent server, SSR and DOM tests run through
 readable first-response data, expired hydration, graph failures, unavailable
 canvas, expiry while the graph fails, and replacement only after canvas paint.
 Regressions cover prefetched responses, missing timing, browser clock skew,
-backward clock changes, page suspension, and failed module retry.
+backward clock changes, device sleep with paused monotonic time and no lifecycle
+events, page suspension, and failed module retry. The sleep guard changes only
+browser behavior; its clock pair is not included in server-rendered page data.
 Existing focus, search, filtering, theme, note-panel and parsed-cache tests
 continue to exercise the complete graph.

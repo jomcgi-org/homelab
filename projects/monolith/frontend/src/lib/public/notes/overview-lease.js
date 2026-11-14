@@ -27,3 +27,33 @@ export function overviewDeadline(overview, timing) {
       : 0;
   return start + overview.leaseMs;
 }
+
+// The document's clock pair exists before any response, hydration or preload.
+// Anchoring at load() would miss device sleep before that call. timeOrigin and
+// Date.now use the same client epoch; only their elapsed difference is used.
+export function overviewClock(overview, timing) {
+  if (!overview || !Number.isFinite(timing.timeOrigin)) return null;
+  return { monotonicAt: 0, wallAt: timing.timeOrigin };
+}
+
+export function overviewLeaseCurrent(
+  deadline,
+  clock,
+  monotonicNow = performance.now(),
+  wallNow = Date.now(),
+) {
+  if (!clock) return false;
+  const remaining = deadline - clock.monotonicAt;
+  const monotonicElapsed = monotonicNow - clock.monotonicAt;
+  const wallElapsed = wallNow - clock.wallAt;
+  // Some platforms pause performance.now and timers during device sleep.
+  // Either elapsed clock can end the lease; neither can lengthen it. A clock
+  // discontinuity fails closed, allowing 100ms for timer precision rounding.
+  return (
+    Number.isFinite(remaining) &&
+    monotonicElapsed >= 0 &&
+    wallElapsed >= 0 &&
+    Math.abs(wallElapsed - monotonicElapsed) <= 100 &&
+    Math.max(monotonicElapsed, wallElapsed) < remaining
+  );
+}

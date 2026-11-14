@@ -2,6 +2,7 @@
   import { flushSync, onMount } from "svelte";
   import { browser } from "$app/environment";
   import { page } from "$app/state";
+  import { overviewLeaseCurrent } from "$lib/public/notes/overview-lease.js";
   import {
     SiteIndex,
     TechnicalDrawingChrome,
@@ -20,7 +21,7 @@
     !expired &&
       data.overview &&
       (browser
-        ? performance.now() < data.overviewDeadline
+        ? overviewLeaseCurrent(data.overviewDeadline, data.overviewClock)
         : Date.now() < data.overview.expiresAt)
       ? data.overview
       : null,
@@ -28,13 +29,40 @@
 
   $effect(() => {
     const deadline = data.overviewDeadline;
+    const clock = data.overviewClock;
     const remaining =
       document.visibilityState === "hidden" ? 0 : deadline - performance.now();
-    expired = !Number.isFinite(remaining) || remaining <= 0;
-    if (!Number.isFinite(remaining) || remaining <= 0) return;
+    const current = remaining > 0 && overviewLeaseCurrent(deadline, clock);
+    expired = !current;
+    if (!current) return;
+    let ended = false;
+    let frame;
+    const expire = () => {
+      ended = true;
+      flushSync(() => (expired = true));
+    };
+    const revalidate = () => {
+      if (!overviewLeaseCurrent(deadline, clock)) expire();
+    };
+    const beforePaint = () => {
+      if (ended) return;
+      revalidate();
+      if (!ended) frame = requestAnimationFrame(beforePaint);
+    };
+    // Recheck before the first post-sleep paint even if both the monotonic
+    // clock and timeout paused, and no visibility or pagehide event occurred.
+    frame = requestAnimationFrame(beforePaint);
+    window.addEventListener("focus", revalidate);
+    window.addEventListener("pageshow", revalidate);
     // Expire unconditionally. A wall-clock adjustment cannot revive titles.
-    const timer = setTimeout(() => (expired = true), remaining);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(expire, remaining);
+    return () => {
+      ended = true;
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("pageshow", revalidate);
+    };
   });
 
   async function loadGraph() {

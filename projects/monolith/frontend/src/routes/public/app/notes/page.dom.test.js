@@ -138,6 +138,7 @@ describe("public notes sheet DOM", () => {
       leaseToken: "test-response",
     },
     overviewDeadline: performance.now() + leaseMs,
+    overviewClock: { monotonicAt: performance.now(), wallAt: Date.now() },
   });
 
   it("keeps real titles visible until the canvas has painted", async () => {
@@ -216,13 +217,53 @@ describe("public notes sheet DOM", () => {
         vi.fn(() => 1),
       );
       vi.stubGlobal("cancelAnimationFrame", vi.fn());
-      const data = overviewData(1000);
       vi.setSystemTime(clock);
+      const data = overviewData(1000);
       await render(Page, { data });
       expect(target.textContent).toContain("First-paint public title");
       vi.setSystemTime(clock - 60_000);
       await vi.advanceTimersByTimeAsync(1000);
       await tick();
+      expect(target.textContent).not.toContain("First-paint public title");
+    },
+  );
+
+  it.each(["sleep", "backward jump"])(
+    "removes titles before paint after %s without lifecycle events or advancing timers",
+    async (change) => {
+      const frames = new Map();
+      let nextFrame = 0;
+      vi.stubGlobal("requestAnimationFrame", (callback) => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      });
+      vi.stubGlobal("cancelAnimationFrame", (id) => frames.delete(id));
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      await render(Page, { data: overviewData() });
+      expect(target.textContent).toContain("First-paint public title");
+      wall.mockReturnValue(change === "sleep" ? 1_120_000 : 999_000);
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(1000);
+      // A synchronous flush removes the titles before the browser paints.
+      expect(target.textContent).not.toContain("First-paint public title");
+    },
+  );
+
+  it.each(["focus", "pageshow"])(
+    "revalidates the lease immediately on %s",
+    async (event) => {
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        vi.fn(() => 1),
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      vi.spyOn(performance, "now").mockReturnValue(1000);
+      const wall = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      await render(Page, { data: overviewData() });
+      wall.mockReturnValue(1_120_000);
+      window.dispatchEvent(new Event(event));
       expect(target.textContent).not.toContain("First-paint public title");
     },
   );
