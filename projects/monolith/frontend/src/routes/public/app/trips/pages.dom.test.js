@@ -36,6 +36,7 @@ afterEach(async () => {
   document.body.innerHTML = "";
   document.documentElement.removeAttribute("data-theme");
   localStorage.clear();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -63,7 +64,10 @@ async function render(surface, data = tripsData(), query = "") {
     if (surface === "trip" || surface === "day" || query.includes("view=map"))
       expect(maps).toHaveLength(1);
   });
-  maps.forEach((map) => map.fire("load"));
+  maps.forEach((map) => {
+    map.fire("load");
+    map.fire("render");
+  });
   await settle();
 }
 
@@ -246,6 +250,206 @@ describe("trips composed sheets", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(map.setPaintProperty.mock.calls).toHaveLength(paintCalls);
       expect(map.remove).toHaveBeenCalledOnce();
+    },
+  );
+});
+
+function photoRequests() {
+  const requested = [];
+  vi.stubGlobal(
+    "Image",
+    class {
+      complete = false;
+      naturalWidth = 0;
+      fetchPriority = "auto";
+      set src(value) {
+        this.url = value;
+        requested.push(this);
+      }
+      get src() {
+        return this.url;
+      }
+      decode() {
+        return new Promise((resolve, reject) => {
+          this.decoded = resolve;
+          this.failed = reject;
+        });
+      }
+      removeAttribute(name) {
+        if (name === "src") this.cancelled = true;
+      }
+    },
+  );
+  return requested;
+}
+function galleryData() {
+  const data = tripsData();
+  data.points = Array.from({ length: 30 }, (_, i) => ({
+    ...data.points[0],
+    id: `warm-${i}`,
+    lat: 49 + i * 0.001,
+    lng: -123 + i * 0.001,
+    taken_at: new Date(
+      Date.parse("2026-10-17T16:00:00Z") + i * 60000,
+    ).toISOString(),
+    imgDisplay: `/fixture-display-${i}.jpg`,
+  }));
+  return data;
+}
+async function mountDay(data) {
+  setPage("https://jomcgi.dev/app/trips/fixture-walk/day/1", data);
+  instance = mount(Route, {
+    target: document.body,
+    props: { surface: "day", data },
+  });
+  await settle();
+  await vi.waitFor(() => expect(maps).toHaveLength(1));
+  return maps[0];
+}
+
+describe("trip image loading", () => {
+  it("prioritizes only the first index cover without changing image URLs", async () => {
+    const data = tripsData();
+    data.index.trips.push({
+      ...data.trip,
+      slug: "second-trip",
+      coverUrl: "/second-cover.jpg",
+    });
+    await render("index", data);
+    const [first, second] = document.querySelectorAll("a.card img");
+    expect(first.getAttribute("src")).toBe(data.trip.coverUrl);
+    expect(first.getAttribute("loading")).toBe("eager");
+    expect(first.getAttribute("fetchpriority")).toBe("high");
+    expect(second.getAttribute("src")).toBe("/second-cover.jpg");
+    expect(second.getAttribute("loading")).toBe("lazy");
+    expect(second.getAttribute("fetchpriority")).toBe("auto");
+  });
+
+  it.each(["photo", "map"])(
+    "waits for the photo and populated map when %s is ready first",
+    async (first) => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const requested = photoRequests();
+      const map = await mountDay(galleryData());
+      expect(requested.map((image) => image.src)).toEqual([
+        "/fixture-display-0.jpg",
+      ]);
+      map.fire("load");
+      map.isSourceLoaded = vi.fn(() => false);
+      map.fire("render");
+      if (first === "photo") requested[0].decoded();
+      else {
+        map.isSourceLoaded.mockReturnValue(true);
+        map.fire("render");
+      }
+      await settle();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(requested).toHaveLength(1);
+      if (first === "photo") {
+        map.isSourceLoaded.mockReturnValue(true);
+        map.fire("render");
+      } else requested[0].decoded();
+      await settle();
+      expect(requested.map((image) => image.src)).toEqual([
+        "/fixture-display-0.jpg",
+        "/fixture-display-1.jpg",
+      ]);
+      expect(requested[1].fetchPriority).toBe("low");
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(requested).toHaveLength(2);
+      requested[1].onload();
+      await settle();
+      expect(requested[2].src).toBe("/fixture-display-2.jpg");
+      requested[2].onload();
+      await settle();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(requested).toHaveLength(3);
+    },
+  );
+
+  it("cancels an old neighbour on navigation and stops on unmount", async () => {
+    const requested = photoRequests();
+    const map = await mountDay(galleryData());
+    map.fire("load");
+    map.fire("render");
+    requested[0].decoded();
+    await settle();
+    const neighbour = requested[1];
+    button("Next photo").click();
+    await settle();
+    expect(neighbour.cancelled).toBe(true);
+    const current = requested.at(-1);
+    expect(current.src).toBe("/fixture-display-1.jpg");
+    expect(document.querySelector(".photo img").getAttribute("src")).toBe(
+      "/fixture-display-0.jpg",
+    );
+    current.decoded();
+    await settle();
+    expect(document.querySelector(".photo img").getAttribute("src")).toBe(
+      "/fixture-display-1.jpg",
+    );
+    const pending = requested.at(-1);
+    expect(pending.src).toBe("/fixture-display-2.jpg");
+    await unmount(instance);
+    instance = null;
+    expect(pending.cancelled).toBe(true);
+    const count = requested.length;
+    pending.onload();
+    await settle();
+    expect(requested).toHaveLength(count);
+  });
+
+  it("waits for a new map after visiting a missing day", async () => {
+    const requested = photoRequests();
+    const data = tripsData();
+    await render("day", data);
+    requested[0].decoded();
+    await settle();
+    expect(requested).toHaveLength(2);
+    dataStore.set({ ...data, dayNumber: 9 });
+    await settle();
+    expect(maps[0].remove).toHaveBeenCalledOnce();
+    dataStore.set({ ...data, dayNumber: 2 });
+    await settle();
+    await vi.waitFor(() => expect(maps).toHaveLength(2));
+    const current = requested.at(-1);
+    expect(current.src).toBe(data.points[3].imgDisplay);
+    current.decoded();
+    await settle();
+    const beforeMap = requested.length;
+    expect(
+      requested.filter((image) => image.fetchPriority === "low"),
+    ).toHaveLength(1);
+    maps[1].fire("load");
+    await settle();
+    expect(requested).toHaveLength(beforeMap);
+    maps[1].fire("render");
+    await settle();
+    expect(requested).toHaveLength(beforeMap + 1);
+    expect(requested.at(-1).src).toBe(data.points[4].imgDisplay);
+  });
+
+  it.each(["save-data", "decode-error"])(
+    "keeps optional requests off for %s",
+    async (condition) => {
+      const requested = photoRequests();
+      if (condition === "save-data")
+        Object.defineProperty(navigator, "connection", {
+          configurable: true,
+          value: { saveData: true },
+        });
+      try {
+        const map = await mountDay(galleryData());
+        map.fire("load");
+        map.fire("render");
+        if (condition === "save-data") requested[0].decoded();
+        else requested[0].failed(new Error("image unavailable"));
+        await settle();
+        expect(requested).toHaveLength(1);
+        expect(button("Next photo").disabled).toBe(false);
+      } finally {
+        if (condition === "save-data") delete navigator.connection;
+      }
     },
   );
 });
