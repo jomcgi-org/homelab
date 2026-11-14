@@ -140,7 +140,7 @@ type Engine struct {
 	wg       sync.WaitGroup
 
 	// Only the polling goroutine uses these.
-	groups       map[string]bool      // merge group commits that carry a review check
+	groups       map[string]string    // merge group commit: the conclusion of its review check
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
 }
 
@@ -224,7 +224,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules,
-		inflight: map[headKey]*running{}, groups: map[string]bool{}, enqueueAfter: map[string]time.Time{},
+		inflight: map[headKey]*running{}, groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
 	}
 }
 
@@ -1193,8 +1193,11 @@ const maxGroups = 1000
 
 // mergeGroups posts the review check on each merge group commit, whose
 // required checks GitHub evaluates again: success when the queued PR's head
-// passed review, failure otherwise. The group's other PRs are ahead of it
-// in the queue and carry their own groups.
+// passed review, failure otherwise. A group posted as passing is checked on
+// every poll: once its PR's head stops passing (a hold label or a newer
+// review), the group gets a failing check, so the queue cannot merge it on
+// the earlier pass. The group's other PRs are ahead of it in the queue and
+// carry their own groups.
 func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*github.CheckRun) {
 	repo := b.repo()
 	entries, err := e.gh.MergeQueueEntries(ctx, repo, b.BaseBranch)
@@ -1207,17 +1210,26 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 	}
 	for _, en := range entries {
 		key := repo + "@" + en.HeadCommit
-		if en.HeadCommit == "" || e.groups[key] {
-			continue
+		if en.HeadCommit == "" || e.groups[key] == ConclusionFailure {
+			continue // a failed group cannot merge; GitHub removes it
 		}
 		l := e.log.With("binding", b.Name, "repo", repo, "pr", en.Number, "sha", en.PRHeadSHA, "merge_group", en.HeadCommit)
-		existing, err := e.reviewCheck(ctx, b, en.HeadCommit)
-		if err != nil {
-			continue
-		}
-		if existing != nil {
-			e.groups[key] = true
-			continue
+		posted := e.groups[key]
+		if posted == "" {
+			existing, err := e.reviewCheck(ctx, b, en.HeadCommit)
+			if err != nil {
+				continue
+			}
+			if existing != nil {
+				posted = ConclusionFailure
+				if existing.Status == "completed" && existing.Conclusion == ConclusionSuccess {
+					posted = ConclusionSuccess
+				}
+				e.groups[key] = posted
+				if posted == ConclusionFailure {
+					continue
+				}
+			}
 		}
 		review, ok := reviews[en.Number]
 		if !ok || (review != nil && review.HeadSHA != en.PRHeadSHA) {
@@ -1231,10 +1243,21 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 			Summary: fmt.Sprintf("This merge group commit adds PR #%d, whose head %s passed `%s`.", en.Number, short(en.PRHeadSHA), e.cfg.CheckName),
 		}
 		conclusion := ConclusionSuccess
-		if !passed {
+		switch {
+		case posted == "" && !passed:
 			conclusion = ConclusionFailure
 			o.Title = "Queued PR not reviewed"
 			o.Summary = fmt.Sprintf("PR #%d's head %s has no passing `%s`, so this merge group cannot merge.", en.Number, short(en.PRHeadSHA), e.cfg.CheckName)
+		case posted == "":
+		case !passed:
+			// The queued head stopped passing after its group's check, say
+			// for a hold label: the group must not merge on the earlier pass.
+			conclusion = ConclusionFailure
+			o.Title = "Queued PR no longer passes"
+			o.Summary = fmt.Sprintf("PR #%d's head %s no longer passes `%s` (a hold or a newer review), so this merge group cannot merge.",
+				en.Number, short(en.PRHeadSHA), e.cfg.CheckName)
+		default:
+			continue // posted and still passing
 		}
 		now := e.cfg.Now().UTC()
 		_, err = e.gh.CreateCheckRun(ctx, repo, github.CheckRunWrite{
@@ -1245,7 +1268,7 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 			e.ghError(ctx, l, b, "create_check", err)
 			continue
 		}
-		e.groups[key] = true
+		e.groups[key] = conclusion
 		e.m.MergeGroupChecks.WithLabelValues(b.Name, conclusion).Inc()
 		l.InfoContext(ctx, "merge group check posted", "conclusion", conclusion)
 	}

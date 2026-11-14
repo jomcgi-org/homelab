@@ -716,6 +716,33 @@ func TestMergeGroupsGetTheQueuedPRsReview(t *testing.T) {
 	}
 }
 
+func TestHoldOnAQueuedPRFailsItsMergeGroup(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.mu.Lock()
+	h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionSuccess {
+		t.Fatalf("mg-7 = %+v", c)
+	}
+	h.gh.label(7, "needs-human") // after the group's check passed
+	e.Tick(ctx)
+	e.Tick(ctx)
+	if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionFailure || c.Title != "Queued PR no longer passes" {
+		t.Fatalf("mg-7 after the hold = %+v", c)
+	}
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("the failed group was posted again")
+	}
+}
+
 func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
