@@ -638,9 +638,22 @@ factory's own code.
   sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
   Third-party Apps may open PRs but merge only through this gate. Joe keeps a
   ruleset bypass for emergencies; nothing else does.
+- **Trigger.** kagent v1.0.1 has no trigger resources (no webhook, cron or
+  event types); agents run when sent an A2A task. A small deterministic
+  `factory-reviewer` Deployment, separate from the connector, with its own
+  ServiceAccount, polls open PRs into main every ~30 s. It uses ETag
+  conditional requests on the reviewer App's rate pool and needs no public
+  webhook endpoint. For a new head SHA it creates the `factory review` check
+  as in progress and sends the kagent `reviewer` agent an A2A task with
+  message ID `factory-review/<pr>/<sha>`, idempotent like coding runs. The
+  agent has its own binding, a read-only repository token and no push. It
+  returns a structured verdict. The service then completes the check on that
+  exact SHA and, on a pass with required CI green, enqueues. The agent never
+  holds the reviewer App's credentials, and the broker mints the author's and
+  the reviewer's tokens only for their own ServiceAccounts.
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
   status. It holds no merge authority: the reviewer's failing check becomes
-  the revision round's feedback.
+  the revision round's feedback (`reviewerCheck {name, appId}`).
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the
