@@ -13,6 +13,9 @@ metadata:
     # podCertificate projected volume the kagent controller uses, so the
     # apiserver computes the diff (as for substrate).
     argocd.argoproj.io/compare-options: ServerSideDiff=true
+    # The root Application prunes; removing this file must not cascade into
+    # kagent's namespace, identity and sessions.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -23,6 +26,9 @@ spec:
       targetRevision: 0.1.0
       helm:
         releaseName: factory
+        # The chart's PreSync hook is the CRDs' only applier, so ArgoCD never
+        # tracks (or prunes) them (chart templates/crd-hook.yaml).
+        skipCrds: true
         valueFiles:
           - $values/projects/factory/deploy/values.yaml
     - repoURL: https://github.com/jomcgi-org/homelab.git
@@ -39,6 +45,8 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      # kagent CRs are applied in the sync that first creates their CRDs.
+      - SkipDryRunOnMissingResource=true
     retry:
       limit: 5
       backoff:

@@ -116,12 +116,33 @@ def test_credential_provider_reads_only_this_namespace() -> None:
             "namespace": "ate-system",
         }
     ]
-    # No Secret in the chart is offered for egress injection.
-    for doc in docs:
-        if doc["kind"] == "Secret":
-            assert "substrate.ate.dev/injectable" not in doc["metadata"].get(
-                "labels", {}
-            )
+    # The chart ships no Secret, so it offers nothing for egress injection;
+    # kagent's database Secrets come from outside and stay unlabelled.
+    assert not [d for d in docs if d["kind"] == "Secret"]
+
+
+def test_rbac_is_namespaced() -> None:
+    # Cluster-wide ClusterRoles would hand every namespace's Secrets to a
+    # controller behind unverified trusted-proxy auth.
+    docs = _render()
+    cluster_scoped = {
+        d["metadata"]["name"]
+        for d in docs
+        if d["kind"] in ("ClusterRole", "ClusterRoleBinding")
+    }
+    assert cluster_scoped == {"kagent-kagent-crds"}
+    roles = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Role"}
+    assert {r["metadata"]["namespace"] for r in roles.values()} == {"kagent"}
+    assert "kagent-reconciliation-role" in roles
+    config = yaml.safe_load(
+        _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
+    )
+    assert config["kubernetes"]["watchNamespaces"] == ["kagent"]
+
+
+def test_identity_lands_with_the_namespace() -> None:
+    sa = _one(_render(), "ServiceAccount", "kagent-controller")
+    assert sa["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-2"
 
 
 def test_trusted_proxy_without_tool_server_or_default_model() -> None:
@@ -140,46 +161,125 @@ def test_trusted_proxy_without_tool_server_or_default_model() -> None:
     ]
 
 
+def _pod_labels(docs: list[dict[str, Any]], name: str) -> dict[str, str]:
+    return _one(docs, "Deployment", name)["spec"]["template"]["metadata"]["labels"]
+
+
+def test_policies_select_the_kagent_pods() -> None:
+    docs = _render()
+    for policy, deployment in (
+        ("kagent-controller", "kagent-controller"),
+        ("kagent-ui", "kagent-ui"),
+    ):
+        selector = _one(docs, "CiliumNetworkPolicy", policy)["spec"][
+            "endpointSelector"
+        ]["matchLabels"]
+        assert selector == _pod_labels(docs, deployment)
+
+
 def test_controller_admits_only_bearer_paths() -> None:
-    policy = _one(_render(), "CiliumNetworkPolicy", "kagent-controller")
-    peers = policy["spec"]["ingress"][0]["fromEndpoints"]
-    namespaces = {
-        p["matchLabels"].get("k8s:io.kubernetes.pod.namespace") for p in peers
-    }
-    # None: the UI and the controller itself, in the policy's namespace.
-    assert namespaces == {None, "edge", "factory", "ate-system"}
-    assert len(policy["spec"]["ingress"]) == 1
-    egress_ns = {
-        sel["matchLabels"].get("k8s:io.kubernetes.pod.namespace")
-        for rule in policy["spec"]["egress"]
-        for sel in rule.get("toEndpoints", [])
-    }
-    assert "ate-system" in egress_ns
-    assert any(
-        sel.get("matchLabels") == {"cnpg.io/cluster": "kagent-pg"}
-        for rule in policy["spec"]["egress"]
-        for sel in rule.get("toEndpoints", [])
-    )
+    docs = _render()
+    spec = _one(docs, "CiliumNetworkPolicy", "kagent-controller")["spec"]
+    ui = _pod_labels(docs, "kagent-ui")
+    controller = _pod_labels(docs, "kagent-controller")
+    assert spec["ingress"] == [
+        {
+            "fromEndpoints": [
+                {"matchLabels": ui},
+                {"matchLabels": controller},
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-name": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-namespace": "edge",
+                    }
+                },
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory",
+                        "app.kubernetes.io/name": "factory-connector",
+                    }
+                },
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "ate-system",
+                        "app": "atenet-egress",
+                    }
+                },
+            ],
+            "toPorts": [{"ports": [{"port": "8083", "protocol": "TCP"}]}],
+        }
+    ]
+
+    def to(selectors: list[dict[str, str]], port: str) -> dict[str, Any]:
+        return {
+            "toEndpoints": [{"matchLabels": m} for m in selectors],
+            "toPorts": [{"ports": [{"port": port, "protocol": "TCP"}]}],
+        }
+
+    substrate = "ate-system"
+    ns = "k8s:io.kubernetes.pod.namespace"
+    assert spec["egress"] == [
+        {"toEntities": ["kube-apiserver"]},
+        to([controller], "8083"),
+        to([{ns: substrate, "app": "ate-api-server"}], "443"),
+        to(
+            [
+                {ns: substrate, "app": "ate-idp-server"},
+                {ns: substrate, "app": "atenet-router"},
+            ],
+            "8443",
+        ),
+        to([{"cnpg.io/cluster": "kagent-pg"}], "5432"),
+    ]
+
+
+def test_ui_admits_only_the_edge() -> None:
+    docs = _render()
+    spec = _one(docs, "CiliumNetworkPolicy", "kagent-ui")["spec"]
+    assert spec["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-name": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-namespace": "edge",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        }
+    ]
+    assert spec["egress"] == [
+        {
+            "toEndpoints": [{"matchLabels": _pod_labels(docs, "kagent-controller")}],
+            "toPorts": [{"ports": [{"port": "8083", "protocol": "TCP"}]}],
+        }
+    ]
 
 
 def test_existing_kagent_renders_only_crds() -> None:
-    # Helm cannot make crds/ conditional; an existing install skips them with
-    # the Application's helm.skipCrds.
+    # Helm cannot make crds/ conditional. The factory Application sets
+    # helm.skipCrds, so under ArgoCD an existing install renders nothing.
     docs = _render(["kagent.mode=existing", "kagent.enabled=false"])
     assert {d["kind"] for d in docs} == {"CustomResourceDefinition"}
 
 
 @pytest.mark.parametrize(
-    "override",
+    ("override", "message"),
     [
-        "kagent.enabled=false",
-        "itsaplan.enabled=true",
-        "broker.enabled=true",
-        "connector.enabled=true",
-        "repositories[0].repo=homelab",
-        "postgres.mode=install",
+        ("kagent.enabled=false", "kagent.enabled must be true for kagent.mode install"),
+        ("itsaplan.enabled=true", "itsaplan is not implemented"),
+        ("broker.enabled=true", "broker is not implemented"),
+        ("connector.enabled=true", "connector is not implemented"),
+        (
+            "repositories[0].repo=homelab",
+            "repositories, agents and providers are not implemented",
+        ),
+        ("postgres.mode=install", "postgres.mode"),
     ],
 )
-def test_unimplemented_or_inconsistent_values_fail(override: str) -> None:
-    with pytest.raises(RuntimeError):
+def test_unimplemented_or_inconsistent_values_fail(override: str, message: str) -> None:
+    with pytest.raises(RuntimeError, match=message):
         _render([override])
