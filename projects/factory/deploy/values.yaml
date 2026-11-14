@@ -56,6 +56,14 @@ kagent:
         serviceAccount:
           authority: factory-home
 
+# The Codex agent's model. kagent v1.0.1 pins Codex 0.161.0, which gives the
+# model its apply_patch edit tool only for models in its bundled catalogue
+# (codex-rs/models-manager/models.json); gpt-6.1-terra is not there, so with
+# it the first run (HOME-1) had no way to edit files.
+agents:
+  codex:
+    model: gpt-6.1-sol
+
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
 # (projects/platform-factory/substrate/values/substrate.yaml).
