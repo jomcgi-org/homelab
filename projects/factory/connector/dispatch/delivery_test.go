@@ -155,6 +155,21 @@ func (g *fakeGitHub) check(sha, name string, app int64, conclusion string) {
 	})
 }
 
+// status sets the latest commit status of a context on a commit.
+func (g *fakeGitHub) status(sha, context, creator, state string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	sts := g.statuses[sha][:0:0]
+	for _, s := range g.statuses[sha] {
+		if s.Context != context {
+			sts = append(sts, s)
+		}
+	}
+	g.statuses[sha] = append(sts, github.Status{
+		NodeID: g.node("SC"), Context: context, State: state, Creator: creator, SHA: sha,
+	})
+}
+
 func (g *fakeGitHub) green(sha string) {
 	g.check(sha, "test", 100, "success")
 	g.check(sha, "semgrep-review", 200, "success")
@@ -742,6 +757,36 @@ func TestEnqueueOnlyAtCurrentHeadWithEverythingGreen(t *testing.T) {
 	v.poll()
 	if n := len(v.gh.Enqueues()); n != 1 {
 		t.Fatalf("enqueues = %d, want one while queued", n)
+	}
+}
+
+func TestStatusCheckGatesOnItsCreator(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.RequiredChecks = append(v.cfg.Bindings[0].Review.RequiredChecks,
+		dispatch.Check{Name: "pr-checks", StatusCreator: "buildbuddy-io[bot]"})
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.status("sha-1", "pr-checks", "", "success") // no creator, as the combined endpoint reports
+	v.poll()
+	if n := len(v.gh.Enqueues()); n != 0 {
+		t.Fatal("enqueued on a status without its creator")
+	}
+	v.gh.status("sha-1", "pr-checks", "someone-else", "success")
+	v.poll()
+	if n := len(v.gh.Enqueues()); n != 0 {
+		t.Fatal("enqueued on a status from an untrusted creator")
+	}
+	v.gh.status("sha-1", "pr-checks", "BuildBuddy-IO[bot]", "pending")
+	v.poll()
+	if n := len(v.gh.Enqueues()); n != 0 {
+		t.Fatal("enqueued on a pending status")
+	}
+	v.gh.status("sha-1", "pr-checks", "BuildBuddy-IO[bot]", "success")
+	v.poll()
+	if q := v.gh.Enqueues(); len(q) != 1 || q[0] != "sha-1" {
+		t.Fatalf("enqueues = %v, want sha-1 once its creator's status passed", q)
 	}
 }
 
