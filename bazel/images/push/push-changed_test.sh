@@ -29,6 +29,7 @@ fail() {
 # claim already exist; CRANE_BROKEN makes every lookup fail instead.
 setup() {
 	local manifest="$1" published="$2" broken="${3:-}"
+	export STUB_VERIFY_STATUS=0
 	WORK=$(mktemp -d)
 	mkdir -p "$WORK/bazel/images" "$WORK/bazel-bin/bazel/images/digests" "$WORK/bin"
 
@@ -128,8 +129,10 @@ STUB
 	fi
 	cat >"$WORK/bin/verifier" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$STUB_VERIFY_ARGV"
+printf '%s\n' "$@" >"$STUB_VERIFY_ARGV"
 cp "$2" "$STUB_VERIFY_RESULTS"
+cp "$STUB_ORDER_LOG" "$STUB_VERIFY_ARGV.order"
+exit "${STUB_VERIFY_STATUS:-0}"
 STUB
 
 	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane" "$WORK/bin/verifier"
@@ -152,7 +155,7 @@ STUB
 teardown() { rm -rf "$WORK"; }
 
 run_script() {
-	BUILD_WORKSPACE_DIRECTORY="$WORK" BAZEL="$WORK/bin/bazel" CRANE="$WORK/bin/crane" \
+	PATH="$WORK/bin:$PATH" BUILD_WORKSPACE_DIRECTORY="$WORK" BAZEL="$WORK/bin/bazel" CRANE="$WORK/bin/crane" \
 		HELM="$WORK/bin/crane" PUBLISH_RUN_ID=test-run \
 		VERIFY_PUBLISHED_IMAGES="$WORK/bin/verifier" \
 		TOOLS_VERSION_FILE="${TOOLS_VERSION_FILE:-$WORK/.tools-version}" \
@@ -485,6 +488,70 @@ else
 	fail "chart push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
 fi
 teardown
+
+# 21. The final verifier can reject a run after successful registry writes.
+#     Use the same mixed push/skip fixture for rejection and success, with an
+#     absent floating tools tag so any continuation must attempt the retag.
+for VERIFY_STATUS in 17 0; do
+	setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa"
+	tools_version_alpha
+	export STUB_VERIFY_STATUS="$VERIFY_STATUS"
+	# Record production's temporary-file allocations independently of verifier
+	# argv, so both ephemeral path arguments can be compared exactly.
+	export STUB_REAL_MKTEMP="$(command -v mktemp)"
+	export STUB_TEMP_LOG="$WORK/temps.log"
+	cat >"$WORK/bin/mktemp" <<'STUB'
+#!/usr/bin/env bash
+path=$("$STUB_REAL_MKTEMP" "$STUB_TEMP_LOG.XXXXXX") || exit $?
+printf '%s\n' "$path" >>"$STUB_TEMP_LOG"
+printf '%s\n' "$path"
+STUB
+	chmod +x "$WORK/bin/mktemp"
+	OUT=$(run_script) && STATUS=0 || STATUS=$?
+	EXPECTED_ORDER=$(printf '%s\n' \
+		"check //projects/beta:image.push" \
+		"check //projects/gamma:image.push" \
+		"push //projects/beta:image.push" \
+		"push //projects/gamma:image.push" \
+		"push //bazel/images:push_charts")
+	EXPECTED_ARGV=$(printf '%s\n' \
+		"test-run" "$(sed -n '3p' "$STUB_TEMP_LOG")" \
+		"$WORK/.chart-version-records" "$(sed -n '4p' "$STUB_TEMP_LOG")" \
+		"$WORK/bazel-bin")
+	EXPECTED_RESULTS=$(printf '%s\t%s\t%s\t%s\t%s\n' \
+		"test-run" "skipped" "//projects/alpha:image.push" "ghcr.io/jomcgi/homelab/alpha" "sha256:aaa" \
+		"test-run" "pushed" "//projects/beta:image.push" "ghcr.io/jomcgi/homelab/beta" "sha256:bbb" \
+		"test-run" "pushed" "//projects/gamma:image.push" "ghcr.io/jomcgi/homelab/gamma" "sha256:ccc")
+	if [ "$(cat "$STUB_VERIFY_ARGV.order")" = "$EXPECTED_ORDER" ] &&
+		[ "$(cat "$STUB_RUN_LOG")" = "$(printf '%s\n' \
+			"//projects/beta:image.push" "//projects/gamma:image.push" "//bazel/images:push_charts")" ] &&
+		[ "$(cat "$STUB_VERIFY_ARGV")" = "$EXPECTED_ARGV" ] &&
+		[ "$(cat "$STUB_VERIFY_RESULTS")" = "$EXPECTED_RESULTS" ]; then
+		pass "verifier exit $VERIFY_STATUS receives all five arguments and same-run evidence after image and chart publication"
+	else
+		fail "verifier exit $VERIFY_STATUS receives publication evidence" "order: $(cat "$STUB_VERIFY_ARGV.order")
+argv: $(cat "$STUB_VERIFY_ARGV")
+results: $(cat "$STUB_VERIFY_RESULTS")"
+	fi
+	if [ "$VERIFY_STATUS" -eq 17 ]; then
+		if [ "$STATUS" -eq 17 ] && [ ! -s "$STUB_TAG_LOG" ]; then
+			pass "verifier rejection exits 17 before an eligible floating tools retag"
+		else
+			fail "verifier rejection exits 17 before an eligible floating tools retag" "status=$STATUS
+$OUT
+tag.log: $(cat "$STUB_TAG_LOG")"
+		fi
+	elif [ "$STATUS" -eq 0 ] &&
+		[ "$(cat "$STUB_TAG_LOG")" = "ghcr.io/jomcgi/homelab/alpha@sha256:aaa main" ]; then
+		pass "verifier success exits 0 and retags the equivalent mixed push/skip fixture"
+	else
+		fail "verifier success exits 0 and retags the equivalent mixed push/skip fixture" "status=$STATUS
+$OUT
+tag.log: $(cat "$STUB_TAG_LOG")"
+	fi
+	unset STUB_REAL_MKTEMP STUB_TEMP_LOG
+	teardown
+done
 
 echo ""
 if [ "$FAILURES" -ne 0 ]; then
