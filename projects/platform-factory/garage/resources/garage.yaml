@@ -195,8 +195,12 @@ spec:
         - name: config
           configMap:
             name: garage-config
+  # apiVersion, kind and volumeMode as the API server stores them, so ArgoCD's
+  # diff matches.
   volumeClaimTemplates:
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: meta
         annotations:
           # Also on the StatefulSet's PVCs, which ArgoCD does not track today.
@@ -204,16 +208,20 @@ spec:
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: local-path
+        volumeMode: Filesystem
         resources:
           requests:
             storage: 1Gi
-    - metadata:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
         name: data
         annotations:
           argocd.argoproj.io/sync-options: Prune=false,Delete=false
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: local-path
+        volumeMode: Filesystem
         resources:
           # local-path does not enforce sizes; Garage's layout capacity
           # (garage_init.py) is what balances data.
