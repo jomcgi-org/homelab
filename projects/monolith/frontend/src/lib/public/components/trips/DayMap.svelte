@@ -7,6 +7,7 @@
     watchMapScheme,
   } from "$lib/trips/map-theme.js";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 
   // Single-day route map, a faithful port of the original React DayMap. The
   // basemap starts from Carto Positron and receives resolved sheet-token paint
@@ -275,6 +276,8 @@
     (async () => {
       maplibre = await import("maplibre-gl");
       if (destroyed) return;
+      // The package-relative default is absent from Vite's emitted chunks.
+      maplibre.setWorkerUrl(workerUrl);
 
       const b = bounds();
       map = new maplibre.Map({

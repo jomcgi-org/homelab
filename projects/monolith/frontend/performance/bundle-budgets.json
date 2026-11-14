@@ -33,17 +33,17 @@
     "/public/app/trips/[slug]": {
       "initialGzip": 85000,
       "deferredGzip": 330000,
-      "workerGzip": 0
+      "workerGzip": 170000
     },
     "/public/app/trips/[slug]/day/[day]": {
       "initialGzip": 85000,
       "deferredGzip": 330000,
-      "workerGzip": 0
+      "workerGzip": 170000
     },
     "/public/app/trips/[slug]/timeline": {
       "initialGzip": 85000,
       "deferredGzip": 330000,
-      "workerGzip": 0
+      "workerGzip": 170000
     },
     "/public/app/notes": {
       "initialGzip": 105000,
