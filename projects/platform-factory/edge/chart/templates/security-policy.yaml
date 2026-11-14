@@ -2,8 +2,8 @@
 Every route on the edge Gateway signs in through Authentik before Envoy
 forwards the request. A SecurityPolicy that targets a route replaces this one
 for that route, so only the `edge` namespace may create SecurityPolicies
-(projects/platform-factory/edge-admission/); the one exception is Authentik's
-own route (authentik-route.yaml).
+(projects/platform-factory/edge-admission/). Authentik's own route is exempt;
+kagent's route uses the same OIDC settings with access-token forwarding.
 
 If the client secret is missing or empty, Envoy Gateway marks this policy
 invalid and answers every route with 500. The Secret starts with a placeholder
@@ -17,7 +17,6 @@ browser, because the issuer must be the public URL.
 A new hostname needs its callback URL added to the factory-edge provider's
 redirect_uris (projects/platform/authentik/factory-blueprints/).
 */}}
-{{- $issuerBase := printf "https://%s/application/o" .Values.authentik.hostname }}
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
@@ -29,29 +28,4 @@ spec:
       kind: Gateway
       name: edge
   oidc:
-    provider:
-      issuer: {{ printf "%s/%s/" $issuerBase .Values.authentik.oidc.applicationSlug }}
-      authorizationEndpoint: {{ printf "%s/authorize/" $issuerBase }}
-      tokenEndpoint: {{ printf "%s/token/" $issuerBase }}
-      endSessionEndpoint: {{ printf "%s/%s/end-session/" $issuerBase .Values.authentik.oidc.applicationSlug }}
-    clientID: {{ .Values.authentik.oidc.clientID }}
-    clientSecret:
-      name: {{ .Values.authentik.oidc.clientSecretName }}
-    scopes:
-      - openid
-      - email
-      - profile
-    # Cloudflare terminates TLS, so the request Envoy sees is plain HTTP and
-    # the default redirect URL (built from X-Forwarded-Proto, which Envoy
-    # rewrites for an untrusted peer) would be http://.
-    redirectURL: "https://%REQ(:authority)%/oauth2/callback"
-    # Envoy's default /logout would shadow an application's own path.
-    logoutPath: /oauth2/logout
-    cookieConfig:
-      sameSite: Lax
-    # No refresh: when the access token expires (10 minutes, set on the
-    # factory-edge provider) Envoy sends the browser back to Authentik, which
-    # re-checks the authentik Admins binding. Removing someone from the group
-    # ends their edge access within that window; an active Authentik session
-    # makes the round trip invisible to everyone else.
-    refreshToken: false
+    {{- include "edge.oidc" . | nindent 4 }}

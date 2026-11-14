@@ -215,6 +215,11 @@ spec:
         !has(object.spec.hostnames) ||
         !object.spec.hostnames.exists(h, h == 'factory-auth.jomcgi.dev')
       message: Only the edge namespace may route factory-auth.jomcgi.dev.
+    - expression: >-
+        request.namespace == 'edge' ||
+        !has(object.spec.hostnames) ||
+        !object.spec.hostnames.exists(h, h == 'factory-agents.jomcgi.dev')
+      message: Only the edge namespace may route factory-agents.jomcgi.dev.
     # itsaplan's namespace routes its own hostname and nothing else, so a
     # route there cannot take over another application's host.
     - expression: >-

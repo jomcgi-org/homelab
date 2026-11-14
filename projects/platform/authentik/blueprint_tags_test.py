@@ -288,8 +288,17 @@ def test_factory_edge_and_argocd_callback_hosts():
         if entry["model"] == "authentik_providers_oauth2.oauth2provider"
     }
     edge_urls = {uri["url"] for uri in providers["edge-provider"]["redirect_uris"]}
-    assert "https://factory.jomcgi.dev/oauth2/callback" in edge_urls
-    assert "https://factory-argocd.jomcgi.dev/oauth2/callback" in edge_urls
+    assert edge_urls == {
+        "https://factory.jomcgi.dev/oauth2/callback",
+        "https://factory-argocd.jomcgi.dev/oauth2/callback",
+        "https://factory-plan.jomcgi.dev/oauth2/callback",
+        "https://factory-grafana.jomcgi.dev/oauth2/callback",
+        "https://factory-agents.jomcgi.dev/oauth2/callback",
+    }
+    assert all(
+        uri["matching_mode"] == "strict"
+        for uri in providers["edge-provider"]["redirect_uris"]
+    )
     assert providers["argocd-provider"]["redirect_uris"] == [
         {
             "matching_mode": "strict",

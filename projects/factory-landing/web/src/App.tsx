@@ -11,7 +11,6 @@ const tools = [
     name: "kagent",
     purpose: "Agent sessions.",
     href: paths.agents,
-    comingSoon: true,
   },
   { name: "Grafana", purpose: "Metrics.", href: paths.grafana },
   { name: "ArgoCD", purpose: "Deploy state.", href: paths.argocd },
@@ -33,22 +32,12 @@ export function App() {
               <VStack gap={3}>
                 <Heading level={2}>{tool.name}</Heading>
                 <Text type="body">{tool.purpose}</Text>
-                {tool.comingSoon ? (
-                  <>
-                    <Text type="body">Coming soon</Text>
-                    <Text type="body">{tool.href}</Text>
-                  </>
-                ) : (
-                  <HStack gap={2} wrap="wrap">
-                    <Button label={`Open ${tool.name}`} href={tool.href} />
-                    {tool.name === "GitHub" && (
-                      <Button
-                        label="Open factory PRs"
-                        href={paths.pullRequests}
-                      />
-                    )}
-                  </HStack>
-                )}
+                <HStack gap={2} wrap="wrap">
+                  <Button label={`Open ${tool.name}`} href={tool.href} />
+                  {tool.name === "GitHub" && (
+                    <Button label="Open factory PRs" href={paths.pullRequests} />
+                  )}
+                </HStack>
               </VStack>
             </Card>
           ))}

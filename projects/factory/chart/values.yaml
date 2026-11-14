@@ -80,8 +80,8 @@ kagent:
   ui:
     image:
       tag: "1.0.1@sha256:ce5c3a9a05d1292afa3d94c3aaf1547feac4389fe4181840acb8d54179da6128"
-    # The UI has no route of its own; the edge publishes it (projects/
-    # platform-factory/edge). Until then it is reached through a port-forward.
+    # The edge publishes factory-agents.jomcgi.dev with route-specific OIDC
+    # access-token forwarding (projects/platform-factory/edge).
     route:
       enabled: false
 

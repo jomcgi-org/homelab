@@ -3,9 +3,9 @@ Authentik's own hostname. It cannot sit behind the gateway-wide OIDC policy,
 since that policy redirects to it, so a route-level SecurityPolicy replaces the
 gateway one here and allows every request through to Authentik's login flows.
 
-The route lives in `edge`, not `authentik`, so that this exemption is the only
-SecurityPolicy outside the gateway-wide one; a ReferenceGrant in `authentik`
-lets it name the Authentik Service.
+The route lives in `edge`, where admission confines SecurityPolicies; a
+ReferenceGrant in `authentik` lets it name the Authentik Service. This is the
+only route policy that exempts a route from sign-in.
 
 From the internet Authentik serves only what sign-in needs: its flow pages,
 static files, the OAuth2 endpoints under /application/o/ and the API prefixes
