@@ -61,6 +61,36 @@ export function transferTotals(requests) {
 // Context-wide request events include dedicated workers and child frames.
 // Request.sizes() supplies encoded response body plus response-header bytes.
 // A missing final size must never silently contribute zero to a full total.
+export async function responseTransferSize(request) {
+  try {
+    const response = await request.response();
+    if (!response) throw new Error("response unavailable for sizing");
+    if ([301, 302, 303, 307, 308].includes(response.status())) {
+      // Chromium does not report redirect body transfer sizes. Playwright uses
+      // Content-Length and silently substitutes zero when the header is absent.
+      const length = await response.headerValue("content-length");
+      if (length === null || !/^\d+$/.test(length.trim())) {
+        throw new Error(
+          "redirect body size unavailable without Content-Length",
+        );
+      }
+    }
+    const sizes = await request.sizes();
+    if (
+      ![sizes.responseBodySize, sizes.responseHeadersSize].every(
+        (size) => Number.isFinite(size) && size >= 0,
+      )
+    ) {
+      throw new Error("response size unavailable");
+    }
+    return {
+      transferBytes: sizes.responseBodySize + sizes.responseHeadersSize,
+    };
+  } catch (error) {
+    return { transferBytes: null, sizeError: error.message };
+  }
+}
+
 export function responseTransferTotals(requests) {
   const measured = requests.filter(
     (r) => r.complete && !r.failed && Number.isFinite(r.transferBytes),

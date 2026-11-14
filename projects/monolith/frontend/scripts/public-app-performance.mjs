@@ -7,6 +7,7 @@ import {
   cls,
   median,
   recordTransferBytes,
+  responseTransferSize,
   responseTransferTotals,
   percentile,
   summarize,
@@ -131,6 +132,7 @@ const report = {
     "Cold browser context; observed edge state, no CDN purge.",
     "TTFB is navigation responseStart minus startTime and includes connection setup.",
     "Context-wide request events cover page, worker and child-frame requests. Request.sizes() supplies encoded body plus response-header sizes. Full transfer totals are unavailable when any request remains unfinished, failed or unsized at the observation cutoff; completed-response lower bounds remain in JSON.",
+    "Redirects without Content-Length have unknown body size: Playwright's fallback zero is not a measurement. Such a redirect keeps the whole-page transfer total unavailable.",
     "Detailed CDP initiators cover the page target only. A worker or child frame makes the complete initiator inventory unavailable; page-target partial observations remain in JSON.",
     "The separate page-target CDP byte estimate includes response bytes received plus body chunks. Finished-request totals replace the running estimate; this partial inventory is never used as a whole-page total.",
     "CPU/network throttling applies to the page target. Runs with workers or child frames have profileComplete=false and cannot certify the full mobile target profile.",
@@ -170,12 +172,7 @@ async function measure(route, run) {
     const item = contextRequests.get(request);
     if (!item) return;
     item.complete = true;
-    item.sizing = request
-      .sizes()
-      .then((sizes) => ({
-        transferBytes: sizes.responseBodySize + sizes.responseHeadersSize,
-      }))
-      .catch((error) => ({ sizeError: error.message }));
+    item.sizing = responseTransferSize(request);
   });
   context.on("requestfailed", (request) => {
     const item = contextRequests.get(request);
