@@ -43,13 +43,22 @@ type fakeGitHub struct {
 	requests []mintRequest
 	serial   int
 	widen    bool // answer with an extra repository
+	noPerms  bool // answer without a permissions map
 	fail     map[string]bool
+	revoked  []string
 }
 
 func newFakeGitHub(t *testing.T, key *rsa.PrivateKey, appID, installation, owner string) *fakeGitHub {
 	t.Helper()
 	f := &fakeGitHub{fail: map[string]bool{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Path == "/installation/token" {
+			f.mu.Lock()
+			f.revoked = append(f.revoked, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/"+installation+"/access_tokens" {
 			http.NotFound(w, r)
 			return
@@ -68,7 +77,7 @@ func newFakeGitHub(t *testing.T, key *rsa.PrivateKey, appID, installation, owner
 		f.mu.Lock()
 		f.requests = append(f.requests, req)
 		f.serial++
-		serial, widen := f.serial, f.widen
+		serial, widen, noPerms := f.serial, f.widen, f.noPerms
 		fail := len(req.Repositories) == 1 && f.fail[req.Repositories[0]]
 		f.mu.Unlock()
 		if fail {
@@ -86,6 +95,9 @@ func newFakeGitHub(t *testing.T, key *rsa.PrivateKey, appID, installation, owner
 		perms := map[string]string{"metadata": "read"}
 		for k, v := range req.Permissions {
 			perms[k] = v
+		}
+		if noPerms {
+			perms = nil
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -223,6 +235,25 @@ func TestMintAgentsDownscopesAndWritesSecrets(t *testing.T) {
 	}
 }
 
+func TestMintAgentsRefusesUnmanagedSecret(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.client.CoreV1().Secrets("factory-homelab").Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-git", Namespace: "factory-homelab"},
+		Data:       map[string][]byte{"other": []byte("keep")},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.minter.MintAgents(context.Background()); err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("MintAgents error = %v, want a refusal", err)
+	}
+	if s := h.secret(t, "factory-homelab"); string(s.Data["other"]) != "keep" || len(s.Data) != 1 {
+		t.Fatalf("unmanaged Secret was changed: %v", s.Data)
+	}
+	if s := h.secret(t, "factory-site"); s.Labels[ManagedByLabel] != ManagedBy {
+		t.Fatalf("managed Secret labels = %v", s.Labels)
+	}
+}
+
 func TestMintAgentsIsolatesFailures(t *testing.T) {
 	h := newHarness(t)
 	h.gh.fail["homelab"] = true
@@ -237,11 +268,29 @@ func TestMintAgentsIsolatesFailures(t *testing.T) {
 	}
 }
 
-func TestMintRejectsWiderToken(t *testing.T) {
+func TestMintRejectsAndRevokesWrongScope(t *testing.T) {
 	h := newHarness(t)
 	h.gh.widen = true
 	if _, err := h.minter.App.Mint(context.Background(), "example-org/homelab", map[string]string{"contents": "write"}); err == nil {
 		t.Fatal("accepted a token scoped to more than one repository")
+	}
+	h.gh.mu.Lock()
+	h.gh.widen, h.gh.noPerms = false, true
+	h.gh.mu.Unlock()
+	if _, err := h.minter.App.Mint(context.Background(), "example-org/homelab", map[string]string{"contents": "write"}); err == nil {
+		t.Fatal("accepted a token reporting no permissions")
+	}
+	h.gh.mu.Lock()
+	revoked := append([]string(nil), h.gh.revoked...)
+	h.gh.mu.Unlock()
+	if len(revoked) != 2 || revoked[0] != "ghs_fake1" || revoked[1] != "ghs_fake2" {
+		t.Fatalf("revoked tokens = %v, want both rejected tokens", revoked)
+	}
+	if err := checkScope("o/r", map[string]string{"contents": "write"}, map[string]string{"contents": "read", "metadata": "read"}, true); err == nil {
+		t.Fatal("accepted a lower level than requested")
+	}
+	if err := checkScope("o/r", map[string]string{"contents": "write"}, map[string]string{"contents": "write", "issues": "write"}, true); err == nil {
+		t.Fatal("accepted an unrequested permission")
 	}
 	if _, err := h.minter.App.Mint(context.Background(), "homelab", map[string]string{"contents": "write"}); err == nil {
 		t.Fatal("accepted a repository without an owner")

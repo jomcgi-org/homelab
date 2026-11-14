@@ -196,6 +196,70 @@ func TestInvalidGrant(t *testing.T) {
 	})
 }
 
+func TestMissingGrantSecretIsNotLoginRequired(t *testing.T) {
+	h := newHarness(t)
+	if err := h.client.CoreV1().Secrets(namespace).Delete(context.Background(), prefix+grantName, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.mgr.AccessToken(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing Secret error = %v, want ErrUnavailable", err)
+	}
+	if h.state("missing") != 1 {
+		t.Fatal("grant state is not missing")
+	}
+}
+
+func TestRefreshRejected(t *testing.T) {
+	now := time.Now().UTC()
+	t.Run("transient failure is unavailable", func(t *testing.T) {
+		h := newHarness(t)
+		access, _ := h.seed(t, now, now.Add(5*24*time.Hour))
+		h.auth.FailTransiently(true)
+		if _, err := h.mgr.RefreshRejected(context.Background(), access); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("RefreshRejected error = %v, want ErrUnavailable", err)
+		}
+		if h.mgr.broker.NeedsLogin(grantName) {
+			t.Fatal("a transient failure marked the grant for login")
+		}
+	})
+	t.Run("concurrent callers share one refresh", func(t *testing.T) {
+		h := newHarness(t)
+		access, _ := h.seed(t, now, now.Add(5*24*time.Hour))
+		h.auth.SetDelay(50 * time.Millisecond)
+		var wg sync.WaitGroup
+		tokens := make([]string, 10)
+		for i := range tokens {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				tok, err := h.mgr.RefreshRejected(context.Background(), access)
+				if err != nil {
+					t.Errorf("caller %d: %v", i, err)
+					return
+				}
+				tokens[i] = tok.AccessToken
+			}(i)
+		}
+		wg.Wait()
+		if h.auth.RefreshCalls() != 1 {
+			t.Fatalf("refresh calls = %d, want 1", h.auth.RefreshCalls())
+		}
+		for i, tok := range tokens {
+			if tok == access || tok != tokens[0] {
+				t.Fatalf("caller %d token not the shared refreshed token", i)
+			}
+		}
+		// The new token refused again inside the cooldown: unavailable,
+		// not login required, and no second rotation.
+		if _, err := h.mgr.RefreshRejected(context.Background(), tokens[0]); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("repeat refusal error = %v", err)
+		}
+		if h.auth.RefreshCalls() != 1 {
+			t.Fatal("repeat refusal rotated again inside the cooldown")
+		}
+	})
+}
+
 func TestSingleFlightRefreshUnderConcurrency(t *testing.T) {
 	h := newHarness(t)
 	now := time.Now().UTC()

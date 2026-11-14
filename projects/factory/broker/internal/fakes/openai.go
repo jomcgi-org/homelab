@@ -37,6 +37,7 @@ type OpenAIAuth struct {
 	current      string
 	used         map[string]bool
 	revoked      bool
+	transient    bool
 	serial       int
 	refreshCalls int
 	beforeReuse  func(token string)
@@ -89,6 +90,9 @@ func (f *OpenAIAuth) token(w http.ResponseWriter, r *http.Request) {
 		rt := r.PostForm.Get("refresh_token")
 		f.mu.Lock()
 		switch {
+		case f.transient:
+			f.mu.Unlock()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		case f.revoked:
 			f.mu.Unlock()
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
@@ -145,6 +149,14 @@ func (f *OpenAIAuth) Rotate() string {
 func (f *OpenAIAuth) Revoke() {
 	f.mu.Lock()
 	f.revoked = true
+	f.mu.Unlock()
+}
+
+// FailTransiently makes refreshes answer 500 server_error, which is not a
+// dead grant.
+func (f *OpenAIAuth) FailTransiently(fail bool) {
+	f.mu.Lock()
+	f.transient = fail
 	f.mu.Unlock()
 }
 

@@ -61,6 +61,9 @@ func reject(reason string) error { return &Error{Reason: reason} }
 // five minutes before iat.
 const clockSkew = 30 * time.Second
 
+// fetchTimeout bounds one discovery and key set fetch.
+const fetchTimeout = 10 * time.Second
+
 // maxTokenBytes bounds work done on an unauthenticated header.
 const maxTokenBytes = 16 << 10
 
@@ -252,7 +255,12 @@ func (v *Verifier) key(ctx context.Context, kid string) (publicKey, error) {
 		}
 		return publicKey{}, reject(ReasonUnknownKey)
 	}
-	if err := v.fetchLocked(ctx); err != nil {
+	// Detached from the request: a cancelled caller must neither abort
+	// the fetch nor spend the refetch slot on nothing.
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+	err := v.fetchLocked(fetchCtx)
+	cancel()
+	if err != nil {
 		v.opts.Logger.Error("actor JWT key set fetch failed", "err", err)
 	}
 	v.mu.RLock()

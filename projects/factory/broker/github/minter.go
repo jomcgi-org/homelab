@@ -28,6 +28,10 @@ const (
 	// BasicKey holds base64("x-access-token:<token>"), the value of an
 	// HTTP Basic Authorization header for git over HTTPS.
 	BasicKey = "basic"
+	// ManagedByLabel marks Secrets the broker owns; it never overwrites a
+	// Secret without it.
+	ManagedByLabel = "app.kubernetes.io/managed-by"
+	ManagedBy      = "factory-broker"
 )
 
 // Minter keeps each binding's agent git Secret current and serves connector
@@ -103,7 +107,7 @@ func (m *Minter) writeSecret(ctx context.Context, b config.Binding, tok Token) e
 		_, err = secrets.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: m.SecretName, Namespace: b.Namespace,
-				Labels:      map[string]string{InjectableLabel: "true", "app.kubernetes.io/managed-by": "factory-broker"},
+				Labels:      map[string]string{InjectableLabel: "true", ManagedByLabel: ManagedBy},
 				Annotations: map[string]string{ExpiresAnnotation: expires},
 			},
 			Type: corev1.SecretTypeOpaque,
@@ -114,8 +118,8 @@ func (m *Minter) writeSecret(ctx context.Context, b config.Binding, tok Token) e
 	if err != nil {
 		return err
 	}
-	if current.Labels == nil {
-		current.Labels = map[string]string{}
+	if current.Labels[ManagedByLabel] != ManagedBy {
+		return fmt.Errorf("secret %s/%s exists without %s=%s; refusing to overwrite it", b.Namespace, m.SecretName, ManagedByLabel, ManagedBy)
 	}
 	if current.Annotations == nil {
 		current.Annotations = map[string]string{}

@@ -40,9 +40,9 @@ func (r *Reviewer) Review(ctx context.Context, token string) (string, error) {
 	if !status.Authenticated || status.Error != "" || status.User.Username == "" {
 		return "", ErrUnauthenticated
 	}
-	// An authenticator that ignores audiences returns none; the API server
-	// returns the intersection when it checked them.
-	if len(status.Audiences) != 0 && !slices.Contains(status.Audiences, r.Audience) {
+	// The API server returns the audiences it checked. An authenticator
+	// that ignores audiences returns none, so require ours explicitly.
+	if !slices.Contains(status.Audiences, r.Audience) {
 		return "", ErrUnauthenticated
 	}
 	return status.User.Username, nil

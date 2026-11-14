@@ -18,6 +18,8 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -57,6 +59,9 @@ type Options struct {
 	ForceCooldown time.Duration
 	Metrics       *metrics.Metrics
 	Logger        *slog.Logger
+	// Context bounds background work such as a pending device login; it
+	// is the process's shutdown context. Defaults to context.Background.
+	Context context.Context
 }
 
 type Manager struct {
@@ -67,7 +72,10 @@ type Manager struct {
 	mu          sync.Mutex
 	lastFailure time.Time
 	lastForced  time.Time
-	login       loginState
+	// rejectMu serializes RefreshRejected, so concurrent callers holding
+	// the same refused token wait for the one in-flight refresh.
+	rejectMu sync.Mutex
+	login    loginState
 }
 
 type loginState struct {
@@ -87,6 +95,9 @@ func New(opts Options) *Manager {
 	}
 	if opts.RetryAfter <= 0 {
 		opts.RetryAfter = time.Minute
+	}
+	if opts.Context == nil {
+		opts.Context = context.Background()
 	}
 	if opts.ForceCooldown <= 0 {
 		opts.ForceCooldown = time.Minute
@@ -134,8 +145,15 @@ func (m *Manager) AccessToken(ctx context.Context) (Token, error) {
 	m.mu.Lock()
 	m.lastFailure = time.Now()
 	m.mu.Unlock()
-	m.opts.Metrics.SetGrantState(grant, "error")
-	m.opts.Logger.Error("codex grant refresh failed", "grant", grant, "err", err)
+	// A missing grant Secret is a deployment fault, not a dead grant: the
+	// chart creates it and a device login cannot (the store only updates
+	// it), so it stays a transient failure with its own state.
+	state := "error"
+	if _, getErr := m.opts.Client.CoreV1().Secrets(m.opts.Namespace).Get(ctx, m.store.SecretName(grant), metav1.GetOptions{}); apierrors.IsNotFound(getErr) {
+		state = "missing"
+	}
+	m.opts.Metrics.SetGrantState(grant, state)
+	m.opts.Logger.Error("codex grant refresh failed", "grant", grant, "state", state, "err", err)
 	return m.cached(ctx, ErrUnavailable)
 }
 
@@ -169,8 +187,47 @@ func (m *Manager) recordSuccess(expiry time.Time) {
 	m.opts.Metrics.GrantExpiry.WithLabelValues(m.opts.Grant).Set(float64(expiry.Unix()))
 }
 
-// ForceRefresh rotates the grant now, at most once per ForceCooldown. The
-// relay calls it when the backend rejects the current access token.
+// RefreshRejected replaces an access token the backend refused. Callers
+// holding the same refused token share one refresh: later callers wait for
+// it and then get the token it stored. It answers ErrLoginRequired only when
+// the refresh token is confirmed dead; anything else is ErrUnavailable.
+func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, error) {
+	grant := m.opts.Grant
+	if m.broker.NeedsLogin(grant) {
+		return Token{}, ErrLoginRequired
+	}
+	m.rejectMu.Lock()
+	defer m.rejectMu.Unlock()
+	if access, expiry, err := m.broker.CachedAccessToken(grant, ctx); err == nil && access != rejected {
+		return m.token(access, expiry)
+	}
+	m.mu.Lock()
+	recent := !m.lastForced.IsZero() && time.Since(m.lastForced) < m.opts.ForceCooldown
+	if !recent {
+		m.lastForced = time.Now()
+	}
+	m.mu.Unlock()
+	if recent {
+		// A refresh just ran and the backend still refuses: do not rotate
+		// again in a loop, and do not claim the grant is dead.
+		return Token{}, ErrUnavailable
+	}
+	access, expiry, err := m.broker.RefreshAccessToken(grant, ctx)
+	if err != nil {
+		if m.broker.NeedsLogin(grant) {
+			m.opts.Metrics.SetGrantState(grant, "login_required")
+			return Token{}, ErrLoginRequired
+		}
+		m.opts.Metrics.SetGrantState(grant, "error")
+		m.opts.Logger.Error("codex grant refresh after backend 401 failed", "grant", grant, "err", err)
+		return Token{}, ErrUnavailable
+	}
+	m.recordSuccess(expiry)
+	return m.token(access, expiry)
+}
+
+// ForceRefresh rotates the grant now, at most once per ForceCooldown, for
+// the admin endpoint.
 func (m *Manager) ForceRefresh(ctx context.Context) error {
 	grant := m.opts.Grant
 	if m.broker.NeedsLogin(grant) {
@@ -268,7 +325,7 @@ func (m *Manager) startLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) completeLogin(code provider.DeviceCodeResponse) {
-	ctx, cancel := context.WithTimeout(context.Background(), 16*time.Minute)
+	ctx, cancel := context.WithTimeout(m.opts.Context, 16*time.Minute)
 	defer cancel()
 	err := m.exchange(ctx, code)
 	if err != nil {

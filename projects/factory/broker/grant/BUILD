@@ -12,6 +12,8 @@ go_library(
         "//projects/shared/go/tokenbroker/provider",
         "//projects/shared/go/tokenbroker/provider/codexchatgpt",
         "//projects/shared/go/tokenbroker/store",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_client_go//kubernetes",
     ],
 )
