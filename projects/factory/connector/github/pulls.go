@@ -22,7 +22,9 @@ const MaxPullPages = 100
 // ListPullRequests lists every open PR into base, oldest first, page by
 // page. Pages are sorted by creation, so a new PR or push changes one page
 // and the others stay answered by 304. complete is false only past
-// MaxPullPages full pages.
+// MaxPullPages full pages. A PR that closes between two page reads shifts
+// the next one off both pages, so one listing that leaves a PR out does not
+// prove it closed.
 func (c *Client) ListPullRequests(ctx context.Context, repo, base string) (prs []PullRequest, complete bool, err error) {
 	for page := 1; page <= MaxPullPages; page++ {
 		q := url.Values{
@@ -301,12 +303,19 @@ const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: I
 fragment checked on Commit {
   oid
   checkSuites(first: 5, filterBy: {appId: $appId}) {
-    nodes { app { databaseId } checkRuns(first: 5, filterBy: {checkName: $check, status: COMPLETED}) { nodes { name conclusion } } }
+    pageInfo { hasNextPage }
+    nodes {
+      app { databaseId }
+      checkRuns(last: 5, filterBy: {checkName: $check, status: COMPLETED}) { pageInfo { hasPreviousPage } nodes { name conclusion } }
+    }
   }
 }`
 
 // Head is a commit that may have been a PR's head. Checked is set when it
-// carries a completed, uncancelled check run of the filter's name and App.
+// carries a completed, uncancelled check run of the filter's name and App,
+// or when it has more of the App's check suites, or completed runs of that
+// name, than one read lists, so one may be left out; the caller reads such
+// a head's check runs.
 type Head struct {
 	SHA     string
 	Checked bool
@@ -322,18 +331,24 @@ type HeadHistory struct {
 // PullRequestHeads lists commits that may have been a PR's head, oldest
 // first, from the last 100 commit and force-push events of its timeline (a
 // pushed commit, and both sides of a force push), each marked by whether it
-// carries a completed check run matching f. One GraphQL read finds the
-// checked heads, however many commits each push added.
+// carries a completed check run matching f, newest runs first. One GraphQL
+// read finds the checked heads, however many commits each push added.
 func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, f CheckRunFilter) (*HeadHistory, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	type commit struct {
 		OID         string `json:"oid"`
 		CheckSuites struct {
+			PageInfo struct {
+				HasNextPage bool `json:"hasNextPage"`
+			} `json:"pageInfo"`
 			Nodes []struct {
 				App *struct {
 					DatabaseID int64 `json:"databaseId"`
 				} `json:"app"`
 				CheckRuns struct {
+					PageInfo struct {
+						HasPreviousPage bool `json:"hasPreviousPage"`
+					} `json:"pageInfo"`
 					Nodes []struct {
 						Name       string `json:"name"`
 						Conclusion string `json:"conclusion"`
@@ -373,10 +388,13 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 			if cm == nil || cm.OID == "" {
 				continue
 			}
-			head := Head{SHA: cm.OID}
+			head := Head{SHA: cm.OID, Checked: cm.CheckSuites.PageInfo.HasNextPage}
 			for _, s := range cm.CheckSuites.Nodes {
 				if s.App == nil || s.App.DatabaseID != f.AppID {
 					continue
+				}
+				if s.CheckRuns.PageInfo.HasPreviousPage {
+					head.Checked = true
 				}
 				for _, r := range s.CheckRuns.Nodes {
 					if r.Name == f.Name && r.Conclusion != "" && !strings.EqualFold(r.Conclusion, "CANCELLED") {

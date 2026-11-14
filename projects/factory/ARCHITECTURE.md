@@ -676,16 +676,19 @@ and public previews).
   severity, a failed task such as a quota or login error, a rejected send or
   a timeout) is retried on the same head after `retryBackoff` (5m); the
   third such attempt fails the check. A later head's prompt carries the
-  previous blocking findings and the interdiff; each comes back `fixed`,
+  previous blocking and `human-gate` findings and the interdiff; each comes
+  back `fixed`,
   `justified` (a medium with a note, or any severity with a note starting
   `withdrawn`) or `open`, and one left out stays open. One reported again
-  keeps the higher of its two severities unless it is fixed or withdrawn.
+  keeps the higher of its two severities unless it is fixed or withdrawn. A
+  `human-gate` finding not fixed or withdrawn holds the later head too.
   When the earlier review cannot be found within the search bounds, the
   prompt and the check say so and the head is reviewed in full. A diff over
   budget (2500 lines or 150 files, generated files excluded by their new
   path) fails with "split this PR" and sends no task. The prompt carries the
-  PR's text and file names from any author, quoted inside a delimited
-  untrusted block (`REVIEW.md` "What the agent sees").
+  PR's text and file names from any author, quoted inside delimited
+  untrusted blocks (`REVIEW.md` "What the agent sees"). Each delimiter names
+  the head and a digest of its block's text, which the text cannot contain.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211)). A PR touching `REVIEW.md`,
   `**/REVIEW.md`, `projects/factory/reviewer/**`,
@@ -724,7 +727,10 @@ and public previews).
   coding runs, in a fresh session; a retry adds `/attempt-<n>`. Each
   attempt's message is built once and resent byte for byte: at most 20
   sends, then one more after a dispatch window, as the connector does. When
-  no open PR still has a head, its task and check are cancelled. The
+  no open PR still has a head, its task and check are cancelled: at once
+  when the PR moved to another head, and after two complete listings in a
+  row leave the PR out when it closed, since a PR closing between page
+  reads shifts another off both pages. The
   agent has its own binding, a read-only repository token and no push. The
   service then completes the check on that exact SHA from the agent's
   findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never

@@ -628,6 +628,7 @@ func TestPullRequestReviewsReadsEveryPage(t *testing.T) {
 
 func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 	var gql map[string]any
+	var query string
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/repos/example-org/homelab/git/trees/base-1" && r.URL.Query().Get("recursive") == "1":
@@ -635,17 +636,28 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 				{"path": "docs/REVIEW.md", "type": "blob"}], "truncated": false}`))
 		case r.URL.Path == "/graphql":
 			var req struct {
+				Query     string         `json:"query"`
 				Variables map[string]any `json:"variables"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			gql = req.Variables
+			gql, query = req.Variables, req.Query
 			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"pageInfo":{"hasPreviousPage":true},"nodes":[
 				{"__typename":"PullRequestCommit","commit":{"oid":"a","checkSuites":{"nodes":[
 					{"app":{"databaseId":5758326},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"FAILURE"}]}}]}}},
 				{"__typename":"PullRequestCommit","commit":{"oid":"b","checkSuites":{"nodes":[
 					{"app":{"databaseId":5758326},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"CANCELLED"}]}},
 					{"app":{"databaseId":1},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"SUCCESS"}]}}]}}},
-				{"__typename":"HeadRefForcePushedEvent","beforeCommit":{"oid":"b","checkSuites":{"nodes":[]}},"afterCommit":{"oid":"c","checkSuites":{"nodes":[]}}}
+				{"__typename":"HeadRefForcePushedEvent","beforeCommit":{"oid":"b","checkSuites":{"nodes":[]}},"afterCommit":{"oid":"c","checkSuites":{"nodes":[]}}},
+				{"__typename":"PullRequestCommit","commit":{"oid":"d","checkSuites":{"nodes":[
+					{"app":{"databaseId":5758326},"checkRuns":{"pageInfo":{"hasPreviousPage":true},"nodes":[
+						{"name":"factory review","conclusion":"CANCELLED"},{"name":"factory review","conclusion":"CANCELLED"},
+						{"name":"factory review","conclusion":"CANCELLED"},{"name":"factory review","conclusion":"CANCELLED"},
+						{"name":"factory review","conclusion":"CANCELLED"}]}},
+					{"app":{"databaseId":1},"checkRuns":{"pageInfo":{"hasPreviousPage":true},"nodes":[]}}]}}},
+				{"__typename":"PullRequestCommit","commit":{"oid":"e","checkSuites":{"pageInfo":{"hasNextPage":true},"nodes":[
+					{"app":{"databaseId":5758326},"checkRuns":{"nodes":[{"name":"factory review","conclusion":"CANCELLED"}]}}]}}},
+				{"__typename":"PullRequestCommit","commit":{"oid":"f","checkSuites":{"nodes":[
+					{"app":{"databaseId":1},"checkRuns":{"pageInfo":{"hasPreviousPage":true},"nodes":[]}}]}}}
 			]}}}}}`))
 		case strings.HasPrefix(r.URL.Path, "/repos/example-org/homelab/compare/"):
 			var files []string
@@ -668,9 +680,15 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Head{{SHA: "a", Checked: true}, {SHA: "b"}, {SHA: "b"}, {SHA: "c"}}
+	// Five cancelled runs on d fill the read, and e has more suites than
+	// it lists: either may hide a completed review, so both are read. f's
+	// overflow is another App's.
+	want := []Head{{SHA: "a", Checked: true}, {SHA: "b"}, {SHA: "b"}, {SHA: "c"}, {SHA: "d", Checked: true}, {SHA: "e", Checked: true}, {SHA: "f"}}
 	if fmt.Sprint(h.Heads) != fmt.Sprint(want) || !h.Truncated || gql["appId"] != float64(5758326) || gql["check"] != "factory review" {
 		t.Fatalf("heads = %+v, truncated %v, vars %v", h.Heads, h.Truncated, gql)
+	}
+	if !strings.Contains(query, "checkRuns(last: 5,") {
+		t.Fatalf("the query does not read the newest check runs:\n%s", query)
 	}
 	cmp, err := c.CompareCommits(ctx, "example-org/homelab", "a", "c")
 	if err != nil || !cmp.Truncated || len(cmp.Files) != MaxCompareFiles {

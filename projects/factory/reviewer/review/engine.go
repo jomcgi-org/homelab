@@ -154,7 +154,15 @@ type headKey struct {
 type running struct {
 	number int
 	cancel context.CancelCauseFunc
+	// unlisted counts the complete listings in a row that left out both
+	// the head and the PR.
+	unlisted int
 }
+
+// closedAfter is how many complete listings in a row must leave out a PR
+// before its review is cancelled as closed: a PR that closes between two
+// page reads shifts the next one off both pages.
+const closedAfter = 2
 
 var (
 	errSuperseded = errors.New("a newer head of the PR superseded this one")
@@ -317,8 +325,10 @@ func prioritize(b *Binding, prs []github.PullRequest) {
 }
 
 // supersede cancels running reviews of heads no open PR into the base
-// still has. Another PR at the same commit keeps its review running. An
-// incomplete listing proves no PR closed.
+// still has. Another PR at the same commit keeps its review running. A PR
+// listed at another head superseded its review at once; one left out of
+// closedAfter complete listings in a row closed. An incomplete listing
+// proves no PR closed.
 func (e *Engine) supersede(b *Binding, prs []github.PullRequest, complete bool) {
 	heads := map[string]bool{}
 	open := map[int]bool{}
@@ -331,14 +341,16 @@ func (e *Engine) supersede(b *Binding, prs []github.PullRequest, complete bool) 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for key, r := range e.inflight {
-		if key.binding != b.Name || heads[key.sha] {
-			continue
-		}
 		switch {
+		case key.binding != b.Name:
+		case heads[key.sha]:
+			r.unlisted = 0
 		case open[r.number]:
 			r.cancel(errSuperseded)
 		case complete:
-			r.cancel(errClosed)
+			if r.unlisted++; r.unlisted >= closedAfter {
+				r.cancel(errClosed)
+			}
 		}
 	}
 }
@@ -691,7 +703,8 @@ const maxPreviousLookups = 20
 
 // previousState reads the State kept by the review of the newest earlier
 // head of the PR that has one, and that head. One GraphQL read lists the
-// heads that carry a completed review check; only those are read. A review
+// heads that carry a completed review check, or may carry one past what it
+// lists; only those are read. A review
 // that ended without a report keeps none and is skipped. When the search
 // stops at a bound (an older timeline than was read, or more reviewed heads
 // than maxPreviousLookups), unknown says so instead of starting fresh.
@@ -785,7 +798,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Blocking, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
+		Previous: in.prior.Previous(), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Comments: comments, DroppedComments: dropped, Gate: in.gate, Attempt: attempt,
 	})
 	msg := &kagent.Message{
@@ -799,7 +812,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	}
 	l.InfoContext(ctx, "review task built", "message_id", msg.MessageID, "attempt", attempt,
 		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead, "previous_unknown", in.priorUnknown,
-		"previous_findings", len(in.prior.Blocking), "trusted_comments", len(comments), "dropped_comments", dropped)
+		"previous_findings", len(in.prior.Previous()), "trusted_comments", len(comments), "dropped_comments", dropped)
 	return msg, nil
 }
 
@@ -844,7 +857,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		a := Assess(r, in.prior.Blocking)
+		a := Assess(r, in.prior.Previous())
 		gate := &Gate{}
 		if in.gate != nil {
 			*gate = *in.gate
