@@ -47,8 +47,9 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if len(b.SkipLabels) != 0 || b.RequiredChecks[0].StatusCreator != "buildbuddy-io[bot]" {
 		t.Fatalf("binding = %+v", b)
 	}
-	gated := "REVIEW.md,**/REVIEW.md,projects/factory/reviewer/**,projects/factory/connector/github/**," +
-		"projects/factory/connector/kagent/**,projects/factory/broker/**,projects/factory/chart/templates/*reviewer*,.github/CODEOWNERS"
+	gated := "REVIEW.md,**/REVIEW.md,.github/CODEOWNERS,projects/factory/reviewer/config/**," +
+		"projects/factory/reviewer/review/report.go,projects/factory/reviewer/review/gate.go," +
+		"projects/factory/reviewer/review/rules.go,projects/factory/broker/config/**"
 	if strings.Join(b.EnqueueAuthors, ",") != "jomcgi" || strings.Join(b.HumanGatePaths, ",") != gated ||
 		strings.Join(b.HumanGateLabels, ",") != "human,needs-human" || strings.Join(b.HumanApprovers, ",") != "jomcgi" ||
 		strings.Join(b.TrustedCommenters, ",") != "jomcgi" || strings.Join(b.ContextDocs, ",") != "AGENTS.md,docs/agents/reference.md" ||

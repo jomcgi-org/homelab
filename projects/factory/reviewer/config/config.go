@@ -95,13 +95,16 @@ type Binding struct {
 // Binding defaults.
 var (
 	DefaultEnqueueAuthors = []string{"jomcgi"}
-	// DefaultHumanGatePaths are the rules, the reviewer, the code its
-	// GitHub, kagent and token calls go through, its chart templates and
-	// CODEOWNERS.
+	// DefaultHumanGatePaths are what could weaken the gate itself: the
+	// rules, the reviewer's verdict, gate and rule-loading code, its config
+	// defaults (these lists), the Apps' permission config and CODEOWNERS
+	// (Joe, 2026-11-14: #7817 comment 6884458635). The agent reports the
+	// rest of REVIEW.md "Joe decides" wherever else it is set.
 	DefaultHumanGatePaths = []string{
-		"REVIEW.md", "**/REVIEW.md", "projects/factory/reviewer/**",
-		"projects/factory/connector/github/**", "projects/factory/connector/kagent/**", "projects/factory/broker/**",
-		"projects/factory/chart/templates/*reviewer*", ".github/CODEOWNERS",
+		"REVIEW.md", "**/REVIEW.md", ".github/CODEOWNERS",
+		"projects/factory/reviewer/config/**", "projects/factory/reviewer/review/report.go",
+		"projects/factory/reviewer/review/gate.go", "projects/factory/reviewer/review/rules.go",
+		"projects/factory/broker/config/**",
 	}
 	DefaultHumanGateLabels = []string{"human", "needs-human"}
 	DefaultHumanApprovers  = []string{"jomcgi"}

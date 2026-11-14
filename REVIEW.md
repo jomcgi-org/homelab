@@ -149,9 +149,14 @@ findings. Report each as `human-gate` at high, naming the decision.
 
 - A change to this file, the deletion of a `REVIEW.md`, or a rule removed or
   loosened without naming the CI check or test that replaces it.
-- A change to the reviewer and what enforces it: its service, agent, prompt,
-  model, binding, the Apps' permissions, the trusted reviewer lists,
-  `CODEOWNERS`, and anything that edits a ruleset or its bypass list.
+- A change that could weaken the gate itself: the human gate's path, label
+  and approver lists and the trusted reviewer lists, wherever they are set
+  or rendered; the reviewer's verdict logic (how findings, the human gate
+  and merge groups become a check conclusion, and which rules it loads);
+  the Apps' permissions; `CODEOWNERS`; and anything that edits a ruleset or
+  its bypass list. Models, deploy values, the reviewer's prompt and agent,
+  and connector and broker code outside the permission config get normal
+  review ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635)).
 - A change to `AGENTS.md` "Merge authority" or "Boundaries", or text that
   records a permission or decision of Joe's without a link to where Joe made
   it.

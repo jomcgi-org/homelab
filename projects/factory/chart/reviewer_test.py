@@ -574,7 +574,7 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
     (binding,) = parsed["Bindings"]
     assert binding["HumanApprovers"] == ["jomcgi"]
     assert binding["HumanGateLabels"] == ["human", "needs-human"]
-    assert "projects/factory/reviewer/**" in binding["HumanGatePaths"]
+    assert "projects/factory/reviewer/review/report.go" in binding["HumanGatePaths"]
     assert binding["MaxDiffLines"] == 2500
     assert binding["MaxDiffFiles"] == 150
     # The deploy values turn enqueues off; the required check gates merges.
