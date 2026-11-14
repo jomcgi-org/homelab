@@ -33,8 +33,11 @@ records how they relate and routes results and feedback between them.
    credential provider with namespace policies, the egress MITM CA, the
    kagent controller in the router SPIFFE allowlist and bootstrap owners, and
    `ate.dev/api-access=true` on the kagent namespace. The first Substrate
-   install (#7829) is upstream v1.0.0; aligning it with the fork is its own
-   change.
+   install (#7829) was upstream v1.0.0; #7837 moved it to the fork's 1.0.1
+   charts with these settings. The provider's grant covers only Secrets in
+   `kagent` labelled `substrate.ate.dev/injectable=true`, and it reads only
+   namespaces holding a RoleBinding for it, which the kagent install adds. An
+   admission policy reserves the `kagent-controller` identity for ArgoCD.
 2. **The Codex harness speaks the OpenAI Responses API.** [V] Its OpenAI
    provider accepts only `baseUrl` and `apiFormat: responses`, authenticated
    by an API key or an `actorJwt` that Substrate mints per actor and injects

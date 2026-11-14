@@ -1,0 +1,55 @@
+# Substrate trusts the identity kagent/kagent-controller as a global owner and
+# a router ingress client (../values/substrate.yaml), and the pod certificate
+# that proves it is issued to any pod running as that ServiceAccount. Until
+# kagent is installed, anyone who can create a namespace named kagent could
+# claim it. Only ArgoCD may create or change that ServiceAccount or run a
+# workload as it; the two controller-manager identities follow from ArgoCD's
+# Deployment (Deployment to ReplicaSet to Pod). k3s runs kube-controller-manager
+# with --use-service-account-credentials, so those are per-controller
+# ServiceAccounts.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kagent-controller-identity
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kagent
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [serviceaccounts, pods]
+      - apiGroups: [apps]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, replicasets]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:deployment-controller',
+          'system:serviceaccount:kube-system:replicaset-controller'
+        ])
+  validations:
+    - expression: >-
+        request.kind.kind == 'ServiceAccount'
+        ? object.metadata.name != 'kagent-controller'
+        : (request.kind.kind == 'Pod' ? object.spec : object.spec.template.spec)
+          .?serviceAccountName.orValue('') != 'kagent-controller'
+          && (request.kind.kind == 'Pod' ? object.spec : object.spec.template.spec)
+          .?serviceAccount.orValue('') != 'kagent-controller'
+      message: >-
+        Only ArgoCD may create the kagent-controller ServiceAccount or run a
+        workload as it; Substrate trusts that identity as a global owner.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kagent-controller-identity
+spec:
+  policyName: kagent-controller-identity
+  validationActions: [Deny]

@@ -2,8 +2,8 @@
 # Render Agent Substrate's install manifests at the pinned release into
 # resources/upstream/.
 #
-# The factory runs the kagent-dev fork of Agent Substrate, the build kagent
-# v1.0.1 compiles against. The fork publishes four Helm charts. This script
+# The factory runs the kagent-dev fork of Agent Substrate, the release line
+# kagent v1.0.1 uses (it builds against fork v1.0.0). The fork publishes four Helm charts. This script
 # pulls each at its pinned version, checks the chart's OCI digest, renders it
 # with values/, and pins every image the charts name by tag to that tag's
 # digest. The charts take one image tag for all components, so a digest pin

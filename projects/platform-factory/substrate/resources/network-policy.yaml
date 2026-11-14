@@ -134,13 +134,18 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
-    # Actors, inside worker pods in any namespace, on any port.
+    # Actors, through the atunnel listener of worker pods in any namespace
+    # (connectTargetPort in the router's config).
     - toEndpoints:
         - matchExpressions:
             - key: ate.dev/worker-pool
               operator: Exists
             - key: k8s:io.kubernetes.pod.namespace
               operator: Exists
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
 ---
 # The egress gateway (agentgateway) checks each actor with ate-api-server and
 # fetches injected credentials from the credential provider. Actor traffic to
