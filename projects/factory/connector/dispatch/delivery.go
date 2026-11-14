@@ -268,7 +268,13 @@ func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, 
 // it left the binding's project, or sits in a completed or canceled column.
 // Moving the issue is how a person cancels a review round in itsaplan.
 func (e *Engine) issueStopped(ctx context.Context, wi *store.WorkItem, b *Binding) (string, error) {
-	if err := e.guard(ctx); err != nil {
+	return e.readIssueStopped(ctx, wi, b, func(string) error { return e.guard(ctx) })
+}
+
+// readIssueStopped lets ejection reads record their attempt before each
+// external call, while ordinary issue polling keeps its existing guard.
+func (e *Engine) readIssueStopped(ctx context.Context, wi *store.WorkItem, b *Binding, beforeRead func(string) error) (string, error) {
+	if err := beforeRead("issue"); err != nil {
 		return "", err
 	}
 	// A 401 or 403 is returned like any error: delivery waits, holding no
@@ -284,7 +290,7 @@ func (e *Engine) issueStopped(ctx context.Context, wi *store.WorkItem, b *Bindin
 	if i := strings.LastIndex(is.Identifier, "-"); i > 0 && is.Identifier[:i] != b.ItsaplanProject {
 		return "the issue moved to another project", nil
 	}
-	if err := e.guard(ctx); err != nil {
+	if err := beforeRead("columns"); err != nil {
 		return "", err
 	}
 	cols, err := e.its.ProjectColumns(ctx, b.ItsaplanProject)
@@ -564,6 +570,12 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if wi.State == store.WorkStopped {
 		return e.stoppedPR(ctx, wi, b, pr, d)
 	}
+	if wi.State == store.WorkMerging && hasHumanLabel(d.Labels) {
+		if err := e.stopWork(ctx, wi, "the queued PR is human-owned"); err != nil {
+			return err
+		}
+		return e.stoppedPR(ctx, wi, b, pr, d)
+	}
 	switch {
 	case d.Merged:
 		return e.merged(ctx, wi, b, pr, d)
@@ -577,13 +589,18 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	case wi.State == store.WorkMerging:
 		// The queue entry can go before the merge shows; look again before
 		// calling it an ejection.
-		if err := e.guard(ctx); err != nil {
+		if err := e.beginEjectionRead(ctx, pr, "confirm-entry", strconv.Itoa(pr.Number)); err != nil {
 			return err
 		}
 		again, err := e.gh.PullRequestDetail(ctx, repo, pr.Number)
 		switch {
 		case err != nil:
 			return err
+		case hasHumanLabel(again.Labels):
+			if err := e.stopWork(ctx, wi, "the queued PR is human-owned"); err != nil {
+				return err
+			}
+			return e.stoppedPR(ctx, wi, b, pr, again)
 		case again.Merged:
 			return e.merged(ctx, wi, b, pr, again)
 		case again.State != "open":
@@ -983,25 +1000,79 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 // ejected records the confirmed ejection and starts a bounded revision in
 // the mapped session. The rejected head stays barred from the merge queue.
 func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+	if hasHumanLabel(d.Labels) {
+		return e.stopWork(ctx, wi, "the queued PR is human-owned")
+	}
+	if d.HeadSHA != pr.EnqueuedHeadSHA {
+		return e.queueHeadChanged(ctx, pr)
+	}
 	limited := wi.ReviewRounds >= b.Review.MaxReviewRounds
-	var prompt string
-	if !limited && b.Review.held(d.Labels) == "" {
-		feedback, held, err := e.ejectionFeedback(ctx, b, pr, d)
+	held := b.Review.held(d.Labels) != ""
+	var feedback string
+	if !limited && !held {
+		var err error
+		feedback, err = e.ejectionFeedback(ctx, b, pr)
 		if err != nil {
 			return err // keep merging so the next poll retries the evidence read
 		}
-		if !held {
-			prompt = roundPrompt(&b.Review, wi, pr, d, []*candidate{{text: feedback}})
+		// The human-gate marker belongs to the PR-head check. The reviewer's
+		// synthetic-commit check has only a generic failure summary.
+		if b.Review.ReviewerCheck != nil {
+			if err := e.beginEjectionRead(ctx, pr, "head-checks", d.HeadSHA); err != nil {
+				return err
+			}
+			checks, err := e.gh.CheckRuns(ctx, b.repo(), d.HeadSHA)
+			if err != nil {
+				return err
+			}
+			held = reviewerHumanHold(&b.Review, d.HeadSHA, checks)
 		}
 	}
-	// Evidence reads may take time. Honor an issue cancellation before the
-	// transaction, and let MarkEjected/StartRound guard an operator stop.
-	reason, err := e.issueStopped(ctx, wi, b)
+	// Evidence reads may take time. Refresh both the issue and PR stops
+	// before the transaction; MarkEjected/StartRound guard an operator stop.
+	reason, err := e.readIssueStopped(ctx, wi, b, func(operation string) error {
+		resource := strconv.FormatInt(wi.IssueID, 10)
+		if operation == "columns" {
+			resource = b.ItsaplanProject
+		}
+		return e.beginEjectionRead(ctx, pr, operation, resource)
+	})
 	if err != nil {
 		return err
 	}
 	if reason != "" {
 		return e.stopWork(ctx, wi, reason)
+	}
+	if err := e.beginEjectionRead(ctx, pr, "confirm-revision", strconv.Itoa(pr.Number)); err != nil {
+		return err
+	}
+	latest, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	if err != nil {
+		return err
+	}
+	if hasHumanLabel(latest.Labels) {
+		if err := e.stopWork(ctx, wi, "the queued PR is human-owned"); err != nil {
+			return err
+		}
+		return e.stoppedPR(ctx, wi, b, pr, latest)
+	}
+	switch {
+	case latest.Merged:
+		return e.merged(ctx, wi, b, pr, latest)
+	case latest.State != "open":
+		return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed without merging", pr.Number, pr.URL))
+	case latest.MergeQueueState != "":
+		return nil
+	case latest.HeadSHA != pr.EnqueuedHeadSHA:
+		return e.queueHeadChanged(ctx, pr)
+	}
+	held = held || b.Review.held(latest.Labels) != ""
+	var prompt string
+	if !limited && !held {
+		if latest.Mergeable == "CONFLICTING" {
+			feedback += fmt.Sprintf("\nconflicts with %s: rebase on origin/%s and resolve.\n", b.BaseBranch, b.BaseBranch)
+		}
+		prompt = roundPrompt(&b.Review, wi, pr, latest, []*candidate{{text: feedback}})
 	}
 	head := pr.EnqueuedHeadSHA
 	var round *store.Run
@@ -1019,7 +1090,7 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 				return err
 			}
 		case prompt != "":
-			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt); err != nil {
+			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt); err != nil {
 				return err
 			}
 			outcome = fmt.Sprintf("Review round %d of %d will address the ejection in the mapped session.",
@@ -1046,39 +1117,85 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 	return e.dispatchReviewRound(ctx, wi, round)
 }
 
-// ejectionFeedback reads the synthetic commit, never the PR head. Only
-// configured check identities supply names and links; arbitrary summaries,
-// titles and status descriptions do not enter this prompt.
-func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (string, bool, error) {
+// queueHeadChanged discards the old entry without spending a review round
+// on a push that may already fix it. Normal polling reviews the new head.
+func (e *Engine) queueHeadChanged(ctx context.Context, pr *store.PullRequest) error {
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := e.st.MarkEjected(ctx, tx, pr)
+		return err
+	})
+}
+
+func hasHumanLabel(labels []string) bool {
+	for _, label := range labels {
+		if strings.EqualFold(label, "human") {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewerHumanHold(p *ReviewPolicy, head string, checks []github.CheckRun) bool {
+	r := p.ReviewerCheck
+	if r == nil || r.AppID == 0 {
+		return false
+	}
+	for _, c := range checks {
+		if c.HeadSHA == head && c.Name == r.Name && c.AppID == r.AppID && c.Status == "completed" &&
+			failedConclusion(c.Conclusion) && strings.Contains(c.Summary, humanHoldMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// beginEjectionRead journals an idempotent read before the external call.
+// Retried queries share this message ID, but always read current external state.
+func (e *Engine) beginEjectionRead(ctx context.Context, pr *store.PullRequest, operation, resource string) error {
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	messageID := fmt.Sprintf("ejection/%d/%s/%s/%s", pr.ID, pr.EnqueuedHeadSHA, operation, resource)
+	if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, messageID, operation, resource); err != nil {
+		return err
+	}
+	return e.guard(ctx)
+}
+
+// ejectionFeedback uses configured names, fixed state classes and links
+// built from repository identity and numeric check IDs. No CI-provided URL,
+// title, summary or status description reaches the coding agent.
+func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.PullRequest) (string, error) {
 	var s strings.Builder
 	fmt.Fprintf(&s, "The merge queue ejected this PR at %s.\n", pr.EnqueuedHeadSHA)
 	if pr.MergeGroupSHA != "" {
-		if err := e.guard(ctx); err != nil {
-			return "", false, err
+		if err := e.beginEjectionRead(ctx, pr, "group-checks", pr.MergeGroupSHA); err != nil {
+			return "", err
 		}
 		checks, err := e.gh.CheckRuns(ctx, b.repo(), pr.MergeGroupSHA)
 		if err != nil {
-			return "", false, err
+			return "", err
 		}
-		if err := e.guard(ctx); err != nil {
-			return "", false, err
+		if err := e.beginEjectionRead(ctx, pr, "group-statuses", pr.MergeGroupSHA); err != nil {
+			return "", err
 		}
 		statuses, err := e.gh.Statuses(ctx, b.repo(), pr.MergeGroupSHA)
 		if err != nil {
-			return "", false, err
+			return "", err
 		}
-		fmt.Fprintf(&s, "\nMerge-group commit: https://github.com/%s/commit/%s\n", b.repo(), pr.MergeGroupSHA)
+		commitURL := fmt.Sprintf("https://github.com/%s/commit/%s/checks", b.repo(), pr.MergeGroupSHA)
+		fmt.Fprintf(&s, "\nMerge-group checks: %s\n", commitURL)
 		for _, c := range checks {
 			if c.HeadSHA != pr.MergeGroupSHA || c.Status != "completed" || !failedConclusion(c.Conclusion) {
 				continue
 			}
-			if r := b.Review.ReviewerCheck; r != nil && r.AppID != 0 && c.AppID == r.AppID && c.Name == r.Name &&
-				strings.Contains(c.Summary, humanHoldMarker) {
-				return "", true, nil
-			}
 			for _, want := range b.Review.checks() {
 				if want.AppID != 0 && c.AppID == want.AppID && c.Name == want.Name {
-					fmt.Fprintf(&s, "- Check %q: %s / %s (%q).\n", c.Name, c.Status, c.Conclusion, c.URL)
+					checkURL := commitURL
+					if c.ID > 0 {
+						checkURL = fmt.Sprintf("https://github.com/%s/runs/%d", b.repo(), c.ID)
+					}
+					fmt.Fprintf(&s, "- Check %q: completed / %s (%s).\n", want.Name, c.Conclusion, checkURL)
 					break
 				}
 			}
@@ -1089,7 +1206,7 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 			}
 			for _, want := range b.Review.checks() {
 				if want.StatusCreator != "" && strings.EqualFold(st.Creator, want.StatusCreator) && st.Context == want.Name {
-					fmt.Fprintf(&s, "- Status %q: %s (%q).\n", st.Context, st.State, st.URL)
+					fmt.Fprintf(&s, "- Status %q: %s (%s).\n", want.Name, st.State, commitURL)
 					break
 				}
 			}
@@ -1097,12 +1214,9 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 	} else {
 		s.WriteString("The merge-group commit was not observed before the queue entry disappeared.\n")
 	}
-	if d.Mergeable == "CONFLICTING" {
-		fmt.Fprintf(&s, "\nconflicts with %s: rebase on origin/%s and resolve.\n", b.BaseBranch, b.BaseBranch)
-	}
 	s.WriteString("\nInspect the queue failure before pushing. If CI infrastructure flaked, you may rebase and re-push " +
 		"the same change. The new head must pass the usual CI and independent review gates.\n")
-	return s.String(), false, nil
+	return s.String(), nil
 }
 
 type issueDonePayload struct {

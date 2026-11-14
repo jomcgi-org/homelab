@@ -89,6 +89,18 @@ func (s *Store) PullRequestFor(ctx context.Context, workID int64) (*PullRequest,
 	return p, err
 }
 
+// RecordDeliveryRead records an attempt before reading external evidence.
+// Repeating the same idempotent read keeps its message ID and counts the
+// attempt, including retries after a writer takeover.
+func (s *Store) RecordDeliveryRead(ctx context.Context, prID, epoch int64, messageID, operation, resource string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO delivery_read (message_id, pull_request_id, operation, resource, writer_epoch)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (message_id) DO UPDATE SET attempts = delivery_read.attempts + 1,
+			writer_epoch = EXCLUDED.writer_epoch, attempted_at = now()`, messageID, prID, operation, resource, epoch)
+	return err
+}
+
 // RecordPullRequest records the work item's PR as GitHub reports it. A work
 // item has one PR; recording another replaces it.
 func (s *Store) RecordPullRequest(ctx context.Context, q Querier, p PullRequest) (*PullRequest, error) {

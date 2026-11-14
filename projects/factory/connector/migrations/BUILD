@@ -7,6 +7,7 @@ go_library(
         "20261114000000_dispatch_schema.sql",
         "20261114120000_delivery_schema.sql",
         "20261114230000_merge_group.sql",
+        "20261115000000_delivery_reads.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
