@@ -52,6 +52,15 @@ def _render(
     ]
     if not binding:
         argv[argv.index(str(_DEPLOY_VALUES))] = str(_DEFAULTS_FILE)
+    else:
+        # These tests describe the factory without its reviewer, which
+        # reviewer_test.py covers; the deploy render lock covers both.
+        argv += [
+            "--set",
+            "reviewer.enabled=false",
+            "--set",
+            "kagent.rbac.namespaces={kagent,factory-r-homelab}",
+        ]
     for override in overrides or []:
         argv += ["--set", override]
     result = subprocess.run(argv, capture_output=True, text=True, check=False)

@@ -50,8 +50,8 @@ kagent:
       auth:
         # The edge authenticates people and forwards their access token;
         # kagent decodes it without verifying (ARCHITECTURE.md finding 5), so
-        # the Cilium policies below keep the edge, the UI and the connector as
-        # the only paths in.
+        # the Cilium policies below keep the edge, the UI, the connector and,
+        # when enabled, the factory-reviewer as the only paths in.
         mode: trusted-proxy
     substrate:
       apiEndpoint: dns:///api.ate-system.svc:443

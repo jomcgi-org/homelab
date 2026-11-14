@@ -3,7 +3,8 @@
 The broker's allowlist under the cluster-wide default-deny. Actors reach the
 relay port only through Substrate's egress gateway, which injects their actor
 JWT. The admin port (device login, refresh, connector tokens, metrics) admits
-only the connector; operators use a port-forward. Substrate's atenet-egress
+only the connector and, when enabled, the factory-reviewer; operators use a
+port-forward. Substrate's atenet-egress
 policy needs the matching egress rule (projects/platform-factory/substrate).
 */}}
 {{- $b := .Values.broker }}

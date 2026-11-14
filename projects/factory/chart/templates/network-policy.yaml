@@ -3,7 +3,8 @@
 The kagent namespace's allowlist under the cluster-wide default-deny
 (projects/platform-factory/network-policy/). kagent's trusted-proxy mode trusts
 any bearer token it is handed (ARCHITECTURE.md finding 5), so the controller
-admits only the UI, the edge, the connector and Substrate's egress gateway.
+admits only the UI, the edge, the connector, the factory-reviewer when enabled
+and Substrate's egress gateway.
 The edge needs a matching egress rule in its own chart.
 */}}
 {{- $ns := include "factory.kagentNamespace" . }}

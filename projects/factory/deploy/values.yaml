@@ -40,7 +40,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -123,3 +123,17 @@ connector:
       - matchLabels:
           k8s:io.kubernetes.pod.namespace: factory-db
           cnpg.io/cluster: factory-db
+
+# The factory-reviewer (projects/factory/reviewer; ARCHITECTURE.md "Merge
+# authority"): posts the `factory review` check on every PR into main and
+# enqueues passing PRs authored by jomcgi; the connector keeps enqueueing
+# the factory's own. Its agent runs in factory-r-homelab-review with a
+# read-only git token from the reviewer App (k8s-homelab/factory-review-gh-app).
+reviewer:
+  enabled: true
+  bindings:
+    homelab:
+      # Enqueue only once the ruleset's required check is green on the head.
+      requiredChecks:
+        - name: pr-checks
+          statusCreator: buildbuddy-io[bot]
