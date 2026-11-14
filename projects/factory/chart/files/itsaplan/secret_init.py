@@ -24,13 +24,16 @@ four steps, in order:
             encrypted with the lost key, and itsaplan decrypts the stored
             OIDC settings before it accepts new ones, so without this every
             later write of them fails.
-  apply     (this script) checks again and writes the keys. When it wrote
-            new main keys it restarts the api and worker (ROLL, a pod-template
-            annotation naming this generation): running pods keep the old keys
-            in their environment, and the PostSync bootstrap would otherwise
-            store fresh settings under the old key through them. ArgoCD runs
-            the bootstrap only once they are healthy again. A failed run
-            repeats the purge, which is idempotent.
+  apply     (this script) checks again and writes the keys. New main keys
+            get a new generation ID, recorded as ROLL_ANNOTATION on the main
+            Secret in the same write. Every run then sets that ID on the api's
+            and worker's pod templates (ROLL), which restarts them only when it
+            changed: running pods keep the old keys in their environment, and
+            the PostSync bootstrap would otherwise store fresh settings under
+            the old key through them. Because the ID is stored with the keys, a
+            run that fails between the two writes is completed by the next.
+            ArgoCD runs the bootstrap only once the pods are healthy again. A
+            failed run repeats the purge, which is idempotent.
 
 Either step removes ALLOW_ANNOTATION whenever it sees it, used or not, so a
 stale annotation cannot authorise a later purge.
@@ -49,7 +52,7 @@ import sys
 import urllib.error
 import urllib.request
 
-SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+SA = os.environ.get("SA_DIR", "/var/run/secrets/kubernetes.io/serviceaccount")
 API = "https://{}:{}".format(
     os.environ["KUBERNETES_SERVICE_HOST"], os.environ["KUBERNETES_SERVICE_PORT"]
 )
@@ -152,7 +155,11 @@ def plan():
 
 
 def roll(generation):
-    """Restart the api and worker onto the new keys, where they exist."""
+    """Set the key generation on the api's and worker's pod templates.
+
+    A merge patch that sets the value they already carry changes nothing, so
+    this runs every time and restarts them only after new keys.
+    """
     patch = {
         "spec": {
             "template": {"metadata": {"annotations": {ROLL_ANNOTATION: generation}}}
@@ -163,29 +170,36 @@ def roll(generation):
         if call("PATCH", path, patch, "application/merge-patch+json") is None:
             print(f"{NAMESPACE}/{name} does not exist yet; it starts on the new keys")
         else:
-            print(f"restarting {NAMESPACE}/{name} onto key generation {generation}")
+            print(f"{NAMESPACE}/{name} is on key generation {generation}")
 
 
 def apply():
     accepted = regenerating(database_rows())
-    rolled = False
+    generation = None
     for name, keys in GENERATED.items():
         secret = call("GET", secret_path(name))
         data = dict(secret.get("data") or {})
         missing = [key for key in keys if not data.get(key)]
         for key in missing:
             data[key] = base64.b64encode(keys[key]()).decode()
+        annotations = secret["metadata"].get("annotations") or {}
         if missing:
             secret["data"] = data
-            if name == MAIN and accepted:
-                secret["metadata"]["annotations"].pop(ALLOW_ANNOTATION)
+            if name == MAIN:
+                if accepted:
+                    annotations.pop(ALLOW_ANNOTATION)
+                annotations[ROLL_ANNOTATION] = secrets.token_hex(8)
+                secret["metadata"]["annotations"] = annotations
             call("PUT", secret_path(name), secret)
             print(f"added {', '.join(missing)} to {NAMESPACE}/{name}")
-            rolled = rolled or name == MAIN
         else:
             print(f"{NAMESPACE}/{name} complete")
-    if rolled:
-        roll(secrets.token_hex(8))
+        if name == MAIN:
+            generation = annotations.get(ROLL_ANNOTATION)
+    # Keys written before generations were recorded carry none; their pods
+    # already run on them.
+    if generation:
+        roll(generation)
 
 
 if __name__ == "__main__":

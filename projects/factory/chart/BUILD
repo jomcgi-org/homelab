@@ -88,3 +88,13 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+py_test(
+    name = "secret_init_test",
+    srcs = ["secret_init_test.py"],
+    data = ["files/itsaplan/secret_init.py"],
+    env = {
+        "SECRET_INIT": "$(rootpath files/itsaplan/secret_init.py)",
+    },
+    deps = ["@pip//pytest"],
+)
