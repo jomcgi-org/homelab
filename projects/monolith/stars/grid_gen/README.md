@@ -5,6 +5,13 @@ site grid and writes it to `stars.sites`. Its image contains rasterio,
 geopandas, Shapely, and their native libraries. The API and routine jobs images
 continue to exclude this directory and those dependencies.
 
+Light-pollution source rights remain unresolved in #7253. The
+[licence investigation](../../../scotland-connector/docs/light-pollution-licence.md)
+records the historical download and the evidence still needed. An input
+filename or matching palette does not establish its producer or permission.
+This follow-up remains non-blocking for launch and public promotion under
+Joe's 20 October 2026 decision.
+
 Each run downloads four operator-selected objects from one S3-compatible store:
 
 - a Natural Earth admin-1 GeoJSON containing Scotland boundaries
