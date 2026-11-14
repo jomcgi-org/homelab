@@ -57,21 +57,34 @@ bindings:
 
 func TestLoadRejects(t *testing.T) {
 	for name, content := range map[string]string{
-		"unknown field":  "namespace: f\nbogus: 1\n",
-		"no namespace":   "listenAddr: ':1'\n",
-		"bad repository": "namespace: f\nbindings: [{name: a, namespace: n, repository: nope}]\n",
-		"dup namespace":  "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}, {name: b, namespace: n, repository: o/b}]\n",
-		"slow mint":      "namespace: f\ngithub: {mintInterval: 2h}\n",
-		"http issuer":    "namespace: f\nactorJwt: {issuer: 'http://idp'}\n",
-		"no app id":      "namespace: f\ngithub: {privateKeyFile: /k}\n",
-		"shared listen":  "namespace: f\nadminListenAddr: ':8080'\n",
-		"bad effort":     "namespace: f\ncodex: {reasoningEffort: huge}\n",
+		"unknown field":      "namespace: f\nbogus: 1\n",
+		"no namespace":       "listenAddr: ':1'\n",
+		"bad repository":     "namespace: f\nbindings: [{name: a, namespace: n, repository: nope}]\n",
+		"dup namespace":      "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}, {name: b, namespace: n, repository: o/b}]\n",
+		"slow mint":          "namespace: f\ngithub: {mintInterval: 2h}\n",
+		"http issuer":        "namespace: f\nactorJwt: {issuer: 'http://idp'}\n",
+		"no app id":          "namespace: f\ngithub: {privateKeyFile: /k}\n",
+		"shared listen":      "namespace: f\nadminListenAddr: ':8080'\n",
+		"bad effort":         "namespace: f\ncodex: {reasoningEffort: huge}\n",
+		"review without key": "namespace: f\ntokenReview: {reviewerSubjects: [a]}\n",
+		"review same app":    "namespace: f\ngithub: {privateKeyFile: /k, appId: '1', installationId: '2'}\ngithubReview: {privateKeyFile: /r, appId: '1', installationId: '3'}\n",
+		"review writes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', agentPermissions: {contents: write}}\n",
+		"review approves":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {pull_requests: write}}\n",
+		"review namespace":   "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}]\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\nreviewBindings: [{name: a, namespace: n, repository: o/a}]\n",
+		"review subject":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\ntokenReview: {connectorSubjects: [s], reviewerSubjects: [s]}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(write(t, "c.yaml", content), func(string) string { return "" }); err == nil {
 				t.Fatal("Load accepted invalid config")
 			}
 		})
+	}
+	review := "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}]\n" +
+		"githubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\n" +
+		"reviewBindings: [{name: a, namespace: nr, repository: o/a}]\ntokenReview: {reviewerSubjects: [s]}\n"
+	if c, err := Load(write(t, "r.yaml", review), func(string) string { return "" }); err != nil || !c.GitHubReviewEnabled() ||
+		c.GitHubReview.AgentPermissions["contents"] != "read" || c.GitHubReview.ConnectorPermissions["checks"] != "write" {
+		t.Fatalf("reviewer config = %+v, %v", c.GitHubReview, err)
 	}
 	if c, err := Load(write(t, "e.yaml", "namespace: f\ncodex: {reasoningEffort: xhigh}\n"), func(string) string { return "" }); err != nil || c.Codex.ReasoningEffort != "xhigh" {
 		t.Fatalf("xhigh effort = %q, %v", c.Codex.ReasoningEffort, err)

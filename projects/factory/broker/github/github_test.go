@@ -235,6 +235,34 @@ func TestMintAgentsDownscopesAndWritesSecrets(t *testing.T) {
 	}
 }
 
+func TestReviewerMinterIsReadOnlyForAgentsAndLabelsItsMints(t *testing.T) {
+	h := newHarness(t)
+	review := config.Defaults().GitHubReview
+	h.minter.AgentPermissions, h.minter.ConnectorPermissions = review.AgentPermissions, review.ConnectorPermissions
+	h.minter.AgentKind, h.minter.TokenKind = "review_agent", "reviewer"
+	if err := h.minter.MintAgents(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i, req := range h.gh.lastRequests() {
+		if len(req.Permissions) != 1 || req.Permissions["contents"] != "read" {
+			t.Fatalf("agent request %d permissions = %v, want contents:read only", i, req.Permissions)
+		}
+	}
+	tok, err := h.minter.ConnectorToken(context.Background(), "example-org/homelab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Permissions["pull_requests"] != "read" || tok.Permissions["checks"] != "write" || tok.Permissions["merge_queues"] != "write" {
+		t.Fatalf("reviewer token permissions = %v", tok.Permissions)
+	}
+	if got := testutil.ToFloat64(h.metrics.GitHubMints.WithLabelValues("review_agent", "homelab", "ok")); got != 1 {
+		t.Fatalf("review_agent mint metric = %v", got)
+	}
+	if got := testutil.ToFloat64(h.metrics.GitHubMints.WithLabelValues("reviewer", "homelab", "ok")); got != 1 {
+		t.Fatalf("reviewer mint metric = %v", got)
+	}
+}
+
 func TestMintAgentsRefusesUnmanagedSecret(t *testing.T) {
 	h := newHarness(t)
 	if _, err := h.client.CoreV1().Secrets("factory-homelab").Create(context.Background(), &corev1.Secret{

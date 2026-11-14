@@ -583,6 +583,15 @@ and retries once, so a brief overlap during a rollout is safe.
   `metadata: read`); any other token is revoked and the mint fails. The
   broker only updates a `github-git` Secret labelled
   `app.kubernetes.io/managed-by=factory-broker`.
+- **Reviewer App.** `githubReview` configures the reviewer App
+  (`jomcgi-factory-review`, "Merge authority") the same way, kept apart from
+  the author's: it mints a read-only (`contents: read`) `github-git` Secret
+  in each `reviewBindings` namespace, which must not be a coding binding's,
+  and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
+  only, with checks and merge queues write, pull requests, contents and
+  statuses read. The config refuses the same App as `github`, a writable
+  agent token, `pull_requests: write` (approval) and a subject that is also a
+  connector or admin subject.
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
   second port serves the admin endpoints, connector tokens and metrics, and
   admits only the connector, so no actor can reach them. Operators use a
@@ -716,9 +725,10 @@ Each step is its own PR with live evidence recorded on #7817.
   `installation-id`. Created 2026-11-14.
 - **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
   review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
-  the reviewer App `jomcgi-factory-review` (checks write, merge queues
-  write, contents and pull requests read) owns review and enqueueing
-  ("Merge authority"); Joe creates it.
+  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks and merge
+  queues write, contents, pull requests and commit statuses read) owns
+  review and enqueueing ("Merge authority"). Its 1Password item is
+  `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
 - **Third-party Apps.** Remove or reduce Apps with write access that are not
   the factory's (Polylane, the Codex connector, Semgrep, Claude), and remove
   `administration` from BuildBuddy, which posts `pr-checks` until in-cluster

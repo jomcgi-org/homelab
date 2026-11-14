@@ -47,6 +47,13 @@ type Config struct {
 	TokenReview TokenReview `json:"tokenReview"`
 	GitHub      GitHub      `json:"github"`
 	Bindings    []Binding   `json:"bindings"`
+	// GitHubReview is the reviewer App (jomcgi-factory-review). It mints a
+	// read-only git token for each ReviewBindings namespace and serves
+	// reviewer tokens (checks and merge queue) to ReviewerSubjects. It is
+	// separate from GitHub so the identity that writes code can never post
+	// the review or merge ("Merge authority").
+	GitHubReview   GitHub    `json:"githubReview"`
+	ReviewBindings []Binding `json:"reviewBindings"`
 }
 
 type Codex struct {
@@ -99,6 +106,8 @@ type TokenReview struct {
 	Audience string `json:"audience"`
 	// AdminSubjects may run device login and forced refresh.
 	AdminSubjects []string `json:"adminSubjects"`
+	// ReviewerSubjects may fetch reviewer GitHub tokens.
+	ReviewerSubjects []string `json:"reviewerSubjects"`
 	// ConnectorSubjects may fetch connector GitHub tokens.
 	ConnectorSubjects []string `json:"connectorSubjects"`
 }
@@ -167,6 +176,18 @@ func Defaults() Config {
 				"checks": "read", "statuses": "read", "merge_queues": "write",
 			},
 		},
+		GitHubReview: GitHub{
+			APIURL:           "https://api.github.com",
+			MintInterval:     Duration{30 * time.Minute},
+			AgentSecretName:  "github-git",
+			AgentPermissions: map[string]string{"contents": "read"},
+			// The reviewer service's token: post the check, read the PR,
+			// and enqueue. Never pull_requests write, so it cannot approve.
+			ConnectorPermissions: map[string]string{
+				"checks": "write", "pull_requests": "read", "contents": "read",
+				"statuses": "read", "merge_queues": "write",
+			},
+		},
 	}
 }
 
@@ -180,6 +201,7 @@ func Load(path string, getenv func(string) string) (Config, error) {
 		}
 		// Permission maps replace the defaults instead of merging into them.
 		cfg.GitHub.AgentPermissions, cfg.GitHub.ConnectorPermissions = nil, nil
+		cfg.GitHubReview.AgentPermissions, cfg.GitHubReview.ConnectorPermissions = nil, nil
 		if err := yaml.UnmarshalStrict(data, &cfg); err != nil {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
@@ -189,6 +211,13 @@ func Load(path string, getenv func(string) string) (Config, error) {
 		}
 		if cfg.GitHub.ConnectorPermissions == nil {
 			cfg.GitHub.ConnectorPermissions = defaults.ConnectorPermissions
+		}
+		review := Defaults().GitHubReview
+		if cfg.GitHubReview.AgentPermissions == nil {
+			cfg.GitHubReview.AgentPermissions = review.AgentPermissions
+		}
+		if cfg.GitHubReview.ConnectorPermissions == nil {
+			cfg.GitHubReview.ConnectorPermissions = review.ConnectorPermissions
 		}
 	}
 	for key, target := range map[string]*string{
@@ -220,7 +249,12 @@ func (c *Config) resolveFiles() error {
 	for _, f := range []struct {
 		value *string
 		file  string
-	}{{&c.GitHub.AppID, c.GitHub.AppIDFile}, {&c.GitHub.InstallationID, c.GitHub.InstallationIDFile}} {
+	}{
+		{&c.GitHub.AppID, c.GitHub.AppIDFile},
+		{&c.GitHub.InstallationID, c.GitHub.InstallationIDFile},
+		{&c.GitHubReview.AppID, c.GitHubReview.AppIDFile},
+		{&c.GitHubReview.InstallationID, c.GitHubReview.InstallationIDFile},
+	} {
 		if *f.value != "" || f.file == "" {
 			continue
 		}
@@ -235,6 +269,9 @@ func (c *Config) resolveFiles() error {
 
 // GitHubEnabled reports whether App credentials are configured.
 func (c Config) GitHubEnabled() bool { return c.GitHub.PrivateKeyFile != "" }
+
+// GitHubReviewEnabled reports whether the reviewer App is configured.
+func (c Config) GitHubReviewEnabled() bool { return c.GitHubReview.PrivateKeyFile != "" }
 
 func (c Config) Validate() error {
 	var errs []error
@@ -281,6 +318,7 @@ func (c Config) Validate() error {
 	if c.GitHubEnabled() && (c.GitHub.AppID == "" || c.GitHub.InstallationID == "") {
 		errs = append(errs, errors.New("github appId and installationId are required with a private key"))
 	}
+	errs = append(errs, c.validateReview()...)
 	seen, namespaces := map[string]bool{}, map[string]bool{}
 	for i, b := range c.Bindings {
 		owner, repo, ok := strings.Cut(b.Repository, "/")
@@ -299,4 +337,65 @@ func (c Config) Validate() error {
 		namespaces[b.Namespace] = true
 	}
 	return errors.Join(errs...)
+}
+
+// validateReview keeps the reviewer apart from the author: its own App, its
+// own agent namespaces (both App's agent Secrets are named github-git) and
+// its own token subjects.
+func (c Config) validateReview() []error {
+	var errs []error
+	if !c.GitHubReviewEnabled() {
+		if len(c.ReviewBindings) > 0 || len(c.TokenReview.ReviewerSubjects) > 0 {
+			errs = append(errs, errors.New("reviewBindings and reviewerSubjects need githubReview.privateKeyFile"))
+		}
+		return errs
+	}
+	r := c.GitHubReview
+	if r.AppID == "" || r.InstallationID == "" {
+		errs = append(errs, errors.New("githubReview appId and installationId are required with a private key"))
+	}
+	if r.AppID != "" && r.AppID == c.GitHub.AppID {
+		errs = append(errs, errors.New("githubReview must be a different App from github"))
+	}
+	if r.MintInterval.Duration <= 0 || r.MintInterval.Duration > 50*time.Minute {
+		errs = append(errs, errors.New("githubReview.mintInterval must be positive and at most 50m"))
+	}
+	if r.AgentSecretName == "" {
+		errs = append(errs, errors.New("githubReview.agentSecretName is required"))
+	}
+	for k, v := range r.AgentPermissions {
+		if v != "read" {
+			errs = append(errs, fmt.Errorf("githubReview.agentPermissions %s: the reviewer agent's token is read-only", k))
+		}
+	}
+	if r.ConnectorPermissions["pull_requests"] == "write" {
+		errs = append(errs, errors.New("githubReview.connectorPermissions: pull_requests write would let the reviewer approve"))
+	}
+	author := map[string]bool{}
+	for _, b := range c.Bindings {
+		author[b.Namespace] = true
+	}
+	seen, namespaces := map[string]bool{}, map[string]bool{}
+	for i, b := range c.ReviewBindings {
+		owner, repo, ok := strings.Cut(b.Repository, "/")
+		if b.Name == "" || b.Namespace == "" || !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+			errs = append(errs, fmt.Errorf("reviewBindings[%d] needs name, namespace and repository owner/name", i))
+		}
+		if seen[b.Name] {
+			errs = append(errs, fmt.Errorf("reviewBindings[%d]: duplicate name %q", i, b.Name))
+		}
+		seen[b.Name] = true
+		if namespaces[b.Namespace] || author[b.Namespace] || b.Namespace == c.Namespace {
+			errs = append(errs, fmt.Errorf("reviewBindings[%d]: namespace %q is already bound", i, b.Namespace))
+		}
+		namespaces[b.Namespace] = true
+	}
+	for _, s := range c.TokenReview.ReviewerSubjects {
+		for _, other := range append(append([]string(nil), c.TokenReview.ConnectorSubjects...), c.TokenReview.AdminSubjects...) {
+			if s == other {
+				errs = append(errs, fmt.Errorf("tokenReview: %q may not be both a reviewer and a connector or admin subject", s))
+			}
+		}
+	}
+	return errs
 }
