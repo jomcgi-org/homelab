@@ -185,6 +185,13 @@ func (g *fakeGitHub) status(sha, context, creator, state string) {
 	})
 }
 
+// label sets a PR's labels.
+func (g *fakeGitHub) label(pr int, labels ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.byNumber(pr).pr.Labels = labels
+}
+
 func (g *fakeGitHub) green(sha string) {
 	g.check(sha, "test", 100, "success")
 	g.check(sha, "semgrep-review", 200, "success")
@@ -403,6 +410,7 @@ func newDeliveryEnv(t *testing.T) *env {
 		TrustedReviewers: []string{"reviewer"},
 		RequiredChecks:   []dispatch.Check{{Name: "test", AppID: 100}},
 		ReviewerCheck:    &dispatch.Check{Name: "semgrep-review", AppID: 200},
+		HoldLabels:       dispatch.DefaultHoldLabels,
 		MaxReviewRounds:  2,
 	}
 	v.cfg.Links = dispatch.Links{
@@ -1389,6 +1397,44 @@ func TestDoneMoveAtWIPLimitIsReportedAndRetried(t *testing.T) {
 	}
 	if !said {
 		t.Fatal("the refused move was not reported")
+	}
+}
+
+func TestHoldLabelKeepsAPassingHeadOutOfTheQueue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.label(1, "needs-human")
+	v.gh.green("sha-1")
+	v.poll()
+	if n := len(v.gh.Enqueues()); n != 0 {
+		t.Fatal("enqueued a PR held for a person")
+	}
+	v.gh.label(1)
+	v.poll()
+	if q := v.gh.Enqueues(); len(q) != 1 || q[0] != "sha-1" {
+		t.Fatalf("enqueues = %v, want the head once the hold is gone", q)
+	}
+}
+
+func TestHoldLabelOnAQueuedPRDequeuesIt(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	if !v.gh.queued(1) || v.work(101).State != store.WorkMerging {
+		t.Fatal("PR not queued")
+	}
+	v.gh.label(1, "Human") // a hold placed after the enqueue, in any case
+	v.poll()
+	if v.gh.queued(1) || len(v.gh.Dequeues()) != 1 {
+		t.Fatalf("dequeues = %v, want the held PR out of the queue", v.gh.Dequeues())
+	}
+	v.poll()
+	if w := v.work(101); w.State != store.WorkReview {
+		t.Fatalf("work item = %s, want back in review", w.State)
+	}
+	if n := len(v.gh.Enqueues()); n != 1 {
+		t.Fatalf("enqueues = %d, want the held head not enqueued again", n)
 	}
 }
 
