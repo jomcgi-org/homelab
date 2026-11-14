@@ -186,8 +186,8 @@ pin images by digest. The charts are rendered into Git instead:
   postStart hook, ate-api-server's authentication config and Cilium
   allowlists. OpenTelemetry push is off; Prometheus `/metrics` stays on.
   It deletes the chart's ClusterRoleBinding that lets the credential provider
-  read every Secret in the cluster, and adds the `kagent-controller-identity`
-  ValidatingAdmissionPolicy (`kagent-identity-guard.yaml`, below).
+  read every Secret in the cluster, and adds the `kagent-controller-*`
+  ValidatingAdmissionPolicies (`kagent-identity-guard.yaml`, below).
 - `bootstrap-substrate.sh` creates the generated Secrets with the fork's
   `kubectl-ate`: the podcertificate signer CAs, the actor identity CA and JWT
   keys, the egress MITM CA (`egress-mitm-ca-pool`, published to actors as the
@@ -220,8 +220,8 @@ kagent's installation (step 5 of `projects/factory/ARCHITECTURE.md`) must:
 - label each Secret meant for injection `substrate.ate.dev/injectable=true`.
 
 Substrate trusts `kagent/kagent-controller` before kagent exists, so the
-`kagent-controller-identity` ValidatingAdmissionPolicy stops anyone else from
-claiming it. In namespace `kagent` it denies creating or updating
+`kagent-controller-*` ValidatingAdmissionPolicies stop anyone else from
+claiming it. In namespace `kagent` they deny creating or updating
 ServiceAccount `kagent-controller`, and Pods, Deployments and ReplicaSets that
 run as it. Only ArgoCD's application controller is exempt, plus the
 `kube-system` deployment-controller and replicaset-controller, which create the
