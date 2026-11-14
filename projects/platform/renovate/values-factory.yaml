@@ -1,0 +1,4 @@
+# Keep the factory writer stopped until Joe verifies renovate-github and the
+# required pr-checks and factory review gates. See README.md for a manual run.
+workloadKind: CronJob
+suspend: true

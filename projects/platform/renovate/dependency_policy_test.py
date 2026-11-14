@@ -42,52 +42,76 @@ def _cron_suspensions(docs: list[dict]) -> dict[str, bool]:
     }
 
 
-def test_ordinary_update_policy_is_staged_with_all_automerge_disabled():
+@pytest.mark.parametrize(
+    ("update_type", "automerge"),
+    [
+        ("minor", True),
+        ("patch", True),
+        ("digest", True),
+        ("pin", True),
+        ("pinDigest", True),
+        ("lockFileMaintenance", True),
+        ("major", False),
+        ("replacement", False),
+        ("bump", False),
+        ("rollback", False),
+    ],
+)
+def test_only_non_major_updates_request_native_automerge(update_type, automerge):
     config = json.loads((ROOT / "renovate.json").read_text())
-    assert config["automerge"] is False
-    assert config["platformAutomerge"] is False
-    assert config["automergeType"] == "pr"
+    assert config["automerge"] is False  # Unlisted update types stay manual.
+    assert config["platformAutomerge"] is True
+    effective = config.copy()
+    for rule in config["packageRules"]:
+        if update_type in rule.get("matchUpdateTypes", []):
+            effective.update(rule)
+    assert effective["automerge"] is automerge
+    if automerge:
+        assert effective["platformAutomerge"] is True
+    assert effective["automergeType"] == "pr"
     assert config["automergeStrategy"] == "auto"
     assert config["dependencyDashboardApproval"] is False
     assert config["stopUpdatingLabel"] == "human"
-    expected = {
-        "major",
-        "minor",
-        "patch",
-        "pin",
-        "digest",
-        "pinDigest",
-        "lockFileMaintenance",
-        "replacement",
-        "bump",
-        "rollback",
-    }
-    rules = [
-        rule
-        for rule in config["packageRules"]
-        if "matchUpdateTypes" in rule and "automerge" in rule
-    ]
-    assert len(rules) == 1
-    assert set(rules[0]["matchUpdateTypes"]) == expected
-    assert rules[0]["automerge"] is False
-    assert rules[0]["platformAutomerge"] is False
 
-    def check_disabled(value):
+    # Neither repository policy nor a more specific rule can bypass review.
+    def check_review(value):
         if isinstance(value, dict):
-            for key, nested in value.items():
-                if key in ("automerge", "platformAutomerge", "autoApprove"):
-                    assert nested is False, key
-                check_disabled(nested)
+            assert value.get("autoApprove", False) is False
+            assert value.get("ignoreTests", False) is False
+            assert value.get("statusCheckNames", ["default"]) is not None
+            for nested in value.values():
+                check_review(nested)
         elif isinstance(value, list):
             for nested in value:
-                check_disabled(nested)
+                check_review(nested)
 
-    check_disabled(config)
+    check_review(config)
     assert config["minimumReleaseAge"] == "3 days"
     assert config["internalChecksFilter"] == "strict"
     assert config["lockFileMaintenance"]["enabled"] is True
-    assert "ignoreTests" not in config
-    assert config.get("statusCheckNames", ["default"]) is not None
+
+
+def test_compatibility_holds_override_non_major_automerge():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    enabled_rule = next(
+        i
+        for i, rule in enumerate(config["packageRules"])
+        if rule.get("automerge") is True
+    )
+    held_packages = set()
+    for index, rule in enumerate(config["packageRules"]):
+        if rule.get("dependencyDashboardApproval"):
+            assert index > enabled_rule
+            assert rule["automerge"] is False
+            assert rule["platformAutomerge"] is False
+            held_packages.update(rule["matchPackageNames"])
+    assert held_packages == {
+        "firecracker-microvm/firecracker",
+        "kata-containers/kata-containers",
+        "k3s-io/k3s",
+        "weave-hand/loom",
+        "yannh/kubernetes-json-schema",
+    }
 
 
 def _dependency_is_disabled(

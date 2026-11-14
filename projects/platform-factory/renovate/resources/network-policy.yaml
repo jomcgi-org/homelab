@@ -1,0 +1,70 @@
+# DNS to CoreDNS is already proxied by the cluster baseline. No ingress or
+# Kubernetes API access is needed. Keep new sources tied to an enabled manager.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: renovate
+  namespace: renovate
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: renovate
+      app.kubernetes.io/instance: renovate
+  egress:
+    - toFQDNs:
+        # Repository, API, changelogs, release attachments and GHCR blobs.
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        - matchPattern: "*.githubusercontent.com"
+        # npm metadata, tarballs and the Node toolchain.
+        - matchName: registry.npmjs.org
+        - matchName: nodejs.org
+        # Python metadata and wheels. UV_NO_BUILD forbids source builds.
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+        # Go module proxy, checksums, module archives and toolchain downloads.
+        - matchName: proxy.golang.org
+        - matchName: sum.golang.org
+        - matchName: storage.googleapis.com
+        - matchName: go.dev
+        - matchName: dl.google.com
+        # OCI metadata and chart blobs, including Docker Hub auth/redirects.
+        - matchName: ghcr.io
+        - matchName: docker.io
+        - matchName: index.docker.io
+        - matchName: registry-1.docker.io
+        - matchName: auth.docker.io
+        - matchName: hub.docker.com
+        - matchName: production.cloudflare.docker.com
+        - matchName: docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
+        # Existing helm-values images and the cert-manager OCI chart.
+        - matchName: quay.io
+        - matchPattern: "*.quay.io"
+        - matchName: ecr-public.aws.com
+        - matchName: public.ecr.aws
+        # Existing Python and kubectl helper images in Helm values.
+        - matchName: cgr.dev
+        - matchName: registry.k8s.io
+        - matchPattern: "*-docker.pkg.dev"
+        # Bazel modules and the allowlisted Python lock compiler's toolchain.
+        - matchName: bcr.bazel.build
+        - matchName: registry.bazel.build
+        - matchName: mirror.bazel.build
+        - matchName: releases.bazel.build
+        # Helm sources in Chart.yaml and ArgoCD Applications, plus Helm itself.
+        - matchName: helm.cilium.io
+        - matchName: cloudnative-pg.github.io
+        - matchName: 1password.github.io
+        - matchName: argoproj.github.io
+        - matchName: charts.goauthentik.io
+        - matchName: kyverno.github.io
+        - matchName: pkgs.tailscale.com
+        - matchName: spiffe.github.io
+        - matchName: get.helm.sh
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

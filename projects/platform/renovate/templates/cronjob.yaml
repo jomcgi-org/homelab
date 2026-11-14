@@ -1,0 +1,47 @@
+{{- if eq .Values.workloadKind "CronJob" }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: renovate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: renovate
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  timeZone: {{ .Values.timezone | quote }}
+  concurrencyPolicy: Forbid
+  suspend: {{ .Values.suspend }}
+  startingDeadlineSeconds: {{ .Values.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      backoffLimit: 2
+      # Keep failed Jobs and their logs for a day, bounded by the history limit.
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: renovate
+            app.kubernetes.io/instance: {{ .Release.Name }}
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 12021
+            runAsGroup: 12021
+            fsGroup: 12021
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: renovate
+              {{- include "renovate.container" . | nindent 14 }}
+          volumes:
+            - name: workspace
+              emptyDir:
+                sizeLimit: {{ .Values.workspace.sizeLimit }}
+{{- end }}

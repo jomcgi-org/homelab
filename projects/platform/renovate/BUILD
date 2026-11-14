@@ -6,6 +6,11 @@ helm_chart(
     visibility = ["//visibility:public"],
 )
 
+exports_files(
+    ["values-factory.yaml"],
+    visibility = ["//projects/platform-factory/renovate:__pkg__"],
+)
+
 argocd_app(
     name = "renovate",
     chart = "projects/platform/renovate",
@@ -57,6 +62,23 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
+)
+
+# The factory root must deploy only a CronJob with the shared runtime limits.
+py_test(
+    name = "factory_deployment_test",
+    srcs = ["factory_deployment_test.py"],
+    args = ["$(rootpath factory_deployment_test.py)"],
+    data = [
+        ":chart",
+        "//projects:factory_renovate_enrollment_manifests",
+        "//projects/platform-factory/renovate:manifests",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pyyaml"],
 )
 
 # Pin effective suspension, credential references and the hub enrollment path.

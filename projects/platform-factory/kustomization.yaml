@@ -8,6 +8,7 @@ resources:
   - ./network-policy # Cluster-wide default-deny baseline and per-namespace allowlists
   - ./argocd # In-cluster ArgoCD adopts the installation bootstrap-gitops.sh made
   - ./onepassword # 1Password Connect and operator; bootstrap secrets are created out of band
+  - ./renovate # Suspended dependency CronJob; existing 1Password credential and registry egress
   - ./runtimeclasses # gvisor RuntimeClass for the runsc handler install-node.sh installs
   - ./cfgate # Cloudflare tunnel and DNS lifecycle from Gateway API resources
   - ./factory-edge # The factory cluster's Cloudflare Tunnel, its Gateway and DNS

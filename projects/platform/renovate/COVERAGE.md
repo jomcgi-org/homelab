@@ -1,8 +1,10 @@
 # Dependency coverage
 
-`renovate.json` stages intake with all native automerge switches false. The
-weekly helper's explicit automerge flag is also false. Activation is held by
-the prerequisites and #7186 handoff in [README.md](README.md). A configured extractor
+`renovate.json` requests native auto-merge for minor, patch, digest, pin and
+lock-file maintenance updates through `pr-checks` and `factory review`.
+Majors stay manual. The factory CronJob ships suspended pending credential
+verification; see [README.md](README.md). The retired hub's weekly helper
+keeps its separate automerge flag off. A configured extractor
 proves discovery; registry lookup, artifact regeneration, independent review
 and CI must also pass before an update can merge.
 
@@ -34,8 +36,8 @@ and CI must also pass before an update can merge.
 
 ## Holds and exclusions
 
-Ordinary major upgrades are eligible for the same independent review and CI as
-minor and patch updates. They stay separate and carry `major-upgrade`.
+Ordinary major upgrades require manual merge after independent review and CI.
+They stay separate and carry `major-upgrade`.
 
 - Envoy Gateway charts, Gateway and Proxy images, and the paired downloaded
   binaries stay disabled while the known header regression is resolved. The
@@ -56,7 +58,12 @@ minor and patch updates. They stay separate and carry `major-upgrade`.
   or queued by this configuration change. The held MCP experiment #7355 remains
   outside dependency maintenance. Cloudflared #7357 has its own owner.
 
-## Review evidence and remaining boundaries
+## Retired hub evidence design
+
+The following records the previous hub dependency-evidence design and its
+open work. The factory deployment in #7945 uses the required `factory review`
+check described in [README.md](README.md); these older canary and publisher
+handoffs are not its activation procedure.
 
 A successful empty GitHub dependency-graph comparison is accepted as a coverage
 limitation, never as proof of safety. The gate still requires complete changed
@@ -135,7 +142,6 @@ left untouched. The workflow checks holds before generation and again before
 push. Each tool failure is isolated and leaves that tool's lock unchanged;
 other modes continue. CI validates generated output and remains required.
 
-No credentials, token scopes, installed Apps, rulesets, review publication flags
-or factory author allowlists are provisioned here. Writer restoration reuses
-#7186, stacked on #7168, under #7001/#7068; the CI credential boundary stays
-with #7005. See README for the exact owner handoff.
+The old hub restoration was tracked in #7186, #7168 and #7001/#7068.
+The factory replaces that writer under #7945. The separate CI credential
+boundary stays with #7005; this deployment does not resolve it.
