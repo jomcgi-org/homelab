@@ -24,4 +24,5 @@ resources:
   - ../factory/deploy # The software factory: kagent (projects/factory/)
   - ./prometheus # Prometheus and kube-state-metrics: the operators' metrics store
   - ./grafana # Grafana at factory-grafana.jomcgi.dev: dashboards over Prometheus
+  - ../factory-landing/deploy # Static operator tools at factory.jomcgi.dev
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

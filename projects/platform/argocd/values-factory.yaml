@@ -1,6 +1,6 @@
 # Factory home cluster overlay (projects/platform-factory/argocd).
 #
-# The UI is published at factory.jomcgi.dev through the edge Gateway
+# The UI is published at factory-argocd.jomcgi.dev through the edge Gateway
 # (projects/platform-factory/edge/), which signs every request in through
 # Authentik before it reaches ArgoCD; ArgoCD then runs its own Authentik OIDC
 # login. The tunnel terminates TLS at Cloudflare and forwards plain HTTP, so
@@ -19,7 +19,7 @@ argo-cd:
           name: edge
           namespace: edge
       hostnames:
-        - factory.jomcgi.dev
+        - factory-argocd.jomcgi.dev
     resources:
       requests:
         cpu: 25m
@@ -50,7 +50,7 @@ argo-cd:
         memory: 128Mi
   configs:
     cm:
-      url: https://factory.jomcgi.dev
+      url: https://factory-argocd.jomcgi.dev
       # Sign-in is Authentik only. Break-glass is kubectl, or the argocd CLI
       # in --core mode, with the cluster kubeconfig
       # (projects/factory-cluster/README.md).

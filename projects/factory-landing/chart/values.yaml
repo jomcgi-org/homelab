@@ -1,0 +1,5 @@
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/factory-landing
+  tag: latest
+  digest: "" # CI supplies the content digest when packaging the chart.
+hostname: factory.jomcgi.dev

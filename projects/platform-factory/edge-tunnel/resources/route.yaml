@@ -23,6 +23,7 @@ spec:
   # One entry per hostname with a route on the edge Gateway.
   hostnames:
     - factory.jomcgi.dev
+    - factory-argocd.jomcgi.dev
     - factory-auth.jomcgi.dev
     - factory-plan.jomcgi.dev
     - factory-grafana.jomcgi.dev

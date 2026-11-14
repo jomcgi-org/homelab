@@ -276,3 +276,18 @@ def test_grimoire_enrollment_requires_invitation_and_grants_no_admin_groups():
                 str(blueprint),
                 "exec",
             )
+
+
+def test_factory_edge_and_argocd_callback_hosts():
+    # BaseLoader preserves custom blueprint tags as scalar/sequence data.
+    blueprint = pathlib.Path(__file__).parent / "factory-blueprints/factory-auth.yaml"
+    entries = yaml.load(blueprint.read_text(), Loader=yaml.BaseLoader)["entries"]
+    providers = {entry.get("id"): entry["attrs"] for entry in entries
+                 if entry["model"] == "authentik_providers_oauth2.oauth2provider"}
+    edge_urls = {uri["url"] for uri in providers["edge-provider"]["redirect_uris"]}
+    assert "https://factory.jomcgi.dev/oauth2/callback" in edge_urls
+    assert "https://factory-argocd.jomcgi.dev/oauth2/callback" in edge_urls
+    assert providers["argocd-provider"]["redirect_uris"] == [{
+        "matching_mode": "strict",
+        "url": "https://factory-argocd.jomcgi.dev/auth/callback",
+    }]

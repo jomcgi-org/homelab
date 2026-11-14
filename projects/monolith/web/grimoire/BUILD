@@ -7,6 +7,7 @@
 # gazelle:exclude src
 # gazelle:exclude preview
 # gazelle:exclude public
+# gazelle:exclude factory
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
@@ -118,6 +119,7 @@ js_library(
         ":node_modules/happy-dom",
         ":node_modules/vitest",
         ":preview_src",
+        ":factory_src",
     ],
 )
 
@@ -176,4 +178,34 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+# Independent, links-only factory entry. Share the pinned Astryx toolchain and
+# compiled sheet theme, without shipping any Grimoire application code.
+js_library(
+    name = "factory_src",
+    srcs = glob(["factory/**"]) + [
+        "package.json",
+        "src/app/app.css",
+        "src/theme/index.ts",
+        "src/theme/sheet.css",
+        "src/theme/sheet.js",
+        "tsconfig.json",
+    ],
+    deps = _RUNTIME_DEPS + _BUILD_DEPS,
+)
+
+js_run_binary(
+    name = "factory_build",
+    srcs = [":factory_src"],
+    args = ["build", "--config", "factory/vite.config.ts"],
+    chdir = package_name(),
+    out_dirs = ["dist-factory"],
+    tool = ":vite",
+    visibility = ["//projects/factory-landing:__pkg__"],
+)
+
+build_test(
+    name = "factory_build_test",
+    targets = [":factory_build"],
 )
