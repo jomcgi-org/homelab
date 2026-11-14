@@ -943,6 +943,14 @@ type issueDonePayload struct {
 	Column  string `json:"column,omitempty"`
 }
 
+func decodeDonePayload(payload []byte) (p issueDonePayload, err error) {
+	err = json.Unmarshal(payload, &p)
+	if err == nil && p.IssueID <= 0 {
+		err = errors.New("missing issue ID")
+	}
+	return p, err
+}
+
 // merged records the observed merge. The itsaplan issue becomes Done, with
 // a comment linking the issue, run, session, PR and merge, only from here.
 func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
@@ -990,9 +998,9 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 
 // deliverIssueDone moves a merged work item's issue to the completed column.
 func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) error {
-	var p issueDonePayload
-	if err := json.Unmarshal(it.Payload, &p); err != nil {
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, err.Error())
+	p, err := decodeDonePayload(it.Payload)
+	if err != nil {
+		return e.recordDoneAbandonment(ctx, it, p, "Done", "invalid Done payload", "invalid Done payload: "+err.Error())
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -1073,16 +1081,27 @@ func (e *Engine) abandonDone(ctx context.Context, it *store.OutboxItem, p issueD
 		public += " (" + publicReason(err) + ")"
 		detail += ": " + err.Error()
 	}
-	e.log.WarnContext(ctx, "Done move abandoned", "outbox", it.ID, "issue", p.IssueID, "reason", detail)
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/done-abandoned/%d/%d", p.IssueID, it.ID), 0, "",
-			commentPayload{IssueID: p.IssueID, Body: fmt.Sprintf(
-				"The pull request merged, but the factory could not move this issue to %q and has stopped trying: %s. "+
-					"Move it to %s by hand unless it was canceled.", column, public, column)}); err != nil {
-			return err
+	return e.recordDoneAbandonment(ctx, it, p, column, public, detail)
+}
+
+// recordDoneAbandonment keeps diagnostic details out of the public report.
+// An invalid payload without an issue ID can only be reported in the log.
+func (e *Engine) recordDoneAbandonment(ctx context.Context, it *store.OutboxItem, p issueDonePayload, column, public, detail string) error {
+	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if p.IssueID > 0 {
+			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/done-abandoned/%d/%d", p.IssueID, it.ID), 0, "",
+				commentPayload{IssueID: p.IssueID, Body: fmt.Sprintf(
+					"The pull request merged, but the factory could not move this issue to %q and has stopped trying: %s. "+
+						"Move it to %s by hand unless it was canceled.", column, public, column)}); err != nil {
+				return err
+			}
 		}
 		return e.st.OutboxAbandon(ctx, tx, it.ID, clip(detail, maxErrorText))
 	})
+	if err == nil {
+		e.log.WarnContext(ctx, "Done move abandoned", "outbox", it.ID, "issue", p.IssueID, "reason", detail)
+	}
+	return err
 }
 
 // publicReason is the class of an itsaplan error, fit for an issue comment.
@@ -1104,8 +1123,11 @@ func publicReason(err error) string {
 // abandonItem gives up on an outbox item after outboxMaxTries. A Done move
 // is reported on its issue.
 func (e *Engine) abandonItem(ctx context.Context, it *store.OutboxItem, err error) error {
-	var p issueDonePayload
-	if it.Kind == store.OutboxIssueDone && json.Unmarshal(it.Payload, &p) == nil {
+	if it.Kind == store.OutboxIssueDone {
+		p, decodeErr := decodeDonePayload(it.Payload)
+		if decodeErr != nil {
+			return e.recordDoneAbandonment(ctx, it, p, "Done", "invalid Done payload", "invalid Done payload: "+decodeErr.Error())
+		}
 		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("the move kept failing for %d tries", outboxMaxTries), err)
 	}
 	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))

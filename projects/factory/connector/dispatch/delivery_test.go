@@ -1,9 +1,11 @@
 package dispatch_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -1004,6 +1006,172 @@ func (v *env) setIssueErr(err error) {
 	v.its.mu.Lock()
 	v.its.issueErr = err
 	v.its.mu.Unlock()
+}
+
+func (v *env) queueDone(key string) {
+	v.t.Helper()
+	if err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxIssueDone, key, 0, "",
+		map[string]any{"issueId": 101, "project": "HL"}); err != nil {
+		v.t.Fatal(err)
+	}
+}
+
+func newDoneEnv(t *testing.T) *env {
+	t.Helper()
+	v := newEnv(t)
+	v.its.issues = map[int64]*itsaplan.Issue{101: {ID: 101, ColumnID: 2}}
+	v.queueDone("done/test")
+	return v
+}
+
+func (v *env) doneReports(want int, reason string) {
+	v.t.Helper()
+	var n int
+	var body string
+	if err := v.st.DB.QueryRow(`SELECT count(*), coalesce(min(payload->>'body'), '') FROM outbox
+		WHERE dedupe_key LIKE 'comment/done-abandoned/101/%'`).Scan(&n, &body); err != nil {
+		v.t.Fatal(err)
+	}
+	if n != want || !strings.Contains(body, "has stopped trying: "+reason+".") ||
+		!strings.Contains(body, "Move it to Done by hand unless it was canceled.") {
+		v.t.Fatalf("reports = %d, body = %q, want %d reports of %q", n, body, want, reason)
+	}
+}
+
+func TestDoneMoveAtWIPLimitReportsEveryAbandonedMove(t *testing.T) {
+	v := newDoneEnv(t)
+	for move := 1; move <= 2; move++ {
+		if move == 2 {
+			v.queueDone("done/later-work-item")
+		}
+		for range 20 {
+			v.its.moveErr = append(v.its.moveErr, itsaplan.ErrConflict)
+		}
+		for attempt := 1; attempt <= 20; attempt++ {
+			v.tick(v.e)
+			var abandoned int
+			if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind = 'issue_done' AND abandoned_at IS NOT NULL`).Scan(&abandoned); err != nil {
+				t.Fatal(err)
+			}
+			want := move - 1
+			if attempt == 20 {
+				want = move
+			}
+			if abandoned != want {
+				t.Fatalf("move %d attempt %d: abandoned = %d, want %d", move, attempt, abandoned, want)
+			}
+			v.clk.Advance(11 * time.Minute)
+		}
+		v.doneReports(move, "the move kept failing for 20 tries (conflict)")
+	}
+	v.tick(v.e)
+	var notes, reports int
+	for _, cm := range v.its.Comments() {
+		if strings.Contains(cm.body, "the factory keeps trying") {
+			notes++
+		}
+		if strings.Contains(cm.body, "has stopped trying") {
+			reports++
+		}
+	}
+	if notes != 1 || reports != 2 || len(v.its.Moves()) != 0 {
+		t.Fatalf("notes = %d, reports = %d, moves = %+v", notes, reports, v.its.Moves())
+	}
+}
+
+func TestDoneMoveReportEnqueueFailureRetriesPastExhaustion(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		t.Run(fmt.Sprintf("invalid_payload=%t", invalid), func(t *testing.T) {
+			v := newDoneEnv(t)
+			v.setIssueErr(&itsaplan.HTTPError{Status: 503, Body: "PRIVATE-ERROR"})
+			want := "the move kept failing for 20 tries (itsaplan was unavailable)"
+			if invalid {
+				want = "invalid Done payload"
+				if _, err := v.st.DB.Exec(`UPDATE outbox SET payload = '{"issueId":101,"project":42}'::jsonb WHERE kind = 'issue_done'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := v.st.DB.Exec(`CREATE FUNCTION reject_done_report() RETURNS trigger LANGUAGE plpgsql AS $$
+				BEGIN IF NEW.dedupe_key LIKE 'comment/done-abandoned/%' THEN RAISE EXCEPTION 'report unavailable'; END IF; RETURN NEW; END $$;
+				CREATE TRIGGER reject_done_report BEFORE INSERT ON outbox FOR EACH ROW EXECUTE FUNCTION reject_done_report();
+				UPDATE outbox SET tries = 19 WHERE kind = 'issue_done'`); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				v.tick(v.e)
+				var pending bool
+				if err := v.st.DB.QueryRow(`SELECT abandoned_at IS NULL AND delivered_at IS NULL FROM outbox WHERE kind = 'issue_done'`).Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if !pending {
+					t.Fatal("Done move lost while its report could not be queued")
+				}
+				v.clk.Advance(11 * time.Minute)
+			}
+			if _, err := v.st.DB.Exec(`DROP TRIGGER reject_done_report ON outbox`); err != nil {
+				t.Fatal(err)
+			}
+			v.tick(v.e)
+			if _, abandoned, _ := v.outbox(store.OutboxIssueDone); !abandoned {
+				t.Fatal("Done move was not abandoned after the report recovered")
+			}
+			v.doneReports(1, want)
+			v.tick(v.e)
+			if c := v.its.Comments(); len(c) != 1 || strings.Contains(c[0].body, "PRIVATE-ERROR") {
+				t.Fatalf("comments = %+v", c)
+			}
+			if len(v.its.Moves()) != 0 {
+				t.Fatal("unexpected move")
+			}
+		})
+	}
+}
+
+func TestDoneMoveInvalidPayloadHasDiagnostic(t *testing.T) {
+	for _, payload := range []string{`[]`, `{}`, `{"issueId":-1}`, `{"issueId":101,"project":42}`} {
+		t.Run(payload, func(t *testing.T) {
+			v := newDoneEnv(t)
+			if _, err := v.st.DB.Exec(`UPDATE outbox SET payload = $1::jsonb WHERE kind = 'issue_done'`, payload); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			v.e.Release()
+			e := dispatch.New(v.cfg, v.st, v.its, v.kg, v.kg, nil, v.m, slog.New(slog.NewJSONHandler(&logs, nil)))
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				ok, err := e.Acquire(v.ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ok {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("diagnostic engine did not acquire the writer lock")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			t.Cleanup(e.Release)
+			v.tick(e)
+			if _, abandoned, reason := v.outbox(store.OutboxIssueDone); !abandoned || !strings.HasPrefix(reason, "invalid Done payload:") {
+				t.Fatalf("abandoned = %v, reason = %q", abandoned, reason)
+			}
+			if !strings.Contains(logs.String(), "Done move abandoned") || !strings.Contains(logs.String(), "invalid Done payload:") {
+				t.Fatalf("logs = %s", &logs)
+			}
+			if strings.Contains(payload, "101") {
+				v.doneReports(1, "invalid Done payload")
+			} else {
+				var n int
+				if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE kind = 'comment'`).Scan(&n); err != nil || n != 0 {
+					t.Fatalf("reports without an issue identity = %d, error = %v", n, err)
+				}
+			}
+			if len(v.its.Moves()) != 0 || len(v.its.Comments()) != 0 {
+				t.Fatal("invalid payload caused an external write")
+			}
+		})
+	}
 }
 
 // TestDoneMoveWaitsForTheIssue: the Done move reads the issue first, so an
