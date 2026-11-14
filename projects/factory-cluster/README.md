@@ -287,9 +287,10 @@ does the rest, idempotently:
 
 - **Secrets.** Before the StatefulSet, it fills `garage/garage-secrets` with
   the RPC secret and admin token, once. They exist only in the cluster; the
-  Secret carries `Delete=false`.
-- **Layout.** After every sync (PostSync Job) and hourly (CronJob), it waits
-  for three connected nodes and applies the first layout if there is none.
+  Secret carries `Prune=false,Delete=false`.
+- **Layout.** After every sync (PostSync Job) and hourly (CronJob), it
+  applies the first layout once all three nodes are connected. Later runs
+  need only two nodes up, so a node down for maintenance does not fail them.
   It never changes an existing layout: a node that comes back with a new ID
   (a lost metadata volume) is logged as a warning, and replacing it is an
   operator step (`garage layout assign`/`remove` from a Garage pod).
@@ -302,21 +303,26 @@ does the rest, idempotently:
   Garage lacks it, and grants read and write on that one bucket. The Secret
   is the source of truth, so a rebuilt Garage gets the same keys back. A
   consumer whose Secret appears after the last sync is served by the next
-  hourly run.
+  hourly run. Each grant is handled on its own: one failing grant is logged
+  and fails the run without stopping the others. A Secret whose key ID
+  exists in Garage with a different secret is reported, never overwritten
+  on either side; delete the Garage key (`garage key delete`) to have the
+  Secret's credentials imported, or empty the Secret's data to get a new key.
 
 | Bucket | Key Secret | Consumer |
 | --- | --- | --- |
-| `kagent-pg-backups` | `kagent/kagent-pg-s3` | `kagent-pg` WAL archive and base backups |
+| `kagent-pg-backups` | `kagent-pg/kagent-pg-s3` | `kagent-pg` WAL archive and base backups |
 | `factory-itsaplan` | `factory/factory-itsaplan-s3` | itsaplan (step 6) |
 | `factory-evidence` | `factory/factory-evidence-s3` | the connector's transcripts and CI logs (step 9) |
 | `ate-snapshots` | none yet | Agent Substrate, when its snapshots move off rustfs |
 
 `projects/platform-factory/factory-buckets/` holds the `factory` namespace's
-key Secrets ahead of the workloads. The S3 API admits only `ate-system`,
-`factory`, `kagent`, `cnpg-system` and CloudNativePG instance pods in any
-namespace; RPC (3901) only Garage pods; the admin API (3903) only
-garage-init. A consumer also needs its own egress rule to
-`app.kubernetes.io/name=garage` in `garage` on 3900. Traffic is plain HTTP
+key Secrets ahead of the workloads. The S3 API admits only the workloads
+holding a key: `kagent-pg`'s instances and the connector
+(`app.kubernetes.io/name=factory-connector` in `factory`); itsaplan and
+Substrate are added with their grants. RPC (3901) admits only Garage pods
+and the admin API (3903) only garage-init. A consumer also needs its own
+egress rule to `app.kubernetes.io/name=garage` in `garage` on 3900. Traffic is plain HTTP
 inside the cluster; Cilium's WireGuard encrypts it between nodes.
 
 The Application, the StatefulSet's PVCs (retention policy `Retain`) and the
@@ -331,7 +337,8 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n garage logs job/garage-bootstrap
 ## Postgres
 
 CloudNativePG 1.30 runs every database. `kagent-pg`
-(`projects/platform-factory/kagent-postgres/`) is kagent's: three instances,
+(`projects/platform-factory/kagent-postgres/`, namespace `kagent-pg`) is
+kagent's: three instances,
 one per node by required anti-affinity, each 256 MiB requested with a 1 GiB
 limit. Three fit: the nodes have about 11 GiB free each, and idle instances
 use under 100 MiB. Losing the primary promotes a replica in seconds; the
@@ -343,20 +350,39 @@ independent: a chart rollback or reinstall never touches the data, and the
 Cluster, its logins and the Application carry `Prune=false,Delete=false`.
 `kagent-pg-setup`, a PostSync Job, generates the two login passwords once
 into `kagent-pg-logins`, writes the connection-string Secrets the chart reads
-(`kagent-postgres-owner`, `kagent-postgres-readwrite`), and runs kagent
-v1.0.1's own setup script (`setup.sql`, copied unchanged) as the superuser
-to create `kagent_owner`, `kagent_readwrite`, their login users and schema
-`kagent`. Only the kagent controller, the setup Job, peers and the operator
-reach the instances. kagent reads the connection strings only at start, so
-restart its controller (through ArgoCD) after they change.
+(`kagent-postgres-owner`, `kagent-postgres-readwrite`) into `kagent`, and
+runs kagent v1.0.1's own setup script (`setup.sql`, copied unchanged) as the
+superuser to create `kagent_owner`, `kagent_readwrite`, their login users
+and schema `kagent`. Only the kagent controller, the setup Job, peers and the
+operator reach the instances. kagent reads the connection strings only at
+start, so restart its controller (through ArgoCD) after they change.
+
+The Cluster has its own namespace because the kagent controller can read
+every Secret in `kagent` and authenticates callers by unverified JWTs
+(`projects/factory/ARCHITECTURE.md`, finding 5). The superuser password, the
+login passwords' source and the Garage key (which can delete backups: Garage
+has no versioning or Object Lock) stay in `kagent-pg`; only the two
+connection strings cross into `kagent`. Superuser access stays enabled
+because the setup Job reruns `setup.sql` after every sync; within its
+namespace only that Job and the operator can use it.
 
 Backups use the in-tree barman-cloud integration: continuous WAL archiving
 and a daily base backup (02:30 UTC, 14 days kept) to `kagent-pg-backups` in
-Garage. 1.30 deprecates it and 1.31 removes it; the barman-cloud plugin would
-also need cert-manager, which the cluster does not run. The operator upgrade
-to 1.31 must move this to the plugin first. Garage is on the same three
-nodes, so these backups protect against losing a node, a volume or a bad
-change, not against losing the cluster.
+Garage. It has been deprecated for several releases and CloudNativePG 1.31
+removes it; the barman-cloud plugin would also need cert-manager, which the
+cluster does not run. The operator upgrade to 1.31 must move this to the
+plugin first. Garage is on the same three nodes, so these backups protect
+against losing a node, a volume or a bad change, not against losing the
+cluster.
+
+Each incarnation of the Cluster archives under its own `serverName`
+(`kagent-pg-v1`) in the bucket. A Cluster created with `initdb` refuses to
+archive into a prefix that already holds WALs ("expected empty archive"),
+so if the Cluster is deleted and recreated while Garage survives, either
+restore it from the old prefix (`bootstrap.recovery` with an
+`externalClusters` entry pointing at `kagent-pg-v1`) or, to start empty,
+bump `serverName` to the next version in `resources/cluster.yaml`. The old
+prefix ages out only by hand.
 
 The itsaplan and connector databases come with the factory chart's
 `postgres.mode: install` (steps 6 and 9), which knows their roles and

@@ -13,8 +13,10 @@ metadata:
   namespace: garage
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
-    # The RPC secret and admin token; losing them strands the data volumes.
-    argocd.argoproj.io/sync-options: Delete=false
+    # The RPC secret and admin token. A new RPC secret means restarting every
+    # node together, so neither a prune nor deleting the Application removes
+    # them.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
 apiVersion: v1

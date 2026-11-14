@@ -1,6 +1,7 @@
-# kagent-pg's allowlist under the cluster-wide default-deny
+# The kagent-pg namespace's allowlist under the cluster-wide default-deny
 # (projects/platform-factory/network-policy/). The kagent controller's egress
-# rule is in the factory chart (postgres.existing.endpoints).
+# rule is in the factory chart (postgres.existing.endpoints in
+# projects/factory/deploy/values.yaml).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -8,7 +9,7 @@ metadata:
     # Before the Cluster (wave -1), whose instances need the API server.
     argocd.argoproj.io/sync-wave: "-3"
   name: kagent-pg
-  namespace: kagent
+  namespace: kagent-pg
 spec:
   # The instances and the operator's initdb and join Jobs.
   endpointSelector:
@@ -18,6 +19,7 @@ spec:
     - fromEndpoints:
         # The kagent controller (factory chart).
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kagent
             app.kubernetes.io/name: kagent
             app.kubernetes.io/component: controller
         - matchLabels:
@@ -68,7 +70,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-3"
   name: kagent-pg-setup
-  namespace: kagent
+  namespace: kagent-pg
 spec:
   endpointSelector:
     matchLabels:

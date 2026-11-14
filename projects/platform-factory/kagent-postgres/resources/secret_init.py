@@ -1,10 +1,10 @@
 """Generate kagent's database passwords once and write its connection strings.
 
-kagent-pg-logins (kagent namespace) is the source of truth. Each password is
+kagent-pg-logins (kagent-pg namespace) is the source of truth. Each password is
 generated only when it is absent, so reruns never rotate one; kagent-pg-setup
 then sets them on the database with kagent's setup script. The connection
 strings the kagent chart reads (kagent-postgres-owner and
-kagent-postgres-readwrite) are derived from it.
+kagent-postgres-readwrite, in the kagent namespace) are derived from it.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -25,9 +25,10 @@ with open(f"{SA}/token") as f:
     TOKEN = f.read()
 CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 
-NAMESPACE = "kagent"
+NAMESPACE = "kagent-pg"
 SOURCE = "kagent-pg-logins"
-HOST = "kagent-pg-rw.kagent.svc"
+TARGET_NAMESPACE = "kagent"
+HOST = "kagent-pg-rw.kagent-pg.svc"
 DATABASE = "kagent"
 # (password key in SOURCE, login, Secret the chart reads, key in it)
 LOGINS = [
@@ -65,14 +66,14 @@ def call(method, path, body=None):
         raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
 
 
-def secret_path(name):
-    return f"/api/v1/namespaces/{NAMESPACE}/secrets/{name}"
+def secret_path(name, namespace=NAMESPACE):
+    return f"/api/v1/namespaces/{namespace}/secrets/{name}"
 
 
-def get(name):
-    secret = call("GET", secret_path(name))
+def get(name, namespace=NAMESPACE):
+    secret = call("GET", secret_path(name, namespace))
     if secret is None:
-        raise SystemExit(f"{NAMESPACE}/{name} is missing; ArgoCD creates it")
+        raise SystemExit(f"{namespace}/{name} is missing; ArgoCD creates it")
     return secret
 
 
@@ -98,13 +99,13 @@ def main():
         password = base64.b64decode(data[key]).decode()
         url = f"postgres://{login}:{password}@{HOST}:5432/{DATABASE}?sslmode=require"
         want = {url_key: b64(url)}
-        current = get(name)
+        current = get(name, TARGET_NAMESPACE)
         if current.get("data") != want:
             current["data"] = want
-            call("PUT", secret_path(name), current)
-            print(f"updated {NAMESPACE}/{name}")
+            call("PUT", secret_path(name, TARGET_NAMESPACE), current)
+            print(f"updated {TARGET_NAMESPACE}/{name}")
         else:
-            print(f"{NAMESPACE}/{name} current")
+            print(f"{TARGET_NAMESPACE}/{name} current")
 
 
 if __name__ == "__main__":

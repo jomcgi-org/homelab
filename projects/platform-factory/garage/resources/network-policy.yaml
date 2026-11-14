@@ -1,6 +1,7 @@
 # The garage namespace's allowlist under the cluster-wide default-deny
-# (projects/platform-factory/network-policy/). Each consumer also needs an
-# egress rule to app.kubernetes.io/name=garage on 3900 in its own namespace.
+# (projects/platform-factory/network-policy/). Each consumer is listed in the
+# S3 ingress rule below and needs an egress rule to
+# app.kubernetes.io/name=garage on 3900 in its own namespace.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -30,19 +31,18 @@ spec:
         - ports:
             - port: "3903"
               protocol: TCP
-    # The S3 API, from the namespaces that hold bucket keys and from
-    # CloudNativePG instances (WAL archives and base backups) in any
-    # namespace. A request still needs that bucket's key.
+    # The S3 API, only from the workloads holding a bucket key; a request
+    # still needs that bucket's key. itsaplan (factory-itsaplan) and
+    # Substrate (ate-snapshots) are added with their grants.
     - fromEndpoints:
-        - matchExpressions:
-            - key: k8s:io.kubernetes.pod.namespace
-              operator: In
-              values: [ate-system, factory, kagent, cnpg-system]
-        - matchExpressions:
-            - key: k8s:io.kubernetes.pod.namespace
-              operator: Exists
-            - key: cnpg.io/cluster
-              operator: Exists
+        # kagent-pg's WAL archives and base backups.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kagent-pg
+            cnpg.io/cluster: kagent-pg
+        # The connector's evidence (factory chart).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-connector
       toPorts:
         - ports:
             - port: "3900"

@@ -10,7 +10,7 @@ resources:
 
 configMapGenerator:
   - name: kagent-pg-setup
-    namespace: kagent
+    namespace: kagent-pg
     files:
       - secret_init.py
       - setup.psql

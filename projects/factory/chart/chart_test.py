@@ -230,7 +230,7 @@ def test_controller_admits_only_bearer_paths() -> None:
             ],
             "8443",
         ),
-        to([{"cnpg.io/cluster": "kagent-pg"}], "5432"),
+        to([{ns: "kagent-pg", "cnpg.io/cluster": "kagent-pg"}], "5432"),
     ]
 
 
