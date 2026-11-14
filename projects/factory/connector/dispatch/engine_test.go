@@ -43,6 +43,8 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { st.DB.Close() })
 	clk := &clock{t: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}
+	// Outbox items come due on the engine's clock, not the database's.
+	st.Now = clk.Now
 	v := &env{
 		t: t, ctx: context.Background(), st: st, clk: clk, its: newFakeItsaplan(clk.Now), kg: newFakeKagent(clk.Now),
 		m: metrics.New(nil),
