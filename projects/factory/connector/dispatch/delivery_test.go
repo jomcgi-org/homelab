@@ -901,30 +901,69 @@ func TestIssueMovedToCanceledColumnCancelsRunningRound(t *testing.T) {
 	v.roundCanceled(round, task)
 }
 
-// TestRefusedIssueCheckStopsDeliveryAfterBound: a round's heartbeat reads
-// the issue with the coordinator key. A refusal is retried through a key
-// rotation; past the bound delivery stops, since the connector cannot
-// confirm that a person has not canceled the issue.
-func TestRefusedIssueCheckStopsDeliveryAfterBound(t *testing.T) {
+// TestRefusedIssueCheckWaitsWithoutStopping: a round's heartbeat and the PR
+// poll read the issue with the coordinator key. A refusal holds no slot, so
+// however long it lasts delivery waits, the round keeps running, and both
+// carry on once the key works.
+func TestRefusedIssueCheckWaitsWithoutStopping(t *testing.T) {
 	v := newDeliveryEnv(t)
 	round, task := v.startRound()
 	v.its.mu.Lock()
 	v.its.issueErr = &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
 	v.its.mu.Unlock()
-	start := v.clk.Now()
-	v.clk.Advance(61 * time.Second)
-	v.tick(v.e)
+	for range 50 {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
 	if w := v.work(101); w.State == store.WorkStopped {
-		t.Fatal("delivery stopped after one refusal")
+		t.Fatalf("delivery stopped: %s", w.StoppedReason)
 	}
-	v.tickUntil(61*time.Second, 40, func() bool { return v.work(101).State == store.WorkStopped })
-	if waited := v.clk.Now().Sub(start); waited < 30*time.Minute {
-		t.Fatalf("stopped after %s, want the 30m bound", waited)
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("cancellations = %+v", cs)
 	}
-	if w := v.work(101); !strings.Contains(w.StoppedReason, "refused the coordinator key") {
-		t.Fatalf("stopped reason = %q", w.StoppedReason)
+	if r := v.run(round.ID); r.State != store.RunDispatched || v.kg.state(task) == kagent.StateCanceled {
+		t.Fatalf("round = %s, task = %s; want it still running", r.State, v.kg.state(task))
 	}
-	v.roundCanceled(round, task)
+	if n := v.refusals("coordinator", "issue_check"); n < 50 {
+		t.Fatalf("issue_check refusals = %d", n)
+	}
+	v.its.mu.Lock()
+	v.its.issueErr = nil
+	v.its.mu.Unlock()
+	v.kg.finish(task, kagent.StateCompleted, "Fixed it.", nil)
+	v.tickUntil(5*time.Second, 5, func() bool { return v.run(round.ID).State == store.RunClosed })
+	if w := v.work(101); w.State == store.WorkStopped {
+		t.Fatalf("delivery stopped: %s", w.StoppedReason)
+	}
+}
+
+// TestDoneMoveWaitsForTheIssue: the Done move reads the issue first, so an
+// issue a person canceled while it could not be read is not moved to Done.
+func TestDoneMoveWaitsForTheIssue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	// The PR poll reads the issue; the Done move's read then fails.
+	v.its.mu.Lock()
+	v.its.issueErrs = []error{nil, &itsaplan.HTTPError{Status: 503, Body: "unavailable"}}
+	v.its.mu.Unlock()
+	v.gh.merge(1, "merge-sha-1")
+	v.poll()
+	if moves := v.its.Moves(); len(moves) != 0 {
+		t.Fatalf("moves = %+v, want the move to wait for the issue", moves)
+	}
+	if _, abandoned, _ := v.outbox(store.OutboxIssueDone); abandoned {
+		t.Fatal("Done move abandoned after one failed read")
+	}
+	v.its.moveTo(101, 4, "") // Canceled
+	v.tickUntil(2*time.Second, 5, func() bool {
+		_, abandoned, _ := v.outbox(store.OutboxIssueDone)
+		return abandoned
+	})
+	if moves := v.its.Moves(); len(moves) != 0 {
+		t.Fatalf("moves = %+v, want a canceled issue left alone", moves)
+	}
 }
 
 func TestIssueMovedToAnotherProjectCancelsRunningRound(t *testing.T) {
