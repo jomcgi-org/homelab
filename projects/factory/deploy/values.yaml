@@ -70,9 +70,11 @@ agents:
   codex:
     model: gpt-6-astra
   # The reviewer reads and never edits, so it needs no apply_patch and runs on
-  # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14). Codex
-  # 0.161.0 gives terra fallback metadata: tool output truncates at 10 KB.
-  # The broker's reasoningEffort (xhigh) applies to it as to the coder.
+  # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14:
+  # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
+  # Codex 0.161.0 gives terra fallback metadata: tool output is cut at
+  # 10,000 bytes. The broker's reasoningEffort (xhigh) applies to it as to
+  # the coder.
   reviewer:
     model: gpt-6.1-terra
 
