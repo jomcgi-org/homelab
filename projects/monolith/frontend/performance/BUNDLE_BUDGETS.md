@@ -60,11 +60,50 @@ routes and `src/lib/private` are absent. Values are bytes. The budget check chan
 
 Hikes, ships, stars and trip detail views defer 285,621 gzip bytes of MapLibre,
 limited to 330,000 bytes. Hikes, ships and stars also load an external worker
-measured at 146,653 gzip bytes, limited to 170,000 bytes. Trips uses the
-library default and has no separate worker asset in its emitted closure.
+measured at 146,653 gzip bytes, limited to 170,000 bytes. Trip detail views now
+use that same emitted worker and limit. The library default previously pointed
+to an absent chunk, so the initial zero-worker budget described a broken map.
 The other pages have no deferred JavaScript in this baseline. Notes has a
 50,000-byte deferred allowance for separating its interactive graph from the
 first view; its initial limit still applies independently.
+
+## Trip maps use the emitted worker
+
+On 2026-11-14 at 23:41 UTC, a production GET of
+`/_app/immutable/chunks/maplibre-gl-worker.mjs` returned HTTP 404 with
+`Content-Type: text/html`. All three captured trip-summary browser runs
+reported that failed request. Installed MapLibre 6.9.0 resolves this default
+relative to its module URL, so bundling its main module changes the directory
+without copying that default file there.
+
+TripMap and DayMap now import the worker with Vite's `?worker&url` and call
+`setWorkerUrl` before constructing the map. Timeline's map uses TripMap. The
+fixture wrapper previously configured the worker itself and masked the
+production failure; it now forwards the same setter used by the components.
+
+Local full production builds before and after the fix use main at
+`8c8cac480365930994dbe0c62f42ecc97420d849`. These include private route metadata,
+so their initial sizes differ from the public-only table above. Each value is
+gzip bytes per file, summed over the route's closure.
+
+| Trip route | Initial before / after | Deferred before / after | Worker before / after |
+| --- | ---: | ---: | ---: |
+| Index | 64,665 / 64,676 | 0 / 0 | 0 / 0 |
+| Summary | 71,575 / 71,709 | 285,621 / 285,621 | 0 / 146,653 |
+| Day | 74,284 / 74,418 | 285,621 / 285,621 | 0 / 146,653 |
+| Timeline | 71,436 / 71,564 | 285,621 / 285,621 | 0 / 146,653 |
+
+The three map routes reference the same emitted
+`/_app/immutable/workers/maplibre-gl-worker-DdG60dM_.js` asset. It is 506,035
+uncompressed bytes, within the 170,000-byte gzip worker limit. The built Node
+adapter serves that URL with HTTP 200 and `Content-Type: text/javascript`;
+its response matches the emitted file. The index retains a zero worker budget.
+
+The constructor-order regression fails for summary, day and timeline before
+the fix and passes afterward. The trip and bundle-budget suite passes 101 tests
+across 10 files; the production and fixture builds pass. These checks establish
+asset delivery locally. After rollout, repeat the production worker GET and
+browser map checks before claiming the production failure is resolved.
 
 Grimoire keeps its admission and session behavior. Its bundle budgets do not
 require server rendering protected data or permit caching session responses.

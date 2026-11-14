@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import { dayColor } from "$lib/trips/trip.js";
   import {
     mapPalette,
@@ -78,6 +79,8 @@
     (async () => {
       const maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      // The package-relative default is absent from Vite's emitted chunks.
+      maplibregl.setWorkerUrl(workerUrl);
 
       const b = bounds();
       map = new maplibregl.Map({

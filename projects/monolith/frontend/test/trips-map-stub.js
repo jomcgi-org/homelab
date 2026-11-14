@@ -3,8 +3,10 @@
 import { vi } from "vitest";
 export const maps = [];
 export const markers = [];
+export const setWorkerUrl = vi.fn();
 export class Map {
   constructor(options) {
+    this.workerUrl = setWorkerUrl.mock.calls.at(-1)?.[0];
     this.options = options;
     this.layers = [{ id: "ground", type: "background" }];
     this.sources = {};

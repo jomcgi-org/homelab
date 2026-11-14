@@ -4,7 +4,11 @@ import { mount, tick, unmount } from "svelte";
 import { fromStore, writable } from "svelte/store";
 import Route from "../../../../../test/TripsRoute.svelte";
 import { tripsData } from "../../../../../test/trips-fixtures.js";
-import { maps, markers } from "../../../../../test/trips-map-stub.js";
+import {
+  maps,
+  markers,
+  setWorkerUrl,
+} from "../../../../../test/trips-map-stub.js";
 import { setPage } from "../../../../../test/profile-page.svelte.js";
 vi.mock(
   "$app/state",
@@ -12,6 +16,9 @@ vi.mock(
 );
 vi.mock("$app/stores", () => import("../../../../../test/profile-stores.js"));
 vi.mock("maplibre-gl", () => import("../../../../../test/trips-map-stub.js"));
+vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
+  default: "/trips-test-worker.js",
+}));
 vi.mock("$app/navigation", () => ({ goto: vi.fn() }));
 
 let instance;
@@ -27,6 +34,7 @@ const textButton = (text) =>
 beforeEach(() => {
   maps.length = 0;
   markers.length = 0;
+  setWorkerUrl.mockClear();
   window.happyDOM.settings.disableCSSFileLoading = true;
   window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
 });
@@ -72,6 +80,18 @@ async function render(surface, data = tripsData(), query = "") {
 }
 
 describe("trips composed sheets", () => {
+  it.each(["trip", "day", "timeline"])(
+    "configures the bundled worker before constructing the %s map",
+    async (surface) => {
+      await render(
+        surface,
+        tripsData(),
+        surface === "timeline" ? "?view=map" : "",
+      );
+      expect(maps[0].workerUrl).toBe("/trips-test-worker.js");
+      expect(setWorkerUrl).toHaveBeenCalledOnce();
+    },
+  );
   it.each(["index", "trip", "day", "timeline"])(
     "mounts the real %s wrapper with one chrome and a working scheme switch",
     async (surface) => {
