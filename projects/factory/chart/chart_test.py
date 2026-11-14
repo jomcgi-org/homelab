@@ -605,6 +605,55 @@ def test_binding_workspace_holds_only_placeholders() -> None:
     assert sa["automountServiceAccountToken"] is False
 
 
+def test_toolchain_is_opt_in_and_grants_only_public_download_origins() -> None:
+    assert not [
+        d
+        for d in _render()
+        if d["kind"] == "EgressPolicy" and d["metadata"]["name"] == "homelab-tools"
+    ]
+    docs = _render(["repositories[0].toolchain=homelab"])
+    ns = "factory-r-homelab"
+    policy = _in(docs, "EgressPolicy", ns, "homelab-tools")
+    assert policy["spec"]["destinations"] == [
+        {"origin": "https://dl-cdn.alpinelinux.org"},
+        {"origin": "https://get.helm.sh"},
+        {"origin": "https://release-assets.githubusercontent.com"},
+        {"origin": "https://registry.npmjs.org"},
+        {"origin": "https://pypi.org"},
+        {"origin": "https://files.pythonhosted.org"},
+    ]
+    agent = _in(docs, "Agent", ns, "homelab-codex")["spec"]
+    assert agent["egressPolicyRefs"] == [
+        {"name": "github-git"},
+        {"name": "homelab-tools"},
+    ]
+    prompt = agent["template"]["inline"]["systemPrompt"]
+    assert "bash projects/factory/toolchain/bootstrap.sh" in prompt
+    assert "ci lint, ci regen and ci ratchet" in prompt
+    assert "no\nBuildBuddy credential" in prompt
+    # Enabling tools changes no worker image, credentials or harness env.
+    defaults = _render()
+    for kind, name in (
+        ("Harness", "codex"),
+        ("WorkerPool", "homelab-codex"),
+        ("EgressPolicy", "github-git"),
+    ):
+        assert _in(docs, kind, ns, name) == _in(defaults, kind, ns, name)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["repositories[0].toolchain=unknown"],
+        ["repositories[0].toolchain=homelab", "agents.codex.egress={}"],
+        ["workers.image=ghcr.io/kagent-dev/substrate/ateworker-gvisor:latest"],
+    ],
+)
+def test_toolchain_configuration_fails_closed(overrides) -> None:
+    with pytest.raises(RuntimeError):
+        _render(overrides)
+
+
 def test_binding_worker_pool_sets_resources_and_concurrency() -> None:
     docs = _render()
     pool = _in(docs, "WorkerPool", "factory-r-homelab", "homelab-codex")

@@ -25,6 +25,9 @@ instead of silently rendering nothing.
 {{- if not $a }}
 {{- fail (printf "repositories %s: agent %q is not in agents" $r.name $r.agent) }}
 {{- end }}
+{{- if and (eq ($r.toolchain | default "") "homelab") (not (has "github-git" $a.egress)) }}
+{{- fail (printf "repositories %s: homelab toolchain needs agents.%s.egress github-git for release downloads" $r.name $r.agent) }}
+{{- end }}
 {{- if hasKey $seen $r.namespace }}
 {{- fail (printf "repositories %s: namespace %s is already bound; one namespace per repository" $r.name $r.namespace) }}
 {{- end }}

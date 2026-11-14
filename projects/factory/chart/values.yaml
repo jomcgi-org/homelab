@@ -292,6 +292,9 @@ agents:
 # namespace must also be in kagent.rbac.namespaces and in Substrate's
 # credentialProvider.namespacePolicies. Each entry: name, owner, repo,
 # baseBranch, namespace, agent (a key of `agents`).
+# Optional toolchain: homelab adds the Alpine bootstrap instructions and its
+# public download origins to this coding binding. Enable in deploy values
+# only after CI publishes a chart version that supports this field.
 repositories: []
 
 # The Substrate worker image for binding WorkerPools, matching Substrate's
