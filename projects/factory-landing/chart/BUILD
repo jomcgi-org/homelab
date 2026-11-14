@@ -16,5 +16,8 @@ py_test(
         "@multitool//tools/helm",
     ],
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )

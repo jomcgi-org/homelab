@@ -23,7 +23,13 @@ argocd_app(
 py_test(
     name = "edge_test",
     srcs = ["edge_test.py"],
-    data = [":chart", "@multitool//tools/helm"],
+    data = [
+        ":chart",
+        "@multitool//tools/helm",
+    ],
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
