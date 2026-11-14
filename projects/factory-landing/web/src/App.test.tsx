@@ -1,12 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import { Theme } from "@astryxdesign/core/theme";
-import { sheetTheme } from "./theme";
-import { App } from "../factory/App";
-import { paths } from "../factory/paths";
+import { neutralTheme } from "@astryxdesign/theme-neutral/built";
+import { App } from "./App";
+import { paths } from "./paths";
 
 it("links to the operator tools and keeps unrouted kagent unavailable", () => {
-  render(<Theme theme={sheetTheme}><App /></Theme>);
+  render(
+    <Theme theme={neutralTheme}>
+      <App />
+    </Theme>,
+  );
   for (const [label, href] of [
     ["Open itsaplan", paths.plan],
     ["Open Grafana", paths.grafana],

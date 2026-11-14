@@ -4,7 +4,7 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 exec_filegroup(
     name = "web_dist",
-    src = "//projects/monolith/web/grimoire:factory_build",
+    src = "//projects/factory-landing/web:build",
 )
 
 genrule(
@@ -20,12 +20,12 @@ genrule(
     """,
 )
 
-# Reuse the locked, nonroot Node static-server runtime; no new APK packages.
+# Standalone, locked nonroot Node runtime; no monolith build inputs.
 apko_image(
     name = "image",
     arm64 = False,
-    config = "//projects/monolith/frontend:apko.yaml",
-    contents = "@monolith_frontend_lock//:contents",
+    config = "apko.yaml",
+    contents = "@factory_landing_lock//:contents",
     tars = [":static_tar"],
 )
 

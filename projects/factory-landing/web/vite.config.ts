@@ -1,12 +1,10 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  root: "factory",
   base: "/",
   esbuild: { jsx: "automatic" },
   build: {
-    outDir: "../dist-factory",
-    emptyOutDir: true,
+    outDir: "dist",
     target: "es2022",
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },

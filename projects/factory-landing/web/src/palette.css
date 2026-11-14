@@ -1,0 +1,39 @@
+/* Sheet palette and typography, copied as values so this app stands alone.
+ * The pinned neutral theme supplies the built component CSS and spacing.
+ */
+[data-astryx-theme="neutral"] {
+  --color-accent: light-dark(#1f4f9f, #d3a45f);
+  --color-on-accent: light-dark(#ffffff, #181a20);
+  --color-text-accent: light-dark(#1f4f9f, #d3a45f);
+  --color-icon-accent: light-dark(#1f4f9f, #d3a45f);
+  --color-background-body: light-dark(#ffffff, #181a20);
+  --color-background-surface: light-dark(#ffffff, #181a20);
+  --color-background-card: light-dark(#ffffff, #181a20);
+  --color-background-muted: light-dark(#f5f6f8, #1c1e26);
+  --color-text-primary: light-dark(#26231c, #e8e5dc);
+  --color-text-secondary: light-dark(#625d50, #a5a297);
+  --color-border: light-dark(#d5d7dc, #393b43);
+  --color-border-emphasized: light-dark(#77766f, #82847e);
+  --focus-outline-color: light-dark(#1f4f9f, #d3a45f);
+  --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-family-heading: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --radius-inner: 0;
+  --radius-element: 0;
+  --radius-container: 0;
+  --radius-page: 0;
+  --shadow-low: none;
+  --shadow-med: none;
+  --shadow-high: none;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+}
