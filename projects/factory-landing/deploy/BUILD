@@ -6,6 +6,9 @@ argocd_app(
     chart_files = "//projects/factory-landing/chart:chart",
     namespace = "factory-landing",
     release_name = "factory-landing",
-    tags = ["helm", "template"],
+    tags = [
+        "helm",
+        "template",
+    ],
     values_files = ["//projects/factory-landing/chart:values.yaml"],
 )

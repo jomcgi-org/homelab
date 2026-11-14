@@ -70,8 +70,8 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
-        "values-gke.yaml",
         "values-factory.yaml",
+        "values-gke.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
