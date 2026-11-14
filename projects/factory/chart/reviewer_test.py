@@ -134,13 +134,8 @@ def test_deploy_values_enable_the_reviewer() -> None:
     deploy = yaml.safe_load(_DEPLOY.read_text())
     assert deploy["reviewer"]["enabled"] is True
     assert _REVIEW_NS in deploy["kagent"]["rbac"]["namespaces"]
-    # The required check gates merges: the reviewer enqueues nothing, and the
-    # connector waits for its check before enqueueing the factory's PRs.
+    # The required check gates merges: the reviewer enqueues nothing.
     assert deploy["reviewer"]["bindings"]["homelab"]["enqueueAuthors"] == []
-    assert deploy["connector"]["bindings"]["homelab"]["reviewerCheck"] == {
-        "name": "factory review",
-        "appId": 5758326,
-    }
 
 
 def test_one_kept_identity_and_private_image() -> None:

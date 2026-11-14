@@ -891,8 +891,10 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		}
 		o := Render(a, r, gate, footer)
 		if in.priorUnknown != "" {
+			// Render left maxPreface for this note, so the summary's tail
+			// (the human-hold marker and footer) survives.
 			o.Output.Summary = clip(fmt.Sprintf("The review of an earlier head could not be found (%s), so this head was reviewed in full.\n\n",
-				in.priorUnknown)+o.Output.Summary, maxSummary)
+				clip(in.priorUnknown, maxPreface-200)), maxPreface) + o.Output.Summary
 		}
 		return result{o: o, r: r, a: &a}
 	}

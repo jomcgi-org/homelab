@@ -239,6 +239,36 @@ func TestRenderPassWithoutFindings(t *testing.T) {
 	}
 }
 
+func TestSummaryKeepsHoldMarkerAndFindingsWithinLimit(t *testing.T) {
+	long := strings.Repeat("x", maxMessage)
+	b := &Binding{HumanApprovers: []string{"jomcgi"}}
+	g := &Gate{Labels: []string{"human"}}
+	a := Assess(&Report{}, nil)
+	a.Blocking = []Blocked{{Finding: gateFinding(b, g)}}
+	for i := range 40 {
+		a.Accepted = append(a.Accepted, Blocked{Finding: finding(fmt.Sprintf("a%d", i), SeverityMedium), Note: long})
+	}
+	o := Render(a, &Report{Summary: strings.Repeat("y", maxAgentSummary)}, g, "footer")
+	if len(o.Output.Summary) > maxSummary || !strings.HasSuffix(o.Output.Summary, gateOnlyMarker+"footer") {
+		t.Fatalf("summary of %d characters ends %q; want the hold marker and footer within %d",
+			len(o.Output.Summary), o.Output.Summary[len(o.Output.Summary)-80:], maxSummary)
+	}
+
+	a = Assess(&Report{}, nil)
+	for i := range 40 {
+		f := finding(fmt.Sprintf("b%d", i), SeverityHigh)
+		f.Detail = strings.Repeat("d", maxDetail)
+		a.Blocking = append(a.Blocking, Blocked{Finding: f, Note: long})
+	}
+	o = Render(a, &Report{}, nil, "footer")
+	listed := strings.Count(o.Output.Summary, "- **high**")
+	if len(o.Output.Summary) > maxSummary || listed == 0 || listed == 40 || !strings.HasSuffix(o.Output.Summary, "footer") ||
+		!strings.Contains(o.Output.Summary, fmt.Sprintf("%d more blocking findings did not fit", 40-listed)) {
+		t.Fatalf("summary of %d characters lists %d of 40 blocking findings without saying how many are left",
+			len(o.Output.Summary), listed)
+	}
+}
+
 func TestClipKeepsRunes(t *testing.T) {
 	if got := clip("héllo", 2); got != "h…" {
 		t.Fatalf("clip = %q", got)

@@ -391,6 +391,11 @@ type Outcome struct {
 const (
 	maxSummary      = 60000
 	maxAgentSummary = 4000
+	// maxPreface is the room Render leaves for a note the engine puts before
+	// the summary, and maxOmitted for the line counting blocking findings
+	// that did not fit.
+	maxPreface = 1000
+	maxOmitted = 200
 	maxTitle        = 300
 	maxDetail       = 1500
 	maxMessage      = 4000
@@ -462,30 +467,51 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 		}
 	}
 
-	var s strings.Builder
+	// The summary is the overview, the blocking findings, the other sections
+	// and a tail of the human-hold marker and the footer. The connector reads
+	// the marker and the findings, so the tail is never clipped and the
+	// blocking findings get the space before the other sections.
+	tail := footer
+	if len(a.Blocking) > 0 && !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return !isGate(b.Finding) }) {
+		tail = gateOnlyMarker + footer
+	}
+	budget := maxSummary - maxPreface - len(tail)
+	var out strings.Builder
 	if sum := strings.TrimSpace(untrusted(r.Summary)); sum != "" {
-		s.WriteString(clip(sum, maxAgentSummary))
-		s.WriteString("\n\n")
+		out.WriteString(clip(sum, maxAgentSummary))
+		out.WriteString("\n\n")
 	}
 	if len(a.Blocking) > 0 {
-		s.WriteString("### Blocking\n\n")
+		out.WriteString("### Blocking\n\n")
+		listed := 0
 		for _, b := range a.Blocking {
-			writeFinding(&s, b.Finding)
+			var e strings.Builder
+			writeFinding(&e, b.Finding)
 			switch {
 			case b.Carried:
-				fmt.Fprintf(&s, "  From the previous review: %s.", b.Reason)
+				fmt.Fprintf(&e, "  From the previous review: %s.", b.Reason)
 			case b.Repeated && b.Reason != "":
-				fmt.Fprintf(&s, "  Raised in the previous review and still present; %s.", b.Reason)
+				fmt.Fprintf(&e, "  Raised in the previous review and still present; %s.", b.Reason)
 			case b.Repeated:
-				s.WriteString("  Raised in the previous review and still present.")
+				e.WriteString("  Raised in the previous review and still present.")
 			}
 			if b.Note != "" {
-				fmt.Fprintf(&s, " Note: %s", oneLine(b.Note, maxMessage))
+				fmt.Fprintf(&e, " Note: %s", oneLine(b.Note, maxMessage))
 			}
-			s.WriteString("\n")
+			e.WriteString("\n")
+			if out.Len()+e.Len()+maxOmitted > budget {
+				break
+			}
+			out.WriteString(e.String())
+			listed++
 		}
-		s.WriteString("\n")
+		if n := len(a.Blocking) - listed; n > 0 {
+			fmt.Fprintf(&out, "\n%d more blocking %s did not fit in this check. Fix those listed and push; the next review lists the rest.\n",
+				n, plural(n, "finding"))
+		}
+		out.WriteString("\n")
 	}
+	var s strings.Builder
 	if len(a.Withdrawn) > 0 {
 		s.WriteString("### Withdrawn\n\nPrevious findings the reviewer withdrew as mistaken:\n\n")
 		for _, b := range a.Withdrawn {
@@ -536,11 +562,11 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 	if len(a.Blocking)+len(a.Accepted)+len(a.Withdrawn)+len(a.Fixed)+len(a.Approved)+optional == 0 {
 		s.WriteString("No findings.\n\n")
 	}
-	if len(a.Blocking) > 0 && !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return !isGate(b.Finding) }) {
-		s.WriteString(gateOnlyMarker)
+	if room := budget - out.Len(); room > 0 {
+		out.WriteString(clip(s.String(), room))
 	}
-	s.WriteString(footer)
-	o.Output.Summary = clip(s.String(), maxSummary)
+	out.WriteString(tail)
+	o.Output.Summary = out.String()
 
 	var anns []github.Annotation
 	add := func(f Finding) {

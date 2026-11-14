@@ -639,9 +639,9 @@ it and merging it are separate identities, and GitHub enforces the review
 rather than the factory's own code.
 
 **Status (2026-11-14): the reviewer is live (#7937) on gpt-6.1-terra
-(#7938).** The connector waits for its check (`reviewerCheck`). The
-reviewer enqueues nothing. Ruleset 9180009 is to require `factory review`
-from App 5758326 beside `pr-checks` once that connector change is deployed
+(#7938) and enqueues nothing (#7940). Next, once #7940's connector image is
+deployed, a values PR sets the connector's `reviewerCheck`. Ruleset 9180009
+then requires `factory review` from App 5758326 beside `pr-checks`
 (Joe's [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)).
 Open work: #7920 (connector authorship check), #7921 (third-party Apps),
 #7922 (in-cluster CI and registry) and #7923 (fork PRs and public
@@ -693,8 +693,8 @@ previews).
   The enable PR follows CI's chart write-back, adding review namespaces to
   `kagent.rbac.namespaces`. Substrate's policy values include
   `factory-r-homelab-review`; regenerate its upstream manifests before
-  enabling. The connector's `reviewerCheck` (#7940) and the
-  required-check ruleset followed separately.
+  enabling. The connector's `reviewerCheck` follows the chart that carries
+  #7940's connector, and the required-check ruleset follows that.
 - **Review contract.** The agent reviews the exact head against the root
   `REVIEW.md` and every `REVIEW.md` on both sides of the diff, with their
   `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
