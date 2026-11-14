@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { render } from "svelte/server";
 import Page from "./+page.svelte";
-import { data, now } from "../../../../../test/stars/fixtures.js";
+import {
+  data,
+  now,
+  twilightOnlySite,
+} from "../../../../../test/stars/fixtures.js";
 import { ssr } from "./+page.js";
 
 describe("/app/stars SSR", () => {
@@ -49,6 +53,30 @@ describe("/app/stars SSR", () => {
       clock.mockRestore();
     }
   });
+
+  it.each(["astronomical", "twilight", "none"])(
+    "uses the map's %s darkness predicate for initial snapshot rows",
+    async (darkness) => {
+      const { html } = await render(Page, {
+        props: {
+          data: {
+            ...data,
+            renderedAt: Date.parse(now),
+            snapshot: {
+              ...data.snapshot,
+              darkness,
+              sites: [twilightOnlySite, ...data.snapshot.sites],
+            },
+          },
+        },
+      });
+      expect(html.includes(twilightOnlySite.name)).toBe(
+        darkness === "twilight",
+      );
+      expect(html).toContain("Fixture site 1");
+      expect(html.match(/<li class="snapshot-row/g)).toHaveLength(6);
+    },
+  );
 
   it("identifies unnamed forecast cells by their real coordinates", async () => {
     const { html } = await render(Page, {
