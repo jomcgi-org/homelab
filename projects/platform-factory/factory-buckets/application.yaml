@@ -1,0 +1,41 @@
+# The factory namespace's Garage bucket keys (resources/keys.yaml), ahead of
+# the itsaplan and connector workloads that will read them.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: factory-buckets
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/factory-buckets/resources
+  destination:
+    server: https://kubernetes.default.svc
+    # Created untracked, so the factory chart can own the namespace later.
+    namespace: factory
+  # garage-init writes the keys.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,215 @@
+# garage-init (garage_init.py): the secrets Job fills garage-secrets before
+# the StatefulSet starts; the bootstrap Job (after every sync) and CronJob
+# (hourly) assign the initial layout and create buckets and per-bucket keys.
+#
+# ArgoCD owns garage-secrets and each consumer's key Secret as empty
+# placeholders and ignores their data. Each consumer namespace grants the
+# garage-init ServiceAccount get and update on its own Secret names, so this
+# Application holds no rights outside its namespace.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garage-secrets
+  namespace: garage
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    # The RPC secret and admin token; losing them strands the data volumes.
+    argocd.argoproj.io/sync-options: Delete=false
+type: Opaque
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage-init
+  namespace: garage
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: garage
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [garage-secrets]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: garage
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: garage-secret-init
+  namespace: garage
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    # A Job's pod template is immutable; a changed script replaces the Job.
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage-init
+    spec:
+      serviceAccountName: garage-init
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: secrets
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, /scripts/garage_init.py, secrets]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: garage-init
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: garage-bootstrap
+  namespace: garage
+  annotations:
+    # After the StatefulSet is healthy, on every sync.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage-init
+    spec:
+      serviceAccountName: garage-init
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, /scripts/garage_init.py, bootstrap]
+          env:
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: garage-secrets
+                  key: admin-token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: garage-init
+---
+# The same reconciliation hourly: serves a consumer Secret created after the
+# last sync and re-imports keys Garage has lost.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: garage-bootstrap
+  namespace: garage
+spec:
+  schedule: "17 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: garage-init
+        spec:
+          serviceAccountName: garage-init
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: bootstrap
+              image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+              command: [python3, -I, /scripts/garage_init.py, bootstrap]
+              env:
+                - name: GARAGE_ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-secrets
+                      key: admin-token
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: garage-init

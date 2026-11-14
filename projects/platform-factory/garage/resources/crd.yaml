@@ -1,0 +1,35 @@
+# The custom resource Garage's Kubernetes discovery publishes, one per node,
+# named by its public key (src/rpc/kubernetes.rs at v2.5.0). Installed here
+# because garage.toml sets skip_crd.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: garagenodes.deuxfleurs.fr
+spec:
+  group: deuxfleurs.fr
+  names:
+    kind: GarageNode
+    listKind: GarageNodeList
+    plural: garagenodes
+    singular: garagenode
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [hostname, address, port]
+              properties:
+                hostname:
+                  type: string
+                address:
+                  type: string
+                port:
+                  type: integer
+                  minimum: 0

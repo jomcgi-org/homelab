@@ -1,0 +1,80 @@
+# The garage namespace's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). Each consumer also needs an
+# egress rule to app.kubernetes.io/name=garage on 3900 in its own namespace.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    # Before the secret Job (wave -1), which needs the API server.
+    argocd.argoproj.io/sync-wave: "-3"
+  name: garage
+  namespace: garage
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+  ingress:
+    # RPC between the Garage nodes.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3901"
+              protocol: TCP
+    # The admin API: garage-init only.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: garage-init
+      toPorts:
+        - ports:
+            - port: "3903"
+              protocol: TCP
+    # The S3 API, from the namespaces that hold bucket keys and from
+    # CloudNativePG instances (WAL archives and base backups) in any
+    # namespace. A request still needs that bucket's key.
+    - fromEndpoints:
+        - matchExpressions:
+            - key: k8s:io.kubernetes.pod.namespace
+              operator: In
+              values: [ate-system, factory, kagent, cnpg-system]
+        - matchExpressions:
+            - key: k8s:io.kubernetes.pod.namespace
+              operator: Exists
+            - key: cnpg.io/cluster
+              operator: Exists
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+  egress:
+    # Kubernetes discovery: each node publishes and lists GarageNodes.
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3901"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: garage-init
+  namespace: garage
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: garage-init
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3903"
+              protocol: TCP

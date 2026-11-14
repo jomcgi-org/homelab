@@ -17,5 +17,8 @@ resources:
   - ./cloudnative-pg # Postgres operator; Authentik's database
   - ./edge # Envoy Gateway: every published route signs in through Authentik
   - ./authentik # Identity provider at factory-auth.jomcgi.dev
+  - ./garage # S3 object store, three-way replicated; workload buckets and WAL archives
+  - ./kagent-postgres # kagent's CNPG Cluster and the Secrets the factory chart reads
+  - ./factory-buckets # The factory namespace's Garage bucket keys
   - ../factory/deploy # The software factory: kagent (projects/factory/)
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

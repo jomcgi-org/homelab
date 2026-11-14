@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# kagent's database for the factory chart's postgres.mode existing
+# (projects/factory-cluster/README.md, "Postgres").
+resources:
+  - network-policy.yaml
+  - setup.yaml
+  - cluster.yaml
+
+configMapGenerator:
+  - name: kagent-pg-setup
+    namespace: kagent
+    files:
+      - secret_init.py
+      - setup.psql
+      - setup.sql
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

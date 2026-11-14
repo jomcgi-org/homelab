@@ -1,0 +1,75 @@
+# kagent's PostgreSQL: three instances, one per node, with WAL archiving and
+# daily base backups to Garage (projects/factory-cluster/README.md,
+# "Postgres"). Garage runs on the same three nodes, so this survives losing a
+# node or a volume, not losing the cluster.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: kagent-pg
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    # Neither a prune nor deleting the Application removes the database; the
+    # operator deletes its PVCs with the Cluster.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+  primaryUpdateStrategy: unsupervised
+  # kagent-pg-setup runs kagent's setup script as the superuser: it creates
+  # roles, which the database owner cannot.
+  enableSuperuserAccess: true
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  storage:
+    size: 5Gi
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  bootstrap:
+    initdb:
+      database: kagent
+      # Owns the database only; kagent's logins come from setup.sql.
+      owner: kagent_admin
+  backup:
+    retentionPolicy: "14d"
+    # The in-tree barman-cloud integration: CloudNativePG 1.30 still serves
+    # it, and the barman-cloud plugin would also need cert-manager. 1.31
+    # removes it, so the operator upgrade moves this to the plugin first.
+    barmanObjectStore:
+      destinationPath: s3://kagent-pg-backups/
+      endpointURL: http://garage.garage.svc:3900
+      s3Credentials:
+        accessKeyId:
+          name: kagent-pg-s3
+          key: AWS_ACCESS_KEY_ID
+        secretAccessKey:
+          name: kagent-pg-s3
+          key: AWS_SECRET_ACCESS_KEY
+        region:
+          name: kagent-pg-s3
+          key: AWS_REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: kagent-pg-daily
+  namespace: kagent
+spec:
+  schedule: "0 30 2 * * *"
+  # One base backup as soon as this is created, then daily.
+  immediate: true
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: kagent-pg
