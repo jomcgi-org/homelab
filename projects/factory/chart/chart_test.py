@@ -556,6 +556,29 @@ def test_broker_policy() -> None:
     ]
 
 
+def test_default_coder_uses_a_catalogued_model() -> None:
+    # Exercise chart defaults without the deploy overlay's model override.
+    # Codex 0.161.0 catalogues gpt-6-astra with freeform apply_patch support.
+    docs = _render(
+        [
+            "broker.enabled=true",
+            "repositories[0].name=example",
+            "repositories[0].owner=example",
+            "repositories[0].repo=example",
+            "repositories[0].baseBranch=main",
+            "repositories[0].namespace=factory-r-example",
+            "repositories[0].agent=codex",
+            "kagent.rbac.namespaces={kagent,factory-r-example}",
+            "kagent.config.runtimeDefaults.cpu=4",
+            "kagent.config.runtimeDefaults.memory=8Gi",
+        ],
+        binding=False,
+    )
+    assert _in(docs, "ModelConfig", "factory-r-example", "codex")["spec"][
+        "model"
+    ] == "gpt-6-astra"
+
+
 def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
     docs = _render()
     ns = "factory-r-homelab"

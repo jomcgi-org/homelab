@@ -237,7 +237,7 @@ agents:
     # actor JWT for audience factory-broker.
     harness: codex
     provider: broker
-    model: gpt-6.1-terra
+    model: gpt-6-astra
     # The actor's CPU and memory limits. kagent 1.0.1 takes every runtime's
     # from kagent.config.runtimeDefaults, so these must equal them.
     resources:
