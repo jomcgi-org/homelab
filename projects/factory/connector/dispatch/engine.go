@@ -829,6 +829,14 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	if b == nil {
 		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
 	}
+	a, err := e.st.LatestAttempt(ctx, r.ID)
+	if err != nil {
+		return err
+	}
+	// Fence before ready can inspect or cancel tasks in the current session.
+	if grantFailure(a) && a.WorkItemEpoch != wi.Epoch {
+		return e.failRun(ctx, e.st.DB, r, "superseded: the work item was reassigned to another agent")
+	}
 	ready, err := e.ready(ctx, r, wi)
 	if err != nil || !ready {
 		return err
@@ -839,14 +847,7 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	if err != nil || busy >= e.concurrency(r.AgentKey) {
 		return err
 	}
-	a, err := e.st.LatestAttempt(ctx, r.ID)
-	if err != nil {
-		return err
-	}
 	if grantFailure(a) {
-		if a.WorkItemEpoch != wi.Epoch {
-			return e.failRun(ctx, e.st.DB, r, "superseded: the work item was reassigned to another agent")
-		}
 		return e.engineeringFailure(ctx, r, wi, a, a.Error)
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
