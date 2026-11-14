@@ -27,12 +27,15 @@ func (s *Store) MarkSynced(ctx context.Context, q Querier, workID, attemptID int
 	return err
 }
 
-// DeliveryWork lists work items whose PR the connector follows, in review or
-// in the merge queue, and merged ones with a turn it has not looked at.
+// DeliveryWork lists work items whose PR the connector follows: in review or
+// in the merge queue, merged ones with a turn it has not looked at, and
+// stopped ones whose PR is open, to dequeue it and observe a merge.
 func (s *Store) DeliveryWork(ctx context.Context) ([]*WorkItem, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+workCols+` FROM work_item
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+workCols+` FROM work_item w
 		WHERE state IN ('review', 'merging')
 			OR (state = 'done' AND turn_attempt_id IS DISTINCT FROM synced_attempt_id)
+			OR (state = 'stopped' AND EXISTS (
+				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id AND p.state = 'open'))
 		ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -105,37 +108,60 @@ func (s *Store) SetPolled(ctx context.Context, id int64, headSHA, state, queueSt
 	return err
 }
 
-// MarkEnqueued records that the PR entered the merge queue at headSHA.
-func (s *Store) MarkEnqueued(ctx context.Context, q Querier, p *PullRequest, headSHA, queueState string) error {
+// moveLive moves a work item to state unless delivery was stopped, which
+// only a new itsaplan run undoes. moved reports whether the row changed.
+func (s *Store) moveLive(ctx context.Context, q Querier, workID int64, state string) (moved bool, err error) {
+	res, err := q.ExecContext(ctx, `UPDATE work_item SET state = $2, updated_at = now() WHERE id = $1 AND state <> 'stopped'`,
+		workID, state)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// MarkEnqueued records that the PR entered the merge queue at headSHA. The
+// PR's queue entry is recorded either way, since GitHub holds it; moved is
+// false when delivery stopped meanwhile and the entry must be dequeued.
+func (s *Store) MarkEnqueued(ctx context.Context, q Querier, p *PullRequest, headSHA, queueState string) (moved bool, err error) {
 	if _, err := q.ExecContext(ctx, `
 		UPDATE pull_request SET enqueued_head_sha = $2, merge_queue_state = nullif($3, ''), updated_at = now()
 		WHERE id = $1`, p.ID, headSHA, queueState); err != nil {
-		return err
+		return false, err
 	}
-	return s.SetWorkState(ctx, q, p.WorkItemID, WorkMerging)
+	return s.moveLive(ctx, q, p.WorkItemID, WorkMerging)
+}
+
+// MarkDequeued records that the connector took the PR out of the queue.
+func (s *Store) MarkDequeued(ctx context.Context, p *PullRequest) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE pull_request SET enqueued_head_sha = NULL, merge_queue_state = 'dequeued', updated_at = now()
+		WHERE id = $1`, p.ID)
+	return err
 }
 
 // MarkEjected returns a work item whose PR left the merge queue unmerged to
 // review. Its head is not enqueued again.
-func (s *Store) MarkEjected(ctx context.Context, q Querier, p *PullRequest) error {
+func (s *Store) MarkEjected(ctx context.Context, q Querier, p *PullRequest) (moved bool, err error) {
 	if _, err := q.ExecContext(ctx, `
 		UPDATE pull_request SET ejected_head_sha = enqueued_head_sha, enqueued_head_sha = NULL,
 			merge_queue_state = 'ejected', updated_at = now()
 		WHERE id = $1`, p.ID); err != nil {
-		return err
+		return false, err
 	}
-	return s.SetWorkState(ctx, q, p.WorkItemID, WorkReview)
+	return s.moveLive(ctx, q, p.WorkItemID, WorkReview)
 }
 
-// MarkMerged records the observed merge and finishes the work item.
-func (s *Store) MarkMerged(ctx context.Context, q Querier, p *PullRequest, mergeSHA string, at time.Time) error {
+// MarkMerged records the observed merge. done is false for a stopped work
+// item, which keeps its state: its issue is not moved to Done.
+func (s *Store) MarkMerged(ctx context.Context, q Querier, p *PullRequest, mergeSHA string, at time.Time) (done bool, err error) {
 	if _, err := q.ExecContext(ctx, `
 		UPDATE pull_request SET state = 'merged', merge_commit_sha = nullif($2, ''), merged_at = $3,
 			merge_queue_state = 'merged', updated_at = now()
 		WHERE id = $1`, p.ID, mergeSHA, at); err != nil {
-		return err
+		return false, err
 	}
-	return s.SetWorkState(ctx, q, p.WorkItemID, WorkDone)
+	return s.moveLive(ctx, q, p.WorkItemID, WorkDone)
 }
 
 // Review event dispositions.
@@ -214,18 +240,23 @@ func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (ins
 	return n > 0, err
 }
 
+// ErrNotReview means the work item left review, for example because
+// delivery was stopped, before a round could start.
+var ErrNotReview = errors.New("store: work item is no longer in review")
+
 // StopWork stops delivery for a work item and queues the announcement, in
 // one transaction. Dispatch then cancels its review rounds. stopped is false
 // when it was already stopped or is done.
-func (s *Store) StopWork(ctx context.Context, workID int64, reason string) (stopped bool, err error) {
+func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (stopped bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		var issueID int64
 		var key string
 		var n int
 		err := tx.QueryRowContext(ctx, `
-			UPDATE work_item SET state = 'stopped', stopped_reason = $2, stops = stops + 1, updated_at = now()
+			UPDATE work_item SET state = 'stopped', stopped_reason = $2, stopped_by = $3, stops = stops + 1,
+				updated_at = now()
 			WHERE id = $1 AND state NOT IN ('stopped', 'done')
-			RETURNING issue_id, issue_key, stops`, workID, reason).Scan(&issueID, &key, &n)
+			RETURNING issue_id, issue_key, stops`, workID, reason, by).Scan(&issueID, &key, &n)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -233,17 +264,21 @@ func (s *Store) StopWork(ctx context.Context, workID int64, reason string) (stop
 			return err
 		}
 		stopped = true
+		// Poll the PR at once, so a queued PR is dequeued without waiting.
+		if _, err := tx.ExecContext(ctx, `UPDATE pull_request SET polled_at = NULL WHERE work_item_id = $1`, workID); err != nil {
+			return err
+		}
 		return s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
 			map[string]any{"issueId": issueID, "body": fmt.Sprintf(
-				"The factory stopped delivering %s: %s. Its review rounds are canceled and no PR updates follow. "+
-					"A new run on the issue resumes delivery.", key, reason)})
+				"The factory stopped delivering %s: %s. Its running turn is canceled, its PR leaves the merge "+
+					"queue, and no PR updates follow. A new run on the issue resumes delivery.", key, reason)})
 	})
 	return stopped, err
 }
 
 // StopIssue is the operator's `connector cancel <issue>`: it stops the
 // work item of the issue key.
-func (s *Store) StopIssue(ctx context.Context, issueKey, reason string) (bool, error) {
+func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (bool, error) {
 	var id int64
 	err := s.DB.QueryRowContext(ctx, `SELECT id FROM work_item WHERE issue_key = $1`, issueKey).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -252,16 +287,23 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason string) (bool, e
 	if err != nil {
 		return false, err
 	}
-	return s.StopWork(ctx, id, reason)
+	return s.StopWork(ctx, id, reason, by)
 }
 
 // StartRound records a review round: a connector run in the work item's
 // session, counted against its bound. The run waits until the work item and
 // its agent key's concurrency let dispatch send it.
 func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt string) (*Run, error) {
-	if _, err := q.ExecContext(ctx, `
+	res, err := q.ExecContext(ctx, `
 		UPDATE work_item SET review_rounds = review_rounds + 1, state = 'active', updated_at = now()
-		WHERE id = $1`, w.ID); err != nil {
+		WHERE id = $1 AND state = 'review'`, w.ID)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err == nil {
+			err = ErrNotReview
+		}
 		return nil, err
 	}
 	return scanRun(q.QueryRowContext(ctx, `

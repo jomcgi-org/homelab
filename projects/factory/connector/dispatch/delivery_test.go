@@ -33,6 +33,9 @@ type fakeGitHub struct {
 	// the next lookups.
 	loseCreate bool
 	findErr    []error
+	dequeues   []string
+	// onEnqueue runs as an enqueue is accepted.
+	onEnqueue func()
 }
 
 // close closes a PR, as a person does.
@@ -321,9 +324,41 @@ func (g *fakeGitHub) EnqueuePullRequest(_ context.Context, _, nodeID, head strin
 		}
 		g.enqueues = append(g.enqueues, head)
 		p.queue = "QUEUED"
-		return p.queue, nil
+		if g.onEnqueue != nil {
+			g.mu.Unlock()
+			g.onEnqueue()
+			g.mu.Lock()
+		}
+		return "QUEUED", nil
 	}
 	return "", github.ErrNotFound
+}
+
+func (g *fakeGitHub) DequeuePullRequest(_ context.Context, _, nodeID string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	for _, p := range g.prs {
+		if p.pr.NodeID == nodeID && p.queue != "" {
+			p.queue = ""
+			g.dequeues = append(g.dequeues, nodeID)
+			return nil
+		}
+	}
+	return errors.New("github: graphql UNPROCESSABLE: not in the merge queue")
+}
+
+func (g *fakeGitHub) Dequeues() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.dequeues...)
+}
+
+// queued reports whether the PR is in the merge queue.
+func (g *fakeGitHub) queued(pr int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.byNumber(pr).queue != ""
 }
 
 // newDeliveryEnv is newEnv with a fake GitHub and a review policy: required
@@ -831,8 +866,8 @@ func (v *env) roundCanceled(round *store.Run, task string) {
 	if w := v.work(101); w.State != store.WorkStopped {
 		v.t.Fatalf("work item = %s, want stopped", w.State)
 	}
-	if r := v.run(round.ID); r.State != store.RunCanceling {
-		v.t.Fatalf("round = %s, want canceling until kagent confirms", r.State)
+	if r := v.run(round.ID); r.State == store.RunClosed {
+		v.t.Fatal("round closed before kagent confirmed the cancellation")
 	}
 	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelRoundStopped {
 		v.t.Fatalf("cancellations = %+v", cs)
@@ -888,7 +923,7 @@ func TestOperatorCancelStopsRunningRound(t *testing.T) {
 	v := newDeliveryEnv(t)
 	round, task := v.startRound()
 	// What `connector cancel HL-7` does.
-	if ok, err := v.st.StopIssue(v.ctx, "HL-7", "an operator canceled it"); err != nil || !ok {
+	if ok, err := v.st.StopIssue(v.ctx, "HL-7", "an operator canceled it", "operator:test"); err != nil || !ok {
 		t.Fatalf("stop = %v, %v", ok, err)
 	}
 	v.clk.Advance(5 * time.Second)
@@ -1082,4 +1117,109 @@ func TestDoneMoveAtWIPLimitIsReportedAndRetried(t *testing.T) {
 	if !said {
 		t.Fatal("the refused move was not reported")
 	}
+}
+
+func TestCanceledIssueIsDequeuedAndNotMovedToDone(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	if !v.gh.queued(1) || v.work(101).State != store.WorkMerging {
+		t.Fatal("PR not queued")
+	}
+	v.its.moveTo(101, 4, "") // Joe cancels the issue in itsaplan
+	v.poll()
+	if w := v.work(101); w.State != store.WorkStopped {
+		t.Fatalf("work item = %s, want stopped", w.State)
+	}
+	if v.gh.queued(1) || len(v.gh.Dequeues()) != 1 {
+		t.Fatalf("dequeues = %v, want the PR out of the queue", v.gh.Dequeues())
+	}
+	// It merges anyway, say by hand: the issue stays canceled.
+	v.gh.merge(1, "merge-sha-1")
+	v.poll()
+	v.poll()
+	if moves := v.its.Moves(); len(moves) != 0 {
+		t.Fatalf("moves = %+v; a canceled issue must not move to Done", moves)
+	}
+	var said bool
+	for _, c := range v.its.Comments() {
+		said = said || strings.Contains(c.body, "left the issue where it is")
+	}
+	if !said || v.work(101).State != store.WorkStopped {
+		t.Fatalf("comments = %+v state = %s", v.its.Comments(), v.work(101).State)
+	}
+}
+
+func TestCancelBetweenGateAndEnqueueDequeues(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.onEnqueue = func() {
+		if _, err := v.st.StopIssue(v.ctx, "HL-7", "an operator canceled it", "operator:test"); err != nil {
+			t.Error(err)
+		}
+	}
+	v.poll()
+	if w := v.work(101); w.State != store.WorkStopped {
+		t.Fatalf("work item = %s; the enqueue resurrected a stopped item", w.State)
+	}
+	if v.gh.queued(1) || len(v.gh.Dequeues()) != 1 {
+		t.Fatalf("dequeues = %v, want the PR taken back out", v.gh.Dequeues())
+	}
+}
+
+// inFlight delivers HL-7, then starts run 2 on it and returns its task.
+func (v *env) inFlight() string {
+	v.t.Helper()
+	v.delivered()
+	v.its.add(2, "coder", 101, "HL-7", "One more change.")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	a, err := v.st.LatestAttempt(v.ctx, 2)
+	if err != nil || a == nil || a.State != store.AttemptAccepted {
+		v.t.Fatalf("run 2 attempt = %+v, %v", a, err)
+	}
+	return a.TaskID
+}
+
+// turnStopped checks that run 2's task is canceled through kagent and that
+// itsaplan hears the failure with the reason once kagent confirms.
+func (v *env) turnStopped(task, why string) {
+	v.t.Helper()
+	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].RunID != 2 || cs[0].Reason != store.CancelRoundStopped {
+		v.t.Fatalf("cancellations = %+v", cs)
+	}
+	if res := v.its.Results(2); len(res) != 0 {
+		v.t.Fatalf("results = %+v before kagent confirmed", res)
+	}
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if v.kg.state(task) != kagent.StateCanceled {
+		v.t.Fatalf("task = %s, want canceled", v.kg.state(task))
+	}
+	res := v.its.Results(2)
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "delivery stopped") || !strings.Contains(res[0].Error, why) {
+		v.t.Fatalf("results = %+v, want a failure naming the stop", res)
+	}
+}
+
+func TestOperatorCancelStopsInFlightItsaplanTurn(t *testing.T) {
+	v := newDeliveryEnv(t)
+	task := v.inFlight()
+	if _, err := v.st.StopIssue(v.ctx, "HL-7", "an operator canceled it", "operator:test"); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.turnStopped(task, "an operator canceled it")
+}
+
+func TestClosedPullRequestStopsInFlightItsaplanTurn(t *testing.T) {
+	v := newDeliveryEnv(t)
+	task := v.inFlight()
+	v.gh.close(1)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	v.turnStopped(task, "was closed")
 }

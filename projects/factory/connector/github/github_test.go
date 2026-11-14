@@ -177,6 +177,11 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 			Variables map[string]any `json:"variables"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.Contains(req.Query, "dequeuePullRequest") {
+			enqueued = map[string]any{"dequeued": req.Variables["id"]}
+			_, _ = w.Write([]byte(`{"data":{"dequeuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}`))
+			return
+		}
 		if strings.Contains(req.Query, "enqueuePullRequest") {
 			enqueued = req.Variables
 			_, _ = w.Write([]byte(`{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}`))
@@ -215,9 +220,17 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 		t.Fatalf("enqueue = %q, %v", state, err)
 	}
 	mu.Lock()
-	defer mu.Unlock()
 	if enqueued["id"] != "PR_5" || enqueued["head"] != "b" {
 		t.Fatalf("enqueue variables = %v, want the node ID and expected head", enqueued)
+	}
+	mu.Unlock()
+	if err := c.DequeuePullRequest(ctx, "example-org/homelab", "PR_5"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if enqueued["dequeued"] != "PR_5" {
+		t.Fatalf("dequeue variables = %v", enqueued)
 	}
 }
 

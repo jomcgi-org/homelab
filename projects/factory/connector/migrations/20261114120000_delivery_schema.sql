@@ -15,13 +15,15 @@ ALTER TABLE delivery_attempt ADD COLUMN context text;
 -- review_rounds counts connector review rounds against the binding's bound.
 -- turn_attempt_id is the completed turn the PR must reflect; synced_attempt_id
 -- the last one it does. A stopped work item gets no PR updates or review
--- rounds, and its running round is canceled, until a new itsaplan run
--- resumes it; stops counts how often, so each stop is announced.
+-- rounds, its running turn is canceled and its PR leaves the merge queue,
+-- until a new itsaplan run resumes it. stopped_by names who stopped it (an
+-- operator, or the connector); stops counts stops, so each is announced.
 ALTER TABLE work_item
     ADD COLUMN review_rounds integer NOT NULL DEFAULT 0,
     ADD COLUMN turn_attempt_id bigint REFERENCES delivery_attempt (id),
     ADD COLUMN synced_attempt_id bigint REFERENCES delivery_attempt (id),
     ADD COLUMN stopped_reason text,
+    ADD COLUMN stopped_by text,
     ADD COLUMN stops integer NOT NULL DEFAULT 0;
 ALTER TABLE work_item DROP CONSTRAINT work_item_state_check;
 ALTER TABLE work_item ADD CONSTRAINT work_item_state_check

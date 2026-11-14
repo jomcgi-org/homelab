@@ -24,6 +24,7 @@ type GitHub interface {
 	CheckRuns(ctx context.Context, repo, sha string) ([]github.CheckRun, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
+	DequeuePullRequest(ctx context.Context, repo, nodeID string) error
 }
 
 // Check is a check the binding trusts: a check run named Name from the
@@ -116,7 +117,7 @@ func (e *Engine) deliverWork(ctx context.Context, wi *store.WorkItem) error {
 	if wi.State == store.WorkDone {
 		return e.followUp(ctx, wi, b, pr)
 	}
-	if wi.TurnAttemptID != 0 && wi.TurnAttemptID != wi.SyncedAttemptID {
+	if wi.State != store.WorkStopped && wi.TurnAttemptID != 0 && wi.TurnAttemptID != wi.SyncedAttemptID {
 		if pr, err = e.syncPR(ctx, wi, b, pr); err != nil {
 			return err
 		}
@@ -135,6 +136,14 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	a, r, err := e.st.LatestTurn(ctx, wi.ID)
 	if err != nil || a == nil {
 		return pr, err
+	}
+	// A canceled issue gets no PR opened or updated.
+	reason, err := e.issueStopped(ctx, wi, b)
+	if err != nil {
+		return nil, err
+	}
+	if reason != "" {
+		return nil, e.stopWork(ctx, wi, reason)
 	}
 	repo := b.repo()
 	body := e.prBody(ctx, wi, a, r)
@@ -206,11 +215,32 @@ func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a
 // stopWork stops delivery for a work item; dispatch then cancels its review
 // rounds, each pending until kagent confirms.
 func (e *Engine) stopWork(ctx context.Context, wi *store.WorkItem, reason string) error {
-	stopped, err := e.st.StopWork(ctx, wi.ID, reason)
+	stopped, err := e.st.StopWork(ctx, wi.ID, reason, "connector")
 	if err == nil && stopped {
+		wi.State, wi.StoppedReason = store.WorkStopped, reason
 		e.log.InfoContext(ctx, "delivery stopped", "work_item", wi.ID, "reason", reason)
 	}
 	return err
+}
+
+// stoppedPR follows the open PR of a stopped work item: a queued PR is
+// dequeued, and a merge is recorded without moving the issue to Done.
+func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+	switch {
+	case d.Merged:
+		return e.merged(ctx, wi, b, pr, d)
+	case d.State != "open" || d.MergeQueueState == "":
+		return nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	if err := e.gh.DequeuePullRequest(ctx, b.repo(), pr.NodeID); err != nil {
+		return fmt.Errorf("dequeue PR %d: %w", pr.Number, err)
+	}
+	e.m.MergeQueue.WithLabelValues("dequeued").Inc()
+	e.log.InfoContext(ctx, "PR dequeued; delivery stopped", "work_item", wi.ID, "pr", pr.Number)
+	return e.st.MarkDequeued(ctx, pr)
 }
 
 // issueStopped reports why the work item's issue no longer wants delivery:
@@ -287,6 +317,34 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 		return nil
 	}
 	return e.stopWork(ctx, wi, reason)
+}
+
+// checkPRClosed stops delivery when the PR of an itsaplan run's work item
+// was closed during the turn; dispatch then cancels the turn.
+func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
+	if e.gh == nil || r.WorkItemID == 0 {
+		return nil
+	}
+	pr, err := e.st.PullRequestFor(ctx, r.WorkItemID)
+	if err != nil || pr == nil || pr.State != "open" {
+		return err
+	}
+	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	b := e.binding(wi.BindingName)
+	if b == nil || wi.State == store.WorkStopped || wi.State == store.WorkDone {
+		return nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	if err != nil || d.State == "open" || d.Merged {
+		return err
+	}
+	return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed", pr.Number, pr.URL))
 }
 
 // followUp handles a turn that finished after the work item's PR merged. Its
@@ -447,6 +505,19 @@ func (e *Engine) lastItsaplanRun(ctx context.Context, workID int64) int64 {
 // ejection, review events on the head, or a head ready to enqueue.
 func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {
 	repo := b.repo()
+	if wi.State != store.WorkStopped {
+		// The issue decides first: a person who canceled it in itsaplan must
+		// not see its PR enqueued, or merged into Done.
+		reason, err := e.issueStopped(ctx, wi, b)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			if err := e.stopWork(ctx, wi, reason); err != nil {
+				return err
+			}
+		}
+	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
@@ -462,6 +533,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return err
 	}
 	pr.HeadSHA, pr.State, pr.MergeQueueState = d.HeadSHA, state, d.MergeQueueState
+	if wi.State == store.WorkStopped {
+		return e.stoppedPR(ctx, wi, b, pr, d)
+	}
 	switch {
 	case d.Merged:
 		return e.merged(ctx, wi, b, pr, d)
@@ -488,7 +562,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return e.ejected(ctx, wi, pr)
 	case d.MergeQueueState != "":
 		// Queued although the enqueue's answer was lost.
-		return e.st.MarkEnqueued(ctx, e.st.DB, pr, d.HeadSHA, d.MergeQueueState)
+		return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -505,6 +579,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return err
 	}
 	started, err := e.reviewEvents(ctx, wi, b, pr, d, checks, statuses)
+	if errors.Is(err, store.ErrNotReview) {
+		return nil // delivery stopped meanwhile; nothing started
+	}
 	if err != nil || started {
 		return err
 	}
@@ -521,7 +598,19 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	}
 	e.m.MergeQueue.WithLabelValues("enqueued").Inc()
 	e.log.InfoContext(ctx, "PR enqueued", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
-	return e.st.MarkEnqueued(ctx, e.st.DB, pr, d.HeadSHA, qs)
+	return e.enqueued(ctx, wi, b, pr, d, qs)
+}
+
+// enqueued records a queued PR. When delivery stopped after the gate was
+// checked, the work item stays stopped and the PR leaves the queue again.
+func (e *Engine) enqueued(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail, qs string) error {
+	moved, err := e.st.MarkEnqueued(ctx, e.st.DB, pr, d.HeadSHA, qs)
+	if err != nil || moved {
+		return err
+	}
+	queued := *d
+	queued.MergeQueueState = qs
+	return e.stoppedPR(ctx, wi, b, pr, &queued)
 }
 
 // failedConclusion reports a check run conclusion that asks for changes.
@@ -832,7 +921,7 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, pr *store.Pull
 	e.m.MergeQueue.WithLabelValues("ejected").Inc()
 	head := pr.EnqueuedHeadSHA
 	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.MarkEjected(ctx, tx, pr); err != nil {
+		if _, err := e.st.MarkEjected(ctx, tx, pr); err != nil {
 			return err
 		}
 		return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/ejected/%d/%s", pr.ID, head), 0, "",
@@ -869,8 +958,16 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		mdLink(wi.SessionID, e.expand(e.cfg.Links.Session, wi, 0, wi.SessionID)),
 		mdLink("#"+strconv.Itoa(pr.Number), pr.URL), mergeLink)
 	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.MarkMerged(ctx, tx, pr, merge, at); err != nil {
+		done, err := e.st.MarkMerged(ctx, tx, pr, merge, at)
+		if err != nil {
 			return err
+		}
+		if !done {
+			// Delivery was stopped: the person's decision on the issue stands.
+			return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/merged-stopped/%d", wi.ID), 0, "",
+				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+					"PR #%d (%s) merged as %s although delivery of %s was stopped (%s). "+
+						"The factory left the issue where it is.", pr.Number, pr.URL, mergeLink, wi.IssueKey, wi.StoppedReason)})
 		}
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/merged/%d", wi.ID), 0, "",
 			commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
@@ -901,6 +998,14 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
 	case err != nil:
 		return err
+	}
+	if is, err := e.its.GetIssue(ctx, p.IssueID); err == nil {
+		for _, c := range cols {
+			if c.ID == is.ColumnID && c.StateType == "canceled" {
+				// Canceled since the merge: a person's decision stands.
+				return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is canceled; not moved to Done")
+			}
+		}
 	}
 	var done *itsaplan.Column
 	for i := range cols {
