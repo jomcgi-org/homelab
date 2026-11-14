@@ -34,9 +34,12 @@ type fakeGitHub struct {
 	// the next lookups.
 	loseCreate bool
 	findErr    []error
+	checkErr   []error
+	statusErr  []error
 	dequeues   []string
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
+	onChecks  func()
 }
 
 // close closes a PR, as a person does.
@@ -63,14 +66,16 @@ type fakeBranch struct {
 }
 
 type fakePR struct {
-	pr       github.PullRequest
-	body     string
-	reviews  []github.Review
-	threads  []github.ReviewThread
-	queue    string
-	mergeSHA string
-	mergedAt time.Time
-	lagSHA   string // merged on the read after next
+	pr        github.PullRequest
+	body      string
+	reviews   []github.Review
+	threads   []github.ReviewThread
+	queue     string
+	groupSHA  string
+	mergeable string
+	mergeSHA  string
+	mergedAt  time.Time
+	lagSHA    string // merged on the read after next
 }
 
 func newFakeGitHub() *fakeGitHub {
@@ -152,6 +157,7 @@ func (g *fakeGitHub) check(sha, name string, app int64, conclusion string) {
 	g.checks[sha] = append(runs, github.CheckRun{
 		NodeID: g.node("CR"), Name: name, AppID: app, HeadSHA: sha,
 		Status: status, Conclusion: conclusion, Title: name + " " + conclusion,
+		URL: "https://github.com/checks/" + sha + "/" + name,
 	})
 }
 
@@ -182,6 +188,7 @@ func (g *fakeGitHub) status(sha, context, creator, state string) {
 	}
 	g.statuses[sha] = append(sts, github.Status{
 		NodeID: g.node("SC"), Context: context, State: state, Creator: creator, SHA: sha,
+		URL: "https://ci.example/" + sha + "/" + context,
 	})
 }
 
@@ -208,7 +215,20 @@ func (g *fakeGitHub) merge(pr int, sha string) {
 func (g *fakeGitHub) eject(pr int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.byNumber(pr).queue = ""
+	p := g.byNumber(pr)
+	p.queue, p.groupSHA = "", ""
+}
+
+func (g *fakeGitHub) mergeGroup(pr int, sha string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.byNumber(pr).groupSHA = sha
+}
+
+func (g *fakeGitHub) conflict(pr int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.byNumber(pr).mergeable = "CONFLICTING"
 }
 
 func (g *fakeGitHub) PRs() []fakePR {
@@ -330,6 +350,7 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 	}
 	return &github.PullRequestDetail{
 		PullRequest: p.pr, MergedAt: p.mergedAt, MergeCommitSHA: p.mergeSHA, MergeQueueState: p.queue,
+		MergeGroupSHA: p.groupSHA, Mergeable: p.mergeable,
 		Reviews: append([]github.Review(nil), p.reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),
 	}, nil
 }
@@ -338,6 +359,14 @@ func (g *fakeGitHub) CheckRuns(_ context.Context, _, sha string) ([]github.Check
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
+	if g.onChecks != nil {
+		g.onChecks()
+	}
+	if len(g.checkErr) > 0 {
+		err := g.checkErr[0]
+		g.checkErr = g.checkErr[1:]
+		return nil, err
+	}
 	return append([]github.CheckRun(nil), g.checks[sha]...), nil
 }
 
@@ -345,6 +374,11 @@ func (g *fakeGitHub) Statuses(_ context.Context, _, sha string) ([]github.Status
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
+	if len(g.statusErr) > 0 {
+		err := g.statusErr[0]
+		g.statusErr = g.statusErr[1:]
+		return nil, err
+	}
 	return append([]github.Status(nil), g.statuses[sha]...), nil
 }
 
@@ -897,17 +931,23 @@ func TestDoneOnlyAfterObservedMerge(t *testing.T) {
 	}
 }
 
-func TestMergeQueueEjectionReturnsToReview(t *testing.T) {
+func TestMergeQueueEjectionStartsOneRoundWithoutReenqueuingTheHead(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.delivered()
 	v.gh.green("sha-1")
 	v.poll()
 	v.gh.eject(1)
 	v.poll()
-	if w := v.work(101); w.State != store.WorkReview {
-		t.Fatalf("work item = %s, want review after the ejection", w.State)
+	if w := v.work(101); w.State != store.WorkActive || w.ReviewRounds != 1 {
+		t.Fatalf("work item = %+v, want one active round after the ejection", w)
 	}
+	// Completing without a push must neither start another round nor enqueue.
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
 	v.poll()
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one for the ejection", n)
+	}
 	if q := v.gh.Enqueues(); len(q) != 1 {
 		t.Fatalf("enqueues = %v; the ejected head must not be enqueued again", q)
 	}
@@ -923,6 +963,224 @@ func TestMergeQueueEjectionReturnsToReview(t *testing.T) {
 	v.poll()
 	if q := v.gh.Enqueues(); len(q) != 2 || q[1] != "sha-2" {
 		t.Fatalf("enqueues = %v, want the new head enqueued", q)
+	}
+}
+
+func TestMergeQueueFailureRevisesInTheMappedSessionWithGroupEvidence(t *testing.T) {
+	v := newDeliveryEnv(t)
+	session := v.delivered()
+	v.cfg.Bindings[0].Review.RequiredChecks = append(v.cfg.Bindings[0].Review.RequiredChecks,
+		dispatch.Check{Name: "build", StatusCreator: "ci-bot"})
+	v.gh.green("sha-1")
+	v.gh.status("sha-1", "build", "ci-bot", "success")
+	v.poll()
+	v.gh.mergeGroup(1, "group-sha-1")
+	v.poll()
+	// A takeover must retain the synthetic SHA after GitHub drops the entry.
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	v.gh.check("group-sha-1", "test", 100, "failure")
+	v.gh.summarize("group-sha-1", "test", "Untrusted check output must not enter the prompt.")
+	v.gh.status("group-sha-1", "build", "CI-BOT", "error")
+	v.gh.check("group-sha-1", "semgrep-review", 999, "failure")
+	v.gh.check("group-sha-1", "unconfigured", 100, "failure")
+	v.gh.mu.Lock()
+	v.gh.checks["group-sha-1"] = append(v.gh.checks["group-sha-1"], github.CheckRun{
+		Name: "test", AppID: 100, HeadSHA: "old-group", Status: "completed", Conclusion: "failure", URL: "stale-check-link",
+	})
+	v.gh.statuses["group-sha-1"] = append(v.gh.statuses["group-sha-1"], github.Status{
+		Context: "build", Creator: "intruder", SHA: "group-sha-1", State: "failure", URL: "spoofed-status-link",
+	})
+	v.gh.mu.Unlock()
+	v.gh.eject(1)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one after failed merge-group CI", n)
+	}
+	sends := v.kg.Sends()
+	last := sends[len(sends)-1]
+	if last.msg.ContextID != session || last.msg.MessageID != "factory-review/1/revision" {
+		t.Fatalf("revision = %+v, want the mapped session %s", last.msg, session)
+	}
+	text := last.msg.Parts[0].Text
+	for _, want := range []string{
+		"Review round 1 for HL-7", "merge queue ejected", "group-sha-1", "completed / failure",
+		"https://github.com/checks/group-sha-1/test", `Status "build": error`,
+		"https://ci.example/group-sha-1/build", "CI infrastructure flaked",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("revision lacks %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"Untrusted check output", "semgrep-review", "unconfigured", "stale-check-link", "spoofed-status-link"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("revision contains untrusted evidence %q:\n%s", unwanted, text)
+		}
+	}
+	v.e.Release()
+	v.e = v.engine("connector-c")
+	v.poll()
+	if len(v.rounds()) != 1 || len(v.kg.Sends()) != 2 {
+		t.Fatal("restart repeated the ejection's revision")
+	}
+	// A changed head still needs all gates. A new enqueue clears old evidence.
+	v.gh.push("factory/HL-7", "sha-2", "fix: rebase after CI infrastructure failure")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Rebased.", nil)
+	v.poll()
+	if n := len(v.gh.Enqueues()); n != 1 {
+		t.Fatal("new head enqueued before its checks and review passed")
+	}
+	v.gh.green("sha-2")
+	v.gh.status("sha-2", "build", "ci-bot", "success")
+	v.poll()
+	pr, err := v.st.PullRequestFor(v.ctx, v.work(101).ID)
+	if err != nil || pr.MergeGroupSHA != "" || pr.EnqueuedHeadSHA != "sha-2" {
+		t.Fatalf("new enqueue retained old merge group: %+v, %v", pr, err)
+	}
+}
+
+func TestMergeQueueConflictAsksForRebase(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.conflict(1)
+	v.gh.eject(1)
+	v.poll()
+	if rounds := v.rounds(); len(rounds) != 1 || !strings.Contains(rounds[0].Prompt, "conflicts with main: rebase on origin/main and resolve") {
+		t.Fatalf("rounds = %+v, want a rebase request", rounds)
+	}
+}
+
+func TestEjectionAndRevisionCommitTogether(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.eject(1)
+	// Reject the round insert after MarkEjected has run in the transaction.
+	if _, err := v.st.DB.Exec(`ALTER TABLE run ADD CONSTRAINT reject_round CHECK (origin <> 'connector')`); err != nil {
+		t.Fatal(err)
+	}
+	v.poll()
+	pr, err := v.st.PullRequestFor(v.ctx, v.work(101).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := v.work(101); w.State != store.WorkMerging || w.ReviewRounds != 0 || pr.EnqueuedHeadSHA != "sha-1" || pr.EjectedHeadSHA != "" {
+		t.Fatalf("failed revision lost its ejection: work=%+v, pr=%+v", w, pr)
+	}
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "left the merge queue") {
+			t.Fatal("rolled-back ejection was announced")
+		}
+	}
+	if _, err := v.st.DB.Exec(`ALTER TABLE run DROP CONSTRAINT reject_round`); err != nil {
+		t.Fatal(err)
+	}
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one after retry", n)
+	}
+}
+
+func TestEjectionsShareTheReviewRoundBound(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	// Spend the first round on ordinary review feedback.
+	v.gh.check("sha-1", "test", 100, "failure")
+	v.poll()
+	for i := 2; i <= 3; i++ {
+		head := fmt.Sprintf("sha-%d", i)
+		v.gh.push("factory/HL-7", head, "fix: feedback")
+		v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Fixed.", nil)
+		v.gh.green(head)
+		v.poll()
+		v.gh.eject(1)
+		v.poll()
+	}
+	v.poll()
+	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 || len(v.rounds()) != 2 {
+		t.Fatalf("work item = %+v, want the shared bound of two rounds", w)
+	}
+	said := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "bound of 2 review rounds") {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Fatalf("round-limit comments = %d, want one", said)
+	}
+}
+
+func TestEjectionEvidenceReadIsRetriedBeforeStartingARound(t *testing.T) {
+	for _, endpoint := range []string{"checks", "statuses"} {
+		t.Run(endpoint, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.mergeGroup(1, "group-sha-1")
+			v.poll()
+			v.gh.check("group-sha-1", "test", 100, "timed_out")
+			v.gh.eject(1)
+			refusal := &github.HTTPError{Status: 403}
+			if endpoint == "checks" {
+				v.gh.checkErr = []error{refusal}
+			} else {
+				v.gh.statusErr = []error{refusal}
+			}
+			v.poll()
+			if w := v.work(101); w.State != store.WorkMerging || w.ReviewRounds != 0 {
+				t.Fatalf("ejection consumed despite missing evidence: %+v", w)
+			}
+			v.poll()
+			if rounds := v.rounds(); len(rounds) != 1 || !strings.Contains(rounds[0].Prompt, "timed_out") {
+				t.Fatalf("rounds = %+v, want the retried evidence", rounds)
+			}
+		})
+	}
+}
+
+func TestEjectionHonorsHumanHoldsAndStops(t *testing.T) {
+	for _, hold := range []string{"label", "reviewer", "operator", "issue"} {
+		t.Run(hold, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.mergeGroup(1, "group-sha-1")
+			v.poll()
+			v.gh.check("group-sha-1", "test", 100, "failure")
+			switch hold {
+			case "label":
+				v.gh.label(1, "needs-human")
+			case "reviewer":
+				v.gh.check("group-sha-1", "semgrep-review", 200, "failure")
+				v.gh.summarize("group-sha-1", "semgrep-review", humanHold)
+			case "operator":
+				v.gh.onChecks = func() {
+					if _, err := v.st.StopIssue(v.ctx, "HL-7", "operator stopped during evidence read", "joe"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "issue":
+				v.gh.onChecks = func() { v.its.moveTo(101, 4, "") }
+			}
+			v.gh.eject(1)
+			v.poll()
+			if len(v.rounds()) != 0 || v.work(101).ReviewRounds != 0 {
+				t.Fatalf("ejection started a round despite %s hold", hold)
+			}
+			want := store.WorkReview
+			if hold == "operator" || hold == "issue" {
+				want = store.WorkStopped
+			}
+			if w := v.work(101); w.State != want {
+				t.Fatalf("work item = %s, want %s", w.State, want)
+			}
+		})
 	}
 }
 
@@ -1367,6 +1625,9 @@ func TestLateMergeIsNotAnEjection(t *testing.T) {
 	v.poll()
 	if w := v.work(101); w.State != store.WorkDone {
 		t.Fatalf("work item = %s, want done", w.State)
+	}
+	if n := len(v.rounds()); n != 0 {
+		t.Fatalf("rounds = %d, want none for a late merge", n)
 	}
 	for _, c := range v.its.Comments() {
 		if strings.Contains(c.body, "left the merge queue") {

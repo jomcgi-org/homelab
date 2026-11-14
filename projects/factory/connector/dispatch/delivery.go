@@ -554,10 +554,13 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if d.Merged {
 		state = "merged"
 	}
-	if err := e.st.SetPolled(ctx, pr.ID, d.HeadSHA, state, d.MergeQueueState, e.cfg.Now()); err != nil {
+	if err := e.st.SetPolled(ctx, pr.ID, d.HeadSHA, state, d.MergeQueueState, d.MergeGroupSHA, e.cfg.Now()); err != nil {
 		return err
 	}
 	pr.HeadSHA, pr.State, pr.MergeQueueState = d.HeadSHA, state, d.MergeQueueState
+	if d.MergeGroupSHA != "" {
+		pr.MergeGroupSHA = d.MergeGroupSHA
+	}
 	if wi.State == store.WorkStopped {
 		return e.stoppedPR(ctx, wi, b, pr, d)
 	}
@@ -583,10 +586,12 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			return err
 		case again.Merged:
 			return e.merged(ctx, wi, b, pr, again)
+		case again.State != "open":
+			return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed without merging", pr.Number, pr.URL))
 		case again.MergeQueueState != "":
 			return nil
 		}
-		return e.ejected(ctx, wi, pr)
+		return e.ejected(ctx, wi, b, pr, again)
 	case d.MergeQueueState != "":
 		// Queued although the enqueue's answer was lost.
 		return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
@@ -631,7 +636,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 // enqueued records a queued PR. When delivery stopped after the gate was
 // checked, the work item stays stopped and the PR leaves the queue again.
 func (e *Engine) enqueued(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail, qs string) error {
-	moved, err := e.st.MarkEnqueued(ctx, e.st.DB, pr, d.HeadSHA, qs)
+	moved, err := e.st.MarkEnqueued(ctx, e.st.DB, pr, d.HeadSHA, qs, d.MergeGroupSHA)
 	if err != nil || moved {
 		return err
 	}
@@ -799,24 +804,15 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
 		if prompt != "" {
 			var err error
-			if round, err = e.st.StartRound(ctx, tx, wi, prompt); err != nil {
+			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt); err != nil {
 				return err
 			}
 			for _, c := range acting {
 				c.ev.RoundRunID = round.ID
 			}
-			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round/%d/%d", wi.ID, wi.ReviewRounds+1), round.ID, "",
-				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-					"The factory started review round %d of %d for %s on PR #%d (%s) at %s, in kagent session %s.",
-					wi.ReviewRounds+1, p.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.SessionID)}); err != nil {
-				return err
-			}
 		}
 		if limited {
-			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round-limit/%d", wi.ID), 0, "",
-				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-					"%s reached its bound of %d review rounds; PR #%d (%s) waits for a person.",
-					wi.IssueKey, p.MaxReviewRounds, pr.Number, pr.URL)}); err != nil {
+			if err := e.reviewRoundLimit(ctx, tx, wi, b, pr); err != nil {
 				return err
 			}
 		}
@@ -836,9 +832,36 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	if round == nil {
 		return false, nil
 	}
+	return true, e.dispatchReviewRound(ctx, wi, round)
+}
+
+// startReviewRound records the run and its announcement together with the
+// event that prompted it. Callers check the issue and round bound first.
+func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
+	pr *store.PullRequest, d *github.PullRequestDetail, prompt string,
+) (*store.Run, error) {
+	round, err := e.st.StartRound(ctx, tx, wi, prompt)
+	if err != nil {
+		return nil, err
+	}
+	err = e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round/%d/%d", wi.ID, wi.ReviewRounds+1), round.ID, "",
+		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+			"The factory started review round %d of %d for %s on PR #%d (%s) at %s, in kagent session %s.",
+			wi.ReviewRounds+1, b.Review.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.SessionID)})
+	return round, err
+}
+
+func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {
+	return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round-limit/%d", wi.ID), 0, "",
+		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+			"%s reached its bound of %d review rounds; PR #%d (%s) waits for a person.",
+			wi.IssueKey, b.Review.MaxReviewRounds, pr.Number, pr.URL)})
+}
+
+func (e *Engine) dispatchReviewRound(ctx context.Context, wi *store.WorkItem, round *store.Run) error {
 	e.m.ReviewRounds.Inc()
 	e.log.InfoContext(ctx, "review round started", "work_item", wi.ID, "run", round.ID, "round", wi.ReviewRounds+1)
-	return true, e.stepLocked(ctx, round.ID)
+	return e.stepLocked(ctx, round.ID)
 }
 
 // roundPrompt asks for a revision: what requested changes, and the PR's
@@ -957,21 +980,129 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 	return false
 }
 
-// ejected returns a work item whose PR left the merge queue unmerged to
-// review. The head the queue rejected is not enqueued again.
-func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, pr *store.PullRequest) error {
-	e.m.MergeQueue.WithLabelValues("ejected").Inc()
+// ejected records the confirmed ejection and starts a bounded revision in
+// the mapped session. The rejected head stays barred from the merge queue.
+func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+	limited := wi.ReviewRounds >= b.Review.MaxReviewRounds
+	var prompt string
+	if !limited && b.Review.held(d.Labels) == "" {
+		feedback, held, err := e.ejectionFeedback(ctx, b, pr, d)
+		if err != nil {
+			return err // keep merging so the next poll retries the evidence read
+		}
+		if !held {
+			prompt = roundPrompt(&b.Review, wi, pr, d, []*candidate{{text: feedback}})
+		}
+	}
+	// Evidence reads may take time. Honor an issue cancellation before the
+	// transaction, and let MarkEjected/StartRound guard an operator stop.
+	reason, err := e.issueStopped(ctx, wi, b)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		return e.stopWork(ctx, wi, reason)
+	}
 	head := pr.EnqueuedHeadSHA
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := e.st.MarkEjected(ctx, tx, pr); err != nil {
+	var round *store.Run
+	var moved bool
+	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		moved, err = e.st.MarkEjected(ctx, tx, pr)
+		if err != nil || !moved {
 			return err
+		}
+		outcome := "The PR waits for a person."
+		switch {
+		case limited:
+			if err := e.reviewRoundLimit(ctx, tx, wi, b, pr); err != nil {
+				return err
+			}
+		case prompt != "":
+			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt); err != nil {
+				return err
+			}
+			outcome = fmt.Sprintf("Review round %d of %d will address the ejection in the mapped session.",
+				wi.ReviewRounds+1, b.Review.MaxReviewRounds)
 		}
 		return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/ejected/%d/%s", pr.ID, head), 0, "",
 			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-				"PR #%d (%s) left the merge queue without merging at %s; %s is back in review. "+
-					"The factory does not enqueue that head again: a new push or review moves it on.",
-				pr.Number, pr.URL, short(head), wi.IssueKey)})
+				"PR #%d (%s) left the merge queue without merging at %s. "+
+					"The factory does not enqueue that head again. %s",
+				pr.Number, pr.URL, short(head), outcome)})
 	})
+	if errors.Is(err, store.ErrNotReview) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if moved {
+		e.m.MergeQueue.WithLabelValues("ejected").Inc()
+	}
+	if round == nil {
+		return nil
+	}
+	return e.dispatchReviewRound(ctx, wi, round)
+}
+
+// ejectionFeedback reads the synthetic commit, never the PR head. Only
+// configured check identities supply names and links; arbitrary summaries,
+// titles and status descriptions do not enter this prompt.
+func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (string, bool, error) {
+	var s strings.Builder
+	fmt.Fprintf(&s, "The merge queue ejected this PR at %s.\n", pr.EnqueuedHeadSHA)
+	if pr.MergeGroupSHA != "" {
+		if err := e.guard(ctx); err != nil {
+			return "", false, err
+		}
+		checks, err := e.gh.CheckRuns(ctx, b.repo(), pr.MergeGroupSHA)
+		if err != nil {
+			return "", false, err
+		}
+		if err := e.guard(ctx); err != nil {
+			return "", false, err
+		}
+		statuses, err := e.gh.Statuses(ctx, b.repo(), pr.MergeGroupSHA)
+		if err != nil {
+			return "", false, err
+		}
+		fmt.Fprintf(&s, "\nMerge-group commit: https://github.com/%s/commit/%s\n", b.repo(), pr.MergeGroupSHA)
+		for _, c := range checks {
+			if c.HeadSHA != pr.MergeGroupSHA || c.Status != "completed" || !failedConclusion(c.Conclusion) {
+				continue
+			}
+			if r := b.Review.ReviewerCheck; r != nil && r.AppID != 0 && c.AppID == r.AppID && c.Name == r.Name &&
+				strings.Contains(c.Summary, humanHoldMarker) {
+				return "", true, nil
+			}
+			for _, want := range b.Review.checks() {
+				if want.AppID != 0 && c.AppID == want.AppID && c.Name == want.Name {
+					fmt.Fprintf(&s, "- Check %q: %s / %s (%q).\n", c.Name, c.Status, c.Conclusion, c.URL)
+					break
+				}
+			}
+		}
+		for _, st := range statuses {
+			if st.SHA != pr.MergeGroupSHA || (st.State != "failure" && st.State != "error") {
+				continue
+			}
+			for _, want := range b.Review.checks() {
+				if want.StatusCreator != "" && strings.EqualFold(st.Creator, want.StatusCreator) && st.Context == want.Name {
+					fmt.Fprintf(&s, "- Status %q: %s (%q).\n", st.Context, st.State, st.URL)
+					break
+				}
+			}
+		}
+	} else {
+		s.WriteString("The merge-group commit was not observed before the queue entry disappeared.\n")
+	}
+	if d.Mergeable == "CONFLICTING" {
+		fmt.Fprintf(&s, "\nconflicts with %s: rebase on origin/%s and resolve.\n", b.BaseBranch, b.BaseBranch)
+	}
+	s.WriteString("\nInspect the queue failure before pushing. If CI infrastructure flaked, you may rebase and re-push " +
+		"the same change. The new head must pass the usual CI and independent review gates.\n")
+	return s.String(), false, nil
 }
 
 type issueDonePayload struct {

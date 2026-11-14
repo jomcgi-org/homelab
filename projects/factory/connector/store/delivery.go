@@ -66,16 +66,17 @@ type PullRequest struct {
 	EnqueuedHeadSHA string
 	EjectedHeadSHA  string
 	MergeCommitSHA  string
+	MergeGroupSHA   string
 }
 
 const prCols = `id, work_item_id, number, node_id, url, head_sha, state, coalesce(merge_queue_state, ''),
 	coalesce(polled_at, 'epoch'::timestamptz), coalesce(enqueued_head_sha, ''), coalesce(ejected_head_sha, ''),
-	coalesce(merge_commit_sha, '')`
+	coalesce(merge_commit_sha, ''), coalesce(merge_group_sha, '')`
 
 func scanPR(row interface{ Scan(...any) error }) (*PullRequest, error) {
 	p := &PullRequest{}
 	err := row.Scan(&p.ID, &p.WorkItemID, &p.Number, &p.NodeID, &p.URL, &p.HeadSHA, &p.State, &p.MergeQueueState,
-		&p.PolledAt, &p.EnqueuedHeadSHA, &p.EjectedHeadSHA, &p.MergeCommitSHA)
+		&p.PolledAt, &p.EnqueuedHeadSHA, &p.EjectedHeadSHA, &p.MergeCommitSHA, &p.MergeGroupSHA)
 	return p, err
 }
 
@@ -99,12 +100,15 @@ func (s *Store) RecordPullRequest(ctx context.Context, q Querier, p PullRequest)
 		RETURNING `+prCols, p.WorkItemID, p.Number, p.NodeID, p.URL, p.HeadSHA, p.State))
 }
 
-// SetPolled records a poll of the PR and what it showed.
-func (s *Store) SetPolled(ctx context.Context, id int64, headSHA, state, queueState string, at time.Time) error {
+// SetPolled records a poll of the PR and what it showed. Keep the latest
+// synthetic commit when the queue entry disappears so its checks remain
+// available after an ejection or a connector restart.
+func (s *Store) SetPolled(ctx context.Context, id int64, headSHA, state, queueState, mergeGroupSHA string, at time.Time) error {
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE pull_request SET head_sha = $2, state = $3, merge_queue_state = nullif($4, ''), polled_at = $5,
+			merge_group_sha = coalesce(nullif($6, ''), merge_group_sha),
 			updated_at = now()
-		WHERE id = $1`, id, headSHA, state, queueState, at)
+		WHERE id = $1`, id, headSHA, state, queueState, at, mergeGroupSHA)
 	return err
 }
 
@@ -123,10 +127,13 @@ func (s *Store) moveLive(ctx context.Context, q Querier, workID int64, state str
 // MarkEnqueued records that the PR entered the merge queue at headSHA. The
 // PR's queue entry is recorded either way, since GitHub holds it; moved is
 // false when delivery stopped meanwhile and the entry must be dequeued.
-func (s *Store) MarkEnqueued(ctx context.Context, q Querier, p *PullRequest, headSHA, queueState string) (moved bool, err error) {
+// Each enqueue replaces the previous entry's synthetic commit, even when
+// GitHub has not built the new one yet.
+func (s *Store) MarkEnqueued(ctx context.Context, q Querier, p *PullRequest, headSHA, queueState, mergeGroupSHA string) (moved bool, err error) {
 	if _, err := q.ExecContext(ctx, `
-		UPDATE pull_request SET enqueued_head_sha = $2, merge_queue_state = nullif($3, ''), updated_at = now()
-		WHERE id = $1`, p.ID, headSHA, queueState); err != nil {
+		UPDATE pull_request SET enqueued_head_sha = $2, merge_queue_state = nullif($3, ''),
+			merge_group_sha = nullif($4, ''), updated_at = now()
+		WHERE id = $1`, p.ID, headSHA, queueState, mergeGroupSHA); err != nil {
 		return false, err
 	}
 	return s.moveLive(ctx, q, p.WorkItemID, WorkMerging)
@@ -141,15 +148,23 @@ func (s *Store) MarkDequeued(ctx context.Context, p *PullRequest) error {
 }
 
 // MarkEjected returns a work item whose PR left the merge queue unmerged to
-// review. Its head is not enqueued again.
+// review. Its head is not enqueued again. Only an item still merging moves,
+// so replaying an ejection cannot interrupt a revision or undo a stop.
 func (s *Store) MarkEjected(ctx context.Context, q Querier, p *PullRequest) (moved bool, err error) {
-	if _, err := q.ExecContext(ctx, `
-		UPDATE pull_request SET ejected_head_sha = enqueued_head_sha, enqueued_head_sha = NULL,
-			merge_queue_state = 'ejected', updated_at = now()
-		WHERE id = $1`, p.ID); err != nil {
+	res, err := q.ExecContext(ctx, `UPDATE work_item SET state = 'review', updated_at = now()
+		WHERE id = $1 AND state = 'merging'`, p.WorkItemID)
+	if err != nil {
 		return false, err
 	}
-	return s.moveLive(ctx, q, p.WorkItemID, WorkReview)
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+	_, err = q.ExecContext(ctx, `
+		UPDATE pull_request SET ejected_head_sha = enqueued_head_sha, enqueued_head_sha = NULL,
+			merge_queue_state = 'ejected', updated_at = now()
+		WHERE id = $1`, p.ID)
+	return true, err
 }
 
 // MarkMerged records the observed merge. done is false for a stopped work
