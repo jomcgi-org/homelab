@@ -116,16 +116,27 @@ export function measureRoutes({
 export function enforceBudgets(rows, budgets, routes, readDocument) {
   const errors = [];
   const measured = new Set(rows.map((row) => row.route));
-  const routeIds = new Set(routes.map((route) => route.id));
+  const byRoute = new Map(routes.map((route) => [route.id, route]));
+  const apiEndpoints = new Set(budgets.apiEndpoints);
+  for (const route of routes) {
+    if (!scoped(route.id) || !route.endpoint) continue;
+    const isApi = apiEndpoints.has(route.id);
+    const isDocument = Object.hasOwn(budgets.documents, route.id);
+    if (!isApi && !isDocument)
+      errors.push(`${route.id}: classify endpoint as API or budgeted document`);
+    if (isApi && isDocument)
+      errors.push(
+        `${route.id}: endpoint has both API and document classifications`,
+      );
+  }
+  for (const route of apiEndpoints) {
+    if (!byRoute.get(route)?.endpoint)
+      errors.push(`${route}: API classification has no built endpoint`);
+  }
   for (const route of Object.keys(budgets.routes)) {
     if (!measured.has(route)) errors.push(`${route}: budget has no built page`);
   }
-  for (const route of budgets.redirects) {
-    if (!routeIds.has(route))
-      errors.push(`${route}: redirect no longer exists`);
-  }
   for (const row of rows) {
-    if (budgets.redirects.includes(row.route)) continue;
     const budget = budgets.routes[row.route];
     if (!budget) {
       errors.push(`${row.route}: add an explicit bundle budget`);
@@ -150,8 +161,8 @@ export function enforceBudgets(rows, budgets, routes, readDocument) {
   }
   const documents = [];
   for (const [route, budget] of Object.entries(budgets.documents)) {
-    if (!routeIds.has(route))
-      errors.push(`${route}: document route is missing`);
+    if (!byRoute.get(route)?.endpoint)
+      errors.push(`${route}: document classification has no built endpoint`);
     const body = readDocument(budget.file);
     const gzip = gzipSync(body, { level: 9 }).length;
     documents.push({ route, bytes: body.length, gzip, limit: budget.gzip });

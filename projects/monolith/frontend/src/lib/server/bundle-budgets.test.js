@@ -59,7 +59,7 @@ const budgets = () => ({
   routes: {
     [route]: { initialGzip: 1000, deferredGzip: 1000, workerGzip: 1000 },
   },
-  redirects: [],
+  apiEndpoints: [],
   documents: {},
 });
 
@@ -162,11 +162,70 @@ describe("public route bundle budgets", () => {
     const input = fixture();
     const limits = budgets();
     limits.documents["/public/app/frank"] = { file: "frank.html", gzip: 1 };
-    const routes = [...input.manifest._.routes, { id: "/public/app/frank" }];
+    const routes = [
+      ...input.manifest._.routes,
+      { id: "/public/app/frank", endpoint: () => {} },
+    ];
     expect(() =>
       enforceBudgets(measureRoutes(input), limits, routes, () =>
         Buffer.from("<script>const inline = 123;</script>"),
       ),
     ).toThrow("/public/app/frank: HTML");
+  });
+
+  it("requires classification for a new standalone HTML endpoint without a page", () => {
+    const input = fixture();
+    const endpoint = "/public/app/new-document";
+    input.manifest._.routes.push({
+      id: endpoint,
+      page: null,
+      endpoint: () => {},
+    });
+    expect(() =>
+      enforceBudgets(measureRoutes(input), budgets(), input.manifest._.routes),
+    ).toThrow(`${endpoint}: classify endpoint as API or budgeted document`);
+  });
+
+  it("accepts only explicitly classified API endpoints and detects removed ones", () => {
+    const input = fixture();
+    const endpoint = "/public/app/hikes/walk/[uuid]";
+    const limits = budgets();
+    limits.apiEndpoints.push(endpoint);
+    expect(() =>
+      enforceBudgets(measureRoutes(input), limits, input.manifest._.routes),
+    ).toThrow("API classification has no built endpoint");
+    input.manifest._.routes.push({ id: endpoint, endpoint: () => {} });
+    expect(
+      enforceBudgets(measureRoutes(input), limits, input.manifest._.routes),
+    ).toEqual([]);
+  });
+
+  it("does not let an API classification exempt a page on the same route", () => {
+    const input = fixture();
+    input.manifest._.routes[0].endpoint = () => {};
+    const limits = budgets();
+    limits.apiEndpoints.push(route);
+    limits.routes[route].initialGzip = 1;
+    expect(() =>
+      enforceBudgets(measureRoutes(input), limits, input.manifest._.routes),
+    ).toThrow(`${route}: initial JS`);
+  });
+
+  it("checks every page even when it was previously a redirect", () => {
+    const input = fixture();
+    const redirect = "/public/app/firecracker";
+    input.manifest._.routes[0].id = redirect;
+    const limits = budgets();
+    limits.routes[redirect] = {
+      initialGzip: 1,
+      deferredGzip: 1000,
+      workerGzip: 1000,
+    };
+    delete limits.routes[route];
+    // A stale redirect exemption cannot suppress a rendered page's budget.
+    limits.redirects = [redirect];
+    expect(() =>
+      enforceBudgets(measureRoutes(input), limits, input.manifest._.routes),
+    ).toThrow(`${redirect}: initial JS`);
   });
 });
