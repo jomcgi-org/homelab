@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: garage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    # The root Application prunes; removing this file must not cascade into
+    # the object store's volumes and keys.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/garage/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: garage
+  # garage-init writes garage-secrets.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: garage-secrets
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

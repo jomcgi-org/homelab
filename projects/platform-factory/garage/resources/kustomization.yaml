@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Garage, the factory cluster's S3 object store (projects/factory-cluster/
+# README.md, "Object storage"), with the Job that bootstraps it and the
+# namespace's allowlist.
+resources:
+  - network-policy.yaml
+  - crd.yaml
+  - bootstrap.yaml
+  - garage.yaml
+
+configMapGenerator:
+  - name: garage-config
+    namespace: garage
+    files:
+      - garage.toml
+  - name: garage-init
+    namespace: garage
+    files:
+      - garage_init.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

@@ -1,0 +1,48 @@
+# The factory namespace's Garage keys, one per bucket: itsaplan's attachments
+# and the connector's evidence (transcripts, CI logs). garage-init
+# (projects/platform-factory/garage) fills each Secret with
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and
+# BUCKET, so a workload can load it with envFrom. Each workload also needs
+# egress to app.kubernetes.io/name=garage in namespace garage on 3900.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-itsaplan-s3
+  namespace: factory
+  annotations:
+    argocd.argoproj.io/sync-options: Delete=false
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-evidence-s3
+  namespace: factory
+  annotations:
+    argocd.argoproj.io/sync-options: Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: factory
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [factory-itsaplan-s3, factory-evidence-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage

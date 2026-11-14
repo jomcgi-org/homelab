@@ -1,0 +1,219 @@
+# kagent-pg-setup (after every sync, once kagent-pg is healthy): its init
+# container generates the login passwords once and writes the chart's
+# connection-string Secrets (secret_init.py); then psql runs kagent's setup
+# script (setup.psql, setup.sql), which creates the roles and schema and sets
+# the passwords. Both steps are idempotent.
+#
+# ArgoCD owns the Secrets as empty placeholders and ignores their data.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-pg-logins
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Delete=false
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-postgres-owner
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-postgres-readwrite
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+type: Opaque
+---
+# kagent-pg's Garage key, filled by garage-init
+# (projects/platform-factory/garage).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-pg-s3
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [kagent-pg-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kagent-pg-setup
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kagent-pg-setup
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [kagent-pg-logins, kagent-postgres-owner, kagent-postgres-readwrite]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kagent-pg-setup
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kagent-pg-setup
+subjects:
+  - kind: ServiceAccount
+    name: kagent-pg-setup
+    namespace: kagent
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kagent-pg-setup
+  namespace: kagent
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kagent-pg-setup
+    spec:
+      serviceAccountName: kagent-pg-setup
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: secrets
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, /scripts/secret_init.py]
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      containers:
+        - name: setup
+          # The instances' image, for a matching psql.
+          image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+          command:
+            - psql
+            - --no-psqlrc
+            - --set=ON_ERROR_STOP=1
+            - --single-transaction
+            - --file=/scripts/setup.psql
+          env:
+            - name: PGHOST
+              value: kagent-pg-rw
+            - name: PGDATABASE
+              value: kagent
+            - name: PGSSLMODE
+              value: require
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: kagent-pg-superuser
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kagent-pg-superuser
+                  key: password
+            - name: KAGENT_OWNER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kagent-pg-logins
+                  key: owner-password
+            - name: KAGENT_READWRITE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kagent-pg-logins
+                  key: readwrite-password
+            - name: HOME
+              value: /tmp
+          securityContext:
+            runAsUser: 26
+            runAsGroup: 26
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: kagent-pg-setup
+        - name: tmp
+          emptyDir: {}

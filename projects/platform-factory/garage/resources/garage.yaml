@@ -1,0 +1,221 @@
+# Garage v2.5.0: three nodes, one per k3s node, replication factor 3
+# (projects/factory-cluster/README.md, "Object storage"). Plain manifests
+# rather than the upstream chart, which lives only in Garage's Git repository
+# (no published release to pin by digest) and generates its RPC secret with
+# Helm's lookup and randHex.
+#
+# Nodes find each other through Garage's Kubernetes discovery: each publishes
+# a GarageNode with its pod IP on start, so peers survive pod IPs changing.
+# garage-init (bootstrap.yaml) assigns the layout and creates buckets and keys.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage
+  namespace: garage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-discovery
+  namespace: garage
+rules:
+  - apiGroups: [deuxfleurs.fr]
+    resources: [garagenodes]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-discovery
+  namespace: garage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-discovery
+subjects:
+  - kind: ServiceAccount
+    name: garage
+    namespace: garage
+---
+# The S3 API. Path-style requests only: no root_domain, so no wildcard DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: garage
+  labels:
+    app.kubernetes.io/name: garage
+spec:
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: s3
+      port: 3900
+      targetPort: s3
+---
+# The admin API, reachable only by garage-init (network-policy.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage-admin
+  namespace: garage
+  labels:
+    app.kubernetes.io/name: garage
+spec:
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: admin
+      port: 3903
+      targetPort: admin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage-headless
+  namespace: garage
+  labels:
+    app.kubernetes.io/name: garage
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: rpc
+      port: 3901
+      targetPort: rpc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: garage
+  namespace: garage
+spec:
+  # Writes need two of three replicas; drain one node at a time.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: garage
+spec:
+  serviceName: garage-headless
+  replicas: 3
+  # All nodes start together: none is ready for S3 until the layout exists.
+  podManagementPolicy: Parallel
+  # PVCs outlive scale-down and StatefulSet deletion.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage
+    spec:
+      serviceAccountName: garage
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: garage
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: garage
+          image: docker.io/dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+          command: [/garage, -c, /etc/garage/garage.toml, server]
+          env:
+            - name: GARAGE_RPC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: garage-secrets
+                  key: rpc-secret
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: garage-secrets
+                  key: admin-token
+          ports:
+            - name: s3
+              containerPort: 3900
+            - name: rpc
+              containerPort: 3901
+            - name: admin
+              containerPort: 3903
+          # /health answers 503 until a layout exists, which garage-init
+          # applies only once all three pods run, so readiness is the port.
+          readinessProbe:
+            tcpSocket:
+              port: s3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: rpc
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage
+              readOnly: true
+            - name: meta
+              mountPath: /var/lib/garage/meta
+            - name: data
+              mountPath: /var/lib/garage/data
+      volumes:
+        # Generated with a content hash in its name (kustomization.yaml), so
+        # a config change rolls the pods.
+        - name: config
+          configMap:
+            name: garage-config
+  volumeClaimTemplates:
+    - metadata:
+        name: meta
+        annotations:
+          # Also on the StatefulSet's PVCs, which ArgoCD does not track today.
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 1Gi
+    - metadata:
+        name: data
+        annotations:
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          # local-path does not enforce sizes; Garage's layout capacity
+          # (garage_init.py) is what balances data.
+          requests:
+            storage: 50Gi

@@ -1,0 +1,84 @@
+# kagent-pg's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). The kagent controller's egress
+# rule is in the factory chart (postgres.existing.endpoints).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    # Before the Cluster (wave -1), whose instances need the API server.
+    argocd.argoproj.io/sync-wave: "-3"
+  name: kagent-pg
+  namespace: kagent
+spec:
+  # The instances and the operator's initdb and join Jobs.
+  endpointSelector:
+    matchLabels:
+      cnpg.io/cluster: kagent-pg
+  ingress:
+    - fromEndpoints:
+        # The kagent controller (factory chart).
+        - matchLabels:
+            app.kubernetes.io/name: kagent
+            app.kubernetes.io/component: controller
+        - matchLabels:
+            app.kubernetes.io/name: kagent-pg-setup
+        # Replication and pg_basebackup between instances.
+        - matchLabels:
+            cnpg.io/cluster: kagent-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # The instance manager: the operator, and peers checking each other's
+    # status during failover.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cnpg-system
+            app.kubernetes.io/name: cloudnative-pg
+        - matchLabels:
+            cnpg.io/cluster: kagent-pg
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: kagent-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+    # WAL archives and base backups.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: kagent-pg-setup
+  namespace: kagent
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: kagent-pg-setup
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: kagent-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
