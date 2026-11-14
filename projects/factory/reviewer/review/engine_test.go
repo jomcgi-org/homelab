@@ -731,8 +731,7 @@ func TestHoldOnAQueuedPRFailsItsMergeGroup(t *testing.T) {
 		t.Fatalf("mg-7 = %+v", c)
 	}
 	h.gh.label(7, "needs-human") // after the group's check passed
-	e.Tick(ctx)
-	e.Tick(ctx)
+	e.Tick(ctx)                  // the same poll that holds the head fails its group
 	if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionFailure || c.Title != "Queued PR no longer passes" {
 		t.Fatalf("mg-7 after the hold = %+v", c)
 	}

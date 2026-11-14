@@ -1403,7 +1403,7 @@ func TestDoneMoveAtWIPLimitIsReportedAndRetried(t *testing.T) {
 func TestHoldLabelKeepsAPassingHeadOutOfTheQueue(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.delivered()
-	v.gh.label(1, "needs-human")
+	v.gh.label(1, "Needs-Human") // matched in any case
 	v.gh.green("sha-1")
 	v.poll()
 	if n := len(v.gh.Enqueues()); n != 0 {
@@ -1424,9 +1424,9 @@ func TestHoldLabelOnAQueuedPRLeavesItToTheQueue(t *testing.T) {
 	if !v.gh.queued(1) || v.work(101).State != store.WorkMerging {
 		t.Fatal("PR not queued")
 	}
-	// The reviewer fails the merge group's check; the connector does not
-	// dequeue, so a person's own requeue of a held PR stands.
-	v.gh.label(1, "Human")
+	// The reviewer fails the merge group's check, and the ALLGREEN queue
+	// drops the PR; the connector does not dequeue.
+	v.gh.label(1, "human")
 	v.poll()
 	if !v.gh.queued(1) || len(v.gh.Dequeues()) != 0 {
 		t.Fatalf("dequeues = %v, want the queue left to GitHub", v.gh.Dequeues())
