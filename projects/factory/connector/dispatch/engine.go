@@ -1261,6 +1261,15 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	if err != nil {
 		return err
 	}
+	// A stale waiting run resumes as dispatched on transport redelivery.
+	// Its finished grant failure still requires waiting admission, including
+	// the reassignment fence for attempts that need no cancellation.
+	if grantFailure(a) {
+		if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
+			return err
+		}
+		return e.resumeWaiting(ctx, r)
+	}
 	if a.WorkItemEpoch != wi.Epoch {
 		// Reassignment fenced this run's attempt; its cancellation reports it.
 		return nil
@@ -1276,14 +1285,6 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		}
 	case store.AttemptAccepted:
 	default:
-		// A stale waiting run resumes as dispatched on transport redelivery.
-		// Its finished grant failure still requires waiting admission.
-		if grantFailure(a) {
-			if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
-				return err
-			}
-			return e.resumeWaiting(ctx, r)
-		}
 		return nil
 	}
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
