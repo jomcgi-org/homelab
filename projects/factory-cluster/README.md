@@ -223,9 +223,13 @@ Substrate trusts `kagent/kagent-controller` before kagent exists, so the
 `kagent-controller-*` ValidatingAdmissionPolicies stop anyone else from
 claiming it. In namespace `kagent` they deny creating or updating
 ServiceAccount `kagent-controller`, and Pods, Deployments and ReplicaSets that
-run as it. Only ArgoCD's application controller is exempt, plus the
-`kube-system` deployment-controller and replicaset-controller, which create the
-ReplicaSets and Pods for ArgoCD's Deployment.
+run as it. Only ArgoCD's application controller is exempt, plus three
+`kube-system` controllers acting for ArgoCD's Deployment: deployment-controller
+and replicaset-controller create its ReplicaSets and Pods, and
+generic-garbage-collector clears their finalizers when ArgoCD deletes it. An
+admin's `kubectl rollout restart` of that Deployment is therefore denied by
+design; restart it through ArgoCD. The policies don't cover `pods/exec` or
+`pods/ephemeralcontainers`, so those must stay admin-only in `kagent`.
 
 These broad grants are acceptable while only admins hold kubeconfigs. Revisit
 them before actors get internet egress or agents get cluster credentials:
