@@ -1151,8 +1151,18 @@ func TestWaitingGrantFailureCanceledOrReassigned(t *testing.T) {
 			v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "codex_login_required", nil)
 			v.tick(v.e)
 			if reassigned {
+				// Fence a stale waiting run, then redeliver it after takeover.
+				v.its.reclaimElsewhere(1)
+				v.clk.Advance(61 * time.Second)
+				v.tick(v.e)
 				v.its.add(2, "coder-b", 101, "HL-1", "Take over.")
 				v.tick(v.e)
+				fr := v.its.Run(1)
+				claim := fr.run
+				claim.Attempts = fr.attempts
+				if err := v.e.HandleClaim(v.ctx, "coder", &claim); err != nil {
+					t.Fatal(err)
+				}
 			} else {
 				v.its.cancel(1, true)
 				v.clk.Advance(61 * time.Second)
