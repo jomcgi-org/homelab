@@ -662,7 +662,7 @@ not the target's namespace exists yet, and leave with Prometheus.
 | `kubelet`, `kubelet-resource`, `kubelet-cadvisor` | each node's kubelet, :10250 | Node and pod CPU and memory, the root filesystem, host NIC and pod network bytes, CFS throttling; most series are dropped at scrape. Verified against the cluster CA; RBAC grants `nodes/metrics`, not `nodes/proxy` |
 | `cilium-agent`, `hubble`, `cilium-operator` | :9962, :9965, :9963 on the host network | Drop reasons and flow counts by namespace |
 | `kube-state-metrics` | `prometheus/kube-state-metrics:8080` | Node conditions, pod phases, restarts, rollouts |
-| `kagent-controller` | `kagent` controller :8443 | controller-runtime's secure metrics: a TokenReview and a SubjectAccessReview for `GET /metrics` (ClusterRole `prometheus`); self-signed certificate. Enabled in `projects/factory/deploy/values.yaml` |
+| `kagent-controller` | `kagent` controller :8443 | controller-runtime's secure metrics: a TokenReview and a SubjectAccessReview for `GET /metrics` (ClusterRole `prometheus`); self-signed certificate. Enabled in `projects/factory/chart/values-homelab.yaml` |
 | `factory-broker` | broker admin port :8081 | Every other path there needs a reviewed admin or connector token |
 | `factory-connector` | :9090 | |
 | `cnpg` | every instance in `kagent-pg`, `factory-db` and `authentik`, :9187 | |
@@ -869,10 +869,11 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-connector
 
 ## Reviewer
 
-The chart stages `factory-reviewer` disabled. After CI publishes the chart
-and writes its version back, a separate deploy-values PR sets
-`reviewer.enabled: true` and adds `factory-r-homelab-review` to
-`kagent.rbac.namespaces`, keeping the existing namespaces. Substrate's
+The reusable chart defaults `factory-reviewer` to disabled. Its bundled
+`projects/factory/chart/values-homelab.yaml` enables it and adds
+`factory-r-homelab-review` to `kagent.rbac.namespaces`, keeping the existing
+namespaces. Chart changes and homelab values ship in the same PR and OCI
+release; CI's write-back advances both together. Substrate's
 `credentialProvider.namespacePolicies` values already list that namespace;
 a custom `reviewer.bindings.homelab.namespace` needs its own policy entry.
 Regenerate Substrate's checked-in manifests with
@@ -910,7 +911,8 @@ curl -fsS localhost:9090/metrics
 `factory_reviewer_enqueues_total` show progress; retries and GitHub/kagent
 error counters explain stalled checks. Metrics have no scraper ingress yet.
 
-Disable through a deploy-values PR setting `reviewer.enabled: false`.
+Disable through a PR setting `reviewer.enabled: false` in the bundled
+`values-homelab.yaml`, then wait for CI's publish write-back.
 ArgoCD removes the service and its network grants; the ServiceAccount and
 review namespaces remain kept to preserve identity and state. Existing
 checks stay on GitHub, and disabling does not cancel a running kagent task.

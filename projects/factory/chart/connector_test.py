@@ -18,9 +18,7 @@ import pytest
 import yaml
 
 _CHART_DIR = Path(__file__).resolve().parent
-_DEPLOY_VALUES = Path(
-    os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
-)
+_DEPLOY_VALUES = Path(os.environ.get("DEPLOY_VALUES", _CHART_DIR / "values-homelab.yaml"))
 _RENDER_LOCK = Path(
     os.environ.get("RENDER_LOCK", _CHART_DIR.parent / "deploy" / "render.sha256")
 )
@@ -38,8 +36,7 @@ _DB = [
         }
     }
 ]
-# The deploy values with the connector on, as the follow-up enablement sets
-# them.
+# Explicit enablement overrides for tests of the connector's chart wiring.
 _ENABLE_VALUES = {
     "itsaplan": {"enabled": True, "database": {"endpoints": _DB}},
     "kagent": {
@@ -141,9 +138,10 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
 
 
 def test_deploy_values_render_is_locked() -> None:
-    # What ArgoCD applies from main's deploy values (no CRDs) changes only
+    # What ArgoCD applies from the bundled homelab values (no CRDs) changes only
     # with a deliberate update of deploy/render.sha256. The chart version
     # label is normalized, since CI writes the version back after publishing.
+    # package_test.py checks these same inputs with CI's image pins applied.
     rendered = re.sub(
         r"(helm\.sh/chart: factory-)\S+", r"\g<1>VERSION", _helm(_CHART_DIR, [])
     )
@@ -152,7 +150,7 @@ def test_deploy_values_render_is_locked() -> None:
     assert got == want, (
         "the deploy values' render changed; if that is intended, write the new "
         "hash to projects/factory/deploy/render.sha256: helm template factory "
-        "projects/factory/chart -n kagent -f projects/factory/deploy/values.yaml "
+        "projects/factory/chart -n kagent -f projects/factory/chart/values-homelab.yaml "
         "| sed -E 's|(helm\\.sh/chart: factory-)[^[:space:]]+|\\1VERSION|' "
         f"| sha256sum (got {got})"
     )

@@ -5,6 +5,13 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # targets, and a BUILD file there would take them out of :chart.
 # gazelle:exclude files
 
+# helm_chart's glob packages this as an optional values file. Keeping it in
+# the chart also makes values-only changes inputs to chart versioning.
+exports_files(
+    ["values-homelab.yaml"],
+    visibility = ["//projects/factory/deploy:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     images = {
@@ -35,6 +42,28 @@ argocd_app(
         "template",
     ],
     values_files = ["//projects/factory/deploy:deploy_values"],
+)
+
+py_test(
+    name = "package_test",
+    srcs = ["package_test.py"],
+    data = [
+        ":chart",
+        ":chart.package",
+        "//projects/factory/deploy:application.yaml",
+        "//projects/factory/deploy:render_lock",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "APPLICATION": "$(rootpath //projects/factory/deploy:application.yaml)",
+        "CHART_PACKAGE": "$(rootpath :chart.package)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(

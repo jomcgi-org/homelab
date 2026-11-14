@@ -1,6 +1,6 @@
-# The factory home cluster's values for the factory chart
-# (projects/factory/chart). The cluster has one install, so there is no
-# overlay.
+# The factory home cluster's values, packaged with the factory chart and
+# selected explicitly by deploy/application.yaml. Chart and values ship in
+# one release; values.yaml remains the reusable chart's defaults.
 
 # kagent's database is the CNPG Cluster kagent-pg in its own namespace,
 # kagent-pg (projects/platform-factory/kagent-postgres), prepared with

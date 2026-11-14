@@ -7,12 +7,13 @@ exports_files(
 
 filegroup(
     name = "deploy_values",
-    srcs = ["values.yaml"],
+    srcs = ["//projects/factory/chart:values-homelab.yaml"],
     visibility = ["//projects/factory/chart:__pkg__"],
 )
 
-# The sha256 of the factory chart's render of these values (ArgoCD's: no
-# CRDs, the chart version label normalized). connector_test.py checks it, so
+# The sha256 of the factory chart's render of its bundled homelab values (no
+# CRDs, the chart version label normalized, before CI injects image digests).
+# connector_test.py checks it; package_test.py checks the published inputs, so
 # a change to what the cluster gets is made deliberately; regenerate with
 # the command its failure prints.
 filegroup(
