@@ -25,6 +25,18 @@ const writerLockKey = 0x666163746f7279 // "factory"
 // Store wraps the connector database.
 type Store struct {
 	DB *sql.DB
+	// Now stamps the one column the dispatch loop compares with its own
+	// clock, an outbox item's first due time. Nil is time.Now. A database
+	// default would mix the database's clock with the engine's, so a test
+	// clock behind real time never saw its items come due.
+	Now func() time.Time
+}
+
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 // Open connects to Postgres with the lib/pq driver.
@@ -768,9 +780,9 @@ func (s *Store) Enqueue(ctx context.Context, q Querier, kind, dedupe string, run
 		return err
 	}
 	_, err = q.ExecContext(ctx, `
-		INSERT INTO outbox (kind, dedupe_key, run_id, agent_key, payload)
-		VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5)
-		ON CONFLICT (dedupe_key) DO NOTHING`, kind, dedupe, runID, agentKey, b)
+		INSERT INTO outbox (kind, dedupe_key, run_id, agent_key, payload, next_attempt_at)
+		VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5, $6)
+		ON CONFLICT (dedupe_key) DO NOTHING`, kind, dedupe, runID, agentKey, b, s.now())
 	return err
 }
 
