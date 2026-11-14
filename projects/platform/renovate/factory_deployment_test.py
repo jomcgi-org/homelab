@@ -49,9 +49,10 @@ def test_factory_root_reaches_the_shared_chart_and_namespace_policy():
     assert parent["spec"]["source"]["path"] == "projects/factory-cluster/root"
     root = _load(cluster / "root/root-application.yaml")
     assert root["spec"]["source"]["path"] == "projects/factory-cluster"
-    assert "../../projects/platform-factory" in _load(cluster / "kustomization.yaml")[
-        "resources"
-    ]
+    assert (
+        "../../projects/platform-factory"
+        in _load(cluster / "kustomization.yaml")["resources"]
+    )
     assert "./renovate" in _load(FACTORY / "kustomization.yaml")["resources"]
     assert _load(DEPLOY / "kustomization.yaml")["resources"] == ["application.yaml"]
     application = _application()
@@ -103,7 +104,7 @@ def test_factory_renders_only_a_suspended_job_and_existing_credential():
     container = pod["containers"][0]
     values = _load(HERE / "values.yaml")
     assert container["image"] == (
-        f'{values["image"]["repository"]}:{values["image"]["tag"]}'
+        f"{values['image']['repository']}:{values['image']['tag']}"
     )
     assert container["resources"]["requests"]["memory"] == "4Gi"
     assert container["resources"]["limits"]["memory"] == "4Gi"
