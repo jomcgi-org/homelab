@@ -42,7 +42,10 @@ export function App() {
                   <HStack gap={2} wrap="wrap">
                     <Button label={`Open ${tool.name}`} href={tool.href} />
                     {tool.name === "GitHub" && (
-                      <Button label="Open factory PRs" href={paths.pullRequests} />
+                      <Button
+                        label="Open factory PRs"
+                        href={paths.pullRequests}
+                      />
                     )}
                   </HStack>
                 )}

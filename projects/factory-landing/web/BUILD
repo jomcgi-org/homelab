@@ -12,7 +12,13 @@ npm_link_all_packages(name = "node_modules")
 
 js_library(
     name = "src",
-    srcs = glob(["src/**"], exclude = ["src/**/*.test.tsx", "src/setup.ts"]) + [
+    srcs = glob(
+        ["src/**"],
+        exclude = [
+            "src/**/*.test.tsx",
+            "src/setup.ts",
+        ],
+    ) + [
         "index.html",
         "package.json",
         "tsconfig.json",
@@ -49,7 +55,10 @@ build_test(
 
 js_library(
     name = "test_src",
-    srcs = glob(["src/**/*.test.tsx"]) + ["src/setup.ts", "vitest.config.ts"],
+    srcs = glob(["src/**/*.test.tsx"]) + [
+        "src/setup.ts",
+        "vitest.config.ts",
+    ],
     deps = [
         ":node_modules/@testing-library/dom",
         ":node_modules/@testing-library/react",

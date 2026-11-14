@@ -30,14 +30,22 @@ createServer(async (request, response) => {
     return;
   }
   try {
-    const pathname = decodeURIComponent(new URL(request.url, "http://static").pathname);
-    const file = resolve(root, `.${pathname === "/" ? "/index.html" : pathname}`);
+    const pathname = decodeURIComponent(
+      new URL(request.url, "http://static").pathname,
+    );
+    const file = resolve(
+      root,
+      `.${pathname === "/" ? "/index.html" : pathname}`,
+    );
     if (!file.startsWith(root + sep) || !types[extname(file)]) {
       response.writeHead(404, headers).end();
       return;
     }
     const body = await readFile(file);
-    response.writeHead(200, { ...headers, "Content-Type": types[extname(file)] });
+    response.writeHead(200, {
+      ...headers,
+      "Content-Type": types[extname(file)],
+    });
     response.end(request.method === "HEAD" ? undefined : body);
   } catch {
     response.writeHead(404, headers).end();

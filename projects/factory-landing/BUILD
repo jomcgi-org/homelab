@@ -9,7 +9,10 @@ exec_filegroup(
 
 genrule(
     name = "static_tar",
-    srcs = ["server.mjs", ":web_dist"],
+    srcs = [
+        "server.mjs",
+        ":web_dist",
+    ],
     outs = ["static.tar"],
     cmd = """
         mkdir -p "$(@D)/static-root/app/build/static"
@@ -32,6 +35,9 @@ apko_image(
 # Indexed through //:repo_docs so the factory does not modify the monolith.
 filegroup(
     name = "repo_docs",
-    srcs = glob(["**/*.md"], exclude = ["**/node_modules/**"]),
+    srcs = glob(
+        ["**/*.md"],
+        exclude = ["**/node_modules/**"],
+    ),
     visibility = ["//:__pkg__"],
 )
