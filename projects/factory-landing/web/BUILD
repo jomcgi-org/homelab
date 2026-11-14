@@ -58,6 +58,8 @@ js_library(
     srcs = glob(["src/**/*.test.tsx"]) + [
         "src/setup.ts",
         "vitest.config.ts",
+        "//projects/factory-landing:server.d.mts",
+        "//projects/factory-landing:server.mjs",
     ],
     deps = [
         ":node_modules/@testing-library/dom",

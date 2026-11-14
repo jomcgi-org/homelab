@@ -9,3 +9,33 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
   gap: var(--spacing-4);
 }
+
+.factory-page section {
+  min-width: 0;
+}
+
+.factory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.factory-list li {
+  padding-block: var(--spacing-3);
+  overflow-wrap: anywhere;
+}
+
+.factory-list li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.factory-list a {
+  color: var(--color-text-accent);
+  text-underline-offset: 0.2em;
+}
+
+@media (max-width: 40rem) {
+  .factory-page {
+    padding: var(--spacing-3);
+  }
+}

@@ -6,6 +6,7 @@ go_library(
         "delivery.go",
         "notify.go",
         "recovery.go",
+        "status.go",
         "store.go",
         "transcript.go",
     ],
@@ -18,6 +19,7 @@ go_test(
     name = "store_test",
     srcs = [
         "recovery_test.go",
+        "status_test.go",
         "store_test.go",
         "transcript_test.go",
     ],

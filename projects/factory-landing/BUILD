@@ -1,6 +1,21 @@
 # gazelle:ignore
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+
+exports_files(
+    [
+        "server.d.mts",
+        "server.mjs",
+    ],
+    visibility = ["//projects/factory-landing/web:__pkg__"],
+)
+
+js_test(
+    name = "server_test",
+    entry_point = "server.test.mjs",
+    data = ["server.mjs"],
+)
 
 exec_filegroup(
     name = "web_dist",

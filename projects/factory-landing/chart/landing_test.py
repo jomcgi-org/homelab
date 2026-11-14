@@ -10,7 +10,7 @@ import yaml
 DIGEST = "sha256:" + "0" * 64
 
 
-def test_private_static_app():
+def test_private_status_app():
     chart = Path(__file__).resolve().parent
     result = subprocess.run(
         [
@@ -27,7 +27,12 @@ def test_private_static_app():
         capture_output=True,
         text=True,
     )
-    docs = {doc["kind"]: doc for doc in yaml.safe_load_all(result.stdout) if doc}
+    rendered = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    docs = {
+        doc["kind"]: doc
+        for doc in rendered
+        if doc["metadata"]["name"] not in ("factory-connector-status", "factory-landing-status")
+    }
     route = docs["HTTPRoute"]["spec"]
     assert route["hostnames"] == ["factory.jomcgi.dev"]
     assert route["parentRefs"] == [
@@ -60,8 +65,39 @@ def test_private_static_app():
     assert container["image"].endswith(f"@{DIGEST}")
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert "envFrom" not in container
+    assert container["env"] == [
+        {"name": "CONNECTOR_STATUS_URL", "value": "http://factory-connector-status.factory.svc:8082/status"}
+    ]
     policy = docs["CiliumNetworkPolicy"]["spec"]
-    assert "egress" not in policy
+    connector_labels = {
+        "app.kubernetes.io/name": "factory-connector",
+        "app.kubernetes.io/instance": "factory",
+    }
+    ports = [{"ports": [{"port": "8082", "protocol": "TCP"}]}]
+    assert policy["egress"] == [{
+        "toEndpoints": [{"matchLabels": {
+            "k8s:io.kubernetes.pod.namespace": "factory", **connector_labels,
+        }}],
+        "toPorts": ports,
+    }]
+    status_service = next(doc for doc in rendered if doc["metadata"]["name"] == "factory-connector-status")
+    assert status_service["metadata"]["namespace"] == "factory"
+    assert status_service["spec"]["selector"] == connector_labels
+    assert status_service["spec"]["ports"] == [
+        {"name": "status", "port": 8082, "targetPort": 8082, "protocol": "TCP"}
+    ]
+    status_policy = next(doc for doc in rendered if doc["metadata"]["name"] == "factory-landing-status")
+    assert status_policy["metadata"]["namespace"] == "factory"
+    assert status_policy["spec"] == {
+        "endpointSelector": {"matchLabels": connector_labels},
+        "ingress": [{
+            "fromEndpoints": [{"matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "factory-landing",
+                "app.kubernetes.io/name": "factory-landing",
+            }}],
+            "toPorts": ports,
+        }],
+    }
     peer = policy["ingress"][0]["fromEndpoints"][0]["matchLabels"]
     assert peer["k8s:io.kubernetes.pod.namespace"] == "edge"
     assert peer["gateway.envoyproxy.io/owning-gateway-name"] == "edge"

@@ -9,6 +9,7 @@ go_library(
         "etag.go",
         "pulls.go",
         "recovery.go",
+        "status.go",
         "tokens.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/github",
@@ -21,6 +22,7 @@ go_test(
         "broker_comments_test.go",
         "github_test.go",
         "recovery_test.go",
+        "status_test.go",
     ],
     embed = [":github"],
 )

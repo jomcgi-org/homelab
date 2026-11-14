@@ -28,6 +28,7 @@ type Config struct {
 	BrokerTokenFile    string // FACTORY_CONNECTOR_BROKER_TOKEN_FILE
 	GitHubURL          string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
 	MetricsAddr        string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
+	StatusAddr         string // FACTORY_CONNECTOR_STATUS_ADDR, default :8082
 	Holder             string // POD_NAME, default hostname
 	NotifyURL          string // FACTORY_CONNECTOR_NOTIFY_URL; empty disables notify
 	NotifyTokenURL     string // FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
@@ -136,6 +137,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		BrokerTokenFile:    getenv("FACTORY_CONNECTOR_BROKER_TOKEN_FILE"),
 		GitHubURL:          strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
 		MetricsAddr:        getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
+		StatusAddr:         getenv("FACTORY_CONNECTOR_STATUS_ADDR"),
 		Holder:             getenv("POD_NAME"),
 		NotifyURL:          getenv("FACTORY_CONNECTOR_NOTIFY_URL"),
 		NotifyTokenURL:     getenv("FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"),
@@ -143,6 +145,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if c.MetricsAddr == "" {
 		c.MetricsAddr = ":9090"
+	}
+	if c.StatusAddr == "" {
+		c.StatusAddr = ":8082"
 	}
 	if c.KagentTokenFile == "" {
 		c.KagentTokenFile = "/var/run/secrets/kagent/token"

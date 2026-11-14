@@ -2,11 +2,21 @@ image:
   repository: ghcr.io/jomcgi/homelab/projects/factory-landing
   digest: "" # CI supplies the content digest when packaging the chart.
 hostname: factory.jomcgi.dev
+# templates/connector-status.yaml: the status Service and its ingress grant.
+connector:
+  namespace: factory
+  matchLabels:
+    app.kubernetes.io/name: factory-connector
+    app.kubernetes.io/instance: factory
+  statusPort: 8082
 
 workloads:
   factory-landing:
     containerName: web
     replicas: 2
+    env:
+      - name: CONNECTOR_STATUS_URL
+        value: http://factory-connector-status.factory.svc:8082/status
     ports:
       - name: http
         containerPort: 8080
@@ -33,6 +43,10 @@ workloads:
       ingress:
         - peer: edge
           port: 8080
+      # Application egress reaches only the connector's status port.
+      egress:
+        - peer: connector
+          port: 8082
 
 secrets:
   ghcr-imagepull-secret:
@@ -47,5 +61,6 @@ exceptions:
     reason: >-
       Preserve the existing policy during the HOME-69 migration. The factory
       cluster's kept default-deny CiliumClusterwideNetworkPolicy already enables
-      deny in both directions and permits DNS; this service has no application
-      egress. Remove this exception if deploying outside that baseline.
+      deny in both directions and permits DNS; this service's only application
+      egress is the connector status port. Remove this exception if deploying
+      outside that baseline.
