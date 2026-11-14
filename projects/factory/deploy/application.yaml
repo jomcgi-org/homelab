@@ -53,6 +53,34 @@ spec:
       namespace: factory
       name: factory-broker-quota
       jsonPointers: [/data]
+    # itsaplan's generated secrets, bootstrap state and agent keys, written by
+    # its Jobs into Secrets the chart declares empty (itsaplan_test.py checks
+    # this list covers them).
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan-admin
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan-bootstrap
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan-agent-homelab-codex
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan-agent-factory-coordinator
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true

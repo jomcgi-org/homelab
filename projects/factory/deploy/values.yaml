@@ -45,3 +45,21 @@ repositories:
     baseBranch: main
     namespace: factory-r-homelab
     agent: codex
+
+# itsaplan at factory-plan.jomcgi.dev, behind the edge's Authentik sign-in.
+# Its database is factory-db (projects/platform-factory/factory-db), whose
+# setup Job writes factory/factory-itsaplan-db; its S3 key is
+# factory/factory-itsaplan-s3 and its OIDC client secret
+# factory/factory-itsaplan-oidc, both from factory-buckets.
+itsaplan:
+  enabled: true
+  database:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: factory-db
+          cnpg.io/cluster: factory-db
+  s3:
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: garage
+          app.kubernetes.io/name: garage
