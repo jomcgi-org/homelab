@@ -65,10 +65,13 @@ install -m 0644 "${HERE}/containerd-runsc.toml" \
 	/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/runsc.toml
 
 # The install script is taken from the pinned release tag, not get.k3s.io.
+# It restarts k3s only when the binary, unit or env file changed; k3s reads
+# config.yaml and registries.yaml only at start, so a rerun forces the restart.
 installer="https://raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh"
 if [[ "${MODE}" == init ]]; then
-	curl -fsSL "${installer}" | INSTALL_K3S_VERSION="${K3S_VERSION}" sh -s - server --cluster-init
+	curl -fsSL "${installer}" | INSTALL_K3S_VERSION="${K3S_VERSION}" INSTALL_K3S_FORCE_RESTART=true \
+		sh -s - server --cluster-init
 else
-	curl -fsSL "${installer}" | INSTALL_K3S_VERSION="${K3S_VERSION}" K3S_TOKEN="${K3S_TOKEN}" \
-		sh -s - server --server "${SERVER}"
+	curl -fsSL "${installer}" | INSTALL_K3S_VERSION="${K3S_VERSION}" INSTALL_K3S_FORCE_RESTART=true \
+		K3S_TOKEN="${K3S_TOKEN}" sh -s - server --server "${SERVER}"
 fi
