@@ -1,5 +1,6 @@
 <script>
-  import { onMount } from "svelte";
+  import { flushSync, onMount } from "svelte";
+  import { browser } from "$app/environment";
   import { page } from "$app/state";
   import {
     SiteIndex,
@@ -12,25 +13,37 @@
   let GraphView = $state(null);
   let graphStatus = $state("loading");
   let attempt = $state(0);
-  let now = $state(Date.now());
+  let expired = $state(false);
+  let moduleFailed = false;
   let stopped = false;
   const overview = $derived(
-    data.overview?.expiresAt > now ? data.overview : null,
+    !expired &&
+      data.overview &&
+      (browser
+        ? performance.now() < data.overviewDeadline
+        : Date.now() < data.overview.expiresAt)
+      ? data.overview
+      : null,
   );
 
   $effect(() => {
-    const deadline = data.overview?.expiresAt;
-    const current = Date.now();
-    now = current;
-    if (!deadline) return;
-    const timer = setTimeout(
-      () => (now = Date.now()),
-      Math.max(0, deadline - current),
-    );
+    const deadline = data.overviewDeadline;
+    const remaining =
+      document.visibilityState === "hidden" ? 0 : deadline - performance.now();
+    expired = !Number.isFinite(remaining) || remaining <= 0;
+    if (!Number.isFinite(remaining) || remaining <= 0) return;
+    // Expire unconditionally. A wall-clock adjustment cannot revive titles.
+    const timer = setTimeout(() => (expired = true), remaining);
     return () => clearTimeout(timer);
   });
 
   async function loadGraph() {
+    if (moduleFailed) {
+      // Browsers retain a failed module evaluation for this document. Fetch a
+      // fresh manifest and module graph instead of retrying the same URL.
+      window.location.reload();
+      return;
+    }
     graphStatus = "loading";
     try {
       const module = await import("$lib/public/notes/GraphView.svelte");
@@ -39,11 +52,23 @@
         attempt++;
       }
     } catch {
-      if (!stopped) graphStatus = "error";
+      if (!stopped) {
+        moduleFailed = true;
+        graphStatus = "error";
+      }
     }
   }
 
   onMount(() => {
+    const expire = () => flushSync(() => (expired = true));
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") expire();
+    };
+    // Clear before a page can be frozen or stored in the back-forward cache.
+    // Restoring the document cannot revive this first-view snapshot.
+    window.addEventListener("pagehide", expire);
+    document.addEventListener("visibilitychange", onVisibility);
+    onVisibility();
     // Let the server-rendered titles paint before downloading the canvas,
     // markdown renderer and D3. The full graph keeps its own HTTP lease.
     let frame = requestAnimationFrame(() => {
@@ -52,6 +77,8 @@
     return () => {
       stopped = true;
       cancelAnimationFrame(frame);
+      window.removeEventListener("pagehide", expire);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   });
 </script>

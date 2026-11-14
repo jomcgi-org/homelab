@@ -9,25 +9,36 @@ The browser imports the canvas, D3 controls and note renderer after an initial
 paint opportunity. The overview occupies the same reserved `80dvh`, minimum
 480px, region as the graph. It remains visible until the canvas reports a
 successful paint. A failed graph request or unavailable canvas retains current
-titles and offers a retry. JavaScript-disabled visitors can read the overview.
+titles and offers a retry. A failed module download instead retries with a fresh
+document, because browsers can retain module failures for the document's life.
+JavaScript-disabled visitors can read the overview.
 
 ## Freshness
 
 The page uses `readPublicSnapshot("graph")`, the same anonymous projection as
-the graph proxy. Its maximum shared and browser cache lifetime is 60 seconds,
-further limited by the upstream public notes' earliest review or validity
-deadline. The snapshot's remaining `Cache-Control`, Cloudflare cache header
-and Date are preserved. Kit computes the HTML validator from the page body,
-including its absolute deadline, so renewing an unchanged graph cannot
-revalidate HTML carrying an expired deadline. There is no stale-while-revalidate or
-stale-if-error allowance for current-only note titles.
+the graph proxy. The snapshot's maximum cache lifetime is 60 seconds, further
+limited by the upstream public notes' earliest review or validity deadline.
+There is no stale-while-revalidate or stale-if-error allowance for current-only
+note titles. The complete graph retains its existing independent HTTP lease,
+cache headers and refresh behavior.
 
-The overview carries an absolute expiry calculated from the remaining lease,
-including Date and Age. Hydration cannot restart it. The browser removes the
-overview's titles at that deadline even if the canvas never loads. Missing,
-expired, private or no-store snapshot leases produce an unavailable overview
-with `no-store` headers. The complete graph retains its existing independent
-HTTP lease and refresh behavior.
+HTML and SvelteKit data responses are deliberately `no-store`. A cached document
+cannot reliably expose its current CDN age to page JavaScript, and the browser
+wall clock cannot establish a review deadline. The HTML cache-HIT target remains
+outstanding for Notes; [#7960](https://github.com/jomcgi-org/homelab/issues/7960)
+tracks the cache and freshness decisions.
+
+The server consumes upstream Date, Age and processing time before serializing
+the remaining lease. Each response receives a unique `Server-Timing` token.
+The browser matches that token to its navigation or resource timing entry and
+starts the remaining lease at that request's monotonic start time. This
+conservatively subtracts origin work, transfer, hydration and any time spent in
+SvelteKit's preload cache. Missing timing uses document start, never a new lease.
+The absolute expiry is used only by server rendering; client wall-clock skew or
+adjustments cannot extend the overview. Its timer removes titles unconditionally.
+Page hide or tab backgrounding clears them before suspension or a back-forward
+cache restore. Missing, expired, private or no-store snapshot leases produce an
+unavailable overview.
 
 ## Budgets and evidence
 
@@ -61,7 +72,14 @@ document, asset links and server-loader time.
 
 JavaScript sizes come from the successful public Vite build and its static
 import graph. The overview defers 27,600 gzip bytes from the initial JavaScript
-load, a 30.3% reduction. The complete graph remains available after hydration.
+load, a 30.3% reduction. These measurements precede the monotonic lease fix.
+The complete graph remains available after hydration.
+
+The lease fix was measured separately with the same eight synthetic titles
+before and after, one warmup and three renders. Component HTML remained
+4,812 bytes, 1,235 gzip bytes, with eight titles. Serialized page data grew
+from 772 to 864 bytes for the lease and timing token. Median component rendering
+was 0.435ms before and 0.276ms after. Its bundle size awaits the integrated build.
 
 The sub-millisecond timing difference is measurement noise. No production
 speedup is established by these local measurements.
@@ -70,5 +88,7 @@ Adjacent server, SSR and DOM tests run through
 `//projects/monolith/frontend:test`. They cover the remaining cache lease,
 readable first-response data, expired hydration, graph failures, unavailable
 canvas, expiry while the graph fails, and replacement only after canvas paint.
+Regressions cover prefetched responses, missing timing, browser clock skew,
+backward clock changes, page suspension, and failed module retry.
 Existing focus, search, filtering, theme, note-panel and parsed-cache tests
 continue to exercise the complete graph.

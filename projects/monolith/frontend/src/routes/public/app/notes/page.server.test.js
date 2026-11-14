@@ -48,9 +48,14 @@ describe("/app/notes first view", () => {
         .reverse()
         .map(({ id, title }) => ({ id, title })),
       expiresAt: 1_010_000,
+      leaseMs: 10_000,
+      leaseToken: expect.any(String),
     });
-    const { etag, "last-modified": modified, ...pageHeaders } = headers;
-    expect(setHeaders).toHaveBeenCalledExactlyOnceWith(pageHeaders);
+    expect(setHeaders).toHaveBeenCalledExactlyOnceWith({
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+      "server-timing": `notes-lease;desc="${data.overview.leaseToken}"`,
+    });
     expect(JSON.stringify(data)).not.toContain('"edges"');
   });
 
@@ -74,6 +79,7 @@ describe("/app/notes first view", () => {
       expect(setHeaders.mock.calls[0][0]).not.toHaveProperty("last-modified");
     }
     expect(pages[0].overview.titles).toEqual(pages[1].overview.titles);
+    expect(pages[0].overview.leaseToken).not.toBe(pages[1].overview.leaseToken);
     expect(pages[1].overview.expiresAt - pages[0].overview.expiresAt).toBe(
       60_000,
     );
@@ -104,6 +110,16 @@ describe("/app/notes first view", () => {
       headers: { ...headers, age: "13" },
     });
     expect(await load({ setHeaders: vi.fn() })).toEqual({ overview: null });
+  });
+
+  it("consumes upstream work and transit against the origin clock", async () => {
+    readPublicSnapshot.mockImplementation(async () => {
+      vi.setSystemTime(1_008_000);
+      return { body: '{"nodes":[],"edges":[]}', headers };
+    });
+    const data = await load({ setHeaders: vi.fn() });
+    expect(data.overview.leaseMs).toBe(5_000);
+    expect(data.overview.expiresAt).toBe(1_013_000);
   });
 
   it.each(["unavailable", "malformed"])(
