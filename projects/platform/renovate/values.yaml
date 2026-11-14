@@ -4,6 +4,8 @@ image:
   tag: "44.14.10-full"
   pullPolicy: IfNotPresent
 
+# The factory overlay uses Kubernetes Jobs; the hub still uses Argo Workflows.
+workloadKind: CronWorkflow
 schedule: "0 4 * * *"
 timezone: America/Vancouver
 suspend: false

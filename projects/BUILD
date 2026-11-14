@@ -36,6 +36,18 @@ exports_files(
     visibility = ["//projects/loom/deploy:__pkg__"],
 )
 
+# The factory deployment test follows the root Applications and platform tree.
+filegroup(
+    name = "factory_renovate_enrollment_manifests",
+    srcs = [
+        "factory-cluster/factory-root-application.yaml",
+        "factory-cluster/kustomization.yaml",
+        "factory-cluster/root/root-application.yaml",
+        "platform-factory/kustomization.yaml",
+    ],
+    visibility = ["//projects/platform/renovate:__pkg__"],
+)
+
 # The faas workload test checks build_workload_spec against this CRD sample.
 filegroup(
     name = "faas_workload_sample",

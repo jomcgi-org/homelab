@@ -147,6 +147,16 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n kube-system exec ds/cilium -c cilium-
 
 That shows one node; run it against each agent pod for the whole cluster.
 
+## Dependency updates
+
+The `renovate` Application deploys a suspended Kubernetes CronJob in its own
+namespace, using the shared platform chart and `values-factory.yaml`. It
+uses the existing `k8s-homelab/renovate-github` item and a Cilium egress
+allowlist for GitHub and dependency registries. Joe verifies the credential
+before the first run. See [Renovate operations](../platform/renovate/README.md)
+for the manual-run command and the required `pr-checks` and `factory review`
+gate. Major updates stay manual.
+
 ## factory.jomcgi.dev
 
 The private entry point is a static Astryx landing page
