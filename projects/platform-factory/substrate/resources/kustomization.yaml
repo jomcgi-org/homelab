@@ -1,8 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Agent Substrate 1.0.1 from the kagent-dev fork, the build kagent v1.0.1
-# needs: its four Helm charts rendered by ../render-upstream.sh with ../values/
+# Agent Substrate 1.0.1 from the kagent-dev fork, the release line kagent
+# v1.0.1 uses: its four Helm charts rendered by ../render-upstream.sh with ../values/
 # into upstream/, every image pinned by digest, plus the fork's bundled
 # PostgreSQL. The patches below and the files beside this one are what this
 # cluster adds; the generated CA and JWT pools and the snapshot store's key
@@ -33,6 +33,7 @@ resources:
   - api-server-config.yaml
   - snapshot-store.yaml
   - network-policy.yaml
+  - kagent-identity-guard.yaml
 
 configMapGenerator:
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
@@ -60,6 +61,15 @@ secretGenerator:
       - ownerConnectionString=postgresql://substrate_owner_user@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/run/servicedns.podcert.ate.dev/trust-bundle.pem&sslcert=/run/postgres.podcert.ate.dev/substrate_owner_user.pem&sslkey=/run/postgres.podcert.ate.dev/substrate_owner_user.pem
 
 patches:
+  # The credential provider's Secret reader ClusterRole is bound per namespace
+  # instead of cluster-wide: the kagent install binds it in kagent with a
+  # RoleBinding, so the provider can read no other namespace's Secrets.
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: k8s-credential-provider-secret-reader
   # Removing or renaming this Application must not take the cluster's Substrate
   # state with it: the CRDs (every WorkerPool and SandboxConfig), the
   # namespaces holding bootstrap-substrate.sh's keys, and the snapshot volume.
