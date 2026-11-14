@@ -196,6 +196,12 @@ broker:
   # and to fetch connector GitHub tokens. Empty: nobody yet.
   adminSubjects: []
   connectorSubjects: []
+  # A ServiceAccount in the broker's namespace for operators, who mint a
+  # short-lived token for it (audience factory-broker) to call the admin
+  # endpoints, such as the device login. The chart creates it and adds its
+  # subject to adminSubjects; a ValidatingAdmissionPolicy keeps any Pod from
+  # running as it. Empty: none.
+  operatorServiceAccount: ""
   # The factory GitHub App (jomcgi-factory) from 1Password item
   # k8s-homelab/factory-github-app (app-id, installation-id, private-key).
   # Off until that item exists: the broker then mints no GitHub tokens and the

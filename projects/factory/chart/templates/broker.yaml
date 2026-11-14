@@ -20,6 +20,11 @@ and metrics. Provider and GitHub credentials exist only in this pod.
 {{- if .Values.connector.enabled }}
 {{- $connectorSubjects = append $connectorSubjects (include "factory.connectorSubject" .) | uniq }}
 {{- end }}
+{{- /* The operators' ServiceAccount logs in and refreshes the grant. */}}
+{{- $adminSubjects := $b.adminSubjects }}
+{{- if $b.operatorServiceAccount }}
+{{- $adminSubjects = append $adminSubjects (printf "system:serviceaccount:%s:%s" $ns $b.operatorServiceAccount) | uniq }}
+{{- end }}
 {{- $config := dict
   "namespace" $ns
   "listenAddr" (printf ":%d" (int $b.relayPort))
@@ -30,7 +35,7 @@ and metrics. Provider and GitHub credentials exist only in this pod.
     "audience" "factory-broker"
     "caFile" "/run/substrate-servicedns/trust-bundle.pem"
     "allowedAtespaces" $atespaces)
-  "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $b.adminSubjects "connectorSubjects" $connectorSubjects)
+  "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $adminSubjects "connectorSubjects" $connectorSubjects)
   "bindings" $bindings
 }}
 {{- if $github }}
@@ -63,6 +68,57 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 ---
+{{- if $b.operatorServiceAccount }}
+# Operators' identity for the admin endpoints: they mint a short-lived token
+# with `kubectl create token ... --audience factory-broker`. Nothing runs as
+# it (factory-broker-operator-pods below).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $b.operatorServiceAccount }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+# A Pod running as the operators' ServiceAccount could log in and mint GitHub
+# tokens from inside the cluster; only operators hold its tokens.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-broker-operator-pods
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $ns }}
+  validations:
+    - expression: >-
+        !has(object.spec.serviceAccountName) ||
+        object.spec.serviceAccountName != {{ $b.operatorServiceAccount | squote }}
+      message: No Pod may run as the factory broker's operator ServiceAccount.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-broker-operator-pods
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  policyName: factory-broker-operator-pods
+  validationActions: [Deny]
+---
+{{- end }}
 # The grant Secret, empty until the broker's device login. The broker only
 # updates it, so a missing Secret is a deployment fault (state `missing`). Its
 # data is the broker's: the Application ignores /data and never prunes or

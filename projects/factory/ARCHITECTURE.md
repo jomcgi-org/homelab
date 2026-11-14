@@ -548,7 +548,10 @@ and retries once, so a brief overlap during a rollout is safe.
   login: `POST /admin/codex/login` returns the user code, `GET` reports
   state, `POST /admin/codex/refresh` forces a refresh. These require a
   projected ServiceAccount token (audience `factory-broker`) whose TokenReview
-  username is in `tokenReview.adminSubjects`. The grant refreshes when under
+  username is in `tokenReview.adminSubjects`. `broker.operatorServiceAccount`
+  creates a ServiceAccount for operators and adds it there; they mint a
+  short-lived token for it, and a ValidatingAdmissionPolicy keeps any Pod
+  from running as it. The grant refreshes when under
   24 h from expiry or 7 days old, single-flight, written to the Secret
   before use, checked every 10 minutes without traffic. When a refresh fails
   but the stored access token is still valid, the relay keeps serving it and
