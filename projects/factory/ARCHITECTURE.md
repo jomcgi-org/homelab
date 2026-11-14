@@ -465,7 +465,13 @@ connector's kagent principal (finding 15), so it never changes once set.
   hook that runs only once the connector's Deployment is healthy, so on a
   fresh install or a restore the connector serves `/healthz` first and waits
   for the key files with backoff, logging which are missing. It reads a key
-  on every call, so a rotated key needs no restart. A startup probe allows
+  on every call, so a rotated key needs no restart. A call sent with the old
+  key during a rotation, or before the kubelet refreshes the projected file,
+  gets a 401 or 403, which is never final: claims, heartbeats and events
+  try again next pass, and an outbox item (result, comment, Done move)
+  backs off as for any other failure. After 12 tries, about 27 minutes, the
+  connector abandons the item as it would a refused one and logs that
+  itsaplan keeps refusing its key. A startup probe allows
   five minutes before liveness counts. The database URL
   comes from `factory-connector-db`, which `factory-db-secrets` declares and
   `factory-db-setup` fills. Issue links default to itsaplan's

@@ -30,6 +30,7 @@ go_test(
     data = ["@postgres_test//:postgres"],
     deps = [
         ":dispatch",
+        "//projects/factory/connector/config",
         "//projects/factory/connector/github",
         "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/itsaplan",

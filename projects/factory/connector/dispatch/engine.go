@@ -1673,10 +1673,16 @@ func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Ru
 	return e.step(ctx, r)
 }
 
-// Outbox delivery limits.
+// Outbox delivery limits. An itsaplan 401 or 403 gets its own, shorter
+// bound: the connector reads its keys on every call, so a request sent with a
+// key the bootstrap has just rotated, or before the kubelet refreshes the
+// projected file, succeeds on a later try. Twelve tries back off for about
+// 27 minutes in all, well past a rotation, before the item is abandoned as a
+// credential problem.
 const (
-	outboxBatch    = 100
-	outboxMaxTries = 20
+	outboxBatch        = 100
+	outboxMaxTries     = 20
+	outboxAuthMaxTries = 12
 )
 
 // flushOutbox delivers due results and comments in order. A failing item
@@ -1705,13 +1711,38 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// terminalHTTP reports an itsaplan answer that a retry cannot change.
+// terminalHTTP reports an itsaplan answer that a retry cannot change. A 401
+// or 403 is not one: see authHTTP.
 func terminalHTTP(err error) bool {
 	var h *itsaplan.HTTPError
 	if errors.Is(err, itsaplan.ErrNotFound) || errors.Is(err, itsaplan.ErrConflict) {
 		return true
 	}
-	return errors.As(err, &h) && h.Status >= 400 && h.Status < 500 && h.Status != 408 && h.Status != 429
+	return errors.As(err, &h) && h.Status >= 400 && h.Status < 500 &&
+		h.Status != 408 && h.Status != 429 && !authHTTP(err)
+}
+
+// authHTTP reports an itsaplan 401 or 403: the key sent was refused, which a
+// rotated key read on a later call can fix.
+func authHTTP(err error) bool {
+	var h *itsaplan.HTTPError
+	return errors.As(err, &h) && (h.Status == 401 || h.Status == 403)
+}
+
+// refused reports that the outbox item must be abandoned after err: a
+// terminal answer, or a 401 or 403 that has used up outboxAuthMaxTries. Below
+// that bound a 401 or 403 backs off like any other failure.
+func (e *Engine) refused(ctx context.Context, it *store.OutboxItem, err error) bool {
+	if !authHTTP(err) {
+		return terminalHTTP(err)
+	}
+	if it.Tries+1 < outboxAuthMaxTries {
+		return false
+	}
+	e.log.ErrorContext(ctx, "itsaplan keeps refusing the connector's API key; abandoning the outbox item. "+
+		"Check the itsaplan agent key Secrets and the bootstrap",
+		"outbox", it.ID, "kind", it.Kind, "agent", it.AgentKey, "tries", it.Tries+1, "error", err)
+	return true
 }
 
 func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
@@ -1728,7 +1759,7 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		switch {
 		case err == nil:
 			return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
-		case terminalHTTP(err):
+		case e.refused(ctx, it, err):
 			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
 		}
 		return err
@@ -1782,7 +1813,7 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 				}
 				return e.st.SetRunState(ctx, tx, r.ID, store.RunClosed, "result not accepted")
 			})
-		case terminalHTTP(err):
+		case e.refused(ctx, it, err):
 			return e.st.Tx(ctx, func(tx *sql.Tx) error {
 				if err := e.st.OutboxAbandon(ctx, tx, it.ID, clip(err.Error(), maxErrorText)); err != nil {
 					return err
