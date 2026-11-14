@@ -23,7 +23,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: factory
-      targetRevision: 0.19.3
+      targetRevision: 0.20.0
       helm:
         releaseName: factory
         # The chart's PreSync hook is the CRDs' only applier, so ArgoCD never
