@@ -49,11 +49,11 @@ _image_pins() {
 # that references none (it deploys only third-party images, like the factory
 # chart's kagent subchart) has nothing for this run to pin.
 _first_party_refs() {
+	# Deliberately broader than _image_pins: any mention of a first-party image
+	# path in any layout (quoted, list item, bare image string) counts, so an
+	# unusual layout fails closed instead of passing as "no first-party images".
 	"$HELM" show values "$@" | awk '
-    /^[[:space:]]*repository:[[:space:]]*/ {
-      repo = $2; gsub(/"/, "", repo)
-      if (repo ~ /^ghcr\.io\/jomcgi\/homelab\//) n++
-    }
+    /ghcr\.io\/jomcgi\/homelab\// && !/ghcr\.io\/jomcgi\/homelab\/charts\// { n++ }
     END { print n + 0 }'
 }
 
