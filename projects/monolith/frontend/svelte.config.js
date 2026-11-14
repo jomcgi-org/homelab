@@ -1,4 +1,4 @@
-import adapter from "@sveltejs/adapter-node";
+import adapter from "./adapter-cache.js";
 import { checkBundleBudgets } from "./performance/bundle-budgets.js";
 
 const out = process.env.SVELTE_OUT_DIR || "dist";

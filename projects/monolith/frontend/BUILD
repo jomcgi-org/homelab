@@ -170,9 +170,13 @@ js_library(
             "src/lib/public/docs/docs-manifest.json",
         ],
     ) + [
+        "adapter-cache.js",
         "package.json",
         "performance/bundle-budgets.js",
         "performance/bundle-budgets.json",
+        "server/cache-server.js",
+        "server/http-cache-policy.js",
+        "server/response-cache-policy.js",
         "svelte.config.js",
         "vite.config.js",
         ":docs_manifest",
@@ -239,9 +243,13 @@ js_library(
             "src/lib/public/docs/docs-manifest.json",
         ],
     ) + [
+        "adapter-cache.js",
         "package.json",
         "performance/bundle-budgets.js",
         "performance/bundle-budgets.json",
+        "server/cache-server.js",
+        "server/http-cache-policy.js",
+        "server/response-cache-policy.js",
         "svelte.config.js",
         "vite.config.js",
         ":docs_manifest",
@@ -403,7 +411,7 @@ apko_image(
 )
 
 # Public-only frontend image (ADR 004 Phase 5d). Reuses the same apko.yaml
-# (node build/index.js on PORT 3000) but ships the private-route-free build, so
+# (node build/cache-server.js on PORT 3000) but ships the private-route-free build, so
 # the image literally does not contain the authenticated page code.
 apko_image(
     name = "image_public",
@@ -1054,6 +1062,7 @@ js_library(
     name = "theme_fixture_src",
     srcs = [
         "BUILD",
+        "adapter-cache.js",
         "factory-preview/fonts.css",
         "factory-preview/fonts/SchibstedGrotesk.ttf",
         "package.json",

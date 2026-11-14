@@ -166,8 +166,6 @@ describe("Activity index cache isolation", () => {
     "/public/slop/factory/data/activity",
     "/public/slop/factory/data/board",
     "/public/slop/factory/activity/[issue]",
-    "/private/factory",
-    null,
   ])("preserves the cache contract of %s", async (id) => {
     const response = await respond({ id });
     for (const [key, value] of Object.entries(publicHeaders)) {

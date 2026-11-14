@@ -1,3 +1,4 @@
+import { requiresNoStore } from "../server/response-cache-policy.js";
 import { startPublicSnapshotPrewarm } from "./lib/server/public-snapshots.js";
 
 // The public build leaves out src/lib/private, so the private prewarm is
@@ -67,7 +68,26 @@ export function pickEncoding(accept) {
 
 /** @type {import('@sveltejs/kit').Handle} */
 export async function handle({ event, resolve }) {
-  const response = await resolve(event);
+  let response = await resolve(event);
+
+  // Apply after resolve, when Kit has added loader headers and cookies, and
+  // before every compression/HEAD/stream fast path. Origin headers cannot
+  // bypass an already stored Cloudflare hit; that rule is tracked in #7961.
+  if (requiresNoStore(event, response)) {
+    const headers = new Headers(response.headers);
+    headers.set("cache-control", "no-store");
+    headers.set("cloudflare-cdn-cache-control", "no-store");
+    if (headers.has("cdn-cache-control"))
+      headers.set("cdn-cache-control", "no-store");
+    // Kit evaluates If-None-Match after this hook. A private response must not
+    // validate a previously shared representation into a 304.
+    headers.delete("etag");
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
 
   // The Activity index still accepts legacy JSON clients at its HTML URL.
   // Cloudflare's URL cache key does not distinguish Accept, so neither
