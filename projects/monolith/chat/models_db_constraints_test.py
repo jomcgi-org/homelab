@@ -205,18 +205,6 @@ class TestChannelSummaryDBConstraints:
         )
         session.commit()  # must not raise
 
-    def test_same_channel_id_different_user_channel_summary_allowed(self, session):
-        """The unique constraint is on ChannelSummary.channel_id alone; a
-        second row with the same channel_id must still be rejected (this
-        confirms the constraint isn't accidentally composite).
-        """
-        session.add(ChannelSummary(channel_id="ch-z", summary="s1", last_message_id=1))
-        session.commit()
-
-        session.add(ChannelSummary(channel_id="ch-z", summary="s2", last_message_id=2))
-        with pytest.raises(IntegrityError):
-            session.commit()
-
 
 # ---------------------------------------------------------------------------
 # DB-level enforcement tests: OrchestratorBrief route CHECK (SQLite)

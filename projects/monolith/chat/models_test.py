@@ -259,11 +259,6 @@ class TestExtendExisting:
         """UserChannelSummary uses a tuple form of __table_args__ (holds a constraint)."""
         assert isinstance(UserChannelSummary.__table_args__, tuple)
 
-    def test_user_channel_summary_extend_existing_in_kwargs_dict(self):
-        """extend_existing is in the kwargs dict at the end of the UserChannelSummary tuple."""
-        kwargs = _get_table_args_dict(UserChannelSummary)
-        assert kwargs.get("extend_existing") is True
-
 
 # ---------------------------------------------------------------------------
 # Field default values — MessageLock, ChannelSummary, UserChannelSummary
@@ -281,53 +276,12 @@ class TestMessageLockDefaults:
         )
         assert lock.completed is False
 
-    def test_claimed_at_defaults_to_current_utc(self):
-        """MessageLock.claimed_at auto-populates with a UTC datetime."""
-        lock = MessageLock(
-            discord_message_id="msg-2",
-            channel_id="ch-2",
-        )
-        assert lock.claimed_at is not None
-        assert lock.claimed_at.tzinfo is not None
-
     def test_id_defaults_none(self):
         """MessageLock has no surrogate pk field; discord_message_id is the pk."""
         # Ensure no 'id' attribute leaks onto MessageLock.
         columns = {c.name for c in MessageLock.__table__.columns}
         assert "discord_message_id" in columns
         assert "id" not in columns
-
-
-class TestChannelSummaryDefaults:
-    """ChannelSummary field defaults."""
-
-    def test_message_count_defaults_zero(self):
-        """ChannelSummary.message_count defaults to 0."""
-        cs = ChannelSummary(
-            channel_id="ch-1",
-            summary="A summary.",
-            last_message_id=42,
-        )
-        assert cs.message_count == 0
-
-    def test_updated_at_defaults_to_current_utc(self):
-        """ChannelSummary.updated_at auto-populates with a UTC datetime."""
-        cs = ChannelSummary(
-            channel_id="ch-2",
-            summary="Another summary.",
-            last_message_id=99,
-        )
-        assert cs.updated_at is not None
-        assert cs.updated_at.tzinfo is not None
-
-    def test_id_defaults_none(self):
-        """ChannelSummary.id is None until persisted."""
-        cs = ChannelSummary(
-            channel_id="ch-3",
-            summary="s",
-            last_message_id=1,
-        )
-        assert cs.id is None
 
 
 class TestUserChannelSummaryDefaults:

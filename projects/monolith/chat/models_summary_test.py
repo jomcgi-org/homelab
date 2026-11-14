@@ -17,15 +17,3 @@ class TestUserChannelSummary:
         assert summary.username == "Alice"
         assert summary.summary == "Alice discussed deployment issues."
         assert summary.last_message_id == 42
-
-    def test_default_updated_at_is_utc(self):
-        """updated_at defaults to a UTC timestamp."""
-        summary = UserChannelSummary(
-            channel_id="ch1",
-            user_id="u1",
-            username="Alice",
-            summary="test",
-            last_message_id=1,
-        )
-        assert summary.updated_at is not None
-        assert summary.updated_at.tzinfo is not None

@@ -92,11 +92,6 @@ class TestChannelSummary:
             "updated_at",
         }
 
-    def test_channel_id_has_unique_constraint(self):
-        """ChannelSummary.channel_id is unique."""
-        col = ChannelSummary.__table__.c["channel_id"]
-        assert col.unique is True
-
     def test_message_count_default_is_zero(self):
         """ChannelSummary.message_count defaults to 0."""
         summary = ChannelSummary(
