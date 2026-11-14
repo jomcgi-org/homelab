@@ -1,10 +1,10 @@
-# Installed to /etc/rancher/k3s/registries.yaml by install-node.sh.
-# With embedded-registry enabled, a listed registry is first looked up on the
-# other nodes (Spegel) before it is pulled from the internet. Spegel serves
-# every image a node holds to any pod, without the pull secret the registry
-# required, and it mirrors whole registry hosts. So only registries serving
-# public images are listed: ghcr.io, which also holds this repository's
-# private images, is pulled from GHCR with credentials on every node.
+# Installed to /etc/rancher/k3s/registries.yaml by install-node.sh, which
+# restarts k3s to apply it. With embedded-registry enabled, k3s runs Spegel for
+# the registries listed here: a pull is first looked up on the other nodes,
+# which serve any image they hold to any pod without the pull secret the
+# registry required. Mirroring is per registry host, so only hosts serving
+# public images are listed. ghcr.io, which also holds this repository's
+# private images, is pulled from GHCR on each node.
 mirrors:
   docker.io:
   quay.io:
