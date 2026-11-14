@@ -97,6 +97,7 @@ func TestVerify(t *testing.T) {
 		"wrong signing key": {other.Sign(t, claimsAt(idp, c.Now())), ReasonSignature},
 		"tampered":          {tampered, ReasonSignature},
 		"alg none":          {b64(`{"alg":"none","kid":"k1"}`) + "." + b64(`{}`) + ".", ReasonAlgorithm},
+		"alg HS256":         {b64(`{"alg":"HS256","kid":"k1"}`) + "." + b64(`{"iss":"x"}`) + "." + b64("mac"), ReasonAlgorithm},
 		"garbage":           {"not-a-jwt", ReasonMalformed},
 	} {
 		t.Run(name, func(t *testing.T) {

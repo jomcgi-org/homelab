@@ -192,13 +192,19 @@ and retries once, so a brief overlap during a rollout is safe.
   Responses request Codex sends in API-key mode is [I] until the first live
   run. Provider credentials exist only in the broker.
 - **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
-  (401), `codex_login_required` (401: no grant, a dead refresh token, or the
-  backend still refusing after one forced refresh), `codex_quota_exhausted`
+  (401); `codex_login_required` (401, only for an empty grant or a refresh
+  token the provider answered `invalid_grant`); `codex_quota_exhausted`
   (429 with `resets_at` and `Retry-After`, from the `x-codex-*` headers or a
   `usage_limit_reached` body; a current exhausted window blocks before the
-  backend is called), `codex_grant_unavailable` (503, transient). Other
-  backend 429s pass through for Codex to retry. The connector treats the
-  login and quota codes as credential and quota failures.
+  backend is called); `codex_grant_unavailable` (503, transient: a failed
+  refresh, a missing grant Secret, or the backend refusing a freshly
+  refreshed token); `relay_busy` (503). A backend 401 replaces the token
+  once, and concurrent 401s for the same token wait on that one refresh.
+  Other backend 429s pass through for Codex to retry. The connector treats
+  the login and quota codes as credential and quota failures.
+- **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
+  requests in flight, and an upstream stream silent for 5 minutes is cut.
+  Quota observations are committed off the request path, latest only.
 - **Refresh.** One grant, `codex-primary`, from the broker's own device
   login: `POST /admin/codex/login` returns the user code, `GET` reports
   state, `POST /admin/codex/refresh` forces a refresh. These require a
@@ -207,8 +213,10 @@ and retries once, so a brief overlap during a rollout is safe.
   24 h from expiry or 7 days old, single-flight, written to the Secret
   before use, checked every 10 minutes without traffic. When a refresh fails
   but the stored access token is still valid, the relay keeps serving it and
-  the grant state metric reports the failure. ActorJWT leaves no relay key
-  to rotate.
+  the grant state metric reports the failure. The chart pre-creates the
+  empty grant Secret: the store only updates it, so a missing Secret is a
+  deployment fault (state `missing`, 503) that a login cannot fix. ActorJWT
+  leaves no relay key to rotate.
 - **GitHub.** Installation tokens from the factory GitHub App (key, App ID
   and installation ID mounted from the 1Password Secret). Every 30 minutes
   the broker mints one token per repository binding (`repositories=[repo]`,
@@ -220,8 +228,16 @@ and retries once, so a brief overlap during a rollout is safe.
   in each binding namespace (step 8). The connector fetches its own token
   from `GET /github/connector-token?repository=<owner/name>` with a
   TokenReview-checked projected token: contents and pull requests write,
-  checks and statuses read, and `merge_queues: write` [I]. GitHub adds
-  `metadata: read`; the broker rejects any token wider than requested.
+  checks and statuses read, and `merge_queues: write` [I]. A token must name
+  exactly the repository and exactly the requested permissions (GitHub adds
+  `metadata: read`); any other token is revoked and the mint fails. The
+  broker only updates a `github-git` Secret labelled
+  `app.kubernetes.io/managed-by=factory-broker`.
+- **RBAC** the chart grants the broker: `create` on `tokenreviews`; in its
+  own namespace `get`/`update` on the grant Secret and the quota ConfigMap
+  by `resourceNames`; in each binding namespace `create` on Secrets (RBAC
+  cannot restrict `create` by name) and `get`/`update` on `github-git` by
+  `resourceNames`.
 - **Metrics** (`factory_broker_*`): grant state and expiry, refresh checks
   and the shared refresh counters, relay requests by outcome and status
   class, actor JWT rejections by reason, GitHub mints by kind, binding and

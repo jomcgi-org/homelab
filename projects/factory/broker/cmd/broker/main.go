@@ -73,7 +73,7 @@ func run(logger *slog.Logger) error {
 	}
 	registry.MustRegister(sharedmetrics.NewQuotaCollectorWithPrefix(metrics.Prefix, quotaStore, []string{relay.QuotaProvider}))
 
-	d, err := build(cfg, client, quotaStore, m, logger)
+	d, err := build(ctx, cfg, client, quotaStore, m, logger)
 	if err != nil {
 		return err
 	}
@@ -89,6 +89,10 @@ func run(logger *slog.Logger) error {
 		Addr:              cfg.ListenAddr,
 		Handler:           d.handler(cfg, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bounds the request body upload; responses stream without a
+		// write timeout, ended instead by the relay's idle timeout.
+		ReadTimeout: cfg.Codex.RequestReadTimeout.Duration,
+		IdleTimeout: 2 * time.Minute,
 	}
 	errc := make(chan error, 1)
 	go func() {
@@ -116,7 +120,7 @@ type deps struct {
 	reviewer *auth.Reviewer
 }
 
-func build(cfg config.Config, client kubernetes.Interface, quotaStore *quota.Store, m *metrics.Metrics, logger *slog.Logger) (*deps, error) {
+func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, quotaStore *quota.Store, m *metrics.Metrics, logger *slog.Logger) (*deps, error) {
 	verifier, err := actorjwt.New(actorjwt.Options{
 		Issuer: cfg.ActorJWT.Issuer, Audience: cfg.ActorJWT.Audience, CAFile: cfg.ActorJWT.CAFile,
 		RefreshInterval: cfg.ActorJWT.KeyRefreshInterval.Duration, MinRefetch: cfg.ActorJWT.MinKeyRefetch.Duration,
@@ -129,7 +133,7 @@ func build(cfg config.Config, client kubernetes.Interface, quotaStore *quota.Sto
 		Grant: cfg.Codex.Grant, Client: client, Namespace: cfg.Namespace, SecretPrefix: cfg.Codex.SecretPrefix,
 		Adapter:             &codexchatgpt.Adapter{Issuer: cfg.Codex.AuthIssuer, HTTPClient: &http.Client{Timeout: 30 * time.Second}},
 		RefreshBeforeExpiry: cfg.Codex.RefreshBeforeExpiry.Duration, MaxGrantAge: cfg.Codex.MaxGrantAge.Duration,
-		CheckInterval: cfg.Codex.RefreshCheckInterval.Duration, Metrics: m, Logger: logger,
+		CheckInterval: cfg.Codex.RefreshCheckInterval.Duration, Metrics: m, Logger: logger, Context: ctx,
 	})
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 2 * time.Minute
@@ -141,6 +145,7 @@ func build(cfg config.Config, client kubernetes.Interface, quotaStore *quota.Sto
 			// No overall timeout: responses stream for as long as a turn runs.
 			Client: &http.Client{Transport: transport},
 			Quota:  quotaStore, Metrics: m, Logger: logger, MaxRequestBytes: cfg.Codex.MaxRequestBytes,
+			StreamIdleTimeout: cfg.Codex.StreamIdleTimeout.Duration, MaxConcurrent: cfg.Codex.MaxConcurrentRequests,
 		},
 		reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger},
 	}

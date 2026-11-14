@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -20,7 +21,7 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 	cfg.Namespace = "factory"
 	cfg.ActorJWT.Issuer = idp.URL
 	cfg.TokenReview.AdminSubjects = []string{"system:serviceaccount:factory:admin"}
-	d, err := build(cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
+	d, err := build(context.Background(), cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

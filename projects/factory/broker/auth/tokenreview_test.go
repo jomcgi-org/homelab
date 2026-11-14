@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,12 @@ import (
 // fakeTokenReview answers TokenReviews from a token table, honouring the
 // requested audience the way the API server does.
 func fakeTokenReview(users map[string]string, audiences map[string][]string, fail bool) *fake.Clientset {
+	return fakeTokenReviewWith(users, audiences, fail, false)
+}
+
+// fakeTokenReviewWith can model an authenticator that ignores audiences and
+// returns none.
+func fakeTokenReviewWith(users map[string]string, audiences map[string][]string, fail, dropAudiences bool) *fake.Clientset {
 	client := fake.NewSimpleClientset()
 	client.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if fail {
@@ -36,6 +43,9 @@ func fakeTokenReview(users map[string]string, audiences map[string][]string, fai
 		if len(matched) == 0 {
 			review.Status = authenticationv1.TokenReviewStatus{Error: "token audiences do not match"}
 			return true, review, nil
+		}
+		if dropAudiences {
+			matched = nil
 		}
 		review.Status = authenticationv1.TokenReviewStatus{Authenticated: true, Audiences: matched, User: authenticationv1.UserInfo{Username: user}}
 		return true, review, nil
@@ -79,6 +89,11 @@ func TestRequire(t *testing.T) {
 				t.Fatalf("user = %q", rec.Body)
 			}
 		})
+	}
+
+	noAud := &Reviewer{Client: fakeTokenReviewWith(map[string]string{"good": connector}, map[string][]string{"good": {"factory-broker"}}, false, true), Audience: "factory-broker"}
+	if _, err := noAud.Review(context.Background(), "good"); err != ErrUnauthenticated {
+		t.Fatalf("review without audiences = %v, want ErrUnauthenticated", err)
 	}
 
 	down := &Reviewer{Client: fakeTokenReview(nil, nil, true), Audience: "factory-broker"}

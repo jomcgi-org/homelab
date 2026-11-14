@@ -61,6 +61,12 @@ type Codex struct {
 	QuotaConfigMap string `json:"quotaConfigMap"`
 	// MaxRequestBytes bounds a buffered relay request body.
 	MaxRequestBytes int64 `json:"maxRequestBytes"`
+	// MaxConcurrentRequests caps relay requests in flight.
+	MaxConcurrentRequests int `json:"maxConcurrentRequests"`
+	// StreamIdleTimeout ends an upstream response silent for this long.
+	StreamIdleTimeout Duration `json:"streamIdleTimeout"`
+	// RequestReadTimeout bounds reading a whole request, body included.
+	RequestReadTimeout Duration `json:"requestReadTimeout"`
 }
 
 type ActorJWT struct {
@@ -125,7 +131,12 @@ func Defaults() Config {
 			RefreshBeforeExpiry:  Duration{24 * time.Hour},
 			MaxGrantAge:          Duration{7 * 24 * time.Hour},
 			RefreshCheckInterval: Duration{10 * time.Minute},
-			MaxRequestBytes:      64 << 20,
+			// Codex sends the whole conversation each turn; images are
+			// inlined as base64.
+			MaxRequestBytes:       32 << 20,
+			MaxConcurrentRequests: 64,
+			StreamIdleTimeout:     Duration{5 * time.Minute},
+			RequestReadTimeout:    Duration{2 * time.Minute},
 		},
 		ActorJWT: ActorJWT{
 			Issuer:             "https://idp.ate-system.svc",
@@ -234,10 +245,14 @@ func (c Config) Validate() error {
 		"codex.refreshBeforeExpiry": c.Codex.RefreshBeforeExpiry, "codex.maxGrantAge": c.Codex.MaxGrantAge,
 		"codex.refreshCheckInterval": c.Codex.RefreshCheckInterval, "actorJwt.keyRefreshInterval": c.ActorJWT.KeyRefreshInterval,
 		"actorJwt.minKeyRefetch": c.ActorJWT.MinKeyRefetch, "github.mintInterval": c.GitHub.MintInterval,
+		"codex.streamIdleTimeout": c.Codex.StreamIdleTimeout, "codex.requestReadTimeout": c.Codex.RequestReadTimeout,
 	} {
 		if d.Duration <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be positive", name))
 		}
+	}
+	if c.Codex.MaxRequestBytes <= 0 || c.Codex.MaxConcurrentRequests <= 0 {
+		errs = append(errs, errors.New("codex.maxRequestBytes and codex.maxConcurrentRequests must be positive"))
 	}
 	// Installation tokens live one hour; reminting less often than that
 	// leaves agents with expired credentials.

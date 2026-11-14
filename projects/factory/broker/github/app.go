@@ -118,11 +118,7 @@ func (a *App) Mint(ctx context.Context, repository string, permissions map[strin
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("Content-Type", "application/json")
-	client := a.Client
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
-	resp, err := client.Do(req)
+	resp, err := a.client().Do(req)
 	if err != nil {
 		return Token{}, err
 	}
@@ -152,23 +148,67 @@ func (a *App) Mint(ctx context.Context, repository string, permissions map[strin
 	if out.Token == "" || out.ExpiresAt.IsZero() {
 		return Token{}, errors.New("installation token response has no token or expiry")
 	}
-	if len(out.Repositories) != 1 || !strings.EqualFold(out.Repositories[0].FullName, repository) {
-		return Token{}, fmt.Errorf("installation token for %s is not scoped to exactly that repository", repository)
-	}
-	for perm, level := range out.Permissions {
-		// GitHub adds metadata:read to every installation token.
-		if perm == "metadata" && level == "read" {
-			continue
+	if err := checkScope(repository, permissions, out.Permissions, len(out.Repositories) == 1 && strings.EqualFold(out.Repositories[0].FullName, repository)); err != nil {
+		// Never keep a token that is not the one asked for.
+		if revokeErr := a.revoke(ctx, out.Token); revokeErr != nil {
+			return Token{}, fmt.Errorf("%w; revoking it also failed: %v", err, revokeErr)
 		}
-		if !within(level, permissions[perm]) {
-			return Token{}, fmt.Errorf("installation token for %s grants %s:%s beyond the request", repository, perm, level)
-		}
+		return Token{}, err
 	}
 	return Token{Token: out.Token, ExpiresAt: out.ExpiresAt, Repository: repository, Permissions: out.Permissions}, nil
 }
 
-// within reports whether granted is no more than requested.
-func within(granted, requested string) bool {
-	rank := map[string]int{"read": 1, "write": 2, "admin": 3}
-	return rank[granted] != 0 && rank[granted] <= rank[requested]
+// checkScope fails closed: the token must name exactly the one repository
+// and grant every requested permission at exactly the requested level, plus
+// at most the metadata:read GitHub adds to every installation token.
+func checkScope(repository string, requested, granted map[string]string, oneRepository bool) error {
+	if !oneRepository {
+		return fmt.Errorf("installation token for %s is not scoped to exactly that repository", repository)
+	}
+	if len(granted) == 0 {
+		return fmt.Errorf("installation token for %s reports no permissions", repository)
+	}
+	for perm, level := range requested {
+		if granted[perm] != level {
+			return fmt.Errorf("installation token for %s grants %s:%q, requested %q", repository, perm, granted[perm], level)
+		}
+	}
+	for perm, level := range granted {
+		if _, ok := requested[perm]; ok {
+			continue
+		}
+		if perm != "metadata" || level != "read" {
+			return fmt.Errorf("installation token for %s grants unrequested %s:%s", repository, perm, level)
+		}
+	}
+	return nil
+}
+
+// revoke deletes an installation token (DELETE /installation/token).
+func (a *App) revoke(ctx context.Context, token string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, strings.TrimRight(a.APIURL, "/")+"/installation/token", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := a.client().Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("revoke returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *App) client() *http.Client {
+	if a.Client != nil {
+		return a.Client
+	}
+	return &http.Client{Timeout: 30 * time.Second}
 }
