@@ -46,8 +46,8 @@ _image_pins() {
 }
 
 # Count first-party image references in chart values, pinned or not. A chart
-# that references none (it deploys only third-party images, like the factory
-# chart's kagent subchart) has nothing for this run to pin.
+# that references none (it deploys only third-party images, such as a chart
+# that only wraps an upstream subchart) has nothing for this run to pin.
 _first_party_refs() {
 	# Deliberately broader than _image_pins: any mention of a first-party image
 	# path in any layout (quoted, list item, bare image string) counts, so an
