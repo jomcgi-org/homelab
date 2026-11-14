@@ -168,6 +168,58 @@ service in install or existing mode. A repository binding is the access
 boundary: one Agent and namespace per repository, with credentials scoped to
 it.
 
+## Sandbox checks
+
+`repositories[].toolchain: homelab` gives one coding binding the bootstrap
+instructions in `chart/files/toolchain-prompt.txt` and the `homelab-tools`
+EgressPolicy. Review bindings do not inherit it. The Substrate worker image
+keeps its existing digest pin.
+
+**Why.** HOME-2 could run no local checks in the Alpine Codex harness
+(#7916). The lighter toolchain option supplies local formatting and chart
+checks without introducing a BuildBuddy credential. The tools OCI image
+contains GNU libc runtimes; the harness uses musl. Installing it unchanged
+would leave Node, Python and Ruff unable to execute. kagent v1.0.1's Codex
+compiler also omits `Harness.workload.command` and `args` from its runtime
+revision, so a command override cannot run setup before the adapter starts.
+The binding's system prompt requires bootstrap immediately after cloning.
+
+From the checkout, run `bash projects/factory/toolchain/bootstrap.sh`, then
+source `${XDG_CACHE_HOME:-$HOME/.cache}/homelab-sandbox-tools/env.sh` in each
+shell. Setup uses the pinned harness's Bash, APK, system utilities and Alpine
+signing keys; it runs as the sandbox user. APK installs
+Node 22, Python, pytest, PyYAML and GNU grep in a private root from the signed
+Alpine 3.22 repositories. Those packages take that stable branch's security
+updates on a fresh cache. Each runtime wrapper sets its own library path;
+the harness and git retain their libraries and CA configuration.
+
+Helm, crane, buildifier, gofumpt, shfmt and shellcheck use the Linux amd64
+URLs and SHA-256 hashes in `bazel/tools/tools.lock.json`. Ruff's musl wheel
+uses that lock's version. pnpm, prettier, the Svelte plugin and Svelte use
+`package.json` versions, installed without lifecycle scripts. PyPI and npm
+verify their distribution integrity; their transitive dependency selection
+is resolved at bootstrap, outside the Bazel dependency graph. Setup checks
+the executables before publishing an environment file and caches them by
+the bootstrap, installer and repository version inputs. A missing executable
+repairs the cache; a failed download never publishes a new environment.
+
+The download allowlist is `dl-cdn.alpinelinux.org`, `get.helm.sh`,
+`release-assets.githubusercontent.com`, `registry.npmjs.org`, `pypi.org` and
+`files.pythonhosted.org`. GitHub release requests use the binding's existing
+`github-git` origin. The new origins have no credential injection, and no
+BuildBuddy origin or key is configured.
+
+Agents can run `ci lint`, `ci regen`, `ci ratchet`, `helm template` and scoped
+`python3 -m pytest` checks. PR CI owns BUILD generation and remote tests;
+these local checks do not establish a passing `ci test` or full `ci` run.
+
+**Rollout.** The chart capability is staged. Per `REVIEW.md`, add
+`toolchain: homelab` to the homelab repository entry in `deploy/values.yaml`
+only after CI publishes and pins the supporting chart. That follow-up must
+update `deploy/render.sha256`, start a fresh coding session, run bootstrap
+and local checks, and confirm its review binding has no download grant.
+An existing session with the old egress policy cannot validate downloads.
+
 ## itsaplan
 
 Step 6 (#7817). The chart's own templates (`templates/itsaplan*.yaml`) run

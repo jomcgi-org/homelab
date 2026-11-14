@@ -7,6 +7,7 @@
 {{- $ns := $r.namespace }}
 {{- $agent := include "factory.bindingAgentName" $r }}
 {{- $worker := printf "%s-worker" $agent }}
+{{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
 ---
 # Kept: deleting it would take the Agent's WorkerPool and the git token with
 # it; removing a binding is a deliberate cleanup.
@@ -162,6 +163,28 @@ spec:
           name: github-git
           key: basic
 {{- end }}
+{{- if $toolchain }}
+---
+# Public tool downloads for this binding only. GitHub itself remains in
+# github-git; no credential is attached to any download origin here.
+apiVersion: api.kagent.dev/v1alpha3
+kind: EgressPolicy
+metadata:
+  name: homelab-tools
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  destinations:
+    - origin: https://dl-cdn.alpinelinux.org
+    - origin: https://get.helm.sh
+    - origin: https://release-assets.githubusercontent.com
+    - origin: https://registry.npmjs.org
+    - origin: https://pypi.org
+    - origin: https://files.pythonhosted.org
+{{- end }}
 ---
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
@@ -179,13 +202,20 @@ spec:
       description: {{ printf "%s %s/%s" $description $r.owner $r.repo | quote }}
       modelConfig:
         name: {{ $r.agent }}
+      {{- if $toolchain }}
+      systemPrompt: {{ printf "%s\n%s" $a.systemPrompt ($.Files.Get "files/toolchain-prompt.txt") | quote }}
+      {{- else }}
       systemPrompt: {{ $a.systemPrompt | quote }}
+      {{- end }}
   harnessRef:
     name: {{ $a.harness }}
-  {{- with $a.egress }}
+  {{- if or $a.egress $toolchain }}
   egressPolicyRefs:
-    {{- range . }}
+    {{- range $a.egress }}
     - name: {{ . }}
+    {{- end }}
+    {{- if $toolchain }}
+    - name: homelab-tools
     {{- end }}
   {{- end }}
 {{- if $.Values.networkPolicy.cilium }}

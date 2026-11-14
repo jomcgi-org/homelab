@@ -41,6 +41,23 @@ _TWO_REPOSITORIES = [
 ]
 
 
+def test_toolchain_grant_stays_with_the_opted_in_coding_binding() -> None:
+    docs = _render(_TWO_REPOSITORIES + ["repositories[0].toolchain=homelab"])
+    policies = [
+        d
+        for d in docs
+        if d["kind"] == "EgressPolicy" and d["metadata"]["name"] == "homelab-tools"
+    ]
+    assert [d["metadata"]["namespace"] for d in policies] == ["factory-r-homelab"]
+    for agent in (d for d in docs if d["kind"] == "Agent"):
+        enabled = agent["metadata"]["namespace"] == "factory-r-homelab"
+        assert (
+            {"name": "homelab-tools"} in agent["spec"]["egressPolicyRefs"]
+        ) == enabled
+        prompt = agent["spec"]["template"]["inline"]["systemPrompt"]
+        assert ("toolchain/bootstrap.sh" in prompt) == enabled
+
+
 def _helm(
     overrides: list[str] | None = None,
     *,

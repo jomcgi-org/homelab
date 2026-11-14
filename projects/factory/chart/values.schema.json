@@ -846,6 +846,10 @@
             "type": "string",
             "minLength": 1
           },
+          "toolchain": {
+            "description": "Opt in to the homelab Alpine bootstrap and public download origins for this coding binding.",
+            "enum": ["homelab"]
+          },
           "namespace": {
             "type": "string",
             "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
