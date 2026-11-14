@@ -5,10 +5,7 @@ helm_chart(
     name = "chart",
     # The vendored kagent subcharts are linted by their own repository.
     lint = False,
-    # Not published until push.sh's empty CHART_TGZ for this chart is fixed:
-    # its first publish failed and stopped push_charts, which blocks the
-    # chart-version write-back for every chart.
-    publish = False,
+    publish = True,
     visibility = [
         "//projects/factory:__subpackages__",  # keep
         "//visibility:public",
