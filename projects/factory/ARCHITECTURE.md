@@ -693,8 +693,8 @@ previews).
   The enable PR follows CI's chart write-back, adding review namespaces to
   `kagent.rbac.namespaces`. Substrate's policy values include
   `factory-r-homelab-review`; regenerate its upstream manifests before
-  enabling. The connector's `reviewerCheck` and the
-  required-check ruleset follow separately.
+  enabling. The connector's `reviewerCheck` (#7940) and the
+  required-check ruleset followed separately.
 - **Review contract.** The agent reviews the exact head against the root
   `REVIEW.md` and every `REVIEW.md` on both sides of the diff, with their
   `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
@@ -774,7 +774,10 @@ previews).
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
   status, and enqueues the factory's PRs once the required checks pass; the
   reviewer's failing check becomes the revision round's feedback
-  (`reviewerCheck {name, appId}`).
+  (`reviewerCheck {name, appId}`), with its summary in full (at most 60,000
+  characters, so the findings after the overview survive). A failure that
+  the reviewer App marks `human-gate-only` starts no round: the PR waits for
+  Joe's approval, which turns the check green.
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the

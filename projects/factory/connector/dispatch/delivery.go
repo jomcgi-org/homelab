@@ -618,6 +618,17 @@ func (e *Engine) enqueued(ctx context.Context, wi *store.WorkItem, b *Binding, p
 	return e.stoppedPR(ctx, wi, b, pr, &queued)
 }
 
+// humanHoldMarker is how the factory-reviewer marks a failed check whose only
+// blocking finding is its human gate. The reviewer strips the marker's prefix
+// from anything the PR or its agent wrote, so only the reviewer service can
+// set it. No revision round clears that hold; the PR waits for a person.
+const humanHoldMarker = "<!-- factory-review:human-gate-only -->"
+
+// maxCheckFeedback bounds a failed check's summary in a revision prompt. The
+// reviewer's summary is at most 60,000 characters and lists its blocking
+// findings after its overview, so a tighter clip could drop them.
+const maxCheckFeedback = 60000
+
 // failedConclusion reports a check run conclusion that asks for changes.
 func failedConclusion(c string) bool {
 	switch c {
@@ -670,6 +681,10 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		if !named {
 			continue
 		}
+		if r := p.ReviewerCheck; r != nil && c.Name == r.Name && c.AppID == r.AppID && r.AppID != 0 &&
+			strings.Contains(c.Summary, humanHoldMarker) {
+			continue // held for a person: a revision round cannot clear it
+		}
 		cands = append(cands, candidate{
 			ev: store.ReviewEvent{
 				NodeID: c.NodeID, CommitSHA: c.HeadSHA, Author: "app/" + strconv.FormatInt(c.AppID, 10),
@@ -677,7 +692,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			},
 			trusted: trusted,
 			text: fmt.Sprintf("Check %q concluded %s (%s): %s\n\n%s", c.Name, c.Conclusion, c.URL, c.Title,
-				clip(c.Summary, 4000)),
+				clip(c.Summary, maxCheckFeedback)),
 		})
 	}
 	for _, st := range statuses {
