@@ -1,0 +1,22 @@
+apiVersion: v2
+name: factory
+description: The software factory on the factory home cluster (projects/factory/ARCHITECTURE.md). This version installs kagent; itsaplan, the credential broker and the connector follow.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  # Agent definitions, execution and sessions.
+  - name: kagent
+    version: 1.0.1
+    repository: oci://ghcr.io/kagent-dev/kagent/helm
+    condition: kagent.enabled
+  # Vendored for its pinned digest only. Its CRDs ship in crds/ and through
+  # the CRD hook Job instead (templates/crd-hook.yaml), so the subchart never
+  # renders; chart_test.py keeps crds/ identical to it.
+  - name: kagent-crds
+    version: 1.0.1
+    repository: oci://ghcr.io/kagent-dev/kagent/helm
+    condition: kagent-crds.enabled
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi-org/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi-org/homelab"

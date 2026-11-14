@@ -1,0 +1,171 @@
+# The software factory umbrella chart (projects/factory/ARCHITECTURE.md,
+# "Umbrella chart"). This version installs kagent with its CRD hook, namespace,
+# Substrate credential grant and Cilium policies. The sections at the end are
+# placeholders for later steps of the delivery plan and render nothing.
+
+# kagent: agent definitions, execution and sessions. Everything under this key
+# except `enabled` and `mode` is passed to the vendored kagent 1.0.1 subchart
+# (charts/kagent-1.0.1.tgz); see its values.yaml for the full set.
+kagent:
+  # install: this chart installs kagent and its namespace, CRDs and policies.
+  # existing: kagent is installed elsewhere and this chart renders none of it.
+  # Helm cannot make crds/ conditional, so an existing install also sets
+  # skipCrds on the Application's Helm source.
+  # `enabled` is the Helm dependency condition and must agree with `mode`
+  # (templates/validate.yaml checks).
+  mode: install
+  enabled: true
+
+  # Fixed names: Substrate grants the controller by its SPIFFE ID,
+  # spiffe://cluster.local/ns/kagent/sa/kagent-controller, in the router
+  # allowlist, the API server's bootstrap owners and the credential provider's
+  # namespace policy.
+  fullnameOverride: kagent
+  namespaceOverride: kagent
+
+  # The factory runs no cluster-operations agents, so the built-in Kubernetes
+  # tool server (and its ClusterRole) is off.
+  kagent-tools:
+    enabled: false
+
+  # Providers come from repository bindings and the credential broker (step 7),
+  # so the chart's default ModelConfig is not rendered.
+  providers: null
+
+  config:
+    server:
+      auth:
+        # The edge authenticates people and forwards their access token;
+        # kagent decodes it without verifying (ARCHITECTURE.md finding 5), so
+        # the Cilium policies below keep the edge, the UI and the connector as
+        # the only paths in.
+        mode: trusted-proxy
+    substrate:
+      apiEndpoint: dns:///api.ate-system.svc:443
+      routerUrl: https://atenet-router.ate-system.svc:443
+      actorJwtIssuer: https://idp.ate-system.svc
+
+  controller:
+    # Substrate client certificates (pod identity) and its service-DNS trust
+    # bundle, both from Substrate's podcertificate signers.
+    substrateClientCertificate:
+      enabled: true
+    serviceAccount:
+      # A kagent principal includes the ServiceAccount UID, so recreating it
+      # loses access to every session it owns (ARCHITECTURE.md finding 6).
+      annotations:
+        argocd.argoproj.io/sync-options: Prune=false,Delete=false
+        helm.sh/resource-policy: keep
+    image:
+      tag: "1.0.1@sha256:5d1c898971de419384144894c5406faaf88bcb34fdfd7698d071e9a757136318"
+
+  ui:
+    image:
+      tag: "1.0.1@sha256:ce5c3a9a05d1292afa3d94c3aaf1547feac4389fe4181840acb8d54179da6128"
+    # The UI has no route of its own; the edge publishes it (projects/
+    # platform-factory/edge). Until then it is reached through a port-forward.
+    route:
+      enabled: false
+
+  # Secrets holding the owner and read/write connection strings; see
+  # `postgres` below.
+  database:
+    postgres:
+      ownerConnectionStringSecretRef:
+        name: kagent-postgres-owner
+        key: ownerConnectionString
+      readWriteConnectionStringSecretRef:
+        name: kagent-postgres-readwrite
+        key: readWriteConnectionString
+
+# Kept as a dependency for its pinned digest; never rendered (Chart.yaml).
+kagent-crds:
+  enabled: false
+
+# Server-side applies crds/ before every sync and upgrade (Helm pre-install and
+# pre-upgrade, ArgoCD PreSync), because Helm installs crds/ only once.
+crdHook:
+  image: registry.k8s.io/kubectl:v1.37.2@sha256:fe049faa65ae483ac200009a949a68fa4c9985daea12c9cb1195c9c7965301fc
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+# kagent's PostgreSQL. kagent 1.0.1 needs PostgreSQL; it has no SQLite mode.
+# The database must be prepared with kagent's setup script
+# (go/core/pkg/postgressetup/setup.sql at v1.0.1): roles kagent_owner and
+# kagent_readwrite, their login users and schema `kagent`.
+postgres:
+  # existing: the Secrets named in kagent.database.postgres are provided
+  # outside this chart. `install` (a CNPG Cluster rendered here) arrives with
+  # the CNPG operator, step 3 of the delivery plan.
+  mode: existing
+  existing:
+    # Cilium endpoint selectors for the database pods, for the controller's
+    # egress rule. Empty allows no database traffic.
+    endpoints: []
+    port: 5432
+
+# Agent Substrate, installed separately (projects/platform-factory/substrate).
+substrate:
+  namespace: ate-system
+  credentialProvider:
+    # Binds Substrate's ClusterRole k8s-credential-provider-secret-reader to
+    # its provider in the kagent namespace, so the egress gateway can inject
+    # Secrets from here. Only Secrets labelled
+    # substrate.ate.dev/injectable=true are injectable; label only egress
+    # credentials, never kagent's database or application Secrets.
+    #
+    # Each repository binding's namespace will need the same RoleBinding and
+    # its own namespacePolicies entry in Substrate's provider configuration.
+    secretReaderBinding: true
+    serviceAccount: k8s-credential-provider
+    clusterRole: k8s-credential-provider-secret-reader
+
+networkPolicy:
+  # CiliumNetworkPolicies for the kagent namespace, under the cluster-wide
+  # default-deny (projects/platform-factory/network-policy/).
+  cilium: true
+  # The authenticated Envoy edge (projects/platform-factory/edge).
+  edge:
+    namespace: edge
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: edge
+      gateway.envoyproxy.io/owning-gateway-namespace: edge
+  # The factory connector (step 9), a bearer path into the controller.
+  connector:
+    namespace: factory
+    matchLabels:
+      app.kubernetes.io/name: factory-connector
+  # OTLP receivers the controller exports to, as Cilium endpoint selectors.
+  # Empty: no telemetry egress (the factory cluster has no trace gateway yet).
+  otlp:
+    endpoints: []
+    port: 4317
+
+# ---------------------------------------------------------------------------
+# Later steps of the delivery plan. Nothing below renders yet, and setting any
+# of it fails the render (templates/validate.yaml) rather than doing nothing.
+# ---------------------------------------------------------------------------
+
+# itsaplan Community: own templates against the upstream images (step 6).
+itsaplan:
+  enabled: false
+# Credential broker, projects/factory/broker (step 7).
+broker:
+  enabled: false
+# Connector, projects/factory/connector (steps 9 and 10).
+connector:
+  enabled: false
+# Model providers (step 7).
+providers: {}
+# Agents: harness, provider, resources, concurrency, egress grants, tools.
+agents: {}
+# Repository bindings (step 8): owner, repo, base branch, itsaplan project,
+# agent, namespace, branch prefix, concurrency, checks, merge policy,
+# retention. One Agent and namespace per repository; each namespace also needs
+# the credential provider's RoleBinding and a Substrate namespacePolicies
+# entry (see `substrate.credentialProvider`).
+repositories: []

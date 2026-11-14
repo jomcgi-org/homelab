@@ -1,0 +1,19 @@
+{{- /*
+Render-time checks for values the schema cannot express, and for later steps
+of the delivery plan that are not implemented yet: setting them fails here
+instead of silently rendering nothing.
+*/}}
+{{- if ne (eq .Values.kagent.mode "install") (.Values.kagent.enabled | default false) }}
+{{- fail "kagent.enabled must be true for kagent.mode install and false for existing" }}
+{{- end }}
+{{- if ne .Values.postgres.mode "existing" }}
+{{- fail "postgres.mode install arrives with the CNPG operator (delivery plan step 3); use existing" }}
+{{- end }}
+{{- range $section := list "itsaplan" "broker" "connector" }}
+{{- if (index $.Values $section).enabled }}
+{{- fail (printf "%s is not implemented in this chart version" $section) }}
+{{- end }}
+{{- end }}
+{{- if or .Values.repositories .Values.agents .Values.providers }}
+{{- fail "repositories, agents and providers are not implemented in this chart version" }}
+{{- end }}

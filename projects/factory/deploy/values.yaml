@@ -1,0 +1,16 @@
+# The factory home cluster's values for the factory chart
+# (projects/factory/chart). The cluster has one install, so there is no
+# overlay.
+
+# kagent's database is the planned CNPG Cluster kagent-pg in the kagent
+# namespace, prepared with kagent's setup script, with the connection-string
+# Secrets kagent-postgres-owner and kagent-postgres-readwrite (the chart's
+# defaults). The CNPG operator and that Cluster land with delivery plan step 3;
+# until then the controller waits for those Secrets.
+postgres:
+  mode: existing
+  existing:
+    endpoints:
+      - matchLabels:
+          cnpg.io/cluster: kagent-pg
+    port: 5432

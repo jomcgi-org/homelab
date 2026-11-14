@@ -1,0 +1,127 @@
+{{- if and (include "factory.kagentInstall" .) .Values.networkPolicy.cilium }}
+{{- /*
+The kagent namespace's allowlist under the cluster-wide default-deny
+(projects/platform-factory/network-policy/). kagent's trusted-proxy mode trusts
+any bearer token it is handed (ARCHITECTURE.md finding 5), so the controller
+admits only the UI, the edge, the connector and Substrate's egress gateway.
+The edge needs a matching egress rule in its own chart.
+*/}}
+{{- $ns := include "factory.kagentNamespace" . }}
+{{- $np := .Values.networkPolicy }}
+{{- $sub := .Values.substrate.namespace }}
+{{- $port := .Values.kagent.controller.service.ports.targetPort | default 8083 }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kagent-controller
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        # The UI's nginx proxies /api, /a2a and /mcp.
+        - matchLabels:
+            {{- include "factory.kagentSelector" (dict "root" . "component" "ui") | nindent 12 }}
+        # The controller's own RemoteMCPServer (kagent-api) points at itself.
+        - matchLabels:
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $np.edge.namespace }}
+            {{- toYaml $np.edge.matchLabels | nindent 12 }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
+            {{- toYaml $np.connector.matchLabels | nindent 12 }}
+        # Agent runtimes in Substrate actors reach the control plane through
+        # the egress gateway.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $sub }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: {{ $port | quote }}
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $port | quote }}
+              protocol: TCP
+    # Substrate: ate-api-server (api.<ns>.svc:443), the actor JWT issuer's
+    # discovery (idp.<ns>.svc, pod port 8443) and atenet-router
+    # (atenet-router.<ns>.svc:443, pod port 8443).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $sub }}
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $sub }}
+            app: ate-idp-server
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $sub }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    {{- with .Values.postgres.existing.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $.Values.postgres.existing.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- with $np.otlp.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $np.otlp.port | quote }}
+              protocol: TCP
+    {{- end }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kagent-ui
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.kagentSelector" (dict "root" . "component" "ui") | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $np.edge.namespace }}
+            {{- toYaml $np.edge.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.kagent.ui.service.ports.targetPort | default 8080 | quote }}
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $port | quote }}
+              protocol: TCP
+{{- end }}
