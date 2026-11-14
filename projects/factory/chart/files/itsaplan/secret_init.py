@@ -24,8 +24,16 @@ four steps, in order:
             encrypted with the lost key, and itsaplan decrypts the stored
             OIDC settings before it accepts new ones, so without this every
             later write of them fails.
-  apply     (this script) checks again and writes the keys, removing the
-            annotation. A failed run repeats the purge, which is idempotent.
+  apply     (this script) checks again and writes the keys. When it wrote
+            new main keys it restarts the api and worker (ROLL, a pod-template
+            annotation naming this generation): running pods keep the old keys
+            in their environment, and the PostSync bootstrap would otherwise
+            store fresh settings under the old key through them. ArgoCD runs
+            the bootstrap only once they are healthy again. A failed run
+            repeats the purge, which is idempotent.
+
+Either step removes ALLOW_ANNOTATION whenever it sees it, used or not, so a
+stale annotation cannot authorise a later purge.
 
 See the factory-cluster README, "itsaplan", for the recovery.
 
@@ -51,6 +59,8 @@ CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 NAMESPACE = os.environ["NAMESPACE"]
 MAIN = os.environ["ITSAPLAN_SECRET"]
 ALLOW_ANNOTATION = "factory.jomcgi.dev/regenerate-itsaplan-keys"
+# Set on the api's and worker's pod templates when new keys are written.
+ROLL_ANNOTATION = "factory.jomcgi.dev/itsaplan-key-generation"
 
 GENERATED = {
     MAIN: {
@@ -65,20 +75,22 @@ GENERATED = {
 }
 
 
-def call(method, path, body=None):
+def call(method, path, body=None, content_type="application/json"):
     req = urllib.request.Request(
         API + path,
         method=method,
         data=None if body is None else json.dumps(body).encode(),
         headers={
             "Authorization": f"Bearer {TOKEN}",
-            "Content-Type": "application/json",
+            "Content-Type": content_type,
         },
     )
     try:
         with urllib.request.urlopen(req, context=CTX, timeout=30) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
+        if e.code == 404 and method == "PATCH":
+            return None
         raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
 
 
@@ -102,22 +114,29 @@ def regenerating(rows):
     """True when the main Secret's keys are missing and the loss is accepted.
 
     Refuses (exits) when they are missing from a database with rows and the
-    Secret does not carry the annotation.
+    Secret does not carry the annotation. An annotation that does not apply
+    now is removed.
     """
     secret = call("GET", secret_path(MAIN))
     data = secret.get("data") or {}
     missing = [key for key in GENERATED[MAIN] if not data.get(key)]
-    if not missing or not rows:
-        return False
     annotations = secret["metadata"].get("annotations") or {}
-    if annotations.get(ALLOW_ANNOTATION) == "true":
+    allowed = annotations.get(ALLOW_ANNOTATION) == "true"
+    if not missing or not rows:
+        if ALLOW_ANNOTATION in annotations:
+            annotations.pop(ALLOW_ANNOTATION)
+            call("PUT", secret_path(MAIN), secret)
+            print(f"removed the unused {ALLOW_ANNOTATION} annotation from {MAIN}")
+        return False
+    if allowed:
         return True
     raise SystemExit(
         f"REFUSING to generate {', '.join(missing)} in {NAMESPACE}/{MAIN}: the "
         f"database already holds {rows} account, settings and secret rows, so "
         "these keys existed and were lost. New ones would end every session and "
         "make every stored credential unreadable. Restore the old values into "
-        "the Secret, or accept the loss with "
+        "the Secret (a running api pod still holds them in its environment), or "
+        "accept the loss with "
         f"`kubectl -n {NAMESPACE} annotate secret {MAIN} {ALLOW_ANNOTATION}=true` "
         'and sync again (factory-cluster README, "itsaplan").'
     )
@@ -132,8 +151,24 @@ def plan():
     print(f"plan: {decision}")
 
 
+def roll(generation):
+    """Restart the api and worker onto the new keys, where they exist."""
+    patch = {
+        "spec": {
+            "template": {"metadata": {"annotations": {ROLL_ANNOTATION: generation}}}
+        }
+    }
+    for name in os.environ["ROLL"].split():
+        path = f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}"
+        if call("PATCH", path, patch, "application/merge-patch+json") is None:
+            print(f"{NAMESPACE}/{name} does not exist yet; it starts on the new keys")
+        else:
+            print(f"restarting {NAMESPACE}/{name} onto key generation {generation}")
+
+
 def apply():
     accepted = regenerating(database_rows())
+    rolled = False
     for name, keys in GENERATED.items():
         secret = call("GET", secret_path(name))
         data = dict(secret.get("data") or {})
@@ -146,8 +181,11 @@ def apply():
                 secret["metadata"]["annotations"].pop(ALLOW_ANNOTATION)
             call("PUT", secret_path(name), secret)
             print(f"added {', '.join(missing)} to {NAMESPACE}/{name}")
+            rolled = rolled or name == MAIN
         else:
             print(f"{NAMESPACE}/{name} complete")
+    if rolled:
+        roll(secrets.token_hex(8))
 
 
 if __name__ == "__main__":

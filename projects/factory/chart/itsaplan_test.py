@@ -201,7 +201,13 @@ def test_job_roles_name_only_their_secrets() -> None:
             "resources": ["secrets"],
             "resourceNames": ["factory-itsaplan", "factory-itsaplan-admin"],
             "verbs": ["get", "update"],
-        }
+        },
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "resourceNames": ["factory-itsaplan-api", "factory-itsaplan-worker"],
+            "verbs": ["patch"],
+        },
     ]
     bootstrap = _one(docs, "Role", "factory-itsaplan-bootstrap")["rules"]
     assert bootstrap[0]["resourceNames"] == [
@@ -289,7 +295,7 @@ def test_application_ignores_every_generated_secret() -> None:
 def test_secret_init_counts_plans_and_purges_before_it_writes() -> None:
     docs = _render()
     job = _one(docs, "Job", "factory-itsaplan-secret-init")
-    assert job["spec"]["activeDeadlineSeconds"] > 0
+    assert job["spec"]["activeDeadlineSeconds"] >= 1800
     pod = job["spec"]["template"]["spec"]
     steps = [c["name"] for c in pod["initContainers"]] + [
         c["name"] for c in pod["containers"]
@@ -304,3 +310,5 @@ def test_secret_init_counts_plans_and_purges_before_it_writes() -> None:
     scripts = _one(docs, "ConfigMap", "factory-itsaplan-scripts")["data"]
     assert "app_secret" in scripts["db_state.sql"]
     assert "delete from app_secret;" in scripts["purge.sql"]
+    env = {e["name"]: e.get("value") for e in pod["containers"][0]["env"]}
+    assert env["ROLL"] == "factory-itsaplan-api factory-itsaplan-worker"

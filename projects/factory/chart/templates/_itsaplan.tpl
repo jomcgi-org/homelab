@@ -116,6 +116,8 @@ env:
     value: {{ $name }}-admin
   - name: ADMIN_EMAIL
     value: {{ .Values.itsaplan.admin.email }}
+  - name: ROLL
+    value: {{ printf "%s-api %s-worker" $name $name }}
 securityContext:
   {{- include "factory.itsaplanContainerSecurity" . | nindent 2 }}
 resources:

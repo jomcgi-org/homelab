@@ -6,7 +6,8 @@ Idempotent; every step reads before it writes:
    accounts, sign up instead: the first account is the instance admin.
 2. Registration invite-only, and the OIDC provider from CONFIG with the
    client secret from OIDC_SECRET (written there by Authentik's secret-init),
-   written when it differs from what STATE_SECRET records, or daily.
+   written when it differs from what STATE_SECRET records, or on the first
+   sync more than a day after the last write.
 3. The team and project from CONFIG, in the admin's workspace.
 4. Each external agent from CONFIG, working in that project. The api returns
    an agent's API key once, at creation or rotation, and this writes it to
@@ -39,7 +40,7 @@ API = os.environ["API_INTERNAL_URL"].rstrip("/")
 ORIGIN = os.environ["APP_URL"].rstrip("/")
 with open(os.environ["CONFIG"]) as f:
     CONFIG = json.load(f)
-# The longest the OIDC settings go without being written again.
+# After this long, the next sync writes the OIDC settings again.
 REWRITE_AFTER = 24 * 3600
 
 
@@ -185,9 +186,9 @@ def ensure_settings(session, client_secret):
 
     # itsaplan cannot return the stored client secret, so the state Secret
     # (STATE_SECRET) records a digest of what was last written and when. The
-    # settings are written when a visible field or the digest differs, and at
-    # least once a day (REWRITE_AFTER), which also undoes a client secret
-    # changed by hand in god mode.
+    # settings are written when a visible field or the digest differs, and on
+    # the first sync more than REWRITE_AFTER after the last write, which also
+    # undoes a client secret changed by hand in god mode.
     oidc = CONFIG["oidc"]
     want = {
         "enabled": True,
@@ -206,12 +207,13 @@ def ensure_settings(session, client_secret):
     except HTTPError as e:
         if e.status < 500:
             raise
-        # Stored settings encrypted with a key the api no longer holds: every
-        # write decrypts them first and fails the same way.
+        # Possibly stored settings encrypted with a key the api no longer
+        # holds: every write decrypts them first and fails the same way.
         raise SystemExit(
-            f"itsaplan cannot read its OIDC settings ({e.status}): they were "
-            "encrypted with another APP_ENCRYPTION_KEY. Recover with the "
-            'factory-cluster README, "itsaplan", which deletes them.'
+            f"itsaplan cannot read its OIDC settings ({e.status}): possibly "
+            "encrypted with another APP_ENCRYPTION_KEY. Check the api logs for "
+            "a decrypt error before following the regeneration runbook "
+            '(factory-cluster README, "itsaplan").'
         )
     matches = current.get("hasClientSecret") and all(
         current.get(k) == v for k, v in want.items()
