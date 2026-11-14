@@ -36,6 +36,56 @@ func TestRuleFilesFromChangedPaths(t *testing.T) {
 	}
 }
 
+func TestIncludesAfterOptionalTitle(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{"first line", "Includes: a.md, b.md\nRules.", "a.md,b.md"},
+		{"title", "# Review: the factory\n\nIncludes: a.md, b.md\nRules.", "a.md,b.md"},
+		{"leading blanks", "\n  # Review\n\n  Includes: a.md\nRules.", "a.md"},
+		{"body directive", "# Review\nRules.\nIncludes: a.md", ""},
+		{"second title", "# Review\n# Another title\nIncludes: a.md", ""},
+		{"subheading", "## Examples\nIncludes: a.md", ""},
+		{"code block", "```\nIncludes: a.md\n```", ""},
+		{"title only", "# Review\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strings.Join(includes(tc.content), ","); got != tc.want {
+				t.Fatalf("includes = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadRulesResolvesFactoryTitleIncludes(t *testing.T) {
+	for _, dir := range []string{"factory", "factory-cluster"} {
+		t.Run(dir, func(t *testing.T) {
+			// The factory rule files begin with an H1, a blank line and Includes.
+			scoped := "projects/" + dir + "/REVIEW.md"
+			platform := "projects/platform-factory/REVIEW.md"
+			gh := &baseRules{head: "base-1", files: map[string]string{
+				"REVIEW.md": "Root rules.",
+				scoped:      "# Review: the factory\n\nIncludes: " + platform + "\n\nFactory rules.",
+				platform:    "Every route signs in.",
+			}}
+			r, err := LoadRules(context.Background(), gh, testRepo, "main", []string{"projects/" + dir + "/x.go"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "REVIEW.md," + platform + "," + scoped; strings.Join(r.Paths(), ",") != want {
+				t.Fatalf("rules = %v, want %s", r.Paths(), want)
+			}
+			if len(r.Notes) != 0 || r.Unchecked != 0 {
+				t.Fatalf("valid includes reported incomplete rules: %+v", r)
+			}
+			prompt := Prompt(PromptInput{Repo: testRepo, Number: 7, Base: "main", SHA: shaA, Rules: r})
+			if !strings.Contains(prompt, platform) || !strings.Contains(prompt, "Every route signs in.") {
+				t.Fatalf("included platform rules missing from prompt: %s", prompt)
+			}
+		})
+	}
+}
+
 // TestLoadRulesReadsOnlyFilesTheTreeHas touches 150 directories, two of
 // which hold a REVIEW.md: one tree read, then two file reads.
 func TestLoadRulesReadsOnlyFilesTheTreeHas(t *testing.T) {

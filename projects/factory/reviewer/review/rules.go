@@ -104,11 +104,16 @@ const (
 )
 
 // includes reads a rule file's "Includes: a, b" line, which must be its
-// first non-blank line.
+// first non-blank line, optionally preceded by one H1 title.
 func includes(content string) []string {
+	title := false
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
+			continue
+		}
+		if !title && strings.HasPrefix(line, "# ") {
+			title = true
 			continue
 		}
 		rest, ok := strings.CutPrefix(line, "Includes:")
