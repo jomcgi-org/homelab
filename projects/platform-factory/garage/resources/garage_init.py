@@ -133,7 +133,10 @@ def wait_for_nodes(timeout=600):
     deadline = time.monotonic() + timeout
     while True:
         try:
-            nodes = [n for n in garage("GET", "GetClusterStatus")["nodes"] if n["isUp"]]
+            # A peer's hostname arrives with its first status exchange, a
+            # few seconds after it connects; it names the node's zone.
+            status = garage("GET", "GetClusterStatus")["nodes"]
+            nodes = [n for n in status if n["isUp"] and n.get("hostname")]
             if len(nodes) >= NODES:
                 return nodes
             print(f"{len(nodes)} of {NODES} Garage nodes up; waiting")
