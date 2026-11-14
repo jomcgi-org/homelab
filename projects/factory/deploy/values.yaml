@@ -30,6 +30,11 @@ broker:
   githubApp:
     enabled: true
     itemPath: vaults/k8s-homelab/items/factory-gh-app
+  # kagent's Codex harness sends no reasoning effort, so the relay sets it on
+  # every model call (projects/factory/broker, codex.reasoningEffort).
+  config:
+    codex:
+      reasoningEffort: xhigh
 
 kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
@@ -56,13 +61,14 @@ kagent:
         serviceAccount:
           authority: factory-home
 
-# The Codex agent's model. kagent v1.0.1 pins Codex 0.161.0, which gives the
-# model its apply_patch edit tool only for models in its bundled catalogue
-# (codex-rs/models-manager/models.json); gpt-6.1-terra is not there, so with
-# it the first run (HOME-1) had no way to edit files.
+# The Codex agent's model: gpt-6-astra, the frontier model, at the broker's
+# xhigh reasoning effort (Joe, 2026-11-14). kagent v1.0.1 pins Codex 0.161.0,
+# which gives a model its apply_patch edit tool only when it is in its
+# bundled catalogue (codex-rs/models-manager/models.json); gpt-6.1-terra is
+# not there, so with it the first run (HOME-1) had no way to edit files.
 agents:
   codex:
-    model: gpt-6.1-sol
+    model: gpt-6-astra
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
