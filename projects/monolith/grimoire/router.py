@@ -2650,6 +2650,17 @@ def create_game_session(
 ) -> GameSession:
     _require_dm(session, campaign_id, email)
 
+    # Serialize the absence check with other starts in this campaign. A
+    # no-key-update lock still permits foreign-key references to the campaign.
+    campaign = session.exec(
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="campaign not found")
+
     active = session.exec(
         select(GameSession).where(
             GameSession.campaign_id == campaign_id,
@@ -2681,14 +2692,24 @@ def update_game_session(
     session: Session = Depends(get_session),
 ) -> GameSession:
     _require_dm(session, campaign_id, email)
-    game_session = session.get(GameSession, session_id)
-    if game_session is None or game_session.campaign_id != campaign_id:
+    # The event writer takes this same lock. Refresh a cached ORM row after
+    # waiting, so a stale pause or resume cannot overwrite a committed end.
+    game_session = session.exec(
+        select(GameSession)
+        .where(GameSession.id == session_id, GameSession.campaign_id == campaign_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if game_session is None:
         raise HTTPException(status_code=404, detail="game session not found")
+    if game_session.status == "ended" and body.status != "ended":
+        raise HTTPException(status_code=409, detail="ended sessions cannot be reopened")
 
+    ending = body.status == "ended" and game_session.status != "ended"
     game_session.status = body.status
-    if body.status == "ended" and game_session.ended_at is None:
+    if ending and game_session.ended_at is None:
         game_session.ended_at = datetime.now(timezone.utc)
-    if body.status == "ended":
+    if ending:
         from grimoire.fact_extraction import enqueue_session_facts
 
         enqueue_session_facts(session, campaign_id, session_id)
