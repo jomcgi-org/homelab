@@ -613,8 +613,54 @@ and retries once, so a brief overlap during a rollout is safe.
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
 | Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
-| Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards a kagent reviewer with its own App, as a reviewer check bound to that App's ID |
+| Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards the reviewer App's required check ("Merge authority") |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
+
+## Merge authority
+
+Decided with Joe on 2026-11-14. Writing code, reviewing it and merging it
+are separate identities, and GitHub enforces the review rather than the
+factory's own code.
+
+- **Author.** `jomcgi-factory` pushes branches and opens PRs: contents and
+  pull requests write, checks and statuses read. It loses merge queue write
+  once the reviewer takes over enqueueing. The agent's token is contents
+  write on its own repository only. Neither can post the review check.
+- **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
+  merge queues write, and contents and pull requests read. A kagent reviewer
+  agent, in its own binding, reviews the exact head against `REVIEW.md` and
+  the repository's review guide. It posts the `factory review` check run and
+  enqueues when the check passes and required CI is green. It never posts a
+  PR approval, so it can never count toward an approval or code-owner rule.
+- **GitHub enforces it.** Ruleset 9180009 requires `factory review`, bound to
+  the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
+  a passing review on that head, including PRs from Joe, interactive
+  sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
+  Third-party Apps may open PRs but merge only through this gate. Joe keeps a
+  ruleset bypass for emergencies; nothing else does.
+- **Connector.** It coordinates sessions, revision rounds and itsaplan
+  status. It holds no merge authority: the reviewer's failing check becomes
+  the revision round's feedback.
+- **Only the factory's own loop acts.** Work starts only from itsaplan
+  (invite-only, behind Authentik); GitHub issues, PRs and comments never
+  start a run. The connector adopts and enqueues only PRs whose author is the
+  factory App and whose head branch is the bound repository's
+  `<branchPrefix><issue key>`; a fork or other author is refused and
+  reported. Only `trustedReviewers` and the reviewer App reach an agent's
+  prompt.
+- **No third-party writers in the trust path.** No other App holds
+  `administration` (it can edit the ruleset) or bypass, and the required
+  checks come from identities the factory runs. Build and artifact
+  publishing move into the cluster: CI runners and an OCI registry for
+  images and charts, with a documented bootstrap that does not need the
+  registry it rebuilds. GitHub stays the forge.
+- **Public routes** serve only mock or fixture data, cached by the CDN, with
+  no secrets and no calls into the cluster: previews and the showcase. No
+  workflow runs with secrets on a fork PR (`pull_request_target` previews
+  move off GitHub Actions).
+
+Until the reviewer App exists, local review agents approve as `jomcgi` and
+the connector enqueues (bootstrap).
 
 ## Delivery plan
 
@@ -648,9 +694,14 @@ Each step is its own PR with live evidence recorded on #7817.
   field reaches the Secret as `private-key`, beside text fields `app-id` and
   `installation-id`. Created 2026-11-14.
 - **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
-  review agents approve its PRs as `jomcgi` (`trustedReviewers`). A kagent
-  reviewer with its own App replaces them afterwards; an App cannot approve
-  a PR it opened.
+  review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
+  the reviewer App `jomcgi-factory-review` (checks write, merge queues
+  write, contents and pull requests read) owns review and enqueueing
+  ("Merge authority"); Joe creates it.
+- **Third-party Apps.** Remove or reduce Apps with write access that are not
+  the factory's (Polylane, the Codex connector, Semgrep, Claude), and remove
+  `administration` from BuildBuddy, which posts `pr-checks` until in-cluster
+  CI replaces it.
 - **1Password, later.** `k8s-homelab/factory-itsaplan` (`BETTER_AUTH_SECRET`,
   `APP_ENCRYPTION_KEY`) and `k8s-homelab/factory-itsaplan-admin` once
   Postgres has off-site backups; until then both are generated in the
