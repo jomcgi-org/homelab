@@ -1,0 +1,242 @@
+{{- if .Values.itsaplan.enabled }}
+{{- /*
+itsaplan's two Jobs, both idempotent standard-library Python from files/itsaplan/:
+
+- secret-init (wave -1, before the workloads) generates BETTER_AUTH_SECRET,
+  APP_ENCRYPTION_KEY and the break-glass admin's password, each only when
+  absent.
+- bootstrap (PostSync) signs in as that admin through the api, creating it
+  on a fresh database, where the first account is the instance admin; sets
+  invite-only registration and the OIDC provider; and creates the team,
+  project and external agents in values. It writes each agent's API key,
+  which the api returns only once, to that agent's Secret, and rotates the
+  key of an agent whose Secret lost it rather than creating a second agent.
+
+Each gets/updates only the Secrets named in its Role.
+*/}}
+{{- $i := .Values.itsaplan }}
+{{- $ns := $i.namespace }}
+{{- $name := include "factory.itsaplanName" . }}
+{{- $agentSecrets := list }}
+{{- range $i.bootstrap.agents }}
+{{- $agentSecrets = append $agentSecrets (include "factory.itsaplanAgentSecret" .username) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-scripts
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  secret_init.py: |
+    {{- .Files.Get "files/itsaplan/secret_init.py" | nindent 4 }}
+  bootstrap.py: |
+    {{- .Files.Get "files/itsaplan/bootstrap.py" | nindent 4 }}
+  config.json: |
+    {{- dict
+      "admin" (dict "name" $i.admin.name)
+      "oidc" (dict "label" $i.oidc.label "discoveryUrl" $i.oidc.discoveryUrl "clientId" $i.oidc.clientId)
+      "team" $i.bootstrap.team
+      "project" $i.bootstrap.project
+      "agents" $i.bootstrap.agents
+      | toPrettyJson | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-secret-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-secret-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $name }}, {{ $name }}-admin]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-secret-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-secret-init
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}-secret-init
+    namespace: {{ $ns }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-secret-init
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    # A Job's pod template is immutable; a changed script replaces the Job.
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}-secret-init
+    spec:
+      serviceAccountName: {{ $name }}-secret-init
+      restartPolicy: OnFailure
+      securityContext:
+        {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      containers:
+        - name: secret-init
+          image: {{ $i.images.jobs }}
+          command: [python3, -I, -u, /scripts/secret_init.py]
+          env:
+            - name: NAMESPACE
+              value: {{ $ns }}
+            - name: ITSAPLAN_SECRET
+              value: {{ $name }}
+            - name: ADMIN_SECRET
+              value: {{ $name }}-admin
+            - name: ADMIN_EMAIL
+              value: {{ $i.admin.email }}
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.jobs | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $name }}-scripts
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}-bootstrap
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-bootstrap
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $name }}-admin, {{ $i.oidc.clientSecretName }}]
+    verbs: [get]
+  {{- with $agentSecrets }}
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: {{ toJson . }}
+    verbs: [get, update]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-bootstrap
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}-bootstrap
+    namespace: {{ $ns }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-bootstrap
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  # The api, the admin Secret and the OIDC client secret are each waited for
+  # (bootstrap.py); this bounds the whole run.
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}-bootstrap
+    spec:
+      serviceAccountName: {{ $name }}-bootstrap
+      restartPolicy: OnFailure
+      securityContext:
+        {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      containers:
+        - name: bootstrap
+          image: {{ $i.images.jobs }}
+          command: [python3, -I, -u, /scripts/bootstrap.py]
+          env:
+            - name: NAMESPACE
+              value: {{ $ns }}
+            - name: API_INTERNAL_URL
+              value: {{ include "factory.itsaplanInternalURL" . }}
+            - name: APP_URL
+              value: {{ include "factory.itsaplanAppURL" . }}
+            - name: ADMIN_SECRET
+              value: {{ $name }}-admin
+            - name: OIDC_SECRET
+              value: {{ $i.oidc.clientSecretName }}
+            - name: AGENT_SECRET_PREFIX
+              value: {{ include "factory.itsaplanAgentSecret" "" }}
+            - name: CONFIG
+              value: /scripts/config.json
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.jobs | nindent 12 }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $name }}-scripts
+{{- end }}

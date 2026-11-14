@@ -274,14 +274,118 @@ workers:
   # Harness snapshots go to <prefix><namespace>/ in Substrate's snapshot store.
   snapshotLocationPrefix: s3://ate-snapshots/
 
+# itsaplan Community v1.10.0: work requests, assignment and the run queue
+# (ARCHITECTURE.md, "itsaplan"). The chart's own templates run the upstream
+# images; upstream's chart renders its secrets from values (finding 4).
+itsaplan:
+  enabled: false
+  # Shared with the broker and the connector; the broker's template owns it.
+  namespace: factory
+  # The public origin. The web app is served at /, the api under apiPath on
+  # the same host (upstream's path mode): the HTTPRoute removes the prefix,
+  # and the session cookie stays host-only (__Host-).
+  host: factory-plan.jomcgi.dev
+  apiPath: /backend
+  images:
+    api: ghcr.io/croffasia/itsaplan-api:1.10.0@sha256:9f53d060db6594b2e51bc224183e8e8c60e544a1fd65dcd451c053568c642753
+    web: ghcr.io/croffasia/itsaplan-web:1.10.0@sha256:be213d6861f66ac68320db2a1481c050bc811a740d558f5ebde576b34f78b289
+    worker: ghcr.io/croffasia/itsaplan-worker:1.10.0@sha256:840650f1dc8cec4d82cf8cdc6fa5cd43aa82df1fc9a9f9213358e3c33688aed0
+    # The secret-init and bootstrap Jobs (standard-library Python).
+    jobs: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+  # PostgreSQL, provided outside the chart: a Secret in `namespace` whose key
+  # DATABASE_URL is a connection URL for a role that owns the database (the
+  # migrations create its tables). `endpoints` are Cilium selectors for the
+  # api's and worker's egress.
+  database:
+    secretName: factory-itsaplan-db
+    endpoints: []
+    port: 5432
+  # S3, provided outside the chart: a Secret in `namespace` with
+  # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and
+  # BUCKET (garage-init's format).
+  s3:
+    secretName: factory-itsaplan-s3
+    endpoints: []
+    port: 3900
+  # Sign-in through the identity provider, set in god mode by the bootstrap
+  # Job. The api calls the discovery URL's host (discovery, keys, tokens) by
+  # name, through Cloudflare like a browser. The client secret comes from
+  # outside the chart: Secret `clientSecretName` in `namespace`, key
+  # client-secret, which Authentik's secret-init fills.
+  oidc:
+    discoveryUrl: https://factory-auth.jomcgi.dev/application/o/factory-itsaplan/.well-known/openid-configuration
+    clientId: factory-itsaplan
+    label: Authentik
+    clientSecretName: factory-itsaplan-oidc
+  # The break-glass instance admin (itsaplan's "god"), created by the bootstrap
+  # Job; secret-init generates its password into factory-itsaplan-admin.
+  admin:
+    email: factory-admin@jomcgi.dev
+    name: Factory admin
+  # What the bootstrap Job creates once: a team, its project and the external
+  # agents. Each agent's API key goes to Secret factory-itsaplan-agent-<username>
+  # (keys apiKey, agentId, teamId, projectKey, url); a lost Secret gets the
+  # same agent a new key.
+  bootstrap:
+    team:
+      name: Factory
+      slug: factory
+    project:
+      key: HOME
+      name: Homelab
+      description: Work for the jomcgi-org/homelab repository.
+    agents:
+      # Claims the project's runs (assignment and mentions).
+      - username: homelab-codex
+        name: Homelab Codex
+        triggerOnAssign: true
+        triggerOnMention: true
+      # The connector's own identity: comments, issue state and run lookups
+      # through the runner queue. It is never assigned work.
+      - username: factory-coordinator
+        name: Factory coordinator
+        triggerOnAssign: false
+        triggerOnMention: false
+  # Settings written to the api's environment over the chart's.
+  env: {}
+  resources:
+    api:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    web:
+      requests:
+        cpu: 20m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    worker:
+      requests:
+        cpu: 20m
+        memory: 192Mi
+      limits:
+        memory: 768Mi
+    jobs:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+  # The HTTPRoute on the authenticated edge Gateway, whose route namespaces
+  # must include `namespace`.
+  route:
+    enabled: true
+    gateway:
+      name: edge
+      namespace: edge
+
 # ---------------------------------------------------------------------------
 # Later steps of the delivery plan. Nothing below renders yet, and setting any
 # of it fails the render (templates/validate.yaml) rather than doing nothing.
 # ---------------------------------------------------------------------------
 
-# itsaplan Community: own templates against the upstream images (step 6).
-itsaplan:
-  enabled: false
 # Connector, projects/factory/connector (steps 9 and 10).
 connector:
   enabled: false

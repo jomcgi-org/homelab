@@ -9,7 +9,7 @@ instead of silently rendering nothing.
 {{- if ne .Values.postgres.mode "existing" }}
 {{- fail "postgres.mode install arrives with the CNPG operator (delivery plan step 3); use existing" }}
 {{- end }}
-{{- range $section := list "itsaplan" "connector" }}
+{{- range $section := list "connector" }}
 {{- if (index $.Values $section).enabled }}
 {{- fail (printf "%s is not implemented in this chart version" $section) }}
 {{- end }}
@@ -41,5 +41,13 @@ instead of silently rendering nothing.
 {{- /* kagent 1.0.1 applies one CPU and memory limit to every runtime. */}}
 {{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
 {{- fail (printf "agents %s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $r.agent $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- end }}
+{{- if .Values.itsaplan.enabled }}
+{{- if eq .Values.itsaplan.namespace (include "factory.kagentNamespace" .) }}
+{{- fail "itsaplan.namespace must not be kagent's: the kagent controller reads every Secret there" }}
+{{- end }}
+{{- if ne .Values.itsaplan.namespace .Values.broker.namespace }}
+{{- fail "itsaplan.namespace must be broker.namespace: they share the factory namespace the broker's template declares" }}
 {{- end }}
 {{- end }}

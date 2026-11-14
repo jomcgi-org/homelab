@@ -98,3 +98,22 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # itsaplan's web app and api (projects/factory/chart).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan
+            app.kubernetes.io/component: web
+      toPorts:
+        - ports:
+            - port: "3001"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan
+            app.kubernetes.io/component: api
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP

@@ -1,0 +1,57 @@
+{{- if and .Values.itsaplan.enabled .Values.itsaplan.route.enabled }}
+{{- /*
+itsaplan on the authenticated edge: every request has signed in through the
+gateway-wide OIDC policy first. The api lives under apiPath on the web's host
+(upstream's path mode): this route removes the prefix, so the api sees /,
+/api/auth/... and /agent-runs/... as on a host of its own. The edge Gateway
+admits routes only from its routeNamespaces, which must list this namespace.
+*/}}
+{{- $i := .Values.itsaplan }}
+{{- $name := include "factory.itsaplanName" . }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  namespace: {{ $i.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $i.route.gateway.name }}
+      namespace: {{ $i.route.gateway.namespace }}
+  hostnames:
+    - {{ $i.host }}
+  # kind, group and weight are the schema defaults, stated so ArgoCD's diff
+  # owns them.
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ $i.apiPath }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ $name }}-api
+          port: 3000
+          weight: 1
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ $name }}-web
+          port: 3001
+          weight: 1
+{{- end }}

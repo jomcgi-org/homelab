@@ -1,6 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# files/ holds scripts the chart mounts from ConfigMaps; they are not Bazel
+# targets, and a BUILD file there would take them out of :chart.
+# gazelle:exclude files
+
 helm_chart(
     name = "chart",
     images = {
@@ -44,6 +48,33 @@ py_test(
     ] + glob([
         "charts/**",
         "crds/**",
+        "files/**",
+        "templates/**",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "itsaplan_test",
+    srcs = ["itsaplan_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.schema.json",
+        "values.yaml",
+        "//projects/factory/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "charts/**",
+        "crds/**",
+        "files/**",
         "templates/**",
     ]),
     env = {

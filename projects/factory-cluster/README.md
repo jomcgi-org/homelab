@@ -50,8 +50,8 @@ router must reserve these three leases.
 | Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
 | Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
 | Admission policy | ValidatingAdmissionPolicy (`projects/platform-factory/edge-admission/`) | Keeps Gateways, routes, the edge label and Envoy's proxy and auth objects inside `edge`. The API server evaluates it in every namespace; Kyverno skips kube-system, kube-public, kube-node-lease and its own namespace |
-| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's database (one instance, no backups yet) and kagent's `kagent-pg` (three instances, one per node) |
-| Backups | `kagent-pg`: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Survives losing a pod, a volume or a node. Garage shares the cluster's failure domain, so this is not off-site: losing the cluster loses the backups too. Off-site copies (R2 or GCS) are deferred |
+| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's database (one instance, no backups yet), kagent's `kagent-pg` and the factory's `factory-db` (three instances each, one per node) |
+| Backups | `kagent-pg` and `factory-db`: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Survives losing a pod, a volume or a node. Garage shares the cluster's failure domain, so this is not off-site: losing the cluster loses the backups too. Off-site copies (R2 or GCS) are deferred |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Repository convention. Authentik's secrets cannot outlive its database until Postgres has off-node backups, so a copy in 1Password would protect nothing yet |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 | Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
@@ -161,14 +161,15 @@ The only path in from the internet:
 3. Envoy Gateway's `edge` Gateway (`projects/platform-factory/edge/`) signs
    every request in through Authentik with a gateway-wide OIDC
    SecurityPolicy, then routes it. Routes attach only from the namespaces
-   listed in the chart's `routeNamespaces` (`edge`, `argocd`), matched by
-   name.
+   listed in the chart's `routeNamespaces` (`edge`, `argocd`, `factory`),
+   matched by name.
 4. The application can run its own Authentik login too; ArgoCD does.
 
 | Hostname | Route | Sign-in |
 | --- | --- | --- |
 | factory.jomcgi.dev | `argocd/argocd-server` | Envoy OIDC (client `factory-edge`), then ArgoCD's OIDC (client `factory-argocd`); both admit only `authentik Admins` |
 | factory-auth.jomcgi.dev | `edge/authentik` | Authentik itself, with MFA required |
+| factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
 
 Envoy's OIDC session lasts as long as the access token, ten minutes, with no
 refresh. Envoy then sends the browser back to Authentik, which checks the
@@ -313,15 +314,17 @@ does the rest, idempotently:
 | Bucket | Key Secret | Consumer |
 | --- | --- | --- |
 | `kagent-pg-backups` | `kagent-pg/kagent-pg-s3` | `kagent-pg` WAL archive and base backups |
+| `factory-db-backups` | `factory-db/factory-db-s3` | `factory-db` WAL archive and base backups |
 | `factory-itsaplan` | `factory/factory-itsaplan-s3` | itsaplan (step 6) |
 | `factory-evidence` | `factory/factory-evidence-s3` | the connector's transcripts and CI logs (step 9) |
 | `ate-snapshots` | none yet | Agent Substrate, when its snapshots move off rustfs |
 
 `projects/platform-factory/factory-buckets/` holds the `factory` namespace's
-key Secrets ahead of the workloads. The S3 API admits only the workloads
-holding a key: `kagent-pg`'s instances and the connector
-(`app.kubernetes.io/name=factory-connector` in `factory`); itsaplan and
-Substrate are added with their grants. RPC (3901) admits only Garage pods
+key Secrets ahead of the workloads, and itsaplan's OIDC client secret,
+which Authentik's secret-init fills. The S3 API admits only the workloads
+holding a key: `kagent-pg`'s and `factory-db`'s instances, itsaplan's api and
+worker, and the connector (`app.kubernetes.io/name=factory-connector` in
+`factory`); Substrate is added with its grant. RPC (3901) admits only Garage pods
 and the admin API (3903) only garage-init. A consumer also needs its own
 egress rule to `app.kubernetes.io/name=garage` in `garage` on 3900. Traffic is plain HTTP
 inside the cluster; Cilium's WireGuard encrypts it between nodes.
@@ -632,3 +635,42 @@ These come from the #7817 step 1 checklist:
   Honeycomb carries the baseline telemetry until then.
 - Alerting on the factory telemetry. Honeycomb's single free trigger is taken
   (`projects/platform/honeycomb/README.md`).
+
+### factory-db
+
+`factory-db` (`projects/platform-factory/factory-db/`, namespace
+`factory-db`) holds itsaplan's database and, from step 9, the connector's
+(`factory_connector`, created empty now). It mirrors `kagent-pg`: three
+instances, the same sizing, WAL and daily base backups (02:45 UTC, 14 days)
+to `factory-db-backups`, and `factory-db-init` (wave -1) holding the Cluster
+back until garage-init fills its key. Unlike `kagent-pg` it has no superuser
+login and no setup script: its roles are managed roles whose passwords come
+from `factory-db-itsaplan-login` and `factory-db-connector-login`, generated
+once by `factory-db-init`, and the connector's database is a `Database`
+object with reclaim policy `retain`. The PostSync `factory-db-setup` Job
+writes each database's `DATABASE_URL` into `factory`
+(`factory-itsaplan-db`, `factory-connector-db`); those Secrets and its Role
+come from the `factory-db-secrets` Application (`factory/`), as for
+`kagent-postgres-secrets`. `smartShutdownTimeout` is 15 s, so a deleted
+primary fails over in about 20 s although itsaplan holds its connections
+open.
+
+## itsaplan
+
+itsaplan (`projects/factory/ARCHITECTURE.md`, "itsaplan") serves
+factory-plan.jomcgi.dev. Its break-glass admin signs in there with email
+and password after the edge's Authentik sign-in, for when itsaplan's own OIDC
+client fails; invite people from it before their first OIDC sign-in, since
+registration is invite-only. The browser calls the api on the public origin,
+so the UI does not work over a port-forward; the api does, for scripts.
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory get secret factory-itsaplan-admin \
+  -o jsonpath='{.data.password}' | base64 -d
+```
+
+The generated `BETTER_AUTH_SECRET` and `APP_ENCRYPTION_KEY`
+(`factory/factory-itsaplan`) move to 1Password item
+`k8s-homelab/factory-itsaplan` once Postgres has off-site backups, as
+Authentik's secret key does. Losing `APP_ENCRYPTION_KEY` makes the stored
+OIDC client secret unreadable; the next sync's bootstrap writes it again.

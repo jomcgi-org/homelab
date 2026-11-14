@@ -1,0 +1,85 @@
+# The factory-db namespace's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). Each client's egress rule is in
+# the factory chart.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    # Before the Cluster (wave 0), whose instances need the API server.
+    argocd.argoproj.io/sync-wave: "-3"
+  name: factory-db
+  namespace: factory-db
+spec:
+  # The instances and the operator's initdb and join Jobs.
+  endpointSelector:
+    matchLabels:
+      cnpg.io/cluster: factory-db
+  ingress:
+    - fromEndpoints:
+        # itsaplan's api (which runs the migrations) and worker.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan
+            app.kubernetes.io/component: api
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-itsaplan
+            app.kubernetes.io/component: worker
+        # The connector (delivery plan step 9).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-connector
+        # Replication and pg_basebackup between instances.
+        - matchLabels:
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # The instance manager: the operator, and peers checking each other's
+    # status during failover.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cnpg-system
+            app.kubernetes.io/name: cloudnative-pg
+        - matchLabels:
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+    # WAL archives and base backups.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+---
+# The setup Jobs read and write Secrets and nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: factory-db-setup
+  namespace: factory-db
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: factory-db-setup
+  egress:
+    - toEntities: [kube-apiserver]

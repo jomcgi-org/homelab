@@ -1,5 +1,6 @@
-# The factory namespace's Garage bucket keys (resources/keys.yaml), ahead of
-# the itsaplan and connector workloads that will read them.
+# The factory namespace's Secrets that other namespaces fill, ahead of the
+# itsaplan and connector workloads that read them: the Garage bucket keys
+# (resources/keys.yaml) and itsaplan's OIDC client secret (resources/oidc.yaml).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -20,7 +21,7 @@ spec:
     server: https://kubernetes.default.svc
     # Created untracked, so the factory chart can own the namespace later.
     namespace: factory
-  # garage-init writes the keys.
+  # garage-init and authentik-secret-init write them.
   ignoreDifferences:
     - group: ""
       kind: Secret

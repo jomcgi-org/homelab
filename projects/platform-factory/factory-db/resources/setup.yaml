@@ -1,0 +1,220 @@
+# factory-db's secrets. factory-db-init (before the Cluster) generates each
+# login's password once and waits for garage-init to fill the backup key;
+# factory-db-setup (after every sync) writes the connection strings into the
+# factory namespace. Both run secret_init.py and are idempotent.
+#
+# ArgoCD owns every Secret here as a placeholder and ignores its data. Only the
+# connection strings go to the factory namespace, from the factory-db-secrets
+# Application (../factory/); the passwords' source and the backup key stay in
+# factory-db.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-itsaplan-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+# The operator's format for a role's password.
+type: kubernetes.io/basic-auth
+stringData:
+  username: itsaplan
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-connector-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_connector
+---
+# factory-db's Garage key, filled by garage-init
+# (projects/platform-factory/garage). factory-db-init holds the Cluster back
+# until it is filled: an instance that starts without it never picks it up,
+# and archives nothing until it restarts.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-s3
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [factory-db-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-db-setup
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factory-db-setup
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [factory-db-itsaplan-login, factory-db-connector-login]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [factory-db-s3]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factory-db-setup
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-db-setup
+subjects:
+  - kind: ServiceAccount
+    name: factory-db-setup
+    namespace: factory-db
+---
+# Generates the login passwords and waits (up to 30 minutes) for garage-init
+# to fill factory-db-s3 before the Cluster (wave 0) is created. garage-init
+# runs every 10 minutes. If the deadline passes, the sync fails and ArgoCD
+# does not retry the same revision: sync factory-db again once the key is
+# there (README).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: factory-db-init
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factory-db-setup
+    spec:
+      serviceAccountName: factory-db-setup
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: init
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, -u, /scripts/secret_init.py, init]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: factory-db-setup
+---
+# After every sync: writes the connection strings into the factory
+# namespace, waiting up to 15 minutes for factory-db-secrets to create their
+# placeholders. It never connects to the database.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: factory-db-setup
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factory-db-setup
+    spec:
+      serviceAccountName: factory-db-setup
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: setup
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, -u, /scripts/secret_init.py, connections]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: factory-db-setup
