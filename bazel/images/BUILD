@@ -38,6 +38,7 @@ multirun(
         "//projects/embervm/scratch-prep:image.push",
         "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.push",
+        "//projects/factory/broker/image:image.push",
         "//projects/factory/chart:chart.push",
         "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.push",
