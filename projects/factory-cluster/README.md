@@ -461,8 +461,10 @@ pin images by digest. The charts are rendered into Git instead:
 Control plane: `ate-system` (ate-api-server, ate-controller, ate-idp-server,
 atenet-router and atenet-egress on agentgateway, k8s-credential-provider, the
 atelet DaemonSet, postgres and rustfs) and `podcertificate-controller-system`.
-WorkerPools may live in any namespace. The `substrate-workers` cluster-wide
-policy lets their pods reach only the egress gateway. atelet reaches workers
+WorkerPools may live in any namespace labelled
+`factory.jomcgi.dev/substrate-workers=true` (the factory chart labels each
+repository binding namespace). The `substrate-workers` cluster-wide policy lets
+pods in those namespaces reach only the egress gateway. atelet reaches workers
 over a unix socket on the node. ate-controller limits their ingress to
 atenet-router. The gateway reaches ate-api-server and the credential
 provider. The credential provider reaches only the Kubernetes API, and only
@@ -495,9 +497,12 @@ design; restart it through ArgoCD. The policies don't cover `pods/exec` or
 These broad grants are acceptable while only admins hold kubeconfigs. Revisit
 them before actors get internet egress or agents get cluster credentials:
 
-- `substrate-workers`, upstream's atenet-egress ingress policy and the
-  router's egress all select any pod labelled `ate.dev/worker-pool`, in any
-  namespace. Anyone who can create pods can claim the label.
+- Upstream's atenet-egress ingress policy and the router's egress still
+  select any pod labelled `ate.dev/worker-pool`, in any namespace, so anyone
+  who can create pods can claim the label and reach the gateway, though not as
+  an actor. `substrate-workers` itself now also requires the namespace label
+  `factory.jomcgi.dev/substrate-workers=true`, which only cluster admins and
+  ArgoCD can set.
 - The shared `ate-system/ate-client` ServiceAccount is ate-api-server's
   bootstrap owner (`--authz-bootstrap-owners`, ate-setup's default), so
   anyone who can mint its token owns every atespace. `kubectl ate` uses it
@@ -517,6 +522,8 @@ kubectl get sandboxconfig gvisor-default # DEFAULT v7
 kubectl get clustertrustbundles | grep -e podcert.ate.dev -e egress-mitm
 # kubectl-ate from the same release, then a throwaway actor:
 kubectl ate create atespace substrate-smoke
+kubectl create namespace substrate-smoke
+kubectl label namespace substrate-smoke factory.jomcgi.dev/substrate-workers=true
 kubectl apply -f <WorkerPool in namespace substrate-smoke, workerImage ghcr.io/kagent-dev/substrate/ateworker-gvisor:v1.0.1@sha256:...>
 kubectl ate --preview create actor-template -f <template>   # wait for GOLDEN TAG
 kubectl ate create actor smoke-1 -a substrate-smoke --template smoke
