@@ -360,27 +360,33 @@ func (c *Client) CheckRuns(ctx context.Context, repo, sha string) ([]CheckRun, e
 	return runs, nil
 }
 
-// Statuses lists the latest commit status per context.
+// Statuses lists the latest commit status per context. It reads the list
+// endpoint, newest first, and keeps each context's first entry: the combined
+// /commits/{sha}/status endpoint omits each status's creator, so a check
+// bound to a statusCreator could never match it. Statuses past the first
+// 100 are not read.
 func (c *Client) Statuses(ctx context.Context, repo, sha string) ([]Status, error) {
-	var out struct {
-		SHA      string `json:"sha"`
-		Statuses []struct {
-			NodeID      string `json:"node_id"`
-			Context     string `json:"context"`
-			State       string `json:"state"`
-			Description string `json:"description"`
-			TargetURL   string `json:"target_url"`
-			Creator     struct {
-				Login string `json:"login"`
-			} `json:"creator"`
-		} `json:"statuses"`
+	var out []struct {
+		NodeID      string `json:"node_id"`
+		Context     string `json:"context"`
+		State       string `json:"state"`
+		Description string `json:"description"`
+		TargetURL   string `json:"target_url"`
+		Creator     struct {
+			Login string `json:"login"`
+		} `json:"creator"`
 	}
-	path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/status?per_page=100"
+	path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/statuses?per_page=100"
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
-	sts := make([]Status, 0, len(out.Statuses))
-	for _, s := range out.Statuses {
+	sts := make([]Status, 0, len(out))
+	seen := make(map[string]bool, len(out))
+	for _, s := range out {
+		if seen[s.Context] {
+			continue // an older status for a context already listed
+		}
+		seen[s.Context] = true
 		sts = append(sts, Status{
 			NodeID: s.NodeID, Context: s.Context, State: s.State, Creator: s.Creator.Login,
 			Description: s.Description, URL: s.TargetURL, SHA: sha,

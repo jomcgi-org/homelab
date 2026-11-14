@@ -162,6 +162,35 @@ func TestFindPrefersOpenPullRequestAndMapsExisting(t *testing.T) {
 	}
 }
 
+func TestStatusesKeepTheLatestPerContextWithItsCreator(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/example-org/homelab/commits/sha-1/statuses" {
+			http.NotFound(w, r)
+			return
+		}
+		// GitHub's list endpoint, newest first; each entry names its creator.
+		_, _ = w.Write([]byte(`[
+			{"node_id": "SC_3", "context": "pr-checks", "state": "success", "target_url": "https://ci.example/3",
+			 "creator": {"login": "buildbuddy-io[bot]", "type": "Bot"}},
+			{"node_id": "SC_2", "context": "lint", "state": "pending", "creator": {"login": "someone"}},
+			{"node_id": "SC_1", "context": "pr-checks", "state": "failure", "creator": {"login": "buildbuddy-io[bot]"}}
+		]`))
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	sts, err := c.Statuses(context.Background(), "example-org/homelab", "sha-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Status{
+		{NodeID: "SC_3", Context: "pr-checks", State: "success", Creator: "buildbuddy-io[bot]", URL: "https://ci.example/3", SHA: "sha-1"},
+		{NodeID: "SC_2", Context: "lint", State: "pending", Creator: "someone", SHA: "sha-1"},
+	}
+	if fmt.Sprint(sts) != fmt.Sprint(want) {
+		t.Fatalf("statuses = %+v, want %+v", sts, want)
+	}
+}
+
 func TestPullRequestDetailAndEnqueue(t *testing.T) {
 	var mu sync.Mutex
 	var enqueued map[string]any
