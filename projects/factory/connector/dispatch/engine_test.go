@@ -1172,7 +1172,8 @@ func queueAuthDeliveries(t *testing.T, status int) *env {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
-	if err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "auth-comment", 0, "", map[string]any{"issueId": 101, "body": "progress"}); err != nil {
+	// A comment on another issue must not hold this run's result back.
+	if err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "auth-comment", 0, "", map[string]any{"issueId": 202, "body": "progress"}); err != nil {
 		t.Fatal(err)
 	}
 	v.its.commentErr = &itsaplan.HTTPError{Status: status, Body: "refused"}
