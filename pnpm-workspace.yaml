@@ -1,6 +1,7 @@
 # See https://pnpm.io/pnpm-workspace_yaml
 packages:
   - projects/design-system
+  - projects/factory-landing/web
   - projects/monolith/frontend
   - projects/monolith/web/grimoire
 

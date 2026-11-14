@@ -4,20 +4,22 @@ A links-only Astryx page at `factory.jomcgi.dev`. The factory edge performs
 Authentik sign-in before serving it. ArgoCD lives at
 `factory-argocd.jomcgi.dev` and keeps its own OIDC sign-in behind the edge.
 
-The separate Vite entry in `projects/monolith/web/grimoire/factory/` shares
-Grimoire's pinned React/Astryx 0.7.11 toolchain and compiled sheet theme.
-It imports no Grimoire API or application state. From that package:
+`web/` is an independent Vite/React package, with Astryx core and the neutral
+theme pinned to 0.7.11. Its local stylesheet carries the sheet palette and
+typography values. The app and image have no monolith build inputs. From
+`web/`:
 
 ```sh
-pnpm exec vite build --config factory/vite.config.ts
+pnpm build
 pnpm typecheck
 pnpm test
 ```
 
-Bazel builds `//projects/monolith/web/grimoire:factory_build` and layers the
-static output into `//projects/factory-landing:image`. The Node HTTP server
-has no API, credentials or application egress. CI publishes the image and
-Helm chart and writes the chart version into `deploy/application.yaml`.
+Bazel builds `//projects/factory-landing/web:build` and layers the static
+output into `//projects/factory-landing:image`. `apko.yaml` and its lock
+own the nonroot Node runtime. The Node HTTP server has no API, credentials
+or application egress. CI publishes the image and Helm chart and writes
+the chart version into `deploy/application.yaml`.
 The chart's render regression test checks the route and runtime boundary.
 
 Validate with `ci`; PR CI covers factory guests without the local toolchain.

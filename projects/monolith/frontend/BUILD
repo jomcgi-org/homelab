@@ -1124,8 +1124,3 @@ build_test(
     name = "theme_fixture_preview_build_test",
     targets = [":theme_fixture_preview"],
 )
-
-exports_files(
-    ["apko.yaml", "apko.lock.json"],
-    visibility = ["//projects/factory-landing:__pkg__"],
-)

@@ -20,7 +20,6 @@
   "include": [
     "src",
     "preview",
-    "factory",
     "vite.config.ts",
     "vite.preview.config.ts",
     "vitest.config.ts"
