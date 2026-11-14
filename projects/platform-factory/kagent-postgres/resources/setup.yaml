@@ -36,16 +36,14 @@ metadata:
 type: Opaque
 ---
 # kagent-pg's Garage key, filled by garage-init
-# (projects/platform-factory/garage). The Cluster usually starts before the
-# key exists; the reload label makes the operator pass the filled key to the
-# instances, which otherwise keep the empty one they cached.
+# (projects/platform-factory/garage). kagent-pg-wait-for-key holds the Cluster
+# back until it is filled: an instance that starts without it never picks it
+# up, and archives nothing until it restarts.
 apiVersion: v1
 kind: Secret
 metadata:
   name: kagent-pg-s3
   namespace: kagent-pg
-  labels:
-    cnpg.io/reload: "true"
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
@@ -100,6 +98,10 @@ rules:
     resources: [secrets]
     resourceNames: [kagent-pg-logins]
     verbs: [get, update]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [kagent-pg-s3]
+    verbs: [get]
 ---
 # The connection strings in kagent, the only names the setup Job may touch
 # there.
@@ -254,3 +256,53 @@ spec:
             name: kagent-pg-setup
         - name: tmp
           emptyDir: {}
+---
+# Waits (up to 30 minutes) for garage-init to fill kagent-pg-s3 before the
+# Cluster (wave 0) is created. garage-init runs every 10 minutes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kagent-pg-wait-for-key
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kagent-pg-setup
+    spec:
+      serviceAccountName: kagent-pg-setup
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wait
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, /scripts/secret_init.py, wait-for-key]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: kagent-pg-setup

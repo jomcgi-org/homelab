@@ -12,7 +12,8 @@ metadata:
   name: kagent-pg
   namespace: kagent-pg
   annotations:
-    argocd.argoproj.io/sync-wave: "-1"
+    # After kagent-pg-wait-for-key (wave -1, setup.yaml).
+    argocd.argoproj.io/sync-wave: "0"
     # Neither a prune nor deleting the Application removes the database; the
     # operator deletes its PVCs with the Cluster.
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
