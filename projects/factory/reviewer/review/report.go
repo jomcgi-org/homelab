@@ -394,8 +394,8 @@ const (
 	// maxPreface is the room Render leaves for a note the engine puts before
 	// the summary, and maxOmitted for the line counting blocking findings
 	// that did not fit.
-	maxPreface = 1000
-	maxOmitted = 200
+	maxPreface      = 1000
+	maxOmitted      = 200
 	maxTitle        = 300
 	maxDetail       = 1500
 	maxMessage      = 4000
