@@ -527,12 +527,28 @@ func TestDuplicateClaimIsIgnored(t *testing.T) {
 	}
 }
 
+// providerBody is what a provider's error body can carry: a request ID,
+// an internal URL and account detail. It must never reach an issue comment.
+const providerBody = "PROVIDER-BODY request_id=req_8f3a https://api.provider.internal/v1/responses org=acct-7"
+
+// noProviderBody fails if any comment carries part of providerBody.
+func (v *env) noProviderBody() {
+	v.t.Helper()
+	for _, c := range v.its.Comments() {
+		for _, marker := range []string{"PROVIDER-BODY", "req_8f3a", "api.provider.internal", "acct-7"} {
+			if strings.Contains(c.body, marker) {
+				v.t.Fatalf("comment carries provider output %q: %q", marker, c.body)
+			}
+		}
+	}
+}
+
 func TestEngineeringRetryIsBounded(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	for i := 0; i < 3; i++ {
-		v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "tool exited with status 1", nil)
+		v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "tool exited with status 1: "+providerBody, nil)
 		v.clk.Advance(5 * time.Second)
 		v.tick(v.e)
 	}
@@ -552,12 +568,16 @@ func TestEngineeringRetryIsBounded(t *testing.T) {
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	res := v.its.Run(1).results
-	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "engineering retries exhausted (2)") {
-		t.Fatalf("results = %+v", res)
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "engineering retries exhausted (2)") ||
+		!strings.Contains(res[0].Error, "PROVIDER-BODY") {
+		t.Fatalf("results = %+v, want the full error on the run record", res)
 	}
-	if len(v.its.Comments()) != 1 {
-		t.Fatalf("comments = %+v", v.its.Comments())
+	cs := v.its.Comments()
+	if len(cs) != 1 || !strings.Contains(cs[0].body, "after 2 engineering retries: the agent's turn failed") ||
+		!strings.Contains(cs[0].body, "run 1 attempt 3") {
+		t.Fatalf("comments = %+v", cs)
 	}
+	v.noProviderBody()
 	if w := v.work(101); w.EngineeringRetries != 2 {
 		t.Fatalf("retries = %d", w.EngineeringRetries)
 	}
@@ -567,8 +587,8 @@ func TestCredentialAndQuotaFailuresBlock(t *testing.T) {
 	cases := []struct {
 		name, msg, class string
 	}{
-		{"credential", "broker answered codex_login_required", dispatch.ClassCredential},
-		{"quota", "429 Too Many Requests: usage_limit_reached", dispatch.ClassQuota},
+		{"credential", "broker answered codex_login_required: " + providerBody, dispatch.ClassCredential},
+		{"quota", "429 Too Many Requests: usage_limit_reached: " + providerBody, dispatch.ClassQuota},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -596,9 +616,10 @@ func TestCredentialAndQuotaFailuresBlock(t *testing.T) {
 				t.Fatalf("failure evidence = %+v, %v", a, err)
 			}
 			cs := v.its.Comments()
-			if len(cs) != 1 || cs[0].issueID != 101 {
+			if len(cs) != 1 || cs[0].issueID != 101 || !strings.Contains(cs[0].body, dispatch.PublicFailure(tc.class)) {
 				t.Fatalf("comments = %+v", cs)
 			}
+			v.noProviderBody()
 		})
 	}
 }

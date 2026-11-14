@@ -346,7 +346,9 @@ operator unblocks its grant. The class comes from whole identifiers in the
 status text (`codex_login_required`, `unauthorized`, `usage_limit_reached`, an HTTP
 401 or 429 status). A block covers every work item on the same kagent
 Agent, the scope of its grant, and is announced once on the issue that hit
-it. Only an operator clears it, with `connector unblock
+it. Issue comments name only the failure class: the status text is model
+or provider output, so it stays in the logs, the attempt and the itsaplan
+result. Only an operator clears it, with `connector unblock
 kagent:<namespace>/<agent>` after fixing the grant: itsaplan v1.10.0 runs
 carry no requester identity, and a mention can come from an agent. Failed
 runs and runs claimed meanwhile wait without holding a concurrency slot,

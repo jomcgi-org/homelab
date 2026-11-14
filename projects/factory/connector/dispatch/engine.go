@@ -1404,6 +1404,8 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	switch class {
 	case ClassCredential, ClassQuota:
 		e.m.Blocked.WithLabelValues(class).Inc()
+		e.log.WarnContext(ctx, "turn blocked", "run", r.ID, "attempt", a.Seq, "work_item", wi.ID,
+			"class", class, "status", msg)
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, class, msg); err != nil {
 				return err
@@ -1417,11 +1419,12 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 			}
 			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/blocked/%d/%d", r.ID, a.Seq), r.ID, "",
 				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-					"The factory stopped %s: a %s failure needs a person before it can continue. "+
+					"The factory stopped %s: a %s failure needs a person before it can continue (%s). "+
 						"Work items using kagent agent %s/%s wait until an operator fixes the grant "+
-						"and runs `connector unblock %s`. %s",
-					wi.IssueKey, class, wi.KagentNamespace, wi.KagentAgent,
-					store.GrantScope(wi.KagentNamespace, wi.KagentAgent), clip(msg, maxErrorText))}); err != nil {
+						"and runs `connector unblock %s`. The full error is in the connector's logs and on "+
+						"run %d attempt %d.",
+					wi.IssueKey, class, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent,
+					store.GrantScope(wi.KagentNamespace, wi.KagentAgent), r.ID, a.Seq)}); err != nil {
 				return err
 			}
 			return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
@@ -1465,10 +1468,13 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 		}
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/retries/%d/%d", r.ID, a.Seq), r.ID, "",
 			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-				"The factory gave up on %s after %d engineering retries. Last error: %s",
-				wi.IssueKey, budget, clip(msg, maxErrorText))}); err != nil {
+				"The factory gave up on %s after %d engineering retries: %s. The full error is in the "+
+					"connector's logs and on run %d attempt %d.",
+				wi.IssueKey, budget, PublicFailure(ClassEngineering), r.ID, a.Seq)}); err != nil {
 			return err
 		}
+		e.log.WarnContext(ctx, "engineering retries exhausted", "run", r.ID, "attempt", a.Seq,
+			"work_item", wi.ID, "retries", budget, "status", msg)
 		return e.finishRun(ctx, tx, r, itsaplan.Result{
 			Status: "failed",
 			Error:  clip(fmt.Sprintf("engineering retries exhausted (%d): %s", budget, msg), maxErrorText),
