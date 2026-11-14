@@ -296,7 +296,13 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
 		case e.reconcileGate(ctx, b, pr, run):
-			// Held for a person, or the check just changed.
+			// Held for a person, or the check just changed: the merge groups
+			// below must see the head's current check, not the one listed.
+			if cur, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
+				reviews[pr.Number] = cur
+			} else {
+				reviews[pr.Number] = nil // unknown: no group passes on it
+			}
 		case run.Conclusion == ConclusionSuccess:
 			e.maybeEnqueue(ctx, b, pr, run)
 		}

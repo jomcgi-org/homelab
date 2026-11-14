@@ -781,9 +781,12 @@ previews).
   Joe's approval, which turns the check green. A `human` or `needs-human`
   label holds a PR at the connector too: labels are read at enqueue, so a
   hold placed after a passing review cannot race the reviewer's next poll.
-  A hold on a queued PR is the reviewer's: it fails the merge group's
-  required check on its next poll, and the queue ejects the PR. Joe's
-  approval of the head clears the hold, so his own requeue merges.
+  A hold on a queued PR is the reviewer's: on its next poll it fails the
+  merge group's required check, and the queue drops the PR. The queue's
+  `ALLGREEN` grouping keeps the PR from merging inside a later group that
+  contains it. Joe's approval of the head clears the reviewer's hold; a
+  factory PR also needs the label removed, since the connector holds it
+  while labelled and does not re-enqueue an ejected head (Joe can).
 - **Only the factory's own loop acts.** Work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
   start a run. The connector adopts and enqueues only PRs whose author is the
