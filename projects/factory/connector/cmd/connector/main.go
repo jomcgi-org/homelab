@@ -114,6 +114,31 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// Health and metrics come up first, so the pod is ready while it waits for
+	// its keys and runs migrations: on a fresh install the itsaplan bootstrap
+	// writes the keys only once the rest of the release is healthy.
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	m := metrics.New(reg)
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server", "error", err)
+		}
+	}()
+	defer srv.Close()
+
+	keys := cfg.File.KeyFiles()
+	if err := keys.WaitForKeys(ctx, 30*time.Second, func(missing []string) {
+		log.Info("waiting for itsaplan API keys", "missing", missing)
+	}); err != nil {
+		return err
+	}
+
 	st, err := store.Open(cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -123,19 +148,8 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	keys := map[string]string{}
-	coordKey, err := config.ReadKey(cfg.File.Coordinator.APIKeyFile)
-	if err != nil {
-		return err
-	}
-	keys[cfg.File.Coordinator.Key] = coordKey
 	var agents []dispatch.Agent
 	for _, a := range cfg.File.Agents {
-		k, err := config.ReadKey(a.APIKeyFile)
-		if err != nil {
-			return err
-		}
-		keys[a.Key] = k
 		agents = append(agents, dispatch.Agent{Key: a.Key, Concurrency: a.Concurrency})
 	}
 	var bindings []dispatch.Binding
@@ -165,7 +179,9 @@ func run(log *slog.Logger) error {
 		})
 	}
 
-	its := &itsaplan.Client{BaseURL: cfg.ItsaplanURL, Keys: keys, Coordinator: cfg.File.Coordinator.Key}
+	// Keys are read per call, so a key the bootstrap rotates takes effect
+	// without a restart.
+	its := &itsaplan.Client{BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key, Coordinator: cfg.File.Coordinator.Key}
 	tokens := &kagent.TokenSource{Path: cfg.KagentTokenFile}
 	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: tokens}
 	sessions, err := kagent.DialSessions(cfg.KagentGRPCTarget, tokens)
@@ -183,20 +199,6 @@ func run(log *slog.Logger) error {
 	} else {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
 	}
-
-	reg := prometheus.NewRegistry()
-	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	m := metrics.New(reg)
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("metrics server", "error", err)
-		}
-	}()
-	defer srv.Close()
 
 	eng := dispatch.New(dispatch.Config{
 		Holder:          cfg.Holder,

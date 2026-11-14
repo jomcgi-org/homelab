@@ -5,7 +5,9 @@ egress allowlist its peers admit."""
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +20,9 @@ import yaml
 _CHART_DIR = Path(__file__).resolve().parent
 _DEPLOY_VALUES = Path(
     os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
+)
+_RENDER_LOCK = Path(
+    os.environ.get("RENDER_LOCK", _CHART_DIR.parent / "deploy" / "render.sha256")
 )
 _NS = "factory"
 _SUBJECT = "system:serviceaccount:factory:factory-connector"
@@ -137,6 +142,24 @@ def test_deploy_values_render_byte_for_byte_without_the_connector() -> None:
         assert _helm(_CHART_DIR, []) == _helm(bare, [])
 
 
+def test_deploy_values_render_is_locked() -> None:
+    # What ArgoCD applies from main's deploy values (no CRDs) changes only
+    # with a deliberate update of deploy/render.sha256. The chart version
+    # label is normalized, since CI writes the version back after publishing.
+    rendered = re.sub(
+        r"(helm\.sh/chart: factory-)\S+", r"\g<1>VERSION", _helm(_CHART_DIR, [])
+    )
+    got = hashlib.sha256(rendered.encode()).hexdigest()
+    want = _RENDER_LOCK.read_text().strip()
+    assert got == want, (
+        "the deploy values' render changed; if that is intended, write the new "
+        "hash to projects/factory/deploy/render.sha256: helm template factory "
+        "projects/factory/chart -n kagent -f projects/factory/deploy/values.yaml "
+        "| sed -E 's|(helm\\.sh/chart: factory-)[^[:space:]]+|\\1VERSION|' "
+        f"| sha256sum (got {got})"
+    )
+
+
 def test_one_writer_by_digest_with_the_pull_secret() -> None:
     docs = _render(["connector.image.digest=sha256:" + "c" * 64])
     deploy = _in(docs, "Deployment", _NS, "factory-connector")
@@ -151,6 +174,13 @@ def test_one_writer_by_digest_with_the_pull_secret() -> None:
     assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
     assert pod["serviceAccountName"] == "factory-connector"
     assert pod["automountServiceAccountToken"] is False
+    # Health is served before migrations; a slow first one must not trip
+    # liveness.
+    assert c["startupProbe"]["httpGet"] == {"path": "/healthz", "port": "metrics"}
+    assert (
+        c["startupProbe"]["failureThreshold"] * c["startupProbe"]["periodSeconds"]
+        >= 300
+    )
     assert pod["securityContext"]["runAsNonRoot"] is True
     assert c["securityContext"]["readOnlyRootFilesystem"] is True
     assert c["securityContext"]["capabilities"] == {"drop": ["ALL"]}
@@ -232,6 +262,9 @@ def test_endpoints_and_secrets() -> None:
 def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
     docs = _render()
     (keys,) = [v for v in _pod(docs)["spec"]["volumes"] if v["name"] == "itsaplan-keys"]
+    # Optional: the PostSync bootstrap writes them only once this Deployment
+    # is healthy, and the connector waits for the files itself.
+    assert all(s["secret"]["optional"] is True for s in keys["projected"]["sources"])
     sources = {
         s["secret"]["name"]: s["secret"]["items"] for s in keys["projected"]["sources"]
     }
@@ -398,6 +431,11 @@ def test_peers_admit_the_connector_pod() -> None:
             r"reviewerCheck",
         ),
         ("connector.intervals.poll=soon", "poll"),
+        ("networkPolicy.connector.namespace=elsewhere", "must be broker.namespace"),
+        (
+            "networkPolicy.connector.matchLabels.app\\.kubernetes\\.io/name=other",
+            "does not match the connector's pod labels",
+        ),
     ],
 )
 def test_inconsistent_values_fail(override: str, message: str) -> None:

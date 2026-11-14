@@ -3,8 +3,10 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -266,11 +268,72 @@ func Parse(b []byte) (*File, error) {
 	return &f, nil
 }
 
-// ReadKey reads an API key file.
+// ReadKey reads an API key file. An empty file is an error: a Secret whose
+// key is not written yet projects no file or an empty one.
 func ReadKey(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(b)), nil
+	k := strings.TrimSpace(string(b))
+	if k == "" {
+		return "", fmt.Errorf("config: %s is empty", path)
+	}
+	return k, nil
+}
+
+// KeyFiles maps itsaplan agent keys to the files holding their API keys. It
+// reads a file on every lookup, so a key rotated in its Secret takes effect
+// without a restart.
+type KeyFiles map[string]string
+
+// KeyFiles returns the coordinator's and every agent's key file.
+func (f *File) KeyFiles() KeyFiles {
+	k := KeyFiles{f.Coordinator.Key: f.Coordinator.APIKeyFile}
+	for _, a := range f.Agents {
+		k[a.Key] = a.APIKeyFile
+	}
+	return k
+}
+
+// Key reads the API key of agent.
+func (k KeyFiles) Key(agent string) (string, error) {
+	path, ok := k[agent]
+	if !ok {
+		return "", fmt.Errorf("config: no API key file for agent %q", agent)
+	}
+	return ReadKey(path)
+}
+
+// Missing lists the key files that cannot be read yet, sorted.
+func (k KeyFiles) Missing() []string {
+	var out []string
+	for _, path := range k {
+		if _, err := ReadKey(path); err != nil {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// WaitForKeys returns once every key file is readable. The itsaplan bootstrap
+// writes the keys after the connector first starts, so on a fresh install or
+// a restore the connector waits for them, retrying with backoff from 1 s up
+// to maxWait and reporting what it still waits for.
+func (k KeyFiles) WaitForKeys(ctx context.Context, maxWait time.Duration, report func(missing []string)) error {
+	wait := time.Second
+	for {
+		missing := k.Missing()
+		if len(missing) == 0 {
+			return nil
+		}
+		report(missing)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, maxWait)
+	}
 }

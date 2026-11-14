@@ -90,14 +90,32 @@ type Client struct {
 	HTTP    *http.Client
 	// Keys maps an agent key name to the itsaplan API key that acts as it.
 	Keys map[string]string
+	// KeyFunc, when set, replaces Keys: it is asked for the key on every
+	// call, so a rotated key takes effect without a restart.
+	KeyFunc func(agent string) (string, error)
 	// Coordinator names the key used for run lookups and comments.
 	Coordinator string
 }
 
-func (c *Client) do(ctx context.Context, agent, method, path string, body, out any) error {
-	key, ok := c.Keys[agent]
+func (c *Client) key(agent string) (string, error) {
+	if c.KeyFunc != nil {
+		k, err := c.KeyFunc(agent)
+		if err != nil {
+			return "", fmt.Errorf("itsaplan: API key for agent %q: %w", agent, err)
+		}
+		return k, nil
+	}
+	k, ok := c.Keys[agent]
 	if !ok {
-		return fmt.Errorf("itsaplan: no API key for agent %q", agent)
+		return "", fmt.Errorf("itsaplan: no API key for agent %q", agent)
+	}
+	return k, nil
+}
+
+func (c *Client) do(ctx context.Context, agent, method, path string, body, out any) error {
+	key, err := c.key(agent)
+	if err != nil {
+		return err
 	}
 	var rd io.Reader
 	if body != nil {

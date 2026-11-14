@@ -51,8 +51,10 @@ records how they relate and routes results and feedback between them.
    conflicts with 1Password delivery, so the factory chart carries its own
    itsaplan templates against the upstream images.
 5. **kagent's trusted-proxy mode decodes bearer JWTs without verifying
-   them.** [V] Network policy must leave the edge, the kagent UI and the
-   connector as the only bearer paths into the controller.
+   them.** [V] Network policy must leave the edge, the kagent UI, the
+   connector, Substrate's `atenet-egress` (actors' calls, which carry a
+   verified actor JWT) and the controller itself (its own `kagent-api`
+   RemoteMCPServer) as the only bearer paths into the controller.
 6. **A kagent service-account principal includes the ServiceAccount UID.**
    [V] Recreating the connector's ServiceAccount changes its identity and
    loses access to its sessions, so that ServiceAccount is never pruned and a
@@ -453,8 +455,13 @@ connector's kagent principal (finding 15), so it never changes once set.
   agent keys and review policy from `connector.bindings.<name>`. The
   connector's agent keys are itsaplan bootstrap agents: `homelab-codex`
   claims runs and `factory-coordinator` reads and comments. Their keys are
-  mounted from the bootstrap's `factory-itsaplan-agent-<username>` Secrets,
-  so the pod waits until the bootstrap has written them. The database URL
+  mounted, as optional, from the bootstrap's
+  `factory-itsaplan-agent-<username>` Secrets. The bootstrap is a PostSync
+  hook that runs only once the connector's Deployment is healthy, so on a
+  fresh install or a restore the connector serves `/healthz` first and waits
+  for the key files with backoff, logging which are missing. It reads a key
+  on every call, so a rotated key needs no restart. A startup probe allows
+  five minutes before liveness counts. The database URL
   comes from `factory-connector-db`, which `factory-db-secrets` declares and
   `factory-db-setup` fills. Issue links default to itsaplan's
   `/issue/{issueId}` redirect.

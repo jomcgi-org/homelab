@@ -109,6 +109,7 @@ py_test(
         "values.schema.json",
         "values.yaml",
         "//projects/factory/deploy:deploy_values",
+        "//projects/factory/deploy:render_lock",
         "@multitool//tools/helm",
     ] + glob([
         "charts/**",
@@ -118,6 +119,7 @@ py_test(
     ]),
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = [
