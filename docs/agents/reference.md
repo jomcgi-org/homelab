@@ -13,6 +13,8 @@ ci test         # affected tests on one hosted Linux runner
 ci test -- //...  # explicit full-suite escape hatch
 
 helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
+# Factory values ship inside its OCI chart.
+helm template factory projects/factory/chart/ -n kagent -f projects/factory/chart/values-homelab.yaml
 ```
 
 `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`, `crane`, `go`,
@@ -36,6 +38,11 @@ helm template <rel> projects/<svc>/chart/ -f projects/<svc>/deploy/values.yaml
   Keep main and merge-queue no-write guards. Do not check in other build
   artifacts. The EmberVM Go protobuf targets are the pattern (#7066).
 - Image push happens only in CI on merge to main.
+- Factory chart changes and their homelab values belong in one PR. Edit
+  `projects/factory/chart/values-homelab.yaml`; CI publishes both together
+  and advances the Application pin. The factory needs no separate enable
+  PR after chart write-back. Other charts using git-sourced values still
+  need their pinned chart to support a field before values enable it.
 
 ## Delivery mechanics
 

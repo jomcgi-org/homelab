@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 _CHART = Path(__file__).resolve().parent
-_DEPLOY = Path(os.environ.get("DEPLOY_VALUES", _CHART.parent / "deploy/values.yaml"))
+_DEPLOY = Path(os.environ.get("DEPLOY_VALUES", _CHART / "values-homelab.yaml"))
 _LOCK = Path(os.environ.get("RENDER_LOCK", _CHART.parent / "deploy/render.sha256"))
 _REVIEW_NS = "factory-r-homelab-review"
 _SUBJECT = "system:serviceaccount:factory:factory-reviewer"

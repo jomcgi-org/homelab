@@ -1,5 +1,6 @@
 # The software factory on the factory home cluster (projects/factory/), from the
-# published factory chart. CI writes the chart version back to targetRevision.
+# published factory chart, including its homelab values. CI writes the chart
+# version back to targetRevision, advancing chart and values together.
 # Not named `factory`: that is the cluster's root Application.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -30,10 +31,7 @@ spec:
         # tracks (or prunes) them (chart templates/crd-hook.yaml).
         skipCrds: true
         valueFiles:
-          - $values/projects/factory/deploy/values.yaml
-    - repoURL: https://github.com/jomcgi-org/homelab.git
-      targetRevision: HEAD
-      ref: values
+          - values-homelab.yaml
   destination:
     server: https://kubernetes.default.svc
     # The CRD hook runs here before the chart's own Namespace is applied.
