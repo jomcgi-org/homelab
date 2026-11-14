@@ -335,6 +335,13 @@ func scanWork(row interface{ Scan(...any) error }) (*WorkItem, error) {
 	return w, err
 }
 
+// SessionMapped reports whether a work item records the kagent session.
+func (s *Store) SessionMapped(ctx context.Context, sessionID string) (bool, error) {
+	var ok bool
+	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM work_item WHERE session_id = $1)`, sessionID).Scan(&ok)
+	return ok, err
+}
+
 // GetWorkItem reads one work item.
 func (s *Store) GetWorkItem(ctx context.Context, id int64) (*WorkItem, error) {
 	return scanWork(s.DB.QueryRowContext(ctx, `SELECT `+workCols+` FROM work_item WHERE id = $1`, id))

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -166,9 +167,15 @@ func run(log *slog.Logger) error {
 
 	// Leases are kept by their own loop so a slow call in a tick cannot let
 	// itsaplan expire a run. Either loop ending stops the process.
+	// Deferred in this order, the heartbeat loop is stopped and waited for
+	// before the deferred Release closes the writer's connection.
 	ctx, cancel := context.WithCancelCause(ctx)
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	defer cancel(nil)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		err := eng.RunHeartbeats(ctx, time.Duration(cfg.File.Intervals.Heartbeat)/4)
 		cancel(err)
 	}()

@@ -239,10 +239,14 @@ type fakeKagent struct {
 	// notAccepted rejects the next sends with KAGENT_SEND_NOT_ACCEPTED.
 	notAccepted int
 	// lateAccept takes the next send's dispatch reservation but loses the
-	// response; the message persists only when acceptPending runs. Until
-	// then other sends to that session are not accepted.
-	lateAccept bool
-	pending    *fakeSend
+	// response; the message persists only when acceptPending runs within
+	// the reservation. Until then other sends to that session are not
+	// accepted. lateAcceptAll does the same for every send that reserves.
+	lateAccept    bool
+	lateAcceptAll bool
+	pending       *fakeSend
+	pendingAt     time.Time
+	now           func() time.Time
 	// sendErr fails the next sends before anything is dispatched.
 	sendErr []error
 	// sessionErr fails the next GetSession calls.
@@ -257,13 +261,25 @@ type fakeTask struct {
 	cancelRequested bool
 }
 
+// settle completes a requested cancellation on the next read.
+func (t *fakeTask) settle() {
+	if t.cancelRequested && !kagent.Terminal(t.task.Status.State) {
+		t.task.Status = kagent.TaskStatus{State: kagent.StateCanceled}
+	}
+}
+
 type fakeSend struct {
 	agent kagent.AgentRef
 	msg   kagent.Message
 }
 
-func newFakeKagent() *fakeKagent {
+// reservation is how long kagent holds a dispatch before rejecting its
+// late first save.
+const reservation = 2 * time.Minute
+
+func newFakeKagent(now func() time.Time) *fakeKagent {
 	return &fakeKagent{
+		now:   now,
 		tasks: map[string]*fakeTask{}, contexts: map[string]kagent.AgentRef{},
 		initial: map[string]string{}, sessions: map[string]*kagent.Session{},
 	}
@@ -285,16 +301,27 @@ func (k *fakeKagent) Send(_ context.Context, agent kagent.AgentRef, msg kagent.M
 		k.sendErr = k.sendErr[1:]
 		return nil, err
 	}
+	if k.pending != nil && k.now().Sub(k.pendingAt) >= reservation {
+		k.pending = nil // the reservation expired; its late save is rejected
+	}
 	if k.pending != nil {
-		// A reservation in flight blocks every other dispatch to the session.
-		if k.pending.msg.MessageID == msg.MessageID || k.pending.msg.ContextID == msg.ContextID {
+		// A reservation in flight blocks other dispatches to its session. A
+		// first send with another message ID opens a different session.
+		same := k.pending.msg.MessageID == msg.MessageID ||
+			(msg.ContextID != "" && k.pending.msg.ContextID == msg.ContextID)
+		if same {
 			return nil, fmt.Errorf("%w: dispatch busy", kagent.ErrNotAccepted)
 		}
 	}
-	if k.lateAccept {
+	if msg.ContextID == "" {
+		if id, ok := k.initial[msg.MessageID]; ok {
+			return copyTask(&k.tasks[id].task), nil
+		}
+	}
+	if k.lateAccept || k.lateAcceptAll {
 		k.lateAccept = false
 		p := fakeSend{agent, msg}
-		k.pending = &p
+		k.pending, k.pendingAt = &p, k.now()
 		return nil, fmt.Errorf("%w: response lost", kagent.ErrAmbiguous)
 	}
 	return k.accept(agent, msg)
@@ -307,6 +334,9 @@ func (k *fakeKagent) acceptPending() {
 	defer k.mu.Unlock()
 	p := k.pending
 	k.pending = nil
+	if p == nil || k.now().Sub(k.pendingAt) >= reservation {
+		return // kagent rejects a first save after its reservation
+	}
 	if _, err := k.accept(p.agent, p.msg); err != nil {
 		panic(err)
 	}
@@ -385,9 +415,7 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 	if !ok || t.agent != agent {
 		return nil, fmt.Errorf("%w: task", kagent.ErrTaskNotFound)
 	}
-	if t.cancelRequested && !kagent.Terminal(t.task.Status.State) {
-		t.task.Status = kagent.TaskStatus{State: kagent.StateCanceled}
-	}
+	t.settle()
 	return copyTask(&t.task), nil
 }
 
@@ -403,7 +431,8 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 	var out []*kagent.Task
 	for _, id := range k.order {
 		t := k.tasks[id]
-		if t.agent == agent && t.task.ContextID == contextID && (state == "" || t.task.Status.State == state) {
+		t.settle()
+		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) && (state == "" || t.task.Status.State == state) {
 			c := copyTask(&t.task)
 			c.History = nil
 			out = append(out, c)

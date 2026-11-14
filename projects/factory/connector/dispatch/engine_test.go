@@ -36,7 +36,7 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { st.DB.Close() })
 	clk := &clock{t: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}
-	v := &env{t: t, ctx: context.Background(), st: st, clk: clk, its: newFakeItsaplan(clk.Now), kg: newFakeKagent()}
+	v := &env{t: t, ctx: context.Background(), st: st, clk: clk, its: newFakeItsaplan(clk.Now), kg: newFakeKagent(clk.Now)}
 	v.cfg = dispatch.Config{
 		Holder: "connector-a",
 		Agents: []dispatch.Agent{{Key: "coder", Concurrency: 2}, {Key: "coder-b", Concurrency: 1}},
@@ -49,7 +49,7 @@ func newEnv(t *testing.T) *env {
 			Agents: []string{"coder", "coder-b"},
 		}},
 		Heartbeat:      60 * time.Second,
-		DispatchWindow: 150 * time.Second,
+		DispatchWindow: dispatch.MinDispatchWindow(kagent.DefaultTimeout),
 		Now:            clk.Now,
 	}
 	v.e = v.engine("connector-a")
@@ -246,27 +246,72 @@ func TestLateAcceptanceIsNeverDuplicated(t *testing.T) {
 	}
 }
 
-func TestUnresolvedSendFailsAfterWindowAndRetries(t *testing.T) {
+// tickUntil ticks every step until cond holds, failing after limit ticks.
+func (v *env) tickUntil(step time.Duration, limit int, cond func() bool) {
+	v.t.Helper()
+	for i := 0; i < limit; i++ {
+		if cond() {
+			return
+		}
+		v.clk.Advance(step)
+		v.tick(v.e)
+	}
+	if !cond() {
+		v.t.Fatalf("condition not reached after %d ticks", limit)
+	}
+}
+
+func (v *env) latest(runID int64) *store.Attempt {
+	v.t.Helper()
+	a, err := v.st.LatestAttempt(v.ctx, runID)
+	if err != nil {
+		v.t.Fatal(err)
+	}
+	return a
+}
+
+func TestLateCommitAfterSendCapIsFoundNotDuplicated(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.kg.lateAccept = true
+	v.kg.lateAcceptAll = true
 	v.tick(v.e)
-	// The first send never commits; every resend meets its reservation.
-	for i := 0; i < 25; i++ {
-		v.clk.Advance(16 * time.Second)
-		v.tick(v.e)
-		if i == 20 {
-			v.kg.expirePending()
-		}
+	v.tickUntil(16*time.Second, 40, func() bool { return v.latest(1).Issues >= 20 })
+	// The last reservation commits after the cap stops the spaced sends.
+	v.kg.lateAcceptAll = false
+	v.kg.acceptPending()
+	if v.kg.Executions() != 1 {
+		t.Fatalf("executions = %d", v.kg.Executions())
 	}
-	attempts, err := v.st.CountSends(v.ctx, 1)
-	if err != nil || attempts != 2 {
-		t.Fatalf("attempts = %d (%v), want the unresolved one and its retry", attempts, err)
+	v.tickUntil(16*time.Second, 20, func() bool { return v.latest(1).State == store.AttemptAccepted })
+	if n, _ := v.st.CountSends(v.ctx, 1); n != 1 {
+		t.Fatalf("attempts = %d, want the one that kagent took", n)
 	}
-	a, _ := v.st.LatestAttempt(v.ctx, 1)
+	if v.kg.Executions() != 1 {
+		t.Fatalf("executions = %d, want 1", v.kg.Executions())
+	}
+}
+
+func TestUnresolvedSendFailsOnlyAWindowAfterItsLastSend(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.kg.lateAcceptAll = true // every send reserves and loses its response
+	v.tick(v.e)
+	v.tickUntil(16*time.Second, 200, func() bool { return v.latest(1).Issues >= 23 })
+	last := v.latest(1).SentAt
+	v.kg.lateAcceptAll = false
+	v.clk.Advance(last.Add(209 * time.Second).Sub(v.clk.Now()))
+	v.tick(v.e)
+	if n, _ := v.st.CountSends(v.ctx, 1); n != 1 {
+		t.Fatalf("attempt failed %s after its last send, inside the window (%d attempts, latest %+v)", v.clk.Now().Sub(last), n, v.latest(1))
+	}
+	v.clk.Advance(2 * time.Second)
+	v.tick(v.e)
+	a := v.latest(1)
 	if a.DecisionID != "replacement-0-1" || a.State != store.AttemptAccepted {
-		t.Fatalf("latest attempt = %+v", a)
+		t.Fatalf("latest attempt = %+v, want the retry accepted", a)
 	}
+	// The last reservation's save arrives late; kagent rejects it.
+	v.kg.acceptPending()
 	if v.kg.Executions() != 1 {
 		t.Fatalf("executions = %d, want 1", v.kg.Executions())
 	}
@@ -829,28 +874,28 @@ func TestEmptyLookupBeforeSightingIsNotACancel(t *testing.T) {
 	}
 }
 
-func TestCancelResolvesLateAcceptedSendBeforeConfirming(t *testing.T) {
+func TestCancelStopsLateAcceptedFirstSendWithoutSending(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.kg.lateAccept = true
 	v.tick(v.e)
 	v.its.cancel(1, false)
 	v.clk.Advance(61 * time.Second)
-	v.tick(v.e) // pending; the resend meets the reservation
+	v.tick(v.e)
 	if cs := v.pendingCancellations(); len(cs) != 1 {
 		t.Fatalf("cancellations = %+v", cs)
 	}
+	// The lost first send commits within its reservation, in a session no
+	// work item maps.
 	v.kg.acceptPending()
-	for i := 0; i < 3; i++ {
-		v.clk.Advance(31 * time.Second)
-		v.tick(v.e)
-	}
-	if cs := v.pendingCancellations(); len(cs) != 0 {
-		t.Fatalf("cancellation still pending: %+v", cs)
-	}
+	sends := len(v.kg.Sends())
+	v.tickUntil(16*time.Second, 30, func() bool { return len(v.pendingCancellations()) == 0 })
 	task := v.kg.lastTask()
 	if v.kg.state(task) != kagent.StateCanceled || v.kg.Executions() != 1 {
 		t.Fatalf("task = %s executions = %d; want the late task canceled", v.kg.state(task), v.kg.Executions())
+	}
+	if got := len(v.kg.Sends()); got != sends {
+		t.Fatalf("cancellation sent %d messages", got-sends)
 	}
 }
 
@@ -880,33 +925,112 @@ func TestCanceledContextIsNotATakeover(t *testing.T) {
 	}
 }
 
-func TestBlockPausesGrantUntilHumanRunOrOperator(t *testing.T) {
+func (v *env) setTrigger(id int64, trigger string) {
+	v.its.mu.Lock()
+	defer v.its.mu.Unlock()
+	v.its.get(id).run.Trigger = trigger
+}
+
+func TestBlockedGrantFailsAutomatedRunsAndFreesTheSlot(t *testing.T) {
 	v := newEnv(t)
+	v.cfg.Agents = []dispatch.Agent{{Key: "coder", Concurrency: 1}, {Key: "coder-b", Concurrency: 1}}
+	v.e.Release()
+	v.e = v.engine("connector-a2")
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "broker answered codex_login_required", nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 
-	// Another issue on the same grant waits instead of failing the same way.
+	// An automated run on another issue fails back instead of holding the
+	// only slot.
 	v.its.add(2, "coder", 102, "HL-2", "Other work.")
-	v.its.runs[1].run.Trigger = "delegation"
+	v.setTrigger(2, "delegation")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
-	if r := v.run(2); r.State != store.RunWaiting {
-		t.Fatalf("run 2 = %s, want waiting", r.State)
+	if r := v.run(2); r.State != store.RunClosed {
+		t.Fatalf("run 2 = %s, want closed", r.State)
+	}
+	if res := v.its.Run(2).results; len(res) != 1 || !strings.Contains(res[0].Error, "paused") {
+		t.Fatalf("run 2 results = %+v", res)
 	}
 	if n := len(v.kg.Sends()); n != 1 {
 		t.Fatalf("sends = %d while blocked", n)
 	}
+	// A person's run is claimed in the freed slot and clears the block.
+	v.its.add(3, "coder", 102, "HL-2", "Credentials are fixed, go.")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if n := len(v.kg.Sends()); n != 2 {
+		t.Fatalf("sends = %d after a person's run, want 2", n)
+	}
+	if blocked, _, _ := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); blocked {
+		t.Fatal("grant still blocked")
+	}
+}
+
+func TestOperatorUnblockLetsAutomatedRunsThrough(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "status 429", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
 	cleared, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope("factory-homelab", "coder"))
 	if err != nil || !cleared {
 		t.Fatalf("unblock = %v %v", cleared, err)
 	}
+	v.its.add(2, "coder", 102, "HL-2", "Other work.")
+	v.setTrigger(2, "delegation")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 2 {
 		t.Fatalf("sends = %d after unblock, want 2", n)
+	}
+}
+
+func TestReassignedRunCanceledInItsaplanCloses(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.its.add(2, "coder-b", 101, "HL-1", "Take over.")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e) // reassignment cancellation pending, cancel requested
+	// Run 1 is canceled in itsaplan before kagent confirms.
+	v.its.cancel(1, false)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if r := v.run(1); r.State != store.RunClosed {
+		t.Fatalf("run 1 = %s, want closed", r.State)
+	}
+	if n, _ := v.st.CountActiveRuns(v.ctx, "coder"); n != 0 {
+		t.Fatalf("coder still holds %d slots", n)
+	}
+	if len(v.its.Run(1).results) != 0 {
+		t.Fatal("a canceled run reported a result")
+	}
+}
+
+func TestCancelOfUnresolvedSendNeverSends(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.kg.dropSend = true
+	v.tick(v.e)
+	v.its.cancel(1, false)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	sends := len(v.kg.Sends())
+	v.tickUntil(16*time.Second, 20, func() bool { return len(v.pendingCancellations()) == 0 })
+	if got := len(v.kg.Sends()); got != sends {
+		t.Fatalf("cancellation sent %d messages", got-sends)
+	}
+	if v.clk.Now().Sub(v.latest(1).SentAt) < 210*time.Second {
+		t.Fatal("confirmed inside the dispatch window")
+	}
+	if r := v.run(1); r.State != store.RunClosed {
+		t.Fatalf("run = %s", r.State)
 	}
 }
 
