@@ -1847,7 +1847,7 @@
       "description": "401/403 answers from itsaplan by key role and call kind. Slot-holding lookups give up after 30 minutes of continuous refusals.",
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum by (role, kind) (increase(factory_connector_credential_refusals_total[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "{{role}} {{kind}}"
@@ -1862,18 +1862,22 @@
             "fillOpacity": 60,
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": {"mode": "normal", "group": "A"}
+            "stacking": { "mode": "normal", "group": "A" }
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": {"displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"]},
-        "tooltip": {"mode": "multi", "sort": "desc"}
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "id": 35,
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 56},
-      "datasource": {"type": "prometheus", "uid": "prometheus"}
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 56 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
     }
   ]
 }
