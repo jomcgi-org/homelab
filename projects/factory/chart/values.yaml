@@ -51,6 +51,9 @@ kagent:
     substrateClientCertificate:
       enabled: true
     serviceAccount:
+      # Substrate's bootstrap owners, router allowlist and admission policies
+      # name exactly kagent/kagent-controller.
+      name: kagent-controller
       # A kagent principal includes the ServiceAccount UID, so recreating it
       # loses access to every session it owns (ARCHITECTURE.md finding 6).
       annotations:
