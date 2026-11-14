@@ -963,6 +963,84 @@ func TestLateHoldNeedsFreshApprovalAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestFreshSameSecondApprovalAfterTheRecordedHoldClearsIt(t *testing.T) {
+	h := newHarness(t)
+	second := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
+	addPR7(h)
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the hold")
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[0].SubmittedAt = second
+	h.gh.mu.Unlock()
+	e, ctx, stop := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.label(7, "human")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("the pre-hold approval in the same second was reused")
+	}
+	stop()
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the waiting check appeared")
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[1].SubmittedAt = second // GitHub exposes only seconds for both reviews.
+	h.gh.mu.Unlock()
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("a new approval after the persisted hold was rejected due to second precision")
+	}
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("an unchanged same-second approval rewrote its check")
+	}
+}
+
+func TestSameSecondSnapshotWaitsForACompleteRead(t *testing.T) {
+	h := newHarness(t)
+	second := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	cutoff := second.Add(400 * time.Millisecond)
+	h.cfg.Now = func() time.Time { return cutoff }
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.label(7, "human")
+	reviews := "GET /repos/" + testRepo + "/pulls/7/reviews"
+	h.gh.failWith(reviews, 502)
+	e.Tick(ctx)
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.Gate == nil || st.Gate.ApprovalSnapshot != nil || !st.Gate.ApprovalAfter.Equal(cutoff) {
+		t.Fatal("a failed review read established a usable snapshot")
+	}
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the first complete snapshot")
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[0].SubmittedAt = second
+	h.gh.mu.Unlock()
+	h.gh.failWith(reviews, 0)
+	e.Tick(ctx)
+	st, _ = LoadState(h.gh.check(shaA).Text)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure || st.Gate.ApprovalSnapshot == nil || len(st.Gate.ApprovalSnapshot.IDs) != 1 || !st.Gate.ApprovalAfter.Equal(cutoff) {
+		t.Fatal("the first complete snapshot cleared its own ambiguous approval or moved the cutoff")
+	}
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("the persisted snapshot changed on an unchanged poll")
+	}
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the complete snapshot")
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[1].SubmittedAt = second
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("a new same-second approval did not clear the persisted hold")
+	}
+}
+
 func TestHoldAddedDuringReviewNeedsFreshApproval(t *testing.T) {
 	for _, gatedPath := range []bool{false, true} {
 		t.Run(fmt.Sprint("gated path ", gatedPath), func(t *testing.T) {
@@ -1089,6 +1167,46 @@ func TestDuplicateHeadStaysHeldWithoutCheckOrTaskChurn(t *testing.T) {
 	}
 }
 
+func TestLabelsObservedDuringADuplicateHoldStayStickyAcrossRestart(t *testing.T) {
+	for _, number := range []int{7, 8} {
+		t.Run(fmt.Sprint("label on PR ", number), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+			e, ctx, stop := h.start()
+			e.Tick(ctx) // Establish the duplicate marker before the label exists.
+			h.gh.label(number, "needs-human")
+			e.Tick(ctx)
+			st, ok := LoadState(h.gh.check(shaA).Text)
+			if !ok || st.Gate == nil || !slices.Contains(st.Gate.Labels, "needs-human") {
+				t.Error("the existing duplicate hold did not record the new label")
+			}
+			n := h.gh.checkCount()
+			h.gh.label(number)
+			e.Tick(ctx)
+			if h.gh.checkCount() != n {
+				t.Fatal("removing a duplicate label needlessly rewrote its sticky hold")
+			}
+			stop()
+			h.gh.mu.Lock()
+			h.gh.prs[8].Closed = true
+			h.gh.mu.Unlock()
+			e, ctx, _ = h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
+			if h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("removed duplicate-period label was forgotten after restart")
+			}
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "approve the retained hold")
+			e.Tick(ctx)
+			if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+				t.Fatal("fresh approval did not clear the retained hold")
+			}
+		})
+	}
+}
+
 func TestDuplicateHeadRevokesAPassAndReviewsAgainAfterResolution(t *testing.T) {
 	h, e, ctx := approvedQueuedHead(t)
 	e.Tick(ctx)
@@ -1154,11 +1272,14 @@ func TestCompletionDetectsADuplicateCreatedDuringReview(t *testing.T) {
 	addPR7(h)
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
-	h.gh.addPR(&fakePR{Number: 8, Head: shaA}) // No intervening Tick.
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA, Labels: []string{"human"}}) // No intervening Tick.
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
 	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
 		t.Fatalf("completed a shared head from one PR's context: %+v", c)
+	}
+	if st, ok := LoadState(h.gh.check(shaA).Text); !ok || st.Gate == nil || !slices.Contains(st.Gate.Labels, "human") {
+		t.Fatal("completion did not preserve the other PR's hold label")
 	}
 }
 
