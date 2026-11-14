@@ -27,3 +27,11 @@ Live acceptance after rollout: an anonymous `/` redirects to Authentik;
 sign-in opens the five cards; the ArgoCD link signs in at its new hostname.
 Keep the Authentik admin/setup 403/404 probes and the edge's
 `/oauth2-sentinel` 404 unchanged.
+
+The CSP keeps `style-src 'self'`. The app uses the neutral theme's `/built`
+export and imports its `theme.css` into the Vite stylesheet. In
+[Astryx 0.7.11's Theme](https://github.com/facebook/astryx/blob/v0.7.11/packages/core/src/theme/Theme.tsx),
+`useThemeStyleInjection` returns immediately for `__built` themes. The
+`csp.test.tsx` regression test checks that rendering this page creates no
+inline style elements or attributes, so no inline hashes or
+`'unsafe-inline'` exception is needed.
