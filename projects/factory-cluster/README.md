@@ -358,6 +358,15 @@ and schema `kagent`. Only the kagent controller, the setup Job, peers and the
 operator reach the instances. kagent reads the connection strings only at
 start, so restart its controller (through ArgoCD) after they change.
 
+Those two Secrets and the Role letting the setup Job update them come from a
+second Application, `kagent-postgres-secrets` (`kagent/`), whose destination
+is `kagent` with `CreateNamespace`. `kagent-postgres` itself touches only
+`kagent-pg`, so on a fresh cluster neither Application fails because the
+other's namespace is not there yet (the root's waves do not wait for an
+Application to be healthy). The setup Job waits up to 15 minutes for the two
+Secrets to appear. If they are recreated later, they stay empty until the
+next `kagent-postgres` sync refills them.
+
 The Cluster has its own namespace because the kagent controller can read
 every Secret in `kagent` and authenticates callers by unverified JWTs
 (`projects/factory/ARCHITECTURE.md`, finding 5). The superuser password, the
@@ -371,6 +380,14 @@ A CloudNativePG instance that starts before its Garage key exists caches
 the missing credentials and archives nothing until it restarts, so
 `kagent-pg-wait-for-key` (wave -1) holds the Cluster back until garage-init
 has filled `kagent-pg-s3`, at most one 10-minute run on a fresh install.
+If it gives up after 30 minutes (garage-init failing, say), the sync fails
+and ArgoCD does not retry the same revision; once
+`kubectl -n garage logs job/garage-bootstrap` shows the key, sync again:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n argocd patch app kagent-postgres --type merge \
+  -p '{"operation":{"initiatedBy":{"username":"operator"},"sync":{"syncOptions":["CreateNamespace=true","ServerSideApply=true","RespectIgnoreDifferences=true"]}}}'
+```
 
 Backups use the in-tree barman-cloud integration: continuous WAL archiving
 and a daily base backup (02:30 UTC, 14 days kept) to `kagent-pg-backups` in

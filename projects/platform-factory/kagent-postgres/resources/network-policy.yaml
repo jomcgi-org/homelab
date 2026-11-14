@@ -84,3 +84,18 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
+---
+# kagent-pg-wait-for-key reads one Secret and nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: kagent-pg-wait-for-key
+  namespace: kagent-pg
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: kagent-pg-wait-for-key
+  egress:
+    - toEntities: [kube-apiserver]
