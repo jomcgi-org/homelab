@@ -84,8 +84,16 @@ export function useTable(
     })),
   });
 
-  const blocking = [lobby, sessions, characters];
-  const failed = blocking.find((query) => query.isError && !query.data);
+  const blocking = [
+    lobby,
+    sessions,
+    characters,
+    ...(dm ? [members, voices] : []),
+    ...(session ? [events, initiative] : []),
+  ];
+  const failed = blocking.find(
+    (query) => query.isError && query.data === undefined,
+  );
   if (failed)
     return {
       status: "error",
@@ -96,10 +104,10 @@ export function useTable(
     return { status: "loading" };
   if (!campaign) return { status: "not-member" };
   if (selectedSessionId && !session) return { status: "session-missing" };
-  if (session && events.data === undefined) return { status: "loading" };
-  // The DM's composer restores a kept draft against the saved voices, so it
-  // must not mount before they have loaded.
-  if (dm && voices.data === undefined && !voices.isError)
+  if (session && (events.data === undefined || initiative.data === undefined))
+    return { status: "loading" };
+  // Private replies need the member map; restored drafts need the saved voices.
+  if (dm && (members.data === undefined || voices.data === undefined))
     return { status: "loading" };
 
   return {

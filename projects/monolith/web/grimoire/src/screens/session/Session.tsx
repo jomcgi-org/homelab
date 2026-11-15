@@ -13,6 +13,10 @@ import {
   VStack,
 } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
+import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "@astryxdesign/core/SegmentedControl";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
@@ -27,6 +31,7 @@ import {
   type SessionEvent,
   type TurnOrder,
 } from "../../api/session";
+import { Loaded } from "../../app/Loaded";
 import { Page } from "../../app/Page";
 import { paths } from "../../app/paths";
 import { useAction } from "../../app/useAction";
@@ -221,16 +226,33 @@ function TableView({ table }: { table: Table }) {
       </div>
       {tab === "journal" &&
         (session ? (
-          <JournalPanel
-            journal={journal.data ?? null}
-            view={journalView}
-            onViewChange={setJournalView}
-            onShowEvent={showEvent}
-            onOpenKnowledge={setEntity}
-            characterNames={Object.fromEntries(
-              characters.map((row) => [row.id, row.character_name]),
-            )}
-          />
+          <VStack gap={5} as="section" aria-label="Session journal">
+            <HStack>
+              <SegmentedControl
+                label="Journal audience"
+                value={journalView}
+                onChange={(value) => setJournalView(value as JournalView)}
+              >
+                <SegmentedControlItem value="mine" label="Mine" />
+                <SegmentedControlItem value="party" label="Party" />
+              </SegmentedControl>
+            </HStack>
+            <Loaded query={journal} what="the journal">
+              {(data) => (
+                <JournalPanel
+                  journal={data}
+                  view={journalView}
+                  showViewToggle={false}
+                  regionLabel={null}
+                  onShowEvent={showEvent}
+                  onOpenKnowledge={setEntity}
+                  characterNames={Object.fromEntries(
+                    characters.map((row) => [row.id, row.character_name]),
+                  )}
+                />
+              )}
+            </Loaded>
+          </VStack>
         ) : (
           <Text type="body" color="secondary">
             Your journal starts when the session does.
