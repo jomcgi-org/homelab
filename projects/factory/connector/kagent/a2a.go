@@ -101,6 +101,15 @@ type Artifact struct {
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
+// TaskPage retains the coverage metadata needed to prove a complete scan.
+// TotalSize counts matching tasks before pagination; it is not the page length.
+type TaskPage struct {
+	Tasks         []*Task `json:"tasks"`
+	TotalSize     int     `json:"totalSize"`
+	PageSize      int     `json:"pageSize"`
+	NextPageToken string  `json:"nextPageToken"`
+}
+
 // Task is an A2A task with its synthesized history.
 type Task struct {
 	ID        string         `json:"id"`
@@ -296,7 +305,7 @@ func (c *A2A) GetTask(ctx context.Context, agent AgentRef, taskID string) (*Task
 // ListTasks lists one page of tasks in one state (or all when empty), without history, so a
 // page stays small: one session's, or with no contextID, those of every
 // session of the Agent the caller owns.
-func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, pageToken string) ([]*Task, string, error) {
+func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, pageToken string) (*TaskPage, error) {
 	params := map[string]any{"pageSize": 100, "historyLength": 0}
 	if contextID != "" {
 		params["contextId"] = contextID
@@ -314,15 +323,19 @@ func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, p
 		NextPageToken *string  `json:"nextPageToken"`
 	}
 	if err := c.call(ctx, agent, "ListTasks", params, &out); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	// kagent's pinned A2A SDK emits all four fields, including tasks: [] for
 	// an empty page. Missing/null fields are uncertainty, not task absence.
 	if out == nil || out.Tasks == nil || out.TotalSize == nil || out.PageSize == nil || out.NextPageToken == nil ||
-		*out.TotalSize < 0 || *out.PageSize < 1 || *out.PageSize > 100 {
-		return nil, "", errors.New("kagent: invalid task list response")
+		*out.TotalSize < 0 || *out.PageSize < 1 || *out.PageSize > 100 ||
+		len(*out.Tasks) > *out.PageSize || (*out.NextPageToken != "" && len(*out.Tasks) != *out.PageSize) {
+		return nil, errors.New("kagent: invalid task list response")
 	}
-	return *out.Tasks, *out.NextPageToken, nil
+	// Count and rows use separate database queries. Preserve their metadata:
+	// the caller may adopt an exact task even if counts raced, but must not
+	// infer absence until a complete scan accounts for the advertised total.
+	return &TaskPage{Tasks: *out.Tasks, TotalSize: *out.TotalSize, PageSize: *out.PageSize, NextPageToken: *out.NextPageToken}, nil
 }
 
 // CancelTask requests cancellation and returns the task as kagent then

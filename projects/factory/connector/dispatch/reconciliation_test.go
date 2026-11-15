@@ -10,15 +10,32 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
+func (v *env) dispatchReconciliationInitial() {
+	v.t.Helper()
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+}
+
+func (v *env) tickReconciliation(count int, step time.Duration) {
+	v.t.Helper()
+	for range count {
+		v.clk.Advance(step)
+		v.tick(v.e)
+	}
+}
+
+func (v *env) requireReconciliationSetup(err error) {
+	v.t.Helper()
+	if err != nil {
+		v.t.Fatal(err)
+	}
+}
+
 func TestAcceptedInitialSendWithEveryResponseLostNeverStartsSecondWriter(t *testing.T) {
 	v := newEnv(t)
 	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
-	for i := 0; i < 30; i++ {
-		v.clk.Advance(v.cfg.DispatchWindow)
-		v.tick(v.e)
-	}
+	v.dispatchReconciliationInitial()
+	v.tickReconciliation(30, v.cfg.DispatchWindow)
 	if got := v.kg.Executions(); got != 1 {
 		t.Fatalf("executions = %d; accepted initial send is still running, want one writer", got)
 	}
@@ -31,12 +48,11 @@ func TestAcceptedInitialSendWithEveryResponseLostNeverStartsSecondWriter(t *test
 	}
 }
 
-func (v *env) exhaustOriginalResponses() {
+func (v *env) advanceDispatchWindow() {
 	v.t.Helper()
-	for v.latest(1).Issues < 23 {
-		v.clk.Advance(v.cfg.DispatchWindow)
-		v.tick(v.e)
-	}
+	// Ambiguous sends are never reissued. Advance without polling so the
+	// caller can arrange the public lookup before the next reconciliation.
+	v.clk.Advance(v.cfg.DispatchWindow)
 }
 
 func TestOriginalMessageReconciliationAdoptsEveryTaskState(t *testing.T) {
@@ -50,13 +66,11 @@ func TestOriginalMessageReconciliationAdoptsEveryTaskState(t *testing.T) {
 			v.e.Release()
 			v.e = v.engine("reconcile-every-state")
 			v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
-			v.exhaustOriginalResponses()
+			v.dispatchReconciliationInitial()
+			v.advanceDispatchWindow()
 			taskID := v.kg.lastTask()
 			v.kg.finish(taskID, state, "Original outcome", nil)
-			v.clk.Advance(v.cfg.DispatchWindow)
-			v.tick(v.e)
+			v.tickReconciliation(1, v.cfg.DispatchWindow)
 			if v.kg.Executions() != 1 || v.latest(1).TaskID != taskID {
 				t.Fatalf("executions=%d attempt=%+v; original task was not adopted", v.kg.Executions(), v.latest(1))
 			}
@@ -77,18 +91,14 @@ func TestOriginalMessageLookupReadsPastTenPages(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		_, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"},
 			kagent.Message{MessageID: fmt.Sprintf("unrelated-%d", i)})
-		if err != nil {
-			t.Fatal(err)
-		}
+		v.requireReconciliationSetup(err)
 	}
 	v.kg.listPageSize = 1
 	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
 	original := v.kg.lastTask()
-	v.exhaustOriginalResponses()
-	v.clk.Advance(v.cfg.DispatchWindow)
-	v.tick(v.e)
+	v.advanceDispatchWindow()
+	v.tickReconciliation(1, v.cfg.DispatchWindow)
 	if v.kg.Executions() != 13 || v.latest(1).TaskID != original || len(v.kg.listedStates) != 13 {
 		t.Fatalf("executions=%d task=%s pages=%d; want original on page 13", v.kg.Executions(), v.latest(1).TaskID, len(v.kg.listedStates))
 	}
@@ -97,18 +107,14 @@ func TestOriginalMessageLookupReadsPastTenPages(t *testing.T) {
 func TestPositiveOriginalMatchSurvivesUnrelatedIncompleteHistory(t *testing.T) {
 	v := newEnv(t)
 	unrelated, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, kagent.Message{MessageID: "unrelated-cleanup"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	v.requireReconciliationSetup(err)
 	v.kg.tasks[unrelated.ID].task.History = nil
 	v.kg.listPageSize = 1
 	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
 	original := v.kg.lastTask()
-	v.exhaustOriginalResponses()
-	v.clk.Advance(v.cfg.DispatchWindow)
-	v.tick(v.e)
+	v.advanceDispatchWindow()
+	v.tickReconciliation(1, v.cfg.DispatchWindow)
 	if v.latest(1).TaskID != original || v.kg.Executions() != 2 || v.work(101).EngineeringRetries != 0 {
 		t.Fatal("unrelated incomplete history hid a positive original-message match")
 	}
@@ -122,14 +128,12 @@ func TestMissingOpeningInputNeverProvesAbsenceInAnyState(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			v := newEnv(t)
 			v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
-			v.exhaustOriginalResponses()
+			v.dispatchReconciliationInitial()
+			v.advanceDispatchWindow()
 			task := &v.kg.tasks[v.kg.lastTask()].task
 			task.Status.State = state
 			task.History = []*kagent.Message{{MessageID: "reply-only", Role: "ROLE_AGENT", TaskID: task.ID, ContextID: task.ContextID}}
-			v.clk.Advance(v.cfg.DispatchWindow)
-			v.tick(v.e)
+			v.tickReconciliation(1, v.cfg.DispatchWindow)
 			if v.latest(1).State != store.AttemptAmbiguous || v.work(101).EngineeringRetries != 0 || v.kg.Executions() != 1 {
 				t.Fatal("a history without its opening input authorized retry")
 			}
@@ -140,16 +144,12 @@ func TestMissingOpeningInputNeverProvesAbsenceInAnyState(t *testing.T) {
 func TestDeletedPageBoundaryCannotProveOriginalAbsent(t *testing.T) {
 	v := newEnv(t)
 	_, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, kagent.Message{MessageID: "cursor-task"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	v.requireReconciliationSetup(err)
 	v.kg.listPageSize, v.kg.vanishCursor = 1, true
 	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
-	v.exhaustOriginalResponses()
-	v.clk.Advance(v.cfg.DispatchWindow)
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
+	v.advanceDispatchWindow()
+	v.tickReconciliation(1, v.cfg.DispatchWindow)
 	if v.kg.Executions() != 2 || v.work(101).EngineeringRetries != 0 || v.latest(1).State != store.AttemptAmbiguous {
 		t.Fatal("deleted cursor caused false absence and retry")
 	}
@@ -168,13 +168,10 @@ func TestIncompleteOriginalMessageLookupKeepsUncertainty(t *testing.T) {
 			// The first page has no match, so a repeated cursor cannot be
 			// mistaken for the original task or complete absence.
 			_, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, kagent.Message{MessageID: "unrelated"})
-			if err != nil {
-				t.Fatal(err)
-			}
+			v.requireReconciliationSetup(err)
 			v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
-			v.exhaustOriginalResponses()
+			v.dispatchReconciliationInitial()
+			v.advanceDispatchWindow()
 			switch failure {
 			case "list":
 				v.kg.listErr = errors.New("HTTP 503")
@@ -185,10 +182,7 @@ func TestIncompleteOriginalMessageLookupKeepsUncertainty(t *testing.T) {
 			case "cursor":
 				v.kg.listPageSize, v.kg.repeatPageToken = 1, true
 			}
-			for i := 0; i < 3; i++ {
-				v.clk.Advance(v.cfg.DispatchWindow)
-				v.tick(v.e)
-			}
+			v.tickReconciliation(3, v.cfg.DispatchWindow)
 			if v.kg.Executions() != 2 || v.work(101).EngineeringRetries != 0 || v.latest(1).State != store.AttemptAmbiguous {
 				t.Fatalf("uncertainty retried: executions=%d work=%+v attempt=%+v", v.kg.Executions(), v.work(101), v.latest(1))
 			}
@@ -206,8 +200,7 @@ func TestCallerChangeHoldsOriginalSendUntilIdentityRestored(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			v := newEnv(t)
 			v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
+			v.dispatchReconciliationInitial()
 			original := v.kg.identity
 			switch field {
 			case "uid":
@@ -225,19 +218,15 @@ func TestCallerChangeHoldsOriginalSendUntilIdentityRestored(t *testing.T) {
 			}
 			v.e.Release()
 			v.e = v.engine("restarted-different-caller")
-			for i := 0; i < 30; i++ {
-				v.clk.Advance(v.cfg.DispatchWindow)
-				v.tick(v.e)
-			}
+			v.tickReconciliation(30, v.cfg.DispatchWindow)
 			if len(v.kg.Sends()) != 1 || v.kg.Executions() != 1 || v.work(101).EngineeringRetries != 0 || v.latest(1).State != store.AttemptAmbiguous {
 				t.Fatalf("caller change escaped hold: sends=%d work=%+v attempt=%+v", len(v.kg.Sends()), v.work(101), v.latest(1))
 			}
 			v.kg.identity, v.kg.identityErr = original, nil
-			v.exhaustOriginalResponses()
+			v.advanceDispatchWindow()
 			v.e.Release()
 			v.e = v.engine("restarted-original-caller")
-			v.clk.Advance(v.cfg.DispatchWindow)
-			v.tick(v.e)
+			v.tickReconciliation(1, v.cfg.DispatchWindow)
 			if v.kg.Executions() != 1 || v.latest(1).TaskID == "" {
 				t.Fatal("restored caller did not reconcile original")
 			}
@@ -252,8 +241,7 @@ func TestLegacyCallerRequiresPositiveSessionOwnership(t *testing.T) {
 			if evidence != "accepted" && evidence != "known-unsent-retry" {
 				v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
 			}
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
+			v.dispatchReconciliationInitial()
 			if _, err := v.st.DB.Exec(`UPDATE work_item SET caller_identity = NULL`); err != nil {
 				t.Fatal(err)
 			}
@@ -270,13 +258,10 @@ func TestLegacyCallerRequiresPositiveSessionOwnership(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, err := v.st.RecordAttempt(v.ctx, v.st.DB, store.Attempt{RunID: 1, RunAttempt: 1, WorkItemEpoch: 1, DecisionID: "replacement-0-1", Kind: "initial", MessageID: "itsaplan-run/1/replacement-0-1", KagentNamespace: "factory-homelab", KagentAgent: "coder", WriterEpoch: v.e.Epoch()})
-				if err != nil {
-					t.Fatal(err)
-				}
+				v.requireReconciliationSetup(err)
 			}
 			before := len(v.kg.Sends())
-			v.clk.Advance(v.cfg.DispatchWindow)
-			v.tick(v.e)
+			v.tickReconciliation(1, v.cfg.DispatchWindow)
 			positive := evidence == "accepted" || evidence == "ambiguous"
 			if positive {
 				if v.work(101).CallerIdentity != v.kg.identity.Key() {
@@ -292,8 +277,7 @@ func TestLegacyCallerRequiresPositiveSessionOwnership(t *testing.T) {
 func TestLegacyAdoptionChecksOlderUncertainSendsBeforeNewRetry(t *testing.T) {
 	v := newEnv(t)
 	v.kg.loseResponse = true
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
 	original := v.kg.lastTask()
 	wi := v.work(101)
 	if _, err := v.st.DB.Exec(`UPDATE delivery_attempt SET state = 'failed'; UPDATE work_item SET caller_identity = NULL`); err != nil {
@@ -307,26 +291,14 @@ func TestLegacyAdoptionChecksOlderUncertainSendsBeforeNewRetry(t *testing.T) {
 		KagentNamespace: "factory-homelab", KagentAgent: "coder", WriterEpoch: v.e.Epoch(),
 	}
 	b, err := v.st.RecordAttempt(v.ctx, v.st.DB, older)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := v.st.MarkIssued(v.ctx, b, v.clk.Now()); err != nil {
-		t.Fatal(err)
-	}
+	v.requireReconciliationSetup(err)
+	v.requireReconciliationSetup(v.st.MarkIssued(v.ctx, b, v.clk.Now()))
 	task, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: b.KagentNamespace, Name: b.KagentAgent}, kagent.Message{MessageID: b.MessageID})
-	if err != nil {
-		t.Fatal(err)
-	}
+	v.requireReconciliationSetup(err)
 	v.kg.finish(task.ID, kagent.StateCompleted, "B completed", nil)
-	if err := v.st.MarkAccepted(v.ctx, v.st.DB, b.ID, task.ContextID, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.st.SetSession(v.ctx, v.st.DB, wi.ID, task.ContextID); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.st.FinishAttempt(v.ctx, v.st.DB, b.ID, store.AttemptCompleted, "", ""); err != nil {
-		t.Fatal(err)
-	}
+	v.requireReconciliationSetup(v.st.MarkAccepted(v.ctx, v.st.DB, b.ID, task.ContextID, task.ID))
+	v.requireReconciliationSetup(v.st.SetSession(v.ctx, v.st.DB, wi.ID, task.ContextID))
+	v.requireReconciliationSetup(v.st.FinishAttempt(v.ctx, v.st.DB, b.ID, store.AttemptCompleted, "", ""))
 	older.DecisionID, older.MessageID = "replacement-1-2", "itsaplan-run/1/replacement-1-2"
 	if _, err := v.st.RecordAttempt(v.ctx, v.st.DB, older); err != nil {
 		t.Fatal(err)
@@ -346,15 +318,11 @@ func TestLegacyAdoptionChecksOlderUncertainSendsBeforeNewRetry(t *testing.T) {
 func TestLegacyMissingOriginalCannotEstablishCaller(t *testing.T) {
 	v := newEnv(t)
 	v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
 	if _, err := v.st.DB.Exec(`UPDATE work_item SET caller_identity = NULL`); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 30; i++ {
-		v.clk.Advance(v.cfg.DispatchWindow)
-		v.tick(v.e)
-	}
+	v.tickReconciliation(30, v.cfg.DispatchWindow)
 	if v.work(101).CallerIdentity != "" || v.work(101).EngineeringRetries != 0 || len(v.kg.Sends()) != 1 || v.latest(1).State != store.AttemptAmbiguous {
 		t.Fatal("missing legacy message was treated as new unsent work")
 	}
@@ -362,14 +330,11 @@ func TestLegacyMissingOriginalCannotEstablishCaller(t *testing.T) {
 
 func TestLegacyAttemptCannotBorrowNewerSessionsOwnership(t *testing.T) {
 	v := newEnv(t)
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
 	original := v.latest(1)
 	v.kg.sessions[original.ContextID].Creator = "old-owner"
 	newer, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, kagent.Message{MessageID: "newer-session"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	v.requireReconciliationSetup(err)
 	if _, err := v.st.DB.Exec(`UPDATE work_item SET caller_identity = NULL, session_id = $1`, newer.ContextID); err != nil {
 		t.Fatal(err)
 	}
@@ -380,25 +345,16 @@ func TestLegacyAttemptCannotBorrowNewerSessionsOwnership(t *testing.T) {
 }
 
 func TestLaterSendRefusalCannotDiscardAnAcceptedMessage(t *testing.T) {
-	for _, refusal := range []error{kagent.ErrTaskNotFound, kagent.ErrRejected} {
+	for _, refusal := range []error{kagent.ErrTaskNotFound, kagent.ErrRejected, kagent.ErrNotAccepted} {
 		t.Run(refusal.Error(), func(t *testing.T) {
 			v := newEnv(t)
 			v.kg.loseResponse = true
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
+			v.dispatchReconciliationInitial()
 			original := v.kg.lastTask()
-			for i := 0; i < 22; i++ {
-				v.kg.sendErr = []error{refusal}
-				v.clk.Advance(v.cfg.DispatchWindow)
-				v.tick(v.e)
-				if v.latest(1).State != store.AttemptAmbiguous || v.run(1).State != store.RunDispatched {
-					t.Fatalf("later refusal closed original: run=%+v attempt=%+v", v.run(1), v.latest(1))
-				}
-			}
-			v.clk.Advance(v.cfg.DispatchWindow)
-			v.tick(v.e)
-			if v.latest(1).TaskID != original || v.kg.Executions() != 1 || v.work(101).EngineeringRetries != 0 {
-				t.Fatal("later refusal did not preserve/reconcile original")
+			v.kg.sendErr = []error{refusal}
+			v.tickReconciliation(1, v.cfg.DispatchWindow)
+			if v.latest(1).TaskID != original || v.kg.Executions() != 1 || v.work(101).EngineeringRetries != 0 || len(v.kg.Sends()) != 1 || len(v.kg.sendErr) != 1 {
+				t.Fatal("unknown outcome issued a later call instead of positively reconciling")
 			}
 		})
 	}
@@ -406,8 +362,7 @@ func TestLaterSendRefusalCannotDiscardAnAcceptedMessage(t *testing.T) {
 
 func TestCallerWitnessCannotBeRebound(t *testing.T) {
 	v := newEnv(t)
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
+	v.dispatchReconciliationInitial()
 	wi := v.work(101)
 	if wi.CallerIdentity != v.kg.identity.Key() {
 		t.Fatal("first send did not persist identity")
@@ -427,19 +382,14 @@ func TestDeletingSessionCannotStartReplacement(t *testing.T) {
 	for _, phase := range []string{"working", "continuation"} {
 		t.Run(phase, func(t *testing.T) {
 			v := newEnv(t)
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
+			v.dispatchReconciliationInitial()
 			if phase == "continuation" {
 				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
-				v.clk.Advance(5 * time.Second)
-				v.tick(v.e)
+				v.tickReconciliation(1, 5*time.Second)
 				v.its.add(2, "coder", 101, "HL-1", "Continue.")
 			}
 			v.kg.sessions[v.work(101).SessionID].State = kagent.RuntimeDeleting
-			for i := 0; i < 5; i++ {
-				v.clk.Advance(time.Minute)
-				v.tick(v.e)
-			}
+			v.tickReconciliation(5, time.Minute)
 			if len(v.kg.Sends()) != 1 || v.work(101).EngineeringRetries != 0 {
 				t.Fatal("replacement started while actor deletion was in progress")
 			}
@@ -451,8 +401,7 @@ func TestCallerChangeHoldsCancellationAndContinuation(t *testing.T) {
 	for _, phase := range []string{"cancel", "continuation", "crashed"} {
 		t.Run(phase, func(t *testing.T) {
 			v := newEnv(t)
-			v.its.add(1, "coder", 101, "HL-1", "Do it.")
-			v.tick(v.e)
+			v.dispatchReconciliationInitial()
 			switch phase {
 			case "cancel":
 				if _, err := v.st.StopIssue(v.ctx, "HL-1", "operator canceled", "operator:test"); err != nil {
@@ -460,17 +409,13 @@ func TestCallerChangeHoldsCancellationAndContinuation(t *testing.T) {
 				}
 			case "continuation":
 				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
-				v.clk.Advance(5 * time.Second)
-				v.tick(v.e)
+				v.tickReconciliation(1, 5*time.Second)
 				v.its.add(2, "coder", 101, "HL-1", "Continue.")
 			case "crashed":
 				v.kg.crash(v.work(101).SessionID)
 			}
 			v.kg.identity.ServiceAccountUID = "new-uid"
-			for i := 0; i < 5; i++ {
-				v.clk.Advance(time.Minute)
-				v.tick(v.e)
-			}
+			v.tickReconciliation(5, time.Minute)
 			if len(v.kg.Sends()) != 1 || v.kg.reverts != 0 || v.work(101).EngineeringRetries != 0 {
 				t.Fatal("identity drift allowed external action or retry")
 			}
@@ -481,20 +426,25 @@ func TestCallerChangeHoldsCancellationAndContinuation(t *testing.T) {
 	}
 }
 
-func TestCompleteAbsenceWaitsForDispatchWindow(t *testing.T) {
+func TestUnknownAbsenceBecomesVisibleHoldAfterDispatchWindow(t *testing.T) {
 	v := newEnv(t)
 	v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.tick(v.e)
-	v.exhaustOriginalResponses()
-	v.clk.Advance(v.cfg.DispatchWindow - time.Nanosecond)
-	v.tick(v.e)
-	if v.work(101).EngineeringRetries != 0 || len(v.kg.listedStates) != 0 {
-		t.Fatal("absence was used inside dispatch window")
+	v.dispatchReconciliationInitial()
+	original := v.latest(1).ID
+	v.tickReconciliation(1, v.cfg.DispatchWindow-time.Nanosecond)
+	if v.work(101).EngineeringRetries != 0 || v.latest(1).Error != "" {
+		t.Fatal("operator hold announced inside dispatch window")
 	}
-	v.clk.Advance(time.Nanosecond)
-	v.tick(v.e)
-	if v.work(101).EngineeringRetries != 1 || v.kg.Executions() != 1 || v.latest(1).DecisionID != "replacement-0-1" {
-		t.Fatalf("complete absence did not take one bounded retry: %+v", v.latest(1))
+	v.tickReconciliation(1, time.Nanosecond)
+	v.tickReconciliation(3, v.cfg.DispatchWindow)
+	if a := v.latest(1); a.ID != original || a.State != store.AttemptAmbiguous || a.Error == "" || v.work(101).EngineeringRetries != 0 || v.kg.Executions() != 0 || len(v.kg.Sends()) != 1 {
+		t.Fatalf("complete absence released unknown work: %+v", a)
+	}
+	var notices int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE dedupe_key LIKE 'comment/recovery-held/%'`).Scan(&notices); err != nil {
+		t.Fatal(err)
+	}
+	if notices != 1 {
+		t.Fatalf("hold announcements=%d, want one", notices)
 	}
 }

@@ -195,7 +195,7 @@ func TestDeliversRunAndReportsLastCallUsage(t *testing.T) {
 	}
 }
 
-func TestLostSendResponseResendsSameMessageWithoutDuplicate(t *testing.T) {
+func TestLostSendResponseReconcilesWithoutResending(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.kg.loseResponse = true
@@ -210,12 +210,12 @@ func TestLostSendResponseResendsSameMessageWithoutDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.State != store.AttemptAccepted || a.TaskID == "" || a.Issues != 2 {
-		t.Fatalf("attempt = %+v, want accepted with its task after two sends", a)
+	if a.State != store.AttemptAccepted || a.TaskID == "" || a.Issues != 1 {
+		t.Fatalf("attempt = %+v, want accepted with its task after one send", a)
 	}
 	sends := v.kg.Sends()
-	if len(sends) != 2 || sends[1].msg.MessageID != sends[0].msg.MessageID {
-		t.Fatalf("sends = %d, want the same message twice", len(sends))
+	if len(sends) != 1 || sends[0].msg.MessageID != a.MessageID {
+		t.Fatalf("sends = %+v, want only the original message", sends)
 	}
 	if v.kg.Executions() != 1 {
 		t.Fatalf("executions = %d, want 1", v.kg.Executions())
@@ -225,25 +225,30 @@ func TestLostSendResponseResendsSameMessageWithoutDuplicate(t *testing.T) {
 	}
 }
 
-func TestDroppedSendIsResentAfterReissueInterval(t *testing.T) {
+func TestDroppedSendRetainsAttemptAndSlotAfterWindow(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.kg.dropSend = true
 
 	v.tick(v.e)
+	original := v.latest(1)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 1 {
-		t.Fatalf("sends inside the reissue interval = %d, want 1", n)
+		t.Fatalf("sends = %d, want 1", n)
 	}
-	v.clk.Advance(11 * time.Second)
-	v.tick(v.e)
-	sends := v.kg.Sends()
-	if len(sends) != 2 || sends[1].msg.MessageID != sends[0].msg.MessageID {
-		t.Fatalf("sends = %d, want the same message sent once more", len(sends))
+	for i := 0; i < 3; i++ {
+		v.clk.Advance(v.cfg.DispatchWindow)
+		v.tick(v.e)
 	}
-	if v.kg.Executions() != 1 {
-		t.Fatalf("executions = %d, want 1", v.kg.Executions())
+	if a := v.latest(1); a.ID != original.ID || a.MessageID != original.MessageID || a.State != store.AttemptAmbiguous || a.Issues != 1 {
+		t.Fatalf("unknown original was replaced or retried: %+v", a)
+	}
+	if len(v.kg.Sends()) != 1 || v.kg.Executions() != 0 || v.work(101).EngineeringRetries != 0 {
+		t.Fatal("an empty lookup authorized another send")
+	}
+	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
+		t.Fatalf("active slots = %d, %v; want original slot held", n, err)
 	}
 }
 
@@ -254,18 +259,21 @@ func TestLateAcceptanceIsNeverDuplicated(t *testing.T) {
 
 	v.tick(v.e) // reserved by kagent, response lost
 	v.clk.Advance(16 * time.Second)
-	v.tick(v.e) // resend while the first is in flight: not accepted
+	v.tick(v.e) // no visible task yet; keep the original dispatch uncertain
 	if a, _ := v.st.LatestAttempt(v.ctx, 1); a.State != store.AttemptAmbiguous {
 		t.Fatalf("attempt = %s, want ambiguous", a.State)
 	}
 	v.kg.acceptPending()
 	v.clk.Advance(16 * time.Second)
-	v.tick(v.e) // resend answers with the task that took the first send
+	v.tick(v.e) // read-only reconciliation finds the original task
 	if a, _ := v.st.LatestAttempt(v.ctx, 1); a.State != store.AttemptAccepted {
 		t.Fatalf("attempt = %s, want accepted", a.State)
 	}
 	if v.kg.Executions() != 1 {
 		t.Fatalf("executions = %d, want 1", v.kg.Executions())
+	}
+	if len(v.kg.Sends()) != 1 {
+		t.Fatal("late acceptance was probed with another send")
 	}
 }
 
@@ -293,13 +301,16 @@ func (v *env) latest(runID int64) *store.Attempt {
 	return a
 }
 
-func TestLateCommitAfterSendCapIsFoundNotDuplicated(t *testing.T) {
+func TestLateCommitAfterEmptyLookupsIsFoundWithoutResending(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.kg.lateAcceptAll = true
 	v.tick(v.e)
-	v.tickUntil(16*time.Second, 40, func() bool { return v.latest(1).Issues >= 20 })
-	// The last reservation commits after the cap stops the spaced sends.
+	for i := 0; i < 5; i++ {
+		v.clk.Advance(16 * time.Second)
+		v.tick(v.e)
+	}
+	// The original reservation commits after several empty read-only lookups.
 	v.kg.lateAcceptAll = false
 	v.kg.acceptPending()
 	if v.kg.Executions() != 1 {
@@ -312,47 +323,69 @@ func TestLateCommitAfterSendCapIsFoundNotDuplicated(t *testing.T) {
 	if v.kg.Executions() != 1 {
 		t.Fatalf("executions = %d, want 1", v.kg.Executions())
 	}
+	if len(v.kg.Sends()) != 1 || v.latest(1).Issues != 1 {
+		t.Fatal("reconciliation resent an ambiguous message")
+	}
 }
 
-func TestUnresolvedSendFailsOnlyAWindowAfterItsLastSend(t *testing.T) {
+func TestExpiredUnknownReservationRetainsAttemptAndSlot(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.kg.lateAcceptAll = true // every send reserves and loses its response
+	v.kg.lateAcceptAll = true // the send reserves and loses its response
 	v.tick(v.e)
-	v.tickUntil(16*time.Second, 200, func() bool { return v.latest(1).Issues >= 23 })
-	last := v.latest(1).SentAt
+	original := v.latest(1)
 	v.kg.lateAcceptAll = false
-	v.clk.Advance(last.Add(209 * time.Second).Sub(v.clk.Now()))
-	v.tick(v.e)
-	if n, _ := v.st.CountSends(v.ctx, 1); n != 1 {
-		t.Fatalf("attempt failed %s after its last send, inside the window (%d attempts, latest %+v)", v.clk.Now().Sub(last), n, v.latest(1))
+	for i := 0; i < 3; i++ {
+		v.clk.Advance(v.cfg.DispatchWindow)
+		v.tick(v.e)
 	}
-	v.clk.Advance(2 * time.Second)
-	v.tick(v.e)
-	a := v.latest(1)
-	if a.DecisionID != "replacement-0-1" || a.State != store.AttemptAccepted {
-		t.Fatalf("latest attempt = %+v, want the retry accepted", a)
-	}
-	// The last reservation's save arrives late; kagent rejects it.
+	// This fake's late save is rejected, but absence cannot prove that an
+	// unobserved runtime stopped. No replacement is admitted on that basis.
 	v.kg.acceptPending()
-	if v.kg.Executions() != 1 {
-		t.Fatalf("executions = %d, want 1", v.kg.Executions())
+	if a := v.latest(1); a.ID != original.ID || a.State != store.AttemptAmbiguous || a.Issues != 1 {
+		t.Fatalf("expired unknown attempt was retired: %+v", a)
+	}
+	if len(v.kg.Sends()) != 1 || v.kg.Executions() != 0 || v.work(101).EngineeringRetries != 0 {
+		t.Fatal("expired reservation authorized a new execution")
+	}
+	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
+		t.Fatalf("active slots = %d, %v; want original slot held", n, err)
 	}
 }
 
 func TestNotAcceptedSendIsRetriedWithSameMessage(t *testing.T) {
-	v := newEnv(t)
-	v.its.add(1, "coder", 101, "HL-1", "Do it.")
-	v.kg.notAccepted = 1
-	v.tick(v.e)
-	v.clk.Advance(16 * time.Second)
-	v.tick(v.e)
-	sends := v.kg.Sends()
-	if len(sends) != 2 || sends[0].msg.MessageID != sends[1].msg.MessageID {
-		t.Fatalf("sends = %+v", sends)
-	}
-	if v.kg.Executions() != 1 {
-		t.Fatalf("executions = %d", v.kg.Executions())
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.kg.notAccepted = 1
+			v.tick(v.e)
+			original := v.latest(1)
+			if original.State != store.AttemptSending || original.Issues != 1 {
+				t.Fatalf("definitive refusal was not persisted as safe to retry: %+v", original)
+			}
+			if restart {
+				v.e.Release()
+				v.e = v.engine("connector-b")
+			}
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			if len(v.kg.Sends()) != 1 {
+				t.Fatal("proven unaccepted send retried inside its interval")
+			}
+			v.clk.Advance(11 * time.Second)
+			v.tick(v.e)
+			sends := v.kg.Sends()
+			if len(sends) != 2 || sends[0].msg.MessageID != sends[1].msg.MessageID {
+				t.Fatalf("sends = %+v", sends)
+			}
+			if a := v.latest(1); a.ID != original.ID || a.State != store.AttemptAccepted || a.Issues != 2 {
+				t.Fatalf("refused original was not retried: %+v", a)
+			}
+			if v.kg.Executions() != 1 {
+				t.Fatalf("executions = %d", v.kg.Executions())
+			}
+		})
 	}
 }
 
@@ -475,10 +508,10 @@ func TestRestartAfterLeaseExpiryAttachesWithoutSecondExecution(t *testing.T) {
 	if r := v.run(1); r.Attempt != 2 || r.State != store.RunDispatched {
 		t.Fatalf("run = attempt %d state %s, want the redelivered attempt 2 dispatched", r.Attempt, r.State)
 	}
-	// The new writer resends the same message, and kagent answers with the
-	// task the first send started.
-	if sends := v.kg.Sends(); len(sends) != 2 || sends[1].msg.MessageID != sends[0].msg.MessageID {
-		t.Fatalf("sends after redelivery = %d, want the same message twice", len(sends))
+	// The new writer finds the task the first send started without issuing
+	// another message, even after the lease and dispatch window expired.
+	if sends := v.kg.Sends(); len(sends) != 1 {
+		t.Fatalf("sends after redelivery = %d, want only the original", len(sends))
 	}
 	if v.kg.Executions() != 1 {
 		t.Fatalf("executions = %d", v.kg.Executions())
@@ -1298,12 +1331,21 @@ func TestCancelSparesAnotherRunsUnattachedFirstSend(t *testing.T) {
 	v.its.cancel(1, false)
 	v.clk.Advance(61 * time.Second)
 	v.tick(v.e)
-	v.tickUntil(16*time.Second, 30, func() bool { return len(v.pendingCancellations()) == 0 })
+	for i := 0; i < 3; i++ {
+		v.clk.Advance(v.cfg.DispatchWindow)
+		v.tick(v.e)
+	}
 	if v.kg.state(other) != kagent.StateWorking {
 		t.Fatalf("run 2's task = %s; run 1's cancellation stopped it", v.kg.state(other))
 	}
-	if r := v.run(1); r.State != store.RunClosed {
-		t.Fatalf("run 1 = %s", r.State)
+	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].RunID != 1 || cs[0].Requests != 0 {
+		t.Fatalf("unknown original cancellation was cleared or targeted another task: %+v", cs)
+	}
+	if r := v.run(1); r.State != store.RunCanceling {
+		t.Fatalf("run 1 = %s, want held for cancellation", r.State)
+	}
+	if len(v.kg.Sends()) != 2 {
+		t.Fatal("cancellation or reconciliation resent an ambiguous message")
 	}
 }
 
@@ -1360,15 +1402,24 @@ func TestCancelOfUnresolvedSendNeverSends(t *testing.T) {
 	v.clk.Advance(61 * time.Second)
 	v.tick(v.e)
 	sends := len(v.kg.Sends())
-	v.tickUntil(16*time.Second, 20, func() bool { return len(v.pendingCancellations()) == 0 })
+	for i := 0; i < 3; i++ {
+		v.clk.Advance(v.cfg.DispatchWindow)
+		v.tick(v.e)
+	}
 	if got := len(v.kg.Sends()); got != sends {
 		t.Fatalf("cancellation sent %d messages", got-sends)
 	}
-	if v.clk.Now().Sub(v.latest(1).SentAt) < 210*time.Second {
-		t.Fatal("confirmed inside the dispatch window")
+	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Requests != 0 {
+		t.Fatalf("absence confirmed or targeted an unknown task: %+v", cs)
 	}
-	if r := v.run(1); r.State != store.RunClosed {
-		t.Fatalf("run = %s", r.State)
+	if a := v.latest(1); a.State != store.AttemptAmbiguous || a.Issues != 1 {
+		t.Fatalf("cancellation retired the unknown attempt: %+v", a)
+	}
+	if r := v.run(1); r.State != store.RunCanceling {
+		t.Fatalf("run = %s, want held for cancellation", r.State)
+	}
+	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
+		t.Fatalf("active slots = %d, %v; want original slot held", n, err)
 	}
 }
 
