@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -604,8 +605,8 @@ func TestAssessKeepsPreviousGateFindings(t *testing.T) {
 }
 
 // TestLaterScopeLowersNewFindingsOutsideTheInterdiff lowers a new high or
-// medium finding placed outside the files changed since the previous head
-// to a deferred low one unless its cause is a changed file. Critical,
+// medium finding the agent marks earlier to a deferred low one when its file
+// is outside the files changed since the previous head. Unmarked, critical,
 // human-gate, previous, pathless and review-process findings keep their
 // severity, and nothing is lowered without an interdiff the service can
 // trust.
@@ -622,23 +623,23 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 			t.Errorf("%s: scope %+v, want none", name, s)
 		}
 	}
-	at := func(id, severity, path, cause string) Finding {
-		return Finding{ID: id, Severity: severity, Path: path, Title: id, Cause: cause}
+	at := func(id, severity, path string, earlier bool) Finding {
+		return Finding{ID: id, Severity: severity, Path: path, Title: id, Earlier: earlier}
 	}
 	r := &Report{Summary: "s", Findings: []Finding{
-		at("u.go:correctness", SeverityHigh, "u.go", ""),
-		at("u.go:validation", SeverityMedium, "u.go", "elsewhere.go"),
-		at(":unverified", SeverityMedium, "", ""),
-		at(":correctness", SeverityHigh, "", ""),
-		at("u.go:unreviewed", SeverityHigh, "u.go", ""),
-		at("u.go:review-injection:prompt", SeverityMedium, "u.go", ""),
-		at("u.go:boundary", SeverityHigh, "u.go", "changed.go"),
-		at("changed.go:correctness", SeverityMedium, "./changed.go", ""),
-		at("old/name.go:goal", SeverityMedium, "old/name.go", ""),
-		at("u.go:security", SeverityCritical, "u.go", ""),
-		at("u.go:prior", SeverityHigh, "u.go", ""),
-		at("REVIEW.md:human-gate", SeverityHigh, "REVIEW.md", ""),
-		at("u.go:naming", SeverityLow, "u.go", ""),
+		at("u.go:correctness", SeverityHigh, "u.go", true),
+		at("u.go:validation", SeverityMedium, "u.go", true),
+		at(":unverified", SeverityMedium, "", true),
+		at(":correctness", SeverityHigh, "", true),
+		at("u.go:unreviewed", SeverityHigh, "u.go", true),
+		at("u.go:review-injection:prompt", SeverityMedium, "u.go", true),
+		at("u.go:boundary", SeverityHigh, "u.go", false), // a caller this head broke: unmarked
+		at("changed.go:correctness", SeverityMedium, "./changed.go", true),
+		at("old/name.go:goal", SeverityMedium, "old/name.go", true),
+		at("u.go:security", SeverityCritical, "u.go", true),
+		at("u.go:prior", SeverityHigh, "u.go", true),
+		at("REVIEW.md:human-gate", SeverityHigh, "REVIEW.md", true),
+		at("u.go:naming", SeverityLow, "u.go", false),
 	}}
 	prior := []Finding{finding("u.go:prior", SeverityHigh)}
 	if got := LaterScope("", d).Lower(r, prior); got != r {
@@ -677,7 +678,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	for i := range MaxLow + 1 {
 		many = append(many, finding(fmt.Sprintf("l%d", i), SeverityLow))
 	}
-	many = append(many, at("u.go:late", SeverityHigh, "u.go", ""))
+	many = append(many, at("u.go:late", SeverityHigh, "u.go", true))
 	a = Assess(LaterScope("prev", d).Lower(&Report{Findings: many}, nil), nil)
 	if a.Conclusion != ConclusionSuccess || a.DroppedLow != 1 || len(a.Deferred) != 1 || a.Deferred[0].Lowered != SeverityHigh {
 		t.Fatalf("assessment = %+v", a)
@@ -783,4 +784,33 @@ func TestStateTrimsTheClearedRecordFirst(t *testing.T) {
 	if got, _ := LoadState(encodeState(st)); len(got.Blocking) != 40 || got.Cleared != nil {
 		t.Fatalf("state = %d blocking, %d cleared", len(got.Blocking), len(got.Cleared))
 	}
+
+	// Blocking findings that fit alone stay whole when only the cleared IDs
+	// push the state over: the record goes before any blocking text.
+	cleared := slices.Clone(st.Cleared)
+	var small State
+	for i := 0; rawStateLen(State{Blocking: small.Blocking, Cleared: bareCleared(cleared)}) <= maxState; i++ {
+		small.Blocking = append(small.Blocking, Finding{ID: fmt.Sprintf("f%d.go:correctness", i), Severity: SeverityMedium, Title: "Title", Detail: strings.Repeat("y", 150)})
+	}
+	if rawStateLen(State{Blocking: small.Blocking}) > maxState {
+		t.Fatal("the fixture does not fit without its cleared record")
+	}
+	small.Cleared = cleared
+	if got, _ := LoadState(encodeState(small)); !reflect.DeepEqual(got.Blocking, small.Blocking) || got.Cleared != nil {
+		t.Fatalf("state = %d blocking (whole: %v), %d cleared", len(got.Blocking), reflect.DeepEqual(got.Blocking, small.Blocking), len(got.Cleared))
+	}
+}
+
+// rawStateLen is the length of st's encoding before any trimming.
+func rawStateLen(st State) int {
+	raw, _ := json.Marshal(st)
+	return len(statePrefix) + base64.StdEncoding.EncodedLen(len(raw)) + len(stateSuffix)
+}
+
+func bareCleared(cs []Cleared) []Cleared {
+	out := make([]Cleared, len(cs))
+	for i, c := range cs {
+		out[i] = Cleared{ID: c.ID, Status: c.Status}
+	}
+	return out
 }
