@@ -528,7 +528,7 @@ func TestSuccessfulGraphCanOutlastTheTickWait(t *testing.T) {
 			// Finish the original poll, including its fresh root read and result.
 			for range 20 {
 				v.tick(v.e)
-				if v.run(1).State == store.RunDispatched || v.run(1).State == store.RunClosed {
+				if v.kg.Executions() == 1 || v.run(1).State == store.RunClosed {
 					break
 				}
 			}
@@ -544,6 +544,255 @@ func TestSuccessfulGraphCanOutlastTheTickWait(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSuccessfulGraphOutlastsReadTimeoutAndKeepsLease(t *testing.T) {
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.AdmissionBudget = 20 * time.Millisecond
+	v.cfg.AdmissionReadTimeout = 2 * time.Second
+	v.e = v.engine("long-graph-with-heartbeats")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	for id := int64(102); id <= 104; id++ {
+		v.dependency(101, id, fmt.Sprintf("HL-%d", id-100), 3)
+	}
+	type readDeadline struct {
+		id        int64
+		remaining time.Duration
+	}
+	reads := make(chan readDeadline, 16)
+	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+		if id == 101 {
+			return nil
+		}
+		deadline, _ := ctx.Deadline()
+		reads <- readDeadline{id, time.Until(deadline)}
+		// Three individually successful requests exceed the request timeout
+		// in aggregate. The later requests must get their own full deadlines.
+		timer := time.NewTimer(800 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	v.tick(v.e)
+	v.held(1)
+	select {
+	case first := <-reads:
+		if first.id != 102 || first.remaining <= time.Second || first.remaining > v.cfg.AdmissionReadTimeout {
+			t.Fatalf("first read deadline = %+v", first)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dependency read did not start")
+	}
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.Heartbeats(v.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v.its.Run(1).beats == 0 {
+		t.Fatal("a dependency read prevented the held run's lease renewal")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for v.kg.Executions() == 0 && time.Now().Before(deadline) {
+		v.tick(v.e)
+	}
+	if v.kg.Executions() != 1 || v.run(1).State != store.RunDispatched {
+		t.Fatal("a successful traversal exceeding the request timeout never dispatched")
+	}
+	for _, id := range []int64{103, 104} {
+		select {
+		case read := <-reads:
+			if read.id != id || read.remaining <= time.Second || read.remaining > v.cfg.AdmissionReadTimeout {
+				t.Fatalf("read = %+v, want %d with a fresh deadline", read, id)
+			}
+		default:
+			t.Fatalf("missing read of %d", id)
+		}
+	}
+	if len(reads) != 0 {
+		t.Fatal("the long graph restarted an already successful read")
+	}
+}
+
+func TestReleaseRechecksAllBlockersAfterSlowRead(t *testing.T) {
+	for _, column := range []int64{2, 4} {
+		t.Run(fmt.Sprintf("reopened-column=%d", column), func(t *testing.T) {
+			v := newEnv(t)
+			v.e.Release()
+			v.cfg.AdmissionBudget = 20 * time.Millisecond
+			v.e = v.engine("blocker-changes-during-read")
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.dependency(101, 102, "HL-2", 3)
+			v.dependency(101, 103, "HL-3", 3)
+			entered := make(chan struct{}, 1)
+			proceed := make(chan struct{})
+			v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+				if id != 103 {
+					return nil
+				}
+				select {
+				case entered <- struct{}{}:
+				default:
+				}
+				select {
+				case <-proceed:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			v.tick(v.e)
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("later blocker read did not start")
+			}
+			// A was read as completed, then changes while the graph reads B.
+			// The relation IDs stay the same throughout the poll.
+			v.its.moveTo(102, column, "")
+			close(proceed)
+			deadline := time.Now().Add(5 * time.Second)
+			for !strings.Contains(v.run(1).HoldReason, "HL-2") && time.Now().Before(deadline) {
+				v.tick(v.e)
+				if v.kg.Executions() != 0 {
+					t.Fatal("stale completion evidence released admission")
+				}
+			}
+			v.held(1)
+			if !strings.Contains(v.run(1).HoldReason, "HL-2") {
+				t.Fatal("fresh blocker state did not become the hold reason")
+			}
+			v.e.Release()
+			v.its.waitIssueRead = nil
+			v.e = v.engine("reopened-blocker-restart")
+			for range 2 {
+				v.tick(v.e)
+				v.held(1)
+			}
+			wantComments := 0
+			if column == 4 {
+				wantComments = 1
+			}
+			if len(v.its.Comments()) != wantComments || v.kg.Calls() != 0 {
+				t.Fatal("replaying the fresh blocker state duplicated a comment or started work")
+			}
+			v.its.moveTo(102, 3, "")
+			deadline = time.Now().Add(5 * time.Second)
+			for v.kg.Executions() == 0 && time.Now().Before(deadline) {
+				v.tick(v.e)
+			}
+			if v.kg.Executions() != 1 {
+				t.Fatal("completing the reopened blocker did not release admission")
+			}
+		})
+	}
+}
+
+func TestCancellationDuringAdmissionReadDiscardsThePoll(t *testing.T) {
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.AdmissionBudget = 20 * time.Millisecond
+	v.e = v.engine("cancellation-during-read")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.dependency(101, 102, "HL-2", 3)
+	entered := make(chan struct{}, 1)
+	proceed := make(chan struct{})
+	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+		if id != 102 {
+			return nil
+		}
+		entered <- struct{}{}
+		select {
+		case <-proceed:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	v.tick(v.e)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dependency read did not start")
+	}
+	v.its.cancel(1, false)
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.Heartbeats(v.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v.run(1).State != store.RunClosed {
+		t.Fatal("a pending dependency read prevented cancellation")
+	}
+	close(proceed)
+	v.tick(v.e)
+	v.e.Release()
+	if v.run(1).State != store.RunClosed || v.run(1).WorkItemID != 0 || v.kg.Calls() != 0 {
+		t.Fatal("the completed read resurrected a canceled run")
+	}
+	if a, err := v.st.LatestAttempt(v.ctx, 1); err != nil || a != nil {
+		t.Fatalf("canceled admission created an attempt: %+v, %v", a, err)
+	}
+}
+
+func TestRedeliveryDuringAdmissionReadDiscardsThePoll(t *testing.T) {
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.AdmissionBudget = 20 * time.Millisecond
+	v.e = v.engine("redelivery-during-read")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.dependency(101, 102, "HL-2", 3)
+	entered := make(chan struct{}, 1)
+	proceed := make(chan struct{})
+	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+		if id != 102 {
+			return nil
+		}
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-proceed:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	v.tick(v.e)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dependency read did not start")
+	}
+	// Model a reclaimed lease being recorded while the old attempt's read
+	// is still in flight. Its successful response cannot authorize a send.
+	v.clk.Advance(301 * time.Second)
+	claim, err := v.its.Claim(v.ctx, "coder")
+	if err != nil || claim == nil {
+		t.Fatalf("redelivery = %+v, %v", claim, err)
+	}
+	if _, _, err := v.st.RecordClaim(v.ctx, store.ClaimedRun{
+		ID: claim.ID, AgentKey: "coder", IssueID: 101, IssueKey: "HL-1", Attempt: claim.Attempts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+	deadline := time.Now().Add(5 * time.Second)
+	for v.kg.Executions() == 0 && time.Now().Before(deadline) {
+		v.tick(v.e)
+	}
+	if v.run(1).Attempt != 2 || v.kg.Executions() != 1 {
+		t.Fatal("the fresh attempt did not run its own admission poll")
+	}
+	var rootReads int
+	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT attempts FROM admission_read
+		WHERE run_id = 1 AND run_attempt = 1 AND operation = 'issue' AND resource = '101'`).Scan(&rootReads); err != nil || rootReads != 1 {
+		t.Fatalf("the stale poll reached its final release read: %d root reads, %v", rootReads, err)
+	}
+	v.e.Release()
 }
 
 func TestRestartDiscardsAnInFlightAdmission(t *testing.T) {

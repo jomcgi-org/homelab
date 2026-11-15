@@ -348,6 +348,18 @@ func (f *fakeItsaplan) GetIssue(ctx context.Context, issueID int64) (*itsaplan.I
 		return nil, itsaplan.ErrNotFound
 	}
 	c := *is
+	if is.Links != nil {
+		// listIssueLinks joins all related issues in one SQL statement. Each
+		// response carries a fresh snapshot, including archived blockers.
+		c.Links = make([]itsaplan.IssueLink, len(is.Links))
+		copy(c.Links, is.Links)
+		for i := range c.Links {
+			if other := f.issues[c.Links[i].Issue.ID]; other != nil {
+				c.Links[i].Issue.Identifier = other.Identifier
+				c.Links[i].Issue.ColumnID = other.ColumnID
+			}
+		}
+	}
 	return &c, nil
 }
 

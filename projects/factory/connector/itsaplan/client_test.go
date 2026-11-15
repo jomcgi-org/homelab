@@ -143,7 +143,7 @@ func TestComment(t *testing.T) {
 func TestIssueDependencyDirections(t *testing.T) {
 	var got seen
 	c := server(t, 200, `{"id":41,"identifier":"HL-3","description":"Brief","links":[
-		{"id":1,"kind":"blocks","direction":"inward","issue":{"id":42,"archived":true}},
+		{"id":1,"kind":"blocks","direction":"inward","issue":{"id":42,"identifier":"HL-4","columnId":9,"archived":true}},
 		{"id":2,"kind":"blocks","direction":"outward","issue":{"id":43}},
 		{"id":3,"kind":"blocks","issue":{"id":44}},
 		{"id":4,"kind":"relates","direction":"inward","issue":{"id":45}}
@@ -155,7 +155,7 @@ func TestIssueDependencyDirections(t *testing.T) {
 	if got.method != "GET" || got.path != "/issues/41" || got.key != "k-coord" {
 		t.Fatalf("request = %+v", got)
 	}
-	if len(is.Links) != 4 || is.Links[0].Issue.ID != 42 {
+	if len(is.Links) != 4 || is.Links[0].Issue.ID != 42 || is.Links[0].Issue.Identifier != "HL-4" || is.Links[0].Issue.ColumnID != 9 {
 		t.Fatalf("links = %+v", is.Links)
 	}
 	for i, link := range is.Links {

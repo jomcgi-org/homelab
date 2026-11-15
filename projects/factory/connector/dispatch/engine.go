@@ -100,6 +100,8 @@ type Config struct {
 	// AdmissionBudget bounds how long a tick waits for the admission worker.
 	// Reads continue independently when it expires. Zero selects two seconds.
 	AdmissionBudget time.Duration
+	// AdmissionReadTimeout bounds one request, not a whole dependency graph.
+	AdmissionReadTimeout time.Duration
 }
 
 // MinDispatchWindow is the smallest uncertainty window that covers a send's
@@ -164,6 +166,9 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.AdmissionBudget <= 0 {
 		cfg.AdmissionBudget = 2 * time.Second
+	}
+	if cfg.AdmissionReadTimeout <= 0 {
+		cfg.AdmissionReadTimeout = 30 * time.Second
 	}
 	if m == nil {
 		m = metrics.New(nil)

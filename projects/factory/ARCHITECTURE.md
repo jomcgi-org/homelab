@@ -455,17 +455,22 @@ work item or task. Reopening it requires a new delegation.
 
 Claims and existing holds join one admission queue, ordered by last poll;
 new claims enter at their arrival time. One worker processes a snapshot of
-that queue, with a thirty-second timeout per graph. Each tick waits at most
+that queue, with a thirty-second timeout per request. Each tick waits at most
 two seconds for the worker before cancellation, delivery and outbox phases
 proceed. The worker continues its current poll across ticks, so a successful
-graph taking more than two seconds can still release admission. It checks
-the root again before release and dispatches directly, without caching a
-permission for a later tick. The delivery loop skips the worker's locked
-run; admission and waiting retries serialize their slot checks and starts
-without making the delivery loop wait for that lock. Shutdown cancels and
-joins the worker before releasing writer authority;
-a restart reads the graph again. The latest issue brief supplies the first
-attempt without another read in the send path.
+graph can take longer than either timeout without restarting successful
+reads. During each read the worker releases the run lock, letting heartbeats,
+cancellation and redelivery proceed. It reacquires the lock and checks the
+run's state and attempt before using each response; a changed run discards
+the poll. Before release it refreshes the workflow and root issue. The root's
+links include every direct blocker's column from one SQL query, so this final
+snapshot must show every blocker completed, including blockers read earlier
+in the traversal that have since reopened. Admission dispatches directly,
+without caching permission for a later tick. Admission and waiting retries
+serialize their slot checks and starts without making the delivery loop wait
+for that lock. Shutdown cancels and joins the worker before releasing writer
+authority; a restart reads the graph again. The latest issue brief supplies
+the first attempt without another read in the send path.
 
 Admission traverses unfinished dependencies to detect cycles. Canceled
 dependencies hold the run and queue one explanatory comment per run and

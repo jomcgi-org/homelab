@@ -238,7 +238,9 @@ type IssueLink struct {
 	Kind      string `json:"kind"`
 	Direction string `json:"direction"`
 	Issue     struct {
-		ID int64 `json:"id"`
+		ID         int64  `json:"id"`
+		Identifier string `json:"identifier"`
+		ColumnID   int64  `json:"columnId"`
 	} `json:"issue"`
 }
 
