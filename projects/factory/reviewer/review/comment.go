@@ -225,7 +225,11 @@ func findingsSection(a Assessment, r *Report) string {
 		rows = append(rows, row{f: f})
 	}
 	for _, f := range a.Deferred {
-		rows = append(rows, row{f: f, tag: "follow-up"})
+		rw := row{f: f, tag: "follow-up"}
+		if f.Lowered != "" {
+			rw.note = loweredNote(f)
+		}
+		rows = append(rows, rw)
 	}
 
 	var head string

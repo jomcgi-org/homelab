@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -599,5 +600,174 @@ func TestAssessKeepsPreviousGateFindings(t *testing.T) {
 	st := State{Blocking: []Finding{finding("x.go:correctness", SeverityHigh)}, Gate: &Gate{Paths: []string{"REVIEW.md"}, Findings: prior[:1]}}
 	if got := st.Previous(); len(got) != 2 || got[0].ID != "x.go:correctness" || got[1].ID != "AGENTS.md:human-gate" {
 		t.Fatalf("previous = %+v", got)
+	}
+}
+
+// TestLaterScopeLowersNewFindingsOutsideTheInterdiff lowers a new high or
+// medium finding to a deferred low one unless its path or cause is a file
+// changed since the previous head. Critical, human-gate and previous
+// findings keep their severity, and nothing is lowered without an interdiff
+// the service can trust.
+func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
+	files := []github.PullRequestFile{{Path: "changed.go"}, {Path: "new/name.go", PreviousPath: "old/name.go"}}
+	d := &github.CommitComparison{Status: "ahead", Files: files}
+	for name, s := range map[string]*Scope{
+		"first review": LaterScope("", d),
+		"no interdiff": LaterScope("prev", nil),
+		"rebased":      LaterScope("prev", &github.CommitComparison{Status: "diverged", Files: files}),
+		"truncated":    LaterScope("prev", &github.CommitComparison{Status: "ahead", Files: files, Truncated: true}),
+	} {
+		if s != nil {
+			t.Errorf("%s: scope %+v, want none", name, s)
+		}
+	}
+	at := func(id, severity, path, cause string) Finding {
+		return Finding{ID: id, Severity: severity, Path: path, Title: id, Cause: cause}
+	}
+	r := &Report{Summary: "s", Findings: []Finding{
+		at("u.go:correctness", SeverityHigh, "u.go", ""),
+		at("u.go:validation", SeverityMedium, "u.go", "elsewhere.go"),
+		at(":unverified", SeverityMedium, "", ""),
+		at("u.go:boundary", SeverityHigh, "u.go", "changed.go"),
+		at("changed.go:correctness", SeverityMedium, "./changed.go", ""),
+		at("old/name.go:goal", SeverityMedium, "old/name.go", ""),
+		at("u.go:security", SeverityCritical, "u.go", ""),
+		at("u.go:prior", SeverityHigh, "u.go", ""),
+		at("REVIEW.md:human-gate", SeverityHigh, "REVIEW.md", ""),
+		at("u.go:naming", SeverityLow, "u.go", ""),
+	}}
+	prior := []Finding{finding("u.go:prior", SeverityHigh)}
+	if got := LaterScope("", d).Lower(r, prior); got != r {
+		t.Fatal("a nil scope changed the report")
+	}
+	got := LaterScope("prev", d).Lower(r, prior)
+	var lowered []string
+	for _, f := range got.Findings {
+		if f.Lowered != "" {
+			if f.Severity != SeverityLow || !f.Defer {
+				t.Errorf("lowered finding = %+v", f)
+			}
+			lowered = append(lowered, f.ID+"="+f.Lowered)
+		}
+	}
+	if want := "u.go:correctness=high,u.go:validation=medium,:unverified=medium"; strings.Join(lowered, ",") != want {
+		t.Fatalf("lowered = %v, want %s", lowered, want)
+	}
+	if r.Findings[0].Severity != SeverityHigh || r.Findings[0].Lowered != "" {
+		t.Fatalf("Lower changed the agent's report: %+v", r.Findings[0])
+	}
+	a := Assess(got, prior)
+	var blocking []string
+	for _, b := range a.Blocking {
+		blocking = append(blocking, b.ID)
+	}
+	if want := "u.go:security,u.go:boundary,u.go:prior,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
+		t.Fatalf("blocking = %v, want %s", blocking, want)
+	}
+	if len(a.Gated) != 1 || len(a.Deferred) != 3 || len(a.Optional) != 1 {
+		t.Fatalf("assessment = %+v", a)
+	}
+
+	// The low cap drops the agent's own low findings, never a lowered one.
+	var many []Finding
+	for i := range MaxLow + 1 {
+		many = append(many, finding(fmt.Sprintf("l%d", i), SeverityLow))
+	}
+	many = append(many, at("u.go:late", SeverityHigh, "u.go", ""))
+	a = Assess(LaterScope("prev", d).Lower(&Report{Findings: many}, nil), nil)
+	if a.Conclusion != ConclusionSuccess || a.DroppedLow != 1 || len(a.Deferred) != 1 || a.Deferred[0].Lowered != SeverityHigh {
+		t.Fatalf("assessment = %+v", a)
+	}
+	o := Render(a, &Report{Summary: "s"}, nil, "footer")
+	if !strings.Contains(o.Output.Summary, "### Deferred") || !strings.Contains(o.Output.Summary, "Reported high; lowered because") {
+		t.Fatalf("summary:\n%s", o.Output.Summary)
+	}
+	if body := *reviewComment(a, &Report{Summary: "s"}, &Binding{}, nil).Findings; !strings.Contains(body, "Reported high; lowered because") {
+		t.Fatalf("comment:\n%s", body)
+	}
+}
+
+// TestClearedFindingsCarryAcrossHeads keeps what a review fixed, justified
+// or withdrew, then what earlier reviews cleared, for the next head. A
+// finding that blocks again and a human-gate finding are not cleared.
+func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
+	prior := []Finding{
+		finding("fixed.go:correctness", SeverityHigh), finding("why.go:validation", SeverityMedium),
+		finding("wrong.go:security", SeverityCritical), finding("open.go:correctness", SeverityHigh),
+		finding("AGENTS.md:human-gate", SeverityHigh),
+	}
+	r := &Report{Summary: "s", Findings: []Finding{}, Previous: []Previous{
+		{ID: "fixed.go:correctness", Status: StatusFixed, Note: "Guarded."},
+		{ID: "why.go:validation", Status: StatusJustified, Note: "x_test.go covers it."},
+		{ID: "wrong.go:security", Status: StatusJustified, Note: "withdrawn: a test fixture"},
+		{ID: "AGENTS.md:human-gate", Status: StatusFixed},
+	}}
+	a := Assess(r, prior)
+	a.Earlier = []Cleared{
+		{ID: "old.go:correctness", Status: StatusFixed, Title: "Old", Note: "Earlier fix."},
+		{ID: "open.go:correctness", Status: StatusFixed, Title: "Reopened"},
+		{ID: "fixed.go:correctness", Status: StatusJustified, Title: "Duplicate"},
+	}
+	st, ok := LoadState(Render(a, r, nil, "footer").Output.Text)
+	want := []Cleared{
+		{ID: "fixed.go:correctness", Status: StatusFixed, Title: "fixed.go:correctness", Note: "Guarded."},
+		{ID: "why.go:validation", Status: StatusJustified, Title: "why.go:validation", Note: "x_test.go covers it."},
+		{ID: "wrong.go:security", Status: StatusWithdrawn, Title: "wrong.go:security", Note: "withdrawn: a test fixture"},
+		{ID: "old.go:correctness", Status: StatusFixed, Title: "Old", Note: "Earlier fix."},
+	}
+	if !ok || !reflect.DeepEqual(st.Cleared, want) {
+		t.Fatalf("cleared = %+v, want %+v", st.Cleared, want)
+	}
+	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared})
+	for _, line := range []string{
+		"Reviews of earlier heads cleared these findings. Do not raise one again unless this head changes that code:",
+		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
+		"- `old.go:correctness` fixed: Old. Note: Earlier fix.\n",
+	} {
+		if !strings.Contains(text, line) {
+			t.Errorf("prompt lacks %q", line)
+		}
+	}
+
+	// The record keeps this review's entries first, up to maxCleared.
+	a.Earlier = nil
+	for i := range maxCleared {
+		a.Earlier = append(a.Earlier, Cleared{ID: fmt.Sprintf("e%d", i), Status: StatusFixed})
+	}
+	if got := clearedOf(a, r); len(got) != maxCleared || got[0].ID != "fixed.go:correctness" || got[maxCleared-1].ID != fmt.Sprintf("e%d", maxCleared-4) {
+		t.Fatalf("cleared = %+v", got)
+	}
+}
+
+// TestStateTrimsTheClearedRecordFirst keeps blocking findings whole while
+// the cleared record shrinks to IDs and statuses, and drops the record
+// before any blocking text is cut.
+func TestStateTrimsTheClearedRecordFirst(t *testing.T) {
+	long := strings.Repeat("x", 2000)
+	var st State
+	for i := range 15 {
+		st.Blocking = append(st.Blocking, storable(Finding{ID: fmt.Sprintf("%d:%s", i, long), Severity: SeverityHigh, Path: long, Title: long, Detail: long}))
+	}
+	for i := range maxCleared {
+		st.Cleared = append(st.Cleared, Cleared{
+			ID: storeText(fmt.Sprintf("c%d:%s", i, long), maxTitle), Status: StatusFixed,
+			Title: storeText(long, maxClearedTitle), Note: storeText(long, maxClearedNote),
+		})
+	}
+	if raw, _ := json.Marshal(st); len(raw)*4/3 <= maxState {
+		t.Fatalf("the fixture fits whole (%d bytes)", len(raw))
+	}
+	got, ok := LoadState(encodeState(st))
+	if !ok || !reflect.DeepEqual(got.Blocking, st.Blocking) || len(got.Cleared) != maxCleared {
+		t.Fatalf("state = %v, %d blocking, %d cleared", ok, len(got.Blocking), len(got.Cleared))
+	}
+	if c := got.Cleared[3]; c.ID != st.Cleared[3].ID || c.Status != StatusFixed || c.Title != "" || c.Note != "" {
+		t.Fatalf("cleared = %+v", c)
+	}
+	for range 25 {
+		st.Blocking = append(st.Blocking, st.Blocking[0])
+	}
+	if got, _ := LoadState(encodeState(st)); len(got.Blocking) != 40 || got.Cleared != nil {
+		t.Fatalf("state = %d blocking, %d cleared", len(got.Blocking), len(got.Cleared))
 	}
 }
