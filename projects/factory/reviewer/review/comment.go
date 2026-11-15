@@ -432,9 +432,39 @@ func (e *Engine) lookupComment(ctx context.Context, b *Binding, pr github.PullRe
 	}
 	e.comments[key] = cur
 	if found == nil && !complete {
+		e.mu.Lock()
+		e.commentLimits[key] = true
+		e.mu.Unlock()
 		e.prLog(b, pr).WarnContext(ctx, "the PR has more comments than the reviewer reads; not adding its own")
 	}
 	return cur
+}
+
+// noteCommentLimits runs on the poller after gate reconciliation. Read the
+// current completed check rather than patching an old worker snapshot: a
+// hold or enqueue write may have replaced its output during comment lookup.
+func (e *Engine) noteCommentLimits(ctx context.Context) {
+	e.mu.Lock()
+	heads := make(map[prKey]string, len(e.commentLimits))
+	for key := range e.commentLimits {
+		if head := e.heads[key]; head != "" {
+			heads[key] = head
+		}
+	}
+	e.mu.Unlock()
+	for i := range e.cfg.Bindings {
+		b := &e.cfg.Bindings[i]
+		for key, head := range heads {
+			if key.binding != b.Name || e.isRunning(headKey{b.Name, head}) {
+				continue
+			}
+			run, err := e.reviewCheck(ctx, b, head)
+			if err != nil || run == nil || run.Status != "completed" {
+				continue
+			}
+			e.noteCommentLimit(ctx, b, run, e.prLog(b, github.PullRequest{Number: key.number, HeadSHA: head}))
+		}
+	}
 }
 
 // noteCommentLimit adds the visibility notice after the check has been
@@ -482,6 +512,56 @@ func (e *Engine) listedHead(k prKey) string {
 	return e.heads[k]
 }
 
+// queueMirror snapshots display data and hands it to one ordered writer.
+// The queue lock is never held during I/O or while waiting on commentMu.
+// In particular, stopping a review for a shared-head hold cannot wait for
+// its comment, and polling can revoke merge-group passes during lookup.
+func (e *Engine) queueMirror(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, u *CommentUpdate) {
+	if u == nil || e.cfg.Comments == nil || e.cfg.CommentAuthor == "" {
+		return
+	}
+	update := *u
+	if u.Findings != nil {
+		findings := *u.Findings
+		update.Findings = &findings
+	}
+	if u.Gate != nil {
+		gate := *u.Gate
+		gate.Paths = slices.Clone(gate.Paths)
+		gate.Labels = slices.Clone(gate.Labels)
+		gate.Findings = slices.Clone(gate.Findings)
+		update.Gate = &gate
+	}
+	var link *github.CheckRun
+	if run != nil {
+		link = &github.CheckRun{URL: run.URL}
+	}
+	e.commentQueueMu.Lock()
+	defer e.commentQueueMu.Unlock()
+	e.commentQueue = append(e.commentQueue, func() { e.mirror(ctx, b, pr, link, &update) })
+	if e.commentWorker {
+		return
+	}
+	e.commentWorker = true
+	e.commentWG.Add(1)
+	go func() {
+		defer e.commentWG.Done()
+		for {
+			e.commentQueueMu.Lock()
+			if len(e.commentQueue) == 0 {
+				e.commentWorker = false
+				e.commentQueueMu.Unlock()
+				return
+			}
+			write := e.commentQueue[0]
+			e.commentQueue[0] = nil
+			e.commentQueue = e.commentQueue[1:]
+			e.commentQueueMu.Unlock()
+			write()
+		}
+	}()
+}
+
 // mirror shows a review check write in the PR's comment, when comments are
 // configured. It writes only for the PR's current head and edits only a
 // comment CommentAuthor wrote. A comment is created with its first verdict,
@@ -507,8 +587,11 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if state.err != nil {
 		return
 	}
+	// Polling continues during lookup; a push may have superseded this job.
+	if head := e.listedHead(key); head != "" && head != pr.HeadSHA {
+		return
+	}
 	if cur == nil && !state.complete {
-		e.noteCommentLimit(ctx, b, run, l)
 		return
 	}
 	if cur == nil && u.Verdict == VerdictReviewing {
