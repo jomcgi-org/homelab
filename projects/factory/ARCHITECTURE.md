@@ -1219,9 +1219,13 @@ Each step is its own PR with live evidence recorded on #7817.
   `installation-id`. Created 2026-11-14.
 - **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
   review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
-  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks and merge
-  queues write, contents, pull requests and commit statuses read) owns
-  review and enqueueing ("Merge authority"). Its 1Password item is
+  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks, merge
+  queues, issues and pull requests write, contents and commit statuses
+  read) owns review and enqueueing ("Merge authority"). Joe granted issues
+  and pull requests write on 2026-11-15
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-73#comment-474)):
+  issues write for the reviewer's PR comment, and pull requests write for
+  inline findings (HOME-72), unused until then. Its 1Password item is
   `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
   For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
   PRs and the connector the factory's, since it sees their stops.
