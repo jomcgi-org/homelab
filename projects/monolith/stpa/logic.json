@@ -1,11 +1,11 @@
 {
   "lens": "logic",
-  "commit": "cbe0525ff",
+  "commit": "65df40be0",
   "scope": {
     "summary": "A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.",
-    "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/raw_write.py persist_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (factory/execution/kg_feed.py), a daily-capped DBOS drainer (factory/orchestration/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox. The default-off backlog refill controller reserves advisory inventory work from fresh intake counts, validates the artifact, publishes through durable per-output intents and records conclusive yield separately from interrupted or uncertain runs. Focused historical learning cessation repair against 434907e17 with this diff: authenticated retained journal proof, fresh successor/restore and local lineage checks, digest/CAS/idempotent audit; no live recovery or activation is claimed.",
+    "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/raw_write.py persist_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (factory/execution/kg_feed.py), a daily-capped DBOS drainer (factory/orchestration/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py). The shared CNPG backup checker publishes bounded observations through one precreated ConfigMap, the private monolith evaluates their freshness and 36-hour backup age as advisory health, and its leader queues transitions through the existing durable Discord outbox. The default-off backlog refill controller reserves advisory inventory work from fresh intake counts, validates the artifact, publishes through durable per-output intents and records conclusive yield separately from interrupted or uncertain runs. Focused historical learning cessation repair against 434907e17 with this diff: authenticated retained journal proof, fresh successor/restore and local lineage checks, digest/CAS/idempotent audit; no live recovery or activation is claimed. The private-tier Grimoire verifier has a suspended Argo CronWorkflow and retained grimoire.verify_entities run-now name, provider settings inherited from extraction, a shared workflow mutex, per-run entity/evidence limits and atomic per-entity corrections/version markers.",
     "designed": "Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.",
-    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed. Focused landing analysis at ecf76742f adds standing decisions, separate owner/repair grants, durable policy-transition feedback and native queue controls. These controls are built and default-off; prior semantic keys and security.json are preserved. Activation and live acceptance remain on #7583, #7601 and #7597. Integration on bc1d4dfa2 preserves both approved focused models; the standing landing controls remain default-off and live acceptance is unchanged. Focused #7597/#7583 owner-PR hold-text analysis against 9f5051f01 with this repair: two exact unqualified absence assertions no longer fabricate a discussion hold. No scope, identity, review or landing authority changes, and no live hold release or operational acceptance is claimed. Focused #7614/#7583 required-recovery discovery analysis against 52a8dde2a with this correction: ordinary permitted per-account quota is distinct from optional scout surplus, and a five-hour or shorter window retains the existing 10 percent reserve even when reported alone. Source switches, history, paid-start authority and operational acceptance are unchanged; unrelated prior findings retain their reviewed scope. Focused #7583 receipt handoff analysis against e9f64ef7d4 with this diff: additive staged preparation, serialized attempt intent and mixed-version exclusion. The feature is shipped off pending migration, complete rollout and separate reviewed GitOps activation; existing uncertain executions are not repaired or reinterpreted. Focused #7583 terminal-before-dispatch analysis at 3691fb768: exact native interactive capacity settlement from fresh terminal state and complete locked receipt history; unknown turns, costs and bindings persist. No retry authority or live recovery acceptance is claimed. Unrelated prior findings retain their reviewed scope. Focused #7583 drain-redispatch analysis at b6340b130: bounded complete retained receipt-chain enumeration and fresh cessation for every named guest; atomic exact capacity-only settlement preserves failed turns, results, holds, cost and binding. No retry authority or full self-recovery acceptance is claimed. Focused #7583 version-2 recovery against f5e07400e with this change: deterministic original-allocation retry after exact verified repair, without a paid judge or new credential. Existing landing scope, historical breakers and unrelated findings remain unchanged; natural useful-delivery acceptance remains open. Focused operator landing approval analysis against cbe0525ff with this local change: authenticated explicit consent, complete immutable diff proof, native typed review, finite expiry, audit-specific revocation and one durable factory arming attempt. No grant, queue action or live deployment is claimed; unrelated findings retain their earlier review scope."
+    "note": "Focused #7002 backup-advisory activation analysis at e7905ea1c; the hub overlays opt in, but live operational acceptance remains open on #7002. Earlier findings retain their prior review scope and are not revalidated by this focused update. Focused #7376 refill analysis against 15550c9 with the accompanying repair diff; this feature remains omitted from shipped policy and its live drills remain open on #7376. Focused #7014 knowledge-lane analysis at 970f6df81: raw redaction, missed-enqueue repair, dead-letter retry and replay, and the session-collector producers re-grounded; findings outside that lane retain their prior review scope. Focused receipt model-restriction analysis at 68c9ca11c with the accompanying repair diff: operator amendment, effective-policy continuation, same-receipt readmission and native model admission. Live operational acceptance is not claimed. Focused refill role review against 631c56c59 with this repair: new starts require independent Astra planning and exact-role fresh quota, while existing receipt restriction findings and legacy ledgers are retained. The same focused change adds bounded native-registry feedback and authenticated restriction-to-continuation regression coverage; it makes no live activation or downstream client-visibility claim. Focused #7613 start-diagnostics analysis at 188286240: existing operator reads expose finite or unknown control-subgate observations and sanitized historical funding linkage. No control authority is added; transport, quota and physical capacity remain unevaluated, and deployment or autonomous recovery acceptance is not claimed. Focused landing analysis at ecf76742f adds standing decisions, separate owner/repair grants, durable policy-transition feedback and native queue controls. These controls are built and default-off; prior semantic keys and security.json are preserved. Activation and live acceptance remain on #7583, #7601 and #7597. Integration on bc1d4dfa2 preserves both approved focused models; the standing landing controls remain default-off and live acceptance is unchanged. Focused #7597/#7583 owner-PR hold-text analysis against 9f5051f01 with this repair: two exact unqualified absence assertions no longer fabricate a discussion hold. No scope, identity, review or landing authority changes, and no live hold release or operational acceptance is claimed. Focused #7614/#7583 required-recovery discovery analysis against 52a8dde2a with this correction: ordinary permitted per-account quota is distinct from optional scout surplus, and a five-hour or shorter window retains the existing 10 percent reserve even when reported alone. Source switches, history, paid-start authority and operational acceptance are unchanged; unrelated prior findings retain their reviewed scope. Focused #7583 receipt handoff analysis against e9f64ef7d4 with this diff: additive staged preparation, serialized attempt intent and mixed-version exclusion. The feature is shipped off pending migration, complete rollout and separate reviewed GitOps activation; existing uncertain executions are not repaired or reinterpreted. Focused #7583 terminal-before-dispatch analysis at 3691fb768: exact native interactive capacity settlement from fresh terminal state and complete locked receipt history; unknown turns, costs and bindings persist. No retry authority or live recovery acceptance is claimed. Unrelated prior findings retain their reviewed scope. Focused #7583 drain-redispatch analysis at b6340b130: bounded complete retained receipt-chain enumeration and fresh cessation for every named guest; atomic exact capacity-only settlement preserves failed turns, results, holds, cost and binding. No retry authority or full self-recovery acceptance is claimed. Focused #7583 version-2 recovery against f5e07400e with this change: deterministic original-allocation retry after exact verified repair, without a paid judge or new credential. Existing landing scope, historical breakers and unrelated findings remain unchanged; natural useful-delivery acceptance remains open. Focused operator landing approval analysis against cbe0525ff with this local change: authenticated explicit consent, complete immutable diff proof, native typed review, finite expiry, audit-specific revocation and one durable factory arming attempt. No grant, queue action or live deployment is claimed; unrelated findings retain their earlier review scope. Focused #7022 verifier-wiring analysis at 65df40be0: the invocation path is built and suspended; manual submission remains possible. The existing evidence-value validation gap is unmitigated and tracked by #7190, which remains a prerequisite for operational use. No live verifier run or scheduling activation is claimed; unrelated findings retain their prior review scope."
   },
   "losses": [
     {
@@ -374,6 +374,18 @@
         "L.secret-exposure"
       ],
       "maturity": "built"
+    },
+    {
+      "key": "grimoire-unsupported-verification",
+      "view": "logical",
+      "statement": "A Grimoire field is retained as verified or overwritten with a correction unsupported by its cited evidence, and an entity/version marker prevents another pass at that version",
+      "losses": [
+        "L.integrity-loss",
+        "L.silent-incorrectness"
+      ],
+      "maturity": "built",
+      "status": "none",
+      "issue": "#7190"
     }
   ],
   "ucas": [
@@ -764,6 +776,34 @@
         "landing-queued-with-stale-authority"
       ],
       "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:560; projects/monolith/factory/orchestration/operator_landing_authorization.py:600; projects/monolith/factory/orchestration/operator_landing_authorization.py:626"
+    },
+    {
+      "key": "argo-workflows.verify-grimoire.wrong-timing",
+      "view": "logical",
+      "control_action": "argo-workflows.verify-grimoire",
+      "guideword": "wrong-timing",
+      "condition": "An operator submits the verifier before #7190 evidence-value validation is repaired and the intended corpus is inspected; suspension blocks scheduled starts but manual submission and run-now can still invoke the mutating handler",
+      "severity": "high",
+      "hazards": [
+        "grimoire-unsupported-verification"
+      ],
+      "evidence": "projects/monolith/chart/values.yaml:1151; projects/monolith/scheduler/service.py:120; projects/monolith/grimoire/architecture.md:628",
+      "issue": "#7190",
+      "status": "none"
+    },
+    {
+      "key": "grimoire-verifier.commit.providing",
+      "view": "logical",
+      "control_action": "grimoire-verifier.commit",
+      "guideword": "providing",
+      "condition": "The verifier accepts a supplied citation with the field marker and a correction of the right type without checking that the cited text supports the exact value; the correction and version marker then commit together, leaving #7190 unmitigated",
+      "severity": "high",
+      "hazards": [
+        "grimoire-unsupported-verification"
+      ],
+      "evidence": "projects/monolith/grimoire/verifier.py:382; projects/monolith/grimoire/verifier.py:434; projects/monolith/grimoire/verifier.py:455; #7190",
+      "issue": "#7190",
+      "status": "none"
     }
   ],
   "unsafe_feedback": [
@@ -1126,6 +1166,22 @@
         "landing-queued-with-stale-authority"
       ],
       "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:165; projects/monolith/factory/orchestration/operator_landing_authorization.py:388"
+    },
+    {
+      "key": "grimoire-verifier-result.corrupted",
+      "view": "logical",
+      "from": "grimoire-verifier-model",
+      "to": "grimoire-verifier",
+      "signal": "Field verdict, correction and evidence_chunk_ids",
+      "guideword": "corrupted",
+      "condition": "A model reports verified or corrected with a supplied marker-bearing chunk that does not support the proposed value; citation membership, field coverage and type checks do not establish value support (#7190)",
+      "severity": "high",
+      "hazards": [
+        "grimoire-unsupported-verification"
+      ],
+      "evidence": "projects/monolith/grimoire/verifier.py:336; projects/monolith/grimoire/verifier.py:382",
+      "issue": "#7190",
+      "status": "none"
     }
   ],
   "non_ucas": [
@@ -1159,7 +1215,7 @@
     },
     {
       "item": "scheduler.trigger submits the wrong execution path",
-      "reason": "Bounded by run-now looking up the CronWorkflow whose `replaces` annotation names the requested job and creating a one-off Workflow from its `workflowSpec`; `ARGO_JOBS` only suppresses legacy registry metadata, including for suspended entries (projects/monolith/scheduler/service.py:53)"
+      "reason": "Run-now accepts a retained scheduler row or an ARGO_JOBS name, finds the matching replaces annotation and copies workflowSpec into a one-off Workflow, including its mutex and deadline for suspended entries (projects/monolith/scheduler/service.py:52,82,120)."
     },
     {
       "item": "shotter.capture exceeding its render budget",
@@ -1372,6 +1428,22 @@
     {
       "item": "an expired or revoked operator grant silently falling back to standing delegation",
       "reason": "Explicit authority remains in landing_authorization. Revocation targets its audit and retains a tombstone; scoped_refusal refuses it before delegate selection. Replay only acknowledges the prior request, and a new grant requires a fresh authenticated preview/apply (projects/monolith/factory/orchestration/factory_landing_release.py; projects/monolith/factory/orchestration/operator_landing_authorization.py:448)."
+    },
+    {
+      "item": "Grimoire verifier runs automatically on deployment or in the public tier",
+      "reason": "The entry is suspended and omitted unless grimoire.enabled; chart render tests cover the default and both private deployment overlays (projects/monolith/chart/values.yaml:1159; projects/monolith/chart/templates/cronworkflows.yaml:28; projects/monolith/chart/knowledge_review_jobs_test.py:266)."
+    },
+    {
+      "item": "Separate manual Grimoire verifier submissions overlap each other",
+      "reason": "The shared grimoire-verify-entities workflow mutex serializes manual submissions; run-now copies that workflowSpec. Cron concurrencyPolicy alone would cover only scheduled starts (projects/monolith/chart/templates/cronworkflows.yaml:69; projects/monolith/scheduler/service.py:124)."
+    },
+    {
+      "item": "A verifier workflow runs without time, entity or evidence limits",
+      "reason": "The entry sets a 1500-second deadline, 512Mi memory limit, 25 entities and six evidence chunks per entity. These limit each run; they do not validate corrected values or establish a total spend budget across submissions (projects/monolith/chart/values.yaml:1158,1163; projects/monolith/grimoire/verifier.py:301,494)."
+    },
+    {
+      "item": "Verifier provider failure or rejected output writes a completed version marker",
+      "reason": "Missing hosted-provider credentials skip the run; call or validation exceptions roll back and leave the entity pending. Accepted changes and the marker commit in one transaction, and replay skips that entity/version (projects/monolith/grimoire/jobs.py:389; projects/monolith/grimoire/verifier.py:455,472,553)."
     }
   ],
   "open_questions": [
@@ -1387,7 +1459,8 @@
     "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?",
     "#7002: verify fresh successful-backup timestamps, scheduled checker completion, metric/advisory arrival, runtime ConfigMap preservation and effective additive RBAC on the hub; live Cluster/RBAC reads and Honeycomb queries were unavailable to this activation session. Checker-absence notifications remain outside the current advisory contract.",
     "Default-off refill live acceptance remains on #7376: verify ordinary intake, inventory outputs, a restart and ambiguous-write drill, breaker reset, rolling-limit recovery and disable reconciliation before enablement.",
-    "Revocation cannot undo an already completed GitHub merge. The native observer disarms/dequeues on its next tick, and failed external calls retain errors for observation; confirm this external-action boundary during parent-owned operational acceptance (#7601, #7597). Explicit operator expiry and revocation have the same asynchronous limit: GitHub may merge before the next successful observation, and unobserved external requeue races cannot be ruled out by a polling fence. A stronger final-action guarantee needs a trusted required queue check or final merge owner."
+    "Revocation cannot undo an already completed GitHub merge. The native observer disarms/dequeues on its next tick, and failed external calls retain errors for observation; confirm this external-action boundary during parent-owned operational acceptance (#7601, #7597). Explicit operator expiry and revocation have the same asynchronous limit: GitHub may merge before the next successful observation, and unobserved external requeue races cannot be ruled out by a polling fence. A stronger final-action guarantee needs a trusted required queue check or final merge owner.",
+    "#7190: require evidence-value validation before operational use of the manual verifier; citation membership and field markers currently permit unsupported corrections. Inspect the intended corpus before submission, including the existing behavior that nulls unverifiable fields (projects/monolith/grimoire/verifier.py:382,437,535)."
   ],
   "system_dir": "projects/monolith"
 }
