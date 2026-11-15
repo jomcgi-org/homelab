@@ -210,6 +210,21 @@ def test_factory_mints_the_token_in_the_renovate_image_before_startup():
     assert init["resources"]["limits"]["memory"] == "128Mi"
 
 
+def test_factory_token_check_accepts_current_installation_token_formats():
+    script = (HERE / "files/github-app-token.mjs").read_text()
+    shape = re.search(r"!/(\^[^/]+\$)/\.test\(token\)", script)
+    assert shape, "token shape check not found"
+    accepts = re.compile(shape.group(1))
+    # Synthetic tokens: the classic 40-character form and the longer dotted
+    # form GitHub issued on 2026-11-15 (390 characters with "." and "-").
+    classic = "ghs_" + "A1b2C3d4" * 4 + "Ab12"
+    dotted = "ghs_" + ".".join(["eyJ0eXAi-OiJKV1Qi_" * 7] * 3)
+    for token in (classic, dotted):
+        assert accepts.fullmatch(token), token[:12]
+    for token in ("", "ghs_a b", "ghs_a\nb", 'ghs_a"b', "ghs_a/b", "ghs_a$b"):
+        assert not accepts.fullmatch(token), repr(token)
+
+
 def test_factory_refuses_jobs_that_can_outlive_an_installation_token():
     for deadline in (0, 3600, 7200):
         result = subprocess.run(

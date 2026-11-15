@@ -54,9 +54,11 @@ try {
     throw new Error("Installation token request failed");
   }
   const { token, expires_at: expiresAt } = await response.json();
+  // GitHub's newer installation tokens are long and contain "." and "-".
+  // Accept those, but still reject anything unsafe in a header or file.
   if (
     typeof token !== "string" ||
-    !/^[A-Za-z0-9_]+$/.test(token) ||
+    !/^[A-Za-z0-9_.-]+$/.test(token) ||
     !(Date.parse(expiresAt) > Date.now() + 2_700_000)
   ) {
     throw new Error("Invalid installation token response");
