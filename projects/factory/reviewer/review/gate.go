@@ -70,17 +70,12 @@ type Gate struct {
 	// Approver is the human whose APPROVED review of the head cleared it.
 	// It is revalidated every poll, never used as a cached authorization.
 	Approver string `json:"approver,omitempty"`
-	// ObservedLabels detects re-additions; Labels stays sticky. Empty arrays
-	// survive JSON; nil means a legacy state using Labels as its baseline.
-	ObservedLabels []string `json:"observed_labels"`
-	// ApprovalAfter fences new holds; zero preserves legacy/initial gates.
-	ApprovalAfter time.Time `json:"approval_after,omitzero"`
-	// ApprovalSnapshot records the first complete review read after a hold.
-	ApprovalSnapshot *ReviewSnapshot `json:"approval_snapshot,omitempty"`
-	// ApprovalNonce allows authenticated acknowledgement of ambiguous timing.
-	ApprovalNonce string `json:"approval_nonce,omitempty"`
-	// LabelHistory identifies applied additions, including repeated labels.
-	LabelHistory string `json:"label_history,omitempty"`
+	// ObservedLabels detects re-additions; nil means a legacy state using sticky Labels as its baseline.
+	ObservedLabels   []string        `json:"observed_labels"`
+	ApprovalAfter    time.Time       `json:"approval_after,omitzero"`     // ApprovalAfter fences new holds; zero preserves legacy/initial gates.
+	ApprovalSnapshot *ReviewSnapshot `json:"approval_snapshot,omitempty"` // ApprovalSnapshot records the first complete review read after a hold.
+	ApprovalNonce    string          `json:"approval_nonce,omitempty"`    // ApprovalNonce allows authenticated acknowledgement of ambiguous timing.
+	LabelHistory     string          `json:"label_history,omitempty"`     // LabelHistory identifies applied additions, including repeated labels.
 }
 
 // Snapshot membership supplies ordering; nil/Unavailable is unknown, empty IDs is known empty.
@@ -273,8 +268,7 @@ func approvalAfter(r github.PullRequestReview, after time.Time, snapshot *Review
 	if after.IsZero() || r.SubmittedAt.After(after) {
 		return true
 	}
-	// Whole-second timestamps need either a post-snapshot ID or explicit
-	// acknowledgement. Reviews captured in the first snapshot stay excluded.
+	// Whole-second timestamps need a new post-snapshot ID or explicit acknowledgement.
 	if !r.SubmittedAt.Equal(after.Truncate(time.Second)) {
 		return false
 	}

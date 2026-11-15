@@ -223,6 +223,11 @@ func (f *fakeGitHub) failGraphQL(kind string, fail bool) {
 	f.failGQL[kind] = fail
 }
 
+func (f *fakeGitHub) failCheckWrites(sha string, status int) {
+	f.failWith("POST /repos/"+testRepo+"/check-runs", status)
+	f.failWith(fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, f.check(sha).ID), status)
+}
+
 func (f *fakeGitHub) setBaseFile(path, content string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

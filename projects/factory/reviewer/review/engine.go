@@ -152,8 +152,7 @@ type Engine struct {
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
 }
 
-// headKey names a review. Check runs belong to a commit, so a head shared
-// by multiple ready PRs is held until its PR context is unambiguous.
+// headKey identifies a commit; its check needs unambiguous PR context.
 type headKey struct {
 	binding string
 	sha     string
@@ -381,6 +380,15 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		case sharedHeadHeld(run):
 			// A resolved duplicate needs its remaining PR reviewed afresh.
 			start = append(start, candidate{pr, run})
+		case run != nil && run.ExternalID != MessageID(repo, pr.Number, pr.HeadSHA):
+			// A replacement PR cannot inherit an earlier PR's unknown holds.
+			if run.Status != "completed" {
+				e.cancelTask(ctx, b, RecordedTask(run.Summary).ID, e.prLog(b, pr))
+			}
+			reviews[pr.Number] = e.holdSharedHead(ctx, b, pr, run, labels[pr.HeadSHA])
+			if reviews[pr.Number] != nil {
+				start = append(start, candidate{pr, reviews[pr.Number]})
+			}
 		case run == nil || (run.Status == "completed" && run.Conclusion == ConclusionCancelled):
 			// A cancelled review is no review: the head is current again.
 			start = append(start, candidate{pr, nil})
@@ -391,7 +399,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
 			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
-				e.maybeEnqueue(ctx, b, pr, cur)
+				reviews[pr.Number] = e.maybeEnqueue(ctx, b, pr, cur)
 			}
 		}
 	}
@@ -429,8 +437,8 @@ func sharedHeadHeld(run *github.CheckRun) bool {
 
 func sharedHeadOutcome(prev *github.CheckRun, labels []string, now time.Time) Outcome {
 	o := Outcome{Conclusion: ConclusionFailure, Output: github.CheckRunOutput{
-		Title: "One ready PR per head required",
-		Summary: "The reviewer cannot establish one ready open PR for this commit. Close, draft or move duplicate PRs; the open PR listing must also be complete. " +
+		Title: "Unambiguous PR context required",
+		Summary: "This commit has duplicate PRs, an incomplete PR listing, or a review belonging to another PR. Close, draft or move duplicates; the listing must be complete. " +
 			"The remaining PR will receive a new review and require fresh human approval.\n\n" + duplicateHeadMarker + "\n\n" + gateOnlyMarker,
 	}}
 	var st State
@@ -851,24 +859,21 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 								in.gate.Paths = append(in.gate.Paths, p)
 							}
 						}
-						if run.ExternalID == MessageID(b.repo(), pr.Number, pr.HeadSHA) {
-							in.gate.ObservedLabels = st.Gate.ObservedLabels
-							if !st.Gate.ApprovalAfter.Before(in.gate.ApprovalAfter) {
-								in.gate.ApprovalAfter, in.gate.ApprovalSnapshot, in.gate.ApprovalNonce = st.Gate.ApprovalAfter, st.Gate.ApprovalSnapshot, st.Gate.ApprovalNonce
-							}
-							in.gate.LabelHistory = st.Gate.LabelHistory
-							sameSnapshot = true
+						in.gate.ObservedLabels = st.Gate.ObservedLabels
+						if !st.Gate.ApprovalAfter.Before(in.gate.ApprovalAfter) {
+							in.gate.ApprovalAfter, in.gate.ApprovalSnapshot, in.gate.ApprovalNonce = st.Gate.ApprovalAfter, st.Gate.ApprovalSnapshot, st.Gate.ApprovalNonce
 						}
+						in.gate.LabelHistory = st.Gate.LabelHistory
+						sameSnapshot = true
 					}
 				}
 				if !sameSnapshot && in.gate != nil && len(in.gate.Labels) > 0 {
 					// An unknown label baseline needs fresh approval.
 					in.gate.resetApproval(e.cfg.Now())
 				}
-				// Persist the restored gate's current PR origin.
+				// Rebind inherited prior-head recovery to this PR.
 				in.gate, _ = e.recoveryGate(b, pr, in.gate)
 				in.gate, _ = e.retainGate(b, pr, in.gate, false)
-				run.ExternalID = MessageID(b.repo(), pr.Number, pr.HeadSHA)
 			case late:
 				if next("the reviewer could not read the PR from GitHub.") {
 					return
@@ -1383,12 +1388,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	}
 	gate, recovery := e.recoveryGate(b, pr, gate)
 	priorNonce := gate.ApprovalNonce
-	foreign := run.ExternalID != MessageID(b.repo(), pr.Number, pr.HeadSHA)
-	if foreign {
-		gate.ObservedLabels = []string{} // Another PR's label baseline cannot clear this PR's hold.
-		gate.ApprovalSnapshot = nil
-	}
-	changed := gate.observeLabels(labels, e.cfg.Now()) || foreign || recovery
+	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery
 	events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "label_events", err)
@@ -1413,8 +1413,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		}
 		return run, false
 	}
-	// A read error means approval is unknown. Close a previous pass and
-	// keep retrying the read on later polls; the error creates no new hold.
+	// Unreadable approval closes a pass, but creates no new sticky hold.
 	before := gate.ApprovalSnapshot
 	approver, _ := e.approval(ctx, b, pr, gate)
 	changed = changed || before != gate.ApprovalSnapshot
@@ -1542,7 +1541,8 @@ func keepEnqueueHistory(summary string, prev *github.CheckRun) string {
 // base branch, and it is not queued. Other authors' PRs get the check only.
 // The check run records the enqueue, so a head the queue sends back is not
 // enqueued again; a new push starts over.
-func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) {
+func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (current *github.CheckRun) {
+	current = run
 	if strings.Contains(run.Summary, enqueuedMarker) || !containsFold(b.EnqueueAuthors, pr.Author) {
 		return
 	}
@@ -1558,13 +1558,17 @@ func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullReq
 	q, err := e.gh.PullRequestQueue(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, l, b, "pull_request", err)
-		return
+		return nil
 	}
 	switch {
 	case q.State != "open" || q.Draft || q.BaseRef != b.BaseBranch || q.HeadSHA != pr.HeadSHA:
 		l.InfoContext(ctx, "not enqueuing: the PR changed since it was listed",
 			"state", q.State, "draft", q.Draft, "base", q.BaseRef, "head", q.HeadSHA)
-		return
+		return nil
+	case !slices.Equal(gateLabels(b, pr.Labels), gateLabels(b, q.Labels)):
+		pr.Labels = q.Labels
+		current, _ = e.reconcileGate(ctx, b, pr, run)
+		return // Persist the latest holds before enqueue or group authorization.
 	case q.MergeQueueState != "":
 		e.m.Enqueues.WithLabelValues(b.Name, "already_queued").Inc()
 		l.InfoContext(ctx, "PR already in the merge queue", "queue_state", q.MergeQueueState)
@@ -1582,6 +1586,7 @@ func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullReq
 	e.m.Enqueues.WithLabelValues(b.Name, "enqueued").Inc()
 	l.InfoContext(ctx, "PR enqueued", "queue_state", state)
 	e.markEnqueued(ctx, b, run, "Entered the merge queue", l)
+	return
 }
 
 func (e *Engine) markEnqueued(ctx context.Context, b *Binding, run *github.CheckRun, what string, l *slog.Logger) {
