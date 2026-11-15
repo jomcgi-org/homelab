@@ -68,6 +68,11 @@ type Binding struct {
 
 // Config holds dispatch settings.
 type Config struct {
+	// ArtifactTranscripts admits artifact text into journals. This release
+	// leaves it off until a journal-aware binary is the pinned rollback target.
+	// Existing artifact journals always resume, even when admission is off.
+	ArtifactTranscripts bool
+
 	Caller    Caller
 	Holder    string
 	Agents    []Agent
@@ -1305,13 +1310,24 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 	if r.Connector() {
 		return false, nil // a review round has no itsaplan transcript
 	}
-	events := Events(t)
 	offset, base := r.EventOffset, r.EventTaskBase
 	if r.EventAttempt != r.Attempt {
 		offset, base = 0, 0
 	}
 	if r.EventTaskID != t.ID {
 		base = offset
+	}
+	events, base, err := e.prepareEvents(ctx, r, t, base)
+	if err != nil {
+		return false, err
+	}
+	if offset < base || offset > base+len(events) {
+		return false, fmt.Errorf("transcript offset %d outside persisted range [%d, %d]", offset, base, base+len(events))
+	}
+	// Persist raw text for cursor validation and replay. The destination's
+	// JSONB storage needs NUL replaced without changing the journal's offsets.
+	for i := range events {
+		events[i].Delta = itsaplanText(events[i].Delta)
 	}
 	for {
 		start := offset - base
@@ -1337,7 +1353,7 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 			return false, err
 		}
 		e.m.Events.WithLabelValues("ok").Inc()
-		if next <= offset {
+		if next <= offset || next > base+len(events) {
 			return false, fmt.Errorf("itsaplan acknowledged offset %d at %d", next, offset)
 		}
 		offset = next

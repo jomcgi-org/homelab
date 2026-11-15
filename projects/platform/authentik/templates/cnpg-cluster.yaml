@@ -4,11 +4,19 @@ kind: Cluster
 metadata:
   name: {{ .Values.cnpg.name }}
   namespace: {{ .Release.Namespace }}
+  {{- with .Values.cnpg.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   labels:
     app.kubernetes.io/name: authentik-postgresql
     app.kubernetes.io/part-of: authentik
 spec:
   instances: {{ .Values.cnpg.instances }}
+  {{- with .Values.cnpg.affinity }}
+  affinity:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   storage:
     size: {{ .Values.cnpg.storage.size }}
     {{- with .Values.cnpg.storage.storageClass }}
@@ -32,7 +40,11 @@ spec:
   monitoring:
     enablePodMonitor: {{ .Values.cnpg.monitoring.enablePodMonitor }}
   {{- if .Values.cnpg.backup.enabled }}
+  {{- if eq .Values.cnpg.backup.provider "s3" }}
+  # S3 provides base backups and continuous WAL archiving.
+  {{- else }}
   # Native GCS provides off-cluster base backups and continuous WAL archiving.
+  {{- end }}
   backup:
     retentionPolicy: {{ .Values.cnpg.backup.retentionPolicy | quote }}
     barmanObjectStore:
@@ -40,10 +52,25 @@ spec:
       {{- with .Values.cnpg.backup.serverName }}
       serverName: {{ . | quote }}
       {{- end }}
+      {{- if eq .Values.cnpg.backup.provider "s3" }}
+      # Boto3 uses path-style access for a custom (non-AWS) endpoint.
+      endpointURL: {{ required "cnpg.backup.endpointURL is required for S3" .Values.cnpg.backup.endpointURL | quote }}
+      s3Credentials:
+        accessKeyId:
+          name: {{ .Values.cnpg.backup.credentialsSecret }}
+          key: AWS_ACCESS_KEY_ID
+        secretAccessKey:
+          name: {{ .Values.cnpg.backup.credentialsSecret }}
+          key: AWS_SECRET_ACCESS_KEY
+        region:
+          name: {{ .Values.cnpg.backup.credentialsSecret }}
+          key: AWS_REGION
+      {{- else }}
       googleCredentials:
         applicationCredentials:
           name: {{ .Values.cnpg.backup.credentialsSecret }}
           key: service-account-key.json
+      {{- end }}
       wal:
         compression: gzip
       data:

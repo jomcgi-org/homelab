@@ -64,6 +64,9 @@ type fakeItsaplan struct {
 	runErr   error
 	// columnsErr fails every ProjectColumns while set.
 	columnsErr error
+	// Event failures exercise journal replay before and after server acceptance.
+	eventErr     error
+	loseEventAck bool
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -243,6 +246,9 @@ func (f *fakeItsaplan) Events(_ context.Context, agent string, id int64, attempt
 	if err := f.authorize(agent); err != nil {
 		return 0, err
 	}
+	if f.eventErr != nil {
+		return 0, f.eventErr
+	}
 	r := f.get(id)
 	if r == nil || r.agent != agent || r.status != "pending" || r.attempts != attempt || !f.now().Before(r.until) {
 		return 0, itsaplan.ErrNotFound
@@ -256,6 +262,10 @@ func (f *fakeItsaplan) Events(_ context.Context, agent string, id int64, attempt
 	}
 	r.events[attempt] = append(r.events[attempt], events...)
 	r.offsets[attempt] = offset + len(events)
+	if f.loseEventAck {
+		f.loseEventAck = false
+		return 0, errors.New("lost event acknowledgement")
+	}
 	return r.offsets[attempt], nil
 }
 

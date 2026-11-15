@@ -364,8 +364,8 @@ the monolith's pytest plugin does.
 **Planner proposals.** On 2026-11-15 Joe selected delegated fixes for the
 delivery health, trust drift and documentation drift pilots
 ([Joe's decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789),
-HOME-45). The decision permits repository
-fixes to go to the coder and fixes needing a person to become Joe's tasks;
+HOME-45). The decision permits repository fixes to go to the coder and fixes
+needing a person to become Joe's tasks;
 the planner can only lower the ceiling. This supersedes the Backlog-only
 proposal in
 [`scheduled-agents.md`](../../docs/agents/scheduled-agents.md#use-the-planner-contract).
@@ -385,16 +385,16 @@ cannot close the block or start a line of its own.
 Only the connector's validated proposal path may send planner output to
 itsaplan. It requires bounded title and body and evidence links. A schedule's
 config sets the highest permitted disposition: delegated fix, task assigned
-to Joe with no delegate, or Backlog issue. The planner can lower a delegated fix
-to a Joe task or Backlog, or a Joe task to Backlog; it cannot raise the
+to Joe with no delegate, or Backlog issue. The planner can lower a delegated
+fix to a Joe task or Backlog, or a Joe task to Backlog; it cannot raise the
 configured ceiling.
 
 The connector constructs each issue with a fixed title, coding instructions
 and allowed scope from a reviewed schedule template on main. All planner
 text and links, including its proposed title, body, paraphrases and quoted
 excerpts, go only in a delimited evidence block, quoted and sanitized as for
-the reviewer. The coder's brief treats the whole block
-as untrusted data; no planner field supplies instructions or expands the
+the reviewer. The coder's brief treats the whole block as untrusted data;
+no planner field supplies instructions or expands the
 template's scope. This must hold on initial dispatch, continuations and
 recovery. Any truncation preserves the complete block or omits it. Until
 HOME-40 enforces this separation across those paths, planner issues cannot
@@ -411,6 +411,44 @@ Planner digests and alerts leave the cluster only through the notify sink
 (HOME-51), containing titles, links and fixed fields. Issue bodies, logs
 and secrets never enter that sink. HOME-40 and HOME-51 supply these paths;
 this decision enables no schedule or publication by itself.
+
+**Run transcripts.** Native Codex text arrives in task artifacts, which can
+grow without an assistant history message. The connector journals events
+and per-artifact byte cursors in `task_transcript` before posting to itsaplan.
+Journal JSON is stored as `bytea`, retaining U+0000 and preserving existing
+journals through a conversion migration. itsaplan's JSONB trace storage and
+the connector's JSONB result outbox cannot store NUL, so delivered text uses
+U+FFFD in its place. Replacement happens after event chunking and does not
+change event counts; artifact cursors still count and validate the raw bytes.
+Each journal belongs to one run attempt and kagent task, with a fixed base
+offset after any earlier engineering retry. Artifact message IDs hash the
+full task and artifact IDs; new snapshots append only unseen text. END is
+recorded once when the task becomes quiescent because task snapshots omit
+the artifact stream's `LastChunk` flag. History retains its existing event
+rendering, including offsets acknowledged before the journal was introduced.
+
+**Why.** Re-rendering a growing artifact changes event boundaries and moves
+acknowledged offsets. Persisting events and cursors together lets a restart
+replay the exact batch after a lost acknowledgement, even if the next task
+snapshot has more text. A missing artifact or a changed or shortened prefix
+fails the poll without advancing the transcript or reporting completion
+(#8017).
+
+**Rollback transition (#8017).** This is a compatibility release. Production
+keeps `dispatch.Config.ArtifactTranscripts` false in `cmd/connector/main.go`;
+new journals contain history events only, preserving the previous binary's
+offset interpretation. An existing artifact journal records its admission
+and always resumes, including pending events whose acknowledgement was lost.
+Turning admission off does not change an active journal's event format.
+
+After CI publishes this release, pin it and verify the connector rollout.
+Only then may a follow-up set `ArtifactTranscripts` true in the command.
+That activation must name this journal-aware pin as its rollback target;
+lowering back to it resumes active artifact journals while keeping new ones
+history-only. A direct rollback from the activating release to a pre-journal
+binary is unsupported. The first release can still roll back to the previous
+history-only binary because it never admits artifact offsets. HOME-36's
+production activation remains outstanding until that follow-up.
 
 **Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
 none of these is a Pro feature (status-triggered schedules are Pro and are

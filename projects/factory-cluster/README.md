@@ -50,9 +50,9 @@ router must reserve these three leases.
 | Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
 | Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
 | Admission policy | ValidatingAdmissionPolicy (`projects/platform-factory/edge-admission/`) | Keeps Gateways, routes, the edge label and Envoy's proxy and auth objects inside `edge`. The API server evaluates it in every namespace; Kyverno skips kube-system, kube-public, kube-node-lease and its own namespace |
-| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's database (one instance, no backups yet), kagent's `kagent-pg` and the factory's `factory-db` (three instances each, one per node) |
-| Backups | `kagent-pg` and `factory-db`: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Survives losing a pod, a volume or a node. Garage shares the cluster's failure domain, so this is not off-site: losing the cluster loses the backups too. Off-site copies (R2 or GCS) are deferred |
-| Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Repository convention. Authentik's secrets cannot outlive its database until Postgres has off-node backups, so a copy in 1Password would protect nothing yet |
+| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's `authentik-pg`, kagent's `kagent-pg` and the factory's `factory-db` are configured for three instances each, one per node |
+| Backups | All three CNPG clusters: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Garage shares the cluster's failure domain. Off-site copies (R2 or GCS) are deferred; Authentik's rollout and backup acceptance checks are listed under Postgres |
+| Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Recovery needs the existing `authentik-secrets`. Copying it to 1Password remains on #7952 |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 | Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
 | Metrics view | Prometheus v3.15.1 (one replica, 7 days or 4 GB on a local-path volume) with kube-state-metrics v2.20.0, and Grafana 13.3.1 at factory-grafana.jomcgi.dev; plain manifests, images pinned by digest | The operators' dashboards #7817 names, next to Honeycomb rather than replacing it. No operator or chart: one scrape file names every target, and its RBAC, egress and each target's ingress are written out by hand ([Metrics view](#metrics-view)) |
@@ -297,8 +297,9 @@ fills `AUTHENTIK_SECRET_KEY` and the OIDC client secrets into
 `edge/edge-oidc-client`, `argocd/argocd-authentik-oidc`,
 `factory/factory-itsaplan-oidc` and `grafana/grafana-oidc`. ArgoCD creates
 those Secrets empty and ignores their data, so the Job can only read and
-update those names. CloudNativePG generates `authentik-pg-app`. Move the
-secret key to 1Password once Postgres has off-node backups.
+update those names. CloudNativePG generates `authentik-pg-app`. Copy the
+existing `authentik-secrets` to 1Password as part of #7952; database recovery
+needs the original secret key and OIDC client secrets.
 
 ### Break-glass
 
@@ -337,9 +338,8 @@ does the rest, idempotently:
   It never changes an existing layout: a node that comes back with a new ID
   (a lost metadata volume) is logged as a warning, and replacing it is an
   operator step (`garage layout assign`/`remove` from a Garage pod).
-- **Buckets and keys.** It creates `factory-itsaplan`, `factory-evidence`,
-  `ate-snapshots` and `kagent-pg-backups`. Each consuming namespace declares
-  an empty Secret and a Role letting `garage/garage-init` get and update only
+- **Buckets and keys.** It creates the buckets listed below. Each consuming
+  namespace declares an empty Secret and a Role letting `garage/garage-init` get and update only
   that name; garage-init generates a key into the Secret
   (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
   `AWS_REGION`, `BUCKET`, ready for `envFrom`), imports it into Garage if
@@ -356,15 +356,16 @@ does the rest, idempotently:
 | --- | --- | --- |
 | `kagent-pg-backups` | `kagent-pg/kagent-pg-s3` | `kagent-pg` WAL archive and base backups |
 | `factory-db-backups` | `factory-db/factory-db-s3` | `factory-db` WAL archive and base backups |
+| `authentik-pg-backups` | `authentik/authentik-pg-s3` | Authentik WAL archive and base backups |
 | `factory-itsaplan` | `factory/factory-itsaplan-s3` | itsaplan (step 6) |
 | `factory-evidence` | `factory/factory-evidence-s3` | the connector's transcripts and CI logs (step 9) |
 | `ate-snapshots` | none yet | Agent Substrate, when its snapshots move off rustfs |
 
 `projects/platform-factory/factory-buckets/` holds the `factory` namespace's
-key Secrets ahead of the workloads, and itsaplan's OIDC client secret,
+key Secrets, the backup key in `authentik`, and itsaplan's OIDC client secret,
 which Authentik's secret-init fills. The S3 API admits only the workloads
-holding a key: `kagent-pg`'s and `factory-db`'s instances, itsaplan's api and
-worker, and the connector (`app.kubernetes.io/name=factory-connector` in
+holding a key: `kagent-pg`, `factory-db` and Authentik's instances, itsaplan's
+api and worker, and the connector (`app.kubernetes.io/name=factory-connector` in
 `factory`); Substrate is added with its grant. RPC (3901) admits only Garage pods
 and the admin API (3903) only garage-init. A consumer also needs its own
 egress rule to `app.kubernetes.io/name=garage` in `garage` on 3900. Traffic is plain HTTP
@@ -451,7 +452,24 @@ restore it from the old prefix (`bootstrap.recovery` with an
 bump `serverName` to the next version in `resources/cluster.yaml`. The old
 prefix ages out only by hand.
 
-The itsaplan and connector databases are in `factory-db` (below).
+Authentik's `authentik/authentik-pg` is configured for three instances with
+required hostname anti-affinity, continuous WAL archiving and a daily base
+backup at 03:00 UTC. Garage keeps 14 days of recovery points in
+`authentik-pg-backups`, under `serverName: authentik-pg-v1`. Its scoped key
+stays in `authentik/authentik-pg-s3`, filled by garage-init through the
+factory-buckets Application. `authentik-pg-wait-for-key` holds the Cluster
+back until all three credential fields exist; retry the Authentik sync if its
+30-minute deadline expires. The Cluster carries `Prune=false,Delete=false`,
+preserving its PVCs when the Application is pruned or deleted.
+
+After rollout, confirm three healthy instances, `ContinuousArchiving=True`
+and a completed base backup in Garage. Recovery also needs the existing
+`authentik-secrets`, including `AUTHENTIK_SECRET_KEY` and the OIDC client
+secrets. Their 1Password copies and an isolated restore drill remain on
+[#7952](https://github.com/jomcgi-org/homelab/issues/7952). The same archive
+incarnation rule and migration to the barman-cloud plugin before CNPG 1.31
+apply to Authentik and `factory-db` (the itsaplan and connector databases,
+below).
 
 ## Agent Substrate
 
@@ -732,12 +750,14 @@ These come from the #7817 step 1 checklist:
 - Substrate's PostgreSQL and snapshots onto the replicated stores: its
   snapshots to Garage's `ate-snapshots` (grant `ate-system` a key), its
   database to CloudNativePG.
-- Moving `kagent-pg` backups to the barman-cloud plugin (and cert-manager)
-  before upgrading CloudNativePG to 1.31, which removes the in-tree
-  integration.
+- Moving `kagent-pg`, `factory-db` and Authentik backups to the barman-cloud
+  plugin (and cert-manager) before upgrading CloudNativePG to 1.31, which
+  removes the in-tree integration.
 - Agent Substrate CA rotation before 2027-11-13
   ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
-- Postgres backups for Authentik (Garage now available), then its secret key in 1Password.
+- Verify Authentik's three instances, WAL archiving and a completed Garage
+  base backup after rollout. Copy the existing `authentik-secrets` to
+  1Password and run an isolated restore drill (#7952).
 - Spreading the cloudflared replicas across nodes: cfgate v0.2.0-alpha.11's
   CloudflareTunnel has no topologySpreadConstraints or affinity field, so
   placement is the scheduler's default spreading.

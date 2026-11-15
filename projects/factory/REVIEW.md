@@ -44,8 +44,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   each issue with a fixed title and coding instructions from a reviewed
   schedule template on main; planner fields cannot supply instructions or
   expand their scope. Each issue carries planner text and links only in a
-  delimited evidence block, quoted and sanitized as for the reviewer. The coder's
-  brief treats that block as data. Delegation requires this separation to
+  delimited evidence block, quoted and sanitized as for the reviewer. The
+  coder's brief treats that block as data. Delegation requires this separation to
   survive every coder send, including recovery; bounds and evidence links
   alone never authorize instructions.
 

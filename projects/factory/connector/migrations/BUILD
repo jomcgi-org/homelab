@@ -11,6 +11,8 @@ go_library(
         "20261115120000_caller_identity.sql",
         "20261115180000_recovery.sql",
         "20261115200000_idle_rounds.sql",
+        "20261115203000_transcript.sql",
+        "20261115210000_transcript_bytes.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

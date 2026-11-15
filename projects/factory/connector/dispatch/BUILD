@@ -24,6 +24,7 @@ go_library(
 go_test(
     name = "dispatch_test",
     srcs = [
+        "artifact_transcript_test.go",
         "delivery_test.go",
         "engine_test.go",
         "fakes_test.go",

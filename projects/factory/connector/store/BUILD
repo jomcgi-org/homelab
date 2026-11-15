@@ -6,6 +6,7 @@ go_library(
         "delivery.go",
         "recovery.go",
         "store.go",
+        "transcript.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/store",
     visibility = ["//visibility:public"],
@@ -17,6 +18,7 @@ go_test(
     srcs = [
         "recovery_test.go",
         "store_test.go",
+        "transcript_test.go",
     ],
     data = ["@postgres_test//:postgres"],
     deps = [
