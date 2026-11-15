@@ -104,6 +104,25 @@ def check_blog(root, output):
                     assert not page.evaluate(
                         "document.documentElement.scrollWidth > innerWidth + 1"
                     ), "horizontal page overflow"
+                    # Each data table sits in its own scroller. Its rows fill
+                    # that box at every width, so a narrow table still runs to
+                    # the panel's edges, and the fixture's six-column table,
+                    # wider than a phone, scrolls there instead of the page.
+                    boxes = page.evaluate(
+                        """[...document.querySelectorAll('.prose .table-scroll')].map(box => ({
+                          scrolls: box.scrollWidth > box.clientWidth + 1,
+                          fills: box.querySelector('tr').getBoundingClientRect().width
+                            >= box.clientWidth - 1,
+                        }))"""
+                    )
+                    assert len(boxes) == 2, f"expected two fixture tables: {boxes}"
+                    assert all(b["fills"] for b in boxes), (
+                        f"table rows stop short: {boxes}"
+                    )
+                    if width < 760:
+                        assert any(b["scrolls"] for b in boxes), (
+                            "wide table does not scroll in its box"
+                        )
                     assert (
                         page.locator("#landing-title").bounding_box()["y"] < height / 2
                     )

@@ -686,12 +686,14 @@ body:has(.td) {
 }
 
 .sheet .prose > table:last-child,
+.sheet .prose > .table-scroll:last-child,
 .sheet .prose > figure.fig:last-child,
 .sheet .prose > pre.doc-code:last-child {
   margin-bottom: -1rem;
 }
 
 .sheet .prose > table:last-child tr:last-child td,
+.sheet .prose > .table-scroll:last-child tr:last-child td,
 .sheet .prose > figure.fig:last-child {
   border-bottom: 0;
 }
@@ -848,6 +850,20 @@ body:has(.td) {
   border-collapse: collapse;
 }
 
+/* A data table's scroller takes the table's place on the sheet: it runs to
+   the panel's edges, and a table wider than the screen scrolls inside it
+   rather than scrolling the page. The table fills it. */
+.sheet .prose .table-scroll {
+  width: calc(100% + 2rem);
+  margin: 1rem -1rem;
+  overflow-x: auto;
+}
+
+.sheet .prose .table-scroll > table {
+  width: 100%;
+  margin: 0;
+}
+
 /* Column labels sit on the sheet, framed by stroke-weight rules, while
    data rows keep hairlines: the header is a drawn grid line, never a
    second band. */
@@ -936,21 +952,21 @@ body:has(.td) {
   letter-spacing: 0.08em;
 }
 
-.sheet .prose figure.fig + table {
+.sheet .prose figure.fig + table,
+.sheet .prose figure.fig + .table-scroll {
   margin-top: calc(-1.5rem - 1px);
 }
 
 /* A table or figure that opens a section docks to the band: the band's
    bottom rule is the table's top rule. */
 .sheet .prose h2 + table,
+.sheet .prose h2 + .table-scroll,
 .sheet .prose h2 + figure.fig {
   margin-top: calc(-0.85rem - 1px);
 }
 
-/* Key columns belong to a drawn figure's numbered key. A data table kept
-   below a chart (figure.ix) has ordinary columns. */
-.sheet .prose figure.fig:not(.ix) + table th:first-child,
-.sheet .prose figure.fig:not(.ix) + table td:first-child {
+.sheet .prose figure.fig + table th:first-child,
+.sheet .prose figure.fig + table td:first-child {
   width: 3.5em;
   font-family: var(--font-code);
   text-align: center;
@@ -980,13 +996,8 @@ body:has(.td) {
     padding: 1rem 1em 4em;
   }
 
-  /* Tables keep whole words on a phone. One still wider than the screen
-     scrolls inside itself, so the page never scrolls sideways. */
-  .sheet .prose table {
-    display: block;
-    overflow-x: auto;
-  }
-
+  /* Tighter cells let more tables fit a phone with whole words; a table
+     still wider than the screen scrolls inside its .table-scroll. */
   .sheet .prose th,
   .sheet .prose td {
     padding-inline: 0.6rem;

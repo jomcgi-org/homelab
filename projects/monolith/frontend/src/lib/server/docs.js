@@ -287,7 +287,17 @@ export function renderDoc(entry, slugByPath) {
     },
   });
 
-  const html = m.parser(tokens);
+  // A plain data table renders inside its own scroller: it runs to the
+  // panel's edges like any table, and one wider than a phone scrolls there
+  // instead of scrolling the page. Figure-key tables (class fig-key) keep
+  // their docked layout unwrapped; tables cannot nest, so the lazy match
+  // closes on the table's own end tag.
+  const html = m
+    .parser(tokens)
+    .replace(
+      /<table>\n([\s\S]*?)<\/table>\n/g,
+      '<div class="table-scroll"><table>\n$1</table></div>\n',
+    );
   return { html, toc };
 }
 
