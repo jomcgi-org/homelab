@@ -341,6 +341,7 @@ def test_bindings_derive_from_repositories() -> None:
                 {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
             ],
             "reviewerCheck": {"name": "semgrep", "appId": 12345},
+            "maxReviewRounds": 6,
             "maxRebaseRounds": 5,
         }
     ]
