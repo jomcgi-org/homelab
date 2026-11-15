@@ -24,7 +24,7 @@ test("every figure is registered and has a markdown table", () => {
   for (const slot of slots) {
     expect(figures[slot.ix]).toBeTypeOf("function");
     const table = slot.fallback || parts[parts.indexOf(slot) + 1].html;
-    expect(table).toMatch(/^\s*<table\b/);
+    expect(table).toMatch(/^\s*<div class="table-scroll"><table>/);
   }
 });
 
