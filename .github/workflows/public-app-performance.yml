@@ -27,7 +27,7 @@ concurrency:
 jobs:
   measure:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -90,6 +90,7 @@ jobs:
           }, null, 2) + '\n');
           NODE
       - name: Check browser visibility and calibrate network timing
+        id: browser-fixtures
         timeout-minutes: 2
         run: |
           node projects/monolith/frontend/scripts/public-app-performance-fixture.mjs \
@@ -150,6 +151,14 @@ jobs:
               --runs 3 --samples 20 --settle-ms 15000 \
               --output "$PERFORMANCE_OUTPUT" \
             | tee "$PERFORMANCE_OUTPUT/measurement.log"
+      - name: Diagnose the ready Stars Historical interaction separately
+        if: ${{ always() && steps.browser-fixtures.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          timeout --signal=TERM --kill-after=15s 270s \
+            node projects/monolith/frontend/scripts/public-app-performance-stars.mjs \
+              --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
+              --output "$PERFORMANCE_OUTPUT/stars-diagnostic"
       - name: Summarize completed observations
         if: always()
         run: |

@@ -32,7 +32,7 @@ workflow. It supplies only the four read-only interaction selectors described
 below, with no initial cookies or account session, and never purges the CDN. It uses a hosted Ubuntu runner, pinned Node and
 Playwright versions, a read-only repository token and no secrets or deployment
 credentials. Only one measurement workflow runs at a time. The measurement
-command has a 26-minute deadline within a 28-minute step and a 40-minute job;
+command has a 26-minute deadline within a 28-minute step and a 45-minute job;
 failed samples fail the step. No application build or deployment runs here.
 
 The run summary contains the median table. The 90-day artifact contains
@@ -109,3 +109,14 @@ not fetch data, prove map paint, or extend the load observation. If the
 response does not finish, the raw click duration remains recorded but is
 excluded from comparable interaction medians. A fast loading-state click
 cannot substitute for a click that renders already-loaded history.
+
+After the benchmark, a separate five-minute step profiles three anonymous
+Stars Historical clicks using the same browser/profile and natural history
+response readiness. Its 270-second command limit leaves time for cleanup.
+The diagnostic runs only if the local browser fixtures passed; it can still
+collect evidence if a production benchmark sample failed. It records CPU
+profiles, detailed Event Timing and long tasks in `stars-diagnostic/` inside
+the same artifact. It does not change or replace the benchmark's load metrics
+or interaction medians. The job limit is 45 minutes to include this bounded
+additional step. Partial completed diagnostics remain evidence, not a claim
+that all requested contexts completed or that field INP was measured.
