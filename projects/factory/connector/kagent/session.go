@@ -39,15 +39,19 @@ var ErrSessionNotFound = errors.New("kagent: session not found")
 // replaced.
 var ErrSessionUnrecoverable = errors.New("kagent: session unrecoverable")
 
-// Session is the subset of kagent.api.v1.Session the connector reads.
+// Session is the subset of kagent.api.v1.Session the connector and the
+// reviewer read. AgentNamespace and AgentName are the Agent the session was
+// created for (its AgentProvenance reference).
 type Session struct {
-	ID            string
-	Creator       string
-	State         int
-	Operation     int
-	FailureReason string
-	FailureMsg    string
-	ContextID     string
+	ID             string
+	Creator        string
+	AgentNamespace string
+	AgentName      string
+	State          int
+	Operation      int
+	FailureReason  string
+	FailureMsg     string
+	ContextID      string
 }
 
 // Crashed reports whether the session needs RevertSession.
@@ -175,6 +179,19 @@ func EncodeSession(sess Session) []byte {
 	}
 	b = protowire.AppendTag(b, 14, protowire.BytesType)
 	b = protowire.AppendString(b, sess.ContextID)
+	if sess.AgentNamespace != "" || sess.AgentName != "" {
+		// AgentProvenance agent = 15 { ResourceReference ref = 1 { namespace = 1; name = 2 } }
+		var ref []byte
+		ref = protowire.AppendTag(ref, 1, protowire.BytesType)
+		ref = protowire.AppendString(ref, sess.AgentNamespace)
+		ref = protowire.AppendTag(ref, 2, protowire.BytesType)
+		ref = protowire.AppendString(ref, sess.AgentName)
+		var agent []byte
+		agent = protowire.AppendTag(agent, 1, protowire.BytesType)
+		agent = protowire.AppendBytes(agent, ref)
+		b = protowire.AppendTag(b, 15, protowire.BytesType)
+		b = protowire.AppendBytes(b, agent)
+	}
 	out := protowire.AppendTag(nil, 1, protowire.BytesType)
 	return protowire.AppendBytes(out, b)
 }
@@ -193,6 +210,22 @@ func decodeSession(b []byte) (*Session, error) {
 			s.Operation = int(n)
 		case num == 14 && typ == protowire.BytesType:
 			s.ContextID = string(v)
+		case num == 15 && typ == protowire.BytesType:
+			ref, err := field(v, 1)
+			if err != nil {
+				return
+			}
+			_ = walk(ref, func(fn protowire.Number, ft protowire.Type, fv []byte, _ uint64) {
+				if ft != protowire.BytesType {
+					return
+				}
+				switch fn {
+				case 1:
+					s.AgentNamespace = string(fv)
+				case 2:
+					s.AgentName = string(fv)
+				}
+			})
 		case num == 9 && typ == protowire.BytesType:
 			_ = walk(v, func(fn protowire.Number, ft protowire.Type, fv []byte, _ uint64) {
 				if ft != protowire.BytesType {

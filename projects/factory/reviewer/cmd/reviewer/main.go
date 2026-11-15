@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -100,7 +101,19 @@ func run(log *slog.Logger) error {
 			}
 		}},
 	}
-	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: &kagent.TokenSource{Path: cfg.KagentTokenFile}}
+	kagentTokens := &kagent.TokenSource{Path: cfg.KagentTokenFile}
+	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: kagentTokens}
+	// SessionService shares the A2A gateway's listener (h2c gRPC), so the
+	// reviewer reads sessions at the same address with the same token.
+	kagentURL, err := url.Parse(cfg.KagentURL)
+	if err != nil || kagentURL.Host == "" {
+		return fmt.Errorf("kagentURL %q has no host", cfg.KagentURL)
+	}
+	sessions, err := kagent.DialSessions(kagentURL.Host, kagentTokens)
+	if err != nil {
+		return fmt.Errorf("kagent sessions: %w", err)
+	}
+	defer sessions.Close()
 	// The broker writes the PR comment: its token needs pull requests write,
 	// which could approve, so it never reaches the reviewer.
 	var comments review.Comments
@@ -142,6 +155,7 @@ func run(log *slog.Logger) error {
 		Bindings:      bindings,
 		Comments:      comments,
 		CommentAuthor: cfg.CommentAuthor,
+		Sessions:      sessions,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

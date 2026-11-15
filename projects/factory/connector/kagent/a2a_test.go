@@ -204,7 +204,10 @@ func TestSessionsOverGRPC(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		sess := Session{ID: id, ContextID: id, State: RuntimeFailed, Operation: OperationRevert, FailureReason: ReasonRuntimeCrashed}
+		sess := Session{
+			ID: id, ContextID: id, State: RuntimeFailed, Operation: OperationRevert, FailureReason: ReasonRuntimeCrashed,
+			AgentNamespace: "factory-r-homelab-review", AgentName: "homelab-reviewer",
+		}
 		if method == "/kagent.api.v1.SessionService/RevertSession" {
 			sess = Session{ID: id, ContextID: id, State: RuntimeReady, Operation: 5}
 		}
@@ -228,11 +231,12 @@ func TestSessionsOverGRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.ID != id || !s.Crashed() || s.FailureReason != ReasonRuntimeCrashed {
+	if s.ID != id || !s.Crashed() || s.FailureReason != ReasonRuntimeCrashed ||
+		s.AgentNamespace != "factory-r-homelab-review" || s.AgentName != "homelab-reviewer" {
 		t.Fatalf("session = %+v", s)
 	}
 	s, err = c.RevertSession(context.Background(), id)
-	if err != nil || s.Crashed() || s.State != RuntimeReady {
+	if err != nil || s.Crashed() || s.State != RuntimeReady || s.AgentNamespace != "" {
 		t.Fatalf("revert = %+v %v", s, err)
 	}
 	want := []string{"/kagent.api.v1.SessionService/GetSession", "/kagent.api.v1.SessionService/RevertSession"}
