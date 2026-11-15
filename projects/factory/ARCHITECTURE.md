@@ -579,6 +579,10 @@ synthetic conflict event records the head once, atomically with the round
 and its issue announcement; repeated polls and connector restarts cannot
 start another rebase on that head. Holds and stopped work items block it
 like any other revision trigger.
+Once that conflict event is consumed, independently new check failures or
+trusted review feedback can still start a review round within `maxReviewRounds`.
+Its prompt includes the remaining conflict, but the rebase count does not
+increase again for the same head.
 
 Rebase rounds use a separate per-binding `maxRebaseRounds` bound (default 3,
 0 disables them), persisted as `work_item.rebase_rounds`. They do not spend
@@ -605,8 +609,9 @@ round holds a slot of its agent key's concurrency and waits for one. A
 failed round returns the work item to review.
 
 A round records the head it was asked to change. If it closes with the PR
-still at that head, the agent pushed nothing, and every event on that head
-has already acted, so no new round can start. Once every required check and
+still at that head, the agent pushed nothing. Consumed events cannot start
+another round; independently new feedback remains eligible within the review
+bound. Once every required check and
 the reviewer check has finished on that head and the gate is still closed,
 the connector says so on the issue once per round. A still-conflicting head
 gets this idle-round comment without waiting for checks to finish. The PR
@@ -713,7 +718,10 @@ evidence is unavailable.
 GitHub's `CONFLICTING` mergeability asks the agent to rebase on the bound
 `origin/<base>` and resolve. This stays one ejection round against the review
 bound and consumes the head's conflict event, so an unchanged head cannot
-start another rebase round on a later review poll. A CI infrastructure flake
+start another rebase round on a later review poll. If the review bound is
+already exhausted, the ejection records the conflict as `round_limit` in the
+same transaction and waits for a person. Returning to review cannot switch
+that conflict to the separate rebase budget. A CI infrastructure flake
 may be repaired by rebasing and re-pushing the same change; the new head needs
 the usual checks and independent review.
 
