@@ -114,9 +114,9 @@ func TestSendContinuationNotFound(t *testing.T) {
 func TestListGetCancel(t *testing.T) {
 	var got rpcSeen
 	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","result":{"tasks":[{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_WORKING"},"history":[{"messageId":"itsaplan-run/7/initial","role":"ROLE_USER","parts":[{"text":"hi"}]}]}],"totalSize":1,"pageSize":100,"nextPageToken":""}}`, &got)
-	tasks, next, err := c.ListTasks(context.Background(), ref, "c1", StateWorking, "")
-	if err != nil || next != "" || len(tasks) != 1 {
-		t.Fatalf("tasks = %+v next = %q err = %v", tasks, next, err)
+	page, err := c.ListTasks(context.Background(), ref, "c1", StateWorking, "")
+	if err != nil || page.NextPageToken != "" || len(page.Tasks) != 1 || page.TotalSize != 1 || page.PageSize != 100 {
+		t.Fatalf("page = %+v err = %v", page, err)
 	}
 	if got.method != "ListTasks" || got.params["contextId"] != "c1" || got.params["status"] != StateWorking || got.params["historyLength"] != float64(0) {
 		t.Fatalf("request = %+v", got)
@@ -150,20 +150,23 @@ func TestListTasksRejectsIncompleteResponses(t *testing.T) {
 		"null page size":    `{"tasks":[],"totalSize":0,"pageSize":null,"nextPageToken":""}`,
 		"zero page size":    `{"tasks":[],"totalSize":0,"pageSize":0,"nextPageToken":""}`,
 		"oversized page":    `{"tasks":[],"totalSize":0,"pageSize":101,"nextPageToken":""}`,
+		"too many rows":     `{"tasks":[{"id":"a"},{"id":"b"}],"totalSize":2,"pageSize":1,"nextPageToken":""}`,
+		"short cursor page": `{"tasks":[{"id":"a"}],"totalSize":2,"pageSize":100,"nextPageToken":"next"}`,
+		"empty cursor page": `{"tasks":[],"totalSize":1,"pageSize":100,"nextPageToken":"next"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var got rpcSeen
 			c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","result":`+result+`}`, &got)
-			tasks, next, err := c.ListTasks(context.Background(), ref, "", "", "")
-			if err == nil || tasks != nil || next != "" {
-				t.Fatalf("malformed page accepted: tasks=%+v next=%q err=%v", tasks, next, err)
+			page, err := c.ListTasks(context.Background(), ref, "", "", "")
+			if err == nil || page != nil {
+				t.Fatalf("malformed page accepted: page=%+v err=%v", page, err)
 			}
 		})
 	}
 	t.Run("missing result", func(t *testing.T) {
 		var got rpcSeen
 		c := a2aServer(t, `{"jsonrpc":"2.0","id":"1"}`, &got)
-		if _, _, err := c.ListTasks(context.Background(), ref, "", "", ""); err == nil {
+		if _, err := c.ListTasks(context.Background(), ref, "", "", ""); err == nil {
 			t.Fatal("missing result accepted as an empty page")
 		}
 	})
@@ -174,9 +177,9 @@ func TestListTasksAcceptsEmptyKagentPage(t *testing.T) {
 	// ListTasksResponse encodes all four fields without omitempty.
 	var got rpcSeen
 	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","result":{"tasks":[],"totalSize":0,"pageSize":100,"nextPageToken":""}}`, &got)
-	tasks, next, err := c.ListTasks(context.Background(), ref, "", "", "")
-	if err != nil || tasks == nil || len(tasks) != 0 || next != "" {
-		t.Fatalf("valid empty page rejected: tasks=%+v next=%q err=%v", tasks, next, err)
+	page, err := c.ListTasks(context.Background(), ref, "", "", "")
+	if err != nil || page.Tasks == nil || len(page.Tasks) != 0 || page.NextPageToken != "" || page.TotalSize != 0 {
+		t.Fatalf("valid empty page rejected: page=%+v err=%v", page, err)
 	}
 }
 

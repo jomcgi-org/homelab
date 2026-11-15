@@ -585,7 +585,7 @@ func (s *Store) TakeEngineeringRetry(ctx context.Context, q Querier, workID int6
 
 // Delivery attempt states.
 const (
-	AttemptSending   = "sending"   // recorded before the send
+	AttemptSending   = "sending"   // ready to send; every prior call definitively unaccepted
 	AttemptAmbiguous = "ambiguous" // the send's outcome is unknown
 	AttemptAccepted  = "accepted"  // kagent holds the message in a task
 	AttemptCompleted = "completed"
@@ -679,7 +679,7 @@ func (s *Store) RecordAttempt(ctx context.Context, q Querier, a Attempt) (*Attem
 }
 
 // MarkIssued records, before the call, that the message is being sent. From
-// then on only kagent's answer to the same message decides whether it holds it.
+// then on an unknown response permits only read-only reconciliation.
 func (s *Store) MarkIssued(ctx context.Context, a *Attempt, at time.Time) error {
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE delivery_attempt SET state = 'ambiguous', sent_at = $2, first_sent_at = coalesce(first_sent_at, $2),
@@ -694,10 +694,31 @@ func (s *Store) MarkIssued(ctx context.Context, a *Attempt, at time.Time) error 
 	return err
 }
 
+// MarkNotAccepted persists a definitive refusal of a call made from sending.
+// A crash before this write leaves ambiguity and therefore cannot resend.
+func (s *Store) MarkNotAccepted(ctx context.Context, a *Attempt) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE delivery_attempt SET state = 'sending'
+		WHERE id = $1 AND state = 'ambiguous'`, a.ID)
+	if err == nil {
+		a.State = AttemptSending
+	}
+	return err
+}
+
+// HoldAttempt records an operator-visible reason without ending the attempt or
+// releasing its slot. The original message and caller remain authoritative.
+func (s *Store) HoldAttempt(ctx context.Context, q Querier, id int64, reason string) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE delivery_attempt SET error = $2
+		WHERE id = $1 AND state IN ('ambiguous', 'accepted')`, id, reason)
+	return err
+}
+
 // MarkAccepted attaches the attempt to the kagent task holding its message.
 func (s *Store) MarkAccepted(ctx context.Context, q Querier, id int64, contextID, taskID string) error {
 	_, err := q.ExecContext(ctx, `
-		UPDATE delivery_attempt SET state = 'accepted', context_id = $2, task_id = $3
+		UPDATE delivery_attempt SET state = 'accepted', context_id = $2, task_id = $3, error = NULL
 		WHERE id = $1 AND state IN ('sending', 'ambiguous', 'accepted')`, id, contextID, taskID)
 	return err
 }

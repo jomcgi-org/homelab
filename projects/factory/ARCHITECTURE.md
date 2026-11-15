@@ -347,28 +347,52 @@ HOME-1, the first live run, ended "blocked" without this. A new send uses messag
 ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
 connector's record of why it sends (initial, revision or engineering retry).
 The attempt is recorded, with the run's state, before the send. The
-connector never sets a task ID, so every send opens a task and kagent
-accepts it once (finding 9). After an ambiguous response the connector
-sends the same message again, at most every 15 s: kagent answers with the
-task holding it, refuses while the first copy's reservation is in flight,
-or takes it when the first copy never arrived. After 20 sends, the
-connector sends only once per dispatch window, three more times, since a
-late save of the last send would be found that way. A full window after its
-final send, the connector searches every task state and every page for the
-original message ID. A match attaches the original task, including a task
-that has finished or is waiting for input. Only a complete successful scan
-with no match permits an engineering retry. Every listed task must expose
-its opening user input before a non-match can prove absence. A first
-terminal or waiting save can remain publicly SUBMITTED with hidden history
-until native cleanup finishes; even an unrelated task in that state holds
-an absence proof. A positive exact-message match remains adoptable despite
-other incomplete histories. Null, partial or malformed task-list responses,
-failed reads, repeated cursors and scan timeouts also keep the original
-attempt and its slot.
-The window covers the 60 s call timeout, the
-two-minute reservation and 30 s of skew; configuration refuses anything
-under 210 s. The repository and branch
-come only from configuration.
+connector never sets a task ID, so every send opens a task. A definitive
+not-accepted response leaves the attempt ready to retry, spaced by 15 s;
+after 20 refusals it tries once per dispatch window three more times. The
+ready state is persisted only after that response. A crash before the write
+leaves ambiguity and cannot resend.
+
+After any ambiguous response, the connector only reads every task state and
+page looking for the original message ID. A positive match attaches the
+original task, including a task that finished or is waiting for input. It
+never sends that message again or replaces its context merely because the
+task or session is missing. kagent may remove an idle session's creation
+receipt; resending the same initial message after a long outage could then
+create another actor. Its NodeGone deletion path can also hide an actor
+whose machine has not physically stopped, so even a complete empty listing
+does not prove the original execution ceased.
+
+After a dispatch window with no positive match, the connector keeps the
+original attempt and concurrency slot, records an operator-visible hold,
+and announces it once on the issue. Missing, malformed or incomplete reads
+retain that hold; later positive evidence resumes the original task. A
+request that truly never arrived may also remain held. Recovery requires
+operator verification that the original runtime is fenced; empty task
+lists and elapsed time cannot authorize retry or cancellation confirmation.
+
+Task scans retain page coverage metadata: a negative scan must observe a
+stable total and exactly that many distinct task IDs. Counts and page rows
+use separate queries, so concurrent insertion or deletion can make a scan
+inconsistent. Such a scan may still positively identify the original task.
+Every non-matching task must expose its opening user input: a first
+terminal or waiting save may remain publicly SUBMITTED with hidden history
+until native cleanup finishes. Null/partial responses, failed reads,
+repeated cursors and scan timeouts remain uncertainty. None of these
+negative scans releases an unknown send.
+
+This guarantee is specific to an unknown send: it never causes another send
+or replacement from absence alone. A positively observed original task
+continues through the existing completion and lifecycle handling. That does
+not prove physical quiescence for every published terminal state: kagent
+can publish saved outcomes or synthetic failure after an inferred crash,
+and Substrate's NodeGone cleanup can succeed without an independent kill
+acknowledgment. That platform fencing gap is tracked separately from send
+reconciliation; missing-task recovery must not add a new cessation inference.
+
+The dispatch window covers the 60 s call timeout, the two-minute reservation
+and 30 s of skew; configuration refuses anything under 210 s. The repository
+and branch come only from configuration.
 
 Before the first send, the work item keeps an immutable caller witness:
 projected token issuer, ServiceAccount UID, the controller's configured
@@ -562,9 +586,11 @@ For an attempt whose task is unknown, it waits a dispatch window after the
 last send. It then finds the task in any state whose history holds the
 attempt's message ID, looking in the attempt's session or, for a first
 send, across all of the original caller's sessions. A terminal task confirms
-cancellation; a running or waiting task is cancelled. Only a complete
-successful scan with no match confirms that nothing was dispatched. A run that itsaplan ended closes once its cancellation is
-confirmed, whatever started that cancellation.
+cancellation; a running or waiting task is cancelled. A complete scan with
+no match keeps cancellation pending and records the recovery hold described
+above. Only a never-sent or definitively unaccepted attempt can confirm
+cancellation without a task. A run that itsaplan ended closes once its
+cancellation is confirmed, whatever started that cancellation.
 
 **Deployment.** `templates/connector*.yaml` render with `connector.enabled`,
 which needs `itsaplan.enabled`, `broker.enabled` and kagent's
@@ -878,7 +904,7 @@ previews).
   `factory-review/<owner>/<repo>/<pr>/<sha>/<check run ID>`, idempotent like
   coding runs, in a fresh session; a retry adds `/attempt-<n>`. Each
   attempt's message is built once and resent byte for byte: at most 20
-  sends, then one more after a dispatch window, as the connector does. When
+  sends, then one more after a dispatch window. When
   no open PR still has a head, its task and check are cancelled: at once
   when the PR moved to another head, and after two complete listings in a
   row leave the PR out when it closed, since a PR closing between page

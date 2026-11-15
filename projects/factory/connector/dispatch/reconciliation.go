@@ -150,6 +150,46 @@ func (e *Engine) guardCaller(ctx context.Context, wi *store.WorkItem, current *s
 	return ctx, nil
 }
 
+// taskListCoverage treats kagent's total as a consistency witness, not a
+// transaction snapshot. Its COUNT and page queries may race with inserts or
+// deletion. Such a scan can still find the original task, but cannot prove
+// absence; a later scan starts fresh once the visible set settles.
+type taskListCoverage struct {
+	total        int
+	started      bool
+	inconsistent bool
+	ids          map[string]bool
+}
+
+func (c *taskListCoverage) observe(page *kagent.TaskPage) error {
+	if page == nil || page.TotalSize < 0 || page.PageSize < 1 || page.PageSize > 100 || len(page.Tasks) > page.PageSize ||
+		(page.NextPageToken != "" && len(page.Tasks) != page.PageSize) {
+		return errors.New("task scan: invalid page metadata")
+	}
+	if !c.started {
+		c.started, c.total, c.ids = true, page.TotalSize, map[string]bool{}
+	} else if c.total != page.TotalSize {
+		c.inconsistent = true
+	}
+	for _, task := range page.Tasks {
+		if task == nil || task.ID == "" {
+			return errors.New("task scan: invalid task listing")
+		}
+		if c.ids[task.ID] {
+			c.inconsistent = true
+		}
+		c.ids[task.ID] = true
+	}
+	return nil
+}
+
+func (c *taskListCoverage) complete() error {
+	if !c.started || c.inconsistent || len(c.ids) != c.total {
+		return errors.New("task scan: inconsistent total or incomplete coverage")
+	}
+	return nil
+}
+
 // taskWithMessage searches every task state and page. The absence result is
 // valid only after a complete successful scan under the pinned original caller.
 // A listing or history error, a repeated cursor, or a bounded scan timeout is
@@ -161,14 +201,19 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 	seen := map[string]bool{}
 	var cursors []*kagent.Task
 	incomplete := false
+	var coverage taskListCoverage
 	for {
 		if err := e.guard(ctx); err != nil {
 			return nil, err
 		}
-		tasks, next, err := e.tasks.ListTasks(ctx, ref, contextID, "", token)
+		page, err := e.tasks.ListTasks(ctx, ref, contextID, "", token)
 		if err != nil {
 			return nil, fmt.Errorf("reconcile original message: list tasks: %w", err)
 		}
+		if err := coverage.observe(page); err != nil {
+			return nil, err
+		}
+		tasks, next := page.Tasks, page.NextPageToken
 		for _, c := range tasks {
 			if c == nil || c.ID == "" || (contextID != "" && c.ContextID != contextID) {
 				return nil, errors.New("reconcile original message: invalid task listing")
@@ -198,6 +243,9 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 			}
 		}
 		if next == "" {
+			if err := coverage.complete(); err != nil {
+				return nil, err
+			}
 			if incomplete {
 				return nil, errors.New("reconcile original message: task opening input is not public")
 			}

@@ -615,21 +615,21 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 	return copyTask(&t.task), nil
 }
 
-func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, pageToken string) ([]*kagent.Task, string, error) {
+func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
 	k.listedStates = append(k.listedStates, state)
 	if k.listErr != nil {
-		return nil, "", k.listErr
+		return nil, k.listErr
 	}
 	if k.vanishCursor && pageToken != "" {
 		delete(k.tasks, k.order[0])
-		return nil, "", nil // the upstream cursor subquery no longer finds a position
+		return &kagent.TaskPage{PageSize: 100}, nil // the upstream cursor subquery no longer finds a position
 	}
 	if contextID != "" {
 		if owner, ok := k.contexts[contextID]; !ok || owner != agent {
-			return nil, "", fmt.Errorf("%w: context", kagent.ErrTaskNotFound)
+			return nil, fmt.Errorf("%w: context", kagent.ErrTaskNotFound)
 		}
 	}
 	var out []*kagent.Task
@@ -655,9 +655,9 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 		if k.repeatPageToken {
 			next = "0"
 		}
-		return out[start:end], next, nil
+		return &kagent.TaskPage{Tasks: out[start:end], TotalSize: len(out), PageSize: k.listPageSize, NextPageToken: next}, nil
 	}
-	return out, "", nil
+	return &kagent.TaskPage{Tasks: out, TotalSize: len(out), PageSize: 100}, nil
 }
 
 func (k *fakeKagent) CancelTask(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Task, error) {

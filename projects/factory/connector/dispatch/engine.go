@@ -41,7 +41,7 @@ type Itsaplan interface {
 type Tasks interface {
 	Send(ctx context.Context, agent kagent.AgentRef, msg kagent.Message) (*kagent.Task, error)
 	GetTask(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
-	ListTasks(ctx context.Context, agent kagent.AgentRef, contextID, state, pageToken string) ([]*kagent.Task, string, error)
+	ListTasks(ctx context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error)
 	CancelTask(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
 }
 
@@ -72,14 +72,15 @@ type Config struct {
 	Agents    []Agent
 	Bindings  []Binding
 	Heartbeat time.Duration // itsaplan lease heartbeat, 60 s
-	// ReissueInterval spaces sends of a message whose outcome is unknown.
+	// ReissueInterval spaces proven-unaccepted retries and delays the first
+	// read-only reconciliation; subsequent reads follow the poll interval.
 	ReissueInterval time.Duration
 	// DispatchWindow is how long a sent message may still be taken up by
 	// kagent: the A2A call timeout, kagent's two-minute dispatch reservation
-	// and clock skew. Absence can be proved only after this window.
+	// and clock skew. Afterwards, unresolved ambiguity becomes an operator hold.
 	DispatchWindow time.Duration
-	// MaxIssues bounds the spaced sends of one message. FinalLookups more
-	// follow, one per DispatchWindow, before the attempt fails.
+	// MaxIssues bounds retries of definitively unaccepted calls. FinalLookups
+	// more follow, one per DispatchWindow, before the attempt fails.
 	MaxIssues    int
 	FinalLookups int
 	// CancelInterval spaces CancelTask requests for one task.
@@ -95,7 +96,7 @@ type Config struct {
 	Now             func() time.Time
 }
 
-// MinDispatchWindow is the smallest resend window that covers a send's
+// MinDispatchWindow is the smallest uncertainty window that covers a send's
 // timeout, kagent's dispatch reservation and 30 s of skew.
 func MinDispatchWindow(callTimeout time.Duration) time.Duration {
 	return callTimeout + 2*time.Minute + 30*time.Second
@@ -767,11 +768,12 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking} {
 		token := ""
 		seen := map[string]bool{}
+		var coverage taskListCoverage
 		for {
 			if err := e.guard(ctx); err != nil {
 				return false, err
 			}
-			tasks, next, err := e.tasks.ListTasks(ctx, ref, wi.SessionID, state, token)
+			page, err := e.tasks.ListTasks(ctx, ref, wi.SessionID, state, token)
 			if errors.Is(err, kagent.ErrTaskNotFound) && e.sessions != nil {
 				// An Agent can disappear while its actor still runs. Only
 				// the same caller's session absence can clear this barrier.
@@ -786,6 +788,10 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 			if err != nil {
 				return false, err
 			}
+			if err := coverage.observe(page); err != nil {
+				return false, err
+			}
+			tasks, next := page.Tasks, page.NextPageToken
 			for _, t := range tasks {
 				if t == nil || t.ID == "" || t.ContextID != wi.SessionID {
 					return false, errors.New("session tasks: invalid task listing")
@@ -802,6 +808,9 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 				}
 			}
 			if next == "" {
+				if err := coverage.complete(); err != nil {
+					return false, err
+				}
 				break
 			}
 			if seen[next] {
@@ -996,9 +1005,9 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	return e.issue(ctx, r, wi, b, a)
 }
 
-// issue sends a recorded attempt that kagent has not accepted, or sends it
-// again when its outcome is unknown: kagent answers a repeated task-opening
-// message with the task that holds it, so the same message is the lookup.
+// issue sends only a ready attempt whose earlier calls were definitively
+// unaccepted. An ambiguous call is reconciled read-only: kagent may prune its
+// session creation receipt, so even the same message ID can start new work.
 func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
 	var err error
 	ctx, err = e.guardCaller(ctx, wi, a)
@@ -1007,20 +1016,26 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	}
 	now := e.cfg.Now()
 	if a.State == store.AttemptAmbiguous {
+		if now.Sub(a.SentAt) < e.cfg.ReissueInterval {
+			return nil
+		}
+		// This branch must precede prepareSession: replacing a missing context
+		// would also create a second writer for an unknown continuation.
+		return e.unresolved(ctx, r, wi, a)
+	}
+	if a.Issues > 0 {
 		if a.Issues >= e.cfg.MaxIssues {
-			// Past the cap, reissues are spaced by one dispatch window.
-			// Exhausting responses still proves nothing about an execution
-			// already accepted: unresolved performs a separate complete scan.
 			if now.Sub(a.SentAt) < e.cfg.DispatchWindow {
 				return nil
 			}
 			if a.Issues >= e.cfg.MaxIssues+e.cfg.FinalLookups {
-				return e.unresolved(ctx, r, wi, a)
+				return e.engineeringFailure(ctx, r, wi, a, "kagent definitively refused every send")
 			}
 		} else if now.Sub(a.SentAt) < e.cfg.ReissueInterval {
 			return nil
 		}
 	}
+
 	if a.Kind == "continuation" {
 		ok, err := e.prepareSession(ctx, r, wi, a)
 		if err != nil || !ok {
@@ -1049,11 +1064,11 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		e.m.Sends.WithLabelValues(a.Kind, "accepted").Inc()
 		return e.attach(ctx, a, wi, task)
 	case errors.Is(err, kagent.ErrNotAccepted):
-		// Nothing was dispatched for this call. An earlier send may still be
-		// in flight, so the attempt stays ambiguous and goes again later.
+		// Only ready attempts reach Send. Every previous call was also
+		// definitively unaccepted, so this refusal can safely permit retry.
 		e.m.Sends.WithLabelValues(a.Kind, "not_accepted").Inc()
-		return nil
-	case errors.Is(err, kagent.ErrTaskNotFound) && a.Kind == "initial" && a.Issues == 1:
+		return e.st.MarkNotAccepted(ctx, a)
+	case errors.Is(err, kagent.ErrTaskNotFound) && a.Kind == "initial":
 		e.m.Sends.WithLabelValues(a.Kind, "not_found").Inc()
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "kagent agent not found"); err != nil {
@@ -1069,11 +1084,6 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		return nil
 	case errors.Is(err, kagent.ErrRejected):
 		e.m.Sends.WithLabelValues(a.Kind, "rejected").Inc()
-		if a.Issues > 1 {
-			// Rejecting this call says nothing about an earlier accepted
-			// copy whose response was lost (for example after Agent edits).
-			return nil
-		}
 		return e.st.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", clip(err.Error(), maxErrorText)); err != nil {
 				return err
@@ -1082,25 +1092,43 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		})
 	default:
 		e.m.Sends.WithLabelValues(a.Kind, "ambiguous").Inc()
-		e.log.WarnContext(ctx, "send outcome unknown; resending the same message later", "run", r.ID, "message_id", a.MessageID, "error", err)
+		e.log.WarnContext(ctx, "send outcome unknown; reconciling the original message read-only", "run", r.ID, "message_id", a.MessageID, "error", err)
 		return nil
 	}
 }
 
-// unresolved reconciles an attempt after its final dispatch window. Waiting
-// out the reservation excludes late acceptance, but not an already accepted
-// execution whose replies were lost. Only a complete absent lookup may retry.
+// unresolved only adopts positive evidence of the original message. Absence
+// cannot prove physical cessation: NodeGone deletion may hide an orphan actor,
+// and idle expiry can remove even its initial-message creation receipt.
 func (e *Engine) unresolved(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
 	t, err := e.taskWithMessage(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.ContextID, a.MessageID)
-	if err != nil {
-		return err
-	}
-	if t != nil {
+	if err == nil && t != nil {
 		return e.attach(ctx, a, wi, t)
 	}
-	e.m.Sends.WithLabelValues(a.Kind, "unresolved").Inc()
-	msg := fmt.Sprintf("original message absent after %d sends and a complete task lookup", a.Issues)
-	return e.engineeringFailure(ctx, r, wi, a, msg)
+	if e.cfg.Now().Sub(a.SentAt) >= e.cfg.DispatchWindow {
+		if holdErr := e.holdUncertain(ctx, r, wi, a); holdErr != nil {
+			return holdErr
+		}
+	}
+	return err
+}
+
+// holdUncertain keeps the original attempt open and announces the hold once.
+// Grant blocks are inappropriate here: they free waiting-run slots and permit
+// a fresh retry when cleared, without proving the old writer stopped.
+func (e *Engine) holdUncertain(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
+	const reason = "execution outcome unknown; original runtime must be fenced before retry or cancellation confirmation"
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if err := e.st.HoldAttempt(ctx, tx, a.ID, reason); err != nil {
+			return err
+		}
+		return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/recovery-held/%d", a.ID), r.ID, "",
+			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+				"The factory is holding %s because the outcome of run %d attempt %d is unknown. It will only reconcile the original message; no automatic resend, replacement, or cancellation confirmation follows from a missing task. Recovery requires operator verification that the original runtime is fenced.", wi.IssueKey, r.ID, a.Seq)})
+	})
 }
 
 // attach records the task holding an attempt's message.
@@ -1304,7 +1332,7 @@ type commentPayload struct {
 	Body    string `json:"body"`
 }
 
-// progress follows a dispatched run's latest attempt: send or resend it,
+// progress follows a dispatched run's latest attempt: send or reconcile it,
 // post the transcript, and handle the end of the turn.
 func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	a, err := e.st.LatestAttempt(ctx, r.ID)
@@ -1564,8 +1592,8 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		return err
 	}
 	if a.State == store.AttemptSending {
-		// Recorded but never sent: kagent cannot hold it.
-		return e.confirmCancel(ctx, c, a, "not_sent")
+		// Every prior call was definitively unaccepted (or never made).
+		return e.confirmCancel(ctx, c, a, "not_accepted")
 	}
 	if !a.Open() {
 		return e.confirmCancel(ctx, c, a, a.State)
@@ -1585,9 +1613,8 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	ref := kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}
 	if a.TaskID == "" {
 		// The send's outcome is unknown. A cancellation never sends: that
-		// could start the turn it is meant to stop. kagent can commit a sent
-		// message only within its reservation, so a whole dispatch window
-		// after the last send no new task can appear.
+		// could start the turn it is meant to stop. After the reservation
+		// window, a missing task still cannot prove its runtime stopped.
 		if e.cfg.Now().Sub(a.SentAt) < e.cfg.DispatchWindow {
 			return nil
 		}
@@ -1595,11 +1622,11 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		// all-state listing covers the original caller's sessions, including
 		// a first send whose session the work item has not recorded yet.
 		t, err := e.taskWithMessage(ctx, ref, a.ContextID, a.MessageID)
-		if err != nil {
+		if err != nil || t == nil {
+			if holdErr := e.holdUncertain(ctx, r, wi, a); holdErr != nil {
+				return holdErr
+			}
 			return err
-		}
-		if t == nil {
-			return e.confirmCancel(ctx, c, a, "not_dispatched")
 		}
 		if err := e.st.MarkAccepted(ctx, e.st.DB, a.ID, t.ContextID, t.ID); err != nil {
 			return err
@@ -1715,8 +1742,8 @@ func (e *Engine) claim(ctx context.Context) error {
 
 // HandleClaim records a claimed run and advances it. A run already known at
 // this attempt is a duplicate and changes nothing. A higher attempt of a
-// known run is a transport redelivery: its open attempt resumes, and kagent
-// answers a resend of its message with the task already holding it.
+// known run is a transport redelivery: its open attempt resumes, preserving
+// any ambiguity until a read-only lookup finds the original task.
 func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Run) error {
 	defer e.lockRun(run.ID)()
 	var issueID int64
