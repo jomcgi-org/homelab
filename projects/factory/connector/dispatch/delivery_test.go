@@ -451,7 +451,8 @@ func (g *fakeGitHub) queued(pr int) bool {
 
 // newDeliveryEnv is newEnv with a fake GitHub and a review policy: required
 // check "test" from app 100, reviewer check "semgrep-review" from app 200,
-// trusted reviewer "reviewer", two review rounds.
+// trusted reviewer "reviewer", two review rounds, three rebase rounds and one
+// split round.
 func newDeliveryEnv(t *testing.T) *env {
 	t.Helper()
 	v := newEnv(t)
@@ -463,6 +464,7 @@ func newDeliveryEnv(t *testing.T) *env {
 		HoldLabels:       dispatch.DefaultHoldLabels,
 		MaxReviewRounds:  2,
 		MaxRebaseRounds:  3,
+		MaxSplitRounds:   1,
 	}
 	v.cfg.Links = dispatch.Links{
 		Issue:   "https://plan.example/issue/{issue}",
@@ -636,7 +638,11 @@ func TestRequestedChangesResumeTheSameSession(t *testing.T) {
 		t.Fatalf("send = %q in %q, want a revision in session %s", last.msg.MessageID, last.msg.ContextID, session)
 	}
 	text := last.msg.Parts[0].Text
-	for _, want := range []string{"Review round 1 for HL-7", "Please rename the helper.", "Review thread (file path omitted)", "This name hides"} {
+	for _, want := range []string{
+		"Review round 1 for HL-7", "Please rename the helper.", "Review thread (file path omitted)", "This name hides",
+		"The reviewer reads the PR's commit messages, not your reply.", `add a "Review response" to the commit message`,
+		"evidence the reviewer can check (file:line, a test, a CI run or an issue)", "`git commit --allow-empty`",
+	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("revision text lacks %q:\n%s", want, text)
 		}
@@ -1330,6 +1336,122 @@ func TestRebaseRoundsHaveASeparateBound(t *testing.T) {
 			}
 			if notices != 1 || len(v.gh.Enqueues()) != 0 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("limited")) != 1 {
 				t.Fatalf("limit notices = %d, enqueues = %v", notices, v.gh.Enqueues())
+			}
+		})
+	}
+}
+
+// splitOnly is the factory-reviewer's marker for a check that failed only
+// because the PR is over its size budget.
+const splitOnly = "<!-- factory-review:split-only -->"
+
+// splitRequest fails the reviewer check on sha as over the size budget.
+func (v *env) splitRequest(sha string) {
+	v.t.Helper()
+	v.gh.check(sha, "semgrep-review", 200, "failure")
+	v.gh.summarize(sha, "semgrep-review", "This PR has 3000 changed lines in 2 files. Split this PR into smaller ones.\n\n"+splitOnly)
+}
+
+// TestSplitRequestUsesItsOwnBound keeps a size failure from spending the
+// review budget (#8062 lost a review round to one).
+func TestSplitRequestUsesItsOwnBound(t *testing.T) {
+	v := newDeliveryEnv(t)
+	session := v.delivered()
+	// A spent review budget does not prevent the split.
+	if _, err := v.st.DB.Exec(`UPDATE work_item SET review_rounds = 2`); err != nil {
+		t.Fatal(err)
+	}
+	v.splitRequest("sha-1")
+	v.poll()
+	rounds := v.rounds()
+	if len(rounds) != 1 || rounds[0].Trigger != "split" {
+		t.Fatalf("rounds = %+v, want one split round", rounds)
+	}
+	for _, want := range []string{
+		"Split round 1 for HL-7", "over the reviewer's size budget", "Split this PR into smaller ones",
+		"name the parts you removed in the commit message", `"Review response"`,
+	} {
+		if !strings.Contains(rounds[0].Prompt, want) {
+			t.Errorf("prompt lacks %q: %s", want, rounds[0].Prompt)
+		}
+	}
+	if w := v.work(101); w.ReviewRounds != 2 || w.SplitRounds != 1 || w.State != store.WorkActive {
+		t.Fatalf("work item = %+v", w)
+	}
+	if sends := v.kg.Sends(); len(sends) != 2 || sends[1].msg.ContextID != session {
+		t.Fatalf("split did not continue session %s: %+v", session, sends)
+	}
+	announced := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "started split round 1 of 1") && strings.Contains(c.body, "over the reviewer's size budget") {
+			announced++
+		}
+	}
+	if announced != 1 || testutil.ToFloat64(v.m.SplitRounds.WithLabelValues("started")) != 1 || testutil.ToFloat64(v.m.ReviewRounds) != 0 {
+		t.Fatalf("split announcements = %d, want one and its metric", announced)
+	}
+
+	// The round ends without a push.
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Cannot split.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.gh.check("sha-1", "test", 100, "success")
+	v.poll()
+	idle := v.idleComments()
+	if len(idle) != 1 || !strings.Contains(idle[0], "Split round 1 of 1 for HL-7") || !strings.Contains(idle[0], "no split rounds remain") {
+		t.Fatalf("idle comments = %q", idle)
+	}
+	if testutil.ToFloat64(v.m.SplitRounds.WithLabelValues("idle")) != 1 {
+		t.Fatal("missing idle split metric")
+	}
+
+	// Past the bound a new head still over the budget waits for a person,
+	// with one notice across a takeover.
+	v.gh.push("factory/HL-7", "sha-2", "fix: still large")
+	v.splitRequest("sha-2")
+	v.poll()
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	v.poll()
+	if w := v.work(101); w.SplitRounds != 1 || w.ReviewRounds != 2 || w.State != store.WorkReview || len(v.rounds()) != 1 {
+		t.Fatalf("work item = %+v, rounds = %d", w, len(v.rounds()))
+	}
+	notices := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "reached its bound of 1 split rounds") && strings.Contains(c.body, "waits for a person") {
+			notices++
+		}
+	}
+	if notices != 1 || testutil.ToFloat64(v.m.SplitRounds.WithLabelValues("limited")) != 1 || len(v.gh.Enqueues()) != 0 {
+		t.Fatalf("limit notices = %d, enqueues = %v", notices, v.gh.Enqueues())
+	}
+	evs := v.events()
+	if last := evs[len(evs)-1]; last.CommitSHA != "sha-2" || last.Disposition != store.EventRoundLimit {
+		t.Fatalf("last event = %+v, want the sha-2 split at the bound", last)
+	}
+}
+
+// TestSplitMarkerCountsOnlyFromTheReviewerAlone spends a review round when
+// the marker comes from another check or the head has other failures.
+func TestSplitMarkerCountsOnlyFromTheReviewerAlone(t *testing.T) {
+	for _, tc := range []string{"required check", "with a failed check"} {
+		t.Run(tc, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			switch tc {
+			case "required check":
+				v.gh.check("sha-1", "test", 100, "failure")
+				v.gh.summarize("sha-1", "test", "Lint failed.\n\n"+splitOnly)
+			case "with a failed check":
+				v.splitRequest("sha-1")
+				v.gh.check("sha-1", "test", 100, "failure")
+			}
+			v.poll()
+			if rounds := v.rounds(); len(rounds) != 1 || rounds[0].Trigger != "review" {
+				t.Fatalf("rounds = %+v, want one review round", rounds)
+			}
+			if w := v.work(101); w.ReviewRounds != 1 || w.SplitRounds != 0 {
+				t.Fatalf("work item = %+v", w)
 			}
 		})
 	}

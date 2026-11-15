@@ -322,6 +322,7 @@ def test_bindings_derive_from_repositories() -> None:
             "connector.bindings.homelab.reviewerCheck.name=semgrep",
             "connector.bindings.homelab.reviewerCheck.appId=12345",
             "connector.bindings.homelab.maxRebaseRounds=5",
+            "connector.bindings.homelab.maxSplitRounds=2",
             "connector.intervals.poll=10s",
         ]
     )
@@ -343,6 +344,7 @@ def test_bindings_derive_from_repositories() -> None:
             "reviewerCheck": {"name": "semgrep", "appId": 12345},
             "maxReviewRounds": 6,
             "maxRebaseRounds": 5,
+            "maxSplitRounds": 2,
         }
     ]
     # The binding's kagent Agent is the one the chart renders.
@@ -455,6 +457,7 @@ def test_peers_admit_the_connector_pod() -> None:
         ),
         ("connector.bindings.homelab.owner=x", "owner"),
         ("connector.bindings.homelab.maxRebaseRounds=-1", "maxRebaseRounds"),
+        ("connector.bindings.homelab.maxSplitRounds=-1", "maxSplitRounds"),
         (
             # The deploy values name an App; also naming a creator fails.
             "connector.bindings.homelab.reviewerCheck.statusCreator=someone",

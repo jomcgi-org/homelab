@@ -595,6 +595,40 @@ ejections carried conflicts back to the agent: PR #8058 repeatedly failed
 enqueue with a conflict while its issue stayed silent. Detecting conflicts
 during review repairs that case within a separate bound.
 
+The reviewer marks a check that failed only because the PR is over its size
+budget with a service-only `split-only` marker. When that check, from the
+binding's reviewer App, is the only acting event on the head, it starts a
+split round instead of a review round. The prompt asks the agent to reduce
+the PR to one coherent part within the budget and to name what it removed in
+the commit message. Split rounds use a separate per-binding `maxSplitRounds`
+bound (default 1, 0 disables them), persisted as `work_item.split_rounds`.
+Past the bound, one issue comment says the PR is over the budget and waits
+for a person. `factory_connector_split_rounds_total{outcome}` counts
+`started`, `idle` and `limited`. A split request that arrives with other
+failures on the head starts the round they would start. The marker changes
+no check conclusion, and the reviewer strips its prefix from all PR and
+agent text, as it does for the human-gate marker.
+
+**Why.** A size failure is not a review finding, and no review ran.
+PR #8062 spent the first of its three review rounds on one
+([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)).
+
+Every round prompt says the reviewer reads commit messages, not the agent's
+reply. For each finding it does not fix, the agent adds a "Review response"
+to the commit it pushes: the finding ID, why, and evidence the reviewer can
+check (file:line, a test, a CI run or an issue). With no code change it
+records the responses in an empty commit (`git commit --allow-empty`), so
+the reviewer reviews a new head.
+
+**Why.** `REVIEW.md` "Clearing a finding without a fix" lets an author
+justify a medium or withdraw a wrong finding with evidence, but the agent's
+reply reached no one. The reviewer reads PR comments only from
+`trustedCommenters` and the PR body, which the connector writes without the
+change's intent. On PR #8037 the reviewer repeated a finding verbatim after
+the agent's reply showed the read was idempotent. Commit messages are already
+public, so this channel publishes nothing new
+([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)).
+
 A review round is a connector-initiated continuation, not an itsaplan
 mention-run: itsaplan v1.10.0 starts no run for an agent's comment
 (finding 13). The round is a connector run (negative id, message IDs
@@ -1083,7 +1117,16 @@ previews).
   When the earlier review cannot be found within the search bounds, the
   prompt and the check say so and the head is reviewed in full. A diff over
   budget (2500 lines or 150 files, generated files excluded by their new
-  path) fails with "split this PR" and sends no task. The prompt carries the
+  path) fails with "split this PR" and sends no task. Its summary ends with
+  the service's `split-only` marker, so the connector counts that round
+  against `maxSplitRounds`; the conclusion is unchanged. The prompt carries the
+  PR's commit messages in a delimited `commits` block: those since the earlier
+  reviewed head while it is still in the PR's history, else all of them, the
+  newest 20 within 16,000 characters and 4,000 per message, read from
+  `GET /pulls/{n}/commits` at the head. The agent weighs a "Review response"
+  in them as the author's claim and checks the evidence it cites before it
+  counts a finding justified or withdrawn. A failed read is named in the
+  prompt and the review goes ahead. The prompt also carries the
   PR's text and file names from any author, quoted inside delimited
   untrusted blocks (`REVIEW.md` "What the agent sees"). Each delimiter names
   the head and a 128-bit digest of its block's text: holding its own closer

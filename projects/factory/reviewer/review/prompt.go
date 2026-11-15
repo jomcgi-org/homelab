@@ -62,7 +62,10 @@ type PromptInput struct {
 	DroppedComments int
 	// Cited is the service's evidence about pull requests the description
 	// cites (cited.go).
-	Cited   []CitedPR
+	Cited []CitedPR
+	// Commits are the author's commit messages since PreviousHead
+	// (commits.go); nil leaves the section out.
+	Commits *Commits
 	Gate    *Gate
 	Attempt int
 	// CheckName is the reviewer's own check, reported for cited heads.
@@ -260,6 +263,9 @@ func Prompt(in PromptInput) string {
 		}
 	}
 	writeUntrusted(&b, "description", in.SHA, desc)
+	if in.Commits != nil {
+		writeCommits(&b, in.Base, in.SHA, *in.Commits)
+	}
 
 	b.WriteString("## Pull request\n\n")
 	b.WriteString("File names are quoted strings, as the PR's author chose them.\n\n")

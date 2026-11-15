@@ -101,7 +101,7 @@ links:
 		t.Fatal(err)
 	}
 	b := f.Bindings[0]
-	if *b.MaxReviewRounds != 3 || *b.MaxRebaseRounds != 3 || len(b.RequiredChecks) != 2 || b.ReviewerCheck.AppID != 4242 || b.TrustedReviewers[0] != "reviewer" {
+	if *b.MaxReviewRounds != 3 || *b.MaxRebaseRounds != 3 || *b.MaxSplitRounds != 1 || len(b.RequiredChecks) != 2 || b.ReviewerCheck.AppID != 4242 || b.TrustedReviewers[0] != "reviewer" {
 		t.Fatalf("binding = %+v", b)
 	}
 	if time.Duration(f.Intervals.ReviewPoll) != time.Minute || f.Links.Issue == "" {
@@ -118,6 +118,14 @@ links:
 			}
 		} else if err != nil || *f.Bindings[0].MaxRebaseRounds != bound {
 			t.Fatalf("maxRebaseRounds %d: config = %+v, error = %v", bound, f, err)
+		}
+		f, err = Parse([]byte(sample + fmt.Sprintf("    maxSplitRounds: %d\n", bound)))
+		if bound < 0 {
+			if err == nil {
+				t.Fatal("negative split bound accepted")
+			}
+		} else if err != nil || *f.Bindings[0].MaxSplitRounds != bound {
+			t.Fatalf("maxSplitRounds %d: config = %+v, error = %v", bound, f, err)
 		}
 	}
 }

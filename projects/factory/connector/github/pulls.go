@@ -64,6 +64,8 @@ type PullRequestCommit struct {
 			Name  string `json:"name"`
 			Email string `json:"email"`
 		} `json:"author"`
+		// Message is the commit message, which the commit's author wrote.
+		Message string `json:"message"`
 	} `json:"commit"`
 }
 

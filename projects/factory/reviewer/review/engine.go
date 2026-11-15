@@ -1100,7 +1100,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				l.WarnContext(ctx, "the PR is over the review budget; asking for a split",
 					"lines", in.size.Lines, "files", in.size.Files, "generated", in.size.Generated)
 				e.m.SplitRequests.WithLabelValues(b.Name).Inc()
-				e.finish(ctx, b, pr, run, SplitOutcome(b, in.size, e.footer(b, pr, "")), l)
+				o := SplitOutcome(b, in.size, e.footer(b, pr, ""))
+				o.Output.Summary += "\n\n" + splitOnlyMarker
+				e.finish(ctx, b, pr, run, o, l)
 				return
 			}
 		}
@@ -1378,11 +1380,13 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 			return nil, err
 		}
 	}
+	commits := e.commitMessages(ctx, b, pr, in.priorHead, l)
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
-		Comments: comments, DroppedComments: dropped, Cited: cited, Gate: in.gate, Attempt: attempt, CheckName: e.cfg.CheckName,
+		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
+		CheckName: e.cfg.CheckName,
 	})
 	msg := &kagent.Message{
 		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
@@ -1396,7 +1400,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	l.InfoContext(ctx, "review task built", "message_id", msg.MessageID, "attempt", attempt,
 		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead, "previous_unknown", in.priorUnknown,
 		"previous_findings", len(in.prior.Previous()), "trusted_comments", len(comments), "dropped_comments", dropped,
-		"cited", len(cited))
+		"cited", len(cited), "commits", len(commits.List), "commits_since", commits.Since, "commits_unread", commits.Unread)
 	return msg, nil
 }
 
