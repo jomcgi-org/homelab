@@ -273,10 +273,12 @@ const written =
       ...changes(call),
     });
 
-const draftFrom = (call: Call): Partial<CharacterSheetView> => ({
-  status: "draft",
-  sheet: call.body as Record<string, unknown>,
-});
+const draftFrom = (call: Call): Partial<CharacterSheetView> => {
+  const sheet = { ...(call.body as Record<string, unknown>) };
+  // The revision precondition is request metadata, never a stored sheet fact.
+  delete sheet.expected_updated_at;
+  return { status: "draft", sheet };
+};
 
 const decided =
   (status: "approved" | "returned") =>

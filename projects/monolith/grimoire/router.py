@@ -19,7 +19,7 @@ import binascii
 import json
 import logging
 from collections.abc import Collection
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -1424,6 +1424,10 @@ class SheetDecisionRequest(BaseModel):
         return normalized or None
 
 
+class CharacterSheetDraftUpdate(CharacterSheetV1):
+    expected_updated_at: AwareDatetime | None = None
+
+
 def _require_character_reader(
     session: Session,
     campaign_id: str,
@@ -1592,7 +1596,7 @@ def update_character_sheet_draft(
     campaign_id: str,
     player_character_id: str,
     sheet_version_id: str,
-    body: CharacterSheetV1,
+    body: CharacterSheetDraftUpdate,
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> CharacterSheetVersion:
@@ -1602,11 +1606,31 @@ def update_character_sheet_draft(
     )
     if version.status != "draft":
         raise HTTPException(status_code=409, detail="only a draft can be edited")
-    version.sheet = body.model_dump()
-    version.derived = _derive_sheet_or_422(
-        session, campaign_id, player_character_id, body
+    current_updated_at = version.updated_at
+    if current_updated_at.tzinfo is None:
+        # SQLite fixtures reload timezone-aware columns as naive UTC values.
+        current_updated_at = current_updated_at.replace(tzinfo=timezone.utc)
+    if (
+        body.expected_updated_at is not None
+        and body.expected_updated_at != current_updated_at
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This sheet changed since you opened it. "
+                "Review the latest version before saving."
+            ),
+        )
+    sheet = CharacterSheetV1.model_validate(
+        body.model_dump(exclude={"expected_updated_at"})
     )
-    version.updated_at = datetime.now(timezone.utc)
+    version.sheet = sheet.model_dump()
+    version.derived = _derive_sheet_or_422(
+        session, campaign_id, player_character_id, sheet
+    )
+    version.updated_at = max(
+        datetime.now(timezone.utc), current_updated_at + timedelta(microseconds=1)
+    )
     session.add(version)
     session.commit()
     session.refresh(version)

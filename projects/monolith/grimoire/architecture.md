@@ -92,6 +92,17 @@ the database trigger and return 500. Row locking keeps the route's conflict
 response consistent with the stored state. PostgreSQL tests inspect waiting
 transactions and verify stale ORM rows cannot overwrite a decision (#7965).
 
+Draft edits may include `expected_updated_at`, the unchanged timestamp returned
+with the draft. The route checks it after locking and refreshing the version;
+a mismatch returns 409 without changing the saved sheet. Every successful edit
+advances the timestamp, including when the application clock has not advanced.
+The field is optional for older clients and is never part of the stored sheet.
+
+**Why.** Status locking alone permits two tabs to overwrite each other's draft
+fields. The browser sends the revision it edited so a save between the latest
+poll and the PATCH cannot silently replace another tab's changes. PostgreSQL
+tests cover cached ORM state and two writers waiting on the same draft row.
+
 ### Shared corpus and play state
 
 The `grimoire` schema uses a typed entity spine rather than the standalone
@@ -709,8 +720,23 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   `src/api/session.ts`). While the tab is visible and the session has not
   ended, it fetches events after the last sequence number it holds every two
   seconds and re-reads the whole feed every fifteen, because a retraction
-  edits an old event in place. The lobby, the session list, the voice map and
-  the turn order refresh every fifteen seconds; approved sheets every sixty.
+  edits an old event in place. The lobby, roster, characters and sheet histories
+  refresh every five seconds, so an open player lobby receives character
+  assignments and open sheets receive submissions or DM decisions. The
+  session's approved mechanics and roll bonuses use the same
+  history query as the sheet editor and take only the newest approved version.
+  A sheet refresh updates a clean editor. A dirty editor merges changes to
+  different fields against its prior saved snapshot; conflicting fields block
+  saving and submission until the player chooses their edits or the saved
+  values. Browser draft updates carry that snapshot's `expected_updated_at`.
+  A rejected stale save refreshes the history without automatically retrying
+  the old payload. If another tab submits the version, unsaved edits remain
+  visible in a read-only, copyable buffer; saving stays unavailable while the
+  version is submitted. A return restores those edits to the editor, and an
+  explicit discard removes the buffer.
+  The active session list, voice map and turn order refresh every fifteen
+  seconds. With no active session, the session list refreshes every two seconds
+  so players see the DM start or resume.
   A new event refreshes the journal, and a `turn` event refreshes the turn
   order. Inventory, notes, voices, initiative, grants and reveals call their
   own API routes. The table waits for its first feed and turn order reads,

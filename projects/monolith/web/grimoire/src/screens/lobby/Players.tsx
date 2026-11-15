@@ -35,7 +35,8 @@ import { useAction } from "../../app/useAction";
 export function Players({ campaign }: { campaign: LobbyCampaignView }) {
   const members = useMembers(campaign.id);
   const characters = useCharacters(campaign.id);
-  const [managing, setManaging] = useState<MemberView | null>(null);
+  const [managingId, setManagingId] = useState<string | null>(null);
+  const managing = members.data?.find((member) => member.id === managingId);
   const [removing, setRemoving] = useState<MemberView | null>(null);
   const remove = useAction(removeMember, {
     invalidate: [keys.members(campaign.id)],
@@ -62,7 +63,7 @@ export function Players({ campaign }: { campaign: LobbyCampaignView }) {
                     <Button
                       label="Manage"
                       size="sm"
-                      onClick={() => setManaging(member)}
+                      onClick={() => setManagingId(member.id)}
                     />
                   )
                 }
@@ -81,11 +82,11 @@ export function Players({ campaign }: { campaign: LobbyCampaignView }) {
             campaign.is_owner
               ? () => {
                   setRemoving(managing);
-                  setManaging(null);
+                  setManagingId(null);
                 }
               : undefined
           }
-          onClose={() => setManaging(null)}
+          onClose={() => setManagingId(null)}
         />
       )}
       <AlertDialog

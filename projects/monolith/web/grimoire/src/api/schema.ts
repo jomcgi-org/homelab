@@ -56,6 +56,15 @@ export interface CharacterNameRequest {
   name: string;
 }
 
+export interface CharacterSheetDraftUpdate {
+  schema_version?: 1;
+  ancestry: string;
+  class_name: string;
+  level: number;
+  ability_scores: AbilityScores;
+  expected_updated_at?: string | null;
+}
+
 export interface CharacterSheetHistoryView {
   character: CharacterView;
   viewer_role: "dm" | "player";
@@ -507,7 +516,7 @@ export interface Operations {
   };
   "PATCH /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}": {
     query: undefined;
-    body: CharacterSheetV1;
+    body: CharacterSheetDraftUpdate;
     response: CharacterSheetView;
   };
   "POST /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}/approve": {
