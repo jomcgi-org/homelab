@@ -64,7 +64,7 @@ def objects(result):
 
 
 def golden(name, actual):
-    assert actual == json.loads((HERE / "goldens" / f"{name}.json").read_text())
+    assert actual == yaml.safe_load((HERE / "goldens" / f"{name}.yaml").read_text())
 
 
 def test_defaults(chart):
@@ -139,7 +139,7 @@ def test_exceptions(chart):
 
 # Error text is stable even when Helm's call stack or source line changes.
 @pytest.mark.parametrize(
-    "case", json.loads((HERE / "goldens/refusals.json").read_text())
+    "case", yaml.safe_load((HERE / "goldens/refusals.yaml").read_text())
 )
 def test_refusals(chart, case):
     config = values()
