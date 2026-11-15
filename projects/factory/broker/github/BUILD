@@ -4,6 +4,7 @@ go_library(
     name = "github",
     srcs = [
         "app.go",
+        "comments.go",
         "minter.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/broker/github",
@@ -20,7 +21,10 @@ go_library(
 
 go_test(
     name = "github_test",
-    srcs = ["github_test.go"],
+    srcs = [
+        "comments_test.go",
+        "github_test.go",
+    ],
     embed = [":github"],
     deps = [
         "//projects/factory/broker/config",

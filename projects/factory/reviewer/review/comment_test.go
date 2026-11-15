@@ -2,8 +2,6 @@ package review
 
 import (
 	"fmt"
-	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -12,21 +10,6 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
-
-// The comment token can write pull requests, which includes approving one.
-// The engine reaches it only through Comments, which must stay limited to
-// listing, creating and editing conversation comments.
-func TestCommentsOnlyWritesConversationComments(t *testing.T) {
-	typ := reflect.TypeOf((*Comments)(nil)).Elem()
-	var got []string
-	for i := range typ.NumMethod() {
-		got = append(got, typ.Method(i).Name)
-	}
-	want := []string{"CreateIssueComment", "IssueComments", "UpdateIssueComment"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("Comments methods = %v, want %v", got, want)
-	}
-}
 
 func withComments(h *harness) {
 	h.cfg.CommentAuthor = botLogin

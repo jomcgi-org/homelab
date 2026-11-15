@@ -136,8 +136,11 @@ type deps struct {
 	minter   *github.Minter
 	// reviewMinter mints the reviewer App's tokens; commentMinter its PR
 	// comment tokens, apart so a permission the App lacks fails only those.
+	// The comment token never leaves the broker: comments writes the
+	// reviewer's PR comment with it.
 	reviewMinter  *github.Minter
 	commentMinter *github.Minter
+	comments      *github.CommentProxy
 	reviewer      *auth.Reviewer
 }
 
@@ -198,12 +201,14 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 			Interval: r.MintInterval.Duration, RetryInterval: time.Minute, ConnectorMinLife: 15 * time.Minute,
 			AgentKind: "review_agent", TokenKind: "reviewer", Metrics: m, Logger: logger,
 		}
-		if len(r.CommentPermissions) > 0 {
-			// Serves tokens only; it never runs, so it writes no agent Secret.
+		if len(r.CommentPermissions) > 0 && r.CommentAuthor != "" {
+			// Mints for the comment proxy only; it never runs, so it writes
+			// no agent Secret.
 			d.commentMinter = &github.Minter{
 				App: app, Bindings: cfg.ReviewBindings, ConnectorPermissions: r.CommentPermissions,
 				ConnectorMinLife: 15 * time.Minute, TokenKind: "reviewer_comment", Metrics: m, Logger: logger,
 			}
+			d.comments = &github.CommentProxy{Minter: d.commentMinter, Author: r.CommentAuthor, Logger: logger}
 		}
 	}
 	return d, nil
@@ -256,15 +261,17 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 		reviewer = d.reviewMinter.ConnectorHandler()
 	}
 	mux.Handle("/github/reviewer-token", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, reviewer))
-	comment := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	comments := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"factory_error":"github_review_comments_not_configured"}` + "\n"))
 	}))
-	if d.commentMinter != nil {
-		comment = d.commentMinter.ConnectorHandler()
+	if d.comments != nil {
+		comments = d.comments
 	}
-	mux.Handle("/github/reviewer-comment-token", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, comment))
+	// The reviewer's PR comment, written here so the comment token, which
+	// could approve, never reaches the reviewer.
+	mux.Handle("/github/reviewer-comments", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, comments))
 	return mux
 }
 

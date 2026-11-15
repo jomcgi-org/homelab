@@ -55,6 +55,10 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "appIdFile" "/etc/factory-review-github-app/app-id"
   "installationIdFile" "/etc/factory-review-github-app/installation-id"
   "privateKeyFile" "/etc/factory-review-github-app/private-key") }}
+{{- with .Values.reviewer.commentAuthor }}
+{{- /* The broker writes the reviewer's PR comment and edits only this login's. */}}
+{{- $_ := set $config.githubReview "commentAuthor" . }}
+{{- end }}
 {{- $_ := set $config "reviewBindings" $reviewBindings }}
 {{- $_ := set $config.tokenReview "reviewerSubjects" (list (include "factory.reviewerSubject" .)) }}
 {{- end }}

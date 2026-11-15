@@ -126,10 +126,14 @@ type GitHub struct {
 	AgentSecretName      string            `json:"agentSecretName"`
 	AgentPermissions     map[string]string `json:"agentPermissions"`
 	ConnectorPermissions map[string]string `json:"connectorPermissions"`
-	// CommentPermissions scope the reviewer's PR comment token, served
-	// apart from its check token so a permission the App lacks fails only
-	// the comment. Only githubReview has them; empty serves none.
+	// CommentPermissions scope the token the broker writes the reviewer's PR
+	// comment with, apart from its check token so a permission the App lacks
+	// fails only the comment. The token never leaves the broker. Only
+	// githubReview has them; empty writes no comments.
 	CommentPermissions map[string]string `json:"commentPermissions"`
+	// CommentAuthor is the reviewer App's bot login. The broker edits only
+	// a comment this login wrote. Empty writes no comments.
+	CommentAuthor string `json:"commentAuthor"`
 }
 
 // Binding is one repository binding: the access boundary for an agent.
@@ -194,9 +198,10 @@ func Defaults() Config {
 			},
 			// The reviewer's own PR comment. GitHub refuses a PR
 			// conversation comment from a token with issues write alone
-			// (HTTP 403, 2026-11-15), so it also needs pull_requests write.
-			// The reviewer reaches this token only through review.Comments,
-			// which lists, creates and edits conversation comments.
+			// (HTTP 403, 2026-11-15), so it also needs pull_requests write,
+			// which could approve. The token stays in the broker, which
+			// lists, creates and edits only conversation comments with it
+			// (github.CommentProxy).
 			CommentPermissions: map[string]string{"issues": "write", "pull_requests": "write"},
 		},
 	}
@@ -333,8 +338,8 @@ func (c Config) Validate() error {
 	if c.GitHubEnabled() && (c.GitHub.AppID == "" || c.GitHub.InstallationID == "") {
 		errs = append(errs, errors.New("github appId and installationId are required with a private key"))
 	}
-	if len(c.GitHub.CommentPermissions) > 0 {
-		errs = append(errs, errors.New("github.commentPermissions: only the reviewer App's githubReview serves comment tokens"))
+	if len(c.GitHub.CommentPermissions) > 0 || c.GitHub.CommentAuthor != "" {
+		errs = append(errs, errors.New("github.commentPermissions and commentAuthor: only the reviewer App's githubReview writes comments"))
 	}
 	errs = append(errs, c.validateReview()...)
 	seen, namespaces := map[string]bool{}, map[string]bool{}
@@ -401,6 +406,9 @@ func (c Config) validateReview() []error {
 		if v != "read" && ((k != "issues" && k != "pull_requests") || v != "write") {
 			errs = append(errs, fmt.Errorf("githubReview.commentPermissions %s: the comment token may write only issues and pull_requests", k))
 		}
+	}
+	if r.CommentAuthor != "" && !strings.HasSuffix(r.CommentAuthor, "[bot]") {
+		errs = append(errs, errors.New("githubReview.commentAuthor must be the reviewer App's bot login, ending in [bot]"))
 	}
 	author := map[string]bool{}
 	for _, b := range c.Bindings {
