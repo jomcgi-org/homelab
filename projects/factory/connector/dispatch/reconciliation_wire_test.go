@@ -356,13 +356,16 @@ func TestTaskListCountsCannotReleaseUnknownSend(t *testing.T) {
 				wire.listResult = wirePage(t, tasks[:1], 2, 100, "")
 			case "changed between pages":
 				wire.listPages = map[string]json.RawMessage{
-					"": wirePage(t, tasks[:1], 1, 1, "second"), "second": wirePage(t, tasks[1:2], 2, 1, "")}
+					"": wirePage(t, tasks[:1], 1, 1, "second"), "second": wirePage(t, tasks[1:2], 2, 1, ""),
+				}
 			case "changed and restored":
 				wire.listPages = map[string]json.RawMessage{
-					"": wirePage(t, tasks[:1], 3, 1, "second"), "second": wirePage(t, tasks[1:2], 2, 1, "third"), "third": wirePage(t, tasks[2:], 3, 1, "")}
+					"": wirePage(t, tasks[:1], 3, 1, "second"), "second": wirePage(t, tasks[1:2], 2, 1, "third"), "third": wirePage(t, tasks[2:], 3, 1, ""),
+				}
 			case "stable pages", "empty final page":
 				wire.listPages = map[string]json.RawMessage{
-					"": wirePage(t, tasks[:1], 2, 1, "second"), "second": wirePage(t, tasks[1:], 2, 1, "")}
+					"": wirePage(t, tasks[:1], 2, 1, "second"), "second": wirePage(t, tasks[1:], 2, 1, ""),
+				}
 				if kind == "empty final page" {
 					wire.listPages["second"] = wirePage(t, tasks[1:], 2, 1, "end")
 					wire.listPages["end"] = wirePage(t, []*kagent.Task{}, 2, 1, "")
@@ -394,10 +397,12 @@ func TestTaskListCountDriftStillAdoptsPositiveOriginal(t *testing.T) {
 				wire.listResult = wirePage(t, []*kagent.Task{original}, 2, 100, "")
 			case "changing total":
 				wire.listPages = map[string]json.RawMessage{
-					"": wirePage(t, []*kagent.Task{unrelated}, 3, 1, "second"), "second": wirePage(t, []*kagent.Task{original}, 2, 1, "")}
+					"": wirePage(t, []*kagent.Task{unrelated}, 3, 1, "second"), "second": wirePage(t, []*kagent.Task{original}, 2, 1, ""),
+				}
 			case "duplicate rows":
 				wire.listPages = map[string]json.RawMessage{
-					"": wirePage(t, []*kagent.Task{unrelated}, 2, 1, "second"), "second": wirePage(t, []*kagent.Task{unrelated}, 2, 1, "third"), "third": wirePage(t, []*kagent.Task{original}, 2, 1, "")}
+					"": wirePage(t, []*kagent.Task{unrelated}, 2, 1, "second"), "second": wirePage(t, []*kagent.Task{unrelated}, 2, 1, "third"), "third": wirePage(t, []*kagent.Task{original}, 2, 1, ""),
+				}
 			}
 			wire.mu.Unlock()
 			v.tickReconciliation(1, v.cfg.DispatchWindow)
