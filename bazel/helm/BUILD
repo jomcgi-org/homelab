@@ -92,6 +92,7 @@ SKIPPED_MANIFEST_SETS = {
     "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
     "projects/platform/cloudnative-pg/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
     "projects/platform-factory/edge/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by its own :template_test and trialled on the factory cluster.",
+    "projects/platform-factory/external-secrets/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/platform-factory/external-secrets/chart:external_secrets_test and :lint_test; server-side admission checks are documented in its README.",
     "projects/shared/helm/factory-library": "Library chart, which renders nothing on its own. Workload renders and refusals are covered by //projects/shared/helm/factory-library:library_test; the first consumer is covered by //projects/factory-landing/chart:landing_test.",
     "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
 }
