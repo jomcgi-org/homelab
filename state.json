@@ -1,17 +1,6 @@
 {
   "pages_url": "https://jomcgi-org.github.io/homelab/",
-  "previews": {
-    "7999": {
-      "run_id": 43661179361,
-      "sha": "4103300d88002200ea1ca3bc5f2d4257f3ff5b9b",
-      "updated_at": 1794705625
-    },
-    "8000": {
-      "run_id": 43661187014,
-      "sha": "fa8cc3ababdf075b748a274f5fd26d3025db61af",
-      "updated_at": 1794705303
-    }
-  },
+  "previews": {},
   "repository": "jomcgi-org/homelab",
   "schema": "fixture-preview-state-v1"
 }
