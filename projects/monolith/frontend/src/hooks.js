@@ -27,7 +27,7 @@ const APEX_PREFIX = "/public";
 // Keep this aligned with the baked shotter-egress.json mapping; other service
 // names, including the private frontend, are not public aliases.
 const PUBLIC_SERVICE_HOST =
-  "monolith-public-frontend.monolith-public.svc.cluster.local";
+  "monolith-public-frontend.monolith-public.svc.cluster.local"; // ratchet-allow: svc-url (exact inbound Host alias for the baked Shotter mapping)
 
 // Local previews (adapter-node build or vite dev on a workstation) serve the
 // public tier: without this every path 404s locally because nothing maps the
