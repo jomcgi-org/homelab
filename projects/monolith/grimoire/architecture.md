@@ -1127,3 +1127,34 @@ It also unmounts queued speech and toasts. Ordinary lobby refreshes, renamed
 campaigns, new memberships and temporary lobby failures preserve unsaved
 work. The live check remains: hold a real login past the access-token lifetime
 and confirm the session stays Live without a reload.
+
+A kept draft records its session ID. A restored private reply keeps its target
+action and resolution choice only in that same session with the same available
+recipient. The original, unretracted private action must still be present and
+its `author_member_id` must still hold the saved character. Character existence
+alone is insufficient: reassignment, membership removal or a missing action
+restricts the unsent text to the DM. The same check runs when the open reply's
+feed or roster refreshes. This does not change who can read historical events.
+Retrying an unchanged draft reuses its request ID, including when a lost
+acknowledgement left its action already resolved. Cancelling or explicitly
+selecting a reply clears the pending request identity, even if the DM later
+chooses the same action and text again.
+
+If the session changed, the saved draft has no session ID, or its recipient is
+no longer available, the text is kept for the DM with a visible and announced
+explanation. Its reply target, resolution choice and request ID are cleared.
+The same reset applies when an already mounted composer moves to another
+session. Reply targets carry their session ID across composer remounts, and
+a completed send from an unmounted composer cannot clear a newer reply. A
+successful send clears the draft only if its request ID and complete message
+context still match, including its reply target. The author chooses a recipient
+again before widening the audience.
+
+Temporary table loading keeps the composer snapshot in memory above the table
+loading boundary, scoped to its campaign, account, role and character. Restoring
+it uses the same session and recipient checks as sign-in recovery. The viewer
+privacy boundary removes that memory with the session screen; unmount cleanup
+never writes a draft back to storage after the boundary has cleared it.
+
+**Why.** Journal replies refer to actions within one session. Carrying an old
+reply into a new session would leave the original action waiting for the DM.

@@ -87,6 +87,7 @@ describe("session sign-in expiry", () => {
   it("keeps a DM's composer and reads it back once", () => {
     vi.stubGlobal("sessionStorage", memoryStorage());
     const composer = {
+      sessionId: "same-session",
       text: "You hear a whisper.",
       audience: `pc:${pcA}`,
       replyTo: { id: "event-1", name: "Aria" },
@@ -97,11 +98,29 @@ describe("session sign-in expiry", () => {
     };
     expect(keepDraft(campaignId, dmViewer, composer)).toBe(true);
     const page = {
+      sessionId: "same-session",
       dm: true,
       characters: [{ id: pcA }],
       speakers: ["narrator", npc, "label:custom"],
+      events: [
+        {
+          id: "event-1",
+          campaign_id: campaignId,
+          session_id: "same-session",
+          kind: "action",
+          audience: "dm",
+          author_member_id: "original-author",
+          retracted_at: null,
+        },
+      ],
+      members: [
+        { id: "original-author", role: "player", player_character_id: pcA },
+      ],
     };
-    expect(takeDraft(campaignId, dmViewer, page)).toEqual(composer);
+    expect(takeDraft(campaignId, dmViewer, page)).toEqual({
+      ...composer,
+      resetReason: null,
+    });
     expect(takeDraft(campaignId, dmViewer, page)).toBe(null);
   });
 
@@ -156,6 +175,61 @@ describe("session sign-in expiry", () => {
       audience: "dm",
       replyTo: null,
       speakerKey: "narrator",
+    });
+  });
+
+  it.each(["old-session", undefined])(
+    "drops a reply context from a different or unknown session (%s)",
+    (sessionId) => {
+      vi.stubGlobal("sessionStorage", memoryStorage());
+      keepDraft(campaignId, dmViewer, {
+        sessionId,
+        text: "Keep this private.",
+        audience: `pc:${pcA}`,
+        replyTo: { id: "event-1", name: "Aria" },
+        resolved: true,
+        pending: { signature: "old-signature", id: "old-request" },
+      });
+      expect(
+        takeDraft(campaignId, dmViewer, {
+          sessionId: "new-session",
+          dm: true,
+          characters: [{ id: pcA }],
+        }),
+      ).toMatchObject({
+        sessionId: "new-session",
+        text: "Keep this private.",
+        audience: "dm",
+        replyTo: null,
+        resolved: false,
+        pending: null,
+        resetReason: "session",
+      });
+    },
+  );
+
+  it("discards retry and resolution context when the recipient disappears", () => {
+    vi.stubGlobal("sessionStorage", memoryStorage());
+    keepDraft(campaignId, dmViewer, {
+      sessionId: "same-session",
+      text: "Keep this private.",
+      audience: `pc:${pcA}`,
+      replyTo: { id: "event-1", name: "Aria" },
+      resolved: true,
+      pending: { signature: "old-signature", id: "old-request" },
+    });
+    expect(
+      takeDraft(campaignId, dmViewer, {
+        sessionId: "same-session",
+        dm: true,
+        characters: [],
+      }),
+    ).toMatchObject({
+      audience: "dm",
+      replyTo: null,
+      resolved: false,
+      pending: null,
+      resetReason: "recipient",
     });
   });
 });

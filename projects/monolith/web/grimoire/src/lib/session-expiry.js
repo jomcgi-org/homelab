@@ -81,11 +81,7 @@ export function dropDraft(campaignId) {
 // dropped. A restored choice never widens the audience: a recipient the page
 // no longer offers falls back to the DM, and a speaker it no longer offers
 // falls back to the narrator.
-export function takeDraft(
-  campaignId,
-  viewer,
-  { dm, characters, speakers = ["narrator"] },
-) {
+export function takeDraft(campaignId, viewer, context) {
   let saved;
   try {
     const store = storage();
@@ -94,6 +90,64 @@ export function takeDraft(
   } catch {
     return null;
   }
+  return restoreDraft(saved, viewer, { ...context, campaignId });
+}
+
+// A character can change hands without being deleted. An unsent reply belongs
+// to the original action's author, not to whoever later receives that character.
+/**
+ * @param {{ id: string } | null} reply
+ * @param {{ campaignId: string, sessionId: string, characterId: string,
+ *   events?: import("../api/schema").SessionEventView[],
+ *   members?: import("../api/schema").MemberView[] }} context
+ */
+export function replyStillAvailable(
+  reply,
+  { campaignId, sessionId, characterId, events = [], members = [] },
+) {
+  const action = events.find((row) => row.id === reply?.id);
+  if (
+    !action ||
+    action.campaign_id !== campaignId ||
+    action.session_id !== sessionId ||
+    action.kind !== "action" ||
+    action.audience !== "dm" ||
+    action.retracted_at ||
+    !action.author_member_id
+  )
+    return false;
+  const author = members.find((row) => row.id === action.author_member_id);
+  return (
+    author?.role === "player" &&
+    author.player_character_id === characterId &&
+    members.filter((row) => row.player_character_id === characterId).length ===
+      1
+  );
+}
+
+// Both reload recovery and temporary session loading use this same scope check.
+// This helper never persists anything while a component unmounts.
+/**
+ * @param {*} saved
+ * @param {{ id: string, role: string }} viewer
+ * @param {{ campaignId: string, sessionId?: string, dm: boolean,
+ *   characters: Array<{id: string}>, speakers?: string[],
+ *   events?: import("../api/schema").SessionEventView[],
+ *   members?: import("../api/schema").MemberView[] }} context
+ */
+export function restoreDraft(
+  saved,
+  viewer,
+  {
+    campaignId,
+    sessionId = "",
+    dm,
+    characters,
+    speakers = ["narrator"],
+    events = [],
+    members = [],
+  },
+) {
   if (
     typeof viewer?.id !== "string" ||
     saved?.viewer?.id !== viewer.id ||
@@ -103,29 +157,57 @@ export function takeDraft(
   if (typeof saved.text !== "string" || !saved.text.trim()) return null;
   const audiences = ["table", "dm"];
   if (dm) audiences.push(...characters.map((row) => `pc:${row.id}`));
-  const audience = audiences.includes(saved.audience) ? saved.audience : "dm";
+  const sameSession =
+    typeof sessionId === "string" &&
+    sessionId.length > 0 &&
+    saved.sessionId === sessionId;
   const reply = saved.replyTo;
+  const validReply =
+    dm &&
+    typeof saved.audience === "string" &&
+    saved.audience.startsWith("pc:") &&
+    typeof reply?.id === "string" &&
+    typeof reply?.name === "string" &&
+    replyStillAvailable(reply, {
+      campaignId,
+      sessionId,
+      characterId: saved.audience.slice(3),
+      events,
+      members,
+    });
+  const resetReason = !sameSession
+    ? "session"
+    : !audiences.includes(saved.audience) || (reply != null && !validReply)
+      ? "recipient"
+      : null;
+  const speakerKey = speakers.includes(saved.speakerKey)
+    ? saved.speakerKey
+    : "narrator";
+  const speakerLabel = String(saved.speakerLabel ?? "").slice(0, 64);
+  const text = saved.text.slice(0, 8000);
   const pending = saved.pending;
+  const unchanged =
+    !resetReason &&
+    text === saved.text &&
+    speakerKey === saved.speakerKey &&
+    speakerLabel === saved.speakerLabel;
   return {
-    // A send interrupted before the reload keeps its request id, so retrying
-    // it cannot post the message twice.
+    sessionId,
+    resetReason,
+    // Reuse a request only when its session and composer context survived.
     pending:
-      typeof pending?.signature === "string" && typeof pending?.id === "string"
+      unchanged &&
+      typeof pending?.signature === "string" &&
+      typeof pending?.id === "string"
         ? { signature: pending.signature, id: pending.id }
         : null,
-    text: saved.text.slice(0, 8000),
-    audience,
+    text,
+    audience: resetReason ? "dm" : saved.audience,
     replyTo:
-      audience.startsWith("pc:") &&
-      typeof reply?.id === "string" &&
-      typeof reply?.name === "string"
-        ? { id: reply.id, name: reply.name }
-        : null,
-    resolved: saved.resolved !== false,
-    speakerKey: speakers.includes(saved.speakerKey)
-      ? saved.speakerKey
-      : "narrator",
-    speakerLabel: String(saved.speakerLabel ?? "").slice(0, 64),
+      !resetReason && validReply ? { id: reply.id, name: reply.name } : null,
+    resolved: !resetReason && saved.resolved !== false,
+    speakerKey,
+    speakerLabel,
   };
 }
 

@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
@@ -6,19 +12,45 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
+import { useAnnounce } from "@astryxdesign/core/hooks";
 import { postEvent, afterCommand } from "../../api/session";
 import { signIn } from "../../app/signIn";
 import { useAction } from "../../app/useAction";
 import { FREE_LABEL, presetSpeakers } from "../../lib/read-aloud.js";
 import { composeMessage } from "../../lib/session-compose.js";
-import { dropDraft, keepDraft, takeDraft } from "../../lib/session-expiry.js";
+import {
+  dropDraft,
+  keepDraft,
+  replyStillAvailable,
+  restoreDraft,
+  takeDraft,
+} from "../../lib/session-expiry.js";
 import type { Table } from "./useTable";
 
 /** A private action the DM is answering. */
 export interface ReplyTarget {
+  sessionId: string;
   id: string;
   name: string;
   characterId: string;
+}
+
+interface Draft {
+  sessionId: string;
+  text: string;
+  audience: string;
+  replyTo: Pick<ReplyTarget, "id" | "name"> | null;
+  resolved: boolean;
+  speakerKey: string;
+  speakerLabel: string;
+  pending: { signature: string; id: string } | null;
+}
+
+/** Lives above table loading, but disappears with the viewer privacy boundary. */
+export interface ComposerMemory {
+  campaignId: string;
+  viewer: { id: string; role: string; characterId: string | null };
+  draft: Draft;
 }
 
 interface ComposerProps {
@@ -27,9 +59,15 @@ interface ComposerProps {
   /** Set by the feed's "Reply privately" button; cleared here. */
   reply: ReplyTarget | null;
   onReplyDone: () => void;
+  memory: RefObject<ComposerMemory | null>;
   /** Extra actions shown beside Send: dice, handouts. */
   tools?: React.ReactNode;
 }
+
+const SESSION_CHANGED =
+  "The session changed. Your text was kept for the DM. Choose who should receive it before sending.";
+const RECIPIENT_CHANGED =
+  "The recipient is no longer available. Your text was kept for the DM. Choose who should receive it before sending.";
 
 const SPEAKER_LABEL = /^(?!\.+$)[A-Za-z0-9 _'.-]{1,64}$/;
 
@@ -41,13 +79,15 @@ const SPEAKER_LABEL = /^(?!\.+$)[A-Za-z0-9 _'.-]{1,64}$/;
 export function Composer({
   table,
   sessionId,
-  reply,
+  reply: selectedReply,
   onReplyDone,
+  memory,
   tools,
 }: ComposerProps) {
   const { viewer, characters, voices } = table;
   const campaignId = viewer.campaign.id;
   const dm = viewer.dm;
+  const [remembered] = useState(() => memory.current);
   const speakers = presetSpeakers(voices) as Array<{
     key: string;
     name: string;
@@ -59,34 +99,92 @@ export function Composer({
   ];
 
   const [text, setText] = useState("");
+  const [draftSessionId, setDraftSessionId] = useState(sessionId);
+  const sessionChanged =
+    draftSessionId !== sessionId ||
+    (selectedReply !== null && selectedReply.sessionId !== sessionId);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const currentSession = useRef(sessionId);
+  currentSession.current = sessionId;
+  const [notice, setNotice] = useState("");
+  const announce = useAnnounce();
   const [audience, setAudience] = useState("table");
   const [speakerKey, setSpeakerKey] = useState("narrator");
   const [speakerLabel, setSpeakerLabel] = useState("");
   const [resolved, setResolved] = useState(true);
+  const [restoredReply, setRestoredReply] = useState<ReplyTarget | null>(null);
+  const candidateReply = selectedReply ?? restoredReply;
+  const recipientChanged =
+    !sessionChanged &&
+    candidateReply !== null &&
+    !replyStillAvailable(candidateReply, {
+      campaignId,
+      sessionId,
+      characterId: candidateReply.characterId,
+      events: table.events,
+      members: table.members,
+    });
+  const contextChanged = sessionChanged || recipientChanged;
+  const reply = contextChanged ? null : candidateReply;
   const pending = useRef<{ signature: string; id: string } | null>(null);
+  const finishReply = () => {
+    pending.current = null;
+    setRestoredReply(null);
+    onReplyDone();
+  };
+  const liveSignature = useRef("");
   const input = useRef<HTMLTextAreaElement>(null);
 
   const send = useAction(postEvent, {
     invalidate: afterCommand(campaignId, sessionId),
     onSuccess: (_event, sent) => {
-      // Clear only if the box still holds what was sent (the body is trimmed).
-      if (text.trim() === (sent.event.body as { text: string }).text) {
+      if (!mounted.current || sent.sessionId !== currentSession.current) return;
+      // Identical text can belong to a newly selected private reply. Clear
+      // only the request whose full composer context still matches.
+      if (
+        pending.current !== null &&
+        pending.current.id === sent.event.request_id &&
+        pending.current.signature === liveSignature.current
+      ) {
         setText("");
+        setNotice("");
         pending.current = null;
-        if (reply) onReplyDone();
+        if (reply) finishReply();
         dropDraft(campaignId);
       }
     },
   });
 
-  const snapshot = () => ({
+  const snapshot = (): Draft => ({
+    sessionId,
     text,
-    audience: reply ? `pc:${reply.characterId}` : audience,
+    audience: contextChanged
+      ? "dm"
+      : reply
+        ? `pc:${reply.characterId}`
+        : audience,
     replyTo: reply ? { id: reply.id, name: reply.name } : null,
-    resolved,
+    resolved: !contextChanged && resolved,
     speakerKey,
     speakerLabel,
-    pending: pending.current,
+    pending: contextChanged ? null : pending.current,
+  });
+  useLayoutEffect(() => {
+    memory.current = {
+      campaignId,
+      viewer: {
+        id: viewer.user.id,
+        role: viewer.campaign.role,
+        characterId: viewer.campaign.player_character_id,
+      },
+      draft: snapshot(),
+    };
   });
   const live = useRef(snapshot);
   live.current = snapshot;
@@ -95,19 +193,69 @@ export function Composer({
 
   // Restore a draft kept across a sign-in reload, once.
   useEffect(() => {
-    const kept = takeDraft(
+    const owner = { id: viewer.user.id, role: viewer.campaign.role };
+    const context = {
       campaignId,
-      { id: viewer.user.id, role: viewer.campaign.role },
-      { dm, characters, speakers: speakerKeys },
-    ) as ReturnType<typeof snapshot> | null;
+      sessionId,
+      dm,
+      characters,
+      speakers: speakerKeys,
+      events: table.events,
+      members: table.members,
+    };
+    const sameViewer =
+      remembered?.campaignId === campaignId &&
+      remembered.viewer.id === owner.id &&
+      remembered.viewer.role === owner.role &&
+      remembered.viewer.characterId === viewer.campaign.player_character_id;
+    const kept = (
+      sameViewer
+        ? restoreDraft(
+            { ...remembered.draft, viewer: remembered.viewer },
+            owner,
+            context,
+          )
+        : takeDraft(campaignId, owner, context)
+    ) as
+      | (ReturnType<typeof snapshot> & {
+          resetReason: "session" | "recipient" | null;
+        })
+      | null;
     if (!kept) return;
     setText(kept.text);
     setAudience(kept.audience);
+    if (kept.replyTo)
+      setRestoredReply({
+        ...kept.replyTo,
+        sessionId,
+        characterId: kept.audience.slice(3),
+      });
     setResolved(kept.resolved);
     setSpeakerKey(kept.speakerKey);
     setSpeakerLabel(kept.speakerLabel);
     pending.current = kept.pending;
+    if (kept.resetReason)
+      setNotice(
+        kept.resetReason === "session" ? SESSION_CHANGED : RECIPIENT_CHANGED,
+      );
   }, [campaignId]);
+
+  // A cached next session can replace this table without remounting the box.
+  // Keep the text, but never attach an old action or retry to the new session.
+  useEffect(() => {
+    if (!contextChanged) return;
+    setDraftSessionId(sessionId);
+    finishReply();
+    setAudience("dm");
+    setResolved(false);
+    pending.current = null;
+    if (text.trim())
+      setNotice(sessionChanged ? SESSION_CHANGED : RECIPIENT_CHANGED);
+  }, [sessionId, contextChanged]);
+
+  useEffect(() => {
+    if (notice) announce(notice);
+  }, [notice, announce]);
 
   // Before an automatic reload: hold it while a send is in flight (a message
   // that landed must not come back as a draft), otherwise keep the draft.
@@ -131,12 +279,14 @@ export function Composer({
   }, [speakerKeys.join("|")]);
 
   useEffect(() => {
-    if (reply) {
+    if (selectedReply && !sessionChanged) {
+      pending.current = null;
+      setRestoredReply(null);
       setText("");
       setResolved(true);
       input.current?.focus();
     }
-  }, [reply]);
+  }, [selectedReply]);
 
   // Ctrl or Cmd with Enter sends. Enter alone stays a new line, and an Enter
   // that confirms an IME composition is never a send.
@@ -160,27 +310,30 @@ export function Composer({
 
   const label = speakerLabel.trim();
   const labelValid = speakerKey !== FREE_LABEL || SPEAKER_LABEL.test(label);
-  const canSend = text.trim().length > 0 && labelValid && !send.isPending;
+  const canSend =
+    text.trim().length > 0 && labelValid && !send.isPending && !contextChanged;
+
+  const body = text.trim();
+  const message = composeMessage({
+    text: body,
+    dm,
+    audience: reply ? `pc:${reply.characterId}` : audience,
+    replyTo: reply,
+    resolved,
+    speakerKey: speakerKey === FREE_LABEL ? label : speakerKey,
+  }) as {
+    kind: "narration" | "action";
+    audience: "table" | "dm" | "pcs";
+    pcIds: string[];
+    replyTo?: string;
+    resolved: boolean;
+    speakerKey?: string;
+  };
+  const signature = JSON.stringify({ sessionId, ...message, text: body });
+  liveSignature.current = signature;
 
   const submit = () => {
-    const body = text.trim();
     if (!canSend || !body) return;
-    const message = composeMessage({
-      text: body,
-      dm,
-      audience: reply ? `pc:${reply.characterId}` : audience,
-      replyTo: reply,
-      resolved,
-      speakerKey: speakerKey === FREE_LABEL ? label : speakerKey,
-    }) as {
-      kind: "narration" | "action";
-      audience: "table" | "dm" | "pcs";
-      pcIds: string[];
-      replyTo?: string;
-      resolved: boolean;
-      speakerKey?: string;
-    };
-    const signature = JSON.stringify({ sessionId, ...message, text: body });
     if (pending.current?.signature !== signature)
       pending.current = { signature, id: crypto.randomUUID() };
     send.run({
@@ -208,6 +361,11 @@ export function Composer({
 
   return (
     <VStack gap={3} as="section" aria-label="Message">
+      {notice && (
+        <Text type="body" color="secondary">
+          {notice}
+        </Text>
+      )}
       {reply && (
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Text type="label">Replying privately to {reply.name}</Text>
@@ -215,7 +373,7 @@ export function Composer({
             label="Cancel reply"
             size="sm"
             variant="ghost"
-            onClick={onReplyDone}
+            onClick={finishReply}
           />
         </HStack>
       )}
@@ -290,7 +448,13 @@ export function Composer({
                     }))
                   : []),
               ]}
-              value={reply ? `pc:${reply.characterId}` : audience}
+              value={
+                contextChanged
+                  ? "dm"
+                  : reply
+                    ? `pc:${reply.characterId}`
+                    : audience
+              }
               onChange={setAudience}
               width={190}
             />
