@@ -23,7 +23,7 @@ _login_watch_tasks: set[asyncio.Task] = set()
 async def codex_login_gate(
     model: str | None, grant: str = _DEFAULT_GRANT
 ) -> dict | None:
-    """Return a user-facing login response when a Codex grant is not ready.
+    """Return a user-facing credential wait when a Codex grant is not ready.
 
     Non-Codex sessions skip the broker entirely. An unreachable broker does not
     block the turn, since the sidecar may still have a cached token.
@@ -43,6 +43,17 @@ async def codex_login_gate(
         return None
     if status.get("state") == "granted":
         return None
+    if status.get("state") == "blocked":
+        return {
+            "login_required": False,
+            "refresh_blocked": True,
+            "grant": grant,
+            "message": (
+                "Codex is waiting for refreshed credentials. This session will "
+                "resume automatically when they arrive. If recovery is needed, "
+                "start a new device login from the Codex login page."
+            ),
+        }
 
     try:
         data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
@@ -112,10 +123,14 @@ def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> No
                 if state == "granted":
                     await on_granted()
                     return
+                if state == "blocked":
+                    deadline = None
+                elif deadline is None:
+                    deadline = monotonic() + _LOGIN_TIMEOUT
                 if state == "failed":
                     logger.error("Codex broker login failed")
                     return
-                if state == "none" and monotonic() >= deadline:
+                if state == "none" and deadline is not None and monotonic() >= deadline:
                     return
             await asyncio.sleep(_LOGIN_POLL_INTERVAL)
 

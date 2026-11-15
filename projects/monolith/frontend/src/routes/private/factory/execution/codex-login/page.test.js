@@ -29,6 +29,81 @@ afterEach(async () => {
 
 describe("Codex login page", () => {
   test.each(["prod", "dev"])(
+    "offers wait and explicit device recovery for blocked %s",
+    async (environment) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          Response.json({
+            user_code: "RECOVERY-CODE",
+            verification_url: "https://example.test/device",
+            environment,
+            grant: "codex-cluster",
+          }),
+        ),
+      );
+      vi.stubGlobal("navigator", {});
+      vi.spyOn(window, "open").mockImplementation(() => null);
+      const { component, target } = await render(
+        { environment, state: "blocked" },
+        true,
+      );
+
+      expect(target.querySelector('[role="status"]').textContent).toBe(
+        "Waiting for refreshed credentials",
+      );
+      expect(target.textContent).toContain("wait and check the");
+      expect(target.textContent).toContain("new device login below");
+      expect(target.querySelector("button.check").textContent).toBe(
+        "Check connection",
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+
+      target.querySelector("button.primary-action").click();
+      await vi.waitFor(() =>
+        expect(target.querySelector("code")?.textContent).toBe("RECOVERY-CODE"),
+      );
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `/private/factory/execution/codex-login/start${environment === "dev" ? "?grant=codex-cluster&environment=dev" : ""}`,
+        { method: "POST" },
+      );
+
+      component.$set({ data: { environment, state: "granted" } });
+      await tick();
+      expect(target.querySelector('[role="status"]').textContent).toBe(
+        "Login saved",
+      );
+      expect(target.querySelector("code")).toBeNull();
+      expect(target.querySelector("button.primary-action")).toBeNull();
+      expect(globalThis.fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  test("offers an explicit dev action and a read-only connection check", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { target } = await render({ environment: "dev", state: "none" });
+
+    expect(target.querySelector("h2").textContent).toBe("Dev conformance");
+    expect(
+      target.querySelector('nav a[aria-current="page"]').getAttribute("href"),
+    ).toBe("?environment=dev");
+    expect(
+      target.querySelector("button.primary-action").textContent.trim(),
+    ).toBe("Authorize Codex for dev conformance");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(target.querySelector("form").getAttribute("method")).toBe("GET");
+    expect(target.querySelector('input[name="environment"]').value).toBe("dev");
+    expect(
+      target.querySelector("form").hasAttribute("data-sveltekit-reload"),
+    ).toBe(true);
+    expect(
+      [...target.querySelectorAll("nav a")].every((link) =>
+        link.hasAttribute("data-sveltekit-reload"),
+      ),
+    ).toBe(true);
+  });
+
+  test.each(["prod", "dev"])(
     "retries saving an approved %s login without another device code",
     async (environment) => {
       vi.stubGlobal(

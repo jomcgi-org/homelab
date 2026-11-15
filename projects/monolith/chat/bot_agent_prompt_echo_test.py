@@ -60,7 +60,8 @@ def _make_bot() -> ChatBot:
 
 
 @pytest.mark.asyncio
-async def test_handle_agent_command_starts_session_after_prompt_echo():
+@pytest.mark.parametrize("refresh_blocked", [False, True])
+async def test_handle_agent_command_starts_session_after_prompt_echo(refresh_blocked):
     """The owner starts an EmberVM session after the prompt echo and intro."""
     bot = _make_bot()
 
@@ -92,13 +93,27 @@ async def test_handle_agent_command_starts_session_after_prompt_echo():
             "agent_sessions.api.start_session_for_thread", new_callable=AsyncMock
         ) as start_session,
     ):
+        start_session.return_value = (
+            {
+                "refresh_blocked": True,
+                "login_required": False,
+                "message": "Waiting for refreshed credentials; this session will resume.",
+            }
+            if refresh_blocked
+            else 42
+        )
         await bot._handle_agent_command(
             interaction, "add a health check", "jomcgi/homelab"
         )
 
-    assert thread.send.call_count == 2
-    echo_call_content = thread.send.call_args_list[0][0][0]
-    assert echo_call_content.startswith("Prompt from <@42>:")
+    if refresh_blocked:
+        thread.send.assert_awaited_once_with(
+            "🔐 Waiting for refreshed credentials; this session will resume."
+        )
+    else:
+        assert thread.send.call_count == 2
+        echo_call_content = thread.send.call_args_list[0][0][0]
+        assert echo_call_content.startswith("Prompt from <@42>:")
 
     start_session.assert_awaited_once_with(
         str(thread.id), "add a health check", "jomcgi/homelab", model="luna"

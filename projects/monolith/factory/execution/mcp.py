@@ -2380,6 +2380,7 @@ def _dev_login_payload(data: object, method: str, status: int) -> dict:
             "persistence_pending": "Login approved; retry saving the login",
             "granted": "Stored dev grant present",
             "failed": "Device login failed; start a new login",
+            "blocked": "Await refreshed credentials or start a new device login",
         }
         state = data.get("state")
         if not isinstance(state, str) or state not in details:

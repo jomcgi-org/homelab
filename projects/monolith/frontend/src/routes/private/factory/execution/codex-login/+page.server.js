@@ -6,6 +6,7 @@ const STATES = new Set([
   "persistence_pending",
   "granted",
   "failed",
+  "blocked",
 ]);
 
 export async function load({ url, fetch, setHeaders }) {

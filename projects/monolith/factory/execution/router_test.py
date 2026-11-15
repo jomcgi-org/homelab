@@ -3802,3 +3802,133 @@ def test_factory_edges_delete_removes_edge(tmp_path, monkeypatch):
         assert response.status_code == 403
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("state", ["none", "blocked"])
+def test_router_start_codex_credential_wait_preserves_session_and_resumes(
+    client, session, monkeypatch, state
+):
+    calls = []
+    watched = []
+    scheduled = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        if method == "GET":
+            return {"state": state}
+        assert state == "none", "a recoverable refresh must not start device login"
+        return {"verification_url": "https://example.test", "user_code": "CODE"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(
+        "factory.execution.router._persist_session",
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router.watch_for_login",
+        lambda grant, callback: watched.append((grant, callback)),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._set_session_status",
+        lambda session_id, status: store.update_session_status(
+            session, session_id, status
+        ),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._schedule_next_message", scheduled.append
+    )
+
+    body = client.post(
+        "/api/agents/sessions", json={"prompt": "Hello", "model": "luna"}
+    ).json()
+
+    assert body["accepted"] is False
+    assert body["login_required"] is (state == "none")
+    if state == "none":
+        assert body["verification_url"] == "https://example.test"
+        assert body["user_code"] == "CODE"
+    else:
+        assert body["refresh_blocked"] is True
+        assert "verification_url" not in body and "user_code" not in body
+    assert body["session_id"]
+    assert body["turn"] == 1
+    row = store.get_session(session, body["session_id"])
+    assert row.discord_thread is None
+    assert row.status == "awaiting_login"
+    assert watched and watched[0][0] == "codex-cluster"
+    assert scheduled == []
+    expected = [("GET", "/grants/codex-cluster/login/status")]
+    if state == "none":
+        expected.append(("POST", "/grants/codex-cluster/login/start"))
+    assert calls == expected
+
+    if state == "blocked":
+        # Exercise the real watcher with this session's resume callback.
+        # Even an elapsed device-flow deadline and a failed status read must
+        # not abandon recovery or start a login while the write is pending.
+        monkeypatch.setattr(codex_login, "_LOGIN_TIMEOUT", 0)
+        monkeypatch.setattr(codex_login, "_LOGIN_POLL_INTERVAL", 0)
+        statuses = iter(["blocked", "unreachable", "blocked", "granted"])
+
+        async def delayed_replacement(method, path):
+            calls.append((method, path))
+            assert method == "GET"
+            next_state = next(statuses)
+            if next_state == "unreachable":
+                raise httpx.ConnectError("storage read temporarily unavailable")
+            return {"state": next_state}
+
+        monkeypatch.setattr(mcp, "_broker_request", delayed_replacement)
+
+        async def wait_for_replacement():
+            previous = set(codex_login._login_watch_tasks)
+            codex_login.watch_for_login(*watched[0])
+            await asyncio.wait_for(
+                asyncio.gather(*(codex_login._login_watch_tasks - previous)), timeout=1
+            )
+
+        asyncio.run(wait_for_replacement())
+        assert len(calls) == 5
+        assert all(method == "GET" for method, _ in calls)
+    else:
+        asyncio.run(watched[0][1]())
+    assert store.get_session(session, body["session_id"]).status == "running"
+    pending = store.get_pending_message(session, row.id, body["turn"])
+    assert pending.message_text == "Hello"
+    assert scheduled == [body["session_id"]]
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["none", "failed"])
+async def test_login_watcher_keeps_device_flow_timeout(monkeypatch, state):
+    calls = []
+    resumed = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        return {"state": state}
+
+    async def resume():
+        resumed.append(True)
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(codex_login, "_LOGIN_TIMEOUT", 0)
+    previous = set(codex_login._login_watch_tasks)
+    codex_login.watch_for_login("codex-cluster", resume)
+    await asyncio.wait_for(
+        asyncio.gather(*(codex_login._login_watch_tasks - previous)), timeout=1
+    )
+    assert calls == [("GET", "/grants/codex-cluster/login/status")]
+    assert resumed == []
+

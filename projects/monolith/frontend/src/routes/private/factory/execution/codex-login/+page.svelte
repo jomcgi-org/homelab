@@ -15,6 +15,7 @@
       persistence_pending: "Login approved; saving needs a retry",
       granted: "Login saved",
       failed: "Device login failed",
+      blocked: "Waiting for refreshed credentials",
       unavailable: "Connection status unavailable",
     }[data.state],
   );
@@ -61,6 +62,13 @@
         <p>
           Approval is complete. Retry saving the login, then check the
           connection.
+        </p>
+      {:else if data.state === "blocked"}
+        <p>
+          A credential refresh is awaiting recovery. You can wait and check the
+          connection again. If the replacement credentials were lost, start a
+          new device login below. Waiting sessions resume automatically when
+          credentials are available.
         </p>
       {:else}
         <p>
