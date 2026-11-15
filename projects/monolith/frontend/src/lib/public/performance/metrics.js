@@ -104,18 +104,24 @@ export async function responseTransferSize(request) {
 // Chromium worker bootstrap responses can report only header bytes. Do not
 // mistake Playwright's missing-body fallback for a measured empty worker.
 export function workerTransferSize(item, workerUrls) {
+  const length = item.contentLength?.trim();
+  const declaredBodySize =
+    /^\d+$/.test(length ?? "") && Number.isFinite(Number(length))
+      ? Number(length)
+      : null;
   if (
     workerUrls.has(item.url) &&
-    item.responseBodySize === 0 &&
     item.status === 200 &&
-    item.contentLength?.trim() !== "0"
+    ((item.responseBodySize === 0 && declaredBodySize !== 0) ||
+      (declaredBodySize !== null && item.responseBodySize !== declaredBodySize))
   ) {
     return {
       ...item,
       reportedTransferBytes: item.transferBytes,
       knownResponseBytes: item.responseHeadersSize,
       transferBytes: null,
-      sizeError: "worker body transfer size unavailable",
+      sizeError:
+        "worker body transfer size unavailable or inconsistent with Content-Length",
     };
   }
   return item;

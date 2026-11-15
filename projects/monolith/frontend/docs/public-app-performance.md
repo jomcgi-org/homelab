@@ -91,7 +91,10 @@ incomplete, failed and unsized requests. Chromium redirect responses without
 `Content-Length` remain unsized: Playwright substitutes a zero body size when
 that header is absent, so the runner cannot treat the result as measured.
 Worker bootstrap requests with a zero reported body and no explicit
-`Content-Length: 0` are also unsized. The hosted run reported only 588 to 590
+`Content-Length: 0`, or a reported body size inconsistent with that header,
+are also unsized. An intermediate run classified 580 to 593 bytes as body
+with zero header bytes despite `Content-Length: 120658`; that also fails the
+size check. The hosted run reported only 588 to 590
 bytes for a worker whose later HTTP body exceeded 120 kB. The runner retains
 reported size components and known header bytes as lower bounds; it does not
 substitute the later HTTP result or a build artifact size. JSON records
