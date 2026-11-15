@@ -959,6 +959,14 @@ func clipDescription(description string) string {
 	return fmt.Sprintf("%s\n\n(description clipped at %d of %d bytes)", clipped, len(clipped), len(description))
 }
 
+// hasIssueBrief distinguishes recorded issue text from legacy unavailable
+// placeholders, whose issue heading had no title. Only the first issue heading
+// counts: an error body could itself contain a heading that looks like a brief.
+func hasIssueBrief(background, issueKey string) bool {
+	_, issue, ok := strings.Cut(background, "\n### Issue ")
+	return ok && strings.HasPrefix(issue, issueKey+": ")
+}
+
 func nextDecision(wi *store.WorkItem, retry int) (kind, decision string) {
 	switch {
 	case wi.SessionID != "" && retry > 0:
@@ -1044,6 +1052,13 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		} else if now.Sub(a.SentAt) < e.cfg.ReissueInterval {
 			return nil
 		}
+	}
+
+	if a.Kind == "initial" && !hasIssueBrief(a.Context, wi.IssueKey) {
+		// An upgrade may find a definitively unaccepted attempt with a legacy
+		// placeholder. Retire it through the bounded retry path so corrected
+		// text gets a new message ID. Ambiguous sends stay read-only above.
+		return e.engineeringFailure(ctx, r, wi, a, "recorded attempt has no required issue brief")
 	}
 
 	if a.Kind == "continuation" {
@@ -1453,7 +1468,7 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 	var brief string
 	if wi.EngineeringRetries < budget && wi.SessionID == "" {
 		brief = a.Context
-		if brief == "" {
+		if !hasIssueBrief(brief, wi.IssueKey) {
 			var err error
 			brief, err = e.issueBrief(ctx, r, wi)
 			if err != nil {
