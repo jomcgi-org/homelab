@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -2214,4 +2215,119 @@ func TestClosedPullRequestStopsInFlightItsaplanTurn(t *testing.T) {
 	v.clk.Advance(61 * time.Second)
 	v.tick(v.e)
 	v.turnStopped(task, "was closed")
+}
+
+// fakeCILogs serves one invocation's failures for links under its prefix.
+type fakeCILogs struct {
+	mu       sync.Mutex
+	failures *buildbuddy.Failures
+	err      error
+	reads    []string
+}
+
+const ciPrefix = "https://bb.example/invocation/"
+
+func (f *fakeCILogs) Invocation(u string) (string, bool) {
+	if !strings.HasPrefix(u, ciPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(u, ciPrefix), true
+}
+
+func (f *fakeCILogs) Failures(_ context.Context, id string) (*buildbuddy.Failures, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads = append(f.reads, id)
+	return f.failures, f.err
+}
+
+// ciEnv is a delivery env whose binding requires BuildBuddy's pr-checks
+// status, with ci reading invocation logs.
+func ciEnv(t *testing.T, ci *fakeCILogs) *env {
+	t.Helper()
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.RequiredChecks = append(v.cfg.Bindings[0].Review.RequiredChecks,
+		dispatch.Check{Name: "pr-checks", StatusCreator: "buildbuddy-io[bot]"})
+	v.cfg.CILogs = ci
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	return v
+}
+
+// failStatus fails pr-checks on sha, linking to link.
+func (v *env) failStatus(sha, link string) {
+	v.t.Helper()
+	v.gh.status(sha, "pr-checks", "buildbuddy-io[bot]", "failure")
+	v.gh.mu.Lock()
+	defer v.gh.mu.Unlock()
+	sts := v.gh.statuses[sha]
+	sts[len(sts)-1].URL = link
+}
+
+func (v *env) lastSendText() string {
+	v.t.Helper()
+	sends := v.kg.Sends()
+	return sends[len(sends)-1].msg.Parts[0].Text
+}
+
+const invocation = "4d2f36f8-72a8-4c37-b831-4a100c9ff2a7"
+
+func TestCIStatusRoundNamesFailingTargetsAndTests(t *testing.T) {
+	ci := &fakeCILogs{failures: &buildbuddy.Failures{
+		Targets: []string{"//projects/factory/chart:package_test"},
+		Tests:   []string{"projects/factory/chart/package_test.py::test_packaged_render"},
+	}}
+	v := ciEnv(t, ci)
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one for the failed status", n)
+	}
+	text := v.lastSendText()
+	for _, want := range []string{
+		`Status "pr-checks" is failure`,
+		"Invocation " + invocation + " reports these failures",
+		"Targets: `//projects/factory/chart:package_test`",
+		"Tests: `projects/factory/chart/package_test.py::test_packaged_render`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("round prompt lacks %q:\n%s", want, text)
+		}
+	}
+	if len(ci.reads) != 1 || ci.reads[0] != invocation {
+		t.Fatalf("reads = %q, want the invocation once", ci.reads)
+	}
+	var recorded int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM delivery_read WHERE operation = 'ci-log' AND resource = $1`,
+		invocation).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("recorded reads = %d (%v), want the read recorded before it was sent", recorded, err)
+	}
+}
+
+func TestCILogReadFailureStillStartsTheRound(t *testing.T) {
+	ci := &fakeCILogs{err: &buildbuddy.Error{Class: "status_401", Err: errors.New("unauthorized")}}
+	v := ciEnv(t, ci)
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want the round despite the failed read", n)
+	}
+	if text := v.lastSendText(); !strings.Contains(text, "could not read which targets failed in invocation "+
+		invocation+" (status_401)") || strings.Contains(text, "unauthorized") {
+		t.Fatalf("round prompt = %s, want the failure by class only", text)
+	}
+}
+
+func TestCIStatusOutsideTheConfiguredPrefixIsNotRead(t *testing.T) {
+	ci := &fakeCILogs{failures: &buildbuddy.Failures{Targets: []string{"//x:y"}}}
+	v := ciEnv(t, ci)
+	v.failStatus("sha-1", "https://evil.example/invocation/"+invocation)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one", n)
+	}
+	if len(ci.reads) != 0 || strings.Contains(v.lastSendText(), "//x:y") {
+		t.Fatalf("reads = %q; a foreign link must not be read", ci.reads)
+	}
 }

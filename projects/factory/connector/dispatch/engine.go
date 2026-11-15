@@ -90,7 +90,10 @@ type Config struct {
 	// SessionCheck spaces checks of a running turn's session for a crash.
 	SessionCheck time.Duration
 	Links        Links
-	Now          func() time.Time
+	// CILogs names the targets and tests a failed CI status's invocation
+	// reports, for revision prompts. Nil leaves only the status line.
+	CILogs CILogs
+	Now    func() time.Time
 }
 
 // MinDispatchWindow is the smallest uncertainty window that covers a send's

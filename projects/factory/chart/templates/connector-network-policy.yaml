@@ -3,8 +3,9 @@
 The connector's allowlist under the cluster-wide default-deny. It accepts no
 connections (nothing scrapes its metrics yet; kubelet probes are host
 traffic) and calls only itsaplan's api, the kagent controller, the broker's
-admin port, its database and GitHub's API. Each peer admits it by
-networkPolicy.connector's labels in its own policy.
+admin port, its database, GitHub's API and, with connector.buildbuddy, that
+BuildBuddy host. Each peer admits it by networkPolicy.connector's labels in
+its own policy.
 */}}
 {{- $c := .Values.connector }}
 {{- $kagentNs := include "factory.kagentNamespace" . }}
@@ -53,6 +54,15 @@ spec:
     # Pull requests, reviews, checks and the merge queue.
     - toFQDNs:
         - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+    {{- if ($c.buildbuddy | default dict).enabled }}
+    # Failed invocations' logs, for revision prompts.
+    - toFQDNs:
+        - matchName: {{ $c.buildbuddy.host }}
       toPorts:
         - ports:
             - port: "443"

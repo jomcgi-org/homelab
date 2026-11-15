@@ -27,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -206,6 +207,13 @@ func run(log *slog.Logger) error {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
 	}
 
+	var ciLogs dispatch.CILogs
+	if bb := cfg.File.BuildBuddy; bb != nil {
+		ciLogs = &buildbuddy.Client{
+			APIURL: bb.APIURL, InvocationPrefix: bb.InvocationPrefix, KeyFile: bb.APIKeyFile,
+			HTTP: &http.Client{Timeout: 30 * time.Second},
+		}
+	}
 	eng := dispatch.New(dispatch.Config{
 		Caller: &kagent.InvocationCredentials{
 			Tokens: tokens, Authority: cfg.KagentAuthority,
@@ -219,6 +227,7 @@ func run(log *slog.Logger) error {
 		DispatchWindow:  time.Duration(cfg.File.Intervals.DispatchWindow),
 		ReviewPoll:      time.Duration(cfg.File.Intervals.ReviewPoll),
 		Links:           dispatch.Links(cfg.File.Links),
+		CILogs:          ciLogs,
 	}, st, its, a2a, sessions, gh, m, log)
 
 	// Wait for the writer lock: during a Recreate rollout the old pod may

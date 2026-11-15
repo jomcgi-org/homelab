@@ -474,3 +474,87 @@ def test_broker_is_required() -> None:
         _render(
             ["broker.enabled=false", "repositories=null", "connector.bindings=null"]
         )
+
+
+_BUILDBUDDY = [
+    "connector.buildbuddy.enabled=true",
+    "connector.buildbuddy.host=example.buildbuddy.io",
+    "connector.buildbuddy.itemPath=vaults/k8s-homelab/items/buildbuddy",
+]
+
+
+def test_buildbuddy_is_off_by_default() -> None:
+    docs = _render()
+    assert "buildbuddy" not in _config(docs)
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "OnePasswordItem" and "buildbuddy" in d["metadata"]["name"]
+    ]
+    assert "buildbuddy" not in yaml.safe_dump(_pod(docs))
+    egress = _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")["spec"][
+        "egress"
+    ]
+    assert not any("buildbuddy" in yaml.safe_dump(r) for r in egress)
+
+
+def test_buildbuddy_key_and_host_belong_only_to_the_connector() -> None:
+    docs = _render(_BUILDBUDDY)
+    assert _config(docs)["buildbuddy"] == {
+        "apiURL": "https://example.buildbuddy.io",
+        "invocationPrefix": "https://example.buildbuddy.io/invocation/",
+        "apiKeyFile": "/var/run/secrets/factory-buildbuddy/api-key",
+    }
+    item = _in(docs, "OnePasswordItem", _NS, "factory-connector-buildbuddy")
+    assert item["spec"] == {"itemPath": "vaults/k8s-homelab/items/buildbuddy"}
+    pod = _pod(docs)["spec"]
+    (volume,) = [v for v in pod["volumes"] if v["name"] == "buildbuddy"]
+    assert volume["secret"] == {
+        "secretName": "factory-connector-buildbuddy",
+        "optional": True,
+        "items": [{"key": "API_KEY", "path": "api-key"}],
+    }
+    (container,) = pod["containers"]
+    assert {
+        "name": "buildbuddy",
+        "mountPath": "/var/run/secrets/factory-buildbuddy",
+        "readOnly": True,
+    } in container["volumeMounts"]
+    egress = _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")["spec"][
+        "egress"
+    ]
+    assert {
+        "toFQDNs": [{"matchName": "example.buildbuddy.io"}],
+        "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+    } in egress
+    # Nothing else in the chart names the key, its mount or the host.
+    for doc in docs:
+        if doc["metadata"]["name"] in (
+            "factory-connector",
+            "factory-connector-buildbuddy",
+        ):
+            continue
+        text = yaml.safe_dump(doc)
+        for needle in (
+            "example.buildbuddy.io",
+            "factory-connector-buildbuddy",
+            "factory-buildbuddy",
+        ):
+            assert needle not in text, (doc["metadata"]["name"], needle)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["connector.buildbuddy.enabled=true"],
+        _BUILDBUDDY[:2],
+        [_BUILDBUDDY[0], _BUILDBUDDY[2]],
+        _BUILDBUDDY + ["connector.buildbuddy.host=https://example.buildbuddy.io"],
+        _BUILDBUDDY + ["connector.buildbuddy.host=example.buildbuddy.io/x"],
+        _BUILDBUDDY + ["connector.buildbuddy.itemPath=bad-path"],
+        _BUILDBUDDY + ["connector.buildbuddy.key=a b"],
+    ],
+)
+def test_invalid_buildbuddy_configuration_fails_render(overrides: list[str]) -> None:
+    with pytest.raises(RuntimeError):
+        _render(overrides)

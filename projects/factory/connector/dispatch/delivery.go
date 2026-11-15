@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
@@ -686,6 +687,8 @@ type candidate struct {
 	ev      store.ReviewEvent
 	trusted bool
 	text    string
+	// ciURL is a CI status's link, used only to find its invocation.
+	ciURL string
 }
 
 // reviewEvents records the PR's events that ask for changes, once each by
@@ -761,6 +764,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			},
 			trusted: trusted,
 			text:    fmt.Sprintf("Status %q is %s (%s): %s", st.Context, st.State, st.URL, st.Description),
+			ciURL:   st.URL,
 		})
 	}
 	ids := make([]string, 0, len(cands))
@@ -816,6 +820,16 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		}
 		if reason != "" {
 			return false, e.stopWork(ctx, wi, reason)
+		}
+		for _, c := range acting {
+			if c.ciURL == "" {
+				continue
+			}
+			text, err := e.ciFailures(ctx, pr, c.ev.CommitSHA, c.ciURL)
+			if err != nil {
+				return false, err
+			}
+			c.text += text
 		}
 		prompt = roundPrompt(p, wi, pr, d, acting)
 	}
@@ -1162,6 +1176,71 @@ func (e *Engine) beginEjectionRead(ctx context.Context, pr *store.PullRequest, o
 	return e.guard(ctx)
 }
 
+// CILogs reads a CI invocation's failing targets and tests
+// (projects/factory/connector/buildbuddy).
+type CILogs interface {
+	// Invocation returns the invocation a status URL links to, only for the
+	// configured CI's own invocation links.
+	Invocation(statusURL string) (string, bool)
+	Failures(ctx context.Context, invocationID string) (*buildbuddy.Failures, error)
+}
+
+// ciFailures names what failed in a trusted CI status's invocation, for a
+// revision prompt. Only identifiers pass the buildbuddy package's fixed
+// patterns; no other log text, title or description is added. The read is a
+// recorded delivery read under the writer epoch, like the ejection reads. A
+// failed read is reported by class and the round still starts: the status
+// line alone is what the round had before.
+func (e *Engine) ciFailures(ctx context.Context, pr *store.PullRequest, sha, statusURL string) (string, error) {
+	if e.cfg.CILogs == nil {
+		return "", nil
+	}
+	id, ok := e.cfg.CILogs.Invocation(statusURL)
+	if !ok {
+		return "", nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	messageID := fmt.Sprintf("ci-log/%d/%s/%s", pr.ID, sha, id)
+	if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, messageID, "ci-log", id); err != nil {
+		return "", err
+	}
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	f, err := e.cfg.CILogs.Failures(ctx, id)
+	if err != nil {
+		class := buildbuddy.Class(err)
+		e.m.CILogReads.WithLabelValues(class).Inc()
+		e.log.WarnContext(ctx, "CI log read failed", "pr", pr.Number, "invocation", id, "error", err)
+		return fmt.Sprintf("\nThe connector could not read which targets failed in invocation %s (%s). "+
+			"Reproduce the failure from the changed code before pushing.", id, class), nil
+	}
+	e.m.CILogReads.WithLabelValues("ok").Inc()
+	return formatFailures(id, f), nil
+}
+
+func formatFailures(id string, f *buildbuddy.Failures) string {
+	var s strings.Builder
+	if f.Empty() {
+		fmt.Fprintf(&s, "\nInvocation %s names no failing target or test; the failure may be in CI setup "+
+			"or a build step outside the test summary.", id)
+		return s.String()
+	}
+	fmt.Fprintf(&s, "\nInvocation %s reports these failures (names only; run or read them to see the error):", id)
+	if len(f.Targets) > 0 {
+		fmt.Fprintf(&s, "\n- Targets: `%s`", strings.Join(f.Targets, "`, `"))
+	}
+	if len(f.Tests) > 0 {
+		fmt.Fprintf(&s, "\n- Tests: `%s`", strings.Join(f.Tests, "`, `"))
+	}
+	if f.Truncated {
+		s.WriteString("\n- The list stops at its bound; more failed.")
+	}
+	return s.String()
+}
+
 // ejectionFeedback uses configured names, fixed state classes and links
 // built from repository identity and numeric check IDs. No CI-provided URL,
 // title, summary or status description reaches the coding agent.
@@ -1207,6 +1286,13 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 			for _, want := range b.Review.checks() {
 				if want.StatusCreator != "" && strings.EqualFold(st.Creator, want.StatusCreator) && st.Context == want.Name {
 					fmt.Fprintf(&s, "- Status %q: %s (%s).\n", want.Name, st.State, commitURL)
+					text, err := e.ciFailures(ctx, pr, pr.MergeGroupSHA, st.URL)
+					if err != nil {
+						return "", err
+					}
+					if text != "" {
+						s.WriteString(strings.TrimPrefix(text, "\n") + "\n")
+					}
 					break
 				}
 			}

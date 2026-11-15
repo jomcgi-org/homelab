@@ -514,6 +514,23 @@ work item (`maxReviewRounds`, default 3); past the bound events are
 `round_limit` and the PR waits for a person. Events are read only while
 the work item is in review, not while a turn runs.
 
+**CI failures by name.** A required status carries only a link and "Failed
+in 43s", and the coding sandbox can neither open BuildBuddy nor run remote
+tests, so a round for a CI failure had nothing to act on (HOME-15 and
+HOME-18, 2026-11-14). With `connector.buildbuddy`, an acting status whose
+link is exactly `https://<host>/invocation/<uuid>` makes the connector read
+that invocation's log through BuildBuddy's GetLog API. The round's prompt
+then names the failing Bazel targets, pytest node IDs without parameters,
+Go test names and JavaScript test files: at most 20 targets and 30 tests,
+each matched against a fixed character set. No other log line reaches the
+agent, because the log carries the output of the code under test. A
+merge-queue ejection names the merge group's failures the same way. The
+read is recorded in `delivery_read` under the writer epoch before it is
+sent. A failed read adds only its class, such as `status_401`, and the
+round starts as before. The read-only API key is a 1Password item that only
+the connector mounts, and only the connector's pod may reach the host.
+`factory_connector_ci_log_reads_total` counts reads by outcome.
+
 A review round is a connector-initiated continuation, not an itsaplan
 mention-run: itsaplan v1.10.0 starts no run for an agent's comment
 (finding 13). The round is a connector run (negative id, message IDs
