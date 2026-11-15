@@ -4,10 +4,12 @@
 layers use the same-origin `/track/[mmsi]` and `/heat` proxies.
 
 The landed [server-rendered snapshot change](https://github.com/jomcgi-org/homelab/pull/7972)
-shows real data rows while the interactive map loads. Its rollout and mobile
-first-view results must be checked separately from the cache and bundle limits.
+shows real data rows while the interactive map loads. Production observations
+and served-generation limits are recorded in the
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md).
+Cache and bundle limits alone do not establish mobile performance.
 
-The pending [vessel animation change](https://github.com/jomcgi-org/homelab/pull/7991)
+The merged [vessel animation change](https://github.com/jomcgi-org/homelab/pull/7991)
 submits geometry changes only for positions that can still move, at the
 existing four-updates-per-second cadence. It preserves the full fleet and
 snapshot freshness policy.
@@ -36,14 +38,19 @@ The public source capture has SHA-256
 `40ee85124646917c6afb759604a5757e925c3161e68197be2018aa152ded4c53`.
 The 304 request follows the first request in each process. Neither query promises
 row order. These timings isolate local route work; they do not establish
-PostgreSQL, production network or mobile latency. Verify the deployed route
-separately before claiming a live improvement.
+PostgreSQL, production network or mobile latency.
 
 Local PostgreSQL 16.14 `EXPLAIN (ANALYZE, BUFFERS)` on the same reconstructed
 rows and migrated schema used a hash join in both versions: median execution
 3.417 ms before and 3.624 ms after, across three read-only runs. This does not
 show a faster database plan; the measured route saving is in Python model
 hydration and JSON encoding. No index or production database change was made.
+
+After release `0.792.55` was verified healthy on November 15, public snapshot
+probes observed MISS p50/p95 of 969.8/1,295.0 ms over 20 requests. The uncached
+300 ms target remains unmet. These full-response measurements include the
+frontend and network; the [measurement report](../../../../../docs/public-app-performance-2026-11-15.md)
+retains the prior samples, cache states and different-runner limitation.
 
 ## Cache windows
 
@@ -100,10 +107,25 @@ Cell coordinates, summed counts and colour stops retain their existing meaning.
 
 A separate stage profile located most local cost in historical ORM hydration
 (2,579 ms) and FastAPI's recursive encoder (443 ms). These SQLite and Python
-results do not measure PostgreSQL, the SvelteKit proxy or production network
-latency. No local PostgreSQL instance was available for `EXPLAIN ANALYZE`.
-Production rollout and uncached remeasurement remain required before claiming
-a live speedup.
+results do not measure the SvelteKit proxy or production network latency.
+
+Subsequent local PostgreSQL 16.14 `EXPLAIN (ANALYZE, BUFFERS)` used the migrated
+schema and the same synthetic table split. Both queries used sequential scans:
+three-run median execution was 0.793/1.027 ms before/after for the live table
+and 11.484/15.011 ms for history. The measured statements were read-only after
+fixture loading and analysis. These plans support no SQL speedup or new index;
+production statistics, concurrency and topology remain unmeasured. The
+[saved plans](../../../../../docs/public-app-performance-2026-11-15.md#evidence-archive)
+retain SQL, buffers and every sample.
+
+After verified release `0.792.55`, 20 public MISS probes measured p50/p95 of
+1,697.6/2,087.3 ms, compared with 5,651.0/7,544.4 ms in the preceding hosted
+series. Both series returned 2,386,283 decoded bytes. The lower observed times
+do not isolate the code change from runner and network differences, and remain
+above the 300 ms target. The normal-key series had 19 HITs and one EXPIRED
+response: p95 was 51.9 ms, but its maximum was 1,661.6 ms. See the
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md)
+for deployment association and complete distributions.
 
 The endpoint regressions run in `//projects/monolith:ships_router_test` and cover
 exact HTTP JSON, cache headers, selected SQL columns, direct encoding and reading

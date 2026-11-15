@@ -10,7 +10,7 @@ app is unrelated.
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `/marketplace.json` | 3,600 | 86,400 | 90,000 (25h) | 31,536,000 | 31,539,600 (365d1h) |
 
-The landing and policy pages have no loader cache opt-in. The pending
+The landing and policy pages have no loader cache opt-in. The merged
 [response-boundary change](https://github.com/jomcgi-org/homelab/pull/7967)
 marks those app responses `no-store`. Their HTML cache-HIT target remains
 open. The [marketplace endpoint](marketplace.json/+server.js)

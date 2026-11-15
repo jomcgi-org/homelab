@@ -14,7 +14,7 @@ must remain `no-store`, including errors and navigation data.
 These proxies use `GRIMOIRE_READ_CACHE_CONTROL` and browser `max-age=0`.
 The allowance applies only to public, non-personalized read responses.
 Any request carrying a cookie or identity header, response setting a cookie,
-or chat/session response is `no-store` under the pending
+or chat/session response is `no-store` under the merged origin
 [response-boundary change](https://github.com/jomcgi-org/homelab/pull/7967).
 Page loaders without a cache opt-in also remain `no-store`.
 

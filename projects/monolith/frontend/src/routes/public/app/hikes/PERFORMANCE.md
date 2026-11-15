@@ -4,8 +4,10 @@
 hourly forecast windows arrive through `/app/hikes/walk/[uuid]` when selected.
 
 The landed [server-rendered snapshot change](https://github.com/jomcgi-org/homelab/pull/7972)
-shows real data rows while the interactive map loads. Its rollout and mobile
-first-view results must be checked separately from the cache and bundle limits.
+shows real data rows while the interactive map loads. Production observations
+and served-generation limits are recorded in the
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md).
+Cache and bundle limits alone do not establish mobile performance.
 
 ## Cache windows
 

@@ -6,7 +6,7 @@ The destination is a server-rendered explainer with no data endpoint.
 ## Cache windows
 
 The redirect loader and destination have no explicit shared-cache TTL, SWR or
-SIE. The pending [response-boundary change](https://github.com/jomcgi-org/homelab/pull/7967)
+SIE. The merged [response-boundary change](https://github.com/jomcgi-org/homelab/pull/7967)
 marks the app redirect `no-store`; the Ember destination remains outside that
 app-specific opt-in rule. No configured maximum cache age can be inferred for
 it from these files. Static-page caching remains in
