@@ -84,7 +84,9 @@ def test_factory_renders_only_a_suspended_job_and_app_credential():
     }
     assert all(doc["metadata"]["namespace"] == "renovate" for doc in docs)
     item = next(doc for doc in docs if doc["kind"] == "OnePasswordItem")
-    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-renovate-gh-app"
+    assert (
+        item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-renovate-gh-app"
+    )
     cron = next(doc for doc in docs if doc["kind"] == "CronJob")
     assert cron["apiVersion"] == "batch/v1"
     spec = cron["spec"]
@@ -141,9 +143,14 @@ def test_factory_renders_only_a_suspended_job_and_app_credential():
     ]
     mounts = {mount["name"]: mount["mountPath"] for mount in container["volumeMounts"]}
     assert mounts == {"workspace": "/tmp", "github-token": "/var/run/renovate-token"}
-    assert next(
-        mount for mount in container["volumeMounts"] if mount["name"] == "github-token"
-    )["readOnly"] is True
+    assert (
+        next(
+            mount
+            for mount in container["volumeMounts"]
+            if mount["name"] == "github-token"
+        )["readOnly"]
+        is True
+    )
     assert "command" not in container  # Keep the image's entrypoint.
     assert container["args"][:2] == ["/bin/sh", "-c"]
     startup = container["args"][2]
@@ -155,7 +162,10 @@ def test_factory_renders_only_a_suspended_job_and_app_credential():
     volumes = {volume["name"]: volume for volume in pod["volumes"]}
     assert set(volumes) == {"github-app", "github-token", "workspace"}
     assert volumes["workspace"]["emptyDir"] == {"sizeLimit": "4Gi"}
-    assert volumes["github-token"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "1Mi"}
+    assert volumes["github-token"]["emptyDir"] == {
+        "medium": "Memory",
+        "sizeLimit": "1Mi",
+    }
     assert volumes["github-app"]["secret"] == {
         "secretName": item["metadata"]["name"],
         "defaultMode": 0o440,
