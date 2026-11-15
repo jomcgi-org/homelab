@@ -535,13 +535,16 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 	// A claimed run waiting for its brief has already been admitted and must
 	// honor any later stop, just like a waiting or dispatched run.
 	live := r.State == store.RunWaiting || r.State == store.RunDispatched || r.State == store.RunClaimed
+	if live && r.StopRequested {
+		return e.stopRun(ctx, r, r.StoppedReason)
+	}
 	if live && r.WorkItemID != 0 {
 		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 		if err != nil {
 			return err
 		}
 		if wi.State == store.WorkStopped {
-			return e.stopRun(ctx, r, wi)
+			return e.stopRun(ctx, r, wi.StoppedReason)
 		}
 	}
 	switch r.State {
@@ -565,7 +568,7 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 // execution: an open kagent task gets a pending cancellation, and the run
 // reports its failure, with the reason, only when kagent confirms. A run
 // with nothing in kagent reports at once.
-func (e *Engine) stopRun(ctx context.Context, r *store.Run, wi *store.WorkItem) error {
+func (e *Engine) stopRun(ctx context.Context, r *store.Run, reason string) error {
 	a, err := e.st.LatestAttempt(ctx, r.ID)
 	if err != nil {
 		return err
@@ -579,7 +582,7 @@ func (e *Engine) stopRun(ctx context.Context, r *store.Run, wi *store.WorkItem) 
 				return err
 			}
 		}
-		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip("delivery stopped: "+wi.StoppedReason, maxErrorText)})
+		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip("delivery stopped: "+reason, maxErrorText)})
 	})
 }
 
@@ -699,7 +702,7 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	}
 	r.WorkItemID = wi.ID
 	if wi.State == store.WorkStopped {
-		return e.stopRun(ctx, r, wi)
+		return e.stopRun(ctx, r, wi.StoppedReason)
 	}
 	if a, err := e.st.LatestAttempt(ctx, r.ID); err != nil {
 		return err
@@ -1647,7 +1650,7 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 	r := &store.Run{ID: c.RunID}
 	var stopped string
 	if err := tx.QueryRowContext(ctx, `
-			SELECT r.agent_key, r.state, r.origin, coalesce(r.work_item_id, 0), coalesce(w.stopped_reason, '')
+			SELECT r.agent_key, r.state, r.origin, coalesce(r.work_item_id, 0), coalesce(r.stopped_reason, w.stopped_reason, '')
 			FROM run r LEFT JOIN work_item w ON w.id = r.work_item_id WHERE r.id = $1`,
 		c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID, &stopped); err != nil {
 		return err
