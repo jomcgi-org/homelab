@@ -615,6 +615,7 @@ py_library(
     deps = [
         ":pkg_framework",
         "@pip//boto3",
+        "@pip//botocore",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -2155,6 +2156,7 @@ py_library(
         "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//boto3",
+        "@pip//botocore",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//fastmcp",
@@ -7805,6 +7807,19 @@ py_test(
 # Artifact service: TestClient unit tests for the publish and read endpoints
 # (S3 faked) and the S3 helper (boto3 mocked).
 py_test(
+    name = "public_assets_test",
+    srcs = ["artifact/public_assets_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_artifact",
+        "@pip//boto3",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "artifact_router_test",
     srcs = ["artifact/router_test.py"],
     imports = ["."],
@@ -7966,6 +7981,46 @@ py_test(
     srcs = ["public_library_image_digest_guard_test.py"],
     data = ["//projects/monolith-public/chart:packaged_library_chart"],
     imports = ["."],
+)
+
+# The package-local image smoke consumes the same image and loader as release
+# publication. Keep those aliases visible only to that test package.
+alias(
+    name = "public_assets_backend_image",
+    actual = ":image_public",
+    visibility = ["//projects/monolith/public_assets_image:__pkg__"],
+)
+
+alias(
+    name = "public_assets_backend_loader",
+    actual = ":image_public.load",
+    visibility = ["//projects/monolith/public_assets_image:__pkg__"],
+)
+
+py_test(
+    name = "public_assets_chart_test",
+    srcs = ["public_assets_chart_test.py"],
+    data = [
+        "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith-public/deploy:deploy_values",
+        "//projects/monolith-public/deploy:gke_values",
+        "@multitool//tools/helm",
+        "@nodejs_linux_amd64//:node_bin",
+    ],
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith-public/deploy:gke_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
+    },
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(

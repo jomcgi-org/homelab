@@ -21,10 +21,14 @@ filegroup(
         "Chart.yaml",
         "values.yaml",
     ] + glob([
+        "files/**/*",
         "templates/**/*",
         "charts/**/*",
     ]),
-    visibility = ["//projects/monolith:__pkg__"],
+    visibility = [
+        "//projects/monolith:__pkg__",
+        "//projects/monolith/public_assets_image:__pkg__",
+    ],
 )
 
 # Guard (ADR 005): the Turnstile *secret* must stay in the backend ("web"); the

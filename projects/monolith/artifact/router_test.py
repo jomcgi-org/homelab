@@ -45,7 +45,9 @@ def test_publish_is_not_mounted(client: TestClient):
     assert set(paths) == {
         "/internal/artifact/{artifact_id}/raw",
         "/internal/artifact/{artifact_id}/version",
+        "/internal/public-assets/{asset_path}",
     }
+    assert set(paths["/internal/public-assets/{asset_path}"]) == {"get"}
     assert all(set(operations) == {"get"} for operations in paths.values())
 
 

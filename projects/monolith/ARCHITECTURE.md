@@ -175,6 +175,15 @@ on the private hostname carries no `SecurityPolicy` on purpose: it reaches the
 backend through a Cloudflare Access IP bypass and is authenticated by the
 handler's HMAC verification alone, which is why it lives on its own HTTPRoute
 rather than as a rule on the private one.
+
+Public immutable frontend files are published to an append-only R2 archive.
+A trusted PreSync Job in `monolith-workflows` archives only the exact public
+frontend image's immutable directory using the existing writer; the public
+backend exposes a read-only internal reader. This first release keeps frontend
+serving unchanged, so it can archive a release before a later deployment enables
+missing-asset fallback. No storage identity is broadened and no deletion is
+scheduled. The [archive contract](../monolith-public/ASSET-ARCHIVE.md) documents
+publication bounds, bootstrap limits and subsequent cross-release acceptance.
 (see: /projects/monolith/chart/templates/httproute-private.yaml)
 (see: /projects/monolith/chart/templates/service.yaml)
 (see: /projects/mcp/ARCHITECTURE.md)
