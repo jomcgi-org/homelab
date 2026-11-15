@@ -16,6 +16,11 @@ from ember_public.synthetic_models import EmberSyntheticProbe
 from framework import PRIVATE_PROFILE, build_app
 
 
+@pytest.fixture(autouse=True)
+def _embervm_configured(monkeypatch):
+    monkeypatch.setenv(health.EMBERVM_URL_ENV, "http://embervm.test:8080")
+
+
 @pytest.fixture(params=["", "http://retired-detector.invalid/v1/health/durability"])
 def module(request, monkeypatch):
     # Registration used to happen at import time. Exercise both the default and
@@ -82,3 +87,31 @@ def test_api_health_surfaces_codex_probe(module, monkeypatch, tmp_path):
     assert body["components"]["ember_codex"]["ok"] is False
     assert body["components"]["ember_codex"]["detail"] == "Codex lane unavailable"
     assert "ember_spark" not in body["components"]
+
+
+def test_failed_codex_latch_cannot_fail_health_without_embervm(
+    module, monkeypatch, tmp_path
+):
+    """After EmberVM leaves a deployment its probe is suspended and its last
+    latch stays failed. /api/health must not return 503 for it."""
+    row = EmberSyntheticProbe(
+        demo="codex",
+        ok=False,
+        detail="Codex lane unavailable",
+        checked_at=datetime.now(timezone.utc),
+    )
+
+    async def read_probe(demo):
+        return row if demo == "codex" else None
+
+    monkeypatch.setattr(health, "read_probe", read_probe)
+    monkeypatch.delenv(health.EMBERVM_URL_ENV)
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'health.db'}", connect_args={"check_same_thread": False}
+    )
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+
+    response = TestClient(build_app(PRIVATE_PROFILE, [module])).get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["components"]["ember_codex"]["ok"] is True
