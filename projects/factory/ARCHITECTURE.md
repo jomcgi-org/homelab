@@ -363,14 +363,19 @@ the monolith's pytest plugin does.
 
 **Planner proposals.** On 2026-11-15 Joe selected delegated fixes for the
 delivery health, trust drift and documentation drift pilots
-([#7935](https://github.com/jomcgi-org/homelab/issues/7935), HOME-39). This
-supersedes the Backlog-only proposal in
+([Joe's decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789),
+HOME-45). The decision permits repository
+fixes to go to the coder and fixes needing a person to become Joe's tasks;
+the planner can only lower the ceiling. This supersedes the Backlog-only
+proposal in
 [`scheduled-agents.md`](../../docs/agents/scheduled-agents.md#use-the-planner-contract).
 The contract in `REVIEW.md` lands before HOME-40 implements the planner,
 because the reviewer loads its rules from main.
 
-**Why.** CI logs, PRs and issues can contain arbitrary-author instructions.
-The planner needs that evidence to propose work. Its exception requires a
+**Why.** CI logs, PRs and issues can contain arbitrary-author instructions,
+and the planner can copy or paraphrase them into its title or body. Field
+bounds and evidence links do not authorize that text as coding instructions.
+The planner needs the evidence to propose work. Its exception requires a
 separate `homelab-planner` identity with a read-only repository token, no
 push, no coding-agent key or session, no itsaplan tools or column moves,
 and a fresh repository-bound session per run. Untrusted prompt input stays
@@ -378,15 +383,29 @@ quoted inside a delimited block and sanitized as for the reviewer: it
 cannot close the block or start a line of its own.
 
 Only the connector's validated proposal path may send planner output to
-itsaplan. It requires bounded title and body and evidence links, then
-constructs each issue from the validated fields. A schedule's config sets
-the highest permitted disposition: delegated fix, task assigned to Joe
-with no delegate, or Backlog issue. The planner can lower a delegated fix
+itsaplan. It requires bounded title and body and evidence links. A schedule's
+config sets the highest permitted disposition: delegated fix, task assigned
+to Joe with no delegate, or Backlog issue. The planner can lower a delegated fix
 to a Joe task or Backlog, or a Joe task to Backlog; it cannot raise the
-configured ceiling. Quoted excerpts belong only in a delimited evidence
-block, sanitized as for the reviewer. The coder's brief treats that block
-as data, keeping untrusted text out of delegated instructions. The coder's
-existing input path otherwise stays unchanged.
+configured ceiling.
+
+The connector constructs each issue with a fixed title, coding instructions
+and allowed scope from a reviewed schedule template on main. All planner
+text and links, including its proposed title, body, paraphrases and quoted
+excerpts, go only in a delimited evidence block, quoted and sanitized as for
+the reviewer. The coder's brief treats the whole block
+as untrusted data; no planner field supplies instructions or expands the
+template's scope. This must hold on initial dispatch, continuations and
+recovery. Any truncation preserves the complete block or omits it. Until
+HOME-40 enforces this separation across those paths, planner issues cannot
+be delegated. The coder still receives work through the existing issue
+dispatch path.
+
+For example, a delivery health schedule may instruct the coder to verify
+and repair a failed main-branch chart publication. The planner's diagnosis
+and proposed remedy remain quoted evidence to assess within that task's
+scope. An instruction embedded in a planner title or paraphrased into its
+body has no authority to change the task or the repository's review gates.
 
 Planner digests and alerts leave the cluster only through the notify sink
 (HOME-51), containing titles, links and fixed fields. Issue bodies, logs

@@ -32,19 +32,27 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   coding-agent key or session, no itsaplan tools or column moves, and a fresh
   repository-bound session per run. Untrusted prompt input stays inside a
   delimited block, quoted and sanitized as for the reviewer.
-  Only the connector's validated proposal path may carry planner output
-  into itsaplan, with bounded title and body and required evidence links.
+  Planner output reaches itsaplan only through the connector's validated
+  proposal path, with bounded title and body and required evidence links.
   A schedule's config sets the ceiling: delegated fix, task assigned to Joe
   with no delegate, or Backlog issue. The planner may only lower that
   disposition, never raise it. Joe chose delegated fixes for the three
-  pilots on 2026-11-15 ([#7935](https://github.com/jomcgi-org/homelab/issues/7935)).
-  The connector constructs each issue from validated fields; quoted
-  excerpts go only in a delimited evidence block, sanitized as for the
-  reviewer and treated as data by the coder's brief, so untrusted text
-  cannot become delegated instructions. Digests and alerts leave the
-  cluster only through the notify sink (HOME-51), carrying titles, links
-  and fixed fields, never issue bodies, logs or secrets. The coder's input
-  path otherwise stays as in "What the agent sees". Critical.
+  pilots on 2026-11-15 ([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789)).
+
+  All planner prose, including proposed titles, bodies, paraphrases and
+  excerpts, stays untrusted after validation. The connector constructs
+  each issue with a fixed title and coding instructions from a reviewed
+  schedule template on main; planner fields cannot supply instructions or
+  expand their scope. Each issue carries planner text and links only in a
+  delimited evidence block, quoted and sanitized as for the reviewer. The coder's
+  brief treats that block as data. Delegation requires this separation to
+  survive every coder send, including recovery; bounds and evidence links
+  alone never authorize instructions.
+
+  Digests and alerts leave the cluster only through the notify sink
+  (HOME-51), carrying titles, links and fixed fields, never issue bodies,
+  logs or secrets. The coder's input path otherwise stays as in "What the
+  agent sees". Critical.
 - **Credentials.** Provider and GitHub credentials never enter a sandbox, a
   log or the evidence bucket; they are injected at egress. A minted token
   names exactly the repository and permissions it needs. Critical.
