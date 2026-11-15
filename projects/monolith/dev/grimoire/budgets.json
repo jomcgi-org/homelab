@@ -102,7 +102,7 @@
       },
       {
         "check": "Notes editor enforces private default, DM opt-in, party sharing, deletion and draft retention",
-        "seconds": 2.9874000119889388e-05
+        "seconds": 2.9874000119889388e-5
       },
       {
         "check": "Journal uses latest visible knowledge, own rolls and resolved threads; party journal excludes private events",
