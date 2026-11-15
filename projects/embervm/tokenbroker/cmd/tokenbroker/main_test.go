@@ -554,7 +554,7 @@ func TestForceRefreshFailureReturnsNeedsLogin(t *testing.T) {
 	}
 }
 
-func TestConsumedRefreshTokenStopsRetriesAndReportsLoginRequired(t *testing.T) {
+func TestConsumedRefreshTokenReconcilesBeforeRequiringLogin(t *testing.T) {
 	now := time.Now().UTC()
 	st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
 		Name: "codex-cluster", ProviderName: "test", LastRefresh: now.Add(-time.Hour),
@@ -563,8 +563,8 @@ func TestConsumedRefreshTokenStopsRetriesAndReportsLoginRequired(t *testing.T) {
 	adapter := &fakeAdapter{refreshErr: provider.ErrRefreshTokenReused}
 	s := newTestServer(st, adapter)
 	response := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/refresh")
-	if response.Code != http.StatusServiceUnavailable || decodeBody(t, response)["needs_login"] != true {
-		t.Fatal("forced refresh did not report needs_login")
+	if response.Code != http.StatusServiceUnavailable || decodeBody(t, response)["needs_login"] != false {
+		t.Fatal("forced refresh required login before storage reconciliation")
 	}
 	for i := 0; i < 3; i++ {
 		response = requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
@@ -576,8 +576,8 @@ func TestConsumedRefreshTokenStopsRetriesAndReportsLoginRequired(t *testing.T) {
 		t.Fatalf("provider calls = %d, want one attempt and one retry", calls)
 	}
 	status := decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
-	if status["state"] != "none" || status["detail"] != "refresh failed, device login required" {
-		t.Fatal("login status did not expose the consumed refresh token")
+	if status["state"] != "granted" || status["detail"] != "stored grant present" {
+		t.Fatal("login status required login before storage reconciliation")
 	}
 	g, _ := st.LoadGrant("codex-cluster")
 	g.LastRefresh = now

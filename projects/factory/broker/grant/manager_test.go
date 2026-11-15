@@ -201,7 +201,7 @@ func TestInvalidGrant(t *testing.T) {
 	})
 }
 
-func TestLostRotationRequiresLoginAndPreservesCachedAccess(t *testing.T) {
+func TestLostRotationReconcilesWithoutDiscardingCachedAccess(t *testing.T) {
 	for _, validAccess := range []bool{false, true} {
 		name := "expired access"
 		if validAccess {
@@ -236,12 +236,12 @@ func TestLostRotationRequiresLoginAndPreservesCachedAccess(t *testing.T) {
 					if err != nil || tok.AccessToken != access {
 						t.Fatal("consumed refresh token discarded the still-valid access token")
 					}
-				} else if !errors.Is(err, ErrLoginRequired) {
-					t.Fatalf("recovery error = %v, want ErrLoginRequired", err)
+				} else if !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("reconciliation error = %v, want ErrUnavailable", err)
 				}
 			}
-			if h.auth.RefreshCalls() != 3 || h.state("login_required") != 1 {
-				t.Fatal("lost rotation did not stop after one bounded recovery retry")
+			if h.auth.RefreshCalls() != 3 || h.state("login_required") != 0 {
+				t.Fatal("reconciliation retried the provider or prematurely required login")
 			}
 			if h.stored(t) != original {
 				t.Fatal("failed recovery changed the stored grant")
@@ -251,24 +251,24 @@ func TestLostRotationRequiresLoginAndPreservesCachedAccess(t *testing.T) {
 				if err := h.store.SaveGrant(original); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.mgr.AccessToken(context.Background()); !errors.Is(err, ErrLoginRequired) {
-					t.Fatalf("expired cache error = %v, want ErrLoginRequired", err)
+				if _, err := h.mgr.AccessToken(context.Background()); !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("expired cache error = %v, want ErrUnavailable during reconciliation", err)
 				}
 			}
-			if err := h.mgr.ForceRefresh(context.Background()); !errors.Is(err, ErrLoginRequired) {
-				t.Fatalf("forced refresh error = %v, want ErrLoginRequired", err)
+			if err := h.mgr.ForceRefresh(context.Background()); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("forced refresh error = %v, want ErrUnavailable", err)
 			}
-			if _, err := h.mgr.RefreshRejected(context.Background(), access); !errors.Is(err, ErrLoginRequired) {
-				t.Fatalf("rejected refresh error = %v, want ErrLoginRequired", err)
+			if _, err := h.mgr.RefreshRejected(context.Background(), access); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("rejected refresh error = %v, want ErrUnavailable", err)
 			}
 			rr := httptest.NewRecorder()
 			h.mgr.AdminHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/codex/login", nil))
 			var status map[string]any
-			if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil || status["grant_state"] != "login_required" {
-				t.Fatalf("admin status did not expose the credential block: %v", err)
+			if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil || status["grant_state"] == "login_required" {
+				t.Fatalf("admin status prematurely required login: %v", err)
 			}
 			if h.auth.RefreshCalls() != 3 {
-				t.Fatal("blocked entry points retried the consumed token")
+				t.Fatal("reconciling entry points retried the consumed token")
 			}
 			// A later durable replacement also recovers the manager's early
 			// NeedsLogin path, without requiring a broker restart.
