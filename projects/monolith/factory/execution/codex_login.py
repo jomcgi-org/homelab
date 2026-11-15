@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from time import monotonic
 
 import httpx
 
@@ -66,6 +67,14 @@ async def codex_login_gate(
             "grant": grant,
             "message": "Codex login could not be checked. Try again after checking the token broker.",
         }
+    if data.get("state") == "pending" and data.get("persistence_retry") is True:
+        return {
+            "login_required": True,
+            "pending": True,
+            "persistence_retry": True,
+            "grant": grant,
+            "message": "Codex login is approved and is being saved. Waiting sessions will resume when saving succeeds.",
+        }
     return {
         "login_required": True,
         "verification_url": data.get("verification_url"),
@@ -76,30 +85,38 @@ async def codex_login_gate(
 
 
 def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> None:
-    """Run a single approval watcher and invoke ``on_granted`` once.
+    """Watch approval and persistence, then invoke ``on_granted`` once.
 
     The device flow belongs to the broker, so callers that had to pause a
     session need a small bridge from the broker's eventual state change back to
-    their pending work. Keep the task strongly referenced until it finishes.
+    their pending work. The broker owns approval expiry; a retained login may
+    need a persistence retry long after that window. Keep watching active flows,
+    including through transient polling failures, until the broker resolves
+    them. The local timeout only bounds waiting without an active broker flow.
+    Keep the task strongly referenced until it finishes.
     """
 
     async def wait() -> None:
-        deadline = asyncio.get_running_loop().time() + _LOGIN_TIMEOUT
-        while asyncio.get_running_loop().time() < deadline:
+        deadline = monotonic() + _LOGIN_TIMEOUT
+        active_flow = False
+        while True:
             try:
                 status = await mcp._broker_request(
                     "GET", f"/grants/{grant}/login/status"
                 )
-            except Exception as exc:
-                logger.warning("Could not poll Codex login status: %s", exc)
+            except Exception:
+                logger.warning("Could not poll Codex login status")
             else:
                 state = status.get("state")
                 if state == "granted":
                     await on_granted()
                     return
                 if state == "failed":
-                    logger.error("Codex broker login failed: %s", status.get("detail"))
+                    logger.error("Codex broker login failed")
                     return
+                active_flow = state in {"pending", "persistence_pending"}
+            if not active_flow and monotonic() >= deadline:
+                return
             await asyncio.sleep(_LOGIN_POLL_INTERVAL)
 
     task = asyncio.create_task(wait())
