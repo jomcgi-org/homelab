@@ -7732,7 +7732,6 @@ py_test(
         ":pkg_core",
         ":pkg_shared",
         ":pkg_stars",
-        "//projects/monolith/shared/testing/sqlite",
         "//projects/monolith/stars/tests:snapshot_fixture",
         "@pip//botocore",
         "@pip//fastapi",

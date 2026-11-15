@@ -40,8 +40,10 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
+from inspect import cleandoc
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
@@ -334,7 +336,6 @@ def _build_sites_from_db(
     }
 
 
-@router.get("/history")
 def get_history(
     request: Request,
     response: Response,
@@ -433,3 +434,20 @@ def get_history(
         "sites": sites,
         "count": len(sites),
     }
+
+
+@router.get("/history", name="get_history", description=cleandoc(get_history.__doc__))
+def get_history_response(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> Response:
+    # The materializer calls get_history directly and needs its dictionary.
+    # HTTP values are already JSON primitives, so skip FastAPI's recursive copy.
+    payload = get_history(request, response, session)
+    if isinstance(payload, Response):
+        return payload
+    return JSONResponse(
+        payload,
+        headers={key: response.headers[key] for key in ("Cache-Control", "ETag")},
+    )
