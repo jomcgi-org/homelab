@@ -4,3 +4,7 @@ description: Static Astryx operator tools landing page
 type: application
 version: 0.5.84
 appVersion: "1.0.0"
+dependencies:
+  - name: factory-library
+    version: "0.1.0"
+    repository: "file://../../shared/helm/factory-library/chart"

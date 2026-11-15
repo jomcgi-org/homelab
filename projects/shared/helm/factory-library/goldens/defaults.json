@@ -1,0 +1,235 @@
+{
+  "Deployment/app": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "app"
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "app"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "app"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "securityContext": {
+            "runAsNonRoot": true,
+            "runAsUser": 65532,
+            "runAsGroup": 65532,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "containers": [
+            {
+              "name": "app",
+              "image": "ghcr.io/jomcgi/example@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": true,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                }
+              },
+              "resources": {
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "32Mi"
+                },
+                "limits": {
+                  "memory": "128Mi"
+                }
+              }
+            }
+          ],
+          "imagePullSecrets": [
+            {
+              "name": "ghcr-imagepull-secret"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "CiliumNetworkPolicy/app": {
+    "apiVersion": "cilium.io/v2",
+    "kind": "CiliumNetworkPolicy",
+    "metadata": {
+      "name": "app"
+    },
+    "spec": {
+      "endpointSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "app"
+        }
+      },
+      "enableDefaultDeny": {
+        "ingress": true,
+        "egress": true
+      }
+    }
+  },
+  "Job/batch": {
+    "apiVersion": "batch/v1",
+    "kind": "Job",
+    "metadata": {
+      "name": "batch"
+    },
+    "spec": {
+      "backoffLimit": 3,
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "batch"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "securityContext": {
+            "runAsNonRoot": true,
+            "runAsUser": 65532,
+            "runAsGroup": 65532,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "containers": [
+            {
+              "name": "batch",
+              "image": "ghcr.io/jomcgi/example@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": true,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                }
+              },
+              "resources": {
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "32Mi"
+                },
+                "limits": {
+                  "memory": "128Mi"
+                }
+              }
+            }
+          ],
+          "imagePullSecrets": [
+            {
+              "name": "ghcr-imagepull-secret"
+            }
+          ],
+          "restartPolicy": "Never"
+        }
+      }
+    }
+  },
+  "CiliumNetworkPolicy/batch": {
+    "apiVersion": "cilium.io/v2",
+    "kind": "CiliumNetworkPolicy",
+    "metadata": {
+      "name": "batch"
+    },
+    "spec": {
+      "endpointSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "batch"
+        }
+      },
+      "enableDefaultDeny": {
+        "ingress": true,
+        "egress": true
+      }
+    }
+  },
+  "CronJob/tick": {
+    "apiVersion": "batch/v1",
+    "kind": "CronJob",
+    "metadata": {
+      "name": "tick"
+    },
+    "spec": {
+      "schedule": "0 * * * *",
+      "concurrencyPolicy": "Forbid",
+      "jobTemplate": {
+        "spec": {
+          "backoffLimit": 3,
+          "template": {
+            "metadata": {
+              "labels": {
+                "app.kubernetes.io/name": "tick"
+              }
+            },
+            "spec": {
+              "automountServiceAccountToken": false,
+              "securityContext": {
+                "runAsNonRoot": true,
+                "runAsUser": 65532,
+                "runAsGroup": 65532,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "containers": [
+                {
+                  "name": "tick",
+                  "image": "registry.example/public@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                  "securityContext": {
+                    "allowPrivilegeEscalation": false,
+                    "readOnlyRootFilesystem": true,
+                    "capabilities": {
+                      "drop": [
+                        "ALL"
+                      ]
+                    }
+                  },
+                  "resources": {
+                    "requests": {
+                      "cpu": "10m",
+                      "memory": "32Mi"
+                    },
+                    "limits": {
+                      "memory": "128Mi"
+                    }
+                  }
+                }
+              ],
+              "restartPolicy": "Never"
+            }
+          }
+        }
+      }
+    }
+  },
+  "CiliumNetworkPolicy/tick": {
+    "apiVersion": "cilium.io/v2",
+    "kind": "CiliumNetworkPolicy",
+    "metadata": {
+      "name": "tick"
+    },
+    "spec": {
+      "endpointSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "tick"
+        }
+      },
+      "enableDefaultDeny": {
+        "ingress": true,
+        "egress": true
+      }
+    }
+  }
+}
