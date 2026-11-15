@@ -129,6 +129,10 @@ type Config struct {
 	RuleIDs  []string
 	Bindings []Binding
 	Now      func() time.Time
+	// Comments, with CommentAuthor (the reviewer App's bot login), keeps one
+	// comment on each PR showing its review; either unset posts none.
+	Comments      Comments
+	CommentAuthor string
 }
 
 // Engine runs the reviewer.
@@ -146,6 +150,13 @@ type Engine struct {
 	pendingHolds map[headKey]*github.CheckRun
 	contexts     map[string]*heldContext
 	wg           sync.WaitGroup
+
+	// heads (under mu) is each listed PR's head. commentMu serializes
+	// comment writes and guards comments, the reviewer's comment on each PR
+	// as last read or written.
+	heads     map[prKey]string
+	commentMu sync.Mutex
+	comments  map[prKey]github.Comment
 
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
@@ -280,6 +291,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
+		heads: map[prKey]string{}, comments: map[prKey]github.Comment{},
 	}
 }
 
@@ -341,6 +353,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		bl.WarnContext(ctx, "the open PR listing is longer than the client reads; PRs past it are not reviewed this poll", "listed", len(prs))
 	}
 	e.supersede(b, prs, complete)
+	e.noteHeads(b, prs, complete)
 	prioritize(b, prs)
 	counts, labels := readyHeads(b, prs)
 
@@ -440,7 +453,7 @@ func sharedHeadOutcome(prev *github.CheckRun, labels []string, now time.Time) Ou
 		Title: "Unambiguous PR context required",
 		Summary: "This commit has duplicate PRs, an incomplete PR listing, or a review belonging to another PR. Close, draft or move duplicates; the listing must be complete. " +
 			"The remaining PR will receive a new review and require fresh human approval.\n\n" + duplicateHeadMarker + "\n\n" + gateOnlyMarker,
-	}}
+	}, Comment: &CommentUpdate{Verdict: VerdictHold, Headline: "Another ready PR shares this commit", Note: "Close, draft or move the duplicate."}}
 	var st State
 	if prev != nil {
 		st, _ = LoadState(prev.Text) // Keep prior findings available to a later head.
@@ -509,6 +522,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	e.mu.Lock()
 	delete(e.pendingHolds, key)
 	e.mu.Unlock()
+	e.mirror(ctx, b, pr, run, o.Comment)
 	return run
 }
 
@@ -716,6 +730,9 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		defer e.wg.Done()
 		defer e.done(key)
 		defer cancel(nil)
+		if kind == "new" {
+			e.mirror(rctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
+		}
 		e.review(rctx, b, pr, run, l.With("check_run", run.ID))
 	}()
 	return false
@@ -815,7 +832,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	next := func(reason string) bool {
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
-			e.complete(ctx, b, run, NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason),
+			e.finish(ctx, b, pr, run, NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason),
 				e.footer(b, pr, rec.ID)), l)
 			return true
 		}
@@ -887,7 +904,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				l.WarnContext(ctx, "the PR is over the review budget; asking for a split",
 					"lines", in.size.Lines, "files", in.size.Files, "generated", in.size.Generated)
 				e.m.SplitRequests.WithLabelValues(b.Name).Inc()
-				e.complete(ctx, b, run, SplitOutcome(b, in.size, e.footer(b, pr, "")), l)
+				e.finish(ctx, b, pr, run, SplitOutcome(b, in.size, e.footer(b, pr, "")), l)
 				return
 			}
 		}
@@ -966,7 +983,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 						e.retainGate(b, p, &Gate{SharedHead: true, Labels: labels[pr.HeadSHA]}, false)
 					}
 				}
-				e.complete(ctx, b, run, sharedHeadOutcome(run, labels[pr.HeadSHA], e.cfg.Now()), l)
+				e.finish(ctx, b, pr, run, sharedHeadOutcome(run, labels[pr.HeadSHA], e.cfg.Now()), l)
 				return
 			}
 			listed := slices.IndexFunc(prs, func(p github.PullRequest) bool {
@@ -1000,7 +1017,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				continue
 			}
-			if e.complete(ctx, b, run, res.o, l) {
+			if e.finish(ctx, b, currentPR, run, res.o, l) {
 				e.observe(ctx, b, res.r, res.a, l)
 			}
 			return
@@ -1124,7 +1141,7 @@ func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.Pull
 	}
 	for _, c := range comments {
 		switch {
-		case strings.TrimSpace(c.Body) == "":
+		case strings.TrimSpace(c.Body) == "", e.ownComment(c):
 		case containsFold(b.TrustedCommenters, c.Author):
 			out = append(out, c)
 		default:
@@ -1269,6 +1286,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			a.Conclusion = ConclusionFailure
 		}
 		o := Render(a, r, gate, footer)
+		o.Comment = reviewComment(a, r, b, gate)
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
 			// (the human-hold marker and footer) survives.
@@ -1401,7 +1419,8 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 			return run, true
 		}
 		cur := e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Waiting for hold history",
-			"The reviewer could not read complete label history. It will retry before allowing this head to pass.\n\n"+labelHistoryMarker, e.prLog(b, pr))
+			"The reviewer could not read complete label history. It will retry before allowing this head to pass.\n\n"+labelHistoryMarker,
+			&CommentUpdate{Verdict: VerdictHold, Headline: "Waiting for complete label history"}, e.prLog(b, pr))
 		return cur, true
 	}
 	changed = gate.observeLabelEvents(b, events) || changed
@@ -1409,7 +1428,8 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	changed = changed || retained
 	if !gate.Needed() {
 		if strings.Contains(run.Summary, labelHistoryMarker) {
-			return e.gateCheck(ctx, b, pr, run, st, ConclusionSuccess, "Hold history checked", "The complete label history contains no human hold.", e.prLog(b, pr)), true
+			return e.gateCheck(ctx, b, pr, run, st, ConclusionSuccess, "Hold history checked", "The complete label history contains no human hold.",
+				&CommentUpdate{Verdict: VerdictApproved, Headline: "No blocking findings"}, e.prLog(b, pr)), true
 		}
 		return run, false
 	}
@@ -1421,16 +1441,21 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	gate.Approver = approver
 	conclusion := ConclusionSuccess
 	title, summary := "Human gate cleared by "+approver, fmt.Sprintf("%s approved this exact head, which clears its human gate.", approver)
+	u := &CommentUpdate{Verdict: VerdictApproved, Headline: title, Gate: gate}
 	if approver == "" {
 		conclusion = ConclusionFailure
 		f := gateFinding(b, gate)
 		title, summary = "Waiting for a human review", f.Title+". "+f.Detail+"\n\n"+gateOnlyMarker
+		u = &CommentUpdate{Verdict: VerdictHuman, Headline: needsApproval(b), Gate: gate}
+		if gate.ApprovalNonce != "" {
+			u.Note = acknowledgeNote(gate)
+		}
 	}
 	if !changed && conclusion == run.Conclusion {
 		return run, approver == ""
 	}
 	l := e.prLog(b, pr)
-	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, conclusion, title, summary, l)
+	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")
 	}
@@ -1439,7 +1464,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 
 // gateCheck posts a new review check run on the head that changes only its
 // human gate; the earlier run keeps the review's findings.
-func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, st State, conclusion, title, summary string, l *slog.Logger) *github.CheckRun {
+func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, st State, conclusion, title, summary string, u *CommentUpdate, l *slog.Logger) *github.CheckRun {
 	now := e.cfg.Now().UTC()
 	summary += fmt.Sprintf("\n\nThe review's findings are on the earlier `%s` check run", e.cfg.CheckName)
 	if prev.URL != "" {
@@ -1462,6 +1487,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 		approver = st.Gate.Approver
 	}
 	l.InfoContext(ctx, "human gate check posted", "conclusion", conclusion, "approver", approver)
+	e.mirror(ctx, b, pr, run, u)
 	return run
 }
 
@@ -1493,6 +1519,15 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
 	l.InfoContext(ctx, "review check completed", "conclusion", o.Conclusion, "title", o.Output.Title)
+	return true
+}
+
+// finish completes the check run, then shows the outcome in the PR comment.
+func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, o Outcome, l *slog.Logger) bool {
+	if !e.complete(ctx, b, run, o, l) {
+		return false
+	}
+	e.mirror(ctx, b, pr, run, o.Comment)
 	return true
 }
 

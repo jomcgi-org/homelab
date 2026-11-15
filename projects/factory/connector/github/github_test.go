@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -602,6 +603,65 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	}
 	if _, err := c.CompareCommits(ctx, "example-org/homelab", "gone", "sha-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("compare with a missing commit = %v", err)
+	}
+}
+
+func TestIssueCommentsAreListedCreatedAndUpdated(t *testing.T) {
+	srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/comments", 2*MaxListed+5, func(i int) string {
+		return fmt.Sprintf(`{"id": %d, "user": {"login": "u%d"}, "body": "c%d"}`, i, i, i)
+	})
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	ctx := context.Background()
+	cms, complete, err := c.IssueComments(ctx, "example-org/homelab", 7)
+	if err != nil || !complete || len(cms) != 2*MaxListed+5 || cms[204] != (Comment{ID: 205, Author: "u205", Body: "c205"}) {
+		t.Fatalf("comments = %d, complete %v, %v", len(cms), complete, err)
+	}
+	if len(*seen) != 3 {
+		t.Fatalf("pages read = %v", *seen)
+	}
+
+	full, _ := pagedServer(t, "/repos/example-org/homelab/issues/7/comments", MaxCommentPages*MaxListed+1, func(i int) string {
+		return fmt.Sprintf(`{"id": %d, "user": {"login": "u"}, "body": "b"}`, i)
+	})
+	c = &Client{BaseURL: full.URL, Tokens: fixedTokens{}}
+	if cms, complete, err := c.IssueComments(ctx, "example-org/homelab", 7); err != nil || complete || len(cms) != MaxCommentPages*MaxListed {
+		t.Fatalf("a listing past the page bound = %d, complete %v, %v", len(cms), complete, err)
+	}
+
+	var writes []string
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		writes = append(writes, r.Method+" "+r.URL.Path+" "+body["body"])
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/example-org/homelab/issues/7/comments":
+			fmt.Fprintf(w, `{"id": 9, "user": {"login": "reviewer[bot]"}, "body": %q}`, body["body"])
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/example-org/homelab/issues/comments/9":
+			fmt.Fprintf(w, `{"id": 9, "user": {"login": "reviewer[bot]"}, "body": %q}`, body["body"])
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+	c = &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	created, err := c.CreateIssueComment(ctx, "example-org/homelab", 7, "first")
+	if err != nil || *created != (Comment{ID: 9, Author: "reviewer[bot]", Body: "first"}) {
+		t.Fatalf("created = %+v, %v", created, err)
+	}
+	updated, err := c.UpdateIssueComment(ctx, "example-org/homelab", 9, "second")
+	if err != nil || updated.Body != "second" {
+		t.Fatalf("updated = %+v, %v", updated, err)
+	}
+	if _, err := c.UpdateIssueComment(ctx, "example-org/homelab", 10, "gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("updating a deleted comment = %v", err)
+	}
+	want := []string{
+		"POST /repos/example-org/homelab/issues/7/comments first",
+		"PATCH /repos/example-org/homelab/issues/comments/9 second",
+		"PATCH /repos/example-org/homelab/issues/comments/10 gone",
+	}
+	if !slices.Equal(writes, want) {
+		t.Fatalf("writes = %q", writes)
 	}
 }
 

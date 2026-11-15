@@ -134,9 +134,11 @@ type deps struct {
 	grants   *grant.Manager
 	relay    *relay.Relay
 	minter   *github.Minter
-	// reviewMinter mints the reviewer App's tokens.
-	reviewMinter *github.Minter
-	reviewer     *auth.Reviewer
+	// reviewMinter mints the reviewer App's tokens; commentMinter its PR
+	// comment tokens, apart so a permission the App lacks fails only those.
+	reviewMinter  *github.Minter
+	commentMinter *github.Minter
+	reviewer      *auth.Reviewer
 }
 
 func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, quotaStore *quota.Store, m *metrics.Metrics, logger *slog.Logger) (*deps, error) {
@@ -188,12 +190,20 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 		if err != nil {
 			return nil, err
 		}
+		app := &github.App{APIURL: r.APIURL, AppID: r.AppID, InstallationID: r.InstallationID, Key: key}
 		d.reviewMinter = &github.Minter{
-			App:    &github.App{APIURL: r.APIURL, AppID: r.AppID, InstallationID: r.InstallationID, Key: key},
+			App:    app,
 			Client: client, Bindings: cfg.ReviewBindings, SecretName: r.AgentSecretName,
 			AgentPermissions: r.AgentPermissions, ConnectorPermissions: r.ConnectorPermissions,
 			Interval: r.MintInterval.Duration, RetryInterval: time.Minute, ConnectorMinLife: 15 * time.Minute,
 			AgentKind: "review_agent", TokenKind: "reviewer", Metrics: m, Logger: logger,
+		}
+		if len(r.CommentPermissions) > 0 {
+			// Serves tokens only; it never runs, so it writes no agent Secret.
+			d.commentMinter = &github.Minter{
+				App: app, Bindings: cfg.ReviewBindings, ConnectorPermissions: r.CommentPermissions,
+				ConnectorMinLife: 15 * time.Minute, TokenKind: "reviewer_comment", Metrics: m, Logger: logger,
+			}
 		}
 	}
 	return d, nil
@@ -246,6 +256,15 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 		reviewer = d.reviewMinter.ConnectorHandler()
 	}
 	mux.Handle("/github/reviewer-token", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, reviewer))
+	comment := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"factory_error":"github_review_comments_not_configured"}` + "\n"))
+	}))
+	if d.commentMinter != nil {
+		comment = d.commentMinter.ConnectorHandler()
+	}
+	mux.Handle("/github/reviewer-comment-token", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, comment))
 	return mux
 }
 

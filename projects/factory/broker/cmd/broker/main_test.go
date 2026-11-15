@@ -2,10 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/config"
@@ -45,6 +52,7 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
 		{http.MethodGet, "/v1/other", http.StatusNotFound, "not_found"},
 	})
@@ -61,6 +69,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/metrics", http.StatusNotFound, "not_found"},
 	})
 	checkRoutes(t, d.adminHandler(cfg, metricsOK), []routeCase{
@@ -69,6 +78,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusNotFound, ""},
 	})
 }
@@ -122,6 +132,8 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 	}{
 		{"/github/reviewer-token?repository=o/r", "connector-token", http.StatusForbidden},
 		{"/github/reviewer-token?repository=o/r", "reviewer-token", http.StatusServiceUnavailable},
+		{"/github/reviewer-comment-token?repository=o/r", "connector-token", http.StatusForbidden},
+		{"/github/reviewer-comment-token?repository=o/r", "reviewer-token", http.StatusServiceUnavailable},
 		{"/github/connector-token?repository=o/r", "reviewer-token", http.StatusForbidden},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -131,5 +143,39 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		if rec.Code != tc.status {
 			t.Fatalf("%s with %s = %d, want %d", tc.path, tc.token, rec.Code, tc.status)
 		}
+	}
+}
+
+// The comment token comes from its own minter, with only the comment
+// permissions, so the check token never gains issues write and an App
+// without it fails only the comment. An empty map serves none.
+func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "key.pem")
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(path, pemKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	idp := fakes.NewIdP(t)
+	cfg := config.Defaults()
+	cfg.Namespace = "factory"
+	cfg.ActorJWT.Issuer = idp.URL
+	cfg.GitHubReview.PrivateKeyFile, cfg.GitHubReview.AppID, cfg.GitHubReview.InstallationID = path, "9", "3"
+	cfg.ReviewBindings = []config.Binding{{Name: "homelab", Repository: "o/r", Namespace: "factory-r-homelab-review"}}
+	d, err := build(context.Background(), cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.commentMinter == nil || !maps.Equal(d.commentMinter.ConnectorPermissions, map[string]string{"issues": "write"}) ||
+		d.commentMinter.App != d.reviewMinter.App || d.reviewMinter.ConnectorPermissions["issues"] != "" {
+		t.Fatalf("comment minter = %+v, review minter permissions %v", d.commentMinter, d.reviewMinter.ConnectorPermissions)
+	}
+	cfg.GitHubReview.CommentPermissions = map[string]string{}
+	d, err = build(context.Background(), cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil || d.commentMinter != nil {
+		t.Fatalf("comment minter without permissions = %+v, %v", d.commentMinter, err)
 	}
 }

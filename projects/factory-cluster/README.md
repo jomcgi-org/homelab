@@ -922,7 +922,10 @@ set; keep its existing value.
 
 Before enabling, install App `jomcgi-factory-review` (5758326) on the bound
 repository and populate `k8s-homelab/factory-review-gh-app` with `app-id`,
-`installation-id` and `private-key`. The broker alone mounts those keys.
+`installation-id` and `private-key`. Its PR comment
+(`reviewer.commentAuthor`) needs the App's Issues read and write permission,
+accepted on the installation; without it, comment writes fail and the check
+is unaffected. The broker alone mounts those keys.
 Set `reviewer.bindings.homelab.requiredChecks` to the required CI identities,
 currently `[{name: pr-checks, statusCreator: "buildbuddy-io[bot]"}]`.
 The default `enqueueAuthors: [jomcgi]` lets the reviewer enqueue Joe's
@@ -933,7 +936,9 @@ separate changes.
 
 On a PR's current head, open Checks and select `factory review` from the
 reviewer App. It starts in progress and completes with findings or success;
-a human gate waits for Joe's approval on that head. Read service logs and
+a human gate waits for Joe's approval on that head. The reviewer's comment
+on the PR's conversation shows the same verdict and findings, updated in
+place. Read service logs and
 metrics with:
 
 ```bash

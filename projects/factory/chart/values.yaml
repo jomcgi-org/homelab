@@ -492,6 +492,11 @@ reviewer:
     itemPath: vaults/k8s-homelab/items/factory-review-gh-app
   appId: 5758326
   checkName: factory review
+  # The reviewer App's bot login. Set, the reviewer keeps one comment on each
+  # PR it reviews (the verdict and findings by severity), written with the
+  # broker's comment token, which needs the App's Issues write permission.
+  # Empty posts no comment.
+  commentAuthor: ""
   concurrency: 2
   enqueueAuthors: [jomcgi]
   humanApprovers: [jomcgi]

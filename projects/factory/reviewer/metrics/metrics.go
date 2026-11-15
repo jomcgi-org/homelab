@@ -20,6 +20,7 @@ type Metrics struct {
 	GitHubErrors     *prometheus.CounterVec // binding, call
 	KagentErrors     *prometheus.CounterVec // binding, call
 	Conditional      *prometheus.CounterVec // result
+	CommentWrites    *prometheus.CounterVec // binding, outcome
 }
 
 // New registers the metrics with reg; a nil reg leaves them unregistered.
@@ -81,10 +82,15 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_reviewer_github_conditional_reads_total",
 			Help: "GitHub reads sent with an ETag by result (not_modified, changed); a 304 costs no rate limit.",
 		}, []string{"result"}),
+		CommentWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_reviewer_comment_writes_total",
+			Help: "Writes of the reviewer's PR comment by binding and outcome (created, updated, error). An error leaves " +
+				"the check run as it is; each is also logged as \"the review comment was not written\".",
+		}, []string{"binding", "outcome"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.ReviewsStarted, m.ReviewsCompleted, m.Findings, m.Withdrawals, m.HumanGates, m.Retries, m.SplitRequests, m.InFlight, m.Enqueues, m.MergeGroupChecks,
-			m.GitHubErrors, m.KagentErrors, m.Conditional)
+			m.GitHubErrors, m.KagentErrors, m.Conditional, m.CommentWrites)
 	}
 	return m
 }

@@ -29,8 +29,11 @@ import (
 )
 
 // reviewerTokenPath is the broker endpoint that mints the reviewer App's
-// installation tokens.
-const reviewerTokenPath = "/github/reviewer-token"
+// installation tokens; commentTokenPath mints its PR comment tokens.
+const (
+	reviewerTokenPath = "/github/reviewer-token"
+	commentTokenPath  = "/github/reviewer-comment-token"
+)
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -98,6 +101,15 @@ func run(log *slog.Logger) error {
 		}},
 	}
 	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: &kagent.TokenSource{Path: cfg.KagentTokenFile}}
+	// The comment client has its own token, so the check client never holds
+	// issues write.
+	var comments review.Comments
+	if cfg.CommentAuthor != "" {
+		comments = &github.Client{
+			BaseURL: cfg.GitHubURL,
+			Tokens:  &github.BrokerTokens{URL: cfg.BrokerURL, Path: commentTokenPath, Bearer: fileToken(cfg.BrokerTokenFile)},
+		}
+	}
 
 	var bindings []review.Binding
 	var names []string
@@ -120,17 +132,19 @@ func run(log *slog.Logger) error {
 		names = append(names, b.Name)
 	}
 	eng := review.New(review.Config{
-		CheckName:    cfg.CheckName,
-		AppID:        cfg.AppID,
-		Concurrency:  cfg.Concurrency,
-		TaskPoll:     time.Duration(cfg.Intervals.TaskPoll),
-		Reissue:      time.Duration(cfg.Intervals.Reissue),
-		Timeout:      time.Duration(cfg.Intervals.Timeout),
-		RetryBackoff: time.Duration(cfg.Intervals.RetryBackoff),
-		RuleIDs:      cfg.RuleIDs,
-		Bindings:     bindings,
+		CheckName:     cfg.CheckName,
+		AppID:         cfg.AppID,
+		Concurrency:   cfg.Concurrency,
+		TaskPoll:      time.Duration(cfg.Intervals.TaskPoll),
+		Reissue:       time.Duration(cfg.Intervals.Reissue),
+		Timeout:       time.Duration(cfg.Intervals.Timeout),
+		RetryBackoff:  time.Duration(cfg.Intervals.RetryBackoff),
+		RuleIDs:       cfg.RuleIDs,
+		Bindings:      bindings,
+		Comments:      comments,
+		CommentAuthor: cfg.CommentAuthor,
 	}, gh, a2a, m, log)
-	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID,
+	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())
 	return eng.Run(ctx, time.Duration(cfg.Intervals.Poll))
 }

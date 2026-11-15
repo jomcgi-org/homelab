@@ -381,10 +381,12 @@ func sortBlocked(bs []Blocked) {
 	}
 }
 
-// Outcome is how a review's check run completes.
+// Outcome is how a review's check run completes, and what the PR comment
+// shows for it; a nil Comment leaves the comment as it is.
 type Outcome struct {
 	Conclusion string
 	Output     github.CheckRunOutput
+	Comment    *CommentUpdate
 }
 
 // Output limits. GitHub takes 65535 characters in a summary or text.
@@ -762,7 +764,7 @@ func NoReport(reason, footer string) Outcome {
 		Title: "No review report",
 		Summary: clip(untrusted(reason)+fmt.Sprintf("\n\nThe reviewer gave up after %d attempts; push a new commit to review again.\n\n", MaxAttempts)+
 			footer, maxSummary),
-	}}
+	}, Comment: &CommentUpdate{Verdict: VerdictFailed, Headline: "No review report", Note: reason + " Push a new commit to review again."}}
 }
 
 // lookupPath is p as a path that rules and gates are looked up for. Any
