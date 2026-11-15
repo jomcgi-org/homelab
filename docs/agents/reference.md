@@ -111,7 +111,49 @@ they do not launch their own planner, review or landing sequence.
   Application in `projects/gke-apps/<svc>/` listed in its `kustomization.yaml`.
   `ci regen` does not create the hub Application.
 
+## Tracker
+
+itsaplan project HOME, at `https://factory-plan.jomcgi.dev/factory/HOME`
+behind Authentik, holds outstanding work. An issue's link is
+`https://factory-plan.jomcgi.dev/factory/issue/HOME-N`, and a comment's adds
+`#comment-<id>`. Columns are 1 Backlog, 2 Todo, 3 In Progress, 4 Done and
+5 Canceled; priorities are `urgent`, `high`, `medium` and `low`.
+
+A session on Joe's account acts for Joe as `factoryadmin`:
+
+- Port-forward the API: `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory
+  port-forward svc/factory-itsaplan-api 13000:3000`.
+- Sign in with `POST /api/auth/sign-in/email`, using fields `email` and
+  `password` from Secret `factory/factory-itsaplan-admin`. Send header
+  `Origin: https://factory-plan.jomcgi.dev`, keep the session cookie, and
+  call `POST /api/auth/sign-out` when done. Sign-in is rate-limited (429), so
+  use one sign-in per batch of calls.
+- Read the board with `GET /projects/HOME/issues/board`; user IDs are under
+  `assignees` in `GET /projects/HOME`.
+- Write with `POST /projects/HOME/issues` (`title`, `description`,
+  `columnId`, `priority`, `assigneeUserId`, `delegateUserId`),
+  `PATCH /issues/<id>`, `POST /issues/<id>/comments` (`body`) and
+  `POST /issues/<id>/links` (`targetIssueId`, `kind`: `blocks`,
+  `blocked_by`, `relates`, `duplicates`).
+
+Setting `delegateUserId` to the coding agent (`homelab-codex`) starts a run
+from the description as it is then. Write the final description first, and
+start it with "Put `Refs HOME-N` in the commit message." The connector does
+not yet hold a run for its `blocked_by` links (HOME-55), so delegate a
+dependent issue only after its blocker is Done. Never predict a new issue's
+key: other sessions create issues concurrently, so read it from the response.
+
 ## Human handoff
+
+A HOME issue in Todo or In Progress that is assigned to Joe with no delegate
+is Joe's: agents never pick it up, and the "Needs Joe" view
+(`/factory/HOME/view/1`) lists it. Hand work to Joe that way, with a comment
+naming what remains; hand it back by delegating it. On a PR, `human` means a
+person owns it and `needs-human` asks for a decision. Both hold the PR at the
+connector and the reviewer, and agents must not add or remove them without an
+explicit handoff instruction.
+
+The retiring hub factory reads the same labels on GitHub issues:
 
 Label an issue `human` when Joe or another person takes ownership, including
 implementation, coordination or observation acceptance. This label excludes
@@ -170,7 +212,8 @@ when its row applies.
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
-| Recording a decision | a `**Why.**` paragraph in the domain's ARCHITECTURE.md and a Direction row with its issue; no ADRs (#4667) |
+| Recording a decision | Joe's comment on the HOME issue, then a `**Why.**` paragraph in the domain's ARCHITECTURE.md linking it and a Direction row with its HOME issue; no ADRs (#4667) |
+| Filing, delegating or updating work | "Tracker" above |
 
 **Runbooks** (`docs/runbooks/`) are explicit-only: open one when Joe names it,
 a row above points at it, or a task asks for it. Index:

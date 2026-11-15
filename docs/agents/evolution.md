@@ -23,8 +23,8 @@ receipts' pinned contracts until explicitly amended there.
 
 ## Goals survive sessions
 
-The active factory goal set records direction; linked GitHub issues carry
-acceptance and outstanding work. Keep a goal's desired outcome, observable
+The active factory goal set records direction; linked HOME issues in itsaplan
+carry acceptance and outstanding work. Keep a goal's desired outcome, observable
 success, constraints and remaining work in its issue. Use existing receipts,
 plans and audit events for execution state. Preserve other active goals when
 changing the set; only Joe's direction authorizes changing the desired outcome.
@@ -32,7 +32,7 @@ changing the set; only Joe's direction authorizes changing the desired outcome.
 Finish eligible goal work and repair demonstrated delivery bottlenecks. When
 capacity remains, find the next useful improvement from current failures,
 blocked work, review findings, latency, quota waste or incomplete acceptance.
-Check open issues and PRs before creating work. Improvements to the factory
+Check open HOME issues and PRs before creating work. Improvements to the factory
 must name the goal they help; code volume and token consumption are not success.
 
 ## Improvements earn their place
