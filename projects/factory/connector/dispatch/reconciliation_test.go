@@ -94,6 +94,47 @@ func TestOriginalMessageLookupReadsPastTenPages(t *testing.T) {
 	}
 }
 
+func TestPositiveOriginalMatchSurvivesUnrelatedIncompleteHistory(t *testing.T) {
+	v := newEnv(t)
+	unrelated, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, kagent.Message{MessageID: "unrelated-cleanup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.kg.tasks[unrelated.ID].task.History = nil
+	v.kg.listPageSize = 1
+	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	original := v.kg.lastTask()
+	v.exhaustOriginalResponses()
+	v.clk.Advance(v.cfg.DispatchWindow)
+	v.tick(v.e)
+	if v.latest(1).TaskID != original || v.kg.Executions() != 2 || v.work(101).EngineeringRetries != 0 {
+		t.Fatal("unrelated incomplete history hid a positive original-message match")
+	}
+}
+
+func TestMissingOpeningInputNeverProvesAbsenceInAnyState(t *testing.T) {
+	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking, kagent.StateCompleted,
+		kagent.StateFailed, kagent.StateCanceled, kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired} {
+		t.Run(state, func(t *testing.T) {
+			v := newEnv(t)
+			v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			v.exhaustOriginalResponses()
+			task := &v.kg.tasks[v.kg.lastTask()].task
+			task.Status.State = state
+			task.History = []*kagent.Message{{MessageID: "reply-only", Role: "ROLE_AGENT", TaskID: task.ID, ContextID: task.ContextID}}
+			v.clk.Advance(v.cfg.DispatchWindow)
+			v.tick(v.e)
+			if v.latest(1).State != store.AttemptAmbiguous || v.work(101).EngineeringRetries != 0 || v.kg.Executions() != 1 {
+				t.Fatal("a history without its opening input authorized retry")
+			}
+		})
+	}
+}
+
 func TestDeletedPageBoundaryCannotProveOriginalAbsent(t *testing.T) {
 	v := newEnv(t)
 	_, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, kagent.Message{MessageID: "cursor-task"})

@@ -132,6 +132,54 @@ func TestListGetCancel(t *testing.T) {
 	}
 }
 
+func TestListTasksRejectsIncompleteResponses(t *testing.T) {
+	for name, result := range map[string]string{
+		"null result":       `null`,
+		"empty object":      `{}`,
+		"wrong result type": `[]`,
+		"missing tasks":     `{"totalSize":0,"pageSize":100,"nextPageToken":""}`,
+		"null tasks":        `{"tasks":null,"totalSize":0,"pageSize":100,"nextPageToken":""}`,
+		"wrong tasks type":  `{"tasks":{},"totalSize":0,"pageSize":100,"nextPageToken":""}`,
+		"missing cursor":    `{"tasks":[],"totalSize":0,"pageSize":100}`,
+		"null cursor":       `{"tasks":[],"totalSize":0,"pageSize":100,"nextPageToken":null}`,
+		"wrong cursor type": `{"tasks":[],"totalSize":0,"pageSize":100,"nextPageToken":4}`,
+		"missing total":     `{"tasks":[],"pageSize":100,"nextPageToken":""}`,
+		"null total":        `{"tasks":[],"totalSize":null,"pageSize":100,"nextPageToken":""}`,
+		"negative total":    `{"tasks":[],"totalSize":-1,"pageSize":100,"nextPageToken":""}`,
+		"missing page size": `{"tasks":[],"totalSize":0,"nextPageToken":""}`,
+		"null page size":    `{"tasks":[],"totalSize":0,"pageSize":null,"nextPageToken":""}`,
+		"zero page size":    `{"tasks":[],"totalSize":0,"pageSize":0,"nextPageToken":""}`,
+		"oversized page":    `{"tasks":[],"totalSize":0,"pageSize":101,"nextPageToken":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got rpcSeen
+			c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","result":`+result+`}`, &got)
+			tasks, next, err := c.ListTasks(context.Background(), ref, "", "", "")
+			if err == nil || tasks != nil || next != "" {
+				t.Fatalf("malformed page accepted: tasks=%+v next=%q err=%v", tasks, next, err)
+			}
+		})
+	}
+	t.Run("missing result", func(t *testing.T) {
+		var got rpcSeen
+		c := a2aServer(t, `{"jsonrpc":"2.0","id":"1"}`, &got)
+		if _, _, err := c.ListTasks(context.Background(), ref, "", "", ""); err == nil {
+			t.Fatal("missing result accepted as an empty page")
+		}
+	})
+}
+
+func TestListTasksAcceptsEmptyKagentPage(t *testing.T) {
+	// kagent v1.0.1 returns a nonnil empty slice. Its pinned a2a-go v2.7.0
+	// ListTasksResponse encodes all four fields without omitempty.
+	var got rpcSeen
+	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","result":{"tasks":[],"totalSize":0,"pageSize":100,"nextPageToken":""}}`, &got)
+	tasks, next, err := c.ListTasks(context.Background(), ref, "", "", "")
+	if err != nil || tasks == nil || len(tasks) != 0 || next != "" {
+		t.Fatalf("valid empty page rejected: tasks=%+v next=%q err=%v", tasks, next, err)
+	}
+}
+
 func TestSessionsOverGRPC(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
