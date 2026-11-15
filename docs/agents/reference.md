@@ -158,15 +158,20 @@ is Joe's: no run starts on it, and the "Needs Joe" view
 
 To take delegated work from the factory, stop it with
 `connector cancel <ISSUE> --by joe`, or move the issue to Canceled and leave
-it there; the connector announces the stop on the issue. Changing the
-assignee or removing the delegate stops nothing. Then file a new HOME issue,
-assigned to Joe with no delegate, that links the canceled one and names what
-remains. To hand the work back, delegate that new issue.
+it there. Changing the assignee or removing the delegate stops nothing. Wait
+for the stop to settle before anyone else touches the work:
 
-On a PR, `human` means a
-person owns it and `needs-human` asks for a decision. Both hold the PR at the
-connector and the reviewer, and agents must not add or remove them without an
-explicit handoff instruction.
+- the issue's run shows `failed` in `GET /agent-runs/queue`, which the
+  connector reports only after kagent confirms the task stopped;
+- its PR is closed, merged, or open and out of the merge queue.
+
+Then file a new HOME issue, assigned to Joe with no delegate, that links the
+canceled one and names what remains. To hand the work back, delegate that
+new issue.
+
+On a PR, `human` means a person owns it and `needs-human` asks for a decision.
+Both hold the PR at the connector and the reviewer, and agents must not add or
+remove them without an explicit handoff instruction.
 
 The retiring hub factory reads the same labels on GitHub issues:
 
