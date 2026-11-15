@@ -69,6 +69,7 @@ type fakeItsaplan struct {
 	loseEventAck      bool
 	beforeIssueRead   func(int64)
 	beforeColumnsRead func()
+	waitIssueRead     func(context.Context, int64) error
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -324,7 +325,15 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 	return nil
 }
 
-func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Issue, error) {
+func (f *fakeItsaplan) GetIssue(ctx context.Context, issueID int64) (*itsaplan.Issue, error) {
+	f.mu.Lock()
+	wait := f.waitIssueRead
+	f.mu.Unlock()
+	if wait != nil {
+		if err := wait(ctx, issueID); err != nil {
+			return nil, err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++

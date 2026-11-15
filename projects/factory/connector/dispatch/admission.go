@@ -17,6 +17,53 @@ import (
 
 const admissionTask = "factory-admission"
 
+type admissionBudgetKey struct{}
+type admissionIOKey struct{}
+
+// One tick shares this budget across claims and polling. A slow run can spend
+// the remaining budget once; other runs and delivery phases still get a turn.
+type admissionBudget struct {
+	remaining time.Duration
+	visited   map[int64]bool
+}
+
+func (e *Engine) admissionContext(ctx context.Context, r *store.Run) (context.Context, func(), bool) {
+	budget, ok := ctx.Value(admissionBudgetKey{}).(*admissionBudget)
+	if !ok {
+		budget = &admissionBudget{remaining: e.cfg.AdmissionBudget, visited: map[int64]bool{}}
+	}
+	if budget.remaining <= 0 || budget.visited[r.ID] {
+		return nil, nil, false
+	}
+	budget.visited[r.ID] = true
+	started := time.Now()
+	e.admissionPolled.Store(r.ID, started)
+	readCtx, cancel := context.WithTimeout(ctx, budget.remaining)
+	return readCtx, func() {
+		cancel()
+		budget.remaining -= time.Since(started)
+	}, true
+}
+
+func admissionIO(ctx context.Context) context.Context {
+	if ioCtx, ok := ctx.Value(admissionIOKey{}).(context.Context); ok {
+		return ioCtx
+	}
+	return ctx
+}
+
+// Rotate held runs by last poll, so one timeout cannot monopolize successive
+// budgets. No evidence or dispatch permission is cached across polls.
+func (e *Engine) orderAdmissions(runs []*store.Run) {
+	last := func(id int64) time.Time {
+		if at, ok := e.admissionPolled.Load(id); ok {
+			return at.(time.Time)
+		}
+		return time.Time{}
+	}
+	sort.SliceStable(runs, func(i, j int) bool { return last(runs[i].ID).Before(last(runs[j].ID)) })
+}
+
 // beginAdmissionRead follows the read-attempt protocol: stable identity,
 // durable intent, then a fresh writer check immediately before the call.
 func (e *Engine) beginAdmissionRead(ctx context.Context, r *store.Run, operation, resource string) error {
@@ -55,22 +102,46 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 	if err != nil || r.IssueID == 0 {
 		return true, nil // dispatch reports the invalid binding or issue
 	}
-	// The run lock excludes its heartbeat. Bound the entire graph read so
-	// an unavailable dependency cannot consume the five-minute lease.
-	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	readCtx, done, allowed := e.admissionContext(ctx, r)
+	if !allowed {
+		if r.HoldReason == "" && r.WorkItemID == 0 {
+			// Persist the wait and journal but defer its network write too.
+			ioCtx, cancel := context.WithCancel(ctx)
+			cancel()
+			return false, e.holdAdmission(context.WithValue(ctx, admissionIOKey{}, ioCtx), r, "Waiting for the next admission poll.", nil)
+		}
+		return false, nil
+	}
+	defer done()
+	ctx = context.WithValue(ctx, admissionIOKey{}, readCtx)
 	root, err := e.admissionIssue(readCtx, r, r.IssueID)
 	if err != nil {
 		return false, e.admissionFailure(ctx, r, "Waiting for the issue brief and dependency relations to be readable.", err)
 	}
-	if strings.TrimSpace(root.Description) == "" {
-		return false, e.holdAdmission(ctx, r, "Waiting for an issue brief: the description is empty.", nil)
-	}
 	if root.Identifier != r.IssueKey {
 		return false, e.holdAdmission(ctx, r, "Waiting for the issue to match the claimed repository binding.", nil)
 	}
-	var columns []itsaplan.Column
+	if err := e.beginAdmissionRead(readCtx, r, "columns", b.ItsaplanProject); err != nil {
+		return false, e.admissionFailure(ctx, r, "Waiting for the issue's current workflow state.", err)
+	}
+	columns, err := e.its.ProjectColumns(readCtx, b.ItsaplanProject)
+	e.countRefusal(roleCoordinator, "admission", err)
+	if err != nil {
+		return false, e.admissionFailure(ctx, r, "Waiting for the issue's current workflow state.", err)
+	}
 	states := map[int64]string{}
+	for _, c := range columns {
+		states[c.ID] = c.StateType
+	}
+	switch states[root.ColumnID] {
+	case "completed", "canceled":
+		return false, e.failRun(ctx, e.st.DB, r, "delivery stopped: the issue is in a "+states[root.ColumnID]+" column")
+	case "":
+		return false, e.holdAdmission(ctx, r, "Waiting for the issue's current workflow state.", nil)
+	}
+	if strings.TrimSpace(root.Description) == "" {
+		return false, e.holdAdmission(ctx, r, "Waiting for an issue brief: the description is empty.", nil)
+	}
 	issues := map[int64]*itsaplan.Issue{root.ID: root}
 	graph := map[int64][]int64{}
 	var waiting []string
@@ -87,20 +158,6 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 			}
 			if link.Issue.ID <= 0 {
 				return errors.New("blocked_by link has no issue ID")
-			}
-			if columns == nil {
-				if err := e.beginAdmissionRead(readCtx, r, "columns", b.ItsaplanProject); err != nil {
-					return err
-				}
-				var err error
-				columns, err = e.its.ProjectColumns(readCtx, b.ItsaplanProject)
-				e.countRefusal(roleCoordinator, "admission", err)
-				if err != nil {
-					return err
-				}
-				for _, c := range columns {
-					states[c.ID] = c.StateType
-				}
 			}
 			blocker := issues[link.Issue.ID]
 			if blocker == nil {
@@ -175,6 +232,7 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 		return false, err
 	}
 	r.HoldReason = ""
+	r.AdmissionBrief = formatIssueBrief(r.IssueKey, root)
 	return true, nil
 }
 
@@ -240,6 +298,9 @@ func (e *Engine) holdAdmission(ctx context.Context, r *store.Run, reason string,
 		return err
 	}
 	r.HoldReason, r.State = reason, store.RunWaiting
+	if admissionIO(ctx).Err() != nil {
+		return nil // the journal will drain within a later tick's budget
+	}
 	_, err = e.postAdmission(ctx, r)
 	return err
 }
@@ -253,7 +314,7 @@ func (e *Engine) postAdmission(ctx context.Context, r *store.Run) (bool, error) 
 	if err := json.Unmarshal(tr.State, &journal); err != nil {
 		return false, err
 	}
-	return e.sendEvents(ctx, r, admissionTask, journal.Events, tr.Base)
+	return e.sendEvents(admissionIO(ctx), r, admissionTask, journal.Events, tr.Base)
 }
 
 func (e *Engine) admissionMetrics(ctx context.Context) error {

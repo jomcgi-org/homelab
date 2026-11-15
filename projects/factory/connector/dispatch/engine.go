@@ -97,6 +97,9 @@ type Config struct {
 	SessionCheck time.Duration
 	Links        Links
 	Now          func() time.Time
+	// AdmissionBudget bounds the total time spent on admission I/O per tick,
+	// independently of how many runs are held. Zero selects two seconds.
+	AdmissionBudget time.Duration
 }
 
 // MinDispatchWindow is the smallest uncertainty window that covers a send's
@@ -118,7 +121,8 @@ type Engine struct {
 	w        *store.Writer
 	locks    sync.Map // run ID -> *sync.Mutex
 	// checked holds when each running attempt's session was last checked.
-	checked sync.Map // attempt ID -> sessionCheck
+	checked         sync.Map // attempt ID -> sessionCheck
+	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
 	// refusals holds when itsaplan began refusing the coordinator key for
 	// each bounded lookup. The heartbeat goroutine and the tick share it.
 	refusalsMu sync.Mutex
@@ -153,6 +157,9 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.AdmissionBudget <= 0 {
+		cfg.AdmissionBudget = 2 * time.Second
 	}
 	if m == nil {
 		m = metrics.New(nil)
@@ -252,6 +259,12 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 		}
 		return true
 	})
+	e.admissionPolled.Range(func(k, v any) bool {
+		if !open[k.(int64)] {
+			e.admissionPolled.Delete(k)
+		}
+		return true
+	})
 	now := e.cfg.Now()
 	e.refusalsMu.Lock()
 	for k, rf := range e.refusals {
@@ -272,6 +285,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	ctx = context.WithValue(ctx, admissionBudgetKey{}, &admissionBudget{remaining: e.cfg.AdmissionBudget, visited: map[int64]bool{}})
 	phases := []struct {
 		name string
 		fn   func(context.Context) error
@@ -510,6 +524,7 @@ func (e *Engine) stepRuns(ctx context.Context) error {
 		open[r.ID] = true
 	}
 	defer e.pruneLocks(open)
+	e.orderAdmissions(runs)
 	var errs []error
 	for _, r := range runs {
 		if err := e.stepLocked(ctx, r.ID); err != nil {
@@ -551,6 +566,11 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 			return err
 		}
 		if a == nil {
+			if stopped, err := e.st.AdmissionStopped(ctx, r); err != nil {
+				return err
+			} else if stopped {
+				return e.failRun(ctx, e.st.DB, r, store.ErrAdmissionStopped.Error())
+			}
 			if ready, err := e.admit(ctx, r); err != nil || !ready {
 				return err
 			}
@@ -714,6 +734,9 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		wi, reassigned, err = e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
 			Binding: b.Binding, IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
 		})
+	}
+	if errors.Is(err, store.ErrAdmissionStopped) {
+		return e.failRun(ctx, e.st.DB, r, err.Error())
 	}
 	if err != nil {
 		return err
@@ -945,6 +968,9 @@ func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkIte
 	if wi.SessionID != "" || wi.IssueID == 0 || r.Connector() {
 		return "", nil
 	}
+	if r.AdmissionBrief != "" {
+		return r.AdmissionBrief, nil
+	}
 	if err := e.beginAdmissionRead(ctx, r, "brief", strconv.FormatInt(wi.IssueID, 10)); err != nil {
 		return "", err
 	}
@@ -956,12 +982,16 @@ func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkIte
 	if issue == nil || strings.TrimSpace(issue.Description) == "" {
 		return "", errors.New("issue brief is empty")
 	}
+	return formatIssueBrief(wi.IssueKey, issue), nil
+}
+
+func formatIssueBrief(issueKey string, issue *itsaplan.Issue) string {
 	var s strings.Builder
 	s.WriteString("## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
 		"reports your final message on the issue and opens the pull request from the work branch once you " +
 		"push commits to it.\n")
-	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
-	return s.String(), nil
+	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", issueKey, issue.Title, clip(issue.Description, 8000))
+	return s.String()
 }
 
 func nextDecision(wi *store.WorkItem, retry int) (kind, decision string) {

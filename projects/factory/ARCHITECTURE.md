@@ -445,6 +445,22 @@ reads fresh evidence, including after a restart or transport redelivery;
 when the final blocker completes, the next poll can dispatch within the
 agent's concurrency (HOME-55).
 
+The first claim also snapshots the existing work item's stop counter. A later
+stop fences that delegation across holds, restart and transport redelivery,
+even if a newer delegation has already resumed the work item. Resolution
+checks the counter under the same work-item lock as operator stop, before
+changing ownership or state. Admission checks the root issue's workflow column
+on every poll; a completed or canceled root ends the run without creating a
+work item or task. Reopening it requires a new delegation.
+
+Claims and held-run polling share a two-second admission I/O budget per tick,
+including hold event delivery. Each run is polled at most once per tick;
+previously unpolled and oldest-polled runs take priority in the open-run pass.
+When the budget is exhausted, remaining admissions stay held with their
+journals pending, while cancellation, delivery and outbox phases proceed.
+The issue brief read during successful admission supplies the first attempt
+without a second network read outside that budget.
+
 Admission traverses unfinished dependencies to detect cycles. Canceled
 dependencies hold the run and queue one explanatory comment per run and
 blocker; a cyclic component queues one comment on its lowest-ID issue,

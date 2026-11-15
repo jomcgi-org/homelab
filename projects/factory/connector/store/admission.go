@@ -2,8 +2,21 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrAdmissionStopped fences a delegation that predates a work-item stop.
+var ErrAdmissionStopped = errors.New("delivery stopped after this run was claimed; a new delegation is required")
+
+// AdmissionStopped also finds an existing work item before run.work_item_id
+// is resolved, without changing its ownership, grant, state or session.
+func (s *Store) AdmissionStopped(ctx context.Context, r *Run) (bool, error) {
+	var stopped bool
+	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM work_item WHERE issue_id = $1 AND stops > $2)`, r.IssueID, r.AdmissionStops).Scan(&stopped)
+	return stopped, err
+}
 
 // RecordAdmissionRead records an idempotent read before its external call.
 func (s *Store) RecordAdmissionRead(ctx context.Context, r *Run, epoch int64, messageID, operation, resource string) error {

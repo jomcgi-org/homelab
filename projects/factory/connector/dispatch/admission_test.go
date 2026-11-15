@@ -1,7 +1,9 @@
 package dispatch_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -252,9 +254,193 @@ func TestAdmissionReadsAreRecordedBeforeExternalCalls(t *testing.T) {
 	v.tick(v.e)
 	v.tick(v.e)
 	var n, attempts int
-	// The first tick admits in HandleClaim and then polls all open runs.
-	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT count(*), min(attempts) FROM admission_read WHERE run_id = 1`).Scan(&n, &attempts); err != nil || n != 3 || attempts != 3 {
+	// Claims and the open-run pass share one admission poll per tick.
+	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT count(*), min(attempts) FROM admission_read WHERE run_id = 1`).Scan(&n, &attempts); err != nil || n != 3 || attempts != 2 {
 		t.Fatalf("read replay identities: %d rows, %d attempts, %v", n, attempts, err)
+	}
+}
+
+func TestHeldDelegationCannotUndoALaterStop(t *testing.T) {
+	for _, resumeNewer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("newer-delegation=%t", resumeNewer), func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Original work.")
+			v.tick(v.e)
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Done.", nil)
+			v.tick(v.e)
+			v.dependency(101, 102, "HL-2", 2)
+			v.its.add(2, "coder", 101, "HL-1", "Already delegated.")
+			v.tick(v.e)
+			v.held(2)
+			if ok, err := v.st.StopIssue(v.ctx, "HL-1", "Stop after delegation", "joe"); err != nil || !ok {
+				t.Fatalf("stop = %t, %v", ok, err)
+			}
+			v.its.moveTo(102, 3, "")
+			// Restart and reclaim do not refresh the old run's authority.
+			v.e.Release()
+			v.clk.Advance(301 * time.Second)
+			claim, err := v.its.Claim(v.ctx, "coder")
+			if err != nil || claim == nil || claim.ID != 2 {
+				t.Fatalf("redelivery = %+v, %v", claim, err)
+			}
+			if _, _, err := v.st.RecordClaim(v.ctx, store.ClaimedRun{ID: 2, AgentKey: "coder", IssueID: 101, IssueKey: "HL-1", Attempt: claim.Attempts}); err != nil {
+				t.Fatal(err)
+			}
+			v.e = v.engine("stop-restart")
+			if resumeNewer {
+				// A genuinely new delegation may resume delivery, but must
+				// not also authorize the run that predates the stop.
+				v.its.add(3, "coder", 101, "HL-1", "New delegation after stop.")
+			}
+			v.tick(v.e)
+			if a, err := v.st.LatestAttempt(v.ctx, 2); err != nil || a != nil {
+				t.Fatalf("stopped delegation created an attempt: %+v, %v", a, err)
+			}
+			if res := v.its.Results(2); len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "stopped after") {
+				t.Fatalf("old delegation result = %+v", res)
+			}
+			wantSends := 1
+			if resumeNewer {
+				wantSends = 2
+				if v.run(3).AdmissionStops != 1 || v.work(101).State != store.WorkActive {
+					t.Fatal("a new delegation could not resume the stopped work item")
+				}
+			} else if v.work(101).State != store.WorkStopped {
+				t.Fatal("the stop was cleared")
+			}
+			if v.kg.Executions() != wantSends || v.run(2).AdmissionStops != 0 {
+				t.Fatal("redelivery refreshed a stopped delegation's authority")
+			}
+		})
+	}
+}
+
+func TestStopDuringDependencyReadFencesResolution(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Original work.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Done.", nil)
+	v.tick(v.e)
+	v.dependency(101, 102, "HL-2", 3)
+	v.its.add(2, "coder-b", 101, "HL-1", "Delegated before the stop.")
+	v.its.beforeIssueRead = func(id int64) {
+		if id == 102 {
+			if ok, err := v.st.StopIssue(v.ctx, "HL-1", "Stop during admission", "joe"); err != nil || !ok {
+				t.Fatalf("stop = %t, %v", ok, err)
+			}
+		}
+	}
+	v.tick(v.e)
+	if a, err := v.st.LatestAttempt(v.ctx, 2); err != nil || a != nil {
+		t.Fatalf("racing stop created an attempt: %+v, %v", a, err)
+	}
+	if w := v.work(101); w.State != store.WorkStopped || w.AgentKey != "coder" || v.kg.Executions() != 1 {
+		t.Fatalf("resolution undid the stop or reassigned work: %+v", w)
+	}
+}
+
+func TestTerminalRootIssueStopsHeldFirstRun(t *testing.T) {
+	for _, column := range []int64{3, 4} {
+		for _, removeRelation := range []bool{false, true} {
+			t.Run(fmt.Sprintf("column=%d/removed=%t", column, removeRelation), func(t *testing.T) {
+				v := newEnv(t)
+				v.its.add(1, "coder", 101, "HL-1", "Do it.")
+				v.dependency(101, 102, "HL-2", 2)
+				v.tick(v.e)
+				v.held(1)
+				v.its.moveTo(101, column, "")
+				v.e.Release()
+				v.e = v.engine("root-state-restart")
+				if removeRelation {
+					v.its.issues[101].Links = []itsaplan.IssueLink{}
+				} else {
+					// Stopping the root must not depend on its blocker being
+					// complete or even readable.
+					delete(v.its.issues, 102)
+				}
+				v.tick(v.e)
+				if r := v.run(1); r.State != store.RunClosed || r.WorkItemID != 0 || v.kg.Calls() != 0 {
+					t.Fatalf("terminal root started work: %+v", r)
+				}
+				if res := v.its.Results(1); len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "issue is in a") {
+					t.Fatalf("terminal root result = %+v", res)
+				}
+				// Reopening does not revive the stopped delegation.
+				v.its.moveTo(101, 2, "")
+				v.its.issues[101].Links = []itsaplan.IssueLink{}
+				v.tick(v.e)
+				if v.kg.Calls() != 0 {
+					t.Fatal("reopening revived the stopped run")
+				}
+			})
+		}
+	}
+}
+
+func TestAdmissionTimeoutsShareOneBudgetAndDoNotStallDelivery(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Deliver this.")
+	v.its.add(2, "coder-b", 102, "HL-2", "Cancel this.")
+	v.tick(v.e)
+	first, err := v.st.LatestAttempt(v.ctx, 1)
+	if err != nil || first == nil {
+		t.Fatalf("first attempt = %+v, %v", first, err)
+	}
+	second, err := v.st.LatestAttempt(v.ctx, 2)
+	if err != nil || second == nil {
+		t.Fatalf("second attempt = %+v, %v", second, err)
+	}
+	for id := int64(10); id < 20; id++ {
+		v.its.add(id, "coder", id+100, fmt.Sprintf("HL-%d", id), "Held work.")
+		v.dependency(id+100, id+1000, fmt.Sprintf("HL-%d", id+1000), 2)
+	}
+	for range 4 {
+		v.tick(v.e)
+	}
+	for id := int64(10); id < 20; id++ {
+		v.held(id)
+	}
+	v.e.Release()
+	v.cfg.AdmissionBudget = 200 * time.Millisecond
+	v.e = v.engine("bounded-admission")
+	var reads []int64
+	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+		if id < 1000 {
+			return nil
+		}
+		reads = append(reads, id)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	v.gh.push("factory/HL-1", "sha-1", "fix: delivered")
+	v.kg.finish(first.TaskID, kagent.StateCompleted, "Pushed the fix.", nil)
+	v.its.cancel(2, false)
+	v.clk.Advance(61 * time.Second)
+	for round := range 2 {
+		ctx, cancel := context.WithTimeout(v.ctx, 4*time.Second)
+		started := time.Now()
+		err := v.e.Tick(ctx)
+		cancel()
+		if err != nil || time.Since(started) > 1500*time.Millisecond {
+			t.Fatalf("admission stalled delivery: %v, elapsed %v", err, time.Since(started))
+		}
+		if len(reads) != round+1 {
+			t.Fatalf("timeouts multiplied within one tick: reads = %v", reads)
+		}
+		if round == 0 {
+			if len(v.gh.PRs()) != 1 || len(v.its.Results(1)) != 1 {
+				t.Fatal("delivery or result outbox did not progress behind slow holds")
+			}
+			v.kg.mu.Lock()
+			canceled := v.kg.tasks[second.TaskID].cancelRequested
+			v.kg.mu.Unlock()
+			if !canceled {
+				t.Fatal("cancellations did not progress behind slow holds")
+			}
+		}
+	}
+	if reads[0] == reads[1] {
+		t.Fatal("one slow hold monopolized successive poll budgets")
 	}
 }
 
