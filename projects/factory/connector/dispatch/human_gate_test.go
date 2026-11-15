@@ -51,8 +51,10 @@ func (f *fakeItsaplan) CreateGateIssue(_ context.Context, _ string, body itsapla
 		return nil, f.gateCreateErr
 	}
 	id := int64(200 + len(f.gateCreates))
-	is := &itsaplan.Issue{ID: id, Identifier: fmt.Sprintf("HL-%d", id), Title: body.Title,
-		Description: body.Description, ColumnID: body.ColumnID, AssigneeUserID: body.AssigneeUserID, DelegateUserID: body.DelegateUserID}
+	is := &itsaplan.Issue{
+		ID: id, Identifier: fmt.Sprintf("HL-%d", id), Title: body.Title,
+		Description: body.Description, ColumnID: body.ColumnID, AssigneeUserID: body.AssigneeUserID, DelegateUserID: body.DelegateUserID,
+	}
 	f.issues[id] = is
 	if f.loseGateCreate {
 		f.loseGateCreate = false
