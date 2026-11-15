@@ -1141,8 +1141,9 @@ func TestConflictingHeadStartsOneRebaseRound(t *testing.T) {
 			if announced != 1 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("started")) != 1 {
 				t.Fatalf("rebase announcements = %d, want one and its metric", announced)
 			}
-			// Persist deduplication across a takeover, including later failures
-			// on this head. Pending checks do not hide an idle rebase.
+			// Persist conflict deduplication across a takeover. Later feedback
+			// cannot start a review round here because that budget is spent.
+			// Pending checks do not hide an idle rebase.
 			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
 			v.poll()
 			v.e.Release()
@@ -1155,6 +1156,72 @@ func TestConflictingHeadStartsOneRebaseRound(t *testing.T) {
 			}
 			if testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("idle")) != 1 {
 				t.Fatal("missing idle rebase metric")
+			}
+		})
+	}
+}
+
+func TestNewFeedbackAfterIdleRebaseUsesReviewBudget(t *testing.T) {
+	for _, trigger := range []string{"failed check", "failed status", "review"} {
+		t.Run(trigger, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.cfg.Bindings[0].Review.MaxRebaseRounds = 1
+			v.cfg.Bindings[0].Review.RequiredChecks = append(v.cfg.Bindings[0].Review.RequiredChecks,
+				dispatch.Check{Name: "build", StatusCreator: "ci-bot"})
+			session := v.delivered()
+			v.gh.conflict(1)
+			v.gh.check("sha-1", "test", 100, "")
+			v.poll()
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
+			v.poll()
+			if len(v.rounds()) != 1 || len(v.idleComments()) != 1 {
+				t.Fatalf("rounds = %d, idle comments = %v", len(v.rounds()), v.idleComments())
+			}
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			var feedback string
+			addFeedback := func() {
+				switch trigger {
+				case "failed check":
+					v.gh.check("sha-1", "test", 100, "failure")
+					feedback = `Check "test" concluded failure`
+				case "failed status":
+					v.gh.status("sha-1", "build", "ci-bot", "failure")
+					feedback = `Status "build" is failure`
+				case "review":
+					v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Here is how to fix the failure.")
+					feedback = "Here is how to fix the failure."
+				}
+			}
+			addFeedback()
+			v.poll()
+			rounds := v.rounds()
+			if len(rounds) != 2 || rounds[0].Trigger != "rebase" || rounds[1].Trigger != "review" {
+				t.Fatalf("rounds = %+v, want a rebase followed by review", rounds)
+			}
+			for _, want := range []string{"Review round 1", feedback, "conflicts with main", "rebase on origin/main", "rerun the affected tests"} {
+				if !strings.Contains(rounds[1].Prompt, want) {
+					t.Errorf("review prompt lacks %q: %s", want, rounds[1].Prompt)
+				}
+			}
+			if w := v.work(101); w.ReviewRounds != 1 || w.RebaseRounds != 1 || w.State != store.WorkActive {
+				t.Fatalf("work item = %+v, want separate budgets", w)
+			}
+			sends := v.kg.Sends()
+			if len(sends) != 3 || sends[2].msg.ContextID != session {
+				t.Fatalf("review did not continue session %s: %+v", session, sends)
+			}
+			events := v.events()
+			if len(events) != 2 || events[0].Kind != store.EventConflicting || events[0].RoundRunID != rounds[0].ID ||
+				events[1].Disposition != store.EventActed || events[1].RoundRunID != rounds[1].ID {
+				t.Fatalf("events = %+v, want conflict and independent feedback in separate rounds", events)
+			}
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
+			v.poll()
+			addFeedback() // another event ID from the same source is a duplicate
+			v.poll()
+			if len(v.rounds()) != 2 || len(v.gh.Enqueues()) != 0 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("started")) != 1 {
+				t.Fatalf("repeated feedback started a round or enqueued: rounds = %d, enqueues = %v", len(v.rounds()), v.gh.Enqueues())
 			}
 		})
 	}
@@ -1371,32 +1438,63 @@ func TestEjectionAndRevisionCommitTogether(t *testing.T) {
 }
 
 func TestEjectionsShareTheReviewRoundBound(t *testing.T) {
-	v := newDeliveryEnv(t)
-	v.delivered()
-	// Spend the first round on ordinary review feedback.
-	v.gh.check("sha-1", "test", 100, "failure")
-	v.poll()
-	for i := 2; i <= 3; i++ {
-		head := fmt.Sprintf("sha-%d", i)
-		v.gh.push("factory/HL-7", head, "fix: feedback")
-		v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Fixed.", nil)
-		v.gh.green(head)
-		v.poll()
-		v.gh.eject(1)
-		v.poll()
-	}
-	v.poll()
-	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 || len(v.rounds()) != 2 {
-		t.Fatalf("work item = %+v, want the shared bound of two rounds", w)
-	}
-	said := 0
-	for _, c := range v.its.Comments() {
-		if strings.Contains(c.body, "bound of 2 review rounds") {
-			said++
-		}
-	}
-	if said != 1 {
-		t.Fatalf("round-limit comments = %d, want one", said)
+	for _, conflicting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conflicting=%t", conflicting), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			// Spend the first round on ordinary review feedback.
+			v.gh.check("sha-1", "test", 100, "failure")
+			v.poll()
+			for i := 2; i <= 3; i++ {
+				head := fmt.Sprintf("sha-%d", i)
+				v.gh.push("factory/HL-7", head, "fix: feedback")
+				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Fixed.", nil)
+				v.gh.green(head)
+				v.poll()
+				if conflicting && i == 3 {
+					v.gh.conflict(1)
+				}
+				v.gh.eject(1)
+				v.poll()
+			}
+			// The ejection's limit decision survives a restart and later polls,
+			// even though the separate rebase budget is still untouched.
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			v.poll()
+			v.gh.check("sha-3", "test", 100, "failure")
+			v.poll()
+			v.poll()
+			if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 || w.RebaseRounds != 0 || len(v.rounds()) != 2 {
+				t.Fatalf("work item = %+v, want the shared bound of two rounds", w)
+			}
+			if len(v.gh.Enqueues()) != 2 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("started")) != 0 {
+				t.Fatalf("limited ejection was enqueued or rebased: %v", v.gh.Enqueues())
+			}
+			if conflicting {
+				conflicts := 0
+				for _, ev := range v.events() {
+					if ev.Kind == store.EventConflicting {
+						conflicts++
+						if ev.CommitSHA != "sha-3" || ev.Disposition != store.EventRoundLimit || ev.RoundRunID != 0 {
+							t.Fatalf("conflict = %+v, want the ejection's limit decision", ev)
+						}
+					}
+				}
+				if conflicts != 1 {
+					t.Fatalf("conflict events = %d, want one", conflicts)
+				}
+			}
+			said := 0
+			for _, c := range v.its.Comments() {
+				if strings.Contains(c.body, "bound of 2 review rounds") {
+					said++
+				}
+			}
+			if said != 1 {
+				t.Fatalf("round-limit comments = %d, want one", said)
+			}
+		})
 	}
 }
 
