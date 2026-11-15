@@ -83,22 +83,35 @@ func writeCommits(b *strings.Builder, base, sha string, c Commits) {
 		fmt.Fprintf(b, "The PR has no commits%s.\n\n", scope)
 		return
 	}
-	var shown []string
+	// Each message is quoted line by line, as trusted comments are, so no
+	// line of it starts a line of the prompt.
+	var shown, clipped []string
 	total := 0
 	for i := len(c.List) - 1; i >= 0 && len(shown) < maxPromptCommits; i-- {
+		sha := oneLine(c.List[i].SHA, 64)
 		msg := strings.TrimSpace(strings.ReplaceAll(c.List[i].Commit.Message, "\r\n", "\n"))
-		entry := fmt.Sprintf("commit %s\n%s\n", oneLine(c.List[i].SHA, 64), clip(msg, maxPromptCommitLength))
+		entry := fmt.Sprintf("commit %s\n%s\n", sha, quote(clip(msg, maxPromptCommitLength)))
 		if len(shown) > 0 && total+len(entry) > maxPromptCommitText {
 			break
+		}
+		if len(msg) > maxPromptCommitLength {
+			clipped = append(clipped, sha)
 		}
 		shown = append(shown, entry)
 		total += len(entry)
 	}
-	fmt.Fprintf(b, "The block holds the PR's commits%s, oldest first", scope)
+	fmt.Fprintf(b, "The block holds the PR's commits%s, oldest first, each message quoted line by line", scope)
 	if left := len(c.List) - len(shown); left > 0 {
 		fmt.Fprintf(b, ", without the %d earlier %s that `git -C pr log` shows", left, plural(left, "one"))
 	}
 	b.WriteString(".\n\n")
+	if len(clipped) > 0 {
+		// A review response can sit past the clip: name every clipped commit.
+		fmt.Fprintf(b, "%d %s clipped at %d characters, so a review response in %s may be cut off. Read each whole with "+
+			"`git -C pr log -1 --format=%%B <commit>` before you judge an earlier finding: %s.\n\n",
+			len(clipped), plural(len(clipped), "message was", "messages were"), maxPromptCommitLength,
+			plural(len(clipped), "it", "them"), strings.Join(clipped, ", "))
+	}
 	var cb strings.Builder
 	for i := len(shown) - 1; i >= 0; i-- {
 		cb.WriteString(shown[i])
