@@ -160,6 +160,7 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 	token := ""
 	seen := map[string]bool{}
 	var cursors []*kagent.Task
+	incomplete := false
 	for {
 		if err := e.guard(ctx); err != nil {
 			return nil, err
@@ -185,8 +186,21 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 			if t.HasMessage(messageID) {
 				return t, nil
 			}
+			// Every connector input opens a task. kagent can expose a
+			// SUBMITTED placeholder for a first terminal/waiting save while
+			// native cleanup still owns effects, hiding the accepted input
+			// until settlement. A non-match excludes our input only when
+			// that task's opening user message is public. Apply this check
+			// in every state; an empty/malformed history is never absence.
+			if len(t.History) == 0 || t.History[0] == nil || t.History[0].MessageID == "" ||
+				t.History[0].Role != "ROLE_USER" || t.History[0].TaskID != t.ID || t.History[0].ContextID != t.ContextID {
+				incomplete = true
+			}
 		}
 		if next == "" {
+			if incomplete {
+				return nil, errors.New("reconcile original message: task opening input is not public")
+			}
 			// kagent pages by the last task's position. Deleting that
 			// cursor between requests makes its next-page query return no
 			// rows. Verify every boundary still exists before treating an

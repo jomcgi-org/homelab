@@ -357,8 +357,14 @@ late save of the last send would be found that way. A full window after its
 final send, the connector searches every task state and every page for the
 original message ID. A match attaches the original task, including a task
 that has finished or is waiting for input. Only a complete successful scan
-with no match permits an engineering retry. A failed read, repeated cursor,
-scan timeout or missing Agent leaves the attempt uncertain and keeps its slot.
+with no match permits an engineering retry. Every listed task must expose
+its opening user input before a non-match can prove absence. A first
+terminal or waiting save can remain publicly SUBMITTED with hidden history
+until native cleanup finishes; even an unrelated task in that state holds
+an absence proof. A positive exact-message match remains adoptable despite
+other incomplete histories. Null, partial or malformed task-list responses,
+failed reads, repeated cursors and scan timeouts also keep the original
+attempt and its slot.
 The window covers the 60 s call timeout, the
 two-minute reservation and 30 s of skew; configuration refuses anything
 under 210 s. The repository and branch

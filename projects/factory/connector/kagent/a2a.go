@@ -307,14 +307,22 @@ func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, p
 	if pageToken != "" {
 		params["pageToken"] = pageToken
 	}
-	var out struct {
-		Tasks         []*Task `json:"tasks"`
-		NextPageToken string  `json:"nextPageToken"`
+	var out *struct {
+		Tasks         *[]*Task `json:"tasks"`
+		TotalSize     *int     `json:"totalSize"`
+		PageSize      *int     `json:"pageSize"`
+		NextPageToken *string  `json:"nextPageToken"`
 	}
 	if err := c.call(ctx, agent, "ListTasks", params, &out); err != nil {
 		return nil, "", err
 	}
-	return out.Tasks, out.NextPageToken, nil
+	// kagent's pinned A2A SDK emits all four fields, including tasks: [] for
+	// an empty page. Missing/null fields are uncertainty, not task absence.
+	if out == nil || out.Tasks == nil || out.TotalSize == nil || out.PageSize == nil || out.NextPageToken == nil ||
+		*out.TotalSize < 0 || *out.PageSize < 1 || *out.PageSize > 100 {
+		return nil, "", errors.New("kagent: invalid task list response")
+	}
+	return *out.Tasks, *out.NextPageToken, nil
 }
 
 // CancelTask requests cancellation and returns the task as kagent then

@@ -27,6 +27,7 @@ go_test(
         "engine_test.go",
         "fakes_test.go",
         "reconciliation_test.go",
+        "reconciliation_wire_test.go",
         "transcript_test.go",
     ],
     data = ["@postgres_test//:postgres"],
