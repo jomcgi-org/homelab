@@ -143,10 +143,10 @@ PR:
   A further variant is a new finding, rated on its own under the next rule.
 - Review what changed since the last reviewed head and what that affects.
 - A new finding on code the earlier review covered and the new head left
-  alone is low with `defer`, unless its harm survives a revert: a committed
-  secret, data already lost or exposed. The reviewer marks such a finding
-  `earlier`, and the service lowers a marked high or medium finding on a
-  file outside the changed files.
+  alone keeps its severity when it is critical, such as a route outside
+  sign-in the earlier review missed. Otherwise it is low with `defer`. The
+  reviewer marks such a finding `earlier`, and the service lowers a marked
+  high or medium finding on a file outside the changed files.
 
 ## Joe decides
 

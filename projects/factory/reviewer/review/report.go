@@ -388,8 +388,8 @@ func Assess(r *Report, prior []Finding) Assessment {
 
 // Scope is what a later head changed since the previous reviewed head. A new
 // finding on code that review covered and this head left alone is low with
-// defer unless its harm survives a revert (REVIEW.md "Later heads"); Scope
-// enforces that for the high and medium findings it can place.
+// defer unless it is critical (REVIEW.md "Later heads"); Scope enforces that
+// for the high and medium findings it can place.
 type Scope struct {
 	paths map[string]bool
 }
