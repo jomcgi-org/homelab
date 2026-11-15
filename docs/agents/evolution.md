@@ -32,8 +32,10 @@ changing the set; only Joe's direction authorizes changing the desired outcome.
 Finish eligible goal work and repair demonstrated delivery bottlenecks. When
 capacity remains, find the next useful improvement from current failures,
 blocked work, review findings, latency, quota waste or incomplete acceptance.
-Check open HOME issues and PRs before creating work. Improvements to the factory
-must name the goal they help; code volume and token consumption are not success.
+Check open HOME issues, open GitHub issues and PRs before creating work;
+GitHub issues count until they are closed or moved to HOME. Improvements to
+the factory must name the goal they help; code volume and token consumption
+are not success.
 
 ## Improvements earn their place
 
