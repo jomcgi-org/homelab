@@ -110,7 +110,10 @@ truth for outstanding work), titled `<system>: <finding> (STPA <key>)`, with
 `broken safeguard` or `missing safeguard` and, for the security lens,
 `security finding` in the first line of the description. Set priority `urgent`
 for severe losses, otherwise `high`. Reference the issue from the finding's
-evidence, not a STPA.md checklist.
+evidence, not a STPA.md checklist. A worker without itsaplan access, such as a
+factory sandbox, lists each finding under "STPA findings to file" in its PR
+description and sets `issue: pending`; the delivery owner files them and
+records each key.
 
 ## Drift minimization (this is an update, not a rewrite)
 
@@ -175,8 +178,9 @@ Every fragment carries `system_dir` so a lens-only run can locate the committed
 structure. `status` is REQUIRED on security-lens UCA/unsafe-feedback rows and
 optional elsewhere; any `status` must be one of
 `enforced-prod|enforced-dev|shipped-off|designed|none`, and a security-lens row
-or hazard with `status: none` MUST carry a tracking `issue`: a HOME issue key, or a
-GitHub `#N` on rows filed before the move to itsaplan. The validator enforces all
+or hazard with `status: none` MUST carry a tracking `issue`: a HOME issue key, `pending`
+until its owner files it, or a GitHub `#N` on rows filed before the move to
+itsaplan. The validator enforces all
 three. Hazards MAY carry `status`/`issue` too: a tracked unsafe STATE with no
 single attacking control action (a missing egress policy, an absent jailer)
 lives on the hazard row rather than being forced onto an unrelated action.
