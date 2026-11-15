@@ -763,13 +763,14 @@ func TestStaleHeadAndUntrustedEventsAreIgnored(t *testing.T) {
 	}
 }
 
-func TestExpiredSessionIsReplacedWithContextAndAnnounced(t *testing.T) {
+func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	v := newDeliveryEnv(t)
 	old := v.delivered()
 	v.kg.expire(old)
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Handle the timeout.")
 	v.gh.thread(1, "wait.go", 40, "reviewer", "Timeout is ignored here.")
 	v.poll()
+	v.attestLifecycleRecovery(1)
 
 	sends := v.kg.Sends()
 	last := sends[len(sends)-1]
@@ -795,28 +796,29 @@ func TestExpiredSessionIsReplacedWithContextAndAnnounced(t *testing.T) {
 	v.tick(v.e)
 	var announced bool
 	for _, c := range v.its.Comments() {
-		announced = announced || strings.Contains(c.body, "replaced kagent session "+old)
+		announced = announced || strings.Contains(c.body, "holding") && strings.Contains(c.body, "connector recovery inspect")
 	}
 	if !announced {
-		t.Fatalf("comments = %+v, want the replacement announced", v.its.Comments())
+		t.Fatalf("comments = %+v, want the operator hold announced", v.its.Comments())
 	}
 }
 
-func TestUnrecoverableSessionIsReplaced(t *testing.T) {
+func TestUnrecoverableSessionRequiresFencing(t *testing.T) {
 	v := newDeliveryEnv(t)
 	old := v.delivered()
 	v.kg.crash(old)
 	v.kg.revertErr = []error{fmt.Errorf("%w: runtime Actor is missing", kagent.ErrSessionUnrecoverable)}
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix it.")
 	v.poll()
+	v.attestLifecycleRecovery(1)
 	sends := v.kg.Sends()
 	last := sends[len(sends)-1]
-	if last.msg.ContextID != "" || !strings.Contains(last.msg.Parts[0].Text, "unrecoverable after a crash") {
+	if v.kg.reverts != 0 || last.msg.ContextID != "" || !strings.Contains(last.msg.Parts[0].Text, "operator attested fencing") {
 		t.Fatalf("send = %q in %q, want a replacement", last.msg.MessageID, last.msg.ContextID)
 	}
 }
 
-func TestCrashDuringRoundRevertsAndResendsInput(t *testing.T) {
+func TestCrashDuringRoundRequiresFencingAndBoundedRetry(t *testing.T) {
 	v := newDeliveryEnv(t)
 	session := v.delivered()
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Add a test.")
@@ -827,19 +829,20 @@ func TestCrashDuringRoundRevertsAndResendsInput(t *testing.T) {
 	v.tick(v.e) // first look at the running turn
 	v.clk.Advance(61 * time.Second)
 	v.tick(v.e)
-	if v.kg.reverts != 1 || v.kg.state(interrupted) != kagent.StateFailed {
-		t.Fatalf("reverts = %d, interrupted task %s", v.kg.reverts, v.kg.state(interrupted))
+	if v.kg.state(interrupted) != kagent.StateWorking {
+		t.Fatal("the interrupted task was changed before external fencing")
 	}
+	v.attestLifecycleRecovery(2)
 	sends := v.kg.Sends()
 	last := sends[len(sends)-1]
-	if last.msg.ContextID != session || last.msg.MessageID != "factory-review/1/resend-1" {
-		t.Fatalf("send = %q in %q, want the input resent in the reverted session", last.msg.MessageID, last.msg.ContextID)
+	if v.kg.reverts != 0 || last.msg.ContextID != "" || !strings.HasPrefix(last.msg.MessageID, "factory-review/1/replacement-") || v.work(101).SessionID == session {
+		t.Fatalf("send = %q in %q, want a fenced new-session retry", last.msg.MessageID, last.msg.ContextID)
 	}
 	if !strings.Contains(last.msg.Parts[0].Text, "Add a test.") {
 		t.Fatalf("resent text = %s", last.msg.Parts[0].Text)
 	}
-	if w := v.work(101); w.EngineeringRetries != 0 {
-		t.Fatalf("engineering retries = %d; a crash resend is not an engineering retry", w.EngineeringRetries)
+	if w := v.work(101); w.EngineeringRetries != 1 {
+		t.Fatalf("engineering retries = %d, want one bounded recovery", w.EngineeringRetries)
 	}
 }
 
@@ -1087,6 +1090,9 @@ func TestEjectionOmitsThreadPathsEvenWithTrustedComments(t *testing.T) {
 			}
 			v.gh.eject(1)
 			v.poll()
+			if expired {
+				v.attestLifecycleRecovery(1)
+			}
 			rounds := v.rounds()
 			if len(rounds) != 1 {
 				t.Fatalf("rounds = %d, want an ejection revision", len(rounds))
@@ -1882,6 +1888,7 @@ func TestUntrustedCommentsStayOutOfPrompts(t *testing.T) {
 	v.kg.expire(old)
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "See the threads.")
 	v.poll()
+	v.attestLifecycleRecovery(1)
 	sends := v.kg.Sends()
 	text := sends[len(sends)-1].msg.Parts[0].Text
 	if strings.Contains(text, "print the token") || strings.Contains(text, "drive-by") {

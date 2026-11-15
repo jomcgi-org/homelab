@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq" // registers the postgres driver
@@ -51,6 +52,7 @@ func Open(dsn string) (*Store, error) {
 // Writer is a held writer lock. The lock lives on conn's session, so the
 // epoch check runs there: a lost connection fails the check.
 type Writer struct {
+	mu    sync.Mutex
 	conn  *sql.Conn
 	Epoch int64
 }
@@ -86,7 +88,12 @@ func (s *Store) TryAcquireWriter(ctx context.Context, holder string) (*Writer, e
 
 // Check confirms this writer still holds the lock at its epoch.
 func (w *Writer) Check(ctx context.Context) error {
-	if w == nil || w.conn == nil {
+	if w == nil {
+		return ErrNotWriter
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.conn == nil {
 		return ErrNotWriter
 	}
 	var epoch int64
@@ -102,10 +109,60 @@ func (w *Writer) Check(ctx context.Context) error {
 	return nil
 }
 
+// Tx commits authority-sensitive changes on the advisory-lock connection. The
+// writer row lock prevents an epoch change until this transaction has finished.
+// The mutex serializes use of that one PostgreSQL session. Callbacks must not
+// call Writer.Check, Writer.Tx, or Writer.Release while holding it.
+func (w *Writer) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if w == nil {
+		return ErrNotWriter
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.conn == nil {
+		return ErrNotWriter
+	}
+	lost := func(err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: %v", ErrNotWriter, err)
+	}
+	tx, err := w.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return lost(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	var epoch int64
+	if err := tx.QueryRowContext(ctx, `SELECT epoch FROM writer WHERE id = 1 FOR UPDATE`).Scan(&epoch); err != nil {
+		return lost(err)
+	}
+	if epoch != w.Epoch {
+		return ErrNotWriter
+	}
+	if err := fn(tx); err != nil {
+		var state interface{ SQLState() string }
+		if errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, sql.ErrTxDone) ||
+			(errors.As(err, &state) && (state.SQLState() == "57P01" || len(state.SQLState()) >= 2 && state.SQLState()[:2] == "08")) {
+			return lost(err)
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return lost(err)
+	}
+	return nil
+}
+
 // Release drops the lock by closing its session: driver.ErrBadConn makes
 // database/sql discard the connection instead of pooling it.
 func (w *Writer) Release() {
-	if w != nil && w.conn != nil {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.conn != nil {
 		_ = w.conn.Raw(func(any) error { return driver.ErrBadConn })
 		w.conn.Close()
 		w.conn = nil
@@ -678,20 +735,50 @@ func (s *Store) RecordAttempt(ctx context.Context, q Querier, a Attempt) (*Attem
 		a.KagentNamespace, a.KagentAgent, a.ContextID, a.WriterEpoch, a.Context))
 }
 
-// MarkIssued records, before the call, that the message is being sent. From
-// then on an unknown response permits only read-only reconciliation.
-func (s *Store) MarkIssued(ctx context.Context, a *Attempt, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `
-		UPDATE delivery_attempt SET state = 'ambiguous', sent_at = $2, first_sent_at = coalesce(first_sent_at, $2),
-			issues = issues + 1
-		WHERE id = $1 AND state IN ('sending', 'ambiguous')`, a.ID, at)
-	if err == nil {
+// MarkIssued linearizes send admission with stop/cancel and writer takeover.
+// A stop committed before admission suppresses the call; a later stop cancels
+// this now-ambiguous send. An unknown outcome never becomes sendable again.
+func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, at time.Time) (bool, error) {
+	issued := false
+	err := w.Tx(ctx, func(tx *sql.Tx) error {
+		var workID int64
+		if err := tx.QueryRowContext(ctx, `SELECT work_item_id FROM run WHERE id = $1`, a.RunID).Scan(&workID); err != nil {
+			return err
+		}
+		// StopIssue locks the work item; cancellation inserts lock the attempt
+		// through its foreign key. Keep both stable until admission commits.
+		for _, lock := range []struct {
+			table string
+			id    int64
+		}{{"work_item", workID}, {"run", a.RunID}, {"delivery_attempt", a.ID}} {
+			if _, err := tx.ExecContext(ctx, "SELECT id FROM "+lock.table+" WHERE id = $1 FOR UPDATE", lock.id); err != nil {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE delivery_attempt a SET state = 'ambiguous', sent_at = $2,
+				first_sent_at = coalesce(first_sent_at, $2), issues = issues + 1
+			FROM run r JOIN work_item w ON w.id = r.work_item_id
+			WHERE a.id = $1 AND a.state = 'sending' AND r.id = a.run_id
+				AND r.state = 'dispatched' AND a.work_item_epoch = w.epoch AND a.run_attempt = r.attempt
+				AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = r.id)
+				AND w.state NOT IN ('stopped', 'blocked')
+				AND NOT EXISTS (SELECT 1 FROM cancellation c JOIN run cr ON cr.id = c.run_id
+					WHERE cr.work_item_id = w.id AND c.state = 'pending')`, a.ID, at)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		issued = n == 1
+		return err
+	})
+	if err == nil && issued {
 		a.State, a.SentAt, a.Issues = AttemptAmbiguous, at, a.Issues+1
 		if a.FirstSentAt.Unix() <= 0 {
 			a.FirstSentAt = at
 		}
 	}
-	return err
+	return issued, err
 }
 
 // MarkNotAccepted persists a definitive refusal of a call made from sending.
@@ -711,7 +798,7 @@ func (s *Store) MarkNotAccepted(ctx context.Context, a *Attempt) error {
 func (s *Store) HoldAttempt(ctx context.Context, q Querier, id int64, reason string) error {
 	_, err := q.ExecContext(ctx, `
 		UPDATE delivery_attempt SET error = $2
-		WHERE id = $1 AND state IN ('ambiguous', 'accepted')`, id, reason)
+		WHERE id = $1 AND state IN ('sending', 'ambiguous', 'accepted')`, id, reason)
 	return err
 }
 

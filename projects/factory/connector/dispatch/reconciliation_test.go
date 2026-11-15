@@ -292,7 +292,8 @@ func TestLegacyAdoptionChecksOlderUncertainSendsBeforeNewRetry(t *testing.T) {
 	}
 	b, err := v.st.RecordAttempt(v.ctx, v.st.DB, older)
 	v.requireReconciliationSetup(err)
-	v.requireReconciliationSetup(v.st.MarkIssued(v.ctx, b, v.clk.Now()))
+	_, err = v.st.DB.Exec(`UPDATE delivery_attempt SET state = 'ambiguous', issues = 1, first_sent_at = $2, sent_at = $2 WHERE id = $1`, b.ID, v.clk.Now())
+	v.requireReconciliationSetup(err)
 	task, err := v.kg.Send(v.ctx, kagent.AgentRef{Namespace: b.KagentNamespace, Name: b.KagentAgent}, kagent.Message{MessageID: b.MessageID})
 	v.requireReconciliationSetup(err)
 	v.kg.finish(task.ID, kagent.StateCompleted, "B completed", nil)
