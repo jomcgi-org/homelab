@@ -15,6 +15,7 @@ go_library(
         "20261115210000_transcript_bytes.sql",
         "20261115220000_admission_holds.sql",
         "20261115220000_rebase_rounds.sql",
+        "20261115230000_admission_stops.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
