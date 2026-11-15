@@ -205,6 +205,20 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # Public tool downloads for a binding with `toolchain: homelab`, matching
+    # the factory chart's EgressPolicy homelab-tools, which admits them per
+    # actor. No credential is injected on these origins.
+    - toFQDNs:
+        - matchName: dl-cdn.alpinelinux.org
+        - matchName: get.helm.sh
+        - matchName: release-assets.githubusercontent.com
+        - matchName: registry.npmjs.org
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
 ---
 # The k8s.io credential provider reads the Secrets each actor's atespace is
 # granted (credentialProvider.namespacePolicies in ../values/substrate.yaml).
