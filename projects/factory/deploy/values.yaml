@@ -94,6 +94,9 @@ repositories:
     baseBranch: main
     namespace: factory-r-homelab
     agent: codex
+    # Bootstrap instructions and public download origins for local checks
+    # (#7916, ARCHITECTURE.md "Sandbox checks"). The review binding has none.
+    toolchain: homelab
 
 # itsaplan at factory-plan.jomcgi.dev, behind the edge's Authentik sign-in.
 # Its database is factory-db (projects/platform-factory/factory-db), whose
