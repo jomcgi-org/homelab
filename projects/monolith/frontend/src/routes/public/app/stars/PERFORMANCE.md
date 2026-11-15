@@ -92,10 +92,10 @@ On 2026-11-15, three fresh Python processes per version measured the actual
 FastAPI route against a local, file-backed SQLite fixture. Base revision:
 `cc85e454b715ecc32412e11ef8e6035fc3b39e1d`.
 
-| Measurement | Before | HTTP wrapper |
-| --- | ---: | ---: |
-| Median route time | 1,030 ms | 680 ms |
-| Response bytes | 2,513,273 | 2,513,273 |
+| Measurement       |    Before | HTTP wrapper |
+| ----------------- | --------: | -----------: |
+| Median route time |  1,030 ms |       680 ms |
+| Response bytes    | 2,513,273 |    2,513,273 |
 
 The raw route samples were 1,097.96, 1,030.01 and 870.82 ms before, then 774.55,
 569.07 and 680.47 ms after. Every response had SHA-256
@@ -118,6 +118,79 @@ contract used by the materializer. Existing materialization tests still publish
 the real history builder's output. Router and model tests pass together: 50
 tests. The recursive-encoder regression failed against the original route
 before the wrapper was added.
+
+## Historical map transfer
+
+The Historical mode sends the same complete point and polygon collections to
+MapLibre through its public [`setData(URL)` API](https://maplibre.org/maplibre-gl-js/docs/API/classes/GeoJSONSource/).
+The URL contains base64 JSON generated locally. Worker Fetch can decode and
+parse it without the click thread recursively copying every GeoJSON object.
+The live layer keeps its existing object input. There is no extra HTTP request,
+worker customization, removed feature or geometry simplification.
+
+JSON escaping before `btoa` preserves Unicode IDs and lone surrogates. Base64
+contains no `://`, so even an ID containing an HTTPS URL cannot trigger
+MapLibre 6.9's custom-protocol delegation to the main thread. This distinction
+matters: plain `blob:https://` URLs take that delegation path in this version.
+
+### Hosted evidence before transport changes
+
+The separate [diagnostic run](https://github.com/jomcgi-org/homelab/actions/runs/43665083851)
+used Chromium 151.0.7922.34, 4x page CPU slowdown and three fresh contexts. Each
+waited for the natural history-map response to complete and two animation
+frames before clicking. All three had one document request and finished in
+loaded Historical mode.
+
+| Diagnostic observation, ms                | Run 1 | Run 2 | Run 3 |
+| ----------------------------------------- | ----: | ----: | ----: |
+| Click Event Timing duration               |   440 |   464 |   424 |
+| Click processing duration                 | 426.0 | 441.1 | 408.4 |
+| Input delay                               |   8.1 |   8.9 |   8.3 |
+| Sample weight under GeoJSON `sendAsync`   | 328.1 | 324.8 | 312.7 |
+| Recursive transfer serializer self weight | 179.1 | 180.2 | 167.8 |
+
+The last two rows include only stacks under `_dispatchWorkerUpdate`, excluding
+tile-load messages. The archived MapLibre asset `BSile_g5.js` identifies the
+recursive serializer as `zs` and the enclosing actor's Promise executor.
+Sampling weights approximate attribution, not exact function durations. The
+profiles include subsequent frames and a one-second delivery window. Their
+CDP clock is not aligned exactly with document Event Timing. Large `(program)`
+spans remain unattributed, and workers are neither profiled nor certified under
+the page CPU throttle. These diagnostic runs never replace normal benchmark
+medians or field INP.
+
+### Local transport comparison
+
+Three fresh Vitest processes generated both collections through the real
+component from the saved 14,234-site history. Each warmed the installed
+MapLibre serializer with the initial live collections, then ran three
+alternating object/URL pairs. The measured section includes the actual
+`web_worker_transfer.serialize` and native `structuredClone`; the URL path
+also includes the production JSON/base64 helper. It does not measure a browser,
+worker execution, rendering, CPU throttling or the worker's return message.
+
+| Local measurement, ms                        | Object input | Data URL |
+| -------------------------------------------- | -----------: | -------: |
+| First sample, median across fresh processes  |       274.21 |   112.12 |
+| Median of each process's three-sample median |       219.25 |   112.12 |
+
+The first samples were 246.07, 386.86 and 274.21 ms for objects, and 115.01,
+112.12 and 90.81 ms for URLs. Decoded value equality held after every transfer:
+14,234 points (2,312,564 JSON bytes) and 14,234 polygons (3,724,686 JSON bytes),
+including every ID, coordinate, property and feature's position in the array.
+
+Base64 creates larger temporary strings. MapLibre also returns the parsed
+collection from its worker and restores the source's data for query APIs;
+that later main-thread work is retained. A verified rollout must remeasure
+clicks, subsequent long tasks and map readiness before claiming a live speedup.
+
+The registered frontend tests cover Unicode and empty collections, real data-
+URL Fetch, the installed `GeoJSONSource` and `GeoJSONWorkerSource` path without
+a main-thread resource bounce, source query data, tile indexing and rapid
+updates. The composed map test checks all months, both source types, full
+point coordinates and card selection. All 89 Stars tests across seven files
+pass. Initial SSR content and all cache windows remain covered by their existing
+tests.
 
 ## Cache windows
 

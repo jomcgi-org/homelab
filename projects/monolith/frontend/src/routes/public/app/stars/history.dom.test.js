@@ -150,8 +150,12 @@ describe("stars immutable history and map updates", () => {
     expect(historyView.mock.calls.at(-1)[0]).toBe(history.sites);
     expect(map.getSource("sites-cells").setData).toHaveBeenCalledOnce();
     expect(map.getSource("sites").setData).toHaveBeenCalledOnce();
-    const cells = () =>
-      map.getSource("sites-cells").setData.mock.calls.at(-1)[0].features;
+    const sourceData = (id) => {
+      const url = map.getSource(id).setData.mock.calls.at(-1)[0];
+      expect(url).toMatch(/^data:application\/json;base64,/);
+      return JSON.parse(atob(url.slice(url.indexOf(",") + 1)));
+    };
+    const cells = () => sourceData("sites-cells").features;
     const expected = (month) => {
       const rows = history.sites.map((site) => ({
         id: site.id,
@@ -179,6 +183,17 @@ describe("stars immutable history and map updates", () => {
       expect(cells().map((feature) => feature.properties)).toEqual(
         expected(month),
       );
+      const points = sourceData("sites").features;
+      expect(points.map((feature) => feature.properties)).toEqual(
+        expected(month),
+      );
+      for (const point of points) {
+        const site = history.sites.find((item) => item.id === point.id);
+        expect(point.geometry).toEqual({
+          type: "Point",
+          coordinates: [site.lon, site.lat],
+        });
+      }
       expect(historyView.mock.calls.at(-1)[0]).toBe(history.sites);
     }
     map.fire("click", { features: [{ properties: { id: 5 } }] }, "sites-cells");

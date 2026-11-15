@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import MapSnapshot from "$lib/public/components/MapSnapshot.svelte";
+  import { geoJSONUrl } from "$lib/public/stars/geojson-url.js";
   import "maplibre-gl/dist/maplibre-gl.css";
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import Button from "@homelab/design-system/components/Button.svelte";
@@ -405,7 +406,7 @@
     ]) {
       const source = map.getSource(id);
       if (source && publishedSources.get(source) !== data) {
-        source.setData(data);
+        source.setData(mode === "historical" ? geoJSONUrl(data) : data);
         publishedSources.set(source, data);
       }
     }
