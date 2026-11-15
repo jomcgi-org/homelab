@@ -3,9 +3,9 @@
 itsaplan Community (ARCHITECTURE.md, "itsaplan"): the api, which applies the
 migrations in an init container before it starts, the web app and the worker,
 from the upstream images. Generated secrets come from itsaplan-jobs.yaml's
-secret-init; the database, S3 key and OIDC client secret from outside the
-chart; the instance's admin, sign-in settings, project and agents from its
-bootstrap. The namespace is not rendered here: the broker's template
+Jobs; the database, S3 key and OIDC client secret from outside the chart;
+the instance's admin, sign-in settings, project, sessions member and agents
+from its bootstrap. The namespace is not rendered here: the broker's template
 declares it while the broker is on, and the Applications that fill its
 Secrets (factory-buckets, factory-db-secrets) create it either way.
 */}}
@@ -54,6 +54,20 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ $name }}-admin
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.itsaplanKeep" . | nindent 4 }}
+type: Opaque
+---
+# Joe's sessions email and password, generated once by the bootstrap Job.
+# Only that Job reads it in-cluster; never label it injectable into sandboxes.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-joe-sessions
   namespace: {{ $ns }}
   labels:
     {{- include "factory.labels" . | nindent 4 }}

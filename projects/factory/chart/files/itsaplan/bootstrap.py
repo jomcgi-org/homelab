@@ -13,6 +13,8 @@ Idempotent; every step reads before it writes:
    an agent's API key once, at creation or rotation, and this writes it to
    Secret AGENT_SECRET_PREFIX<username>. An agent whose Secret holds no
    working key gets a new key; an agent is never created twice.
+5. Joe's sessions account, invited as a regular member of that project. Its
+   password is saved in SESSIONS_SECRET before sign-up and never rotated.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -21,13 +23,14 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+SA = os.environ.get("SA_DIR", "/var/run/secrets/kubernetes.io/serviceaccount")
 K8S = "https://{}:{}".format(
     os.environ["KUBERNETES_SERVICE_HOST"], os.environ["KUBERNETES_SERVICE_PORT"]
 )
@@ -42,11 +45,19 @@ with open(os.environ["CONFIG"]) as f:
     CONFIG = json.load(f)
 # After this long, the next sync writes the OIDC settings again.
 REWRITE_AFTER = 24 * 3600
+# itsaplan 1.10.0's human username validator allows letters, digits, _ and .,
+# but not hyphens. Keep the account's email and Secret named joe-sessions.
+SESSIONS = {
+    "email": "joe-sessions@jomcgi.dev",
+    "name": "Joe (sessions)",
+    "username": "joesessions",
+}
 
 
 class HTTPError(Exception):
     def __init__(self, method, url, status, body):
-        super().__init__(f"{method} {url}: {status} {body[:500]}")
+        # Responses can echo credentials, and invite URLs contain bearer tokens.
+        super().__init__(f"{method} request failed: HTTP {status}")
         self.status = status
         self.body = body
 
@@ -119,7 +130,7 @@ def write_secret(name, want):
 
 
 class Session:
-    """The admin's better-auth session, kept as the cookies the api sets."""
+    """A better-auth session, kept as the cookies the api sets."""
 
     def __init__(self):
         self.cookies = {}
@@ -278,6 +289,117 @@ def ensure_project(session, team_id):
     return project["id"]
 
 
+def find_account(session, path, email):
+    """Find an exact email in a paged account or membership listing."""
+    page = 1
+    while True:
+        query = urllib.parse.urlencode(
+            {"search": email, "kind": "all", "page": page, "pageSize": 100}
+        )
+        result = session.call("GET", f"{path}?{query}")
+        for account in result["items"]:
+            if account["email"].lower() == email.lower():
+                return account
+        if page * 100 >= result["total"]:
+            return None
+        page += 1
+
+
+def sessions_invite(admin, project, email):
+    """Reuse a pending invite, including after an interrupted sign-up."""
+    base = f"{project}/invites"
+    for invite in admin.call("GET", base):
+        if invite["email"].lower() != email or invite["status"] != "pending":
+            continue
+        if (
+            invite["role"] != "member"
+            or invite["teamRole"] != "member"
+            or invite["roleId"] is not None
+        ):
+            raise SystemExit("Joe's sessions invite must grant the default member role")
+        # The invite view has an expiry flag computed by the server's clock.
+        view = admin.call("GET", f"/invites/{invite['token']}")
+        if view["expired"]:
+            invite = admin.call("POST", f"{base}/{invite['id']}/renew", {})
+        return invite
+    return admin.call("POST", base, {"email": email, "role": "member"})
+
+
+def ensure_sessions(admin, team_id):
+    email = SESSIONS["email"]
+    account = find_account(admin, "/god/users", email)
+    name = os.environ["SESSIONS_SECRET"]
+    credentials = secret_data(k8s("GET", name))
+    if credentials.get("email", email) != email:
+        raise SystemExit(f"{NAMESPACE}/{name} names a different account")
+    if account and not all(credentials.get(k) for k in ("email", "password")):
+        raise SystemExit(
+            f"{email} already exists; restore {NAMESPACE}/{name}, "
+            "refusing to replace its password"
+        )
+    if not account:
+        credentials = {
+            "email": email,
+            "password": credentials.get("password") or secrets.token_urlsafe(32),
+        }
+        # Persist first: a failed sign-up or invite acceptance reuses this password.
+        write_secret(name, credentials)
+
+    project = f"/projects/{team_id}.{CONFIG['project']['key']}"
+    member = find_account(admin, f"{project}/members", email)
+    team_member = find_account(admin, f"/teams/{team_id}/members", email)
+    invite = None
+    if not member and not team_member:
+        invite = sessions_invite(admin, project, email)
+
+    session = Session()
+    try:
+        if account:
+            # An invalid stored password fails here; never reset an existing account.
+            session.call("POST", "/api/auth/sign-in/email", credentials)
+        else:
+            session.call(
+                "POST", "/api/auth/sign-up/email", {**credentials, **SESSIONS}
+            )
+        me = session.call("GET", "/me")
+        user = me.get("user") or {}
+        if (
+            not me.get("authenticated")
+            or user.get("email") != email
+            or user.get("role") != "user"
+            or user.get("isAgent") is not False
+            or user.get("username") != SESSIONS["username"]
+        ):
+            raise SystemExit("Joe's sessions account is not the expected regular user")
+        if not member:
+            if invite:
+                session.call("POST", f"/invites/{invite['token']}/accept", {})
+            else:
+                admin.call(
+                    "POST",
+                    f"{project}/members",
+                    {"userId": user["id"], "role": "member"},
+                )
+        access = session.call("GET", project)
+        viewer = access["viewer"]
+        if viewer != {"role": "member", "teamRole": "member", "via": "member"}:
+            raise SystemExit("Joe's sessions account must be a regular project member")
+        team = session.call("GET", f"/teams/{team_id}")
+        workspaces = session.call("GET", "/workspaces")
+        workspace = next(w for w in workspaces if w["id"] == team["workspaceId"])
+        if workspace["role"] is not None:
+            raise SystemExit("Joe's sessions account must not administer the workspace")
+        permissions = access["permissions"].get("work_items", {})
+        if not all(permissions.get(action) for action in ("read", "create", "edit")):
+            raise SystemExit("Joe's sessions account cannot edit issues and comment")
+        if user.get("name") != SESSIONS["name"]:
+            session.call("POST", "/api/auth/update-user", {"name": SESSIONS["name"]})
+        print(f"{SESSIONS['name']} (@{user['username']}) is a project member")
+    finally:
+        if session.cookies:
+            session.call("POST", "/api/auth/sign-out", {})
+
+
 def key_works(key):
     """True when the api resolves the key to an account (/me answers 200 either
     way, with authenticated false for a key it refuses)."""
@@ -356,6 +478,7 @@ def main():
         team_id = ensure_team(session)
         project_id = ensure_project(session, team_id)
         ensure_agents(session, team_id, project_id)
+        ensure_sessions(session, team_id)
     finally:
         # Ends the session, so reruns leave no session rows behind.
         session.call("POST", "/api/auth/sign-out", {})
