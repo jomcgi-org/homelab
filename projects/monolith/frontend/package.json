@@ -22,8 +22,8 @@
   "devDependencies": {
     "@esbuild/linux-x64": "0.27.4",
     "@rollup/rollup-linux-x64-gnu": "4.68.0",
-    "@sveltejs/adapter-node": "5.5.7",
-    "@sveltejs/kit": "2.70.3",
+    "@sveltejs/adapter-node": "5.5.8",
+    "@sveltejs/kit": "3.1.1",
     "@sveltejs/vite-plugin-svelte": "4.0.4",
     "svelte": "5.56.9",
     "vite": "6.4.5",
