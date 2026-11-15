@@ -16,6 +16,14 @@ maintenance policy authorizes implementation, review, merge and rollout.
 Routine human review or a separate "merge" instruction is unnecessary.
 Existing approval covers the same action and scope.
 
+For gated changes, factory work authored by `jomcgi-factory[bot]` still needs
+Joe's APPROVED review of the head. A session Joe guides on his `jomcgi`
+account may satisfy the human gate through the authorship waiver in
+`REVIEW.md` "Joe decides", and lands a gated change only when Joe asked for
+it in that session ([decision](https://github.com/jomcgi-org/homelab/issues/8049)).
+Renovate is excluded even on Joe's account. Explicit holds still require an
+APPROVED review; required CI, independent review and the merge queue apply.
+
 Routine autonomous maintenance includes model choice and IDs, and supported
 CLI/runtime version bumps. Use proportionate compatibility checks, including
 the service's dev conformance gate where applicable. Preserve the review, CI,

@@ -476,6 +476,9 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 	// the marker and the findings, so the tail is never clipped and the
 	// blocking findings get the space before the other sections.
 	tail := footer
+	if gate != nil && gate.Authorship != "" {
+		tail = gate.Authorship + "\n\n" + tail
+	}
 	if len(a.Blocking) > 0 && !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return !isGate(b.Finding) }) {
 		tail = gateOnlyMarker + footer
 	}

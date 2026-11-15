@@ -1086,11 +1086,24 @@ previews).
   `needs-human`, gets a
   `human-gate` high finding from the service; the agent reports the rest of
   `REVIEW.md` "Joe decides" under the same rule, matched by any rule segment
-  of the ID that starts `human-gate`, at any severity. Either blocks until
-  `jomcgi` approves that exact head, and the approval posts a passing check
-  run. GitHub refuses an approval from a PR's own author, so the factory App
-  authors gate-touching changes; a gated PR that `jomcgi` authored lands
-  only through Joe's ruleset bypass. A hold is logged once as `human gate`
+  of the ID that starts `human-gate`, at any severity. Factory-authored PRs
+  require `jomcgi` to approve that exact head. Joe's
+  [authorship decision](https://github.com/jomcgi-org/homelab/issues/8049)
+  also permits a PR from a `humanApprovers` account with its head in the base
+  repository, when every push since the head ref's latest creation is by
+  those accounts and the newest push matches the head. The reviewer reads
+  `/repos/{owner}/{repo}/activity?ref=refs/heads/<branch>` on every poll,
+  requires complete history through creation within 100 events, and grants
+  no waiver on a read error or SHA mismatch. It names this approval by
+  authorship in the check output and never stores it as an approval.
+  Git commit authors such as `ci-format-bot` do not identify push actors.
+  Renovate is excluded by `renovate/` head branches or any PR commit with
+  its git author email, read from base `renovate.json` `gitAuthor` when set;
+  `renovate@whitesourcesoftware.com` is always excluded. A separate
+  non-admin Renovate identity remains follow-up work. Sessions Joe guides
+  land gated changes only when he asked in that session. Hold labels,
+  shared-head, foreign-check and restart-recovery holds still require an
+  APPROVED review. Other findings still block. A hold is logged once as `human gate`
   and marked so the connector can skip its revision round.
 - **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without

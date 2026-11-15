@@ -51,7 +51,8 @@ they do not launch their own planner, review or landing sequence.
   current PR head. On main, that is `pr-checks` and the reviewer App's
   `factory review` check. A failing `factory review` lists its findings, so
   fix and push. On a PR authored by `jomcgi`, a human-gate finding clears
-  only when Joe merges it with his bypass. Review guidance:
+  through the verified authorship waiver in `REVIEW.md` "Joe decides"
+  ([decision](https://github.com/jomcgi-org/homelab/issues/8049)). Review guidance:
   `docs/agents/review.md`.
 - `homelab pr land <n>` follows merge, chart writeback and rollout. Otherwise,
   `gh pr merge <n> --auto` enters the merge queue; pass no strategy flag.

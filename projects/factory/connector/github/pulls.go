@@ -17,6 +17,90 @@ import (
 // hold more than was read.
 const MaxListed = 100
 
+// RefActivity is a repository activity, newest first. Actor is the GitHub
+// identity that pushed, independent of the commit's git author or committer.
+type RefActivity struct {
+	ID    int64  `json:"id"`
+	Ref   string `json:"ref"`
+	Type  string `json:"activity_type"`
+	Actor struct {
+		Login string `json:"login"`
+	} `json:"actor"`
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+// HeadRefActivity reads at most 100 events through the ref's latest creation.
+// Missing creation (including a truncated or missing page) is no proof. Read
+// all activity types so force pushes and delete/recreate cycles cannot hide.
+func (c *Client) HeadRefActivity(ctx context.Context, repo, branch string) ([]RefActivity, error) {
+	ref := "refs/heads/" + branch
+	q := url.Values{"ref": {ref}, "direction": {"desc"}, "per_page": {strconv.Itoa(MaxListed)}}
+	var events []RefActivity
+	if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/activity?"+q.Encode(), nil, &events); err != nil {
+		return nil, err
+	}
+	if len(events) > MaxListed {
+		return nil, ErrTooMany
+	}
+	seen := map[int64]bool{}
+	for i, event := range events {
+		if event.ID <= 0 || seen[event.ID] || event.Ref != ref || event.Type == "" {
+			return nil, errors.New("github: incomplete ref activity")
+		}
+		seen[event.ID] = true
+		if event.Type == "branch_creation" {
+			return events[:i+1], nil
+		}
+	}
+	return nil, errors.New("github: ref activity does not reach its latest creation within 100 events")
+}
+
+// PullRequestCommit carries the immutable git author, not the linked GitHub user.
+type PullRequestCommit struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Author struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"author"`
+	} `json:"commit"`
+}
+
+// PullRequestCommits refuses GitHub's 250-commit cap rather than returning a
+// partial author list. A disappearing page or missing head also fails closed.
+func (c *Client) PullRequestCommits(ctx context.Context, repo string, number int, head string) ([]PullRequestCommit, error) {
+	var commits []PullRequestCommit
+	seen := map[string]bool{}
+	for page := 1; page <= 3; page++ {
+		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		var out []PullRequestCommit
+		if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls/"+strconv.Itoa(number)+"/commits?"+q.Encode(), nil, &out); err != nil {
+			return nil, err
+		}
+		if out == nil || len(out) > MaxListed {
+			return nil, errors.New("github: incomplete PR commits")
+		}
+		for _, cm := range out {
+			if cm.SHA == "" || seen[cm.SHA] || cm.Commit.Author.Email == "" {
+				return nil, errors.New("github: incomplete PR commit author")
+			}
+			seen[cm.SHA] = true
+		}
+		commits = append(commits, out...)
+		if len(commits) >= 250 {
+			return nil, ErrTooMany
+		}
+		if len(out) < MaxListed {
+			if len(commits) == 0 || commits[len(commits)-1].SHA != head {
+				return nil, errors.New("github: PR commits do not end at the expected head")
+			}
+			return commits, nil
+		}
+	}
+	return nil, ErrTooMany
+}
+
 // MaxPullPages bounds an open PR listing: 10,000 PRs.
 const MaxPullPages = 100
 

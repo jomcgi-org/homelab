@@ -80,9 +80,9 @@ type Binding struct {
 	// enqueues; other authors' PRs get the check only. The connector
 	// enqueues the factory's own PRs, since it sees their stops.
 	EnqueueAuthors []string `yaml:"enqueueAuthors"`
-	// A PR touching HumanGatePaths (globs, ** for any directories) or
-	// carrying HumanGateLabels needs an APPROVED review from one of
-	// HumanApprovers on its exact head.
+	// HumanGatePaths (globs, ** for any directories) require exact-head
+	// approval, including the verified authorship waiver (#8049).
+	// HumanGateLabels always require an APPROVED review from HumanApprovers.
 	HumanGatePaths  []string `yaml:"humanGatePaths"`
 	HumanGateLabels []string `yaml:"humanGateLabels"`
 	HumanApprovers  []string `yaml:"humanApprovers"`

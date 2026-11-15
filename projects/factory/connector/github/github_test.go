@@ -156,6 +156,136 @@ func TestUnauthorizedRefreshesTokenOnce(t *testing.T) {
 
 type fixedTokens struct{}
 
+func TestHeadRefActivityRequiresCreationWithinOneCompletePage(t *testing.T) {
+	activity := func(id int, kind string) RefActivity {
+		e := RefActivity{ID: int64(id), Ref: "refs/heads/session/joe", Type: kind, Before: "before", After: "after"}
+		e.Actor.Login = "jomcgi"
+		return e
+	}
+	full := make([]RefActivity, 100)
+	for i := range full {
+		full[i] = activity(100-i, "push")
+	}
+	full[99].Type = "branch_creation"
+	for _, tc := range []struct {
+		name   string
+		events []RefActivity
+		ok     bool
+	}{
+		{"complete", []RefActivity{activity(3, "push"), activity(2, "branch_creation"), activity(1, "branch_deletion")}, true},
+		{"exact limit", full, true},
+		{"over limit", append(append([]RefActivity(nil), full...), activity(101, "push")), false},
+		{"truncated", full[:99], false},
+		{"missing page", nil, false},
+		{"empty page", []RefActivity{}, false},
+		{"duplicate event", []RefActivity{activity(1, "push"), activity(1, "branch_creation")}, false},
+		{"no identity", []RefActivity{activity(0, "branch_creation")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				q := r.URL.Query()
+				if r.URL.Path != "/repos/example-org/homelab/activity" || q.Get("ref") != "refs/heads/session/joe" || q.Get("direction") != "desc" || q.Get("per_page") != "100" || q.Get("actor") != "" || q.Get("activity_type") != "" {
+					t.Errorf("activity request = %s", r.URL)
+				}
+				if r.Header.Get("If-None-Match") != "" {
+					t.Error("activity reused ETag evidence")
+				}
+				w.Header().Set("ETag", "activity")
+				_ = json.NewEncoder(w).Encode(tc.events)
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
+			for range 2 {
+				got, err := c.HeadRefActivity(context.Background(), "example-org/homelab", "session/joe")
+				if (err == nil) != tc.ok {
+					t.Fatalf("events = %+v, error = %v", got, err)
+				}
+				if tc.ok && got[len(got)-1].Type != "branch_creation" {
+					t.Fatalf("read older incarnation: %+v", got)
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != 2 {
+				t.Fatalf("calls = %d", calls)
+			}
+		})
+	}
+}
+
+func TestPullRequestCommitsFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name                           string
+		count                          int
+		badEmail, mismatch, missingPage bool
+		ok                             bool
+	}{
+		{name: "complete", count: 101, ok: true},
+		{name: "empty", count: 0},
+		{name: "GitHub cap", count: 250},
+		{name: "missing author", count: 1, badEmail: true},
+		{name: "head changed", count: 1, mismatch: true},
+		{name: "missing page", count: 101, missingPage: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/example-org/homelab/pulls/7/commits" || r.URL.Query().Get("per_page") != "100" {
+					t.Errorf("request = %s", r.URL)
+				}
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				if tc.missingPage && page > 1 {
+					_, _ = w.Write([]byte("null"))
+					return
+				}
+				out := []PullRequestCommit{}
+				for i := (page-1)*100; i < min(page*100, tc.count); i++ {
+					var cm PullRequestCommit
+					cm.SHA, cm.Commit.Author.Email = strconv.Itoa(i), "joe@example.com"
+					if tc.badEmail {
+						cm.Commit.Author.Email = ""
+					}
+					out = append(out, cm)
+				}
+				_ = json.NewEncoder(w).Encode(out)
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			head := strconv.Itoa(tc.count - 1)
+			if tc.mismatch {
+				head = "changed"
+			}
+			commits, err := c.PullRequestCommits(context.Background(), "example-org/homelab", 7, head)
+			if (err == nil) != tc.ok {
+				t.Fatalf("commits = %d, error = %v", len(commits), err)
+			}
+			if tc.ok && (len(commits) != tc.count || commits[0].Commit.Author.Email != "joe@example.com") {
+				t.Fatalf("commits = %+v", commits)
+			}
+		})
+	}
+}
+
+func TestPullRequestPreservesHeadRepository(t *testing.T) {
+	for _, tc := range []struct{ repo, want string }{
+		{`{"full_name":"example-org/homelab"}`, "example-org/homelab"},
+		{`{"full_name":"someone/fork"}`, "someone/fork"},
+		{"null", ""},
+	} {
+		var p restPull
+		if err := json.Unmarshal([]byte(`{"head":{"ref":"session/joe","sha":"head","repo":`+tc.repo+`}}`), &p); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.pr(); got.HeadRepo != tc.want || got.HeadRef != "session/joe" || got.HeadSHA != "head" {
+			t.Fatalf("PR = %+v", got)
+		}
+	}
+}
+
 func (fixedTokens) Token(context.Context, string) (string, error) { return "ghs_fixed", nil }
 func (fixedTokens) Invalidate(string)                             {}
 
