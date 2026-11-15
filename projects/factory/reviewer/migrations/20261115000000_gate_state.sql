@@ -6,7 +6,8 @@ CREATE TABLE writer (
 );
 
 -- One atomic snapshot, keyed internally by repository/PR and repository/head.
--- Its existence records completion of the one-time GitHub import.
+-- Its Imported field records completion of the one-time GitHub import;
+-- failure projections can commit while the import is still pending.
 CREATE TABLE reviewer_state (
     id integer PRIMARY KEY CHECK (id = 1),
     state jsonb NOT NULL

@@ -1201,13 +1201,23 @@ and enqueue. A failed GitHub write retains its intent for the next poll or
 process. Pending failures are retried; a pending pass requires current evidence
 again. Approval remains revalidated on every poll. Check runs expose the gate
 and carry review reports and task IDs; their text cannot replace durable gate
-observations after startup.
+observations after startup. Gate observation and check publication share a
+critical section, so a success cannot be sent after a newer hold commits.
 
 The first start imports all open PRs, including drafts, from the reviewer's
-check runs and complete label history before acting. The snapshot records
-completion atomically. Failed reads or incomplete history leave import pending.
+check runs and complete label history before passing or enqueueing. The snapshot
+records completion atomically. Failed reads or incomplete history leave import
+pending and revoke queued merge-group passes. Revocation intents persist with
+the import marker still false, and retry across restarts after lost GitHub writes.
 Legacy restart-only holds import without a hold; labels, gated paths, shared
 heads and human-gate findings remain binding. Later starts load Postgres.
+
+The migration can recover only evidence the old process wrote to GitHub or
+that complete label history and the current PR listing reveal. An observation
+lost from the old process's memory after every GitHub write failed cannot be
+reconstructed. HOME-54 explicitly requires discarding restart-only holds, so
+this migration does not impose a blanket transition hold to cover that unknown
+history. Write-ahead persistence protects observations made by the new version.
 
 **Why.** [Joe's decision on 2026-11-15](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891505565)
 requires a person only where a hold actually applies. Durable observations

@@ -3,7 +3,9 @@ package review
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,6 +64,21 @@ func TestImportDropsRestartOnlyHold(t *testing.T) {
 	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "restart resurrected imported recovery state")
 }
 
+func TestImportCommitsSharedHeadsBeforeFirstProjection(t *testing.T) {
+	h := newPR7Harness(t)
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	e, ctx, stop := h.start()
+	failIf(t, !e.load(ctx), "import failed")
+	failIf(t, h.gh.checkCount() != 0, "import unexpectedly wrote a GitHub check")
+	stop()
+	h.gh.withLock(func() { h.gh.prs[7].Closed = true })
+	head := strings.Repeat("b", 40)
+	h.gh.push(8, head)
+	e, ctx, _ = h.start()
+	completeReview(t, h, runReview(t, h, e, ctx, 8, head), head, "imported shared-head review")
+	failIf(t, h.gh.check(head).Conclusion != ConclusionFailure, "import lost an observed duplicate before its first projection")
+}
+
 func TestImportIsAtomicAndRequiresCompleteHistory(t *testing.T) {
 	for _, failure := range []string{"checks", "labels", "incomplete labels", "listing"} {
 		t.Run(failure, func(t *testing.T) {
@@ -100,6 +117,71 @@ func TestImportMarkerSurvivesRestart(t *testing.T) {
 	h.gh.failWith("GET /repos/"+testRepo+"/issues/7/events", 502)
 	e, ctx, _ = h.start()
 	failIf(t, !e.load(ctx), "a completed import ran again after restart")
+}
+
+func TestIncompleteImportRevokesQueuedPassAcrossRestart(t *testing.T) {
+	for _, failure := range []string{"checks", "labels", "incomplete labels", "listing", "group check"} {
+		for _, lostWrite := range []bool{false, true} {
+			name := failure
+			if lostWrite {
+				name += "/lost write"
+			}
+			t.Run(name, func(t *testing.T) {
+				h := newPR7Harness(t)
+				h.gh.addCheck(shaA, "factory review", testAppID, ConclusionSuccess)
+				h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
+				h.gh.withLock(func() {
+					h.gh.queue = []github.MergeQueueEntry{{HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+					switch failure {
+					case "checks":
+						h.gh.fail["GET /repos/"+testRepo+"/commits/"+shaA+"/check-runs"] = 502
+					case "labels":
+						h.gh.fail["GET /repos/"+testRepo+"/issues/7/events"] = 502
+					case "incomplete labels":
+						for i := range github.MaxIssueEventPages * github.MaxListed {
+							h.gh.prs[7].LabelEvents = append(h.gh.prs[7].LabelEvents, github.LabelEvent{ID: int64(i + 1), Label: "human", CreatedAt: time.Now()})
+						}
+					case "listing":
+						h.gh.fail["GET /repos/"+testRepo+"/pulls"] = 502
+					case "group check":
+						h.gh.fail["GET /repos/"+testRepo+"/pulls"] = 502
+						h.gh.fail["GET /repos/"+testRepo+"/commits/mg-7/check-runs"] = 502
+					}
+				})
+				if lostWrite {
+					h.gh.failCheckWrites("mg-7", 502)
+				}
+				e, ctx, stop := h.start()
+				e.Tick(ctx)
+				data, err := h.writer.Load(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var saved durableState
+				if err := json.Unmarshal(data, &saved); err != nil {
+					t.Fatal(err)
+				}
+				failIf(t, saved.Imported || len(saved.Contexts) != 0, "a failure projection completed the import")
+				if lostWrite {
+					failIf(t, saved.Projections[testRepo+"@mg-7"].Write.Conclusion != ConclusionFailure, "lost revocation was not durable")
+				} else {
+					failIf(t, h.gh.check("mg-7").Conclusion != ConclusionFailure, "incomplete import preserved a queued pass")
+				}
+				stop()
+				h.gh.failCheckWrites("mg-7", 0)
+				e, ctx, _ = h.start()
+				e.Tick(ctx)
+				failIf(t, e.loaded || h.gh.check("mg-7").Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0, "restart skipped import or failed to revoke the queued pass")
+				h.gh.withLock(func() {
+					clear(h.gh.fail)
+					if failure == "incomplete labels" {
+						h.gh.prs[7].LabelEvents = nil
+					}
+				})
+				failIf(t, !e.load(ctx), "import did not recover when complete reads became available")
+			})
+		}
+	}
 }
 
 func TestDatabaseFailureProducesNoPassOrEnqueue(t *testing.T) {
@@ -175,6 +257,84 @@ func TestLaterDurableHoldRejectsStaleSuccess(t *testing.T) {
 		Output: &github.CheckRunOutput{Text: encodeState(st)},
 	})
 	failIf(t, err == nil, "a stale worker passed after a newer hold committed")
+}
+
+// checkBarrierStore pauses publication after its intent commits, exactly
+// where a later observation used to overtake the success sent to GitHub.
+type checkBarrierStore struct {
+	StateStore
+	reached chan struct{}
+	resume  chan struct{}
+}
+
+func (s checkBarrierStore) Check(ctx context.Context) error {
+	close(s.reached)
+	select {
+	case <-s.resume:
+		return s.StateStore.Check(ctx)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestSuccessPublicationSerializesWithHoldObservation(t *testing.T) {
+	h := newPR7Harness(t)
+	e, parent, _ := startPassedReview(t, h)
+	e.Wait()
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	b := &e.cfg.Bindings[0]
+	barrier := checkBarrierStore{StateStore: h.writer, reached: make(chan struct{}), resume: make(chan struct{})}
+	e.cfg.Store = barrier
+	release := sync.OnceFunc(func() { close(barrier.resume) })
+	var workers sync.WaitGroup
+	defer func() {
+		release()
+		workers.Wait()
+	}()
+	posted := make(chan error, 1)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		_, err := e.createCheck(ctx, b, github.CheckRunWrite{
+			Name: e.cfg.CheckName, HeadSHA: shaA, ExternalID: MessageID(testRepo, 7, shaA),
+			Status: "completed", Conclusion: ConclusionSuccess,
+			Output: &github.CheckRunOutput{Text: encodeState(st)},
+		})
+		posted <- err
+	}()
+	select {
+	case <-barrier.reached:
+	case <-ctx.Done():
+		t.Fatal("publication did not reach its writer check")
+	}
+	observed := make(chan struct{})
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		gate := &Gate{Labels: []string{"human"}}
+		gate.resetApproval(time.Now())
+		e.retainGate(ctx, b, github.PullRequest{Number: 7, HeadSHA: shaA}, gate, true)
+		close(observed)
+	}()
+	select {
+	case <-observed:
+		t.Error("a hold committed while an older success was waiting to publish")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	if err := <-posted; err != nil {
+		t.Fatal(err)
+	}
+	<-observed
+	e.cfg.Store = h.writer
+	_, err := e.createCheck(ctx, b, github.CheckRunWrite{
+		Name: e.cfg.CheckName, HeadSHA: shaA, ExternalID: MessageID(testRepo, 7, shaA),
+		Status: "completed", Conclusion: ConclusionSuccess,
+		Output: &github.CheckRunOutput{Text: encodeState(st)},
+	})
+	failIf(t, err == nil, "publication after the hold reused the previous approval")
 }
 
 func TestDuplicateObservationCommitsEverySiblingBeforeProjection(t *testing.T) {

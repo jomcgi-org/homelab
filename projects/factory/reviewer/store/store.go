@@ -77,8 +77,9 @@ func (s *Store) TryAcquireWriter(ctx context.Context, holder string) (*Writer, e
 	return &Writer{conn: conn, Epoch: epoch}, nil
 }
 
-// Load returns the last committed snapshot. Nil means the one-time import
-// has never committed. Reads use the writer session as well as writes.
+// Load returns the last committed snapshot, including failure intents saved
+// before import completes. Nil means no snapshot has committed yet. Reads
+// use the writer session as well as writes.
 func (w *Writer) Load(ctx context.Context) ([]byte, error) {
 	var data []byte
 	err := w.Tx(ctx, func(tx *sql.Tx) error {

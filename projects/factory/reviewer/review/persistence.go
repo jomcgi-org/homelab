@@ -36,6 +36,7 @@ type pendingHold struct {
 // repository; no gate or context generation can leak across repositories.
 type durableState struct {
 	Version      int
+	Imported     bool
 	Contexts     map[string]*heldContext
 	Pending      []pendingHold
 	Projections  map[string]projection
@@ -81,7 +82,7 @@ func (e *Engine) saveLocked(ctx context.Context) error {
 		e.failStoreLocked(errors.New("database writer is required"))
 		return e.storeErr
 	}
-	s := durableState{Version: 1, Contexts: e.contexts, Projections: e.projections, Groups: e.groups, EnqueueAfter: e.enqueueAfter}
+	s := durableState{Version: 1, Imported: e.loaded, Contexts: e.contexts, Projections: e.projections, Groups: e.groups, EnqueueAfter: e.enqueueAfter}
 	for k, run := range e.pendingHolds {
 		s.Pending = append(s.Pending, pendingHold{Repo: k.binding, SHA: k.sha, Run: run})
 	}
@@ -140,8 +141,10 @@ func (e *Engine) load(ctx context.Context) bool {
 		for _, p := range s.Pending {
 			e.pendingHolds[headKey{p.Repo, p.SHA}] = p.Run
 		}
-		e.loaded = true
-		return true
+		e.loaded = s.Imported
+		if e.loaded {
+			return true
+		}
 	}
 	imported := map[string]*heldContext{}
 	for i := range e.cfg.Bindings {
@@ -151,6 +154,7 @@ func (e *Engine) load(ctx context.Context) bool {
 			e.log.WarnContext(ctx, "gate import needs a complete open PR listing", "binding", b.Name)
 			return false
 		}
+		counts, labels := readyHeads(b, prs)
 		for _, pr := range prs {
 			run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
 			if err != nil {
@@ -175,6 +179,16 @@ func (e *Engine) load(ctx context.Context) bool {
 			}
 			g.observeLabels(gateLabels(b, pr.Labels), e.cfg.Now())
 			g.observeLabelEvents(b, events)
+			if !pr.Draft && pr.BaseRef == b.BaseBranch && counts[pr.HeadSHA] > 1 {
+				g.SharedHead = true
+				for _, label := range labels[pr.HeadSHA] {
+					if !slices.Contains(g.Labels, label) {
+						g.Labels = append(g.Labels, label)
+					}
+				}
+				g.resetApproval(e.cfg.Now())
+				g.ApprovalSnapshot = &ReviewSnapshot{All: true}
+			}
 			// LoadState deliberately ignores the retired recovery fields. Do
 			// not import their approval baseline as a new reason to hold.
 			if !g.Needed() {
@@ -185,6 +199,7 @@ func (e *Engine) load(ctx context.Context) bool {
 	}
 	e.mu.Lock()
 	e.contexts = imported
+	e.loaded = true
 	err = e.saveLocked(ctx)
 	e.loaded = err == nil
 	e.mu.Unlock()
@@ -272,6 +287,13 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 	}
 	key := p.Repo + "@" + p.Write.HeadSHA
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Serialize the coverage check, durable intent and GitHub publication
+	// with hold observation. Releasing mu before the external write lets a
+	// new hold commit and then be overwritten by this older success.
+	if !e.loaded && p.Write.Conclusion == ConclusionSuccess {
+		return nil, errors.New("gate import is incomplete")
+	}
 	// ExternalID binds a PR projection to its repository, number and head.
 	prefix := "factory-review/" + p.Repo + "/"
 	if strings.HasPrefix(p.Write.ExternalID, prefix) && p.Write.Output != nil {
@@ -293,7 +315,6 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 					}
 					if m.Gate != nil {
 						if p.Write.Conclusion == ConclusionSuccess && !coversGate(g, m.Gate) {
-							e.mu.Unlock()
 							return nil, errors.New("gate context changed before success projection")
 						}
 						g.inherit(m.Gate)
@@ -313,14 +334,11 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 	}
 	e.projections[key] = p
 	err = e.saveLocked(ctx)
-	e.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	if err := e.cfg.Store.Check(ctx); err != nil {
-		e.mu.Lock()
 		e.failStoreLocked(err)
-		e.mu.Unlock()
 		return nil, err
 	}
 	var run *github.CheckRun
@@ -334,13 +352,11 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 	if err != nil {
 		return nil, err
 	}
-	e.mu.Lock()
 	delete(e.projections, key)
 	if p.Write.ExternalID == "" && p.Write.Status == "completed" {
 		e.groups[key] = p.Write.Conclusion
 	}
 	err = e.saveLocked(ctx)
-	e.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +384,9 @@ func coversGate(evaluated, current *Gate) bool {
 	}
 	for _, finding := range current.Findings {
 		if !slices.ContainsFunc(evaluated.Findings, func(f Finding) bool {
-			return f.ID == finding.ID }) { return false
+			return f.ID == finding.ID
+		}) {
+			return false
 		}
 	}
 	return true

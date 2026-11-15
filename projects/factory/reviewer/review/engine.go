@@ -347,6 +347,14 @@ func (e *Engine) Wait() { e.wg.Wait() }
 // under ctx.
 func (e *Engine) Tick(ctx context.Context) {
 	if !e.load(ctx) {
+		// An unavailable legacy read must revoke an already-passing queued
+		// group. These failure intents commit without completing the import.
+		for i := range e.cfg.Bindings {
+			if ctx.Err() != nil || e.storageError() != nil {
+				return
+			}
+			e.mergeGroups(ctx, &e.cfg.Bindings[i], nil)
+		}
 		return
 	}
 	e.retryHolds(ctx)
@@ -1779,9 +1787,11 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 		posted := e.group(key)
 		if posted == "" {
 			existing, err := e.reviewCheck(ctx, b, en.HeadCommit)
-			if err != nil {
+			if err != nil && reviews != nil {
 				continue
 			}
+			// With no current PR evidence, revocation is safe even if the
+			// old group check cannot be read. Persist and attempt the failure.
 			if existing != nil {
 				posted = ConclusionFailure
 				if existing.Status == "completed" && existing.Conclusion == ConclusionSuccess {
