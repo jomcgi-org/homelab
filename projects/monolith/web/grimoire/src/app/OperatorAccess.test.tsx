@@ -1,7 +1,9 @@
 import { act, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { keys } from "../api/lobby";
 import { platformKeys } from "../api/platform";
 import { findToast, openApp } from "../test/app";
+import { lobby } from "../test/fixtures";
 import {
   platformIds,
   platformOther,
@@ -17,6 +19,7 @@ const USERS = "GET /api/auth/platform/management/users";
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function open(initialStatus?: number, path = paths.platform) {
@@ -43,7 +46,7 @@ function open(initialStatus?: number, path = paths.platform) {
     permissions: (status: number) => {
       permissionStatus = status;
     },
-    directory: (status: number) => {
+    directory: (status?: number) => {
       directoryStatus = status;
     },
   };
@@ -101,6 +104,84 @@ async function staysFenced(app: ReturnType<typeof open>) {
 }
 
 describe("operator access boundary", () => {
+  it.each(["existing", "reset", "recreated", "new"] as const)(
+    "preserves feedback across an older refusal, then fences a %s directory denial",
+    async (retry) => {
+      // Ordering must not depend on distinct millisecond timestamps.
+      vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      const oldKey = platformKeys.directory(platformIds.unshown);
+      const app = open(
+        403,
+        `${paths.platform}?invitation_id=${platformIds.unshown}`,
+      );
+      await screen.findByRole("button", {
+        name: "Import my operator identity",
+      });
+      await app.user.click(screen.getByRole("button", { name: "Feedback" }));
+      await app.user.type(
+        screen.getByRole("textbox", { name: "What should change?" }),
+        "Keep this unsent feedback",
+      );
+      await app.user.keyboard("{Escape}");
+      await app.user.click(
+        screen.getByRole("link", { name: "Back to Grimoire" }),
+      );
+      await screen.findByRole("heading", {
+        name: "Could not load your account",
+      });
+      app.directory();
+      app.backend.set({
+        "GET /lobby": lobby({ can_administer_accounts: true }),
+      });
+      await act(async () => {
+        await app.client.invalidateQueries({ queryKey: keys.lobby });
+      });
+      await app.user.click(
+        await screen.findByRole("link", { name: "Accounts" }),
+      );
+
+      await screen.findByRole("region", { name: "Users" });
+      expect(app.client.getQueryState(oldKey)?.error).toMatchObject({
+        status: 403,
+      });
+      expect(app.reload).not.toHaveBeenCalled();
+      await app.user.click(screen.getByRole("button", { name: "Feedback" }));
+      expect(
+        screen.getByRole("textbox", { name: "What should change?" }),
+      ).toHaveProperty("value", "Keep this unsent feedback");
+
+      app.directory(403);
+      const reads = app.backend.callsTo(USERS).length;
+      await act(async () => {
+        const original = app.client.getQueryCache().find({ queryKey: oldKey })!;
+        if (retry === "reset")
+          await app.client.resetQueries({ queryKey: oldKey });
+        if (retry === "recreated")
+          app.client.removeQueries({ queryKey: oldKey });
+        if (retry === "existing") {
+          await app.client.refetchQueries({ queryKey: oldKey, type: "all" });
+        } else {
+          // All directory variants first read the same protected user list.
+          // Its real 403 must fence even when the cache key or Query is new.
+          await app.client
+            .fetchQuery({
+              ...original.options,
+              queryKey:
+                retry === "new"
+                  ? platformKeys.directory(platformIds.shown)
+                  : oldKey,
+            })
+            .catch(() => undefined);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(app.backend.callsTo(USERS)).toHaveLength(reads + 1);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      cleared(app);
+      await staysFenced(app);
+    },
+  );
+
   it.each([403, 404])(
     "clears the directory and open dialogs after access is refused with %s",
     async (status) => {

@@ -53,12 +53,12 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
   const [confirmed, setConfirmed] = useState<{
     viewer: LobbyView | undefined;
     account: PlatformUser | undefined;
-    operator: boolean;
+    operator: WeakMap<object, { errors: number; error: unknown }> | null;
     changed: boolean;
   }>({
     viewer: undefined,
     account: undefined,
-    operator: false,
+    operator: null,
     changed: false,
   });
   const cache = client.getQueryCache();
@@ -79,9 +79,16 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     subscribe,
     () =>
       !confirmed.changed &&
-      cache
-        .findAll({ queryKey: platformKeys.directories })
-        .some((query) => accessDenied(query.state.error)),
+      confirmed.operator !== null &&
+      cache.findAll({ queryKey: platformKeys.directories }).some((query) => {
+        const before = confirmed.operator?.get(query);
+        return (
+          accessDenied(query.state.error) &&
+          (!before ||
+            query.state.errorUpdateCount !== before.errors ||
+            query.state.error !== before.error)
+        );
+      }),
   );
   const announce = useAnnounce();
   // Platform pages can be available without Grimoire permission. Once seen,
@@ -91,7 +98,9 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
   );
   // A successful directory establishes operator access. Keep checking the
   // authoritative management endpoint after navigation, even without lobby access.
-  const operator = useOperatorAccess(confirmed.operator && !confirmed.changed);
+  const operator = useOperatorAccess(
+    confirmed.operator !== null && !confirmed.changed,
+  );
   const reloading = useRef(false);
 
   // Adjust this component's state before React renders its children. An
@@ -127,7 +136,18 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
         : { ...confirmed, account: account.data },
     );
   } else if (knownDirectory && !confirmed.operator && !confirmed.changed) {
-    setConfirmed({ ...confirmed, operator: true });
+    // Old refusals under other directory keys predate this access baseline.
+    // Query identity also distinguishes a removed/recreated key; the error
+    // identity covers a query reset whose update counter starts over.
+    const baseline = new WeakMap(
+      cache
+        .findAll({ queryKey: platformKeys.directories })
+        .map((query) => [
+          query,
+          { errors: query.state.errorUpdateCount, error: query.state.error },
+        ]),
+    );
+    setConfirmed({ ...confirmed, operator: baseline });
   }
 
   useEffect(() => {
