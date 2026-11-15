@@ -741,18 +741,25 @@ App marks its failed review `human-gate-only`, the connector creates one
 issue titled `Merge #<n> past the human gate`. It is assigned to Joe with
 no delegate, in Todo, so it appears in Needs Joe. Its body links the PR,
 names the head and includes the review's gated files and findings. Joe's
-merge supplies approval for a PR authored as `jomcgi`.
+merge supplies approval for a PR authored as `jomcgi`. Long review summaries
+are clipped within itsaplan's 50,000-character description limit, preserving
+the PR link, head, recovery markers and a link to the full review.
 
 The issue follows the PR during coding turns and after delivery stops:
 an unready head moves it to Backlog, a ready head to Todo, a merge to Done,
-and a close to Canceled. `human_gate_issue` has one row per repository and
-PR. Every write first records an immutable `human_gate_attempt` with its
-message ID, payload and writer epoch. The same marker in the description
+and a close to Canceled. Canceled issues keep polling so reopening a PR
+restores Backlog or Todo without resuming stopped coding work.
+`human_gate_issue` has one row per repository and PR. Every write first
+records a `human_gate_attempt` with its message ID, payload and writer epoch.
+The same marker in the description
 recovers a create whose response was lost, including after a restart.
 Itsaplan 1.10 has no creation idempotency key: an ambiguous POST is never
 repeated, and reconciliation keeps searching, including archived issues.
-A send proven unaccepted can retry. An ambiguous create that never becomes
-visible requires operator investigation; it is logged each review poll.
+A send proven unaccepted can retry with the current payload under the same
+create message ID; accepted or ambiguous payloads remain frozen. A writer
+guard failure before POST clears only that send's marker, even if its context
+was canceled, so a successor can retry safely. An ambiguous create that never
+becomes visible requires operator investigation; it is logged each review poll.
 Absolute state updates retry with the same message ID and payload for
 that revision, and failed terminal moves remain eligible after PR delivery
 ends. The coordinator needs `work_items` create, read and edit. HOME-51's

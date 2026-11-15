@@ -114,14 +114,39 @@ func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRe
 	}
 	key := fmt.Sprintf("factory-human-gate/%s/%d", b.repo(), pr.Number)
 	marker := "<!-- " + key + " -->"
-	description := fmt.Sprintf("@%s: %s\n\nHead SHA: `%s`.\n\n"+
-		"Joe's merge is the approval for PRs authored as `jomcgi`, since GitHub does not allow authors to approve their own PRs.\n\n%s\n\n%s\n",
-		b.HumanGateAssignee, mdLink(fmt.Sprintf("Pull request #%d", pr.Number), pr.URL), d.HeadSHA, summary, marker)
+	description, err := humanGateDescription(b, pr, d.HeadSHA, summary, key)
+	if err != nil {
+		return err
+	}
 	h, err = e.st.ObserveHumanGate(ctx, b.repo(), pr, d.HeadSHA, state, description)
 	if err != nil || h.AppliedRevision == h.Revision {
 		return err
 	}
 	return e.deliverHumanGate(ctx, b, pr, h, key, marker)
+}
+
+// itsaplan limits descriptions to 50,000 characters. A UTF-8 byte budget is
+// conservative for both Unicode code points and UTF-16 units. Reserve space
+// for the longest message ID before clipping only the reflected review text.
+func humanGateDescription(b *Binding, pr *store.PullRequest, head, summary, key string) (string, error) {
+	const limit = 50000
+	prefix := fmt.Sprintf("@%s: %s\n\nHead SHA: `%s`.\n\n"+
+		"Joe's merge is the approval for PRs authored as `jomcgi`, since GitHub does not allow authors to approve their own PRs.\n\n",
+		b.HumanGateAssignee, mdLink(fmt.Sprintf("Pull request #%d", pr.Number), pr.URL), head)
+	suffix := "\n\n<!-- " + key + " -->\n"
+	budget := limit - len(prefix) - len(suffix) - len(humanGateMessageMarker(key+"/update/9223372036854775807"))
+	if len(summary) > budget {
+		note := "\n\n" + mdLink("Review summary truncated; see the full review in the pull request's checks", pr.URL+"/checks")
+		if budget < len(note) {
+			return "", errors.New("human-gate metadata exceeds the issue description limit")
+		}
+		summary = clip(summary, budget-len(note)) + note
+	}
+	return prefix + summary + suffix, nil
+}
+
+func humanGateMessageMarker(messageID string) string {
+	return "\n<!-- message-id: " + messageID + " -->\n"
 }
 
 // Require pr-checks explicitly as well as any other configured checks. Trust
@@ -195,7 +220,7 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 	}
 	if h.IssueID == 0 {
 		messageID := key + "/create"
-		body.Description += "\n<!-- message-id: " + messageID + " -->\n"
+		body.Description += humanGateMessageMarker(messageID)
 		a, err := e.st.HumanGateWrite(ctx, h, e.Epoch(), messageID, "create", body)
 		if err != nil {
 			return err
@@ -216,18 +241,18 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 			if err := json.Unmarshal(a.Payload, &body); err != nil {
 				return err
 			}
-			if err := e.st.StartHumanGateWrite(ctx, messageID, e.Epoch()); err != nil {
+			epoch := e.Epoch()
+			send, err := e.st.StartHumanGateWrite(ctx, messageID, epoch)
+			if err != nil {
 				return err
 			}
 			if err := e.guard(ctx); err != nil {
-				return err
+				return errors.Join(err, e.st.ClearHumanGateSend(ctx, messageID, epoch, send))
 			}
 			found, err = e.its.CreateGateIssue(ctx, b.ItsaplanProject, body)
 			if err != nil {
 				if notCreated(err) {
-					if clearErr := e.st.ClearHumanGateSend(ctx, messageID); clearErr != nil {
-						return clearErr
-					}
+					return errors.Join(err, e.st.ClearHumanGateSend(ctx, messageID, epoch, send))
 				}
 				return err
 			}
@@ -247,7 +272,7 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 		}
 	}
 	messageID := fmt.Sprintf("%s/update/%d", key, h.Revision)
-	body.Description += "\n<!-- message-id: " + messageID + " -->\n"
+	body.Description += humanGateMessageMarker(messageID)
 	a, err := e.st.HumanGateWrite(ctx, h, e.Epoch(), messageID, "update", body)
 	if err != nil {
 		return err
@@ -255,7 +280,7 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 	if err := json.Unmarshal(a.Payload, &body); err != nil {
 		return err
 	}
-	if err := e.st.StartHumanGateWrite(ctx, messageID, e.Epoch()); err != nil {
+	if _, err := e.st.StartHumanGateWrite(ctx, messageID, e.Epoch()); err != nil {
 		return err
 	}
 	if err := e.guard(ctx); err != nil {

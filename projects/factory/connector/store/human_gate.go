@@ -13,12 +13,13 @@ type HumanGatePoll struct {
 	PolledAt   time.Time
 }
 
-// HumanGateWork includes active revisions and stopped deliveries. A closed PR
-// remains eligible until its gate issue's final state is acknowledged.
+// HumanGateWork includes active revisions and stopped deliveries. Canceled
+// gate issues stay eligible so reopening a PR is observed even after delivery
+// stops. Only an acknowledged merge can end gate polling.
 func (s *Store) HumanGateWork(ctx context.Context) ([]HumanGatePoll, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT p.work_item_id, p.human_gate_polled_at
 		FROM pull_request p LEFT JOIN human_gate_issue h ON h.pull_request_id = p.id
-		WHERE p.state = 'open' OR h.state NOT IN ('Done', 'Canceled')
+		WHERE p.state = 'open' OR h.state <> 'Done'
 			OR h.applied_revision <> h.revision ORDER BY p.id`)
 	if err != nil {
 		return nil, err
@@ -90,6 +91,8 @@ type HumanGateAttempt struct {
 }
 
 // HumanGateWrite freezes a write before it is sent; retries load those bytes.
+// A create proven not to have been accepted may take the current payload, so
+// validation failures cannot freeze an invalid description under its stable ID.
 func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int64, messageID, operation string, payload any) (*HumanGateAttempt, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -97,7 +100,11 @@ func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int
 	}
 	_, err = s.DB.ExecContext(ctx, `INSERT INTO human_gate_attempt
 		(message_id, gate_id, operation, revision, payload, writer_epoch) VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (message_id) DO NOTHING`, messageID, h.ID, operation, h.Revision, data, epoch)
+		ON CONFLICT (message_id) DO UPDATE SET payload = EXCLUDED.payload,
+			revision = EXCLUDED.revision, writer_epoch = EXCLUDED.writer_epoch
+		WHERE human_gate_attempt.operation = 'create' AND EXCLUDED.operation = 'create'
+			AND NOT human_gate_attempt.send_started AND human_gate_attempt.finished_at IS NULL`,
+		messageID, h.ID, operation, h.Revision, data, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -107,14 +114,22 @@ func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int
 	return a, err
 }
 
-func (s *Store) StartHumanGateWrite(ctx context.Context, messageID string, epoch int64) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE human_gate_attempt SET send_started = true, finished_at = NULL,
-		sends = sends + 1, writer_epoch = $2, attempted_at = now() WHERE message_id = $1`, messageID, epoch)
-	return err
+func (s *Store) StartHumanGateWrite(ctx context.Context, messageID string, epoch int64) (int, error) {
+	var send int
+	err := s.DB.QueryRowContext(ctx, `UPDATE human_gate_attempt SET send_started = true, finished_at = NULL,
+		sends = sends + 1, writer_epoch = $2, attempted_at = now() WHERE message_id = $1
+		RETURNING sends`, messageID, epoch).Scan(&send)
+	return send, err
 }
 
-func (s *Store) ClearHumanGateSend(ctx context.Context, messageID string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE human_gate_attempt SET send_started = false WHERE message_id = $1`, messageID)
+// ClearHumanGateSend records proof that this send did not create an issue,
+// including a canceled writer guard before POST. Cleanup survives cancellation
+// but cannot clear a later writer's send or an acknowledged attempt.
+func (s *Store) ClearHumanGateSend(ctx context.Context, messageID string, epoch int64, send int) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_, err := s.DB.ExecContext(ctx, `UPDATE human_gate_attempt SET send_started = false
+		WHERE message_id = $1 AND writer_epoch = $2 AND sends = $3 AND finished_at IS NULL`, messageID, epoch, send)
 	return err
 }
 

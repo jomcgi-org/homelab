@@ -2,10 +2,14 @@ package dispatch_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -47,6 +51,9 @@ func (f *fakeItsaplan) CreateGateIssue(_ context.Context, _ string, body itsapla
 		f.beforeGateWrite()
 	}
 	f.gateCreates = append(f.gateCreates, body)
+	if len(utf16.Encode([]rune(body.Description))) > 50000 {
+		return nil, &itsaplan.HTTPError{Status: 422, Body: "description exceeds 50000 characters"}
+	}
 	if f.gateCreateErr != nil {
 		return nil, f.gateCreateErr
 	}
@@ -71,6 +78,9 @@ func (f *fakeItsaplan) UpdateGateIssue(_ context.Context, id int64, body itsapla
 		f.beforeGateWrite()
 	}
 	f.gateUpdates = append(f.gateUpdates, body)
+	if len(utf16.Encode([]rune(body.Description))) > 50000 {
+		return &itsaplan.HTTPError{Status: 422, Body: "description exceeds 50000 characters"}
+	}
 	is := f.issues[id]
 	is.Title, is.Description, is.ColumnID = body.Title, body.Description, body.ColumnID
 	is.AssigneeUserID, is.DelegateUserID = body.AssigneeUserID, body.DelegateUserID
@@ -306,6 +316,110 @@ func TestHumanGateTerminalStates(t *testing.T) {
 	}
 }
 
+func TestHumanGateReopenedPRKeepsItsIssueAfterRestart(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	id := v.gateIssue(1, "sha-1").IssueID
+	v.gh.close(1)
+	v.poll()
+	h := v.gateIssue(4, "sha-1")
+	if h.AppliedRevision != h.Revision || v.work(101).State != store.WorkStopped {
+		t.Fatal("close did not stop delivery and acknowledge Canceled")
+	}
+	v.e.Release()
+	v.e = v.engine("reopened-gate")
+	v.gh.byNumber(1).pr.State = "open"
+	v.poll()
+	v.gateIssue(1, "sha-1")
+	v.gh.close(1)
+	v.poll()
+	v.gateIssue(4, "sha-1")
+	v.gh.byNumber(1).pr.State = "open"
+	v.gh.push("factory/HL-7", "sha-2", "not ready on reopening")
+	v.poll()
+	v.gateIssue(5, "sha-2")
+	v.readyGate("sha-2")
+	v.poll()
+	v.gateIssue(1, "sha-2")
+	v.gh.merge(1, "merged-sha")
+	v.poll()
+	if v.gateIssue(3, "sha-2").IssueID != id || len(v.its.gateCreates) != 1 {
+		t.Fatal("reopening replaced the gate issue")
+	}
+	if v.work(101).State != store.WorkStopped {
+		t.Fatal("gate polling resumed stopped delivery")
+	}
+	if work, err := v.st.HumanGateWork(v.ctx); err != nil || len(work) != 0 {
+		t.Fatalf("acknowledged merge still eligible: %+v, %v", work, err)
+	}
+}
+
+func TestHumanGateWriterLossBeforeCreateCanRetry(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	// Change leadership exactly after marking the send and before its guard.
+	if _, err := v.st.DB.Exec(`
+		CREATE FUNCTION lose_gate_writer() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.operation = 'create' AND NEW.send_started AND NEW.sends = 1 AND NOT OLD.send_started THEN
+				UPDATE writer SET epoch = epoch + 1;
+			END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER lose_gate_writer AFTER UPDATE ON human_gate_attempt
+			FOR EACH ROW EXECUTE FUNCTION lose_gate_writer();`); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.Tick(v.ctx); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("tick = %v, want writer loss", err)
+	}
+	if len(v.its.gateCreates) != 0 {
+		t.Fatal("lost writer reached POST")
+	}
+	var started bool
+	var sends int
+	if err := v.st.DB.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started, &sends); err != nil || started || sends != 1 {
+		t.Fatalf("unsent attempt: started=%t sends=%d err=%v", started, sends, err)
+	}
+	v.e.Release()
+	v.e = v.engine("writer-after-gate-loss")
+	v.poll()
+	v.gateIssue(1, "sha-1")
+	if len(v.its.gateCreates) != 1 {
+		t.Fatal("new writer did not send the proven unsent create once")
+	}
+}
+
+func TestHumanGateUnsentCleanupSurvivesCancellationAndIsFenced(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.its.gateCreateErr = errors.New("timeout; outcome unknown")
+	v.poll()
+	const messageID = "factory-human-gate/jomcgi-org/homelab/1/create"
+	epoch := v.e.Epoch()
+	send, err := v.st.StartHumanGateWrite(v.ctx, messageID, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(v.ctx)
+	cancel()
+	clearAndCheck := func(clearEpoch int64, clearSend int, wantStarted bool) {
+		t.Helper()
+		if err := v.st.ClearHumanGateSend(canceled, messageID, clearEpoch, clearSend); err != nil {
+			t.Fatal(err)
+		}
+		var started bool
+		if err := v.st.DB.QueryRow(`SELECT send_started FROM human_gate_attempt WHERE message_id = $1`, messageID).Scan(&started); err != nil || started != wantStarted {
+			t.Fatalf("cleanup: started=%t want=%t err=%v", started, wantStarted, err)
+		}
+	}
+	clearAndCheck(epoch, send-1, true) // cannot clear a later send in this epoch
+	clearAndCheck(epoch-1, send, true) // cannot clear a later writer's send
+	clearAndCheck(epoch, send, false)  // canceled caller can record its own proof
+}
+
 func TestHumanGateLostCreateResponseReconcilesCurrentHead(t *testing.T) {
 	v := newHumanGateEnv(t)
 	v.readyGate("sha-1")
@@ -326,13 +440,23 @@ func TestHumanGateUnknownCreateIsNeverRepeated(t *testing.T) {
 	v.readyGate("sha-1")
 	v.its.gateCreateErr = errors.New("timeout; outcome unknown")
 	v.poll()
+	var original string
+	if err := v.st.DB.QueryRow(`SELECT payload::text FROM human_gate_attempt WHERE operation = 'create'`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
 	v.its.gateCreateErr = nil
 	v.e.Release()
 	v.e = v.engine("ambiguous-create")
+	v.gh.push("factory/HL-7", "sha-2", "new ready head")
+	v.readyGate("sha-2")
 	v.poll()
 	v.poll()
 	if len(v.its.gateCreates) != 1 {
 		t.Fatal("ambiguous POST was repeated")
+	}
+	var current string
+	if err := v.st.DB.QueryRow(`SELECT payload::text FROM human_gate_attempt WHERE operation = 'create'`).Scan(&current); err != nil || current != original {
+		t.Fatalf("ambiguous create payload changed: %v", err)
 	}
 }
 
@@ -345,7 +469,72 @@ func TestHumanGateRefusedCreateCanRetry(t *testing.T) {
 	v.poll()
 	v.gateIssue(1, "sha-1")
 	if len(v.its.gateCreates) != 2 || v.its.gateCreates[0] != v.its.gateCreates[1] {
-		t.Fatal("refused create did not retry the immutable payload")
+		t.Fatal("refused create changed despite unchanged evidence")
+	}
+}
+
+func TestHumanGateLongReviewDescriptionsFitOnCreateAndUpdate(t *testing.T) {
+	for _, text := range []string{"x", "界🙂"} {
+		t.Run(text, func(t *testing.T) {
+			v := newHumanGateEnv(t)
+			for _, head := range []string{"sha-1", "sha-2"} {
+				v.gh.push("factory/HL-7", head, "long review")
+				v.readyGate(head)
+				v.gh.summarize(head, "factory review", "`REVIEW.md`: human gate\n"+strings.Repeat(text, 59900/len(text))+humanHold)
+				v.poll()
+				h := v.gateIssue(1, head)
+				if h.AppliedRevision != h.Revision {
+					t.Fatal("long review update was rejected")
+				}
+			}
+			if len(v.its.gateCreates) != 1 || len(v.its.gateUpdates) != 2 {
+				t.Fatalf("creates=%d updates=%d", len(v.its.gateCreates), len(v.its.gateUpdates))
+			}
+			for _, writes := range [][]itsaplan.GateIssueWrite{v.its.gateCreates, v.its.gateUpdates} {
+				for _, body := range writes {
+					if len(body.Description) > 50000 || !utf8.ValidString(body.Description) {
+						t.Fatal("description exceeds its budget or splits UTF-8")
+					}
+					for _, want := range []string{"REVIEW.md", "Head SHA:", "Joe's merge is the approval", "Review summary truncated", v.gh.PRs()[0].pr.URL + "/checks", "<!-- factory-human-gate/jomcgi-org/homelab/1 -->", "<!-- message-id: factory-human-gate/jomcgi-org/homelab/1/"} {
+						if !strings.Contains(body.Description, want) {
+							t.Errorf("truncation dropped %q", want)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHumanGateRejectedOversizedCreateRefreshesPayloadAfterRestart(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.its.gateCreateErr = &itsaplan.HTTPError{Status: 422, Body: "invalid description"}
+	v.poll()
+	// Model the durable payload left by the old connector after a validation
+	// refusal. Its permanent create ID must not trap the oversized description.
+	old := v.its.gateCreates[0]
+	old.Description += strings.Repeat("x", 50001)
+	payload, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.st.DB.Exec(`UPDATE human_gate_attempt SET payload = $1 WHERE operation = 'create'`, payload); err != nil {
+		t.Fatal(err)
+	}
+	v.its.gateCreateErr = nil
+	v.e.Release()
+	v.e = v.engine("rejected-create-recovery")
+	v.gh.push("factory/HL-7", "sha-2", "new ready head")
+	v.readyGate("sha-2")
+	v.poll()
+	v.gateIssue(1, "sha-2")
+	if len(v.its.gateCreates) != 2 || !strings.Contains(v.its.gateCreates[1].Description, "`sha-2`") {
+		t.Fatal("refused create did not use the current head's bounded payload")
+	}
+	var attempts, sends int
+	if err := v.st.DB.QueryRow(`SELECT count(*), sum(sends) FROM human_gate_attempt WHERE operation = 'create'`).Scan(&attempts, &sends); err != nil || attempts != 1 || sends != 2 {
+		t.Fatalf("create identity changed: attempts=%d sends=%d err=%v", attempts, sends, err)
 	}
 }
 
