@@ -2353,6 +2353,7 @@ def _dev_login_payload(data: object, method: str, status: int) -> dict:
         details = {
             "none": "Device login required",
             "pending": "Device approval pending",
+            "persistence_pending": "Login approved; retry saving the login",
             "granted": "Stored dev grant present",
             "failed": "Device login failed; start a new login",
         }
@@ -2360,6 +2361,12 @@ def _dev_login_payload(data: object, method: str, status: int) -> dict:
         if not isinstance(state, str) or state not in details:
             raise ValueError("invalid dev login state")
         return {"state": state, "detail": details[state]}
+    if (
+        status == 202
+        and data.get("state") == "pending"
+        and data.get("persistence_retry") is True
+    ):
+        return {"state": "pending", "persistence_retry": True}
     if status == 409:
         reason = data.get("reason")
         if (

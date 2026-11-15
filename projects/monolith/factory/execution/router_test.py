@@ -569,6 +569,18 @@ def test_codex_login_start_proxies_broker(client, monkeypatch):
     assert calls == [("POST", "/grants/codex-cluster/login/start")]
 
 
+def test_codex_login_start_preserves_persistence_retry_without_device_fields(
+    client, monkeypatch
+):
+    async def broker_request(*_args):
+        return {"state": "pending", "persistence_retry": True, "refresh_token": "secret"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    response = client.post("/api/agents/codex-login/start")
+    assert response.status_code == 200
+    assert response.json() == {"state": "pending", "persistence_retry": True}
+
+
 @pytest.mark.parametrize("reason", [None, "login_pending"])
 def test_codex_login_start_returns_in_flight_broker_login(client, monkeypatch, reason):
     async def broker_request(*_args):

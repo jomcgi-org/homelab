@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -166,7 +167,7 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 
 func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Time, error) {
 	b.metrics.Refreshes.Inc()
-	grant, err := b.store.LoadGrant(grantName)
+	grant, err := b.loadGrant(ctx, grantName)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -177,7 +178,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	// has caught up, clear it: preferring a stale stash would replay an
 	// already-consumed refresh token forever and pin the reuse alarm high.
 	if s.authoritative != nil {
-		if s.authoritative.LastRefresh.After(grant.LastRefresh) {
+		if store.CompareGrantVersion(*s.authoritative, grant) > 0 {
 			grant = *s.authoritative
 		} else {
 			s.authoritative = nil
@@ -211,7 +212,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
 			b.metrics.ReusedRetries.Inc()
 			b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
-			grant, err = b.store.LoadGrant(grantName)
+			grant, err = b.loadGrant(ctx, grantName)
 			if err == nil {
 				result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
 			}
@@ -219,6 +220,13 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	}
 	if err != nil {
 		if errors.Is(err, provider.ErrInvalidGrant) {
+			// Another replica may have replaced this authorization while its
+			// refresh was in flight. A refusal of the old token says nothing
+			// about the newer durable grant.
+			if saved, loadErr := b.loadGrant(ctx, grantName); loadErr == nil && store.CompareGrantVersion(saved, grant) > 0 && saved.TokenBundle.AccessToken != "" {
+				b.ClearNeedsLogin(grantName)
+				return saved.TokenBundle.AccessToken, saved.TokenBundle.ExpiresAt, nil
+			}
 			s.mu.Lock()
 			s.needsLogin = true
 			s.mu.Unlock()
@@ -240,9 +248,9 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	}
 	grant.LastRefresh = stamp
 	grant.TokenBundle.LastRefresh = grant.LastRefresh
-	if err = b.saveRotatedGrant(grantName, grant); err != nil {
+	if err = b.saveRotatedGrant(ctx, grantName, grant); err != nil {
 		if errors.Is(err, store.ErrGrantNotNewer) {
-			stored, loadErr := b.store.LoadGrant(grantName)
+			stored, loadErr := b.loadGrant(ctx, grantName)
 			if loadErr != nil {
 				return "", time.Time{}, loadErr
 			}
@@ -260,15 +268,23 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	return grant.TokenBundle.AccessToken, grant.TokenBundle.ExpiresAt, nil
 }
 
-func (b *Broker) saveRotatedGrant(name string, grant store.Grant) error {
+func (b *Broker) saveRotatedGrant(ctx context.Context, name string, grant store.Grant) error {
 	var err error
 	for attempt := 0; attempt < 5; attempt++ {
-		err = b.store.SaveGrantIfNewer(grant)
+		err = b.saveGrant(ctx, grant)
 		if err == nil || errors.Is(err, store.ErrGrantNotNewer) {
 			return err
 		}
 		if attempt < 4 {
-			time.Sleep(time.Duration(1<<attempt) * 2 * time.Second)
+			timer := time.NewTimer(time.Duration(1<<attempt) * 2 * time.Second)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+			}
+			timer.Stop()
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
 	s, _ := b.state(name)
@@ -283,7 +299,7 @@ func (b *Broker) saveRotatedGrant(name string, grant store.Grant) error {
 func (b *Broker) retryGrantPersistence(name string, grant store.Grant) {
 	for {
 		time.Sleep(30 * time.Second)
-		if err := b.store.SaveGrantIfNewer(grant); err == nil || errors.Is(err, store.ErrGrantNotNewer) {
+		if err := b.saveGrant(context.Background(), grant); err == nil || errors.Is(err, store.ErrGrantNotNewer) {
 			return
 		} else {
 			b.logger.Error("tokenbroker rotated grant persistence retry failed", "grant", name, "err", err)
@@ -300,7 +316,7 @@ func (b *Broker) CachedAccessToken(grantName string, ctx context.Context) (strin
 	if _, err := b.state(grantName); err != nil {
 		return "", time.Time{}, err
 	}
-	grant, err := b.store.LoadGrant(grantName)
+	grant, err := b.loadGrant(ctx, grantName)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -314,7 +330,7 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 	if _, err := b.state(grantName); err != nil {
 		return "", time.Time{}, err
 	}
-	grant, err := b.store.LoadGrant(grantName)
+	grant, err := b.loadGrant(ctx, grantName)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -334,7 +350,7 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 		if _, _, err = b.RefreshAccessToken(grantName, ctx); err != nil {
 			return "", time.Time{}, ErrRefreshFailed
 		}
-		grant, err = b.store.LoadGrant(grantName)
+		grant, err = b.loadGrant(ctx, grantName)
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -358,7 +374,7 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 		if _, _, err = b.RefreshAccessToken(grantName, ctx); err != nil {
 			return "", time.Time{}, ErrRefreshFailed
 		}
-		grant, err = b.store.LoadGrant(grantName)
+		grant, err = b.loadGrant(ctx, grantName)
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -387,6 +403,9 @@ func (b *Broker) SaveGrant(grant store.Grant) error {
 	}
 	// Assign the persistence order only once the preceding refresh has finished.
 	grant.LastRefresh = time.Time{}
+	// Refresh preserves this identity, including across broker replicas. The
+	// login order stays fixed even if persistence is retried much later.
+	grant.LoginID, grant.LoginAt = rand.Text(), time.Now().UTC()
 	// Secret timestamps round-trip through RFC3339 without monotonic data or
 	// local timezone pointers. Normalize for ambiguous-write confirmation.
 	grant.TokenBundle.ExpiresAt = grant.TokenBundle.ExpiresAt.UTC()
@@ -426,10 +445,14 @@ func (b *Broker) persistLogin(s *grantState, grant store.Grant) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err = b.persistLoginAttempt(ctx, s, &grant)
 		if errors.Is(err, store.ErrGrantNotNewer) {
-			// An update can commit even when its response is lost. Confirm that
-			// exact bundle before treating a duplicate write as successful.
-			saved, loadErr := b.loadLoginGrant(ctx, grant.Name)
-			if loadErr == nil && saved.LastRefresh.Equal(grant.LastRefresh) && saved.TokenBundle == grant.TokenBundle {
+			// A lost write response may have been followed by another replica
+			// rotating this login, or a later device login superseding it. Adopt
+			// that durable version without replaying a consumed refresh token.
+			saved, loadErr := b.loadGrant(ctx, grant.Name)
+			if loadErr == nil && saved.TokenBundle.AccessToken != "" && saved.TokenBundle.RefreshToken != "" &&
+				(store.CompareGrantVersion(saved, grant) > 0 ||
+					(store.CompareGrantVersion(saved, grant) == 0 && saved.TokenBundle == grant.TokenBundle)) {
+				grant = saved
 				err = nil
 			}
 		}
@@ -458,7 +481,12 @@ func (b *Broker) persistLogin(s *grantState, grant store.Grant) error {
 	return s.lastErr
 }
 
-func (b *Broker) loadLoginGrant(ctx context.Context, name string) (store.Grant, error) {
+func (b *Broker) loadGrant(ctx context.Context, name string) (store.Grant, error) {
+	ctx, cancel := context.WithTimeout(ctx, store.RequestTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return store.Grant{}, err
+	}
 	if st, ok := b.store.(interface {
 		LoadGrantContext(context.Context, string) (store.Grant, error)
 	}); ok {
@@ -467,9 +495,23 @@ func (b *Broker) loadLoginGrant(ctx context.Context, name string) (store.Grant, 
 	return b.store.LoadGrant(name)
 }
 
+func (b *Broker) saveGrant(ctx context.Context, grant store.Grant) error {
+	ctx, cancel := context.WithTimeout(ctx, store.RequestTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if st, ok := b.store.(interface {
+		SaveGrantIfNewerContext(context.Context, store.Grant) error
+	}); ok {
+		return st.SaveGrantIfNewerContext(ctx, grant)
+	}
+	return b.store.SaveGrantIfNewer(grant)
+}
+
 func (b *Broker) persistLoginAttempt(ctx context.Context, s *grantState, grant *store.Grant) error {
 	if grant.LastRefresh.IsZero() {
-		saved, err := b.loadLoginGrant(ctx, grant.Name)
+		saved, err := b.loadGrant(ctx, grant.Name)
 		if err != nil {
 			return err
 		}
@@ -488,12 +530,7 @@ func (b *Broker) persistLoginAttempt(ctx context.Context, s *grantState, grant *
 		s.pendingLogin = &copy
 		s.mu.Unlock()
 	}
-	if st, ok := b.store.(interface {
-		SaveGrantIfNewerContext(context.Context, store.Grant) error
-	}); ok {
-		return st.SaveGrantIfNewerContext(ctx, *grant)
-	}
-	return b.store.SaveGrantIfNewer(*grant)
+	return b.saveGrant(ctx, *grant)
 }
 
 var (

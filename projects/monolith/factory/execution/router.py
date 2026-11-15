@@ -736,6 +736,8 @@ async def codex_login_start(
         )
     if environment == "dev":
         return data
+    if data.get("state") == "pending" and data.get("persistence_retry") is True:
+        return {"state": "pending", "persistence_retry": True}
     return {
         "verification_url": data.get("verification_url"),
         "user_code": data.get("user_code"),

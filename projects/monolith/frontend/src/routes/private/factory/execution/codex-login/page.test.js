@@ -28,6 +28,30 @@ afterEach(async () => {
 });
 
 describe("Codex login page", () => {
+  test.each(["prod", "dev"])("retries saving an approved %s login without another device code", async (environment) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      state: "pending", persistence_retry: true, environment, grant: "codex-cluster",
+    }, { status: 202 })));
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { component, target } = await render({ environment, state: "persistence_pending" }, true);
+
+    const retry = target.querySelector("button.primary-action");
+    expect(retry.textContent.trim()).toBe("Retry saving login");
+    expect(target.textContent).toContain("Approval is complete");
+    retry.click();
+    await vi.waitFor(() => expect(target.textContent).toContain("Saving the approved login"));
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+    expect(target.querySelector("code")).toBeNull();
+    expect(target.querySelector("button.primary-action").disabled).toBe(true);
+    expect(open).not.toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+
+    component.$set({ data: { environment, state: "granted" } });
+    await tick();
+    expect(target.textContent).toContain("Login saved");
+    expect(target.querySelector("button.primary-action")).toBeNull();
+  });
+
   test("offers an explicit dev action and a read-only connection check", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const { target } = await render({ environment: "dev", state: "none" });

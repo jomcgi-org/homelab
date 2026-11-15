@@ -2482,7 +2482,9 @@ def test_dev_broker_login_start_is_separate_and_allowlists_response(
     assert "secret" not in notified[0]
 
 
-@pytest.mark.parametrize("state", ["none", "pending", "granted", "failed"])
+@pytest.mark.parametrize(
+    "state", ["none", "pending", "persistence_pending", "granted", "failed"]
+)
 def test_dev_broker_status_never_returns_provider_error_detail(monkeypatch, state):
     async def dev_request(method, path, *, timeout):
         assert (method, path, timeout) == (
@@ -2512,6 +2514,33 @@ def test_dev_broker_status_never_returns_provider_error_detail(monkeypatch, stat
     assert result["grant"] == "codex-cluster"
     assert set(result) == {"state", "detail", "environment", "grant"}
     assert "secret" not in json.dumps(result)
+
+
+def test_dev_login_persistence_retry_keeps_scope_and_drops_credentials(monkeypatch):
+    async def dev_request(method, path, *, timeout):
+        return httpx.Response(
+            202,
+            request=httpx.Request(method, "https://dev-broker" + path),
+            json={
+                "state": "pending",
+                "persistence_retry": True,
+                "refresh_token": "secret-refresh",
+                "detail": "secret-provider-detail",
+            },
+        )
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("persistence retry must not notify a device code")
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", dev_request)
+    monkeypatch.setattr(mcp.agent_api, "notify", unexpected)
+    result = asyncio.run(mcp.monolith_codex_broker_login_start(environment="dev"))
+    assert result == {
+        "state": "pending",
+        "persistence_retry": True,
+        "environment": "dev",
+        "grant": "codex-cluster",
+    }
 
 
 @pytest.mark.parametrize("operation", ["start", "status"])

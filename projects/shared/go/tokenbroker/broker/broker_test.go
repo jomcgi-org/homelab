@@ -36,7 +36,7 @@ func (s *testStore) SaveGrant(g store.Grant) error {
 func (s *testStore) SaveGrantIfNewer(g store.Grant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if previous := s.grants[g.Name]; !previous.LastRefresh.IsZero() && !g.LastRefresh.After(previous.LastRefresh) {
+	if previous := s.grants[g.Name]; !previous.LastRefresh.IsZero() && store.CompareGrantVersion(g, previous) <= 0 {
 		return store.ErrGrantNotNewer
 	}
 	s.grants[g.Name] = g
@@ -524,4 +524,155 @@ func TestLoginFencesDetachedRotationRetry(t *testing.T) {
 			t.Fatal("detached older rotation overwrote the login")
 		}
 	})
+}
+
+type competingLoginStore struct {
+	*testStore
+	scenario string
+	wrote    bool
+}
+
+func (s *competingLoginStore) SaveGrantIfNewerContext(_ context.Context, g store.Grant) error {
+	if !s.wrote {
+		s.wrote = true
+		competing := g
+		competing.LastRefresh = g.LastRefresh.Add(time.Hour)
+		competing.TokenBundle.LastRefresh = competing.LastRefresh
+		competing.TokenBundle.AccessToken = "competing-access"
+		competing.TokenBundle.RefreshToken = "competing-refresh"
+		switch s.scenario {
+		case "older login refresh":
+			competing.LoginID, competing.LoginAt = "previous-login", g.LoginAt.Add(-time.Hour)
+		case "later login":
+			competing.LoginID, competing.LoginAt = "later-login", g.LoginAt.Add(time.Second)
+		}
+		// For "rotated login", simulate a committed write whose response was
+		// lost, followed by another replica refreshing that same authorization.
+		if err := s.testStore.SaveGrant(competing); err != nil {
+			return err
+		}
+		return errors.New("write response lost")
+	}
+	return s.testStore.SaveGrantIfNewer(g)
+}
+
+func TestLoginReconcilesCompetingWrites(t *testing.T) {
+	for _, scenario := range []string{"older login refresh", "rotated login", "later login"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st := &competingLoginStore{testStore: &testStore{grants: map[string]store.Grant{}}, scenario: scenario}
+				a := &testAdapter{}
+				b := New(st, map[string]provider.Adapter{"test": a}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+				login := loginGrant()
+				if err := b.SaveGrant(login); err != nil {
+					t.Fatal("competing write stranded login persistence")
+				}
+				g, _ := st.LoadGrant("one")
+				want := "competing-refresh"
+				if scenario == "older login refresh" {
+					want = login.TokenBundle.RefreshToken
+				}
+				if g.TokenBundle.RefreshToken != want || g.LoginID == "" {
+					t.Fatal("reconciliation selected the wrong authorization")
+				}
+				if access, _, err := b.GetAccessToken("one", context.Background()); err != nil || access != g.TokenBundle.AccessToken {
+					t.Fatal("token serving did not adopt the reconciled grant")
+				}
+				if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil || len(a.refreshInput) != 1 || a.refreshInput[0] != want {
+					t.Fatal("recovery left refresh blocked or replayed an older credential")
+				}
+			})
+		})
+	}
+}
+
+func TestLoginFencesAnotherReplicaRefresh(t *testing.T) {
+	for _, refreshErr := range []error{nil, provider.ErrInvalidGrant} {
+		t.Run(fmt.Sprintf("invalid=%t", refreshErr != nil), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st := &testStore{grants: map[string]store.Grant{"one": loginGrant()}}
+				a := &blockedRefreshAdapter{testAdapter: &testAdapter{}, started: make(chan struct{}), release: make(chan struct{}), err: refreshErr}
+				remote := New(st, map[string]provider.Adapter{"test": a}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+				local := New(st, nil, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+				refreshed := make(chan error, 1)
+				go func() {
+					_, _, err := remote.RefreshAccessToken("one", context.Background())
+					refreshed <- err
+				}()
+				<-a.started
+				login := loginGrant()
+				if err := local.SaveGrant(login); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(time.Second)
+				close(a.release)
+				if err := <-refreshed; err != nil || remote.NeedsLogin("one") {
+					t.Fatal("old refresh did not adopt the replacement login")
+				}
+				g, _ := st.LoadGrant("one")
+				if g.TokenBundle.RefreshToken != login.TokenBundle.RefreshToken {
+					t.Fatal("late refresh from another replica overwrote the new login")
+				}
+			})
+		})
+	}
+}
+
+type stuckRefreshStore struct {
+	*testStore
+	operation string
+	started   chan struct{}
+	once      sync.Once
+	released  bool
+}
+
+func (s *stuckRefreshStore) stall(ctx context.Context) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	s.released = true
+}
+
+func (s *stuckRefreshStore) LoadGrantContext(ctx context.Context, name string) (store.Grant, error) {
+	if s.operation == "load" && !s.released {
+		s.stall(ctx)
+		return store.Grant{}, ctx.Err()
+	}
+	return s.testStore.LoadGrant(name)
+}
+
+func (s *stuckRefreshStore) SaveGrantIfNewerContext(ctx context.Context, g store.Grant) error {
+	if s.operation == "save" && g.LoginID == "" {
+		current, _ := s.testStore.LoadGrant(g.Name)
+		if store.CompareGrantVersion(g, current) <= 0 {
+			return store.ErrGrantNotNewer
+		}
+		s.stall(ctx)
+		return ctx.Err()
+	}
+	return s.testStore.SaveGrantIfNewer(g)
+}
+
+func TestStuckRefreshStorageReleasesWaitingLogin(t *testing.T) {
+	for _, operation := range []string{"load", "save"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st := &stuckRefreshStore{testStore: &testStore{grants: map[string]store.Grant{"one": loginGrant()}}, operation: operation, started: make(chan struct{})}
+				b := New(st, map[string]provider.Adapter{"test": &testAdapter{}}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+				refreshed := make(chan struct{})
+				go func() {
+					defer close(refreshed)
+					_, _, _ = b.RefreshAccessToken("one", context.Background())
+				}()
+				<-st.started
+				start := time.Now()
+				if err := b.SaveGrant(loginGrant()); err != nil {
+					t.Fatal("stuck refresh prevented the exchanged login from being installed")
+				}
+				<-refreshed
+				if time.Since(start) > time.Minute || !st.released {
+					t.Fatal("refresh Secret request was not bounded")
+				}
+			})
+		})
+	}
 }

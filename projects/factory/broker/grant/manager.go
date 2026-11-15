@@ -306,10 +306,15 @@ func (m *Manager) startLogin(w http.ResponseWriter, r *http.Request) {
 		m.login = loginState{state: "pending", detail: "saving exchanged credentials"}
 		m.mu.Unlock()
 		go func() { m.finishLogin(m.broker.RetryPendingGrant(m.opts.Grant)) }()
-		writeJSON(w, http.StatusAccepted, map[string]string{"state": "pending", "detail": "retrying credential persistence"})
+		writeJSON(w, http.StatusAccepted, map[string]any{"state": "pending", "persistence_retry": true})
 		return
 	}
 	if m.login.state == "pending" {
+		if m.login.detail == "saving exchanged credentials" {
+			m.mu.Unlock()
+			writeJSON(w, http.StatusAccepted, map[string]any{"state": "pending", "persistence_retry": true})
+			return
+		}
 		resp := map[string]any{"state": "pending"}
 		if c := m.login.code; c != nil {
 			resp["verification_url"], resp["user_code"], resp["expires_in"] = c.VerificationURL, c.UserCode, c.ExpiresIn
