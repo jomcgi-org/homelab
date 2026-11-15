@@ -257,10 +257,10 @@ This suggests request-quota or rate limiting; historical headers do not
 identify the limit. The workflow still grants aggregate `pages: read`.
 Loading the recorded 1,691 state files required 1,694 REST reads.
 
-The repair defaults off in Python; the publisher workflow does not set
-`FIXTURE_PREVIEW_REPAIR_ENABLED`. When the authorized owner activates it,
-state loading uses three REST metadata reads and one public archive pinned to the state
-commit. The archive request sends no Authorization header and follows no
+The repair defaults off in Python; the publisher workflow turns it on with
+`FIXTURE_PREVIEW_REPAIR_ENABLED: "true"` (HOME-104). With it on, state
+loading uses three REST metadata reads and one public archive pinned to the
+state commit. The archive request sends no Authorization header and follows no
 redirects. Each member must match the validated tree's path, size and Git
 blob hash. State ownership, archive limits and preview completeness remain
 required. No fallback bypasses a failed Pages configuration check.
