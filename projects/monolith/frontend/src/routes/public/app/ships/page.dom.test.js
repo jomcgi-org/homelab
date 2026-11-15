@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { fromStore, writable } from "svelte/store";
 import Route from "../../../../../test/ProfileRoute.svelte";
 import { setPage, page } from "../../../../../test/profile-page.svelte.js";
 import { maps, initialization } from "../../../../../test/ships-map-double.js";
@@ -12,6 +13,7 @@ import {
 import { goto, invalidateAll } from "$app/navigation";
 import mapSource from "$lib/public/components/ships/ShipsMap.svelte?raw";
 import snapshotSource from "$lib/public/components/MapSnapshot.svelte?raw";
+import { deadReckon } from "$lib/public/ships/deadReckoning.js";
 
 vi.mock("$app/environment", () => ({
   browser: true,
@@ -29,7 +31,7 @@ vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
 }));
 vi.mock("$app/navigation", () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 
-let instance, target, media, fetchMock, idle, styles;
+let instance, target, media, fetchMock, idle, styles, routeData;
 const settle = async () => {
   await vi.dynamicImportSettled();
   await tick();
@@ -137,9 +139,15 @@ afterEach(async () => {
 
 async function render(query = "", data = snapshot, load = true) {
   setPage(`https://jomcgi.dev/app/ships${query}`);
+  routeData = fromStore(writable({ snapshot: data }));
   instance = mount(Route, {
     target,
-    props: { surface: "ships", data: { snapshot: data } },
+    props: {
+      surface: "ships",
+      get data() {
+        return routeData.current;
+      },
+    },
   });
   await settle();
   expect(maps).toHaveLength(1);
@@ -151,6 +159,156 @@ async function render(query = "", data = snapshot, load = true) {
 }
 
 describe("ships production browser route", () => {
+  const fixedAt = Date.parse("2026-11-14T12:00:00Z");
+  const frameAt = (time) => {
+    vi.setSystemTime(time);
+    requestAnimationFrame.mock.calls.at(-1)[0]();
+  };
+
+  it("keeps capped and stationary positions without resubmitting idle frames", async () => {
+    vi.setSystemTime(fixedAt);
+    const vessels = [
+      snapshot.vessels[0],
+      {
+        ...snapshot.vessels[1],
+        speed: 0,
+        recorded_at: new Date(fixedAt).toISOString(),
+      },
+      {
+        ...snapshot.vessels[2],
+        speed: null,
+        recorded_at: new Date(fixedAt + 60000).toISOString(),
+      },
+    ];
+    const map = await render("", { vessels });
+    const source = map.getSource("vessels");
+    const before = structuredClone(source.data);
+    source.setData.mockClear();
+    frameAt(fixedAt + 250);
+    frameAt(fixedAt + 500);
+    expect(source.setData).not.toHaveBeenCalled();
+    expect(source.updateData).not.toHaveBeenCalled();
+    expect(source.data).toEqual(before);
+    expect(source.data.features).toHaveLength(3);
+
+    map.emit("mousemove", { features: [{ id: "900000002" }] }, "vessels");
+    map.emit("click", { features: [{ id: "900000001" }] }, "vessels");
+    await settle();
+    expect(source.setData).toHaveBeenCalledTimes(2);
+    expect(source.data.features[0].properties.sel).toBe(true);
+    expect(source.data.features[1].properties.hov).toBe(true);
+    expect(source.data.features.map((feature) => feature.geometry)).toEqual(
+      before.features.map((feature) => feature.geometry),
+    );
+    map.emit("mouseleave", {}, "vessels");
+    target.querySelector('[aria-label="Close vessel panel"]').click();
+    await settle();
+    expect(source.data).toEqual(before);
+  });
+
+  it("renders every moving tick and the final capped position before becoming idle", async () => {
+    vi.setSystemTime(fixedAt);
+    const vessels = snapshot.vessels.slice(0, 2).map((vessel, index) => ({
+      ...vessel,
+      recorded_at: new Date(fixedAt - 299750 + index * 250).toISOString(),
+    }));
+    const map = await render("", { vessels });
+    const source = map.getSource("vessels");
+    source.setData.mockClear();
+    for (const elapsed of [250, 500]) {
+      frameAt(fixedAt + elapsed);
+      expect(source.updateData).toHaveBeenCalledTimes(elapsed / 250);
+      expect(
+        source.data.features.map((feature) => feature.geometry.coordinates),
+      ).toEqual(
+        vessels.map((vessel) => {
+          const position = deadReckon(
+            vessel,
+            Math.min(
+              (fixedAt + elapsed - Date.parse(vessel.recorded_at)) / 1000,
+              300,
+            ),
+          );
+          return [position.lon, position.lat];
+        }),
+      );
+    }
+    const capped = structuredClone(source.data);
+    frameAt(fixedAt + 750);
+    frameAt(fixedAt + 1000);
+    expect(source.setData).not.toHaveBeenCalled();
+    expect(
+      source.updateData.mock.calls.map(([diff]) =>
+        diff.update.map((entry) => entry.id),
+      ),
+    ).toEqual([["900000001", "900000002"], ["900000002"]]);
+    expect(source.data).toEqual(capped);
+  });
+
+  it("patches moving geometry while keeping the full fleet and interaction properties", async () => {
+    vi.setSystemTime(fixedAt);
+    const vessels = snapshot.vessels.map((vessel, index) => ({
+      ...vessel,
+      recorded_at:
+        index < 2 ? new Date(fixedAt).toISOString() : vessel.recorded_at,
+    }));
+    const map = await render("?mmsi=900000001", { vessels });
+    const source = map.getSource("vessels");
+    map.emit("mousemove", { features: [{ id: "900000002" }] }, "vessels");
+    const before = structuredClone(source.data);
+    source.setData.mockClear();
+    frameAt(fixedAt + 250);
+    expect(source.setData).not.toHaveBeenCalled();
+    expect(source.updateData).toHaveBeenCalledTimes(1);
+    expect(
+      source.updateData.mock.calls[0][0].update.map((entry) => entry.id),
+    ).toEqual(["900000001", "900000002"]);
+    expect(source.data.features).toHaveLength(48);
+    expect(source.data.features.slice(2)).toEqual(before.features.slice(2));
+    expect(source.data.features.map((feature) => feature.properties)).toEqual(
+      before.features.map((feature) => feature.properties),
+    );
+    expect(
+      source.data.features
+        .slice(0, 2)
+        .map((feature) => feature.geometry.coordinates),
+    ).toEqual(
+      vessels.slice(0, 2).map((vessel) => {
+        const position = deadReckon(vessel, 0.25);
+        return [position.lon, position.lat];
+      }),
+    );
+  });
+
+  it("resumes animation on a refreshed fix and drops removed vessels", async () => {
+    vi.setSystemTime(fixedAt);
+    const map = await render("", { vessels: snapshot.vessels.slice(0, 2) });
+    const source = map.getSource("vessels");
+    source.setData.mockClear();
+    frameAt(fixedAt + 250);
+    expect(source.setData).not.toHaveBeenCalled();
+    const vessel = {
+      ...snapshot.vessels[0],
+      lat: 51,
+      lon: -2,
+      recorded_at: new Date(fixedAt + 250).toISOString(),
+    };
+    routeData.current = { snapshot: { vessels: [vessel] } };
+    await settle();
+    expect(source.setData).toHaveBeenCalledTimes(1);
+    expect(source.data.features.map((feature) => feature.id)).toEqual([
+      "900000001",
+    ]);
+    frameAt(fixedAt + 500);
+    expect(source.setData).toHaveBeenCalledTimes(1);
+    expect(source.updateData).toHaveBeenCalledTimes(1);
+    const position = deadReckon(vessel, 0.25);
+    expect(source.data.features[0].geometry.coordinates).toEqual([
+      position.lon,
+      position.lat,
+    ]);
+  });
+
   it("mounts the real app/map under one sheet and chrome, with accessible controls", async () => {
     const map = await render();
     expect(target.querySelectorAll("main.td.sheet")).toHaveLength(1);

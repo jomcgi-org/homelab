@@ -41,6 +41,8 @@
   let pal = null; // resolved on the map surface at load and on scheme changes
   let rafId = null;
   let lastDrMs = 0;
+  let lastDataMs = -Infinity;
+  let latestMovingFixMs = -Infinity;
   let didFit = false;
   let layerReady = false;
   let mapPainted = $state(false);
@@ -355,8 +357,7 @@
   // Build the FeatureCollection from current fleet state, dead-reckoning each
   // vessel forward from its last fix. selection/hover ride along as feature
   // properties (not feature-state, which setData would clear).
-  function buildFeatures() {
-    const now = Date.now();
+  function buildFeatures(now) {
     const features = [];
     for (const [id, e] of fleet) {
       const elapsed = Math.min((now - e.fixTimeMs) / 1000, MAX_DR_SECONDS);
@@ -380,9 +381,49 @@
     return { type: "FeatureCollection", features };
   }
 
-  function pushData() {
+  function buildMotionDiff(now) {
+    const update = [];
+    for (const [id, e] of fleet) {
+      if (!e.speed || e.speed <= 0) continue;
+      const elapsed = Math.min((now - e.fixTimeMs) / 1000, MAX_DR_SECONDS);
+      const previous = Math.min(
+        (lastDataMs - e.fixTimeMs) / 1000,
+        MAX_DR_SECONDS,
+      );
+      if (elapsed === previous) continue;
+      const pos = deadReckon(
+        { lat: e.fixLat, lon: e.fixLon, speed: e.speed, course: e.course },
+        elapsed,
+      );
+      update.push({
+        id,
+        newGeometry: { type: "Point", coordinates: [pos.lon, pos.lat] },
+      });
+    }
+    return { update };
+  }
+
+  function pushData(onlyIfMoving = false) {
     const src = map?.getSource(SOURCE_ID);
-    if (src) src.setData(buildFeatures());
+    if (!src) return;
+    const now = Date.now();
+    const motionEndsAt = latestMovingFixMs + MAX_DR_SECONDS * 1000;
+    // Once every moving fix has reached the cap, time no longer changes any
+    // position. Keep snapshot, selection and hover writes unconditional.
+    if (
+      onlyIfMoving &&
+      Math.min(now, motionEndsAt) === Math.min(lastDataMs, motionEndsAt)
+    )
+      return;
+    if (onlyIfMoving) {
+      // Fleet keys are unique MMSI feature IDs. Geometry-only diffs preserve
+      // all vessel properties and leave stationary/capped features in place.
+      const diff = buildMotionDiff(now);
+      if (diff.update.length) src.updateData(diff);
+    } else {
+      src.setData(buildFeatures(now));
+    }
+    lastDataMs = now;
   }
 
   // AIS sentinels: lat 91 / lon 181 mean "position not available"; (0, 0) is
@@ -441,11 +482,12 @@
     if (!map || !layerReady) return;
 
     const seen = new Set();
+    latestMovingFixMs = -Infinity;
     for (const v of vessels) {
       if (!validLatLon(v.lat, v.lon)) continue;
       const id = String(v.mmsi);
       seen.add(id);
-      fleet.set(id, {
+      const entry = {
         row: v,
         fixLat: v.lat,
         fixLon: v.lon,
@@ -454,7 +496,10 @@
         course: v.course,
         rotation: rotationOf(v),
         icon: iconFor(v.ship_type),
-      });
+      };
+      fleet.set(id, entry);
+      if (entry.speed > 0)
+        latestMovingFixMs = Math.max(latestMovingFixMs, entry.fixTimeMs);
     }
     for (const id of fleet.keys()) {
       if (!seen.has(id)) fleet.delete(id);
@@ -484,7 +529,7 @@
     }
   }
 
-  // Throttled dead-reckoning: rebuild the source ~4x/sec. During pan/zoom the
+  // Throttled dead-reckoning: update moving fixes ~4x/sec. During pan/zoom the
   // points already track the basemap on the GPU, so this only animates the
   // slow drift between snapshots.
   function startLoop() {
@@ -492,7 +537,7 @@
       const now = Date.now();
       if (now - lastDrMs >= DR_INTERVAL_MS) {
         lastDrMs = now;
-        pushData();
+        pushData(true);
       }
       rafId = requestAnimationFrame(step);
     };
