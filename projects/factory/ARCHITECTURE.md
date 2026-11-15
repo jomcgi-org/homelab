@@ -1210,14 +1210,21 @@ records completion atomically. Failed reads or incomplete history leave import
 pending and revoke queued merge-group passes. Revocation intents persist with
 the import marker still false, and retry across restarts after lost GitHub writes.
 Legacy restart-only holds import without a hold; labels, gated paths, shared
-heads and human-gate findings remain binding. Later starts load Postgres.
+heads and human-gate findings remain binding. Later starts load Postgres. A PR
+that was closed during import restores its existing check gate and complete
+label history on its first later encounter, before any pass or enqueue. The
+per-head restoration marker commits with that state. Until then, listing
+observations remain durable but cannot replace the legacy gate. Returning to an
+earlier head also restores the gate on that head's existing check.
 
 The migration can recover only evidence the old process wrote to GitHub or
 that complete label history and the current PR listing reveal. An observation
 lost from the old process's memory after every GitHub write failed cannot be
-reconstructed. HOME-54 explicitly requires discarding restart-only holds, so
-this migration does not impose a blanket transition hold to cover that unknown
-history. Write-ahead persistence protects observations made by the new version.
+reconstructed. Joe's accepted [issue #8048, "One-time import"](https://github.com/jomcgi-org/homelab/issues/8048)
+requires a PR held only by the retired restart hold to "import as not held".
+This migration therefore does not impose a blanket transition hold to cover
+that unknown history. Write-ahead persistence protects observations made by
+the new version.
 
 **Why.** [Joe's decision on 2026-11-15](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891505565)
 requires a person only where a hold actually applies. Durable observations

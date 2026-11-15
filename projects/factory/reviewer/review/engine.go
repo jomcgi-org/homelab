@@ -174,11 +174,12 @@ type headKey struct {
 }
 
 type heldContext struct {
-	Head   string
-	Token  string
-	Labels []string
-	Shared bool
-	Gate   *Gate
+	Head     string
+	Token    string
+	Labels   []string
+	Shared   bool
+	Gate     *Gate
+	Restored bool
 }
 
 // retainGate carries PR facts across cached heads without importing approval.
@@ -199,6 +200,9 @@ func (e *Engine) retainGateLocked(b *Binding, pr github.PullRequest, g *Gate, fr
 	if m == nil {
 		m = &heldContext{Head: pr.HeadSHA, Token: g.ContextToken, Labels: append([]string(nil), g.Labels...), Shared: g.SharedHead}
 		e.contexts[key] = m
+	}
+	if m.Head != pr.HeadSHA {
+		m.Restored = false
 	}
 	if m.Gate != nil {
 		g.inherit(m.Gate)
@@ -419,6 +423,12 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
 		if err != nil {
 			reviews[pr.Number] = nil // Unknown approval must also fail a queued group.
+			continue
+		}
+		// A legacy PR may have been closed during the initial import. Its
+		// first listing records observations without replacing its old gate.
+		if (run == nil || run.ExternalID == MessageID(repo, pr.Number, pr.HeadSHA)) && !e.restoreContext(ctx, b, pr, run) {
+			reviews[pr.Number] = nil
 			continue
 		}
 		reviews[pr.Number] = run

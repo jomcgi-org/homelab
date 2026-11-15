@@ -194,7 +194,7 @@ func (e *Engine) load(ctx context.Context) bool {
 			if !g.Needed() {
 				g = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
 			}
-			imported[prKey(b, pr.Number)] = &heldContext{Head: pr.HeadSHA, Token: g.ContextToken, Labels: append([]string(nil), g.Labels...), Shared: g.SharedHead, Gate: g}
+			imported[prKey(b, pr.Number)] = &heldContext{Head: pr.HeadSHA, Token: g.ContextToken, Labels: append([]string(nil), g.Labels...), Shared: g.SharedHead, Gate: g, Restored: true}
 		}
 	}
 	e.mu.Lock()
@@ -215,10 +215,75 @@ func (e *Engine) stateFor(b *Binding, pr github.PullRequest, run *github.CheckRu
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if m := e.contexts[prKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA {
+	if m := e.contexts[prKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Restored {
 		st.Gate = cloneGate(m.Gate)
 	}
 	return st
+}
+
+// restoreContext imports a PR first seen after startup, including legacy PRs
+// that were closed during the repository import. Until this commits, its
+// listing observations are provisional and cannot replace its recorded gate.
+func (e *Engine) restoreContext(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) bool {
+	e.mu.Lock()
+	m := e.contexts[prKey(b, pr.Number)]
+	restored := m != nil && m.Restored
+	e.mu.Unlock()
+	if restored {
+		return true
+	}
+	var st State
+	if run != nil {
+		var ok bool
+		st, ok = LoadState(run.Text)
+		if !ok && strings.Contains(run.Text, statePrefix) {
+			return false
+		}
+	}
+	g := st.Gate
+	if g == nil {
+		g = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
+	}
+	events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
+	if err != nil {
+		e.ghError(ctx, e.prLog(b, pr), b, "restore_label_events", err)
+		if run != nil && run.Status == "completed" && run.Conclusion == ConclusionSuccess {
+			// Preserve the old gate and report while revoking an existing
+			// pass. A new head with no review must still receive a review.
+			st.Gate = g
+			e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Waiting for hold history",
+				"The reopened PR's complete hold history could not be read.\n\n"+labelHistoryMarker, e.prLog(b, pr))
+		}
+		return false
+	}
+	g.observeLabels(gateLabels(b, pr.Labels), e.cfg.Now())
+	g.observeLabelEvents(b, events)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m = e.contexts[prKey(b, pr.Number)]
+	if m == nil || m.Head != pr.HeadSHA {
+		return false
+	}
+	if m.Restored {
+		return true
+	}
+	if m.Gate != nil {
+		g.inherit(m.Gate)
+		for _, path := range m.Gate.Paths {
+			if !slices.Contains(g.Paths, path) {
+				g.Paths = append(g.Paths, path)
+			}
+		}
+		for _, finding := range m.Gate.Findings {
+			if !slices.ContainsFunc(g.Findings, func(f Finding) bool { return f.ID == finding.ID }) {
+				g.Findings = append(g.Findings, finding)
+			}
+		}
+	}
+	m.Gate = cloneGate(g)
+	m.Token, m.Shared, m.Labels = g.ContextToken, g.SharedHead, append([]string(nil), g.Labels...)
+	m.Restored = true
+	return e.saveLocked(ctx) == nil
 }
 
 func (e *Engine) persistGate(ctx context.Context, b *Binding, pr github.PullRequest, g *Gate) {
@@ -247,7 +312,7 @@ func (e *Engine) observeListing(ctx context.Context, b *Binding, prs []github.Pu
 		if pr.HeadSHA == "" {
 			continue
 		}
-		g := &Gate{ObservedLabels: []string{}}
+		g := &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
 		if m := e.contexts[prKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Gate != nil {
 			g = cloneGate(m.Gate)
 		}

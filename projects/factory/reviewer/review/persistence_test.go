@@ -45,6 +45,145 @@ func TestReopenedAndLaterPRsNeedNoRestartApproval(t *testing.T) {
 	failIf(t, h.gh.check(head).Conclusion != ConclusionSuccess, "new PR acquired a restart hold")
 }
 
+func closedLegacyGate(t *testing.T, gate *Gate, approved bool) *harness {
+	t.Helper()
+	h := newPR7Harness(t)
+	conclusion := ConclusionFailure
+	if approved {
+		gate.Approver = "jomcgi"
+		conclusion = ConclusionSuccess
+		h.gh.review(7, "jomcgi", "APPROVED", shaA, "before closing")
+	}
+	h.gh.addCheck(shaA, "factory review", testAppID, conclusion)
+	h.gh.withLock(func() {
+		h.gh.prs[7].Closed = true
+		c := h.gh.checks[len(h.gh.checks)-1]
+		c.ExternalID = MessageID(testRepo, 7, shaA)
+		c.Text = encodeState(State{Gate: gate})
+		c.Summary = gateOnlyMarker
+	})
+	e, ctx, stop := h.start()
+	failIf(t, !e.load(ctx), "initial import failed")
+	stop()
+	h.gh.withLock(func() { h.gh.prs[7].Closed = false })
+	return h
+}
+
+func TestReopenedLegacyPRRestoresAndRevalidatesItsGate(t *testing.T) {
+	for _, kind := range []string{"path", "finding", "removed label"} {
+		for _, approved := range []bool{false, true} {
+			name := kind
+			if approved {
+				name += "/approved"
+			}
+			t.Run(name, func(t *testing.T) {
+				gate := &Gate{}
+				switch kind {
+				case "path":
+					gate.Paths = []string{"REVIEW.md"}
+				case "finding":
+					gate.Findings = []Finding{{ID: "app.go:human-gate", Severity: SeverityHigh, Title: "Human decision required"}}
+				case "removed label":
+					gate.Labels = []string{"human"}
+					gate.ObservedLabels = []string{}
+				}
+				h := closedLegacyGate(t, gate, approved)
+				e, ctx, _ := h.start()
+				e.Tick(ctx)
+				want := ConclusionFailure
+				if approved {
+					want = ConclusionSuccess
+				}
+				st, _ := LoadState(h.gh.check(shaA).Text)
+				failIf(t, h.gh.check(shaA).Conclusion != want || !st.Gate.Needed(), "reopening erased the gate or its valid approval")
+				if approved {
+					h.gh.review(7, "jomcgi", "DISMISSED", shaA, "withdraw approval")
+					e.Tick(ctx)
+					failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "restored approval was not revalidated")
+				} else {
+					approveAndCheck(t, h, e, ctx, 7, shaA, "approve restored gate", "fresh approval did not clear the restored gate")
+				}
+			})
+		}
+	}
+}
+
+func TestReopenedGateRestorationRetriesCompleteReadsAcrossRestart(t *testing.T) {
+	for _, read := range []string{"commits/" + shaA + "/check-runs", "issues/7/events"} {
+		t.Run(read, func(t *testing.T) {
+			h := closedLegacyGate(t, &Gate{Paths: []string{"REVIEW.md"}}, true)
+			h.gh.review(7, "jomcgi", "DISMISSED", shaA, "withdrawn while closed")
+			h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
+			h.gh.withLock(func() { h.gh.queue = []github.MergeQueueEntry{{HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}} })
+			call := "GET /repos/" + testRepo + "/" + read
+			h.gh.failWith(call, 502)
+			e, ctx, stop := h.start()
+			e.Tick(ctx)
+			data, err := h.writer.Load(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved durableState
+			if err := json.Unmarshal(data, &saved); err != nil {
+				t.Fatal(err)
+			}
+			m := saved.Contexts[testRepo+"#7"]
+			failIf(t, m == nil || m.Restored || h.gh.check("mg-7").Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0, "incomplete restoration admitted the reopened PR")
+			stop()
+			h.gh.failWith(call, 0)
+			e, ctx, _ = h.start()
+			e.Tick(ctx)
+			st, _ := LoadState(h.gh.check(shaA).Text)
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || st.Gate == nil || len(st.Gate.Paths) == 0, "restart lost the unrestored legacy gate")
+		})
+	}
+}
+
+func TestReturningToAnEarlierHeadRestoresItsRecordedGate(t *testing.T) {
+	h := newPR7Harness(t)
+	h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+	h.gh.withLock(func() {
+		c := h.gh.checks[len(h.gh.checks)-1]
+		c.ExternalID = MessageID(testRepo, 7, shaA)
+		c.Text = encodeState(State{Gate: &Gate{Paths: []string{"REVIEW.md"}}})
+		c.Summary = gateOnlyMarker
+	})
+	h.gh.push(7, strings.Repeat("b", 40))
+	e, ctx, _ := h.start()
+	failIf(t, !e.load(ctx), "initial import failed")
+	h.gh.push(7, shaA)
+	e.Tick(ctx)
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || st.Gate == nil || len(st.Gate.Paths) == 0, "returning to an earlier head erased its gate")
+}
+
+func TestRestorationReadFailureCannotMakeAnUnreviewedHeadPass(t *testing.T) {
+	for _, conclusion := range []string{"", ConclusionCancelled, ConclusionFailure} {
+		t.Run("prior/"+conclusion, func(t *testing.T) {
+			h := newPR7Harness(t)
+			h.gh.withLock(func() { h.gh.prs[7].Closed = true })
+			e, ctx, _ := h.start()
+			failIf(t, !e.load(ctx), "initial import failed")
+			h.gh.withLock(func() { h.gh.prs[7].Closed = false })
+			if conclusion != "" {
+				h.gh.addCheck(shaA, "factory review", testAppID, conclusion)
+				h.gh.withLock(func() {
+					h.gh.checks[len(h.gh.checks)-1].ExternalID = MessageID(testRepo, 7, shaA)
+				})
+			}
+			read := "GET /repos/" + testRepo + "/issues/7/events"
+			h.gh.failWith(read, 502)
+			before := h.gh.checkCount()
+			e.Tick(ctx)
+			failIf(t, h.gh.checkCount() != before, "restoration replaced an unreviewed check with a gate-only result")
+			h.gh.failWith(read, 0)
+			e.Tick(ctx)
+			check := h.gh.check(shaA)
+			failIf(t, check != nil && check.Conclusion == ConclusionSuccess, "restoration bypassed review")
+		})
+	}
+}
+
 func TestImportDropsRestartOnlyHold(t *testing.T) {
 	h := newPR7Harness(t)
 	h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)

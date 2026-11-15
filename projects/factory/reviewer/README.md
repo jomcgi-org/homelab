@@ -16,12 +16,17 @@ revocation intents persist without marking import complete, including when
 GitHub writes fail. Retired restart-only holds are ignored. Subsequent
 starts load gate observations, approval baselines, context generations,
 pending projections, merge-group conclusions and enqueue backoff from Postgres.
+PRs closed during the initial import restore their recorded gate and complete
+label history when first encountered later. A durable marker distinguishes
+listing observations from a restored gate; failed reads leave restoration
+pending across restarts. Returning to an earlier head restores that head's gate
+before its cached check can authorize a pass or enqueue.
 
 Import cannot recover observations that the old process lost from memory
-without ever projecting them to GitHub. HOME-54 requires clearing restart-only
-holds, so the migration does not introduce a blanket transition hold for that
-unknown history. The new writer commits observations before projection, closing
-that loss window for subsequent restarts.
+without ever projecting them to GitHub. Joe's accepted [issue #8048, "One-time import"](https://github.com/jomcgi-org/homelab/issues/8048)
+requires clearing restart-only holds, so the migration does not introduce a
+blanket transition hold for that unknown history. The new writer commits
+observations before projection, closing that loss window for subsequent restarts.
 
 Labels, shared heads, gated paths and human-gate findings retain the existing
 exact-head approval rules and authenticated `factory-review-ack:<nonce>`
