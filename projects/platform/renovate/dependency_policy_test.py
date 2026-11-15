@@ -205,7 +205,9 @@ def _python_update_config(config, name, *, security=False):
     if security:
         # init/vulnerability.ts appends a rule whose force object overrides
         # package rules. A package-scoped strategy would be overwritten here.
-        effective.update({"isVulnerabilityAlert": True, **config["vulnerabilityAlerts"]})
+        effective.update(
+            {"isVulnerabilityAlert": True, **config["vulnerabilityAlerts"]}
+        )
     return effective
 
 
