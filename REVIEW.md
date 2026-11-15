@@ -162,9 +162,10 @@ branch or any PR commit with Renovate's git author email from base
 `renovate.json` `gitAuthor` gives no waiver;
 `renovate@whitesourcesoftware.com` and the maintenance workflow's
 `renovate[bot]@users.noreply.github.com` are always excluded. Explicit holds
-(`human`, `needs-human`), shared-head and foreign-check holds, and
-restart-recovery holds always require an APPROVED review. Every other
-finding still blocks as before.
+(`human`, `needs-human`), shared-head and foreign-check holds always require
+an APPROVED review. Restarting the reviewer creates no hold
+([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891505565)).
+Every other finding still blocks as before.
 
 - A change to this file, the deletion of a `REVIEW.md`, or a rule removed or
   loosened without naming the CI check or test that replaces it.

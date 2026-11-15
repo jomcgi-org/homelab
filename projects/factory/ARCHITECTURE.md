@@ -1106,10 +1106,10 @@ previews).
   traffic on his account. GitHub activity carries no evidence of session
   supervision. His recorded condition was "agents can automerge if I ask
   them to". Sessions Joe guides land gated changes only when he asked in
-  that session. Hold labels, shared-head, foreign-check and restart-recovery
-  holds still require an
-  APPROVED review. Other findings still block. A hold is logged once as `human gate`
-  and marked so the connector can skip its revision round.
+  that session. Hold labels, shared-head and foreign-check holds still require
+  an APPROVED review. A reviewer restart adds no hold. Other findings still
+  block. A hold is logged once as `human gate` and marked so the connector
+  can skip its revision round.
 - **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
   the reviewer App's ID, beside `pr-checks`. Nothing merges into main without
   a passing review on that head, including PRs from Joe, interactive

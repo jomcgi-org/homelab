@@ -159,7 +159,7 @@ func (g *Gate) approved() bool { return g.Approver != "" || g.Authorship != "" }
 
 // reviewRequired holds cannot be cleared by authorship, even on Joe's PRs.
 func (g *Gate) reviewRequired() bool {
-	return g.SharedHead || g.RecoveryEpoch != "" || len(g.Labels) > 0 || !g.ApprovalAfter.IsZero()
+	return g.SharedHead || len(g.Labels) > 0 || !g.ApprovalAfter.IsZero()
 }
 
 const (

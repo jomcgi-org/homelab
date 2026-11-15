@@ -206,8 +206,8 @@ func TestAuthorshipCannotClearContextHolds(t *testing.T) {
 		name string
 		gate Gate
 	}{
-		{"shared head", Gate{SharedHead: true}},
-		{"recovery or foreign check", Gate{RecoveryEpoch: "epoch", RecoveryPR: 7}},
+		{"shared head or foreign check", Gate{SharedHead: true}},
+		{"sticky label", Gate{Labels: []string{"human"}}},
 		{"removed sticky hold", Gate{ApprovalAfter: time.Now()}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

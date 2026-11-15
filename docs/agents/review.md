@@ -40,10 +40,10 @@ git author email are excluded, using base `renovate.json` `gitAuthor` when
 set. Both `renovate@whitesourcesoftware.com` and the maintenance workflow's
 `renovate[bot]@users.noreply.github.com` remain excluded when `gitAuthor` is
 configured. Renovate needs a separate identity without admin permissions;
-this exclusion applies until then. Hold labels, shared-head, foreign-check
-and restart-recovery holds still need an APPROVED review. Other findings and
-required checks still block, and eligible PRs use the merge queue through
-requested auto-merge.
+this exclusion applies until then. Hold labels, shared-head and foreign-check
+holds still need an APPROVED review. A reviewer restart adds no hold. Other
+findings and required checks still block, and eligible PRs use the merge queue
+through requested auto-merge.
 
 ## Changing rules
 

@@ -28,6 +28,41 @@ func TestPreexistingPRKeepsAutonomousPathAcrossRestarts(t *testing.T) {
 	failIf(t, len(h.gh.enqueues()) != 1, "unheld PR did not stay enqueueable")
 }
 
+func TestAuthorshipWaiverIsRevalidatedAcrossRestart(t *testing.T) {
+	for _, readFails := range []bool{false, true} {
+		name := "verified authorship"
+		if readFails {
+			name = "unreadable activity"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.gh.addPR(authoredPR())
+			_, _, stop := startPassedReview(t, h)
+			failIf(t, !strings.Contains(h.gh.check(shaA).Summary, authorshipPrefix), "initial pass did not verify authorship")
+			stop()
+
+			call := "GET /repos/" + testRepo + "/activity"
+			before := h.gh.countCalls(call)
+			if readFails {
+				h.gh.failWith(call, 502)
+			}
+			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+			e, ctx, _ := h.start()
+			for range 2 {
+				e.Tick(ctx)
+			}
+			failIf(t, h.gh.countCalls(call) <= before, "restart reused the prior authorship evidence")
+			c := h.gh.check(shaA)
+			if readFails {
+				failIf(t, c.Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0, "unreadable authorship passed or enqueued after restart")
+				failIf(t, strings.Contains(c.Summary, authorshipPrefix), "revoked authorship remains in the check")
+			} else {
+				failIf(t, c.Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1, "verified authorship lost the autonomous path after restart")
+			}
+		})
+	}
+}
+
 func TestReopenedAndLaterPRsNeedNoRestartApproval(t *testing.T) {
 	h := newPR7Harness(t)
 	head := strings.Repeat("b", 40)
