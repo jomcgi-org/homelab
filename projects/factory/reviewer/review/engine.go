@@ -178,7 +178,7 @@ type Engine struct {
 
 	// heads (under mu) is each listed PR's head. commentMu serializes
 	// comment writes and guards comments, the reviewer's comment on each PR
-	// as last read or written, including absent or unreadable comments.
+	// as last read or written, including absent comments and reached limits.
 	heads     map[prKey]string
 	commentMu sync.Mutex
 	comments  map[prKey]*commentState
@@ -539,7 +539,6 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	if pending == nil && sharedHeadHeld(prev) && o.Output.Text == prev.Text {
 		return prev
 	}
-	o.Output.Summary = e.commentSummary(ctx, b, pr, o.Output.Summary)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: o.Conclusion, StartedAt: &now, CompletedAt: &now, Output: &o.Output,
@@ -1922,7 +1921,6 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 	}
 	summary += "."
 	summary = keepEnqueueHistory(summary, prev)
-	summary = e.commentSummary(ctx, b, pr, summary)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
@@ -1968,6 +1966,9 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		}
 		return false
 	}
+	// Optional comment feedback uses the output actually written, including
+	// cancellation state and any annotation fallback, after the gate stands.
+	run.Title, run.Summary, run.Text = o.Output.Title, o.Output.Summary, o.Output.Text
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
 	l.InfoContext(ctx, "review check completed", "conclusion", o.Conclusion, "title", o.Output.Title)
 	return true
@@ -1975,7 +1976,6 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 
 // finish completes the check run, then shows the outcome in the PR comment.
 func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, o Outcome, l *slog.Logger) bool {
-	o.Output.Summary = e.commentSummary(ctx, b, pr, o.Output.Summary)
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
