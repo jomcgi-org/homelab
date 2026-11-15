@@ -1,0 +1,48 @@
+# The cluster-wide baseline admits DNS to CoreDNS. These are the only other
+# flows ESO needs before slices 2 and 3 introduce external minting APIs.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: external-secrets-api
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: external-secrets
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - external-secrets
+          - external-secrets-webhook
+          - external-secrets-cert-controller
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            # k3s API backend; 443 is the kubernetes Service port.
+            - port: "6443"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: external-secrets-webhook
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: external-secrets
+      app.kubernetes.io/name: external-secrets-webhook
+  ingress:
+    - fromEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP

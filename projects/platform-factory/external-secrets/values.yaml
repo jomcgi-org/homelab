@@ -1,0 +1,43 @@
+# Upstream external-secrets chart values. The CRDs remain installed so admission
+# explicitly refuses unsupported kinds, including on a server-side dry run.
+installCRDs: true
+processClusterStore: false
+processClusterExternalSecret: false
+processClusterGenerator: false
+processPushSecret: false
+processClusterPushSecret: false
+processSecretStore: true
+
+# Consumers use namespaced SecretStores. Do not add ESO permissions to built-in
+# user roles; consumer ServiceAccounts and their grants arrive with each slice.
+rbac:
+  aggregateToView: false
+  aggregateToEdit: false
+  aggregateToAdmin: false
+  serviceAccountTokenCreate: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    memory: 256Mi
+
+webhook:
+  create: true
+  port: 10250
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 128Mi
+
+certController:
+  create: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 128Mi

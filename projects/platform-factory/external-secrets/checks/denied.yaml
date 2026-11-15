@@ -1,0 +1,99 @@
+# Only use with kubectl apply --dry-run=server. No credential values are needed.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: home-70-denied-pod
+  namespace: factory-credentials
+spec:
+  containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.10
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: GithubAccessToken
+metadata:
+  name: home-70-denied-no-repositories
+  namespace: factory-credentials
+spec:
+  appID: "1"
+  installID: "1"
+  permissions:
+    contents: read
+  auth:
+    privateKey:
+      secretRef:
+        name: home-70-nonexistent-key
+        key: private-key
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: GithubAccessToken
+metadata:
+  name: home-70-denied-no-permissions
+  namespace: factory-credentials
+spec:
+  appID: "1"
+  installID: "1"
+  repositories: [homelab]
+  auth:
+    privateKey:
+      secretRef:
+        name: home-70-nonexistent-key
+        key: private-key
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: GithubAccessToken
+metadata:
+  name: home-70-denied-outside-namespace
+  namespace: default
+spec:
+  appID: "1"
+  installID: "1"
+  repositories: [homelab]
+  permissions:
+    contents: read
+  auth:
+    privateKey:
+      secretRef:
+        name: home-70-nonexistent-key
+        key: private-key
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Webhook
+metadata:
+  name: home-70-denied-webhook
+  namespace: default
+spec:
+  url: https://example.invalid/credentials
+  result:
+    jsonPath: $.token
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: ClusterGenerator
+metadata:
+  name: home-70-denied-cluster-generator
+spec:
+  kind: Password
+  generator:
+    passwordSpec:
+      length: 32
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: home-70-denied-list
+  namespace: factory-credentials
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [home-70-minted-token]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: home-70-denied-unnamed-read
+  namespace: factory-credentials
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: [get]

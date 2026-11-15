@@ -1,0 +1,5 @@
+apiVersion: v2
+name: factory-credential-guards
+description: Admission and network isolation for factory credential minting
+type: application
+version: 0.1.0

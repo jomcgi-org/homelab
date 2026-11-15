@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-secrets
+  namespace: argocd
+  annotations:
+    # After 1Password (wave 0). Keep the guards if this Application is removed.
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://charts.external-secrets.io
+      chart: external-secrets
+      targetRevision: 2.15.0
+      helm:
+        releaseName: external-secrets
+        valueFiles:
+          - $values/projects/platform-factory/external-secrets/values.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/external-secrets/chart
+      helm:
+        releaseName: external-secrets
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-secrets
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
