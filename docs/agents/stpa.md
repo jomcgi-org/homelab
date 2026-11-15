@@ -110,10 +110,11 @@ truth for outstanding work), titled `<system>: <finding> (STPA <key>)`, with
 `broken safeguard` or `missing safeguard` and, for the security lens,
 `security finding` in the first line of the description. Set priority `urgent`
 for severe losses, otherwise `high`. Reference the issue from the finding's
-evidence, not a STPA.md checklist. File the issue before the row that cites
-it lands. A worker without itsaplan access, such as a factory sandbox, leaves
-a new finding's row out and reports the finding to its dispatcher, who files
-it; the row lands later with its key.
+evidence, not a STPA.md checklist. A refresh files each new finding before
+it opens its PR, so it runs where HOME issues can be filed: a session on
+Joe's account (`docs/agents/reference.md` "Tracker"). Do not delegate a
+refresh to a factory sandbox, which has no itsaplan access, until the planner
+proposal path (HOME-40) can file its findings.
 
 ## Drift minimization (this is an update, not a rewrite)
 
