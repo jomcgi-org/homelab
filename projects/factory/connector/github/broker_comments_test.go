@@ -87,7 +87,26 @@ func TestBrokerCommentsListingBound(t *testing.T) {
 	}))
 	defer srv.Close()
 	b := &BrokerComments{URL: srv.URL, Bearer: staticBearer("t"), HTTP: srv.Client()}
-	if _, complete, err := b.IssueComments(context.Background(), "o/r", 1); err != nil || complete || pages != MaxCommentPages {
+	if _, complete, err := b.IssueComments(context.Background(), "o/r", 1); err != nil || complete || pages != maxBrokerCommentPages {
 		t.Fatalf("bounded list: complete %v, pages %d, %v", complete, pages, err)
+	}
+}
+
+// The largest page the broker can send, escaped, decodes.
+func TestBrokerCommentsReadsAFullEscapedPage(t *testing.T) {
+	comments := make([]map[string]any, BrokerCommentPageSize)
+	for i := range comments {
+		comments[i] = map[string]any{"id": i + 1, "author": "a", "body": strings.Repeat("&", 65536)}
+	}
+	page, _ := json.Marshal(map[string]any{"comments": comments, "next": false})
+	if len(page) < 6*65536*BrokerCommentPageSize || len(page) > maxBrokerCommentPageBytes {
+		t.Fatalf("page is %d bytes", len(page))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(page) }))
+	defer srv.Close()
+	b := &BrokerComments{URL: srv.URL, Bearer: staticBearer("t"), HTTP: srv.Client()}
+	all, complete, err := b.IssueComments(context.Background(), "o/r", 1)
+	if err != nil || !complete || len(all) != BrokerCommentPageSize || len(all[0].Body) != 65536 {
+		t.Fatalf("full page = %d comments, %v, %v", len(all), complete, err)
 	}
 }
