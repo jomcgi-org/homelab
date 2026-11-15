@@ -1295,6 +1295,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
 			return err
 		}
+		r.State = store.RunWaiting
 		return e.resumeWaiting(ctx, r)
 	}
 	if a.WorkItemEpoch != wi.Epoch {
@@ -1408,7 +1409,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	switch state {
 	case kagent.StateCompleted, kagent.StateInputRequired:
 		res := itsaplan.Result{Status: "success", Output: Output(t), Usage: LastCallUsage(t)}
-		return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCompleted, "", ""); err != nil {
 				return err
 			}
@@ -1432,7 +1433,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 		e.m.Blocked.WithLabelValues(class).Inc()
 		e.log.WarnContext(ctx, "turn blocked", "run", r.ID, "attempt", a.Seq, "work_item", wi.ID,
 			"class", class, "status", msg)
-		return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, class, msg); err != nil {
 				return err
 			}
@@ -1456,7 +1457,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 			return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
 		})
 	case ClassCanceled:
-		return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, class, msg); err != nil {
 				return err
 			}
@@ -1489,7 +1490,7 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 		}
 	}
 	var next *store.Attempt
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 		// A grant failure was already finished while blocked. Preserve its
 		// class and evidence when taking the deferred retry after unblock.
 		if a.Open() {

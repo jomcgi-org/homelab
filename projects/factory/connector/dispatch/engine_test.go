@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,10 @@ func newEnv(t *testing.T) *env {
 }
 
 func (v *env) engine(holder string) *dispatch.Engine {
+	return v.engineWithTasks(holder, v.kg)
+}
+
+func (v *env) engineWithTasks(holder string, tasks dispatch.Tasks) *dispatch.Engine {
 	v.t.Helper()
 	cfg := v.cfg
 	cfg.Holder = holder
@@ -78,7 +83,7 @@ func (v *env) engine(holder string) *dispatch.Engine {
 	if v.gh != nil {
 		gh = v.gh
 	}
-	e := dispatch.New(cfg, v.st, v.its, v.kg, v.kg, gh, v.m, nil)
+	e := dispatch.New(cfg, v.st, v.its, tasks, v.kg, gh, v.m, nil)
 	// Postgres releases a closed session's advisory lock asynchronously.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -553,6 +558,140 @@ func TestEpochFencesSideEffects(t *testing.T) {
 	}
 	if after := v.its.Calls() + v.kg.Calls(); after != before {
 		t.Fatalf("fenced writer made %d external calls", after-before)
+	}
+}
+
+// delayedTaskResponse holds an already-read response while the successor uses
+// the underlying task service normally.
+type delayedTaskResponse struct {
+	dispatch.Tasks
+	taskID  string
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (d *delayedTaskResponse) GetTask(ctx context.Context, ref kagent.AgentRef, id string) (*kagent.Task, error) {
+	task, err := d.Tasks.GetTask(ctx, ref, id)
+	if err == nil && id == d.taskID {
+		close(d.entered)
+		select {
+		case <-d.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return task, err
+}
+
+func TestDelayedTerminalResponseCannotOverwriteSuccessor(t *testing.T) {
+	for _, reviewRound := range []bool{false, true} {
+		for _, outcome := range []struct{ state, text string }{
+			{kagent.StateCompleted, "done"},
+			{kagent.StateInputRequired, "need input"},
+			{kagent.StateFailed, "codex_login_required"},
+			{kagent.StateFailed, "usage_limit_reached"},
+			{kagent.StateCanceled, "canceled"},
+			{kagent.StateFailed, "test failed"},
+		} {
+			t.Run(fmt.Sprintf("round=%t/%s/%s", reviewRound, outcome.state, outcome.text), func(t *testing.T) {
+				v := newDeliveryEnv(t)
+				var runID int64 = 1
+				if reviewRound {
+					round, _ := v.startRound()
+					runID = round.ID
+				} else {
+					v.its.add(1, "coder", 101, "HL-7", "Do it.")
+					v.tick(v.e)
+				}
+				taskID := v.kg.lastTask()
+				v.kg.finish(taskID, outcome.state, outcome.text, nil)
+				// Native output can be artifact-only, with no new history events
+				// to cause a writer check in postEvents. Review rounds skip it entirely.
+				v.kg.tasks[taskID].task.History = nil
+				if outcome.state == kagent.StateCompleted {
+					v.kg.tasks[taskID].task.Status.Message = nil
+					v.kg.tasks[taskID].task.Artifacts = []*kagent.Artifact{{
+						ArtifactID: "answer", Parts: []kagent.Part{{Text: "done"}},
+					}}
+				}
+				v.gh.push("factory/HL-7", "sha-terminal", "fix: complete turn")
+				delay := &delayedTaskResponse{Tasks: v.kg, taskID: taskID, entered: make(chan struct{}), release: make(chan struct{})}
+				v.e.Release()
+				old := v.engineWithTasks("delayed-writer", delay)
+				ctx, cancel := context.WithCancel(v.ctx)
+				defer cancel()
+				finished := make(chan error, 1)
+				go func() { finished <- old.Tick(ctx) }()
+				select {
+				case <-delay.entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("old writer did not reach GetTask")
+				}
+				var terminated bool
+				if err := v.st.DB.QueryRow(`SELECT pg_terminate_backend(pid) FROM pg_locks
+					WHERE locktype = 'advisory' AND granted
+					AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&terminated); err != nil || !terminated {
+					t.Fatalf("terminate writer: %t, %v", terminated, err)
+				}
+				next := v.engine("successor")
+				// The heartbeat skips this locked run, so it cannot cancel the
+				// delayed tick on behalf of the terminal transaction's fence.
+				if err := old.Heartbeats(v.ctx); err != nil {
+					t.Fatalf("heartbeat while GetTask is held: %v", err)
+				}
+				v.tick(next)
+				if outcome.state == kagent.StateFailed {
+					if w := v.work(101); w.State == store.WorkBlocked {
+						if _, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope(w.KagentNamespace, w.KagentAgent)); err != nil {
+							t.Fatal(err)
+						}
+						v.tick(next)
+					}
+					// Finish the successor's retry so every case starts the next
+					// run with the old run closed and its outcome already recorded.
+					v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "retry done", nil)
+					v.tick(next)
+				}
+				if r := v.run(runID); r.State != store.RunClosed {
+					t.Fatalf("successor did not close old run: %+v", r)
+				}
+				if !reviewRound && outcome.state == kagent.StateCompleted {
+					results := v.its.Run(runID).results
+					if len(results) != 1 || results[0].Output != "done" {
+						t.Fatalf("successor lost artifact output: %+v", results)
+					}
+				}
+				v.its.add(2, "coder", 101, "HL-7", "Continue working.")
+				v.tick(next)
+				if r := v.run(2); r.State != store.RunDispatched {
+					t.Fatalf("successor did not dispatch next run: %+v", r)
+				}
+				beforeRun, beforeWork, beforeAttempt := v.run(runID), v.work(101), v.latest(runID)
+				if beforeWork.State != store.WorkActive {
+					t.Fatalf("new turn is not active: %+v", beforeWork)
+				}
+				v.gh.green("sha-terminal")
+				close(delay.release)
+				select {
+				case err := <-finished:
+					if !errors.Is(err, store.ErrNotWriter) {
+						t.Errorf("delayed tick = %v, want ErrNotWriter", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("delayed tick did not finish")
+				}
+				if !reflect.DeepEqual(v.run(runID), beforeRun) || !reflect.DeepEqual(v.work(101), beforeWork) ||
+					!reflect.DeepEqual(v.latest(runID), beforeAttempt) {
+					t.Fatalf("delayed response changed successor state: run=%+v work=%+v attempt=%+v", v.run(runID), v.work(101), v.latest(runID))
+				}
+				v.clk.Advance(time.Minute)
+				v.tick(next)
+				if len(v.gh.Enqueues()) != 0 || v.work(101).State != store.WorkActive ||
+					v.run(2).State != store.RunDispatched || v.kg.tasks[v.latest(2).TaskID].task.Status.State != kagent.StateWorking {
+					t.Fatal("delayed response enabled delivery while the successor's turn is running")
+				}
+			})
+		}
 	}
 }
 
