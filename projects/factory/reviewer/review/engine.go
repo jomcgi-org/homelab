@@ -1212,12 +1212,23 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			in.gate.observeLabelEvents(b, events)
 			in.gate, _ = e.retainGate(b, pr, in.gate, before != in.gate.ApprovalNonce)
-			if _, err := e.interdiff(ctx, b, currentPR, in, l); err != nil {
+			built := in.compared // This process built the task's prompt.
+			since, err := e.interdiff(ctx, b, currentPR, in, l)
+			if err != nil {
 				// The prompt already lowered late findings, so a review
 				// assessed without the interdiff could pass on less than
 				// a full review: wait for it instead.
 				e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for the changes since the previous review.", l)
 				return // Reattach the completed task once the interdiff is readable.
+			}
+			if !built && since == nil && in.priorHead != "" && in.priorHead != currentPR.HeadSHA {
+				// A task prompted in another process may have had an
+				// interdiff GitHub no longer has; its reply may hold
+				// lowered late findings, so review the whole change again.
+				if next("GitHub no longer has the earlier reviewed head " + short(in.priorHead) + ", so the whole change is reviewed again.") {
+					return
+				}
+				continue
 			}
 			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if res.reason != "" {

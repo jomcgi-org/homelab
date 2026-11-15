@@ -62,9 +62,10 @@ type Finding struct {
 	Title    string `json:"title"`
 	Detail   string `json:"detail,omitempty"`
 	Defer    bool   `json:"defer,omitempty"`
-	// Cause is the file changed since the previous reviewed head whose
-	// change causes a new finding outside the changed files (Scope).
-	Cause string `json:"cause,omitempty"`
+	// Earlier is the agent's statement that a new finding on a later head
+	// is on code an earlier review covered and this head left alone (Scope).
+	// Left out, the finding keeps its severity.
+	Earlier bool `json:"earlier,omitempty"`
 	// Lowered is the severity the agent gave a finding Scope lowered; the
 	// agent cannot set it.
 	Lowered string `json:"-"`
@@ -417,12 +418,12 @@ func (s *Scope) changed(p string) bool {
 }
 
 // Lower returns r with each new high or medium finding lowered to a
-// deferred low one when it names a file outside the files changed since the
-// previous head and no changed file as its cause. Critical findings,
+// deferred low one when the agent marks it earlier (on code an earlier
+// review covered and this head left alone) and its file is outside the files
+// changed since the previous head. Unmarked findings, critical findings,
 // human-gate findings, the previous round's IDs, findings with no path and
-// findings about the review itself (processRules) keep their severity: the
-// service lowers only what it can place on previously reviewed code. A nil
-// Scope lowers nothing.
+// findings about the review itself (processRules) keep their severity, so an
+// omitted mark never lowers a regression. A nil Scope lowers nothing.
 func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	if s == nil {
 		return r
@@ -436,7 +437,7 @@ func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	for i := range out.Findings {
 		f := &out.Findings[i]
 		if (f.Severity != SeverityHigh && f.Severity != SeverityMedium) || isGate(*f) || known[f.ID] ||
-			strings.TrimSpace(f.Path) == "" || isProcess(*f) || s.changed(f.Path) || s.changed(f.Cause) {
+			!f.Earlier || strings.TrimSpace(f.Path) == "" || isProcess(*f) || s.changed(f.Path) {
 			continue
 		}
 		f.Lowered, f.Severity, f.Defer = f.Severity, SeverityLow, true
@@ -710,7 +711,7 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 
 // loweredNote says why Scope lowered a finding.
 func loweredNote(f Finding) string {
-	return fmt.Sprintf("Reported %s; lowered because neither its path nor its cause is a file changed since the previous review (REVIEW.md \"Later heads\").",
+	return fmt.Sprintf("Reported %s; lowered because the reviewer placed it on code an earlier review covered, outside the files changed since the previous review (REVIEW.md \"Later heads\").",
 		oneLine(f.Lowered, 20))
 }
 
@@ -775,7 +776,7 @@ func storable(f Finding) Finding {
 	f.ID, f.Title = storeText(f.ID, maxTitle), storeText(f.Title, maxTitle)
 	f.Path = storeText(f.Path, maxStoredPath)
 	f.Detail = storeText(f.Detail, maxStoredDetail)
-	f.Defer, f.Cause = false, ""
+	f.Defer, f.Earlier = false, false
 	return f
 }
 
@@ -872,6 +873,10 @@ func encodeState(st State) string {
 			bare[i] = Cleared{ID: c.ID, Status: c.Status}
 		}
 		st.Cleared = bare
+		out = enc(st)
+	}
+	if len(out) > maxState && len(st.Cleared) > 0 {
+		st.Cleared = nil // Drop the record whole before any blocking text.
 		out = enc(st)
 	}
 	for _, lim := range []struct{ text, detail, path, id int }{

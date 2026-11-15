@@ -244,10 +244,9 @@ func Prompt(in PromptInput) string {
 			b.WriteString(" Block only on what changed since then and what that change affects: a new finding on code the earlier " +
 				"review covered and this head left alone is low with defer, unless its harm survives a revert.")
 			if LaterScope(in.PreviousHead, d) != nil {
-				b.WriteString(" A new finding whose path is not in that list must name, in \"cause\", the listed file whose change " +
-					"causes it, such as a caller broken by a changed function. The reviewer service lowers a new high or medium " +
-					"finding with a path outside the list and no listed cause to a deferred low one, so an omitted cause drops a " +
-					"regression. Findings with no path keep their severity.")
+				b.WriteString(" Mark such a finding \"earlier\": true; the reviewer service lowers a marked high or medium finding " +
+					"outside the listed files to a deferred low one. Never mark a finding this head's changes cause or affect, " +
+					"such as a caller broken by a changed function: unmarked findings keep their severity.")
 			}
 			b.WriteString("\n\n")
 		}
@@ -331,9 +330,8 @@ func Prompt(in PromptInput) string {
 	b.WriteString("- title: the failure in one line. detail: the input or state, what happens, why it matters and what resolves it.\n")
 	b.WriteString("- defer: true for a low finding worth a follow-up issue.\n")
 	if LaterScope(in.PreviousHead, in.Interdiff) != nil {
-		fmt.Fprintf(&b, "- cause: required for a new finding outside the files changed since %s that this head's changes cause: "+
-			"the changed file whose change causes it. Omit it for a finding inside those files or on code this head did not affect.\n",
-			in.PreviousHead)
+		b.WriteString("- earlier: true only for a new finding on code the earlier review covered and this head left alone; " +
+			"omit it otherwise.\n")
 	}
 	b.WriteString("- previous: one entry per finding under \"Previous review\", or empty.\n")
 	b.WriteString("- summary: what you read; findings: an empty list when there are none.\n")
