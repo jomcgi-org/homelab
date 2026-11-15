@@ -1,0 +1,31 @@
+# Positive controls, also dry-run only. A generator alone never mints a token.
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: GithubAccessToken
+metadata:
+  name: home-70-allowed-scoped-generator
+  namespace: factory-credentials
+spec:
+  appID: "1"
+  installID: "1"
+  repositories: [homelab]
+  permissions:
+    contents: read
+  auth:
+    privateKey:
+      secretRef:
+        name: home-70-nonexistent-key
+        key: private-key
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: home-70-allowed-named-read
+  namespace: factory-credentials
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [home-70-minted-token]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list]

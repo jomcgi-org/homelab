@@ -94,8 +94,10 @@ durable lessons. Factory prompts choose the work and its sequence.
   ownership and task limits. Never bypass gates or clear explicit holds.
 - CI owns chart version increases, deployment pin advances and image pushes;
   lowering a deployment pin remains the revert lever.
-- Secrets use the 1Password Operator; internet traffic uses Cloudflare.
+- Secrets use the 1Password Operator; External Secrets Operator mints short-lived
+  credentials from them in `factory-credentials`. Internet traffic uses Cloudflare.
   Preserve authentication and public/private data boundaries.
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-67#comment-425).
 - `human` means human-owned; `needs-human` requests a decision. Explicit
   handoff is required to change human ownership; removing the label does not
   resume an admitted receipt.

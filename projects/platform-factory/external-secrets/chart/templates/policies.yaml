@@ -1,0 +1,178 @@
+# Name-based namespace checks cannot be bypassed by relabelling a namespace.
+# CREATE and UPDATE cover both new objects and widening existing grants.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-credentials-no-pods
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  validations:
+    - expression: request.namespace != 'factory-credentials'
+      message: Pods may not run in factory-credentials.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-credentials-no-pods
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-credentials-no-pods
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-credentials-generators
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [generators.external-secrets.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [githubaccesstokens, webhooks]
+  validations:
+    - expression: request.namespace == 'factory-credentials'
+      message: Credential generators belong in factory-credentials.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-credentials-generators
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-credentials-generators
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-credentials-github-scope
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [generators.external-secrets.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [githubaccesstokens]
+  validations:
+    - expression: >-
+        has(object.spec) && has(object.spec.repositories) &&
+        size(object.spec.repositories) > 0 &&
+        object.spec.repositories.all(r, size(r) > 0)
+      message: GithubAccessToken requires non-empty repositories.
+    - expression: >-
+        has(object.spec) && has(object.spec.permissions) &&
+        size(object.spec.permissions) > 0 &&
+        object.spec.permissions.all(p,
+          size(p) > 0 && size(object.spec.permissions[p]) > 0)
+      message: GithubAccessToken requires non-empty permissions.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-credentials-github-scope
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-credentials-github-scope
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-credentials-no-cluster-or-push
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [generators.external-secrets.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [clustergenerators]
+      - apiGroups: [external-secrets.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources:
+          - clustersecretstores
+          - clusterexternalsecrets
+          - pushsecrets
+          - clusterpushsecrets
+  validations:
+    - expression: "false"
+      message: Cluster generators, cluster stores, cluster external secrets and push secrets are disabled.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-credentials-no-cluster-or-push
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-credentials-no-cluster-or-push
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-credentials-secret-readers
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [roles]
+  validations:
+    # Wildcard groups/resources grant secret access too. Unrelated rules (for
+    # example ConfigMaps) may retain the verbs their API requires.
+    - expression: >-
+        request.namespace != 'factory-credentials' ||
+        !has(object.rules) || object.rules.all(r,
+          !(has(r.apiGroups) && r.apiGroups.exists(g, g == '' || g == '*') &&
+            has(r.resources) && r.resources.exists(s,
+              s == '*' || s == 'secrets' || s.startsWith('secrets/'))) ||
+          (has(r.resourceNames) && size(r.resourceNames) > 0 &&
+           r.resourceNames.all(n, size(n) > 0) &&
+           has(r.verbs) && size(r.verbs) > 0 && r.verbs.all(v, v == 'get')))
+      message: Secret readers in factory-credentials require resourceNames and only get.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-credentials-secret-readers
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  policyName: factory-credentials-secret-readers
+  validationActions: [Deny]
