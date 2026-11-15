@@ -62,6 +62,12 @@ type Finding struct {
 	Title    string `json:"title"`
 	Detail   string `json:"detail,omitempty"`
 	Defer    bool   `json:"defer,omitempty"`
+	// Cause is the file changed since the previous reviewed head whose
+	// change causes a new finding outside the changed files (Scope).
+	Cause string `json:"cause,omitempty"`
+	// Lowered is the severity the agent gave a finding Scope lowered; the
+	// agent cannot set it.
+	Lowered string `json:"-"`
 }
 
 // Previous is the agent's account of a previous round's blocking finding.
@@ -234,9 +240,14 @@ type Assessment struct {
 	Approved []Finding
 	Approver string
 	Optional []Finding
+	// Deferred are low findings worth a follow-up, including those Scope
+	// lowered, which MaxLow never drops.
 	Deferred []Finding
 	// DroppedLow counts low findings past MaxLow.
 	DroppedLow int
+	// Earlier is what earlier heads' reviews cleared; the State carries it
+	// on with this review's (clearedOf).
+	Earlier []Cleared
 }
 
 // withdrawn reports a note withdrawing a previous finding.
@@ -299,6 +310,8 @@ func Assess(r *Report, prior []Finding) Assessment {
 			f.Severity = p.Severity
 		}
 		switch {
+		case f.Severity == SeverityLow && f.Lowered != "":
+			a.Deferred = append(a.Deferred, f)
 		case f.Severity == SeverityLow:
 			if low++; low > MaxLow {
 				a.DroppedLow++
@@ -372,6 +385,62 @@ func Assess(r *Report, prior []Finding) Assessment {
 	return a
 }
 
+// Scope is what a later head changed since the previous reviewed head. A new
+// finding on code that review covered and this head left alone is low with
+// defer unless its harm survives a revert (REVIEW.md "Later heads"); Scope
+// enforces that for the high and medium findings it can place.
+type Scope struct {
+	paths map[string]bool
+}
+
+// LaterScope is the scope of a head reviewed after since, or nil when there
+// is none to enforce: a first review, or an interdiff that is missing,
+// truncated or spans a rebase.
+func LaterScope(since string, d *github.CommitComparison) *Scope {
+	if since == "" || d == nil || d.Status != "ahead" || d.Truncated {
+		return nil
+	}
+	s := &Scope{paths: map[string]bool{}}
+	for _, f := range d.Files {
+		s.paths[f.Path] = true
+		if f.PreviousPath != "" {
+			s.paths[f.PreviousPath] = true
+		}
+	}
+	return s
+}
+
+// changed reports a path that names a file changed since the previous head.
+func (s *Scope) changed(p string) bool {
+	p = strings.TrimSpace(p)
+	return p != "" && (s.paths[p] || s.paths[cleanPath(p)])
+}
+
+// Lower returns r with each new high or medium finding lowered to a
+// deferred low one when neither its path nor its cause is a file changed
+// since the previous head. Critical findings, human-gate findings and the
+// previous round's IDs keep their severity. A nil Scope lowers nothing.
+func (s *Scope) Lower(r *Report, prior []Finding) *Report {
+	if s == nil {
+		return r
+	}
+	known := map[string]bool{}
+	for _, p := range prior {
+		known[p.ID] = true
+	}
+	out := *r
+	out.Findings = slices.Clone(r.Findings)
+	for i := range out.Findings {
+		f := &out.Findings[i]
+		if (f.Severity != SeverityHigh && f.Severity != SeverityMedium) || isGate(*f) || known[f.ID] ||
+			s.changed(f.Path) || s.changed(f.Cause) {
+			continue
+		}
+		f.Lowered, f.Severity, f.Defer = f.Severity, SeverityLow, true
+	}
+	return &out
+}
+
 func sortBlocked(bs []Blocked) {
 	// Stable insertion sort by severity keeps the agent's order within one.
 	for i := 1; i < len(bs); i++ {
@@ -431,8 +500,30 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*)
 // account for the findings; only a person clears the human gate.
 type State struct {
 	Blocking []Finding `json:"blocking"`
+	Cleared  []Cleared `json:"cleared,omitempty"`
 	Gate     *Gate     `json:"gate,omitempty"`
 }
+
+// Cleared is a finding a review of an earlier head cleared: fixed,
+// justified or withdrawn, with the agent's note. Each head's review runs in
+// a fresh session, so the prompt lists these to keep it from raising one
+// again on code the head left alone.
+type Cleared struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Title  string `json:"title,omitempty"`
+	Note   string `json:"note,omitempty"`
+}
+
+// StatusWithdrawn marks a cleared finding the agent withdrew as mistaken.
+const StatusWithdrawn = "withdrawn"
+
+// Bounds on the cleared record.
+const (
+	maxCleared      = 20
+	maxClearedTitle = 200
+	maxClearedNote  = 300
+)
 
 // Previous is what the next head's review accounts for: the blocking
 // findings and the agent's human-gate findings. The service's own gate, by
@@ -549,6 +640,9 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 		s.WriteString("### Deferred\n\n")
 		for _, f := range a.Deferred {
 			writeFinding(&s, f)
+			if f.Lowered != "" {
+				fmt.Fprintf(&s, "  %s\n", loweredNote(f))
+			}
 		}
 		s.WriteString("\n")
 	}
@@ -593,14 +687,21 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 		add(f)
 	}
 	o.Output.Annotations = anns
-	o.Output.Text = encodeState(stateOf(a, gate))
+	o.Output.Text = encodeState(stateOf(a, r, gate))
 	return o
 }
 
-// stateOf keeps an assessment's blocking findings for the next round. The
-// human gate is kept apart: only a person clears it, so no round carries it.
-func stateOf(a Assessment, gate *Gate) State {
-	st := State{Blocking: []Finding{}, Gate: gate}
+// loweredNote says why Scope lowered a finding.
+func loweredNote(f Finding) string {
+	return fmt.Sprintf("Reported %s; lowered because neither its path nor its cause is a file changed since the previous review (REVIEW.md \"Later heads\").",
+		oneLine(f.Lowered, 20))
+}
+
+// stateOf keeps an assessment's blocking findings for the next round, and
+// what this and earlier reviews cleared. The human gate is kept apart: only
+// a person clears it, so no round carries it.
+func stateOf(a Assessment, r *Report, gate *Gate) State {
+	st := State{Blocking: []Finding{}, Cleared: clearedOf(a, r), Gate: gate}
 	for _, b := range a.Blocking {
 		if isGate(b.Finding) || len(st.Blocking) == maxStored {
 			continue
@@ -610,13 +711,54 @@ func stateOf(a Assessment, gate *Gate) State {
 	return st
 }
 
+// clearedOf is the cleared record for the next head: this review's fixed,
+// justified and withdrawn findings, then the earlier ones, at most
+// maxCleared. A finding that blocks this head is not cleared, and
+// human-gate findings are left out: only a person clears the gate.
+func clearedOf(a Assessment, r *Report) []Cleared {
+	notes := map[string]string{}
+	if r != nil {
+		for _, p := range r.Previous {
+			if _, ok := notes[p.ID]; !ok {
+				notes[p.ID] = p.Note
+			}
+		}
+	}
+	skip := map[string]bool{}
+	for _, b := range a.Blocking {
+		skip[b.ID] = true
+	}
+	var out []Cleared
+	add := func(f Finding, status, note string) {
+		id := storeText(f.ID, maxTitle)
+		if isGate(f) || skip[f.ID] || skip[id] || len(out) == maxCleared {
+			return
+		}
+		skip[id] = true
+		out = append(out, Cleared{ID: id, Status: status, Title: storeText(f.Title, maxClearedTitle), Note: storeText(note, maxClearedNote)})
+	}
+	for _, f := range a.Fixed {
+		add(f, StatusFixed, notes[f.ID])
+	}
+	for _, b := range a.Accepted {
+		add(b.Finding, StatusJustified, b.Note)
+	}
+	for _, b := range a.Withdrawn {
+		add(b.Finding, StatusWithdrawn, b.Note)
+	}
+	for _, c := range a.Earlier {
+		add(Finding{ID: c.ID, Title: c.Title}, c.Status, c.Note)
+	}
+	return out
+}
+
 // storable bounds a finding for the hidden State: every field is one line
 // of printable text, clipped.
 func storable(f Finding) Finding {
 	f.ID, f.Title = storeText(f.ID, maxTitle), storeText(f.Title, maxTitle)
 	f.Path = storeText(f.Path, maxStoredPath)
 	f.Detail = storeText(f.Detail, maxStoredDetail)
-	f.Defer = false
+	f.Defer, f.Cause = false, ""
 	return f
 }
 
@@ -695,8 +837,9 @@ func writeFindingN(s *strings.Builder, f Finding, detail int) {
 
 // encodeState hides a State in one HTML comment that GitHub does not
 // render; base64 keeps the JSON from closing it. Past maxState it shortens
-// the stored text, never the findings or the gate: titles and details
-// first, then paths, until only IDs and severities are left.
+// the cleared record to IDs and statuses, then drops it, and never drops
+// the blocking findings or the gate: their titles and details go first,
+// then paths, until only IDs and severities are left.
 func encodeState(st State) string {
 	enc := func(st State) string {
 		var b strings.Builder
@@ -706,6 +849,14 @@ func encodeState(st State) string {
 		return statePrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(b.String()))) + stateSuffix
 	}
 	out := enc(st)
+	if len(out) > maxState && len(st.Cleared) > 0 {
+		bare := make([]Cleared, len(st.Cleared))
+		for i, c := range st.Cleared {
+			bare[i] = Cleared{ID: c.ID, Status: c.Status}
+		}
+		st.Cleared = bare
+		out = enc(st)
+	}
 	for _, lim := range []struct{ text, detail, path, id int }{
 		{120, 120, maxStoredPath, maxTitle}, {0, 0, 120, 120}, {0, 0, 0, 80},
 	} {
@@ -730,7 +881,7 @@ func encodeState(st State) string {
 			}
 			return out
 		}
-		small := State{Blocking: shrink(st.Blocking)}
+		small := State{Blocking: shrink(st.Blocking)} // Without the cleared record.
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.
 			gate.Paths, gate.Findings = nil, shrink(g.Findings)

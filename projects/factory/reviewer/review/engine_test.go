@@ -938,11 +938,103 @@ func TestPreviousFindingsCarryToTheNextHead(t *testing.T) {
 		map[string]any{"id": "c.go#m2", "status": "fixed"},
 	}})
 	prompt = h.k.sent()[len(h.k.sent())-1].Parts[0].Text
-	if strings.Contains(prompt, "a.go#m1") || strings.Contains(prompt, "d.go:nil-deref") || !strings.Contains(prompt, "b.go#h1") {
+	previous, cleared, _ := strings.Cut(prompt, "Reviews of earlier heads cleared these findings.")
+	if strings.Contains(previous, "a.go#m1") || strings.Contains(previous, "d.go:nil-deref") || !strings.Contains(previous, "b.go#h1") {
 		t.Errorf("the third prompt carries the wrong findings:\n%s", prompt)
+	}
+	for _, want := range []string{
+		"- `a.go#m1` justified: M1. Note: The retry is intentional.\n",
+		"- `d.go:nil-deref` withdrawn: C1. Note: Withdrawn: d.go checks for nil two lines up.\n",
+	} {
+		if !strings.Contains(cleared, want) {
+			t.Errorf("the third prompt does not list %q as cleared:\n%s", want, prompt)
+		}
 	}
 	if third.Conclusion != ConclusionSuccess || !strings.Contains(third.Summary, "### Fixed since the previous review") {
 		t.Fatalf("third = %s:\n%s", third.Conclusion, third.Summary)
+	}
+}
+
+// TestLaterHeadsBlockOnlyOnTheirChanges reviews a second head whose
+// interdiff is interdiff-bbbb.go. A new high finding elsewhere that names no
+// changed file as its cause is lowered to a deferred low one; one with a
+// cause, one in the interdiff and a critical one still block. The third
+// head's prompt lists the finding the second review fixed as cleared.
+func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	round := func(sha string, v any) *fakeCheck {
+		t.Helper()
+		if sha != shaA {
+			h.gh.push(7, sha)
+		}
+		h.k.finish(runReview(t, h, e, ctx, 7, sha), kagent.StateCompleted, report(t, v))
+		eventually(t, "the check on "+sha, func() bool { return h.gh.check(sha).Status == "completed" })
+		eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+		return h.gh.check(sha)
+	}
+	round(shaA, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.go:correctness", "severity": "high", "path": "a.go", "line": 1, "title": "Stale draft wins"},
+	}})
+
+	shaB := strings.Repeat("b", 40)
+	second := round(shaB, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.go:correctness:tabs", "severity": "high", "path": "a.go", "line": 9, "title": "Two tabs race"},
+		map[string]any{"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error", "cause": "interdiff-bbbb.go"},
+		map[string]any{"id": "interdiff-bbbb.go:validation", "severity": "medium", "path": "interdiff-bbbb.go", "title": "No regression test"},
+		map[string]any{"id": "c.go:security", "severity": "critical", "path": "c.go", "title": "Token logged"},
+	}, "previous": []any{
+		map[string]any{"id": "a.go:correctness", "status": "fixed", "note": "The newest draft now wins."},
+	}})
+	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
+	for _, want := range []string{"Block only on what changed since then", "names the listed file whose change causes it in \"cause\"", "- cause: "} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the second prompt lacks %q", want)
+		}
+	}
+	if second.Conclusion != ConclusionFailure || second.Title != "3 blocking findings (1 critical, 2 medium)" {
+		t.Fatalf("second = %s: %s\n%s", second.Conclusion, second.Title, second.Summary)
+	}
+	_, deferred, _ := strings.Cut(second.Summary, "### Deferred")
+	if !strings.Contains(deferred, "Two tabs race (`a.go:correctness:tabs`)") || !strings.Contains(deferred, "Reported high; lowered") {
+		t.Fatalf("the lowered finding is not deferred:\n%s", second.Summary)
+	}
+	eventually(t, "the lowered log line", func() bool {
+		return strings.Contains(h.log.String(), `"msg":"lowered a new finding outside the interdiff"`)
+	})
+
+	shaC := strings.Repeat("c", 40)
+	round(shaC, map[string]any{"summary": "s", "findings": []any{}})
+	prompt = h.k.sent()[len(h.k.sent())-1].Parts[0].Text
+	if !strings.Contains(prompt, "- `a.go:correctness` fixed: Stale draft wins. Note: The newest draft now wins.\n") {
+		t.Errorf("the third prompt does not list the fixed finding as cleared:\n%s", prompt)
+	}
+}
+
+// TestRestartedReviewerStillLowersLateFindings reattaches to a later
+// head's task after a restart. No prompt was built in that process, so the
+// outcome reads the interdiff itself.
+func TestRestartedReviewerStillLowersLateFindings(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e1, ctx1, stop1 := h.start()
+	h.k.finish(runReview(t, h, e1, ctx1, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the first check", func() bool { return h.gh.check(shaA).Status == "completed" })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	shaB := strings.Repeat("b", 40)
+	h.gh.push(7, shaB)
+	task := runReview(t, h, e1, ctx1, 7, shaB)
+	eventually(t, "the task recorded on the check", func() bool { return RecordedTask(h.gh.check(shaB).Summary).ID == task })
+	stop1()
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "x.go:correctness", "severity": "high", "path": "x.go", "title": "Late race"},
+	}}))
+	e2, ctx2, _ := h.start()
+	e2.Tick(ctx2)
+	eventually(t, "the check on "+shaB, func() bool { return h.gh.check(shaB).Status == "completed" })
+	if c := h.gh.check(shaB); c.Conclusion != ConclusionSuccess || !strings.Contains(c.Summary, "Reported high; lowered") {
+		t.Fatalf("check = %s:\n%s", c.Conclusion, c.Summary)
 	}
 }
 

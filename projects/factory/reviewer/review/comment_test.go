@@ -116,7 +116,7 @@ func TestCommentFollowsEveryHeadInPlace(t *testing.T) {
 	var newer string
 	eventually(t, "the new task", func() bool { newer = h.taskOn(7, shaB, 1); return newer != "" })
 	h.k.finish(newer, kagent.StateCompleted, report(t, map[string]any{"summary": "Second head.", "findings": []any{
-		map[string]any{"id": "x.go:correctness", "severity": "high", "path": "x.go", "line": 4, "title": "Nil dereference"},
+		map[string]any{"id": "x.go:correctness", "severity": "high", "path": "x.go", "line": 4, "title": "Nil dereference", "cause": "interdiff-bbbb.go"},
 	}}))
 	eventually(t, "the new verdict", func() bool { return commentHas(h, 7, "### ❌ Changes requested", "Nil dereference") })
 	c := onlyComment(t, h, 7)

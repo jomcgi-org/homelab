@@ -52,6 +52,8 @@ type PromptInput struct {
 	// PreviousHead.
 	Previous     []Finding
 	PreviousHead string
+	// Cleared is what reviews of earlier heads cleared.
+	Cleared []Cleared
 	// Interdiff is what changed since PreviousHead; nil when GitHub no
 	// longer has that commit.
 	Interdiff *github.CommitComparison
@@ -182,9 +184,11 @@ func Prompt(in PromptInput) string {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised no blocking findings.\n", in.PreviousHead)
 		} else {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised these blocking findings. Account for every one in \"previous\": "+
-				"\"fixed\" when this head resolves it; \"justified\" with a note when it is a medium finding the author has good "+
-				"reason to keep; \"justified\" with a note starting \"withdrawn:\" when the finding was wrong, whatever its severity; "+
-				"\"open\" otherwise. A finding left out stays open. If one is still present, also report it in \"findings\" with the same id.\n\n",
+				"\"fixed\" when the failure it describes no longer occurs, whichever fix was chosen; \"justified\" with a note when it "+
+				"is a medium finding the author has good reason to keep; \"justified\" with a note starting \"withdrawn:\" when the "+
+				"finding was wrong, whatever its severity; \"open\" otherwise. A finding left out stays open. If one is still present, "+
+				"also report it in \"findings\" with the same id. Never widen a finding under its id: a further variant (another input, "+
+				"path or interleaving) is a new finding with its own id, rated on its own.\n\n",
 				in.PreviousHead)
 			if slices.ContainsFunc(in.Previous, isGate) {
 				b.WriteString("A `human-gate` finding holds this head for Joe too unless it is \"fixed\" or withdrawn: " +
@@ -207,6 +211,17 @@ func Prompt(in PromptInput) string {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+		if len(in.Cleared) > 0 {
+			b.WriteString("Reviews of earlier heads cleared these findings. Do not raise one again unless this head changes that code:\n\n")
+			for _, c := range in.Cleared {
+				fmt.Fprintf(&b, "- `%s` %s: %s", oneLine(c.ID, maxTitle), oneLine(c.Status, 20), oneLine(c.Title, maxTitle))
+				if c.Note != "" {
+					fmt.Fprintf(&b, ". Note: %s", oneLine(c.Note, maxClearedNote))
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
 		switch d := in.Interdiff; {
 		case d == nil:
 			fmt.Fprintf(&b, "GitHub no longer has %s, so there is no interdiff: review the whole change again.\n\n", in.PreviousHead)
@@ -219,6 +234,12 @@ func Prompt(in PromptInput) string {
 			if d.Truncated {
 				fmt.Fprintf(&b, " GitHub lists only the first %d; `git -C pr diff --stat %s %s` lists them all.",
 					github.MaxCompareFiles, in.PreviousHead, in.SHA)
+			}
+			b.WriteString(" Block only on what changed since then and what that change affects: a new finding on code the earlier " +
+				"review covered and this head left alone is low with defer, unless its harm survives a revert.")
+			if LaterScope(in.PreviousHead, d) != nil {
+				b.WriteString(" A new finding whose path is not in that list names the listed file whose change causes it in \"cause\"; " +
+					"the reviewer service lowers a new high or medium finding with neither to a deferred low one.")
 			}
 			b.WriteString("\n\n")
 		}
@@ -297,10 +318,14 @@ func Prompt(in PromptInput) string {
 	b.WriteString("\n```\n\n")
 	b.WriteString("- severity: \"critical\", \"high\", \"medium\" or \"low\", rated by the review rules above. Critical, high " +
 		"and medium block the merge; low never does.\n")
-	b.WriteString("- id: `<path>:<rule>` as the rules define it, the same on every head. Reuse a previous id for the same problem.\n")
+	b.WriteString("- id: `<path>:<rule>` as the rules define it, the same on every head. Reuse a previous id only for the same failure.\n")
 	b.WriteString("- path and line: repository-relative, a line in the head commit. Omit both for a finding about no single place.\n")
 	b.WriteString("- title: the failure in one line. detail: the input or state, what happens, why it matters and what resolves it.\n")
 	b.WriteString("- defer: true for a low finding worth a follow-up issue.\n")
+	if LaterScope(in.PreviousHead, in.Interdiff) != nil {
+		fmt.Fprintf(&b, "- cause: for a new finding outside the files changed since %s, the changed file whose change causes it; omit it otherwise.\n",
+			in.PreviousHead)
+	}
 	b.WriteString("- previous: one entry per finding under \"Previous review\", or empty.\n")
 	b.WriteString("- summary: what you read; findings: an empty list when there are none.\n")
 	b.WriteString("- Declare no verdict: the reviewer service decides it from the severities.\n")

@@ -1107,7 +1107,7 @@ previews).
   `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
   read from main and sent in the prompt. It treats its checkout of the head
   as data and runs nothing from it. It returns findings only (`summary`,
-  `findings[{id, severity, path, line, title, detail, defer}]`,
+  `findings[{id, severity, path, line, title, detail, defer, cause}]`,
   `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
   decides: success only when no critical, high or medium finding blocks.
   An attempt without a usable report (unparseable output, an unknown
@@ -1120,6 +1120,16 @@ previews).
   `withdrawn`) or `open`, and one left out stays open. One reported again
   keeps the higher of its two severities unless it is fixed or withdrawn. A
   `human-gate` finding not fixed or withdrawn holds the later head too.
+  The check's State also keeps up to 20 findings earlier reviews cleared
+  (fixed, justified or withdrawn, with notes), and the prompt tells the
+  agent not to raise them again unless the head changes that code. When the
+  head descends from the previous one and GitHub lists the whole interdiff,
+  the service lowers a new high or medium finding to a deferred low one
+  unless its `path` or `cause` is a changed file
+  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)).
+  **Why.** Each head gets a fresh kagent session that read the whole diff
+  again and found new problems in code the earlier review had covered; 18
+  PRs used all three review rounds with blocking findings left.
   When the earlier review cannot be found within the search bounds, the
   prompt and the check say so and the head is reviewed in full. A diff over
   budget (2500 lines or 150 files, generated files excluded by their new

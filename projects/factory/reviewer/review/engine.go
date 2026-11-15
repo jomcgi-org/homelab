@@ -995,6 +995,10 @@ type inputs struct {
 	priorHead string
 	// priorUnknown says why an earlier head's review could not be found.
 	priorUnknown string
+	// since is what changed since priorHead, once compared is set; nil
+	// when GitHub no longer has priorHead.
+	since    *github.CommitComparison
+	compared bool
 }
 
 // review drives one head's review to a completed check run. It makes at
@@ -1372,19 +1376,15 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		return nil, err
 	}
 	cited := e.citedEvidence(ctx, b, pr, l)
-	var interdiff *github.CommitComparison
-	if in.priorHead != "" && in.priorHead != pr.HeadSHA {
-		interdiff, err = e.gh.CompareCommits(ctx, repo, in.priorHead, pr.HeadSHA)
-		if err != nil && !errors.Is(err, github.ErrNotFound) {
-			e.ghError(ctx, l, b, "compare", err)
-			return nil, err
-		}
+	interdiff, err := e.interdiff(ctx, b, pr, in, l)
+	if err != nil {
+		return nil, err
 	}
 	commits := e.commitMessages(ctx, b, pr, in.priorHead, l)
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Previous(), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
+		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		CheckName: e.cfg.CheckName,
 	})
@@ -1402,6 +1402,22 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		"previous_findings", len(in.prior.Previous()), "trusted_comments", len(comments), "dropped_comments", dropped,
 		"cited", len(cited), "commits", len(commits.List), "commits_since", commits.Since, "commits_unread", commits.Unread)
 	return msg, nil
+}
+
+// interdiff is what changed since the previous reviewed head, read once per
+// review: nil for a first review, a same-head review, or a head GitHub no
+// longer has.
+func (e *Engine) interdiff(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, l *slog.Logger) (*github.CommitComparison, error) {
+	if in.compared || in.priorHead == "" || in.priorHead == pr.HeadSHA {
+		return in.since, nil
+	}
+	d, err := e.gh.CompareCommits(ctx, b.repo(), in.priorHead, pr.HeadSHA)
+	if err != nil && !errors.Is(err, github.ErrNotFound) {
+		e.ghError(ctx, l, b, "compare", err)
+		return nil, err
+	}
+	in.since, in.compared = d, true
+	return d, nil
 }
 
 // recordProgress writes the attempt, and its task once sent, on the
@@ -1458,7 +1474,19 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		a := Assess(r, in.prior.Previous())
+		prior := in.prior.Previous()
+		since, err := e.interdiff(ctx, b, pr, in, l)
+		if err != nil {
+			l.WarnContext(ctx, "could not read the interdiff; new findings keep their severities", "error", err)
+		}
+		r = LaterScope(in.priorHead, since).Lower(r, prior)
+		a := Assess(r, prior)
+		a.Earlier = in.prior.Cleared
+		for _, f := range a.Deferred {
+			if f.Lowered != "" {
+				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)
+			}
+		}
 		gate := &Gate{ObservedLabels: []string{}}
 		if in.gate != nil {
 			*gate = *in.gate
@@ -1695,7 +1723,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, !gate.approved() || len(st.Blocking) > 0
 	}
 	l := e.prLog(b, pr)
-	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, conclusion, title, summary, u, l)
+	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Cleared: st.Cleared, Gate: gate}, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")
 	}
