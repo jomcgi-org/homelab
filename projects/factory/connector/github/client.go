@@ -62,8 +62,10 @@ type PullRequest struct {
 	Draft   bool
 	HeadSHA string
 	HeadRef string
-	BaseRef string
-	Title   string
+	// HeadRepo is the REST head repository's full name; empty is unknown.
+	HeadRepo string
+	BaseRef  string
+	Title    string
 	// Body, Author, CreatedAt and UpdatedAt come from REST reads only; Labels
 	// from REST reads and PullRequestDetail.
 	Body      string
@@ -296,8 +298,11 @@ type restPull struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	Head struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -312,6 +317,9 @@ func (p restPull) pr() *PullRequest {
 	}
 	if p.Body != nil {
 		pr.Body = *p.Body
+	}
+	if p.Head.Repo != nil {
+		pr.HeadRepo = p.Head.Repo.FullName
 	}
 	if p.UpdatedAt != nil {
 		pr.UpdatedAt = *p.UpdatedAt

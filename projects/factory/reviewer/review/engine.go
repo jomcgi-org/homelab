@@ -36,6 +36,8 @@ type GitHub interface {
 	PullRequestFiles(ctx context.Context, repo string, number int) ([]github.PullRequestFile, error)
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
+	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
+	PullRequestCommits(ctx context.Context, repo string, number int, head string) ([]github.PullRequestCommit, error)
 	PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]github.LabelEvent, error)
 	PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error)
 	PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*github.ReviewAcknowledgement, error)
@@ -1270,10 +1272,13 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			gate = nil
 		} else {
 			if gate.Approver, err = e.approval(ctx, b, pr, gate); err != nil {
-				l.WarnContext(ctx, "could not read the PR's reviews; the human gate stays closed", "error", err)
+				l.WarnContext(ctx, "could not verify the PR's approval; the human gate stays closed", "error", err)
 			}
-			if gate.Approver != "" {
+			if gate.approved() {
 				a.Approved, a.Approver = gate.Findings, gate.Approver
+				if gate.Authorship != "" {
+					a.Approver = pr.Author
+				}
 			} else {
 				if gate.held() {
 					a.Blocking = append(a.Blocking, Blocked{Finding: gateFinding(b, gate)})
@@ -1309,8 +1314,9 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 }
 
 // approval is the configured human whose APPROVED review of the PR's head
-// clears its gate, or empty.
+// clears its gate, or empty. It also refreshes the transient authorship waiver.
 func (e *Engine) approval(ctx context.Context, b *Binding, pr github.PullRequest, gate *Gate) (string, error) {
+	gate.Authorship = ""
 	reviews, err := e.gh.PullRequestReviews(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "reviews", err)
@@ -1341,7 +1347,14 @@ func (e *Engine) approval(ctx context.Context, b *Binding, pr github.PullRequest
 			acknowledged[r.ID] = true
 		}
 	}
-	return approvedBy(b, reviews, pr.HeadSHA, gate.ApprovalAfter, gate.ApprovalSnapshot, acknowledged), nil
+	approver := approvedBy(b, reviews, pr.HeadSHA, gate.ApprovalAfter, gate.ApprovalSnapshot, acknowledged)
+	if approver == "" && !gate.reviewRequired() {
+		gate.Authorship, err = e.authorshipApproval(ctx, b, pr)
+		if err != nil {
+			e.ghError(ctx, e.prLog(b, pr), b, "authorship_approval", err)
+		}
+	}
+	return approver, err
 }
 
 // rule is a finding ID's rule when REVIEW.md or the configuration names it:
@@ -1399,7 +1412,7 @@ func (e *Engine) notifyGate(ctx context.Context, b *Binding, l *slog.Logger, by 
 // It returns the current check (nil on write failure) and whether to defer enqueue.
 func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool) {
 	st, ok := LoadState(run.Text)
-	if (!ok && run.Conclusion != ConclusionSuccess) || len(st.Blocking) > 0 {
+	if !ok && run.Conclusion != ConclusionSuccess {
 		return run, false
 	}
 	labels := gateLabels(b, pr.Labels)
@@ -1431,6 +1444,11 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	changed = changed || retained
 	if !gate.Needed() {
 		if strings.Contains(run.Summary, labelHistoryMarker) {
+			if len(st.Blocking) > 0 {
+				return e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Blocking findings remain",
+					"The complete label history contains no human hold. The review's other blocking findings still need to be resolved.",
+					&CommentUpdate{Verdict: VerdictChanges, Headline: "Blocking findings remain"}, e.prLog(b, pr)), true
+			}
 			return e.gateCheck(ctx, b, pr, run, st, ConclusionSuccess, "Hold history checked", "The complete label history contains no human hold.",
 				&CommentUpdate{Verdict: VerdictApproved, Headline: "No blocking findings"}, e.prLog(b, pr)), true
 		}
@@ -1442,10 +1460,15 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	changed = changed || before != gate.ApprovalSnapshot
 	changed = changed || gate.Approver != approver
 	gate.Approver = approver
+	changed = changed || (gate.Authorship != "" && !strings.Contains(run.Summary, gate.Authorship))
+	changed = changed || (gate.Authorship == "" && strings.Contains(run.Summary, authorshipPrefix))
 	conclusion := ConclusionSuccess
 	title, summary := "Human gate cleared by "+approver, fmt.Sprintf("%s approved this exact head, which clears its human gate.", approver)
+	if gate.Authorship != "" {
+		title, summary = "Human gate cleared by authorship", gate.Authorship
+	}
 	u := &CommentUpdate{Verdict: VerdictApproved, Headline: title, Gate: gate}
-	if approver == "" {
+	if !gate.approved() {
 		conclusion = ConclusionFailure
 		f := gateFinding(b, gate)
 		title, summary = "Waiting for a human review", f.Title+". "+f.Detail+"\n\n"+gateOnlyMarker
@@ -1454,8 +1477,13 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 			u.Note = acknowledgeNote(gate)
 		}
 	}
+	if len(st.Blocking) > 0 {
+		conclusion, title = ConclusionFailure, "Blocking findings remain"
+		summary = strings.ReplaceAll(summary, gateOnlyMarker, "") + "\n\nThe review's other blocking findings still need to be resolved."
+		u.Verdict, u.Headline = VerdictChanges, title
+	}
 	if !changed && conclusion == run.Conclusion {
-		return run, approver == ""
+		return run, !gate.approved() || len(st.Blocking) > 0
 	}
 	l := e.prLog(b, pr)
 	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, conclusion, title, summary, u, l)

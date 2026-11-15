@@ -17,6 +17,25 @@ required checks cover the current head: the reviewer service for the
 permits landing. Whether and when to land stays with the landing owner, and
 a hold on landing still applies.
 
+Factory work authored by `jomcgi-factory[bot]` needs Joe's APPROVED review
+when it touches a gated path or has a `human-gate` finding. Sessions Joe
+guides as `jomcgi` may use approval by authorship under his
+[decision](https://github.com/jomcgi-org/homelab/issues/8049). Such a session
+lands a gated change only when Joe asked for it in that session. The PR must
+be authored by a `humanApprovers` account, with its head in the base
+repository and every push since the latest branch creation by those accounts.
+The reviewer rechecks complete activity within 100 events on every poll and
+requires the newest push to match the head. A CI format commit pushed with
+Joe's token counts as his push.
+
+Renovate never gets this waiver: `renovate/` branches and commits with its
+git author email are excluded, using base `renovate.json` `gitAuthor` when
+set, with `renovate@whitesourcesoftware.com` excluded too. Renovate needs a
+separate identity without admin permissions; this exclusion applies until
+then. Hold labels, shared-head, foreign-check and restart-recovery holds
+still need an APPROVED review. Other findings and required checks still
+block, and eligible PRs use the merge queue through requested auto-merge.
+
 ## Changing rules
 
 Prefer a CI check to a rule (`docs/agents/evolution.md`). A rule is for what

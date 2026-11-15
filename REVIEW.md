@@ -147,6 +147,23 @@ PR:
 These pass only with Joe's approval of the reviewed head, whatever the
 findings. Report each as `human-gate` at high, naming the decision.
 
+Joe's approval is an APPROVED review of that head, or approval by authorship
+under his [decision](https://github.com/jomcgi-org/homelab/issues/8049): the
+PR author is in `humanApprovers`, its head is in the base repository, and
+every push since the head ref's latest creation is by a `humanApprovers`
+account. The newest push must match the reviewed head. The reviewer checks
+repository activity on every poll; a read error, incomplete history, more
+than 100 events or a head mismatch gives no waiver. Git commit authors,
+including `ci-format-bot`, do not identify the account that pushed.
+
+Renovate is excluded even when it uses Joe's account: a `renovate/` head
+branch or any PR commit with Renovate's git author email from base
+`renovate.json` `gitAuthor` gives no waiver;
+`renovate@whitesourcesoftware.com` is always excluded. Explicit holds
+(`human`, `needs-human`), shared-head and foreign-check
+holds, and restart-recovery holds always require an APPROVED review. Every
+other finding still blocks as before.
+
 - A change to this file, the deletion of a `REVIEW.md`, or a rule removed or
   loosened without naming the CI check or test that replaces it.
 - A change that could weaken the gate itself: the human gate's path, label

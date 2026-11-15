@@ -34,17 +34,21 @@ const (
 )
 
 type fakePR struct {
-	Number  int
-	Title   string
-	Body    string
-	Author  string
-	Head    string
-	Base    string
-	Draft   bool
-	Labels  []string
-	Updated time.Time
-	Created time.Time
-	Files   []github.PullRequestFile
+	Number   int
+	Title    string
+	Body     string
+	Author   string
+	Head     string
+	HeadRepo string
+	HeadRef  string
+	Activity []github.RefActivity
+	Commits  []github.PullRequestCommit
+	Base     string
+	Draft    bool
+	Labels   []string
+	Updated  time.Time
+	Created  time.Time
+	Files    []github.PullRequestFile
 	// Heads is the timeline's head history, oldest first; the current head
 	// is appended when it changes.
 	Heads          []string
@@ -332,6 +336,21 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 		f.graphql(w, r)
+	case r.Method == http.MethodGet && path == "/activity":
+		for _, pr := range f.prs {
+			if "refs/heads/"+pr.HeadRef == q.Get("ref") {
+				f.get(w, r, pr.Activity)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && strings.HasSuffix(path, "/commits"):
+		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/pulls/"), "/commits"))
+		if pr := f.prs[n]; pr != nil {
+			f.get(w, r, page(pr.Commits, q))
+			return
+		}
+		http.NotFound(w, r)
 	case r.Method == http.MethodGet && path == "/pulls":
 		if q.Get("state") == "all" {
 			latest := time.Time{}
@@ -356,13 +375,17 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for _, l := range pr.Labels {
 				labels = append(labels, map[string]string{"name": l})
 			}
+			headRef := pr.HeadRef
+			if headRef == "" {
+				headRef = fmt.Sprintf("branch-%d", pr.Number)
+			}
 			out = append(out, map[string]any{
 				"number": pr.Number, "node_id": fmt.Sprintf("PR_%d", pr.Number), "state": "open", "draft": pr.Draft,
 				"title": pr.Title, "body": pr.Body, "user": map[string]string{"login": pr.Author}, "labels": labels,
 				"html_url":   fmt.Sprintf("https://github.com/%s/pull/%d", testRepo, pr.Number),
 				"updated_at": pr.Updated.UTC().Format(time.RFC3339),
 				"created_at": pr.Created.UTC().Format(time.RFC3339),
-				"head":       map[string]string{"ref": fmt.Sprintf("branch-%d", pr.Number), "sha": pr.Head},
+				"head":       map[string]any{"ref": headRef, "sha": pr.Head, "repo": map[string]string{"full_name": pr.HeadRepo}},
 				"base":       map[string]string{"ref": pr.Base},
 			})
 		}
@@ -620,7 +643,7 @@ func (f *fakeGitHub) sortedPRs() []*fakePR {
 }
 
 // page cuts a listing to the page and per_page a request names.
-func page(all []map[string]any, q map[string][]string) []map[string]any {
+func page[T any](all []T, q map[string][]string) []T {
 	n, _ := strconv.Atoi(first(q["page"]))
 	per, _ := strconv.Atoi(first(q["per_page"]))
 	if n < 1 || per < 1 {

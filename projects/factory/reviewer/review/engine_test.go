@@ -19,6 +19,218 @@ import (
 
 const shaA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+// authoredPR includes a CI format commit whose git author is not its pusher.
+func authoredPR() *fakePR {
+	pr := &fakePR{
+		Number: 7, Author: "jomcgi", Title: "fix(reviewer): gated change", Head: shaA,
+		HeadRepo: testRepo, HeadRef: "session/joe",
+		Files:    []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}},
+	}
+	for i, sha := range []string{"first", "second", shaA} {
+		var cm github.PullRequestCommit
+		cm.SHA, cm.Commit.Author.Name, cm.Commit.Author.Email = sha, "Joe", "joe@example.com"
+		if i == 2 {
+			cm.Commit.Author.Name, cm.Commit.Author.Email = "ci-format-bot", "ci-format-bot@example.com"
+		}
+		pr.Commits = append(pr.Commits, cm)
+		activity := github.RefActivity{ID: int64(i + 1), Ref: "refs/heads/" + pr.HeadRef, Type: "push", After: sha}
+		activity.Actor.Login = "jomcgi"
+		if i == 0 {
+			activity.Type, activity.Before = "branch_creation", strings.Repeat("0", 40)
+		} else {
+			activity.Before = pr.Commits[i-1].SHA
+		}
+		pr.Activity = append([]github.RefActivity{activity}, pr.Activity...)
+	}
+	return pr
+}
+
+func TestAuthorshipWaiver(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*harness, *fakePR)
+		pass   bool
+	}{
+		{name: "Joe and CI format commits pushed by Joe", pass: true},
+		{name: "Joe force push", pass: true, change: func(_ *harness, pr *fakePR) { pr.Activity[1].Type = "force_push" }},
+		{name: "latest creation bounds history", pass: true, change: func(_ *harness, pr *fakePR) {
+			old := pr.Activity[0]
+			old.ID, old.Actor.Login = 100, "jomcgi-factory[bot]"
+			pr.Activity = append(pr.Activity, old)
+		}},
+		{name: "factory push", change: func(_ *harness, pr *fakePR) { pr.Activity[1].Actor.Login = "jomcgi-factory[bot]" }},
+		{name: "other pusher", change: func(_ *harness, pr *fakePR) { pr.Activity[0].Actor.Login = "someone" }},
+		{name: "fork", change: func(_ *harness, pr *fakePR) { pr.HeadRepo = "jomcgi/fork" }},
+		{name: "unknown head repository", change: func(_ *harness, pr *fakePR) { pr.HeadRepo = "" }},
+		{name: "factory author", change: func(_ *harness, pr *fakePR) { pr.Author = "jomcgi-factory[bot]" }},
+		{name: "activity read error", change: func(h *harness, _ *fakePR) { h.gh.failWith("GET /repos/"+testRepo+"/activity", 502) }},
+		{name: "commit read error", change: func(h *harness, _ *fakePR) { h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/commits", 502) }},
+		{name: "config read error", change: func(h *harness, _ *fakePR) { h.gh.failWith("GET /repos/"+testRepo+"/contents/renovate.json", 403) }},
+		{name: "truncated history", change: func(_ *harness, pr *fakePR) { pr.Activity = pr.Activity[:2] }},
+		{name: "missing history", change: func(_ *harness, pr *fakePR) { pr.Activity = nil }},
+		{name: "head mismatch", change: func(_ *harness, pr *fakePR) { pr.Activity[0].After = "new-head" }},
+		{name: "gap in pushes", change: func(_ *harness, pr *fakePR) { pr.Activity[0].Before = "missing-push" }},
+		{name: "Renovate branch", change: func(_ *harness, pr *fakePR) { pr.HeadRef = "renovate/dependency" }},
+		{name: "Renovate git author", change: func(_ *harness, pr *fakePR) { pr.Commits[0].Commit.Author.Email = defaultRenovateEmail }},
+		{name: "configured Renovate git author", change: func(h *harness, pr *fakePR) {
+			h.gh.setBaseFile("renovate.json", `{"gitAuthor":"Renovate <updates@example.com>"}`)
+			pr.Commits[1].Commit.Author.Email = "updates@example.com"
+		}},
+		{name: "malformed Renovate config", change: func(h *harness, _ *fakePR) { h.gh.setBaseFile("renovate.json", `{"gitAuthor":false}`) }},
+		{name: "human label", change: func(_ *harness, pr *fakePR) { pr.Labels = []string{"human"} }},
+		{name: "needs-human label", change: func(_ *harness, pr *fakePR) { pr.Labels = []string{"needs-human"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			pr := authoredPR()
+			if tc.change != nil {
+				tc.change(h, pr)
+			}
+			h.gh.addPR(pr)
+			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+				map[string]any{"id": "AGENTS.md:human-gate", "severity": "high", "title": "Changes merge authority"},
+			}}))
+			eventually(t, "completed review", func() bool { return h.gh.check(shaA).Status == "completed" })
+			eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			for range 2 {
+				e.Tick(ctx)
+			}
+			c := h.gh.check(shaA)
+			if (c.Conclusion == ConclusionSuccess) != tc.pass {
+				t.Fatalf("conclusion = %s, summary = %s", c.Conclusion, c.Summary)
+			}
+			if tc.pass {
+				if !strings.Contains(c.Summary, "Joe's approval by authorship: author jomcgi, 3 pushes, all by jomcgi.") || len(h.gh.enqueues()) != 1 {
+					t.Fatalf("waiver or enqueue missing: %s, enqueues %v", c.Summary, h.gh.enqueues())
+				}
+				st, ok := LoadState(c.Text)
+				if !ok || st.Gate == nil || st.Gate.Approver != "" || st.Gate.Authorship != "" || len(st.Gate.Findings) != 1 {
+					t.Fatalf("authorship cached as approval or gate lost: %+v", st.Gate)
+				}
+			} else if len(h.gh.enqueues()) != 0 || strings.Contains(c.Summary, "Joe's approval by authorship") {
+				t.Fatalf("refused waiver enqueued or claimed approval: %s", c.Summary)
+			}
+		})
+	}
+}
+
+func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		revoke func(*harness)
+	}{
+		{"factory pushed the same head", func(h *harness) { h.gh.withLock(func() { h.gh.prs[7].Activity[0].Actor.Login = "jomcgi-factory[bot]" }) }},
+		{"activity read fails", func(h *harness) { h.gh.failWith("GET /repos/"+testRepo+"/activity", 502) }},
+		{"Renovate identity changes", func(h *harness) { h.gh.setBaseFile("renovate.json", `{"gitAuthor":"Renovate <joe@example.com>"}`) }},
+		{"new hold label", func(h *harness) { h.gh.label(7, "human") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.gh.addPR(authoredPR())
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			eventually(t, "authorship pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+			eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			before := h.gh.countCalls("GET /repos/"+testRepo+"/activity")
+			e.Tick(ctx)
+			if h.gh.countCalls("GET /repos/"+testRepo+"/activity") <= before {
+				t.Fatal("poll reused approval")
+			}
+			tc.revoke(h)
+			e.Tick(ctx)
+			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || strings.Contains(c.Summary, "Joe's approval by authorship") {
+				t.Fatalf("waiver survived revocation: %s %s", c.Conclusion, c.Summary)
+			}
+		})
+	}
+}
+
+func TestAuthorshipCannotClearOtherFindings(t *testing.T) {
+	h := newHarness(t)
+	h.gh.addPR(authoredPR())
+	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "x.go:correctness", "severity": "high", "title": "Breaks the service"},
+		map[string]any{"id": "AGENTS.md:human-gate", "severity": "high", "title": "Changes merge authority"},
+	}}))
+	eventually(t, "completed review", func() bool { return h.gh.check(shaA).Status == "completed" })
+	eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	for range 3 {
+		e.Tick(ctx)
+	}
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || len(st.Blocking) != 1 || st.Blocking[0].ID != "x.go:correctness" || len(h.gh.enqueues()) != 0 || strings.Contains(c.Summary, gateOnlyMarker) {
+		t.Fatalf("other finding cleared: %s %s, state %+v", c.Conclusion, c.Summary, st)
+	}
+	h.gh.failWith("GET /repos/"+testRepo+"/activity", 502)
+	e.Tick(ctx)
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || strings.Contains(c.Summary, authorshipPrefix) {
+		t.Fatalf("revoked waiver still displayed alongside other findings: %s", c.Summary)
+	}
+}
+
+func TestAuthorshipCannotClearContextHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gate Gate
+	}{
+		{"shared head", Gate{SharedHead: true}},
+		{"recovery or foreign check", Gate{RecoveryEpoch: "epoch", RecoveryPR: 7}},
+		{"removed sticky hold", Gate{ApprovalAfter: time.Now()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.gh.addPR(authoredPR())
+			e := h.engine()
+			pr := github.PullRequest{Number: 7, Author: "jomcgi", HeadRepo: testRepo, HeadRef: "session/joe", HeadSHA: shaA}
+			approver, err := e.approval(context.Background(), &h.cfg.Bindings[0], pr, &tc.gate)
+			if err != nil || approver != "" || tc.gate.Authorship != "" || h.gh.countCalls("GET /repos/"+testRepo+"/activity") != 0 {
+				t.Fatalf("context hold waived: approver %q, gate %+v, error %v", approver, tc.gate, err)
+			}
+		})
+	}
+}
+
+func TestAuthorshipOnInitialBranchPush(t *testing.T) {
+	h := newHarness(t)
+	pr := authoredPR()
+	creation := pr.Activity[2]
+	creation.After = shaA
+	pr.Activity = []github.RefActivity{creation}
+	h.gh.addPR(pr)
+	e := h.engine()
+	gate := &Gate{Paths: []string{"REVIEW.md"}}
+	approver, err := e.approval(context.Background(), &h.cfg.Bindings[0],
+		github.PullRequest{Number: 7, Author: pr.Author, HeadRepo: pr.HeadRepo, HeadRef: pr.HeadRef, HeadSHA: pr.Head}, gate)
+	if err != nil || approver != "" || gate.Authorship != "Joe's approval by authorship: author jomcgi, 1 push, all by jomcgi." {
+		t.Fatalf("initial push: approver %q, waiver %q, error %v", approver, gate.Authorship, err)
+	}
+}
+
+func TestOtherFindingsSurviveHoldHistoryReadFailure(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "x.go:correctness", "severity": "high", "title": "Breaks the service"},
+	}}))
+	eventually(t, "completed review", func() bool { return h.gh.check(shaA).Status == "completed" })
+	eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.failWith("GET /repos/"+testRepo+"/issues/7/events", 502)
+	e.Tick(ctx)
+	h.gh.failWith("GET /repos/"+testRepo+"/issues/7/events", 0)
+	e.Tick(ctx)
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || len(st.Blocking) != 1 || st.Blocking[0].ID != "x.go:correctness" {
+		t.Fatalf("hold history recovery cleared other findings: %s, state %+v", c.Summary, st)
+	}
+}
+
 var passing = map[string]any{"summary": "Adds x.", "findings": []any{
 	map[string]any{"id": "x.go#naming", "severity": "low", "path": "x.go", "line": 3, "title": "Rename x", "defer": false},
 }}
@@ -771,10 +983,11 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 
 func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 	h := newHarness(t)
-	h.gh.addPR(&fakePR{Number: 7, Title: "fix(reviewer): x", Head: shaA, Files: []github.PullRequestFile{
+	h.gh.addPR(&fakePR{Number: 7, Author: "jomcgi-factory[bot]", Title: "fix(reviewer): x", Head: shaA, Files: []github.PullRequestFile{
 		{Path: "projects/factory/reviewer/review/engine.go", Status: "modified", Additions: 2},
 		{Path: "docs/old.md", PreviousPath: "projects/REVIEW.md", Status: "renamed"},
 	}})
+	h.cfg.Bindings[0].EnqueueAuthors = []string{"jomcgi-factory[bot]"}
 	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)

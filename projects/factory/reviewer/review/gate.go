@@ -1,9 +1,13 @@
 package review
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/mail"
 	"path"
 	"slices"
 	"sort"
@@ -70,6 +74,8 @@ type Gate struct {
 	// Approver is the human whose APPROVED review of the head cleared it.
 	// It is revalidated every poll, never used as a cached authorization.
 	Approver string `json:"approver,omitempty"`
+	// Authorship is current evidence, never persisted or inherited as approval.
+	Authorship string `json:"-"`
 	// ObservedLabels detects re-additions; nil means a legacy state using sticky Labels as its baseline.
 	ObservedLabels   []string        `json:"observed_labels"`
 	ApprovalAfter    time.Time       `json:"approval_after,omitzero"`     // ApprovalAfter fences new holds; zero preserves legacy/initial gates.
@@ -149,6 +155,104 @@ func (g *Gate) observeLabelEvents(b *Binding, events []github.LabelEvent) bool {
 // Needed reports whether the gate applies.
 func (g *Gate) Needed() bool {
 	return g != nil && (g.held() || len(g.Findings) > 0)
+}
+
+func (g *Gate) approved() bool { return g.Approver != "" || g.Authorship != "" }
+
+// reviewRequired holds cannot be cleared by authorship, even on Joe's PRs.
+func (g *Gate) reviewRequired() bool {
+	return g.SharedHead || g.RecoveryEpoch != "" || len(g.Labels) > 0 || !g.ApprovalAfter.IsZero()
+}
+
+const (
+	defaultRenovateEmail = "renovate@whitesourcesoftware.com"
+	authorshipPrefix    = "Joe's approval by authorship: "
+)
+
+// authorshipApproval recomputes the waiver from GitHub on every evaluation.
+// Renovate's identity comes from trusted base config, never the PR's version.
+func (e *Engine) authorshipApproval(ctx context.Context, b *Binding, pr github.PullRequest) (string, error) {
+	if pr.Author == "" || !containsFold(b.HumanApprovers, pr.Author) || pr.HeadRepo == "" || !strings.EqualFold(pr.HeadRepo, b.repo()) ||
+		pr.HeadRef == "" || pr.HeadSHA == "" || strings.HasPrefix(strings.ToLower(pr.HeadRef), "renovate/") {
+		return "", nil
+	}
+	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+	if err != nil {
+		return "", err
+	}
+	config, err := e.gh.FileContent(ctx, b.repo(), "renovate.json", base)
+	if err != nil && !errors.Is(err, github.ErrNotFound) {
+		return "", err
+	}
+	renovateEmail := defaultRenovateEmail
+	if err == nil {
+		var cfg struct {
+			GitAuthor string `json:"gitAuthor"`
+		}
+		if err := json.Unmarshal(config, &cfg); err != nil {
+			return "", err
+		}
+		if cfg.GitAuthor != "" {
+			author, err := mail.ParseAddress(cfg.GitAuthor)
+			if err != nil {
+				return "", err
+			}
+			renovateEmail = author.Address
+		}
+	}
+	commits, err := e.gh.PullRequestCommits(ctx, b.repo(), pr.Number, pr.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	for _, cm := range commits {
+		if strings.EqualFold(cm.Commit.Author.Email, renovateEmail) || strings.EqualFold(cm.Commit.Author.Email, defaultRenovateEmail) {
+			return "", nil
+		}
+	}
+	events, err := e.gh.HeadRefActivity(ctx, b.repo(), pr.HeadRef)
+	if err != nil {
+		return "", err
+	}
+	return approvalByPushes(b, pr, events), nil
+}
+
+func approvalByPushes(b *Binding, pr github.PullRequest, events []github.RefActivity) string {
+	if len(events) == 0 || len(events) > github.MaxListed {
+		return ""
+	}
+	pushes := 0
+	actors := []string{}
+	expected := pr.HeadSHA
+	for _, event := range events {
+		if event.Ref != "refs/heads/"+pr.HeadRef || event.Actor.Login == "" || !containsFold(b.HumanApprovers, event.Actor.Login) || event.After == "" {
+			return ""
+		}
+		switch event.Type {
+		case "push", "force_push", "pr_merge", "merge_queue_merge":
+			if event.After != expected || event.Before == "" {
+				return "" // A newer head or a gap between pushes.
+			}
+			expected = event.Before
+			pushes++
+			if !containsFold(actors, event.Actor.Login) {
+				actors = append(actors, event.Actor.Login)
+			}
+		case "branch_creation":
+			if event.After != expected {
+				return ""
+			}
+			// Creation is the first push to this incarnation of the ref.
+			pushes++
+			if !containsFold(actors, event.Actor.Login) {
+				actors = append(actors, event.Actor.Login)
+			}
+			sort.Strings(actors)
+			return fmt.Sprintf("%sauthor %s, %d %s, all by %s.", authorshipPrefix, pr.Author, pushes, plural(pushes, "push", "pushes"), strings.Join(actors, ", "))
+		default:
+			return "" // Deletion or unknown activity cannot prove an unbroken ref.
+		}
+	}
+	return ""
 }
 
 // held reports whether the service itself holds the head, by path or label.
