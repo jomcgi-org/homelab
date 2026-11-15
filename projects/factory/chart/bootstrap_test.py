@@ -46,9 +46,7 @@ class API:
         self.active_sessions = set()
 
     def credentials(self):
-        return {
-            k: base64.b64decode(v).decode() for k, v in self.secret["data"].items()
-        }
+        return {k: base64.b64decode(v).decode() for k, v in self.secret["data"].items()}
 
     def request(self, method, url, body=None, headers=None, ctx=None):
         parsed = urlsplit(url)
