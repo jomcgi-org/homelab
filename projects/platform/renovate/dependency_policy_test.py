@@ -91,6 +91,86 @@ def test_only_non_major_updates_request_native_automerge(update_type, automerge)
     assert config["lockFileMaintenance"]["enabled"] is True
 
 
+@pytest.mark.parametrize(
+    ("group_name", "package_names"),
+    [
+        (
+            "OpenTelemetry Python packages",
+            (
+                "opentelemetry-api",
+                "opentelemetry-sdk",
+                "opentelemetry-semantic-conventions",
+                "opentelemetry-exporter-otlp",
+                "opentelemetry-exporter-otlp-proto-common",
+                "opentelemetry-exporter-otlp-proto-grpc",
+                "opentelemetry-exporter-otlp-proto-http",
+                "opentelemetry-proto",
+                "opentelemetry-instrumentation",
+                "opentelemetry-instrumentation-asgi",
+                "opentelemetry-instrumentation-fastapi",
+                "opentelemetry-instrumentation-httpx",
+                "opentelemetry-util-http",
+                "opentelemetry-instrumentation-future-library",
+            ),
+        ),
+        ("Pydantic Python packages", ("pydantic", "pydantic-core", "pydantic_core")),
+    ],
+)
+def test_lockstep_python_packages_share_a_group(group_name, package_names):
+    config = json.loads((ROOT / "renovate.json").read_text())
+    rules = [
+        rule for rule in config["packageRules"] if rule.get("groupName") == group_name
+    ]
+    assert len(rules) == 1
+    rule = rules[0]
+    # Apply across Python managers/manifests and update types. In particular,
+    # core and prerelease instrumentation versions need not share a major.
+    assert {key for key in rule if key.startswith("match")} == {
+        "matchDatasources",
+        "matchPackageNames",
+    }
+    assert rule["matchDatasources"] == ["pypi"]
+    assert rule["groupSlug"] == group_name.lower().replace(" ", "-")
+    assert rule["separateMajorMinor"] is False
+    assert rule["separateMinorPatch"] is False
+    for name in package_names:
+        # Renovate's pip_requirements extractor normalizes packageName, including
+        # the pydantic_core spelling pinned in the verifier requirements.
+        normalized = re.sub(r"[-_.]+", "-", name).lower()
+        assert any(
+            fnmatch.fnmatchcase(normalized, pattern)
+            for pattern in rule["matchPackageNames"]
+        ), name
+    for unrelated in (
+        "fastapi",
+        "pytest",
+        "pydantic-settings",
+        "pydantic-ai-slim",
+        "pydantic-graph",
+        "opentelemetry",
+    ):
+        assert not any(
+            fnmatch.fnmatchcase(unrelated, pattern)
+            for pattern in rule["matchPackageNames"]
+        ), unrelated
+
+
+def test_security_alerts_preserve_explicit_lockstep_groups():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    # Renovate 44.14.10 init/vulnerability.ts forces vulnerabilityAlerts over
+    # package rules, including a default groupName=null. Use the explicit slug
+    # so a security fix shares its family's branch with eligible peer updates.
+    # Dependencies without an explicit slug retain their per-package branch.
+    assert config["vulnerabilityAlerts"]["groupName"] == (
+        "{{#if groupSlug}}{{{groupSlug}}}"
+        "{{else}}{{{datasource}}}-{{{depNameSanitized}}}-vulnerability{{/if}}"
+    )
+    assert config["vulnerabilityAlerts"]["enabled"] is True
+    assert config["vulnerabilityAlerts"]["schedule"] == ["at any time"]
+    assert config["vulnerabilityAlerts"]["minimumReleaseAge"] is None
+    assert config["vulnerabilityAlerts"]["prCreation"] == "immediate"
+
+
 def test_compatibility_holds_override_non_major_automerge():
     config = json.loads((ROOT / "renovate.json").read_text())
     enabled_rule = next(

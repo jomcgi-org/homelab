@@ -20,6 +20,7 @@
   "internalChecksFilter": "strict",
   "vulnerabilityAlerts": {
     "enabled": true,
+    "groupName": "{{#if groupSlug}}{{{groupSlug}}}{{else}}{{{datasource}}}-{{{depNameSanitized}}}-vulnerability{{/if}}",
     "labels": ["dependencies", "security"],
     "schedule": ["at any time"],
     "minimumReleaseAge": null,
@@ -234,6 +235,24 @@
       "matchPackageNames": ["pnpm"],
       "groupName": "pnpm",
       "allowedVersions": "<11"
+    },
+    {
+      "description": "Keep the OpenTelemetry API, SDK, exporters, instrumentation and semantic conventions on a matched release set.",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["opentelemetry-*"],
+      "groupName": "OpenTelemetry Python packages",
+      "groupSlug": "opentelemetry-python-packages",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false
+    },
+    {
+      "description": "Update Pydantic with the exact pydantic-core release it requires.",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["pydantic", "pydantic-core"],
+      "groupName": "Pydantic Python packages",
+      "groupSlug": "pydantic-python-packages",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false
     },
     {
       "description": "Keep the documented Python API compatibility bounds until their separate migrations.",
