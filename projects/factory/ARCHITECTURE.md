@@ -1064,8 +1064,9 @@ previews).
   The reviewer's agent has no GitHub API access, so the service reads the
   evidence a description cites: up to eight `#N` or same-repository PR links,
   in order. For each pull request it reports only fixed classes: state,
-  merge time and commit, whether the timeline shows a merge queue entry,
-  logins that match GitHub's login syntax (others become
+  merge time and commit, whether the timeline shows a merge queue entry and
+  who last added it, who last enabled auto-merge (the timeline event, which
+  outlives the merge), logins that match GitHub's login syntax (others become
   `(unrecognized login)`), the head commit's author account and signature
   state, and the review check and the binding's required checks on the head,
   each matched by name and creating App or status creator. Titles, bodies

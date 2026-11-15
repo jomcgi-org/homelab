@@ -29,13 +29,17 @@ type CitedPR struct {
 	MergeCommitSHA string
 	HeadSHA        string
 	Queued         bool
+	QueuedBy       string
 	Author         string
 	MergedBy       string
-	AutoMergeBy    string
-	HeadAuthor     string
-	HeadSignature  string // GitHub's signature state, or "" when unsigned
-	HeadByGitHub   bool
-	Checks         []CitedCheck
+	// AutoMergeEnabledBy enabled auto-merge last, even after the merge;
+	// AutoMergeBy holds a still-pending request.
+	AutoMergeEnabledBy string
+	AutoMergeBy        string
+	HeadAuthor         string
+	HeadSignature      string // GitHub's signature state, or "" when unsigned
+	HeadByGitHub       bool
+	Checks             []CitedCheck
 }
 
 // CitedCheck is a check the binding trusts, matched by name and creator.
@@ -103,7 +107,8 @@ func (e *Engine) citedEvidence(ctx context.Context, b *Binding, pr github.PullRe
 		c := CitedPR{
 			Number: n, Kind: "pull", State: enumOr(p.State, "other"), OnBase: p.BaseRef == b.BaseBranch,
 			MergedAt: p.MergedAt, MergeCommitSHA: shaOr(p.MergeCommitSHA), HeadSHA: shaOr(p.HeadSHA), Queued: p.Queued,
-			Author: loginOr(p.Author), MergedBy: loginOr(p.MergedBy), AutoMergeBy: loginOr(p.AutoMergeBy),
+			QueuedBy: loginOr(p.QueuedBy), Author: loginOr(p.Author), MergedBy: loginOr(p.MergedBy),
+			AutoMergeEnabledBy: loginOr(p.AutoMergeEnabledBy), AutoMergeBy: loginOr(p.AutoMergeBy),
 			HeadAuthor: loginOr(p.HeadCommitAuthor), HeadSignature: enumOr(p.HeadSignature, ""), HeadByGitHub: p.HeadSignedByGitHub,
 		}
 		if c.HeadSHA != "" {
@@ -216,12 +221,12 @@ func writeCited(b *strings.Builder, base string, cited []CitedPR) {
 			fmt.Fprintf(b, " as %s", c.MergeCommitSHA)
 		}
 		if c.Queued {
-			b.WriteString("; its timeline shows it entered the merge queue")
+			fmt.Fprintf(b, "; its timeline shows it entered the merge queue, last added by %s", orNone(c.QueuedBy))
 		} else {
 			b.WriteString("; its timeline shows no merge queue entry")
 		}
-		fmt.Fprintf(b, ".\n- author %s; merged by %s; pending auto-merge request by %s\n",
-			orNone(c.Author), orNone(c.MergedBy), orNone(c.AutoMergeBy))
+		fmt.Fprintf(b, ".\n- author %s; merged by %s; auto-merge last enabled by %s; pending auto-merge request by %s\n",
+			orNone(c.Author), orNone(c.MergedBy), orNone(c.AutoMergeEnabledBy), orNone(c.AutoMergeBy))
 		if c.HeadSHA != "" {
 			fmt.Fprintf(b, "- head %s: commit author account %s; signature %s", c.HeadSHA, orNone(c.HeadAuthor), orNone(c.HeadSignature))
 			if c.HeadByGitHub {
