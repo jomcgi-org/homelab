@@ -41,8 +41,17 @@ const observations = JSON.parse(
       { path: "/not-a-route/", headers: { cookie: "gcs=test-session" }, error: 404 },
       { path: "/not-a-route/", headers: { host: "private.jomcgi.dev" }, error: 404 },
       { path: "/not-a-route/", headers: { host: "friends.jomcgi.dev" }, error: 404 },
-      { path: "/app/frank", anonymous: true }
+      { path: "/app/frank", anonymous: true },
+      { path: "/app/frank", headers: { host: "monolith-public-frontend.monolith-public.svc.cluster.local:3000" }, anonymous: true },
+      { path: "/app/frank", headers: { host: "monolith.monolith.svc.cluster.local:3000" }, error: 404 },
+      { path: "/app/frank", headers: { host: "friends.jomcgi.dev" }, error: 404 },
+      { path: "/app/frank", headers: { host: "unrelated.svc.cluster.local:3000" }, error: 404 },
+      { path: "/private/factory", headers: { host: "monolith-public-frontend.monolith-public.svc.cluster.local:3000" }, error: 404 },
+      { path: "/friends/moving", headers: { host: "monolith-public-frontend.monolith-public.svc.cluster.local:3000" }, error: 404 }
     );
+    for (const identity of ["cookie", "authorization", "cf-access-jwt-assertion", "x-auth-email"]) {
+      cases.push({ path: "/app/frank", headers: { host: "monolith-public-frontend.monolith-public.svc.cluster.local:3000", [identity]: "test-session" } });
+    }
     const asset = readdirSync("./dist/client/_app/immutable/entry").find((name) => name.startsWith("start.") && name.endsWith(".js"));
     cases.push({ path: "/_app/immutable/entry/" + asset, headers: { cookie: "gcs=test-session" }, asset: true });
     const results = [];
@@ -96,12 +105,16 @@ describe("packaged HTTP cache boundary", () => {
     },
   );
 
-  it("preserves the anonymous static page cache contract and body", () => {
-    const result = observations.results.find((entry) => entry.anonymous);
-    expect(result.status).toBe(200);
-    expect(result.headers["cache-control"]).toBe("public, max-age=300");
-    expect(result.body.slice(0, 15)).toBe("<!doctype html>");
-  });
+  it.each(observations.results.filter((entry) => entry.anonymous))(
+    "preserves the anonymous static page on the public and screenshot origins: $headers.host",
+    (result) => {
+      expect(result.status).toBe(200);
+      expect(result.headers["cache-control"]).toBe("public, max-age=300");
+      expect(result.body.slice(0, 15)).toBe("<!doctype html>");
+      const apex = observations.results.find((entry) => entry.anonymous);
+      expect(result.body).toBe(apex.body);
+    },
+  );
 
   it("does not execute backend loads for normalization redirects", () => {
     expect(observations.fetches).toEqual([]);
