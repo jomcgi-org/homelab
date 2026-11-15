@@ -361,6 +361,22 @@ the monolith's, embedded in the binary and applied at startup under an
 advisory lock. Database tests start PostgreSQL 16 from `@postgres_test`, as
 the monolith's pytest plugin does.
 
+**Run transcripts.** Native Codex text arrives in task artifacts, which can
+grow without an assistant history message. The connector journals events
+and per-artifact byte cursors in `task_transcript` before posting to itsaplan.
+Each journal belongs to one run attempt and kagent task, with a fixed base
+offset after any earlier engineering retry. Artifact message IDs hash the
+full task and artifact IDs; new snapshots append only unseen text. END is
+recorded once when the task becomes quiescent because task snapshots omit
+the artifact stream's `LastChunk` flag. History retains its existing event
+rendering, including offsets acknowledged before the journal was introduced.
+
+**Why.** Re-rendering a growing artifact changes event boundaries and moves
+acknowledged offsets. Persisting events and cursors together lets a restart
+replay the exact batch after a lost acknowledgement, even if the next task
+snapshot has more text. A changed or shortened artifact prefix fails the
+poll without advancing the transcript or reporting completion (#8017).
+
 **Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
 none of these is a Pro feature (status-triggered schedules are Pro and are
 not used). Claim runs per agent key. A claimed run with an open attempt
