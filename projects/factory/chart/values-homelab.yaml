@@ -134,10 +134,12 @@ connector:
       # for Joe instead). jomcgi stays trusted, so Joe's "request changes"
       # still blocks and starts a round (#7817 decision 6882698416).
       trustedReviewers: [jomcgi]
-      # Six revision rounds, up from the default three: on 2026-11-15, 17 of
-      # the factory's PRs sat at the third round with blocking findings, each
-      # waiting for a person.
+      # Six revision and six rebase rounds, up from the default three: on
+      # 2026-11-15, 17 of the factory's PRs sat at the third review round with
+      # blocking findings, each waiting for a person, and a busy main spends
+      # rebase rounds quickly.
       maxReviewRounds: 6
+      maxRebaseRounds: 6
       reviewerCheck:
         name: factory review
         appId: 5758326
