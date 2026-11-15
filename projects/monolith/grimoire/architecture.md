@@ -435,9 +435,11 @@ screen and by the session screen's Journal tab. While the tab is open it reads
 the session journal route for the chosen view (`useJournal` in
 `src/api/session.ts`) every thirty seconds and again when a new event arrives.
 The session screen holds the Mine/Party choice, so a refresh replaces the data
-without resetting it. `onShowEvent` and `onOpenKnowledge` are optional panel
-props; the campaign journal screen passes only `onOpenKnowledge`, so its
-entries open knowledge and have no link to a story feed.
+without resetting it. A failed first read offers Try again, with Mine/Party
+still available. A failed refresh keeps the loaded journal visible.
+`onShowEvent` and `onOpenKnowledge` are optional panel props; the campaign
+journal screen passes only `onOpenKnowledge`, so its entries open knowledge
+and have no link to a story feed.
 
 **Why.** One renderer keeps retraction, name-only and partial-journal handling in
 a single place. `journalSections` in `src/api/journal.ts` passes the
@@ -711,7 +713,10 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   the turn order refresh every fifteen seconds; approved sheets every sixty.
   A new event refreshes the journal, and a `turn` event refreshes the turn
   order. Inventory, notes, voices, initiative, grants and reveals call their
-  own API routes.
+  own API routes. The table waits for its first feed and turn order reads,
+  and for the DM's members and voices. Failed reads offer a retry before
+  incomplete data can open editable controls. Refresh failures keep loaded
+  data and unsent drafts visible.
 - **Sign-in expiry.** `src/app/signIn.ts` and `src/lib/session-expiry.js`
   handle a lapsed sign-in. See
   [Deployment and verification](#deployment-and-verification).

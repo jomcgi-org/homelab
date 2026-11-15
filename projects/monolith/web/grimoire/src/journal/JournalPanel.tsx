@@ -37,6 +37,8 @@ export interface JournalPanelProps {
   onShowEvent?: (eventId: string) => void;
   onOpenKnowledge?: (entityId: string) => void;
   showViewToggle?: boolean;
+  /** Null when the parent owns the named journal region and its controls. */
+  regionLabel?: string | null;
   /** The level of the section headings; entries sit one below. */
   headingLevel?: 2 | 3;
   /** Character names by id, so the DM reads who learned an entry. */
@@ -53,6 +55,7 @@ export function JournalPanel({
   onShowEvent,
   onOpenKnowledge,
   showViewToggle = true,
+  regionLabel = "Session journal",
   headingLevel = 2,
   characterNames = {},
 }: JournalPanelProps) {
@@ -79,7 +82,7 @@ export function JournalPanel({
       0;
 
   return (
-    <VStack gap={5} as="section" aria-label="Session journal">
+    <VStack gap={5} as="section" aria-label={regionLabel ?? undefined}>
       {showViewToggle && onViewChange && (
         <HStack>
           <SegmentedControl
