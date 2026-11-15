@@ -169,6 +169,10 @@ const (
 	authorshipPrefix     = "Joe's approval by authorship: "
 )
 
+// projects/platform/renovate/templates/apko-lock-script.yaml sets this
+// identity independently of renovate.json's gitAuthor.
+const maintenanceRenovateEmail = "renovate[bot]@users.noreply.github.com"
+
 // authorshipApproval recomputes the waiver from GitHub on every evaluation.
 // Renovate's identity comes from trusted base config, never the PR's version.
 func (e *Engine) authorshipApproval(ctx context.Context, b *Binding, pr github.PullRequest) (string, error) {
@@ -205,7 +209,7 @@ func (e *Engine) authorshipApproval(ctx context.Context, b *Binding, pr github.P
 		return "", err
 	}
 	for _, cm := range commits {
-		if strings.EqualFold(cm.Commit.Author.Email, renovateEmail) || strings.EqualFold(cm.Commit.Author.Email, defaultRenovateEmail) {
+		if containsFold([]string{renovateEmail, defaultRenovateEmail, maintenanceRenovateEmail}, cm.Commit.Author.Email) {
 			return "", nil
 		}
 	}
