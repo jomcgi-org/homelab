@@ -1,7 +1,7 @@
-# Keep the schedule stopped until a manual App run verifies authentication,
-# bot authorship and signed commits. See README.md before enabling #8041.
+# Manual App runs on 2026-11-15 verified authentication, bot authorship and
+# signed commits (#8041). Set `suspend: true` to stop the scheduled writer.
 workloadKind: CronJob
-suspend: true
+suspend: false
 # Installation tokens last one hour, including init time and Job retries.
 activeDeadlineSeconds: 2700
 

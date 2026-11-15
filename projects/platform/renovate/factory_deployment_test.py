@@ -76,7 +76,7 @@ def test_factory_root_reaches_the_shared_chart_and_namespace_policy():
     ]
 
 
-def test_factory_renders_only_a_suspended_job_and_app_credential():
+def test_factory_renders_only_a_scheduled_job_and_app_credential():
     docs = _render()
     assert {(doc["kind"], doc["metadata"]["name"]) for doc in docs} == {
         ("CronJob", "renovate"),
@@ -90,7 +90,7 @@ def test_factory_renders_only_a_suspended_job_and_app_credential():
     cron = next(doc for doc in docs if doc["kind"] == "CronJob")
     assert cron["apiVersion"] == "batch/v1"
     spec = cron["spec"]
-    assert spec["suspend"] is True
+    assert spec["suspend"] is False
     assert spec["schedule"] == "0 4 * * *"
     assert spec["timeZone"] == "America/Vancouver"
     assert spec["concurrencyPolicy"] == "Forbid"
