@@ -201,7 +201,7 @@ func TestInvalidGrant(t *testing.T) {
 	})
 }
 
-func TestLostRotationReconcilesWithoutDiscardingCachedAccess(t *testing.T) {
+func TestLostRotationExposesRefreshBlockAndPreservesCachedAccess(t *testing.T) {
 	for _, validAccess := range []bool{false, true} {
 		name := "expired access"
 		if validAccess {
@@ -227,7 +227,7 @@ func TestLostRotationReconcilesWithoutDiscardingCachedAccess(t *testing.T) {
 			} else if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("lost response error = %v, want ErrUnavailable", err)
 			}
-			if h.state("login_required") != 0 || h.auth.RefreshCalls() != 1 {
+			if h.state("login_required") != 0 || h.state("refresh_blocked") != 0 || h.auth.RefreshCalls() != 1 {
 				t.Fatal("transport failure was classified as a consumed token")
 			}
 			for i := 0; i < 3; i++ {
@@ -240,8 +240,12 @@ func TestLostRotationReconcilesWithoutDiscardingCachedAccess(t *testing.T) {
 					t.Fatalf("reconciliation error = %v, want ErrUnavailable", err)
 				}
 			}
-			if h.auth.RefreshCalls() != 3 || h.state("login_required") != 0 {
+			if h.auth.RefreshCalls() != 3 || h.state("login_required") != 0 || h.state("refresh_blocked") != 1 {
 				t.Fatal("reconciliation retried the provider or prematurely required login")
+			}
+			h.mgr.Check(context.Background())
+			if testutil.ToFloat64(h.metrics.RefreshOutcomes.WithLabelValues(grantName, "refresh_blocked")) != 1 {
+				t.Fatal("periodic check did not report the refresh block")
 			}
 			if h.stored(t) != original {
 				t.Fatal("failed recovery changed the stored grant")
@@ -264,17 +268,23 @@ func TestLostRotationReconcilesWithoutDiscardingCachedAccess(t *testing.T) {
 			rr := httptest.NewRecorder()
 			h.mgr.AdminHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/codex/login", nil))
 			var status map[string]any
-			if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil || status["grant_state"] == "login_required" {
-				t.Fatalf("admin status prematurely required login: %v", err)
+			if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil || status["grant_state"] != "refresh_blocked" || status["recovery"] == nil {
+				t.Fatalf("admin status did not report the refresh block: %v", err)
+			}
+			rr = httptest.NewRecorder()
+			h.mgr.AdminHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/admin/codex/refresh", nil))
+			var refresh map[string]string
+			if err := json.Unmarshal(rr.Body.Bytes(), &refresh); err != nil || rr.Code != http.StatusServiceUnavailable || refresh["factory_error"] != ErrUnavailable.Error() || refresh["grant_state"] != "refresh_blocked" {
+				t.Fatalf("admin refresh did not report a recoverable block: %v", err)
 			}
 			if h.auth.RefreshCalls() != 3 {
 				t.Fatal("reconciling entry points retried the consumed token")
 			}
-			// A later durable replacement also recovers the manager's early
-			// NeedsLogin path, without requiring a broker restart.
+			// A later durable replacement clears the operator state without
+			// requiring a broker restart or a connector unblock.
 			replacement, _ := h.seed(t, time.Now().UTC(), now.Add(5*24*time.Hour))
 			tok, err = h.mgr.AccessToken(context.Background())
-			if err != nil || tok.AccessToken != replacement || h.state("ready") != 1 || h.state("login_required") != 0 {
+			if err != nil || tok.AccessToken != replacement || h.state("ready") != 1 || h.state("login_required") != 0 || h.state("refresh_blocked") != 0 {
 				t.Fatalf("durable replacement did not recover: %v", err)
 			}
 		})
@@ -392,6 +402,12 @@ func TestSingleFlightRefreshUnderConcurrency(t *testing.T) {
 
 func TestDeviceLogin(t *testing.T) {
 	h := newHarness(t)
+	now := time.Now().UTC()
+	h.seed(t, now.Add(-time.Hour), now.Add(-time.Minute))
+	h.auth.Rotate()
+	if _, err := h.mgr.AccessToken(context.Background()); !errors.Is(err, ErrUnavailable) || !h.mgr.broker.RefreshBlocked(grantName) {
+		t.Fatalf("consumed token did not block refresh before device login: %v", err)
+	}
 	handler := h.mgr.AdminHandler()
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/codex/login", nil))
@@ -422,7 +438,7 @@ func TestDeviceLogin(t *testing.T) {
 		t.Fatalf("stored grant after login = %+v", g)
 	}
 	tok, err := h.mgr.AccessToken(context.Background())
-	if err != nil || tok.AccessToken != g.TokenBundle.AccessToken {
+	if err != nil || tok.AccessToken != g.TokenBundle.AccessToken || h.mgr.broker.RefreshBlocked(grantName) || h.state("refresh_blocked") != 0 {
 		t.Fatalf("AccessToken after login = %+v, %v", tok, err)
 	}
 

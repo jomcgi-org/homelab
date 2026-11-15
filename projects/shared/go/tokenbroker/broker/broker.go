@@ -33,7 +33,6 @@ type grantState struct {
 	lastExpiry    time.Time
 	needsLogin    bool
 	reusedGrant   *store.Grant
-	reuseDeadline time.Time
 	authoritative *store.Grant
 	pendingLogin  *store.Grant
 }
@@ -44,15 +43,17 @@ func (s *grantState) acceptReplacement(grant store.Grant) {
 	if s.reusedGrant != nil && grant.LastRefresh.After(s.reusedGrant.LastRefresh) &&
 		grant.TokenBundle.RefreshToken != "" && grant.TokenBundle.RefreshToken != s.reusedGrant.TokenBundle.RefreshToken {
 		s.reusedGrant = nil
-		s.reuseDeadline = time.Time{}
 		s.needsLogin = false
 	}
 }
 
-func (b *Broker) NeedsLogin(grantName string) bool {
+// grantStatus observes durable replacements before reporting either failure
+// state. A reused token blocks refresh, but cannot prove a login is required:
+// another broker may still be persisting its successful rotation.
+func (b *Broker) grantStatus(grantName string) (needsLogin, refreshBlocked bool) {
 	s, err := b.state(grantName)
 	if err != nil {
-		return false
+		return false, false
 	}
 	s.mu.Lock()
 	blocked := s.reusedGrant != nil
@@ -68,7 +69,20 @@ func (b *Broker) NeedsLogin(grantName string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.needsLogin
+	return s.needsLogin, s.reusedGrant != nil
+}
+
+func (b *Broker) NeedsLogin(grantName string) bool {
+	needsLogin, _ := b.grantStatus(grantName)
+	return needsLogin
+}
+
+// RefreshBlocked reports a consumed refresh token awaiting a durable
+// replacement or a new device login. It does not expire into NeedsLogin:
+// elapsed time cannot rule out a successful rotation still awaiting storage.
+func (b *Broker) RefreshBlocked(grantName string) bool {
+	_, blocked := b.grantStatus(grantName)
+	return blocked
 }
 
 func (b *Broker) ClearNeedsLogin(grantName string) {
@@ -79,7 +93,6 @@ func (b *Broker) ClearNeedsLogin(grantName string) {
 	s.mu.Lock()
 	s.needsLogin = false
 	s.reusedGrant = nil
-	s.reuseDeadline = time.Time{}
 	s.mu.Unlock()
 }
 
@@ -99,7 +112,6 @@ type Broker struct {
 	metrics        *metrics.Metrics
 	refreshBefore  time.Duration
 	maxGrantAge    time.Duration
-	now            func() time.Time
 }
 
 // Default refresh policy. Codex access tokens are valid for roughly eight
@@ -109,11 +121,6 @@ const (
 	DefaultRefreshBeforeExpiry = 5 * time.Minute
 	DefaultMaxGrantAge         = 7 * 24 * time.Hour
 )
-
-// Allow an overlapping refresher to persist its rotation before declaring
-// it lost. Five minutes covers the one-minute provider timeout, the initial
-// 30 seconds of save backoff, and several background persistence retries.
-const reuseReconciliationPeriod = 5 * time.Minute
 
 // SetRefreshPolicy makes GetAccessToken refresh a grant once it is within
 // beforeExpiry of expiry or older than maxAge. Zero keeps the default. Call
@@ -140,7 +147,7 @@ func New(s Store, adapters map[string]provider.Adapter, minters map[string]provi
 	if minters == nil {
 		minters = map[string]provider.Minter{}
 	}
-	b := &Broker{adapters: adapters, minters: minters, store: s, grants: make(map[string]*grantState), grantProviders: make(map[string]string), logger: logger, metrics: m, refreshBefore: DefaultRefreshBeforeExpiry, maxGrantAge: DefaultMaxGrantAge, now: time.Now}
+	b := &Broker{adapters: adapters, minters: minters, store: s, grants: make(map[string]*grantState), grantProviders: make(map[string]string), logger: logger, metrics: m, refreshBefore: DefaultRefreshBeforeExpiry, maxGrantAge: DefaultMaxGrantAge}
 	for _, config := range configs {
 		s := &grantState{}
 		s.cond = sync.NewCond(&s.mu)
@@ -200,12 +207,10 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 
 func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Time, error) {
 	b.metrics.Refreshes.Inc()
-	checkedAt := b.now()
 	grant, err := b.loadGrant(ctx, grantName)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	durable := grant
 	s, _ := b.state(grantName)
 	s.mu.Lock()
 	// The in-memory stash is authoritative ONLY while it is ahead of the
@@ -221,16 +226,9 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	}
 	s.acceptReplacement(grant)
 	if s.reusedGrant != nil {
-		// Reuse also occurs while another broker is saving a successful
-		// rotation. Suppress provider calls during reconciliation, but keep
-		// failures transient. Only a successful durable read begun after the
-		// deadline can confirm the same token is still stranded. Storage
-		// errors and a store lagging our in-memory rotation cannot prove loss.
-		if !checkedAt.Before(s.reuseDeadline) &&
-			durable.TokenBundle.RefreshToken == s.reusedGrant.TokenBundle.RefreshToken &&
-			!durable.LastRefresh.Before(s.reusedGrant.LastRefresh) {
-			s.needsLogin = true
-		}
+		// A successful rotation can await persistence indefinitely. Keep the
+		// provider call blocked and let callers expose operator recovery state
+		// without converting this uncertainty into a permanent login failure.
 		s.mu.Unlock()
 		return "", time.Time{}, provider.ErrRefreshTokenReused
 	}
@@ -291,7 +289,6 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 			if errors.Is(err, provider.ErrRefreshTokenReused) {
 				copy := grant
 				s.reusedGrant = &copy
-				s.reuseDeadline = b.now().Add(reuseReconciliationPeriod)
 			}
 			s.mu.Unlock()
 		}

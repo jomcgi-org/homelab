@@ -378,6 +378,9 @@ func TestRelayOverlappingRotationWaitsForDelayedWrite(t *testing.T) {
 			if testutil.ToFloat64(h.metrics.GrantState.WithLabelValues("codex-primary", "login_required")) != 0 {
 				t.Fatal("overlapping rotation reported login_required")
 			}
+			if testutil.ToFloat64(h.metrics.GrantState.WithLabelValues("codex-primary", "refresh_blocked")) != 1 {
+				t.Fatal("overlapping rotation did not expose the operator state")
+			}
 			g, err := st.LoadGrant("codex-primary")
 			if err != nil {
 				t.Fatal(err)
@@ -392,6 +395,9 @@ func TestRelayOverlappingRotationWaitsForDelayedWrite(t *testing.T) {
 			resp := h.post("/v1/responses", h.actorJWT())
 			if resp.StatusCode != http.StatusOK || h.auth.RefreshCalls() != 2 {
 				t.Fatalf("delayed write did not restore relay serving: status %d", resp.StatusCode)
+			}
+			if testutil.ToFloat64(h.metrics.GrantState.WithLabelValues("codex-primary", "refresh_blocked")) != 0 {
+				t.Fatal("delayed write did not clear the operator state")
 			}
 		})
 	}

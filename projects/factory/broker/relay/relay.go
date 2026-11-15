@@ -256,7 +256,7 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		}
 		if resp.StatusCode == http.StatusUnauthorized {
 			// A freshly refreshed token refused again is not proof the
-			// refresh token is dead; the token endpoint must confirm that.
+			// refresh token is dead; only invalid_grant is.
 			drain(resp)
 			if err := r.Context().Err(); err != nil {
 				return rl.upstreamFailure(w, r, err)

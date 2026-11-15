@@ -12,7 +12,7 @@ import (
 const Prefix = "factory_broker"
 
 // GrantStates are the values of the grant state gauge's state label.
-var GrantStates = []string{"ready", "login_required", "missing", "error"}
+var GrantStates = []string{"ready", "login_required", "refresh_blocked", "missing", "error"}
 
 // UsageRefreshOutcomes are the values of the usage refresh counter's outcome
 // label.
