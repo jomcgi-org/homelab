@@ -20,6 +20,22 @@ const MaxListed = 100
 // MaxPullPages bounds an open PR listing: 10,000 PRs.
 const MaxPullPages = 100
 
+// PullRequestCreationBoundary includes all PR states; zero means an empty list.
+func (c *Client) PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error) {
+	var pulls []restPull
+	q := url.Values{"state": {"all"}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"1"}}
+	if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
+		return time.Time{}, err
+	}
+	if pulls == nil || len(pulls) > 1 || (len(pulls) == 1 && pulls[0].CreatedAt.IsZero()) {
+		return time.Time{}, errors.New("github: incomplete PR creation boundary")
+	}
+	if len(pulls) == 0 {
+		return time.Time{}, nil
+	}
+	return pulls[0].CreatedAt, nil
+}
+
 // ListPullRequests lists every open PR into base, oldest first, page by
 // page. Pages are sorted by creation, so a new PR or push changes one page
 // and the others stay answered by 304. complete is false only past
@@ -476,8 +492,7 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 	return nil, fmt.Errorf("%w: more than %d reviews on PR %d", ErrTooMany, MaxReviewPages*MaxListed, number)
 }
 
-// ReviewAcknowledgement keeps a review's body and edit provenance from one
-// read. An absent author or editor remains unknown, represented by empty login.
+// ReviewAcknowledgement binds body and edit provenance; empty logins stay unknown.
 type ReviewAcknowledgement struct {
 	Author       string
 	Editor       string
@@ -497,8 +512,7 @@ const pullRequestReviewAcknowledgementQuery = `query($id: ID!) {
   }
 }`
 
-// PullRequestReviewAcknowledgement reads one review with its body editor,
-// rejecting responses that do not belong to the requested PR and node.
+// PullRequestReviewAcknowledgement binds one review to its node, PR and editor.
 func (c *Client) PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*ReviewAcknowledgement, error) {
 	if repo == "" || number <= 0 || nodeID == "" {
 		return nil, errors.New("github: incomplete review acknowledgement context")
@@ -532,8 +546,7 @@ func (c *Client) PullRequestReviewAcknowledgement(ctx context.Context, repo stri
 		n.PullRequest.Repository == nil || !strings.EqualFold(n.PullRequest.Repository.NameWithOwner, repo) {
 		return nil, errors.New("github: review acknowledgement context mismatch")
 	}
-	// Null editor/time is valid; omitted fields cannot establish that a
-	// review was never edited. Preserve a null editor even after an edit.
+	// Null is valid; omitted editor/time cannot prove the body was never edited.
 	if len(n.Editor) == 0 || len(n.LastEditedAt) == 0 || n.Body == nil || n.State == "" {
 		return nil, errors.New("github: incomplete review acknowledgement")
 	}
@@ -557,20 +570,17 @@ func (c *Client) PullRequestReviewAcknowledgement(ctx context.Context, repo stri
 	return result, nil
 }
 
-// LabelEvent records when a label was added, including labels later removed.
-// Its ID identifies the event; it does not order it against a review.
+// LabelEvent records additions; IDs do not order them against reviews.
 type LabelEvent struct {
 	ID        int64
 	Label     string
 	CreatedAt time.Time
 }
 
-// MaxIssueEventPages bounds the complete history read to 3000 issue events,
-// including events unrelated to labels.
+// MaxIssueEventPages bounds all issue events read, including non-label events.
 const MaxIssueEventPages = 30
 
-// PullRequestLabelEvents reads every issue-event page before returning label
-// additions. Missing or truncated history is an error, never a partial list.
+// PullRequestLabelEvents returns complete additions or an error, never partial history.
 func (c *Client) PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]LabelEvent, error) {
 	var events []LabelEvent
 	for page := 1; page <= MaxIssueEventPages; page++ {

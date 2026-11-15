@@ -453,6 +453,7 @@ func TestUnchangedPollsAreAnswered304(t *testing.T) {
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the completed worker", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	e.Tick(ctx)
 	before := h.gh.notModified
 	pulls := h.gh.countCalls("GET /repos/" + testRepo + "/pulls")
@@ -853,26 +854,130 @@ func TestGateLabelAfterAPassHoldsTheHead(t *testing.T) {
 	}
 }
 
-// approvedQueuedHead starts with a human-approved gated head and a passing
-// merge group, so a later revocation must replace both passes in one poll.
+func newPR7Harness(t *testing.T) *harness {
+	h := newHarness(t)
+	addPR7(h)
+	return h
+}
+
+func failIf(t *testing.T, bad bool, message string, args ...any) {
+	t.Helper()
+	if bad {
+		t.Fatalf(message, args...)
+	}
+}
+
+func startPassedReview(t *testing.T, h *harness) (*Engine, context.Context, func()) {
+	t.Helper()
+	e, ctx, stop := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	return e, ctx, stop
+}
+
+func secondPR7Harness(t *testing.T, day int) (*harness, time.Time) {
+	t.Helper()
+	h := newHarness(t)
+	second := time.Date(2026, 11, day, 12, 0, 0, 0, time.UTC)
+	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
+	addPR7(h)
+	return h, second
+}
+
+func completeReview(t *testing.T, h *harness, task, head, what string) {
+	t.Helper()
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, what, func() bool { return h.gh.check(head).Status == "completed" })
+}
+
+func unchangedPoll(t *testing.T, h *harness, e *Engine, ctx context.Context, message string) {
+	t.Helper()
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	failIf(t, h.gh.checkCount() != n, "%s", message)
+}
+
+func approveAndCheck(t *testing.T, h *harness, e *Engine, ctx context.Context, number int, head, body, message string) {
+	t.Helper()
+	h.gh.review(number, "jomcgi", "APPROVED", head, body)
+	e.Tick(ctx)
+	failIf(t, h.gh.check(head).Conclusion != ConclusionSuccess, "%s", message)
+}
+
 func approvedQueuedHead(t *testing.T) (*harness, *Engine, context.Context) {
 	t.Helper()
 	h := newHarness(t)
 	h.gh.addPR(&fakePR{Number: 7, Head: shaA, Files: []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}})
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
-	e, ctx, _ := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the approved head", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-	h.gh.mu.Lock()
-	h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
-	h.gh.mu.Unlock()
+	e, ctx, _ := startPassedReview(t, h)
+	h.gh.withLock(func() {
+		h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+	})
 	e.Tick(ctx)
-	if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionSuccess {
-		t.Fatalf("initial merge group = %+v", c)
-	}
+	check := h.gh.check("mg-7")
+	failIf(t, check == nil || check.Conclusion != ConclusionSuccess, "initial merge group = %+v", check)
 	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 	return h, e, ctx
+}
+
+func TestStartupRecoveryUsesCausalApprovalDespiteClockSkew(t *testing.T) {
+	for _, count := range []int{0, 1, maxSnapshotReviews + 1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			h := newPR7Harness(t)
+			for range count {
+				h.gh.review(7, "jomcgi", "APPROVED", shaA, "before restart")
+			}
+			h.gh.mu.Lock()
+			for i := range h.gh.prs[7].Reviews {
+				h.gh.prs[7].Reviews[i].SubmittedAt = time.Now().Add(time.Hour)
+			}
+			h.gh.mu.Unlock()
+			_, _, stop := startPassedReview(t, h)
+			stop()
+			h.startupRecovery = true
+			reads := "GET /repos/" + testRepo + "/pulls/7/reviews"
+			if count == 0 {
+				h.gh.failWith(reads, 502)
+			}
+			e, ctx, _ := h.start()
+			e.Tick(ctx)
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "clock skew reused a pre-restart approval")
+			st, _ := LoadState(h.gh.check(shaA).Text)
+			unchangedPoll(t, h, e, ctx, "unchanged recovery rewrote its gate")
+			body := "after the recovery baseline"
+			if count != 1 {
+				body = approvalAcknowledgement(st.Gate.ApprovalNonce)
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, body)
+			h.gh.failWith(reads, 0)
+			e.Tick(ctx)
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "causal approval or overflow acknowledgement did not clear recovery")
+		})
+	}
+}
+
+func TestStartupBoundaryIncludesClosedPRsAndAllowsLaterPRs(t *testing.T) {
+	h := newPR7Harness(t)
+	h.startupRecovery = true
+	boundary := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
+	h.gh.addPR(&fakePR{Number: 8, Head: strings.Repeat("b", 40), Created: boundary, Closed: true})
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	eventually(t, "the startup task", func() bool { return h.taskOn(7, shaA, 1) != "" })
+	h.k.finishOpen(kagent.StateCompleted, report(t, passing))
+	eventually(t, "the startup hold", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the completed worker", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.withLock(func() { h.gh.prs[8].Closed = false })
+	h.gh.addPR(&fakePR{Number: 9, Head: strings.Repeat("c", 40), Created: boundary.Add(time.Second)})
+	e.Tick(ctx)
+	for _, n := range []int{8, 9} {
+		head := strings.Repeat(string(rune('b'+n-8)), 40)
+		eventually(t, "the later task", func() bool { return h.taskOn(n, head, 1) != "" })
+		h.k.finish(h.taskOn(n, head, 1), kagent.StateCompleted, report(t, passing))
+		eventually(t, "the later check", func() bool { return h.gh.check(head).Status == "completed" })
+		failIf(t, (h.gh.check(head).Conclusion == ConclusionSuccess) != (n == 9), "reopened PR borrowed the new PR exemption")
+	}
 }
 
 func TestApprovedGateIsRevalidatedUntilMerge(t *testing.T) {
@@ -880,9 +985,7 @@ func TestApprovedGateIsRevalidatedUntilMerge(t *testing.T) {
 		t.Run(decision, func(t *testing.T) {
 			h, e, ctx := approvedQueuedHead(t)
 			if decision == "DISMISSED" {
-				h.gh.mu.Lock()
-				h.gh.prs[7].Reviews[0].State = decision // GitHub changes the original review.
-				h.gh.mu.Unlock()
+				h.gh.withLock(func() { h.gh.prs[7].Reviews[0].State = decision }) // GitHub changes the original review.
 			} else {
 				h.gh.review(7, "jomcgi", decision, shaA, "")
 			}
@@ -892,22 +995,14 @@ func TestApprovedGateIsRevalidatedUntilMerge(t *testing.T) {
 					t.Errorf("%s after revocation = %+v", sha, c)
 				}
 			}
-			if len(h.gh.enqueues()) != 0 {
-				t.Fatal("enqueued a revoked approval")
-			}
-			n := h.gh.checkCount()
-			e.Tick(ctx)
-			if h.gh.checkCount() != n {
-				t.Fatal("unchanged revoked approval created another check")
-			}
+			failIf(t, len(h.gh.enqueues()) != 0, "enqueued a revoked approval")
+			unchangedPoll(t, h, e, ctx, "unchanged revoked approval created another check")
 			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 			e.Tick(ctx)
-			if c := h.gh.check(shaA); c.Conclusion != ConclusionSuccess {
-				t.Fatalf("fresh approval left the head held: %+v", c)
-			}
-			if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure {
-				t.Fatal("revived a failed merge group without requeueing")
-			}
+			headCheck := h.gh.check(shaA)
+			failIf(t, headCheck.Conclusion != ConclusionSuccess, "fresh approval left the head held: %+v", headCheck)
+			groupCheck := h.gh.check("mg-7")
+			failIf(t, groupCheck.Conclusion != ConclusionFailure, "revived a failed merge group without requeueing")
 		})
 	}
 }
@@ -917,133 +1012,73 @@ func TestLateHoldNeedsFreshApprovalAcrossRestart(t *testing.T) {
 	h.gh.label(7, "needs-human")
 	e.Tick(ctx)
 	for _, sha := range []string{shaA, "mg-7"} {
-		if c := h.gh.check(sha); c == nil || c.Conclusion != ConclusionFailure {
-			t.Fatalf("%s after a later hold = %+v", sha, c)
-		}
+		check := h.gh.check(sha)
+		failIf(t, check == nil || check.Conclusion != ConclusionFailure, "%s after a later hold = %+v", sha, check)
 	}
 	n := h.gh.checkCount()
 	e = h.engine() // state must survive a process restart.
 	e.Tick(ctx)
-	if h.gh.checkCount() != n || len(h.gh.enqueues()) != 0 {
-		t.Fatal("restart reused the approval before the hold or rewrote the same hold")
-	}
+	failIf(t, h.gh.checkCount() != n || len(h.gh.enqueues()) != 0, "restart reused the approval before the hold or rewrote the same hold")
 	h.gh.label(7) // Removing a hold never clears it by itself.
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("removing the label cleared the hold")
-	}
-	h.gh.review(7, "jomcgi", "APPROVED", shaA, "I accept the hold")
-	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("fresh approval did not clear the hold")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "removing the label cleared the hold")
+	approveAndCheck(t, h, e, ctx, 7, shaA, "I accept the hold", "fresh approval did not clear the hold")
 	h.gh.label(7, "Needs-Human") // Reapplying the same label is a new decision.
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("reapplied hold reused the previous approval")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "reapplied hold reused the previous approval")
 	n = h.gh.checkCount()
 	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("unchanged labels produced another check")
-	}
-	h.gh.review(7, "jomcgi", "APPROVED", shaA, "I accept the new hold")
-	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("fresh approval did not clear the reapplied hold")
-	}
+	failIf(t, h.gh.checkCount() != n, "unchanged labels produced another check")
+	approveAndCheck(t, h, e, ctx, 7, shaA, "I accept the new hold", "fresh approval did not clear the reapplied hold")
 	n = h.gh.checkCount()
 	e.Tick(ctx)
 	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("unchanged approval produced another check")
-	}
-	if n, _ := h.k.state(); n != 1 {
-		t.Fatalf("gate changes started %d model executions, want 1", n)
-	}
+	failIf(t, h.gh.checkCount() != n, "unchanged approval produced another check")
+	tasks, _ := h.k.state()
+	failIf(t, tasks != 1, "gate changes started %d model executions, want 1", tasks)
 }
 
 func TestFreshSameSecondApprovalAfterTheRecordedHoldClearsIt(t *testing.T) {
-	h := newHarness(t)
-	second := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
-	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
-	addPR7(h)
+	h, second := secondPR7Harness(t, 14)
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the hold")
-	h.gh.mu.Lock()
-	h.gh.prs[7].Reviews[0].SubmittedAt = second
-	h.gh.mu.Unlock()
-	e, ctx, stop := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.withLock(func() { h.gh.prs[7].Reviews[0].SubmittedAt = second })
+	e, ctx, stop := startPassedReview(t, h)
 	h.gh.label(7, "human")
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("the pre-hold approval in the same second was reused")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "the pre-hold approval in the same second was reused")
 	stop()
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the waiting check appeared")
-	h.gh.mu.Lock()
-	h.gh.prs[7].Reviews[1].SubmittedAt = second // GitHub exposes only seconds for both reviews.
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[7].Reviews[1].SubmittedAt = second }) // GitHub exposes only seconds for both reviews.
 	e, ctx, _ = h.start()
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("a new approval after the persisted hold was rejected due to second precision")
-	}
-	n := h.gh.checkCount()
-	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("an unchanged same-second approval rewrote its check")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "a new approval after the persisted hold was rejected due to second precision")
+	unchangedPoll(t, h, e, ctx, "an unchanged same-second approval rewrote its check")
 }
 
 func TestFreshSameSecondApprovalCanAcknowledgeHoldBeforeFirstSnapshot(t *testing.T) {
-	h := newHarness(t)
-	second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
-	addPR7(h)
-	e, ctx, _ := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h, second := secondPR7Harness(t, 15)
+	e, ctx, _ := startPassedReview(t, h)
 	h.gh.label(7, "human")
 	reviews := "GET /repos/" + testRepo + "/pulls/7/reviews"
 	h.gh.failWith(reviews, 502)
 	e.Tick(ctx)
 	st, _ := LoadState(h.gh.check(shaA).Text)
-	if st.Gate == nil || st.Gate.ApprovalNonce == "" || !strings.Contains(h.gh.check(shaA).Summary, approvalAcknowledgement(st.Gate.ApprovalNonce)) {
-		t.Fatal("the hold did not publish an acknowledgement before the first review snapshot")
-	}
+	failIf(t, st.Gate == nil || st.Gate.ApprovalNonce == "" || !strings.Contains(h.gh.check(shaA).Summary, approvalAcknowledgement(st.Gate.ApprovalNonce)), "the hold did not publish an acknowledgement before the first review snapshot")
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, approvalAcknowledgement(st.Gate.ApprovalNonce))
-	h.gh.mu.Lock()
-	h.gh.prs[7].Reviews[0].SubmittedAt = second
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[7].Reviews[0].SubmittedAt = second })
 	h.gh.failWith(reviews, 0)
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("a fresh same-second approval before the first snapshot remained rejected")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "a fresh same-second approval before the first snapshot remained rejected")
 }
 
 func TestAnAmbiguousApprovalCanAcknowledgeTheHoldByEditingItsBody(t *testing.T) {
-	h := newHarness(t)
-	second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
-	addPR7(h)
-	e, ctx, stop := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h, second := secondPR7Harness(t, 15)
+	e, ctx, stop := startPassedReview(t, h)
 	h.gh.label(7, "human")
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the label, before the first snapshot")
-	h.gh.mu.Lock()
-	h.gh.prs[7].Reviews[0].SubmittedAt = second
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[7].Reviews[0].SubmittedAt = second })
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("an ambiguous plain approval cleared the hold")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "an ambiguous plain approval cleared the hold")
 	st, _ := LoadState(h.gh.check(shaA).Text)
 	stop()
 	h.gh.mu.Lock()
@@ -1053,22 +1088,14 @@ func TestAnAmbiguousApprovalCanAcknowledgeTheHoldByEditingItsBody(t *testing.T) 
 	h.gh.mu.Unlock()
 	e, ctx, _ = h.start()
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("editing the same approving review to acknowledge the persisted hold did not clear it")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "editing the same approving review to acknowledge the persisted hold did not clear it")
 }
 
 func TestAcknowledgementAuthenticatesTheCurrentReviewBody(t *testing.T) {
 	for _, change := range []string{"other editor", "unknown editor", "missing edit time", "dismissed", "wrong head", "wrong author", "different body", "read failure", "old nonce"} {
 		t.Run(change, func(t *testing.T) {
-			h := newHarness(t)
-			second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-			h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
-			addPR7(h)
-			e, ctx, _ := h.start()
-			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-			eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h, second := secondPR7Harness(t, 15)
+			e, ctx, _ := startPassedReview(t, h)
 			h.gh.label(7, "human")
 			h.gh.review(7, "jomcgi", "APPROVED", shaA, "ambiguous approval")
 			e.Tick(ctx)
@@ -1105,16 +1132,13 @@ func TestAcknowledgementAuthenticatesTheCurrentReviewBody(t *testing.T) {
 				h.gh.label(7, "human")
 			}
 			e.Tick(ctx)
-			if h.gh.check(shaA).Conclusion != ConclusionFailure {
-				t.Fatal("an unauthenticated or stale acknowledgement cleared the hold")
-			}
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "an unauthenticated or stale acknowledgement cleared the hold")
 		})
 	}
 }
 
 func TestRunningReviewRetainsAHoldRemovedBeforeCompletion(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the hold")
 	e, ctx, stop := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
@@ -1126,20 +1150,14 @@ func TestRunningReviewRetainsAHoldRemovedBeforeCompletion(t *testing.T) {
 	e, ctx, _ = h.start()
 	e.Tick(ctx)
 	eventually(t, "the recovered review to finish", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("a hold observed during the task was lost after removal and restart")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "a hold observed during the task was lost after removal and restart")
 }
 
 func TestRemovedHoldHistorySurvivesFailedWritesAndNewHeads(t *testing.T) {
 	for _, newHead := range []bool{false, true} {
 		t.Run(fmt.Sprint("new head ", newHead), func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
-			e, ctx, stop := h.start()
-			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-			eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h := newPR7Harness(t)
+			e, ctx, stop := startPassedReview(t, h)
 			h.gh.label(7, "human")
 			writes := "POST /repos/" + testRepo + "/check-runs"
 			h.gh.failWith(writes, 502)
@@ -1154,59 +1172,43 @@ func TestRemovedHoldHistorySurvivesFailedWritesAndNewHeads(t *testing.T) {
 			}
 			e, ctx, _ = h.start()
 			if newHead {
-				h.k.finish(runReview(t, h, e, ctx, 7, head), kagent.StateCompleted, report(t, passing))
-				eventually(t, "the new head review", func() bool { return h.gh.check(head).Status == "completed" })
+				completeReview(t, h, runReview(t, h, e, ctx, 7, head), head, "the new head review")
 			} else {
 				e.Tick(ctx)
 			}
-			if h.gh.check(head).Conclusion != ConclusionFailure {
-				t.Fatal("removed durable hold history was forgotten")
-			}
+			failIf(t, h.gh.check(head).Conclusion != ConclusionFailure, "removed durable hold history was forgotten")
 		})
 	}
 }
 
 func TestLabelHistoryReadFailureRevokesAndRecoversWithoutChurn(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	reads := "GET /repos/" + testRepo + "/issues/7/events"
 	h.gh.failWith(reads, 502)
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "the failed final history read", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-	if h.gh.check(shaA).Status != "in_progress" {
-		t.Fatal("incomplete history let a task complete")
-	}
+	failIf(t, h.gh.check(shaA).Status != "in_progress", "incomplete history let a task complete")
 	h.gh.failWith(reads, 0)
 	e.Tick(ctx)
 	eventually(t, "the recovered pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
 	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.failWith(reads, 502)
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("unreadable history retained a pass")
-	}
-	n := h.gh.checkCount()
-	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("an unchanged history outage churned checks")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "unreadable history retained a pass")
+	unchangedPoll(t, h, e, ctx, "an unchanged history outage churned checks")
 	h.gh.failWith(reads, 0)
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("history recovery became a sticky failure")
-	}
-	if n, _ := h.k.state(); n != 1 {
-		t.Fatal("history retry started another model task")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "history recovery became a sticky failure")
+	tasks, _ := h.k.state()
+	failIf(t, tasks != 1, "history retry started another model task")
 }
 
 func TestObservedHoldSurvivesUnavailableThenLaggingHistory(t *testing.T) {
 	for _, running := range []bool{false, true} {
 		t.Run(fmt.Sprint("running ", running), func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
+			h := newPR7Harness(t)
 			e, ctx, stop := h.start()
 			task := runReview(t, h, e, ctx, 7, shaA)
 			if !running {
@@ -1226,67 +1228,42 @@ func TestObservedHoldSurvivesUnavailableThenLaggingHistory(t *testing.T) {
 			stop()
 			h.gh.label(7)
 			h.gh.failWith(reads, 0)
-			h.gh.mu.Lock()
-			h.gh.prs[7].LabelEvents = nil
-			h.gh.mu.Unlock() // Simulate a lagging complete history response.
+			h.gh.withLock(func() { h.gh.prs[7].LabelEvents = nil }) // Simulate a lagging complete history response.
 			e, ctx, _ = h.start()
 			e.Tick(ctx)
 			eventually(t, "the completed hold", func() bool { return h.gh.check(shaA).Status == "completed" })
-			if h.gh.check(shaA).Conclusion != ConclusionFailure {
-				t.Fatal("the observed label was lost while history was unreadable")
-			}
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "the observed label was lost while history was unreadable")
 		})
 	}
 }
 
 func TestSameSecondSnapshotWaitsForACompleteRead(t *testing.T) {
-	h := newHarness(t)
-	second := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	h, second := secondPR7Harness(t, 14)
 	cutoff := second.Add(400 * time.Millisecond)
-	h.cfg.Now = func() time.Time { return cutoff }
-	addPR7(h)
-	e, ctx, _ := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e, ctx, _ := startPassedReview(t, h)
 	h.gh.label(7, "human")
 	reviews := "GET /repos/" + testRepo + "/pulls/7/reviews"
 	h.gh.failWith(reviews, 502)
 	e.Tick(ctx)
 	st, _ := LoadState(h.gh.check(shaA).Text)
-	if st.Gate == nil || st.Gate.ApprovalSnapshot != nil || !st.Gate.ApprovalAfter.Equal(cutoff) {
-		t.Fatal("a failed review read established a usable snapshot")
-	}
+	failIf(t, st.Gate == nil || st.Gate.ApprovalSnapshot != nil || !st.Gate.ApprovalAfter.Equal(cutoff), "a failed review read established a usable snapshot")
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the first complete snapshot")
-	h.gh.mu.Lock()
-	h.gh.prs[7].Reviews[0].SubmittedAt = second
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[7].Reviews[0].SubmittedAt = second })
 	h.gh.failWith(reviews, 0)
 	e.Tick(ctx)
 	st, _ = LoadState(h.gh.check(shaA).Text)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure || st.Gate.ApprovalSnapshot == nil || len(st.Gate.ApprovalSnapshot.IDs) != 1 || !st.Gate.ApprovalAfter.Equal(cutoff) {
-		t.Fatal("the first complete snapshot cleared its own ambiguous approval or moved the cutoff")
-	}
-	n := h.gh.checkCount()
-	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("the persisted snapshot changed on an unchanged poll")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || st.Gate.ApprovalSnapshot == nil || len(st.Gate.ApprovalSnapshot.IDs) != 1 || !st.Gate.ApprovalAfter.Equal(cutoff), "the first complete snapshot cleared its own ambiguous approval or moved the cutoff")
+	unchangedPoll(t, h, e, ctx, "the persisted snapshot changed on an unchanged poll")
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the complete snapshot")
-	h.gh.mu.Lock()
-	h.gh.prs[7].Reviews[1].SubmittedAt = second
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[7].Reviews[1].SubmittedAt = second })
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("a new same-second approval did not clear the persisted hold")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "a new same-second approval did not clear the persisted hold")
 }
 
 func TestHoldAddedDuringReviewNeedsFreshApproval(t *testing.T) {
 	for _, gatedPath := range []bool{false, true} {
 		t.Run(fmt.Sprint("gated path ", gatedPath), func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
+			h := newPR7Harness(t)
 			if gatedPath {
 				h.gh.prs[7].Files = []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}
 			}
@@ -1294,70 +1271,53 @@ func TestHoldAddedDuringReviewNeedsFreshApproval(t *testing.T) {
 			e, ctx, _ := h.start()
 			task := runReview(t, h, e, ctx, 7, shaA)
 			h.gh.label(7, "needs-human")
-			h.k.finish(task, kagent.StateCompleted, report(t, passing))
-			eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
-			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, gateOnlyMarker) {
-				t.Fatalf("review completed from stale labels: %s:\n%s", c.Conclusion, c.Summary)
-			}
+			completeReview(t, h, task, shaA, "the completed check")
+			check := h.gh.check(shaA)
+			failIf(t, check.Conclusion != ConclusionFailure || !strings.Contains(check.Summary, gateOnlyMarker), "review completed from stale labels: %s:\n%s", check.Conclusion, check.Summary)
 			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-			h.gh.review(7, "jomcgi", "APPROVED", shaA, "approved after the hold")
-			e.Tick(ctx)
-			if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-				t.Fatal("fresh approval did not clear the hold")
-			}
+			approveAndCheck(t, h, e, ctx, 7, shaA, "approved after the hold", "fresh approval did not clear the hold")
 		})
 	}
 }
 
 func TestCompletionRetriesCurrentGateReadWithoutAnotherTask(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.gh.failGraphQL("pull_request", true)
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "failed current PR read", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-	if c := h.gh.check(shaA); c.Status != "in_progress" || RecordedTask(c.Summary).ID != task {
-		t.Fatalf("failed read lost the attached task: %+v", c)
-	}
+	check := h.gh.check(shaA)
+	failIf(t, check.Status != "in_progress" || RecordedTask(check.Summary).ID != task, "failed read lost the attached task: %+v", check)
 	h.gh.label(7, "needs-human")
 	h.gh.failGraphQL("pull_request", false)
 	e, ctx, _ = h.start()
 	e.Tick(ctx)
 	eventually(t, "the held check after reattach", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("reattach forgot that the hold followed the approval")
-	}
-	if n, _ := h.k.state(); n != 1 {
-		t.Fatalf("final metadata retry started %d tasks, want 1", n)
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "reattach forgot that the hold followed the approval")
+	tasks, _ := h.k.state()
+	failIf(t, tasks != 1, "final metadata retry started %d tasks, want 1", tasks)
 }
 
 func TestReattachedLegacyProgressRequiresFreshHoldApproval(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 	e, ctx, stop := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	eventually(t, "the task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
 	stop()
-	h.gh.mu.Lock()
-	h.gh.checks[0].Text = "" // A progress check written before snapshots existed.
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.checks[0].Text = "" }) // A progress check written before snapshots existed.
 	h.gh.label(7, "human")
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	e, ctx, _ = h.start()
 	e.Tick(ctx)
 	eventually(t, "the legacy task to finish held", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("legacy progress assumed the approval followed the hold")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "legacy progress assumed the approval followed the hold")
 }
 
 func TestReattachedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.label(7, "human")
 	e, ctx, stop := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
@@ -1376,23 +1336,17 @@ func TestReattachedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
 		t.Fatalf("PR 8 borrowed PR 7's preexisting hold snapshot: %s:\n%s", c.Conclusion, c.Summary)
 	}
 	eventually(t, "the shared-head slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 1 })
-	h.gh.review(8, "jomcgi", "APPROVED", shaA, "after PR 8's hold")
-	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("PR 8 could not clear its own hold with a fresh approval")
-	}
+	approveAndCheck(t, h, e, ctx, 8, shaA, "after PR 8's hold", "PR 8 could not clear its own hold with a fresh approval")
 }
 
 func TestDuplicateHeadStaysHeldWithoutCheckOrTaskChurn(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.label(7, "human")
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 	e, ctx, _ := h.start()
 	e.Tick(ctx)
-	if c := h.gh.check(shaA); c == nil || c.Status != "completed" || c.Conclusion != ConclusionFailure {
-		t.Fatalf("duplicate head was not held: %+v", c)
-	}
+	check := h.gh.check(shaA)
+	failIf(t, check == nil || check.Status != "completed" || check.Conclusion != ConclusionFailure, "duplicate head was not held: %+v", check)
 	n := h.gh.checkCount()
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 	for range 3 {
@@ -1400,19 +1354,15 @@ func TestDuplicateHeadStaysHeldWithoutCheckOrTaskChurn(t *testing.T) {
 	}
 	e = h.engine()
 	e.Tick(ctx)
-	if h.gh.checkCount() != n || h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("duplicate head rewrote or cleared its hold across polls/restart")
-	}
-	if n, _ := h.k.state(); n != 0 {
-		t.Fatalf("duplicate head started %d model tasks", n)
-	}
+	failIf(t, h.gh.checkCount() != n || h.gh.check(shaA).Conclusion != ConclusionFailure, "duplicate head rewrote or cleared its hold across polls/restart")
+	tasks, _ := h.k.state()
+	failIf(t, tasks != 0, "duplicate head started %d model tasks", tasks)
 }
 
 func TestLabelsObservedDuringADuplicateHoldStayStickyAcrossRestart(t *testing.T) {
 	for _, number := range []int{7, 8} {
 		t.Run(fmt.Sprint("label on PR ", number), func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
+			h := newPR7Harness(t)
 			h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 			e, ctx, stop := h.start()
 			e.Tick(ctx) // Establish the duplicate marker before the label exists.
@@ -1425,38 +1375,24 @@ func TestLabelsObservedDuringADuplicateHoldStayStickyAcrossRestart(t *testing.T)
 			n := h.gh.checkCount()
 			h.gh.label(number)
 			e.Tick(ctx)
-			if h.gh.checkCount() != n {
-				t.Fatal("removing a duplicate label needlessly rewrote its sticky hold")
-			}
+			failIf(t, h.gh.checkCount() != n, "removing a duplicate label needlessly rewrote its sticky hold")
 			stop()
-			h.gh.mu.Lock()
-			h.gh.prs[8].Closed = true
-			h.gh.mu.Unlock()
+			h.gh.withLock(func() { h.gh.prs[8].Closed = true })
 			e, ctx, _ = h.start()
-			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-			eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
-			if h.gh.check(shaA).Conclusion != ConclusionFailure {
-				t.Fatal("removed duplicate-period label was forgotten after restart")
-			}
+			completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "the recovered review")
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "removed duplicate-period label was forgotten after restart")
 			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-			h.gh.review(7, "jomcgi", "APPROVED", shaA, "approve the retained hold")
-			e.Tick(ctx)
-			if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-				t.Fatal("fresh approval did not clear the retained hold")
-			}
+			approveAndCheck(t, h, e, ctx, 7, shaA, "approve the retained hold", "fresh approval did not clear the retained hold")
 		})
 	}
 }
 
 func TestFailedDuplicateLabelWriteCannotClearTheHoldAfterRestart(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 	e, ctx, stop := h.start()
 	e.Tick(ctx)
-	h.gh.mu.Lock()
-	h.gh.checks[len(h.gh.checks)-1].Text = encodeState(State{}) // Legacy duplicate marker without a stored Gate.
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.checks[len(h.gh.checks)-1].Text = encodeState(State{}) }) // Legacy duplicate marker without a stored Gate.
 	h.gh.label(8, "needs-human")
 	writes := "POST /repos/" + testRepo + "/check-runs"
 	h.gh.failWith(writes, 502)
@@ -1465,17 +1401,12 @@ func TestFailedDuplicateLabelWriteCannotClearTheHoldAfterRestart(t *testing.T) {
 	e.Tick(ctx)
 	h.gh.label(8)
 	stop()
-	h.gh.mu.Lock()
-	h.gh.prs[8].Closed = true
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[8].Closed = true })
 	h.gh.failWith(writes, 0)
 	h.gh.failWith(updates, 0)
 	e, ctx, _ = h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("the failed duplicate-period hold write became an ungated pass after restart")
-	}
+	completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "the recovered review")
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "the failed duplicate-period hold write became an ungated pass after restart")
 }
 
 func TestFailedInitialDuplicateWriteFencesRecovery(t *testing.T) {
@@ -1490,24 +1421,104 @@ func TestFailedInitialDuplicateWriteFencesRecovery(t *testing.T) {
 				h.gh.failWith(updates, 502)
 			}
 			e.Tick(ctx)
-			if !failUpdate && h.gh.check(shaA).Conclusion != ConclusionFailure {
-				t.Fatal("update fallback retained the pass")
-			}
-			h.gh.mu.Lock()
-			h.gh.prs[8].Closed = true
-			h.gh.mu.Unlock()
+			failIf(t, !failUpdate && h.gh.check(shaA).Conclusion != ConclusionFailure, "update fallback retained the pass")
+			h.gh.withLock(func() { h.gh.prs[8].Closed = true })
 			e.Tick(ctx)
-			if len(h.gh.enqueues()) != 0 {
-				t.Fatal("pending duplicate intent allowed enqueue")
-			}
+			failIf(t, len(h.gh.enqueues()) != 0, "pending duplicate intent allowed enqueue")
 			h.gh.failWith(writes, 0)
 			h.gh.failWith(updates, 0)
 			if failUpdate {
 				e.Tick(ctx)
 			} // Durably record pending intent before recovery starts.
-			if h.gh.check(shaA).Conclusion != ConclusionFailure {
-				t.Fatal("recovered writes did not persist the duplicate hold")
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "recovered writes did not persist the duplicate hold")
+		})
+	}
+}
+
+func TestDuplicateHoldSurvivesNewHeadsAndLostWritesAcrossRestart(t *testing.T) {
+	for _, scenario := range []string{"persisted new head", "lost writes same head", "lost writes new head", "cached head"} {
+		t.Run(scenario, func(t *testing.T) {
+			h := newPR7Harness(t)
+			e, ctx, stop := startPassedReview(t, h)
+			held := shaA
+			if scenario == "cached head" {
+				held = strings.Repeat("b", 40)
+				h.gh.push(7, held)
 			}
+			h.gh.addPR(&fakePR{Number: 8, Head: held, Labels: []string{"human"}})
+			writes, updates := "POST /repos/"+testRepo+"/check-runs", fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+			if strings.HasPrefix(scenario, "lost") {
+				h.gh.failWith(writes, 502)
+				h.gh.failWith(updates, 502)
+			}
+			e.Tick(ctx)
+			if scenario != "cached head" {
+				stop()
+			}
+			h.gh.withLock(func() { h.gh.prs[8].Closed = true })
+			h.gh.failWith(writes, 0)
+			h.gh.failWith(updates, 0)
+			head := shaA
+			if scenario == "cached head" {
+				h.gh.push(7, head)
+			}
+			if strings.HasSuffix(scenario, "new head") {
+				head = strings.Repeat("b", 40)
+				h.gh.push(7, head)
+			}
+			h.startupRecovery = strings.HasPrefix(scenario, "lost")
+			if scenario != "cached head" {
+				e, ctx, _ = h.start()
+			}
+			if head != shaA {
+				completeReview(t, h, runReview(t, h, e, ctx, 7, head), head, "the recovered head")
+			} else {
+				e.Tick(ctx)
+			}
+			failIf(t, h.gh.check(head).Conclusion != ConclusionFailure, "a closed sibling's hold vanished across recovery or a new head")
+		})
+	}
+}
+
+func TestInheritedRecoveryCannotBorrowAnotherPRsReviewSnapshot(t *testing.T) {
+	h := newPR7Harness(t)
+	h.startupRecovery = true
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	eventually(t, "PR7 task", func() bool { return h.taskOn(7, shaA, 1) != "" })
+	h.k.finishOpen(kagent.StateCompleted, report(t, passing))
+	eventually(t, "PR7 hold", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the completed worker", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	head := strings.Repeat("b", 40)
+	h.gh.addPR(&fakePR{Number: 8, Head: head, Created: h.gh.prs[7].Created.Add(time.Second), Heads: []string{shaA, head}})
+	h.gh.review(8, "jomcgi", "APPROVED", head, "before inheriting unknown context")
+	completeReview(t, h, runReview(t, h, e, ctx, 8, head), head, "PR8 check")
+	failIf(t, h.gh.check(head).Conclusion != ConclusionFailure, "PR8 borrowed PR7's all-review baseline")
+}
+
+func TestStartupReadFailureRevokesQueuedGroup(t *testing.T) {
+	for _, missing := range []string{"read error", "draft", "skipped", "omitted", "head changed"} {
+		t.Run(missing, func(t *testing.T) {
+			h, e, ctx := approvedQueuedHead(t)
+			h.gh.withLock(func() {
+				switch missing {
+				case "draft":
+					h.gh.prs[7].Draft = true
+				case "skipped":
+					h.gh.prs[7].Labels = []string{"no-review"}
+				case "omitted":
+					h.gh.prs[7].Closed = true
+				case "head changed":
+					h.gh.prs[7].Head = strings.Repeat("b", 40)
+				}
+			})
+			if missing == "read error" {
+				h.startupRecovery = true
+				e = h.engine()
+				h.gh.failWith("GET /repos/"+testRepo+"/pulls", 502)
+			}
+			e.Tick(ctx)
+			failIf(t, h.gh.check("mg-7").Conclusion != ConclusionFailure, "missing current proof refetched a cached pass")
 		})
 	}
 }
@@ -1515,84 +1526,62 @@ func TestFailedInitialDuplicateWriteFencesRecovery(t *testing.T) {
 func TestDuplicateHeadRevokesAPassAndReviewsAgainAfterResolution(t *testing.T) {
 	h, e, ctx := approvedQueuedHead(t)
 	e.Tick(ctx)
-	if len(h.gh.enqueues()) != 1 {
-		t.Fatal("the initial head was not enqueued")
-	}
+	failIf(t, len(h.gh.enqueues()) != 1, "the initial head was not enqueued")
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure {
-		t.Fatal("duplicate head retained a passing head or merge group")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure, "duplicate head retained a passing head or merge group")
 	n := h.gh.checkCount()
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "while the duplicate exists")
 	e.Tick(ctx)
 	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("approved and unlabelled duplicate PRs churned the shared check")
-	}
+	failIf(t, h.gh.checkCount() != n, "approved and unlabelled duplicate PRs churned the shared check")
 	h.gh.mu.Lock()
 	h.gh.prs[8].Closed = true
 	delete(h.gh.queued, 7)
 	h.gh.mu.Unlock()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the fresh review after duplicate resolution", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("resolving the duplicate reused its earlier approval")
-	}
+	completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "the fresh review after duplicate resolution")
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "resolving the duplicate reused its earlier approval")
 	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after resolving the duplicate")
 	e.Tick(ctx)
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1 {
-		t.Fatal("fresh approval failed or re-enqueued a previously returned head")
-	}
-	if n, _ := h.k.state(); n != 2 {
-		t.Fatalf("model executions = %d, want initial and recovered review", n)
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1, "fresh approval failed or re-enqueued a previously returned head")
+	tasks, _ := h.k.state()
+	failIf(t, tasks != 2, "model executions = %d, want initial and recovered review", tasks)
 }
 
 func TestDuplicateHeadStopsARunningReviewBeforeHoldingItsCheck(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 	e.Tick(ctx)
-	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
-		t.Fatalf("running duplicate head was not held: %+v", c)
-	}
-	if _, cancels := h.k.state(); !slices.Contains(cancels, task) {
-		t.Fatal("the duplicate head's running task was not cancelled")
-	}
+	check := h.gh.check(shaA)
+	failIf(t, check.Conclusion != ConclusionFailure, "running duplicate head was not held: %+v", check)
+	_, cancelled := h.k.state()
+	failIf(t, !slices.Contains(cancelled, task), "the duplicate head's running task was not cancelled")
 	n := h.gh.checkCount()
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.checkCount() != n {
-		t.Fatal("the old task overwrote the duplicate hold")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.checkCount() != n, "the old task overwrote the duplicate hold")
 }
 
 func TestCompletionDetectsADuplicateCreatedDuringReview(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA, Labels: []string{"human"}}) // No intervening Tick.
-	h.k.finish(task, kagent.StateCompleted, report(t, passing))
-	eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
-		t.Fatalf("completed a shared head from one PR's context: %+v", c)
-	}
-	if st, ok := LoadState(h.gh.check(shaA).Text); !ok || st.Gate == nil || !slices.Contains(st.Gate.Labels, "human") {
-		t.Fatal("completion did not preserve the other PR's hold label")
-	}
+	completeReview(t, h, task, shaA, "the completed check")
+	check := h.gh.check(shaA)
+	failIf(t, check.Conclusion != ConclusionFailure, "completed a shared head from one PR's context: %+v", check)
+	state, valid := LoadState(h.gh.check(shaA).Text)
+	failIf(t, !valid || state.Gate == nil || !slices.Contains(state.Gate.Labels, "human"), "completion did not preserve the other PR's hold label")
 }
 
 func TestCompletionUsesTheLatestListedPRContext(t *testing.T) {
 	for _, change := range []string{"different sole PR", "new hold label"} {
 		t.Run(change, func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
+			h := newPR7Harness(t)
 			h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the metadata changed")
 			e, ctx, _ := h.start()
 			task := runReview(t, h, e, ctx, 7, shaA)
@@ -1609,22 +1598,19 @@ func TestCompletionUsesTheLatestListedPRContext(t *testing.T) {
 				}
 			}
 			h.gh.mu.Unlock()
-			h.k.finish(task, kagent.StateCompleted, report(t, passing))
-			eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
+			completeReview(t, h, task, shaA, "the completed check")
 			want := ConclusionFailure
 			if change == "different sole PR" {
 				want = ConclusionCancelled
 			}
-			if c := h.gh.check(shaA); c.Conclusion != want {
-				t.Fatalf("ignored the later listing: %s, want %s", c.Conclusion, want)
-			}
+			check := h.gh.check(shaA)
+			failIf(t, check.Conclusion != want, "ignored the later listing: %s, want %s", check.Conclusion, want)
 		})
 	}
 }
 
 func TestDuplicateRecoveryKeepsARemovedStickyLabel(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.label(7, "human")
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
@@ -1634,21 +1620,16 @@ func TestDuplicateRecoveryKeepsARemovedStickyLabel(t *testing.T) {
 	e.Tick(ctx)
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 	e.Tick(ctx)
-	h.gh.mu.Lock()
-	h.gh.prs[8].Closed = true
-	h.gh.mu.Unlock()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
-	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, gateOnlyMarker) {
-		t.Fatalf("duplicate recovery discarded a sticky label: %s", c.Conclusion)
-	}
+	h.gh.withLock(func() { h.gh.prs[8].Closed = true })
+	completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "the recovered review")
+	check := h.gh.check(shaA)
+	failIf(t, check.Conclusion != ConclusionFailure || !strings.Contains(check.Summary, gateOnlyMarker), "duplicate recovery discarded a sticky label: %s", check.Conclusion)
 }
 
 func TestDuplicateRecoveryKeepsSameHeadFindingsAcrossRestart(t *testing.T) {
 	for _, id := range []string{"x.go:bug", "x.go:human-gate"} {
 		t.Run(id, func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
+			h := newPR7Harness(t)
 			e, ctx, stop := h.start()
 			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
 				map[string]any{"id": id, "severity": "high", "path": "x.go", "title": "Still unresolved"},
@@ -1657,21 +1638,15 @@ func TestDuplicateRecoveryKeepsSameHeadFindingsAcrossRestart(t *testing.T) {
 			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 			h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 			e.Tick(ctx)
-			h.gh.mu.Lock()
-			h.gh.prs[8].Closed = true
-			h.gh.mu.Unlock()
+			h.gh.withLock(func() { h.gh.prs[8].Closed = true })
 			task := runReview(t, h, e, ctx, 7, shaA)
 			if prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text; !strings.Contains(prompt, id) {
 				t.Error("recovery prompt omitted the same-head finding")
 			}
 			eventually(t, "the recovered task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
-			h.gh.mu.Lock()
-			h.gh.prs[8].Closed = false // A second duplicate interrupts the recovery task.
-			h.gh.mu.Unlock()
+			h.gh.withLock(func() { h.gh.prs[8].Closed = false }) // A second duplicate interrupts the recovery task.
 			e.Tick(ctx)
-			h.gh.mu.Lock()
-			h.gh.prs[8].Closed = true
-			h.gh.mu.Unlock()
+			h.gh.withLock(func() { h.gh.prs[8].Closed = true })
 			task = runReview(t, h, e, ctx, 7, shaA)
 			eventually(t, "the second recovered task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
 			stop()
@@ -1679,43 +1654,26 @@ func TestDuplicateRecoveryKeepsSameHeadFindingsAcrossRestart(t *testing.T) {
 			h.k.finish(task, kagent.StateCompleted, report(t, passing)) // Omitting an unresolved finding cannot clear it.
 			e.Tick(ctx)
 			eventually(t, "the recovered report", func() bool { return h.gh.check(shaA).Status == "completed" })
-			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, id) {
-				t.Fatalf("recovery discarded the finding: %s:\n%s", c.Conclusion, c.Summary)
-			}
+			check := h.gh.check(shaA)
+			failIf(t, check.Conclusion != ConclusionFailure || !strings.Contains(check.Summary, id), "recovery discarded the finding: %s:\n%s", check.Conclusion, check.Summary)
 		})
 	}
 }
 
 func TestCompletedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
+	h := newPR7Harness(t)
 	h.gh.label(7, "human")
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 	h.gh.prs[7].LabelEvents[0].CreatedAt = h.gh.prs[7].Reviews[0].SubmittedAt.Add(-time.Minute)
-	e, ctx, _ := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-	eventually(t, "the original approval", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e, ctx, _ := startPassedReview(t, h)
 	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
 	h.gh.review(8, "jomcgi", "APPROVED", shaA, "before PR 8's hold")
-	h.gh.mu.Lock()
-	h.gh.prs[7].Closed = true // No poll observed both PRs open.
-	h.gh.mu.Unlock()
+	h.gh.withLock(func() { h.gh.prs[7].Closed = true }) // No poll observed both PRs open.
 	h.gh.label(8, "human")
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure {
-		t.Fatal("PR 8 reused PR 7's label baseline with a pre-hold approval")
-	}
-	n := h.gh.checkCount()
-	e.Tick(ctx)
-	if h.gh.checkCount() != n {
-		t.Fatal("the foreign snapshot caused repeated cutoff/check changes")
-	}
-	h.gh.review(8, "jomcgi", "APPROVED", shaA, "after PR 8's hold")
-	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("PR 8 could not clear its own hold")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "PR 8 reused PR 7's label baseline with a pre-hold approval")
+	unchangedPoll(t, h, e, ctx, "the foreign snapshot caused repeated cutoff/check changes")
+	approveAndCheck(t, h, e, ctx, 8, shaA, "after PR 8's hold", "PR 8 could not clear its own hold")
 }
 
 func TestGateRevalidationErrorsCannotPropagateAnOldPass(t *testing.T) {
@@ -1728,39 +1686,22 @@ func TestGateRevalidationErrorsCannotPropagateAnOldPass(t *testing.T) {
 				h.gh.failWith("GET /repos/"+testRepo+"/commits/"+shaA+"/check-runs", 502)
 			} else {
 				h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")
-				h.gh.mu.Lock()
-				h.gh.failCheckSHA = shaA
-				h.gh.mu.Unlock()
+				h.gh.withLock(func() { h.gh.failCheckSHA = shaA })
 			}
 			e.Tick(ctx)
-			if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure {
-				t.Fatalf("merge group retained an unverified pass: %+v", c)
-			}
-			if len(h.gh.enqueues()) != 0 {
-				t.Fatal("enqueued an unverified approval")
-			}
-			if failure == "reviews" && h.gh.check(shaA).Conclusion != ConclusionFailure {
-				t.Fatal("review read error left the head passing")
-			}
+			check := h.gh.check("mg-7")
+			failIf(t, check.Conclusion != ConclusionFailure, "merge group retained an unverified pass: %+v", check)
+			failIf(t, len(h.gh.enqueues()) != 0, "enqueued an unverified approval")
+			failIf(t, failure == "reviews" && h.gh.check(shaA).Conclusion != ConclusionFailure, "review read error left the head passing")
 			if failure == "reviews" {
-				n := h.gh.checkCount()
-				e.Tick(ctx)
-				if h.gh.checkCount() != n {
-					t.Fatal("repeated read error created another check")
-				}
+				unchangedPoll(t, h, e, ctx, "repeated read error created another check")
 				h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 0)
 				e.Tick(ctx)
-				if h.gh.check(shaA).Conclusion != ConclusionSuccess {
-					t.Fatal("read recovery did not restore the still-valid approval")
-				}
+				failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "read recovery did not restore the still-valid approval")
 			} else if failure == "check write" {
-				h.gh.mu.Lock()
-				h.gh.failCheckSHA = ""
-				h.gh.mu.Unlock()
+				h.gh.withLock(func() { h.gh.failCheckSHA = "" })
 				e.Tick(ctx)
-				if h.gh.check(shaA).Conclusion != ConclusionFailure {
-					t.Fatal("write recovery did not persist the revoked approval")
-				}
+				failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "write recovery did not persist the revoked approval")
 			}
 		})
 	}
@@ -1784,14 +1725,10 @@ func TestLegacyGateStateCapturesHistoryOnceAndRevalidates(t *testing.T) {
 	e.Tick(ctx)
 	h.gh.label(7, "human", "Needs-Human") // Order and case do not create a hold.
 	e.Tick(ctx)
-	if h.gh.checkCount() != n+1 || h.gh.check(shaA).Conclusion != ConclusionSuccess {
-		t.Fatal("legacy label baseline or label order invalidated an approval")
-	}
+	failIf(t, h.gh.checkCount() != n+1 || h.gh.check(shaA).Conclusion != ConclusionSuccess, "legacy label baseline or label order invalidated an approval")
 	h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")
 	e.Tick(ctx)
-	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure {
-		t.Fatal("legacy state skipped approval revalidation")
-	}
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure, "legacy state skipped approval revalidation")
 }
 
 func TestGateChangesPreserveAnEnqueuedHeadsHistory(t *testing.T) {
@@ -1801,17 +1738,10 @@ func TestGateChangesPreserveAnEnqueuedHeadsHistory(t *testing.T) {
 			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Labels: []string{"human"}, Files: []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}})
 			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
-			e, ctx, _ := h.start()
-			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
-			eventually(t, "the approved head", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			e, ctx, _ := startPassedReview(t, h)
 			e.Tick(ctx)
-			if len(h.gh.enqueues()) != 1 || !strings.Contains(h.gh.check(shaA).Summary, enqueuedMarker) {
-				t.Fatal("the head was not initially enqueued and recorded")
-			}
-			h.gh.mu.Lock()
-			delete(h.gh.queued, 7) // The queue ejected this head.
-			h.gh.mu.Unlock()
+			failIf(t, len(h.gh.enqueues()) != 1 || !strings.Contains(h.gh.check(shaA).Summary, enqueuedMarker), "the head was not initially enqueued and recorded")
+			h.gh.withLock(func() { delete(h.gh.queued, 7) }) // The queue ejected this head.
 			switch change {
 			case "label removed":
 				h.gh.label(7)
@@ -1821,17 +1751,13 @@ func TestGateChangesPreserveAnEnqueuedHeadsHistory(t *testing.T) {
 				h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 502)
 			}
 			e.Tick(ctx)
-			if !strings.Contains(h.gh.check(shaA).Summary, enqueuedMarker) {
-				t.Fatal("gate replacement lost the enqueue history")
-			}
+			failIf(t, !strings.Contains(h.gh.check(shaA).Summary, enqueuedMarker), "gate replacement lost the enqueue history")
 			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
 			h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/reviews", 0)
 			e.Tick(ctx)
 			e = h.engine()
 			e.Tick(ctx)
-			if h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1 {
-				t.Fatal("restart re-enqueued a returned head after the gate cleared")
-			}
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.gh.enqueues()) != 1, "restart re-enqueued a returned head after the gate cleared")
 		})
 	}
 }

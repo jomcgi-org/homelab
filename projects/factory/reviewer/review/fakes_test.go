@@ -41,6 +41,7 @@ type fakePR struct {
 	Draft   bool
 	Labels  []string
 	Updated time.Time
+	Created time.Time
 	Files   []github.PullRequestFile
 	// Heads is the timeline's head history, oldest first; the current head
 	// is appended when it changes.
@@ -125,6 +126,12 @@ func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
 	return f, srv
 }
 
+func (f *fakeGitHub) withLock(change func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change()
+}
+
 func (f *fakeGitHub) addPR(pr *fakePR) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -133,6 +140,9 @@ func (f *fakeGitHub) addPR(pr *fakePR) {
 	}
 	if pr.Author == "" {
 		pr.Author = "jomcgi"
+	}
+	if pr.Created.IsZero() {
+		pr.Created = f.now().UTC().Truncate(time.Second)
 	}
 	if len(pr.Heads) == 0 {
 		pr.Heads = []string{pr.Head}
@@ -302,6 +312,20 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 		f.graphql(w, r)
 	case r.Method == http.MethodGet && path == "/pulls":
+		if q.Get("state") == "all" {
+			latest := time.Time{}
+			for _, pr := range f.prs {
+				if pr.Created.After(latest) {
+					latest = pr.Created
+				}
+			}
+			out := []map[string]any{}
+			if !latest.IsZero() {
+				out = append(out, map[string]any{"created_at": latest})
+			}
+			f.get(w, r, out)
+			return
+		}
 		out := []map[string]any{}
 		for _, pr := range f.sortedPRs() {
 			if q.Get("state") != "open" || pr.Closed || pr.Base != q.Get("base") {
@@ -316,6 +340,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"title": pr.Title, "body": pr.Body, "user": map[string]string{"login": pr.Author}, "labels": labels,
 				"html_url":   fmt.Sprintf("https://github.com/%s/pull/%d", testRepo, pr.Number),
 				"updated_at": pr.Updated.UTC().Format(time.RFC3339),
+				"created_at": pr.Created.UTC().Format(time.RFC3339),
 				"head":       map[string]string{"ref": fmt.Sprintf("branch-%d", pr.Number), "sha": pr.Head},
 				"base":       map[string]string{"ref": pr.Base},
 			})
@@ -864,13 +889,14 @@ func (k *fakeKagent) state() (executions int, cancels []string) {
 var testAgent = kagent.AgentRef{Namespace: "factory-review", Name: "reviewer"}
 
 type harness struct {
-	t   *testing.T
-	gh  *fakeGitHub
-	k   *fakeKagent
-	m   *metrics.Metrics
-	log *syncBuffer
-	cfg Config
-	srv *httptest.Server
+	t               *testing.T
+	gh              *fakeGitHub
+	k               *fakeKagent
+	m               *metrics.Metrics
+	log             *syncBuffer
+	cfg             Config
+	srv             *httptest.Server
+	startupRecovery bool
 }
 
 type syncBuffer struct {
@@ -928,7 +954,14 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) engine() *Engine {
 	gh := &github.Client{BaseURL: h.srv.URL, Tokens: reviewerTokens{}, ETags: &github.ETagCache{}}
 	log := slog.New(slog.NewJSONHandler(h.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	return New(h.cfg, gh, h.k, h.m, log)
+	e := New(h.cfg, gh, h.k, h.m, log)
+	if !h.startupRecovery { // Most cases isolate steady-state behavior; recovery cases exercise the startup scan.
+		e.epoch = "steady-state-test"
+		for i := range e.cfg.Bindings {
+			e.cfg.Bindings[i].startupBefore = &time.Time{}
+		}
+	}
+	return e
 }
 
 // start runs one engine until the test ends or stop is called.

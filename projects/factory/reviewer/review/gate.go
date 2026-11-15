@@ -62,56 +62,49 @@ type Gate struct {
 	Paths    []string  `json:"paths,omitempty"`
 	Labels   []string  `json:"labels,omitempty"`
 	Findings []Finding `json:"findings,omitempty"`
-	// SharedHead requires a new approval after duplicate PRs are resolved.
-	// The ambiguity itself is a hold even if a later label write is lost.
-	SharedHead bool `json:"shared_head,omitempty"`
+	// SharedHead makes a recorded duplicate itself a sticky human hold.
+	SharedHead    bool   `json:"shared_head,omitempty"`
+	RecoveryEpoch string `json:"recovery_epoch,omitempty"`
+	RecoveryPR    int    `json:"recovery_pr,omitempty"`
+	ContextToken  string `json:"context_token,omitempty"`
 	// Approver is the human whose APPROVED review of the head cleared it.
 	// It is revalidated every poll, never used as a cached authorization.
 	Approver string `json:"approver,omitempty"`
-	// Labels stays sticky; ObservedLabels records the latest label snapshot
-	// so removing and later reapplying a label creates a fresh hold. Empty
-	// arrays must survive JSON. Nil identifies older states whose Labels
-	// are the only available baseline.
+	// ObservedLabels detects re-additions; Labels stays sticky. Empty arrays
+	// survive JSON; nil means a legacy state using Labels as its baseline.
 	ObservedLabels []string `json:"observed_labels"`
-	// ApprovalAfter is when a new label was observed after review started.
-	// Only reviews submitted after it clear that hold. Zero preserves old
-	// states and gates present when the original review started.
+	// ApprovalAfter fences new holds; zero preserves legacy/initial gates.
 	ApprovalAfter time.Time `json:"approval_after,omitzero"`
-	// ApprovalSnapshot records all review IDs visible in the cutoff second
-	// on the first complete review read after the hold. It is persisted
-	// before an ambiguous same-second approval can clear the gate.
+	// ApprovalSnapshot records the first complete review read after a hold.
 	ApprovalSnapshot *ReviewSnapshot `json:"approval_snapshot,omitempty"`
-	// ApprovalNonce lets the configured approver explicitly acknowledge a
-	// hold when GitHub's second-resolution timestamp cannot order it.
+	// ApprovalNonce allows authenticated acknowledgement of ambiguous timing.
 	ApprovalNonce string `json:"approval_nonce,omitempty"`
-	// LabelHistory identifies the complete set of durable label additions
-	// already applied. Re-additions change it even when Labels stays sticky.
+	// LabelHistory identifies applied additions, including repeated labels.
 	LabelHistory string `json:"label_history,omitempty"`
 }
 
-// ReviewSnapshot distinguishes an observed empty second (IDs is empty)
-// from missing evidence (nil snapshot/IDs or Unavailable). IDs are compared
-// by membership: neither numeric order nor tie ordering is an authority.
+// Snapshot membership supplies ordering; nil/Unavailable is unknown, empty IDs is known empty.
 type ReviewSnapshot struct {
 	IDs         []int64 `json:"ids"`
 	Unavailable bool    `json:"unavailable,omitempty"`
+	All         bool    `json:"all,omitempty"` // Recovery uses causal order, including when clocks differ.
 }
 
 const maxSnapshotReviews = 64
 
-func snapshotReviews(reviews []github.PullRequestReview, after time.Time) *ReviewSnapshot {
-	snapshot := &ReviewSnapshot{IDs: []int64{}}
+func snapshotReviews(reviews []github.PullRequestReview, after time.Time, all bool) *ReviewSnapshot {
+	snapshot := &ReviewSnapshot{IDs: []int64{}, All: all}
 	second := after.Truncate(time.Second)
 	for _, r := range reviews {
 		if r.ID <= 0 || (r.SubmittedAt.IsZero() && r.State != "PENDING") {
-			return &ReviewSnapshot{Unavailable: true}
+			return &ReviewSnapshot{Unavailable: true, All: all}
 		}
-		if !r.SubmittedAt.Equal(second) {
+		if !all && !r.SubmittedAt.Equal(second) {
 			continue
 		}
 		if !slices.Contains(snapshot.IDs, r.ID) {
 			if len(snapshot.IDs) == maxSnapshotReviews {
-				return &ReviewSnapshot{Unavailable: true}
+				return &ReviewSnapshot{Unavailable: true, All: all}
 			}
 			snapshot.IDs = append(snapshot.IDs, r.ID)
 		}
@@ -124,9 +117,7 @@ func (g *Gate) resetApproval(now time.Time) {
 	g.ApprovalNonce = rand.Text()
 }
 
-// observeLabelEvents replays all holds on the PR, including removed labels
-// and earlier heads. The digest is independent of API ordering. We never
-// infer sub-second event order from timestamps or numeric IDs.
+// observeLabelEvents replays removed and older-head holds without ordering ties.
 func (g *Gate) observeLabelEvents(b *Binding, events []github.LabelEvent) bool {
 	var records []string
 	var latest time.Time
@@ -162,14 +153,35 @@ func (g *Gate) observeLabelEvents(b *Binding, events []github.LabelEvent) bool {
 
 // Needed reports whether the gate applies.
 func (g *Gate) Needed() bool {
-	return g != nil && (g.SharedHead || len(g.Paths)+len(g.Labels)+len(g.Findings) > 0)
+	return g != nil && (g.held() || len(g.Findings) > 0)
 }
 
 // held reports whether the service itself holds the head, by path or label.
-func (g *Gate) held() bool { return g != nil && (g.SharedHead || len(g.Paths)+len(g.Labels) > 0) }
+func (g *Gate) held() bool {
+	return g != nil && (g.SharedHead || g.RecoveryEpoch != "" || len(g.Paths)+len(g.Labels) > 0)
+}
 
-// observeLabels retains holds and fences approvals when a new label appears.
-// A legacy completed state uses its sticky labels as its initial snapshot.
+// inherit carries service holds, never a cached old-head approver.
+func (g *Gate) inherit(prior *Gate) {
+	if prior.ContextToken != "" {
+		g.ContextToken = prior.ContextToken
+	}
+	g.SharedHead = g.SharedHead || prior.SharedHead
+	for _, label := range prior.Labels {
+		if !slices.Contains(g.Labels, label) {
+			g.Labels = append(g.Labels, label)
+		}
+	}
+	newRecovery := prior.RecoveryEpoch != "" && (prior.RecoveryEpoch != g.RecoveryEpoch || prior.RecoveryPR != g.RecoveryPR)
+	if prior.RecoveryEpoch != "" {
+		g.RecoveryEpoch, g.RecoveryPR = prior.RecoveryEpoch, prior.RecoveryPR
+	}
+	if newRecovery || prior.ApprovalAfter.After(g.ApprovalAfter) {
+		g.ApprovalAfter, g.ApprovalNonce, g.ApprovalSnapshot = prior.ApprovalAfter, prior.ApprovalNonce, prior.ApprovalSnapshot
+	}
+}
+
+// observeLabels retains holds and detects new labels against the last snapshot.
 func (g *Gate) observeLabels(labels []string, now time.Time) bool {
 	observed := g.ObservedLabels
 	if observed == nil {
@@ -255,19 +267,18 @@ func latestDecisions(reviews []github.PullRequestReview) map[string]github.PullR
 }
 
 func approvalAfter(r github.PullRequestReview, after time.Time, snapshot *ReviewSnapshot, acknowledged bool) bool {
+	if snapshot != nil && snapshot.All {
+		return r.ID > 0 && (acknowledged || (snapshot.IDs != nil && !snapshot.Unavailable && !slices.Contains(snapshot.IDs, r.ID)))
+	}
 	if after.IsZero() || r.SubmittedAt.After(after) {
 		return true
 	}
-	// GitHub exposes whole-second submitted_at values. An unseen review ID
-	// from a later complete read proves a submission after our recorded
-	// snapshot, even when its timestamp is the same second as the hold.
-	// An approval racing between hold observation and that snapshot stays
-	// excluded: its ordering cannot be established from the timestamp.
+	// Whole-second timestamps need either a post-snapshot ID or explicit
+	// acknowledgement. Reviews captured in the first snapshot stay excluded.
 	if !r.SubmittedAt.Equal(after.Truncate(time.Second)) {
 		return false
 	}
-	// A human can also edit an approving review to acknowledge the exact
-	// persisted hold. A pre-hold review cannot predict its random token.
+	// A pre-hold review cannot predict the acknowledgement token.
 	if r.ID > 0 && acknowledged {
 		return true
 	}
@@ -284,6 +295,9 @@ func acknowledges(body, nonce string) bool {
 // waits for its human.
 func gateFinding(b *Binding, g *Gate) Finding {
 	var why []string
+	if g.RecoveryEpoch != "" {
+		why = append(why, "needs its context confirmed after reviewer recovery")
+	}
 	if g.SharedHead {
 		why = append(why, "shared its head with another ready PR")
 	}
@@ -304,9 +318,12 @@ func gateFinding(b *Binding, g *Gate) Finding {
 	if !g.ApprovalAfter.IsZero() {
 		fresh = " submitted after the hold was observed at " + g.ApprovalAfter.UTC().Format(time.RFC3339Nano)
 	}
+	if g.RecoveryEpoch != "" {
+		fresh = " first seen after this hold's recorded review baseline"
+	}
 	ack := ""
 	if g.ApprovalNonce != "" {
-		ack = " If your approval shares the hold's timestamp second, add this exact line to that approving review: `" + approvalAcknowledgement(g.ApprovalNonce) + "`."
+		ack = " If your approval predates this check or shares its timestamp second, acknowledge this hold with this exact line in that approving review: `" + approvalAcknowledgement(g.ApprovalNonce) + "`."
 	}
 	return Finding{
 		ID: HumanGateID, Severity: SeverityHigh,
