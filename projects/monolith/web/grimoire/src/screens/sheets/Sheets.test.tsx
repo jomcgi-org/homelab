@@ -119,9 +119,7 @@ describe("Character sheets", () => {
       { "GET /lobby": { status: 500, detail: "Database unavailable." } },
       "/sheets",
     );
-    expect(
-      await screen.findByText("Could not load character sheets"),
-    ).toBeTruthy();
+    expect(await screen.findByText("Could not load your account")).toBeTruthy();
     expect(screen.getByText("Database unavailable.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });

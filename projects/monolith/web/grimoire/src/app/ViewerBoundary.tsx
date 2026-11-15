@@ -6,6 +6,7 @@ import { useAnnounce } from "@astryxdesign/core/hooks";
 import { ApiError } from "../api/client";
 import { useLobby } from "../api/lobby";
 import type { LobbyView } from "../api/schema";
+import { useOwnAccount, type PlatformUser } from "../api/platform";
 import { dropDraft } from "../lib/session-expiry.js";
 
 /** New memberships add access; changes to an existing seat invalidate its cache. */
@@ -36,18 +37,27 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
   const announce = useAnnounce();
   const [confirmed, setConfirmed] = useState<{
     viewer: LobbyView | undefined;
+    account: PlatformUser | undefined;
     changed: boolean;
-  }>({ viewer: undefined, changed: false });
+  }>({ viewer: undefined, account: undefined, changed: false });
+  // Platform pages can be available without Grimoire permission. Once seen,
+  // keep their own authoritative identity current even after leaving them.
+  const account = useOwnAccount(
+    Boolean(confirmed.account) && !confirmed.changed,
+  );
   const reloading = useRef(false);
 
   // Adjust this component's state before React renders its children. An
   // effect alone would let the old account's data render once more. Keep the
   // fence latched: clearing the lobby query must never reveal the old page.
   if (
-    confirmed.viewer &&
     !confirmed.changed &&
-    lobby.error instanceof ApiError &&
-    lobby.error.status === 403
+    ((confirmed.viewer &&
+      lobby.error instanceof ApiError &&
+      lobby.error.status === 403) ||
+      (confirmed.account &&
+        account.error instanceof ApiError &&
+        [403, 404].includes(account.error.status)))
   ) {
     setConfirmed({ ...confirmed, changed: true });
   } else if (
@@ -58,7 +68,17 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     setConfirmed(
       confirmed.viewer && changedViewer(confirmed.viewer, lobby.data)
         ? { ...confirmed, changed: true }
-        : { viewer: lobby.data, changed: false },
+        : { ...confirmed, viewer: lobby.data },
+    );
+  } else if (
+    account.data &&
+    account.data !== confirmed.account &&
+    !confirmed.changed
+  ) {
+    setConfirmed(
+      confirmed.account && confirmed.account.id !== account.data.id
+        ? { ...confirmed, changed: true }
+        : { ...confirmed, account: account.data },
     );
   }
 

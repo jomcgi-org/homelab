@@ -6,7 +6,7 @@ import { VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { ApiError, SignInError } from "../../api/client";
-import { useDirectory } from "../../api/platform";
+import { useDirectory, useOwnAccount } from "../../api/platform";
 import { Loaded } from "../../app/Loaded";
 import { Page } from "../../app/Page";
 import { paths } from "../../app/paths";
@@ -35,11 +35,16 @@ export function Unavailable() {
 export function Platform() {
   const [search] = useSearchParams();
   const selectedInvitation = search.get("invitation_id");
-  const directory = useDirectory(selectedInvitation);
-  const refused = refusal(directory);
+  const account = useOwnAccount();
+  const directory = useDirectory(
+    selectedInvitation,
+    account.data !== undefined,
+  );
+  const refused = refusal(account) ?? refusal(directory);
   return (
     <Page
       title="Platform accounts"
+      showFeedback={account.data !== undefined}
       back={{ href: paths.lobby, label: "Back to Grimoire" }}
     >
       {refused === 404 ? (
@@ -47,20 +52,24 @@ export function Platform() {
       ) : refused === 403 ? (
         <Bootstrap />
       ) : (
-        <>
-          <Text type="body" color="secondary">
-            Platform signup and campaign invitations are separate. New accounts
-            have no application access until you grant it.
-          </Text>
-          <Loaded query={directory} what="the accounts">
-            {(data) => (
-              <Accounts
-                directory={data}
-                selectedInvitation={selectedInvitation}
-              />
-            )}
-          </Loaded>
-        </>
+        <Loaded query={account} what="your account">
+          {() => (
+            <>
+              <Text type="body" color="secondary">
+                Platform signup and campaign invitations are separate. New
+                accounts have no application access until you grant it.
+              </Text>
+              <Loaded query={directory} what="the accounts">
+                {(data) => (
+                  <Accounts
+                    directory={data}
+                    selectedInvitation={selectedInvitation}
+                  />
+                )}
+              </Loaded>
+            </>
+          )}
+        </Loaded>
       )}
     </Page>
   );

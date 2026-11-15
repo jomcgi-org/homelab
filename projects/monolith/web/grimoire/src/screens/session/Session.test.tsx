@@ -41,7 +41,12 @@ const player: Routes = {
 describe("Session", () => {
   it("shows the story with who can see each entry", async () => {
     openApp(dm, path);
-    const feed = await screen.findByRole("list", { name: "Session feed" });
+    // The identity read now precedes the cold session chunk import.
+    const feed = await screen.findByRole(
+      "list",
+      { name: "Session feed" },
+      { timeout: 2_000 },
+    );
     expect(
       within(feed).getByText("Rain hammers the shutters of the Gilded Eel."),
     ).toBeTruthy();

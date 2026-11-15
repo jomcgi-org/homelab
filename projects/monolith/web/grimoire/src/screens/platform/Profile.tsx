@@ -13,7 +13,7 @@ const GRIMOIRE_ACCESS = "grimoire.access";
 export function Profile() {
   const account = useOwnAccount();
   return (
-    <Page title="Your account">
+    <Page title="Your account" showFeedback={account.data !== undefined}>
       {refusal(account) === 404 ? (
         <Unavailable />
       ) : (

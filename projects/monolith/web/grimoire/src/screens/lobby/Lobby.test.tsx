@@ -130,9 +130,7 @@ describe("Lobby", () => {
 
   it("offers a retry when the lobby cannot load", async () => {
     openApp({ "GET /lobby": { status: 500, detail: "Database unavailable." } });
-    expect(
-      await screen.findByText("Could not load your campaigns"),
-    ).toBeTruthy();
+    expect(await screen.findByText("Could not load your account")).toBeTruthy();
     expect(screen.getByText("Database unavailable.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });

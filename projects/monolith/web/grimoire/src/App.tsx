@@ -1,8 +1,9 @@
 import { lazy, Suspense } from "react";
-import { Route, Routes } from "react-router";
+import { Outlet, Route, Routes } from "react-router";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
 import { useLobby } from "./api/lobby";
 import { ChunkBoundary } from "./app/ChunkBoundary";
+import { Loaded } from "./app/Loaded";
 import { Page } from "./app/Page";
 import { NotFound } from "./screens/NotFound";
 import { Lobby } from "./screens/lobby/Lobby";
@@ -49,8 +50,21 @@ const Profile = lazy(() =>
 
 function Loading() {
   return (
-    <Page title="Grimoire">
+    <Page title="Grimoire" showFeedback={false}>
       <Skeleton width="60%" height={24} />
+    </Page>
+  );
+}
+
+/** Do not start audience-filtered reads before their identity baseline exists. */
+function GrimoireIdentity() {
+  const lobby = useLobby();
+  if (lobby.data) return <Outlet />;
+  return (
+    <Page title="Grimoire" showFeedback={false}>
+      <Loaded query={lobby} what="your account">
+        {() => null}
+      </Loaded>
     </Page>
   );
 }
@@ -63,21 +77,23 @@ export function App() {
     <ChunkBoundary>
       <Suspense fallback={<Loading />}>
         <Routes>
-          <Route index element={<Lobby />} />
-          <Route path="sheets" element={<Sheets />} />
           <Route path="join/accept" element={<JoinAccept />} />
           <Route path="platform" element={<Platform />} />
           <Route path="platform/profile" element={<Profile />} />
-          <Route path="feedback" element={<FeedbackInbox />} />
-          <Route path="roadmap" element={<Roadmap />} />
-          <Route path="campaigns/:campaignId">
-            <Route path="session" element={<Session />} />
-            <Route path="notes" element={<Notes />} />
-            <Route path="journal" element={<CampaignJournal />} />
-            <Route path="grants" element={<Grants />} />
-            <Route path="entities/:entityId" element={<Entity />} />
+          <Route element={<GrimoireIdentity />}>
+            <Route index element={<Lobby />} />
+            <Route path="sheets" element={<Sheets />} />
+            <Route path="feedback" element={<FeedbackInbox />} />
+            <Route path="roadmap" element={<Roadmap />} />
+            <Route path="campaigns/:campaignId">
+              <Route path="session" element={<Session />} />
+              <Route path="notes" element={<Notes />} />
+              <Route path="journal" element={<CampaignJournal />} />
+              <Route path="grants" element={<Grants />} />
+              <Route path="entities/:entityId" element={<Entity />} />
+            </Route>
+            <Route path="*" element={<NotFound />} />
           </Route>
-          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
     </ChunkBoundary>
