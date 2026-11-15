@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - projects/monolith/frontend/scripts/public-app-performance.mjs
+      - projects/monolith/frontend/scripts/public-app-performance*.mjs
       - projects/monolith/frontend/src/lib/public/performance/**
       - .github/workflows/public-app-performance.yml
   workflow_dispatch:
@@ -61,6 +61,8 @@ jobs:
             harnessSha: process.env.HARNESS_SHA,
             deployedSha: null,
             representativeTripSlug: '2025-liard-hot-springs',
+            admissionOnlyRoutes: ['/app/grimoire'],
+            baselineNote: 'Grimoire admission is a new observation without an earlier browser baseline; no protected corpus or admission interaction is measured.',
             runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             runAttempt: process.env.GITHUB_RUN_ATTEMPT,
             startedAt: new Date().toISOString(),
@@ -78,6 +80,12 @@ jobs:
             note: 'The checkout identifies the measurement tool, not the deployed application. Verify rollout separately before comparing results.',
           }, null, 2) + '\n');
           NODE
+      - name: Check browser visibility and calibrate network timing
+        timeout-minutes: 2
+        run: |
+          node projects/monolith/frontend/scripts/public-app-performance-fixture.mjs \
+            --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
+            --output "$PERFORMANCE_OUTPUT"
       - name: Measure the deployed public apps and core data endpoints
         timeout-minutes: 28
         run: |
@@ -92,6 +100,7 @@ jobs:
               --route /scotland \
               --route /app/llm-leaderboard \
               --route /app/notes \
+              --route /app/grimoire \
               --route /app/frank \
               --route /app/firecracker \
               --route /ember/firecracker \
@@ -105,8 +114,8 @@ jobs:
               --content-selector '/app/ships::.map-snapshot .snapshot-row' \
               --content-selector '/app/stars::.map-snapshot .snapshot-row' \
               --content-selector '/app/notes::.graph-overview li' \
-              --content-selector '/app/trips/2025-liard-hot-springs::.route-preview .caption' \
-              --content-selector '/app/trips/2025-liard-hot-springs/day/1::.route-preview .caption' \
+              --content-selector '/app/trips/2025-liard-hot-springs::.dateline' \
+              --content-selector '/app/trips/2025-liard-hot-springs/day/1::.photo img' \
               --interaction '/app/hikes::button.filter-toggle' \
               --interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")' \
               --interaction '/app/stars::[aria-label="Map mode"] button:has-text("Historical")' \

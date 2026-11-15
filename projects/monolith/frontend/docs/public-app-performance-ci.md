@@ -20,11 +20,15 @@ profile and a 15-second observation window after DOMContentLoaded. Ten fixed
 public data URLs get 20 sequential GET samples each. These cover the four
 primary SvelteKit data envelopes, stars map and history map, ships heat, notes
 graph and stats, and Scotland marketplace. Other trip slugs and protected
-Grimoire admission journeys remain separate measurements.
+Grimoire corpus journeys remain separate measurements. A seventeenth route,
+`/app/grimoire`, observes only the logged-out admission page with three new
+contexts. It has no earlier browser baseline and no scripted interaction.
+A challenge or failure is recorded, not solved; its timings do not measure
+protected corpus content.
 
 The origin, routes, sample counts and observation window are fixed in the
-workflow. It supplies no interaction selectors, cookies or account session,
-and never purges the CDN. It uses a hosted Ubuntu runner, pinned Node and
+workflow. It supplies only the four read-only interaction selectors described
+below, with no initial cookies or account session, and never purges the CDN. It uses a hosted Ubuntu runner, pinned Node and
 Playwright versions, a read-only repository token and no secrets or deployment
 credentials. Only one measurement workflow runs at a time. The measurement
 command has a 26-minute deadline within a 28-minute step and a 40-minute job;
@@ -51,10 +55,18 @@ checks. A successful observation run means its requested samples completed;
 it does not mean production met the performance targets.
 
 The hosted command now selects visible data rows for Hikes, Ships and Stars,
-Notes overview rows, and route-preview captions for the representative trip
-summary and day. A selector absent from the deployed release remains
+Notes overview rows, the trip summary's data-derived date range (`.dateline`),
+and the day's photo element (`.photo img`). The trip selectors exist before
+the route-preview change and do not depend on that pending deployment. Photo
+element visibility does not prove image decoding or map readiness. A selector absent from the deployed release remains
 unavailable; it does not become a successful first-paint result. These are
-DOM milestones, not proof of painted or interactive maps.
+DOM milestones, not proof of painted or interactive maps. The same observer
+first runs against local browser fixtures: an element whose own rectangle is
+inside the viewport but is entirely clipped by its ancestor, and CSS-only
+opacity and position animations. Their result is saved as
+`observer-fixture.json`. The checks do not contact production. The same pinned browser also compares
+three pairs of unthrottled and 150 ms throttled local HTTP navigations, saving
+header-event timing, raw NavigationTiming and pass criteria in `calibration.json`.
 
 After each load observation is frozen, the workflow clicks the Hikes limits
 control, Ships Heat mode, Stars Historical mode, and the representative day's

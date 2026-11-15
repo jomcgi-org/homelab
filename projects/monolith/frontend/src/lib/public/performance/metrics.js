@@ -230,3 +230,48 @@ export function summarize(runs) {
     ),
   };
 }
+
+// A local HTTP control checks that the browser's delivered-header event sees
+// emulated latency. This validates only the fixture's page target, not workers.
+export function summarizeTimingCalibration(samples) {
+  const criteria = {
+    pairs: 3,
+    minimumThrottledHeaderMs: 140,
+    minimumAddedLatencyMs: 100,
+    maximumAddedLatencyMs: 400,
+  };
+  const controls = samples.filter((s) => s.latencyMs === 0);
+  const throttled = samples.filter((s) => s.latencyMs === 150);
+  const differences = throttled.flatMap((sample) => {
+    const control = controls.find(
+      (candidate) => candidate.pair === sample.pair,
+    );
+    return Number.isFinite(sample.headerArrivalMs) &&
+      Number.isFinite(control?.headerArrivalMs)
+      ? [sample.headerArrivalMs - control.headerArrivalMs]
+      : [];
+  });
+  const minimumThrottledHeaderMs =
+    throttled.length &&
+    throttled.every((s) => Number.isFinite(s.headerArrivalMs))
+      ? Math.min(...throttled.map((s) => s.headerArrivalMs))
+      : null;
+  const medianAddedLatencyMs = median(differences);
+  return {
+    criteria,
+    minimumThrottledHeaderMs,
+    medianControlHeaderMs: median(controls.map((s) => s.headerArrivalMs)),
+    medianThrottledHeaderMs: median(throttled.map((s) => s.headerArrivalMs)),
+    medianAddedLatencyMs,
+    passed:
+      samples.length === criteria.pairs * 2 &&
+      controls.length === criteria.pairs &&
+      throttled.length === criteria.pairs &&
+      new Set(throttled.map((s) => s.pair)).size === criteria.pairs &&
+      differences.length === criteria.pairs &&
+      samples.every((s) => s.status === 200) &&
+      minimumThrottledHeaderMs >= criteria.minimumThrottledHeaderMs &&
+      medianAddedLatencyMs >= criteria.minimumAddedLatencyMs &&
+      medianAddedLatencyMs <= criteria.maximumAddedLatencyMs,
+  };
+}
