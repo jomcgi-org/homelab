@@ -5,8 +5,9 @@ Renovate runs on the factory home cluster through the
 It loads `values.yaml` then `values-factory.yaml` and renders a Kubernetes
 CronJob in namespace `renovate`. The factory has no Argo Workflows.
 
-**The CronJob ships suspended.** Joe verifies the existing credential before
-the first manual run or a PR setting `suspend: false` in
+**The CronJob ships suspended.** After this change merges, Claude verifies
+one manual run as `jomcgi-factory-renovate[bot]`, including verified commits,
+before #8041 (rebased or replaced) sets `suspend: false` in
 `values-factory.yaml`. The hub's two suspended CronWorkflows remain in place;
 their removal is a follow-up to
 [#7945](https://github.com/jomcgi-org/homelab/issues/7945). The separate weekly
@@ -14,24 +15,44 @@ maintenance helper is not deployed on the factory cluster.
 
 ## GitHub credential
 
-The OnePasswordItem `renovate/renovate-github` uses
-`vaults/k8s-homelab/items/renovate-github`. Its Secret must contain the field
-`RENOVATE_TOKEN`, which the runner reads by secret reference. No token or App
-is created here.
+The factory OnePasswordItem `renovate/factory-renovate-gh-app` uses
+`vaults/k8s-homelab/items/factory-renovate-gh-app`. Joe created the
+`jomcgi-factory-renovate` GitHub App on 2026-11-15 and installed it only on
+`jomcgi-org/homelab`. It has write access to contents, pull requests, workflows,
+issues, commit statuses and merge queues, and read access to checks,
+Dependabot alerts and metadata. It is absent from the ruleset's bypass list.
+The SSH Key item's `private key` field becomes Secret key `private-key`,
+alongside text fields `app-id` and `installation-id`, matching
+[the factory App's layout](../../factory/ARCHITECTURE.md#inputs-from-joe).
 
-The item's type, identity, permissions and expiry/renewal are unverified.
-Before rollout, Joe confirms it can access only the intended repository,
-`jomcgi-org/homelab`, with **contents, pull requests and workflows write**,
-plus the ability to **enable auto-merge**. Check the existing identity against
-Renovate's [GitHub authentication requirements](https://docs.renovatebot.com/modules/platform/github/);
-App and token permission names differ. Confirm any required merge-queue
-capability for that identity. Do not infer permissions from an item name or
-a synced Application, and do not print Secret values during verification.
+Each Pod's `github-app-token` init container uses Node from the same Renovate
+image. It signs an RS256 App JWT with `iat` 60 seconds back and `exp` nine
+minutes ahead, then calls `POST /app/installations/{installation-id}/access_tokens`
+for `homelab`. It resolves the bot ID with
+`GET /users/jomcgi-factory-renovate%5Bbot%5D` and checks the returned login
+and type before constructing
+`jomcgi-factory-renovate[bot] <id+jomcgi-factory-renovate[bot]@users.noreply.github.com>`.
+This lookup uses GitHub's bot user ID, which differs from the App ID.
+
+Only the init container mounts the App Secret. It writes the token and author
+to owner-readable files in a memory-backed emptyDir. Renovate mounts that
+volume read-only, loads `RENOVATE_TOKEN` and `RENOVATE_GIT_AUTHOR` at startup,
+and runs with `username: jomcgi-factory-renovate[bot]` and
+`platformCommit: enabled`. Commits go through GitHub's API for verification.
+The init script never logs the key, JWT, token, API response bodies or raw
+errors. Authentication or bot lookup failure prevents Renovate from starting.
+
+The hub retains its existing `renovate-github` OnePasswordItem and PAT
+reference. This change neither edits that item nor deletes the PAT. After
+the manual run is verified and the factory schedule is enabled, Joe deletes
+the old PAT and `k8s-homelab/renovate-github`.
 
 ## Operations
 
 The scan runs daily at 04:00 America/Vancouver with `concurrencyPolicy: Forbid`.
-Each Job has a two-hour deadline and two retries. Kubernetes retains one
+Each Job has a 45-minute deadline and two retries. The deadline includes init
+time and retries and stays below the installation token's one-hour lifetime.
+Kubernetes retains one
 successful Job and up to five failed Jobs, with finished Jobs expiring after
 one day. The workspace is a disposable 4 GiB emptyDir.
 
@@ -84,7 +105,10 @@ used by the enabled managers: npm, PyPI, the Go proxy and checksum service,
 GHCR, Docker Hub, Quay, ECR, Chainguard, registry.k8s.io, Bazel Central Registry,
 and the Helm repositories declared in this repository. It includes their
 artifact hosts and Node, Go, Bazel and Helm toolchain downloads.
-Cilium's cluster baseline supplies DNS to CoreDNS through its DNS proxy.
+Cilium selects the pod by its `app.kubernetes.io/name: renovate` and
+`app.kubernetes.io/instance: renovate` labels. Its existing `api.github.com`
+TCP 443 grant also covers the init container, which shares the pod's network
+endpoint. Cilium's cluster baseline supplies DNS to CoreDNS through its DNS proxy.
 There is no ingress, world egress or Kubernetes API grant.
 
 Add a registry's DNS names with the dependency that first needs it.
@@ -96,10 +120,11 @@ upstream redirect before proposing a narrower source addition.
 
 ## Verify one run
 
-After Joe confirms the credential and required checks, wait for ArgoCD's
-`renovate` Application to be Synced and Healthy, its OnePasswordItem to
-materialize the expected key, and its Cilium policy to exist. Verify only
-secret synchronization and key presence, without displaying the token.
+After merge, wait for ArgoCD's `renovate` Application to be Synced and Healthy,
+its OnePasswordItem to materialize `private-key`, `app-id` and `installation-id`
+in Secret `factory-renovate-gh-app`, and its Cilium policy to exist. Check key
+names only; do not display Secret values. Confirm `pr-checks` and `factory review`
+are required, repository auto-merge is enabled, and this App has no bypass.
 Keep `suspend: true` during verification.
 
 Ensure no other Renovate Job is running. Manually created Jobs bypass the
@@ -110,17 +135,31 @@ export KUBECONFIG=~/.kube/factory.yaml
 kubectl -n renovate get cronjob renovate
 kubectl -n renovate get jobs
 run="renovate-manual-$(date +%s)"
-kubectl -n renovate create job --from=cronjob/renovate "$run"
-kubectl -n renovate logs --follow --pod-running-timeout=10m "job/$run"
-kubectl -n renovate wait --for=condition=complete "job/$run" --timeout=2h
+KUBECONFIG=~/.kube/factory.yaml kubectl -n renovate create job --from=cronjob/renovate "$run"
+kubectl -n renovate logs --follow --pod-running-timeout=10m "job/$run" -c renovate
+kubectl -n renovate wait --for=condition=complete "job/$run" --timeout=46m
 ```
 
-Confirm extraction completes without authentication failures, OOM kills or
-registry timeouts. Outside Monday's PR window, a successful scan may create
-no ordinary PR. For an eligible non-major PR, verify its author and native
-auto-merge request, then both required checks on its current head and its
-queue result. A major PR must stay manual. Enable the daily schedule through
-a values PR only after that verification. Suspending the CronJob stops future
+Confirm the init container exits zero and extraction completes without
+authentication failures, OOM kills or registry timeouts. If initialization
+fails, inspect `kubectl -n renovate logs "job/$run" -c github-app-token` and
+pod events; do not dump the Secret or token volume.
+
+Outside Monday's PR window, a successful scan may create no ordinary PR;
+that alone does not verify PR authorship or signed commits. For any PR the
+run opens, verify author `jomcgi-factory-renovate[bot]` and every commit's
+`verification.verified: true`:
+
+```bash
+gh pr view <pr-number> --repo jomcgi-org/homelab --json author,autoMergeRequest,headRefOid
+gh api repos/jomcgi-org/homelab/pulls/<pr-number>/commits \
+  --jq '.[] | {sha, author: .author.login, verified: .commit.verification.verified, reason: .commit.verification.reason}'
+```
+
+For an eligible non-major PR, verify its native auto-merge request, both
+required checks on its current head and its queue result. A major PR must
+stay manual. Record the Job and PR evidence before enabling the daily
+schedule through #8041 or its replacement. Suspending the CronJob stops future
 scheduled Jobs; it does not stop a running Job or cancel an armed PR.
 
 ## Repository checks
@@ -132,8 +171,11 @@ scheduled Jobs; it does not stop a running Job or cancel an armed PR.
 linting for the factory Application. The policy tests cover extraction,
 manual majors, retained holds and native auto-merge without approval.
 The deployment tests follow the actual ArgoCD roots and values order,
-check the factory's credential, runtime limits and egress, and retain the
-hub's suspended render checks.
+check the App item, init container, memory-backed token handoff, absence of a
+Secret-backed `RENOVATE_TOKEN`, deadline and pod egress, and retain the hub's
+suspended render checks. The policy suite executes the init script with a
+generated RSA key and mocked GitHub responses to check JWT claims/signatures,
+bot identity, file permissions and credential-safe failure handling.
 
 These checks validate repository configuration. Credential acceptance,
 network reachability and the first run still require live verification.

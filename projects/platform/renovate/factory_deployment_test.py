@@ -76,15 +76,15 @@ def test_factory_root_reaches_the_shared_chart_and_namespace_policy():
     ]
 
 
-def test_factory_renders_only_a_suspended_job_and_existing_credential():
+def test_factory_renders_only_a_suspended_job_and_app_credential():
     docs = _render()
     assert {(doc["kind"], doc["metadata"]["name"]) for doc in docs} == {
         ("CronJob", "renovate"),
-        ("OnePasswordItem", "renovate-github"),
+        ("OnePasswordItem", "factory-renovate-gh-app"),
     }
     assert all(doc["metadata"]["namespace"] == "renovate" for doc in docs)
     item = next(doc for doc in docs if doc["kind"] == "OnePasswordItem")
-    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/renovate-github"
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-renovate-gh-app"
     cron = next(doc for doc in docs if doc["kind"] == "CronJob")
     assert cron["apiVersion"] == "batch/v1"
     spec = cron["spec"]
@@ -94,7 +94,8 @@ def test_factory_renders_only_a_suspended_job_and_existing_credential():
     assert spec["concurrencyPolicy"] == "Forbid"
     assert spec["startingDeadlineSeconds"] == 3600
     job = spec["jobTemplate"]["spec"]
-    assert job["activeDeadlineSeconds"] == 7200
+    assert job["activeDeadlineSeconds"] == 2700
+    assert 0 < job["activeDeadlineSeconds"] < 3600
     assert job["backoffLimit"] == 2
     assert job["ttlSecondsAfterFinished"] == 86400
     pod = job["template"]["spec"]
@@ -112,10 +113,8 @@ def test_factory_renders_only_a_suspended_job_and_existing_credential():
     assert container["securityContext"]["allowPrivilegeEscalation"] is False
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
     env = {entry["name"]: entry for entry in container["env"]}
-    assert env["RENOVATE_TOKEN"]["valueFrom"]["secretKeyRef"] == {
-        "name": item["metadata"]["name"],
-        "key": "RENOVATE_TOKEN",
-    }
+    assert "RENOVATE_TOKEN" not in env
+    assert not any("valueFrom" in entry for entry in container["env"])
     for name, value in {
         "RENOVATE_PLATFORM": "github",
         "RENOVATE_REPOSITORIES": "jomcgi-org/homelab",
@@ -124,6 +123,8 @@ def test_factory_renders_only_a_suspended_job_and_existing_credential():
         "RENOVATE_REQUIRE_CONFIG": "required",
         "RENOVATE_ALLOW_SCRIPTS": "false",
         "RENOVATE_ALLOW_PLUGINS": "false",
+        "RENOVATE_USERNAME": "jomcgi-factory-renovate[bot]",
+        "RENOVATE_PLATFORM_COMMIT": "enabled",
     }.items():
         assert env[name]["value"] == value
     assert json.loads(env["RENOVATE_CUSTOM_ENV_VARIABLES"]["value"]) == {
@@ -139,8 +140,86 @@ def test_factory_renders_only_a_suspended_job_and_existing_credential():
         "bazelModDeps"
     ]
     mounts = {mount["name"]: mount["mountPath"] for mount in container["volumeMounts"]}
-    assert mounts == {"workspace": "/tmp"}
-    assert pod["volumes"] == [{"name": "workspace", "emptyDir": {"sizeLimit": "4Gi"}}]
+    assert mounts == {"workspace": "/tmp", "github-token": "/var/run/renovate-token"}
+    assert next(
+        mount for mount in container["volumeMounts"] if mount["name"] == "github-token"
+    )["readOnly"] is True
+    assert "command" not in container  # Keep the image's entrypoint.
+    assert container["args"][:2] == ["/bin/sh", "-c"]
+    startup = container["args"][2]
+    assert 'RENOVATE_TOKEN="$(cat /var/run/renovate-token/token)"' in startup
+    assert 'RENOVATE_GIT_AUTHOR="$(cat /var/run/renovate-token/git-author)"' in startup
+    assert "export RENOVATE_TOKEN RENOVATE_GIT_AUTHOR" in startup
+    assert "exec renovate" in startup
+
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    assert set(volumes) == {"github-app", "github-token", "workspace"}
+    assert volumes["workspace"]["emptyDir"] == {"sizeLimit": "4Gi"}
+    assert volumes["github-token"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "1Mi"}
+    assert volumes["github-app"]["secret"] == {
+        "secretName": item["metadata"]["name"],
+        "defaultMode": 0o440,
+        "items": [
+            {"key": name, "path": name}
+            for name in ("private-key", "app-id", "installation-id")
+        ],
+    }
+
+
+def test_factory_mints_the_token_in_the_renovate_image_before_startup():
+    cron = next(doc for doc in _render() if doc["kind"] == "CronJob")
+    pod = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert len(pod["initContainers"]) == 1
+    init = pod["initContainers"][0]
+    assert init["name"] == "github-app-token"
+    assert init["image"] == pod["containers"][0]["image"]
+    assert init["imagePullPolicy"] == pod["containers"][0]["imagePullPolicy"]
+    assert init["command"] == ["node", "--input-type=module", "--eval"]
+    assert (
+        init["args"][0].strip()
+        == (HERE / "files/github-app-token.mjs").read_text().strip()
+    )
+    assert {entry["name"]: entry["value"] for entry in init["env"]} == {
+        "GITHUB_APP_CREDENTIALS_DIR": "/var/run/renovate-github-app",
+        "RENOVATE_TOKEN_DIR": "/var/run/renovate-token",
+        "RENOVATE_USERNAME": "jomcgi-factory-renovate[bot]",
+    }
+    assert init["volumeMounts"] == [
+        {
+            "name": "github-app",
+            "mountPath": "/var/run/renovate-github-app",
+            "readOnly": True,
+        },
+        {"name": "github-token", "mountPath": "/var/run/renovate-token"},
+    ]
+    assert init["securityContext"]["readOnlyRootFilesystem"] is True
+    assert init["securityContext"]["runAsNonRoot"] is True
+    assert init["securityContext"]["allowPrivilegeEscalation"] is False
+    assert init["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert init["resources"]["requests"] == {"cpu": "100m", "memory": "64Mi"}
+    assert init["resources"]["limits"]["memory"] == "128Mi"
+
+
+def test_factory_refuses_jobs_that_can_outlive_an_installation_token():
+    for deadline in (0, 3600, 7200):
+        result = subprocess.run(
+            [
+                os.environ.get("HELM_BIN", "helm"),
+                "template",
+                "renovate",
+                str(HERE),
+                "--values",
+                str(HERE / "values-factory.yaml"),
+                "--set",
+                f"activeDeadlineSeconds={deadline}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "activeDeadlineSeconds between 1 and 3599" in result.stderr
 
 
 def test_factory_egress_matches_the_job_and_keeps_other_traffic_denied():
@@ -149,6 +228,10 @@ def test_factory_egress_matches_the_job_and_keeps_other_traffic_denied():
     assert int(policy["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) < 0
     spec = policy["spec"]
     cron = next(doc for doc in _render() if doc["kind"] == "CronJob")
+    # Init containers share the selected pod endpoint and its egress policy.
+    pod = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert pod["initContainers"][0]["name"] == "github-app-token"
+    assert pod.get("hostNetwork", False) is False
     pod_labels = cron["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"]
     assert spec["endpointSelector"]["matchLabels"]
     for key, value in spec["endpointSelector"]["matchLabels"].items():

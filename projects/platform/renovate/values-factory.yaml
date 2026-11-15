@@ -1,4 +1,14 @@
-# Keep the factory writer stopped until Joe verifies renovate-github and the
-# required pr-checks and factory review gates. See README.md for a manual run.
+# Keep the schedule stopped until a manual App run verifies authentication,
+# bot authorship and signed commits. See README.md before enabling #8041.
 workloadKind: CronJob
 suspend: true
+# Installation tokens last one hour, including init time and Job retries.
+activeDeadlineSeconds: 2700
+
+onepassword:
+  itemPath: vaults/k8s-homelab/items/factory-renovate-gh-app
+  secretName: factory-renovate-gh-app
+
+githubApp:
+  enabled: true
+  username: jomcgi-factory-renovate[bot]

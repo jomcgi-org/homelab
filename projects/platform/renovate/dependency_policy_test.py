@@ -773,6 +773,130 @@ def test_bot_pr_with_human_ownership_is_never_rewritten_or_armed():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_app_token_minting_verifies_identity_and_never_logs_credentials(tmp_path):
+    # Exercise the shipped init script with a real RSA key and mocked GitHub
+    # responses. No App credentials or network access are needed.
+    runner = r"""
+      import assert from "node:assert/strict";
+      import {generateKeyPairSync, verify} from "node:crypto";
+      import {existsSync, mkdirSync, readFileSync, statSync, writeFileSync} from "node:fs";
+      import {join} from "node:path";
+      const source = readFileSync(process.argv[1], "utf8");
+      const root = process.argv[2];
+      const username = "jomcgi-factory-renovate[bot]";
+      const {privateKey, publicKey} = generateKeyPairSync("rsa", {modulusLength: 2048});
+      const pem = privateKey.export({type: "pkcs1", format: "pem"});
+      const token = "ghs_mock_installation_token";
+      const now = 1_800_000_000_000;
+      Date.now = () => now;
+      let index = 0;
+      for (const scenario of ["success", "bad-key", "bad-app-id", "bad-installation-id",
+        "rejected", "network", "bad-json", "bad-token", "expired-token",
+        "bot-rejected", "wrong-bot", "wrong-id", "wrong-type"]) {
+        const dir = join(root, scenario);
+        mkdirSync(dir);
+        const output = join(dir, "output");
+        mkdirSync(output);
+        writeFileSync(join(dir, "private-key"), scenario === "bad-key" ? "secret-invalid-key" : pem);
+        writeFileSync(join(dir, "app-id"), scenario === "bad-app-id" ? "123/invalid" : "123\n");
+        writeFileSync(join(dir, "installation-id"), scenario === "bad-installation-id" ? "456/invalid" : "456\n");
+        process.env.GITHUB_APP_CREDENTIALS_DIR = dir;
+        process.env.RENOVATE_TOKEN_DIR = output;
+        process.env.RENOVATE_USERNAME = username;
+        process.exitCode = 0;
+        const calls = [];
+        globalThis.fetch = async (url, options) => {
+          calls.push({url, options});
+          if (calls.length === 1) {
+            if (scenario === "network") throw new Error(token + pem);
+            return {
+              status: scenario === "rejected" ? 401 : 201,
+              json: async () => {
+                if (scenario === "bad-json") throw new Error(token + pem);
+                return {
+                  token: scenario === "bad-token" ? "" : token,
+                  expires_at: new Date(now + (scenario === "expired-token" ? -1 : 3_600_000)).toISOString(),
+                };
+              },
+            };
+          }
+          return {
+            status: scenario === "bot-rejected" ? 404 : 200,
+            json: async () => ({
+              login: scenario === "wrong-bot" ? "someone-else[bot]" : username,
+              id: scenario === "wrong-id" ? "12345" : 12345,
+              type: scenario === "wrong-type" ? "User" : "Bot",
+            }),
+          };
+        };
+        const errors = [];
+        const originalError = console.error;
+        console.error = (...args) => errors.push(args.join(" "));
+        try {
+          await import("data:text/javascript;base64," + Buffer.from(source).toString("base64") + "#" + index++);
+        } finally {
+          console.error = originalError;
+        }
+        if (["bad-key", "bad-app-id", "bad-installation-id"].includes(scenario)) {
+          assert.equal(calls.length, 0, scenario);
+        } else {
+          const {url, options} = calls[0];
+          assert.equal(url, "https://api.github.com/app/installations/456/access_tokens");
+          assert.equal(options.method, "POST");
+          assert.deepEqual(JSON.parse(options.body), {repositories: ["homelab"]});
+          const jwt = options.headers.Authorization.replace(/^Bearer /, "");
+          const [header, claims, signature] = jwt.split(".");
+          assert.deepEqual(JSON.parse(Buffer.from(header, "base64url")), {alg: "RS256", typ: "JWT"});
+          assert.deepEqual(JSON.parse(Buffer.from(claims, "base64url")), {
+            iat: now / 1000 - 60, exp: now / 1000 + 540, iss: "123",
+          });
+          assert.ok(verify("RSA-SHA256", Buffer.from(header + "." + claims), publicKey, Buffer.from(signature, "base64url")));
+          for (const {options} of calls) {
+            assert.equal(options.redirect, "error");
+            assert.ok(options.signal instanceof AbortSignal);
+            assert.equal(options.headers["X-GitHub-Api-Version"], "2022-11-28");
+          }
+          if (calls.length === 2) {
+            assert.equal(calls[1].url, "https://api.github.com/users/jomcgi-factory-renovate%5Bbot%5D");
+            assert.equal(calls[1].options.headers.Authorization, "Bearer " + token);
+          }
+        }
+        if (scenario === "success") {
+          assert.equal(process.exitCode, 0);
+          assert.deepEqual(errors, []);
+          assert.equal(calls.length, 2);
+          assert.equal(readFileSync(join(output, "token"), "utf8"), token);
+          assert.equal(readFileSync(join(output, "git-author"), "utf8"),
+            username + " <12345+" + username + "@users.noreply.github.com>");
+          for (const file of ["token", "git-author"]) {
+            assert.equal(statSync(join(output, file)).mode & 0o777, 0o600);
+          }
+        } else {
+          assert.equal(process.exitCode, 1, scenario);
+          assert.deepEqual(errors, ["GitHub App authentication failed; check the App item and installation"]);
+          assert.ok(!existsSync(join(output, "token")), scenario);
+          assert.ok(!existsSync(join(output, "git-author")), scenario);
+        }
+      }
+      process.exitCode = 0;
+    """
+    result = subprocess.run(
+        [
+            os.environ.get("NODE_BIN", "node"),
+            "--input-type=module",
+            "-e",
+            runner,
+            str(HERE / "files/github-app-token.mjs"),
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == result.stderr == ""
+
+
 def test_native_uv_artifacts_cannot_execute_source_build_backends():
     docs = _render("values.yaml", "values-gke.yaml")
     workflow = next(
