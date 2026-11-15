@@ -937,8 +937,7 @@ previews).
   them as it gates every PR. The agent's token is contents write on its own
   repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
-  merge queues write, issues write for its PR comment, and contents, pull
-  requests and commit statuses read.
+  merge queues write, and contents, pull requests and commit statuses read.
   `projects/factory/reviewer` posts the `factory review` check run on every
   head of every open PR into the base branch, whatever its author, and on
   each merge group commit (success when the queued PR's head passed, since
@@ -955,9 +954,11 @@ previews).
   with the first verdict and edited in place on every head, approval and
   hold: the verdict, the human gate's reasons, the agent's summary, findings
   by severity and what the review cleared. The comment mirrors the
-  assessment behind the check and gates nothing; a failed write is logged
-  and counted (`factory_reviewer_comment_writes_total`). It edits only a
-  comment its bot login wrote, and its own comment never reaches the agent.
+  assessment behind the check and gates nothing. It is written with the
+  broker's separate comment token (`issues: write`), so an App without that
+  permission loses only the comment; a failed write is logged and counted
+  (`factory_reviewer_comment_writes_total`). It edits only a comment its bot
+  login wrote, and its own comment never reaches the agent.
   Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings and human gate in a hidden block, at most
@@ -1146,9 +1147,8 @@ Each step is its own PR with live evidence recorded on #7817.
   `installation-id`. Created 2026-11-14.
 - **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
   review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
-  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks, merge
-  queues and issues write, contents, pull requests and commit statuses
-  read; issues write only for its PR comment) owns
+  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks and merge
+  queues write, contents, pull requests and commit statuses read) owns
   review and enqueueing ("Merge authority"). Its 1Password item is
   `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
   For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
