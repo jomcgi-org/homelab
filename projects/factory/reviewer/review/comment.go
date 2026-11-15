@@ -407,9 +407,9 @@ type prKey struct {
 	number  int
 }
 
-// commentState keeps the lookup result even when no comment was found, the
-// limit was reached or a read failed. Each process looks up a PR only once;
-// an incomplete or failed read never authorizes creating a comment.
+// commentState keeps successful lookup results, including an absent comment
+// or a reached limit. Failed reads are retried on a later write and never
+// authorize creating a comment.
 type commentState struct {
 	comment  *github.Comment
 	complete bool
@@ -426,28 +426,33 @@ func (e *Engine) lookupComment(ctx context.Context, b *Binding, pr github.PullRe
 	defer cancel()
 	found, complete, err := e.findComment(ctx, b, pr.Number)
 	cur := &commentState{comment: found, complete: complete, err: err}
-	e.comments[key] = cur
 	if err != nil {
 		e.commentFailed(ctx, e.prLog(b, pr), b, "list", err)
-	} else if found == nil && !complete {
+		return cur
+	}
+	e.comments[key] = cur
+	if found == nil && !complete {
 		e.prLog(b, pr).WarnContext(ctx, "the PR has more comments than the reviewer reads; not adding its own")
 	}
 	return cur
 }
 
-// commentSummary keeps feedback visible when the bounded lookup cannot
-// safely create a comment. Findings and the check's conclusion are unchanged.
-func (e *Engine) commentSummary(ctx context.Context, b *Binding, pr github.PullRequest, summary string) string {
-	if e.cfg.Comments == nil || e.cfg.CommentAuthor == "" {
-		return summary
+// noteCommentLimit adds the visibility notice after the check has been
+// written. It never sends a conclusion or annotations: the gate and its
+// findings stand even if this optional write fails.
+func (e *Engine) noteCommentLimit(ctx context.Context, b *Binding, run *github.CheckRun, l *slog.Logger) {
+	if run == nil || strings.Contains(run.Summary, commentLimitNote) {
+		return
 	}
-	e.commentMu.Lock()
-	defer e.commentMu.Unlock()
-	cur := e.lookupComment(ctx, b, pr)
-	if cur.err == nil && cur.comment == nil && !cur.complete && !strings.Contains(summary, commentLimitNote) {
-		return summary + "\n\n" + commentLimitNote
+	summary := run.Summary + "\n\n" + commentLimitNote
+	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
+		Output: &github.CheckRunOutput{Title: run.Title, Summary: summary, Text: run.Text},
+	})
+	if err != nil {
+		e.ghError(ctx, l, b, "update_check", err)
+		return
 	}
-	return summary
+	run.Summary = summary
 }
 
 // noteHead records the head a listing shows for a PR. The comment follows
@@ -481,8 +486,8 @@ func (e *Engine) listedHead(k prKey) string {
 // configured. It writes only for the PR's current head and edits only a
 // comment CommentAuthor wrote. A comment is created with its first verdict,
 // so its one notification carries the verdict, and is only ever edited
-// after that. A failed write is logged and counted; the check run is
-// unaffected, and the next write on the PR brings the comment up to date.
+// after that. A failed write is logged and counted; the check's conclusion
+// is unaffected, and the next write on the PR brings the comment up to date.
 func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, u *CommentUpdate) {
 	if u == nil || e.cfg.Comments == nil || e.cfg.CommentAuthor == "" {
 		return
@@ -499,7 +504,11 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 	}
 	state := e.lookupComment(ctx, b, pr)
 	cur := state.comment
-	if state.err != nil || (cur == nil && !state.complete) {
+	if state.err != nil {
+		return
+	}
+	if cur == nil && !state.complete {
+		e.noteCommentLimit(ctx, b, run, l)
 		return
 	}
 	if cur == nil && u.Verdict == VerdictReviewing {
