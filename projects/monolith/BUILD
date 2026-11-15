@@ -8289,7 +8289,6 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_ships",
-        "//projects/monolith/shared/testing/sqlite",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",

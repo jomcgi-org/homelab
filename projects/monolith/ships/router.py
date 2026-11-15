@@ -20,6 +20,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
@@ -236,7 +237,7 @@ def get_track(
 
 
 @router.get("/heat")
-def get_heat(response: Response, session: Session = Depends(get_session)):
+def get_heat(session: Session = Depends(get_session)) -> JSONResponse:
     """All-time traffic-density grid for the /app/ships heatmap.
 
     Sums the live 7-day rollup (HeatCell) with the all-time accumulator
@@ -245,22 +246,31 @@ def get_heat(response: Response, session: Session = Depends(get_session)):
     log-spaced color stops (anchored on the p99 cell count) so the stepped ramp
     self-calibrates and the busy lanes stay legible. SSR-only, CDN-cached.
     """
-    live = [
-        (c.lat_bin, c.lon_bin, c.count) for c in session.exec(select(HeatCell)).all()
-    ]
-    hist = [
-        (c.lat_bin, c.lon_bin, c.count)
-        for c in session.exec(select(HeatCellHistorical)).all()
-    ]
+    # The grid needs only these scalars. Hydrating a model (and its timestamp)
+    # for every occupied cell dominates uncached requests as history grows.
+    live = session.exec(
+        select(HeatCell.lat_bin, HeatCell.lon_bin, HeatCell.count)
+    ).all()
+    hist = session.exec(
+        select(
+            HeatCellHistorical.lat_bin,
+            HeatCellHistorical.lon_bin,
+            HeatCellHistorical.count,
+        )
+    ).all()
     merged = _merge_cells(live, hist)
     cells = [[la, lo, c] for la, lo, c in merged]
     stops = _log_stops([c for _, _, c in merged])
 
-    response.headers["Cache-Control"] = _HEAT_CACHE_CONTROL
-    return {
-        "step_lat": HEAT_LAT_STEP,
-        "step_lon": HEAT_LON_STEP,
-        "count": len(cells),
-        "cells": cells,
-        "stops": stops,
-    }
+    # All values are JSON primitives already; avoid FastAPI recursively copying
+    # the entire grid through jsonable_encoder before JSONResponse renders it.
+    return JSONResponse(
+        {
+            "step_lat": HEAT_LAT_STEP,
+            "step_lon": HEAT_LON_STEP,
+            "count": len(cells),
+            "cells": cells,
+            "stops": stops,
+        },
+        headers={"Cache-Control": _HEAT_CACHE_CONTROL},
+    )
