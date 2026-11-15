@@ -107,9 +107,23 @@ def test_declared_paths_service_api_and_peers(chart):
 def test_exceptions(chart):
     config = values()
     config["exceptions"] = [
-        {"workload": "app", "default": "runAsUser", "value": 1000, "reason": "Image UID"},
-        {"workload": "app", "default": "runAsGroup", "value": 1000, "reason": "Image GID"},
-        {"workload": "app", "default": "readOnlyRootFilesystem", "reason": "Legacy writer"},
+        {
+            "workload": "app",
+            "default": "runAsUser",
+            "value": 1000,
+            "reason": "Image UID",
+        },
+        {
+            "workload": "app",
+            "default": "runAsGroup",
+            "value": 1000,
+            "reason": "Image GID",
+        },
+        {
+            "workload": "app",
+            "default": "readOnlyRootFilesystem",
+            "reason": "Legacy writer",
+        },
         {"workload": "app", "default": "network.world", "reason": "External relay"},
         {"workload": "app", "default": "network.0.0.0.0/0", "reason": "IPv4 relay"},
         {"workload": "app", "default": "network.::/0", "reason": "IPv6 relay"},
@@ -166,7 +180,11 @@ def generated_config():
         },
         "token": {
             "workload": "app",
-            "generated": {"keys": {"token": 32}, "image": IMAGE, "resources": RESOURCES},
+            "generated": {
+                "keys": {"token": 32},
+                "image": IMAGE,
+                "resources": RESOURCES,
+            },
         },
     }
     return config
@@ -220,7 +238,9 @@ def test_generator_preserves_keys_and_retries_conflicts(
             if race:
                 state["data"]["token"] = "d2lubmVy"
                 state["metadata"]["resourceVersion"] = "2"
-                raise urllib.error.HTTPError(request.full_url, 422, "conflict", {}, None)
+                raise urllib.error.HTTPError(
+                    request.full_url, 422, "conflict", {}, None
+                )
             writes.append(patch)
             state["data"] = patch[1]["value"]
         return io.BytesIO(json.dumps(state).encode())
@@ -243,7 +263,9 @@ def test_generator_preserves_keys_and_retries_conflicts(
 def test_exception_does_not_leak_to_another_workload(chart):
     config = values()
     config["workloads"]["other"] = copy.deepcopy(config["workloads"]["app"])
-    config["workloads"]["other"]["network"] = {"egress": [{"peer": "world", "port": 443}]}
+    config["workloads"]["other"]["network"] = {
+        "egress": [{"peer": "world", "port": 443}]
+    }
     config["exceptions"] = [
         {"workload": "app", "default": "network.world", "reason": "App only"}
     ]
@@ -259,9 +281,7 @@ def test_individual_workload_entry_points(chart, kind):
         '(dict "root" . "name" "app" "workload" .Values.workloads.app) }}'
     )
     config = values()
-    config["workloads"]["app"].update(
-        replicas=0, backoffLimit=0, schedule="0 * * * *"
-    )
+    config["workloads"]["app"].update(replicas=0, backoffLimit=0, schedule="0 * * * *")
     docs = objects(render(chart, config))
     key = {"deployment": "Deployment", "job": "Job", "cronjob": "CronJob"}[kind]
     spec = docs[f"{key}/app"]["spec"]

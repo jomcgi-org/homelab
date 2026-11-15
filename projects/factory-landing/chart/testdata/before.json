@@ -36,9 +36,7 @@
                 "allowPrivilegeEscalation": false,
                 "readOnlyRootFilesystem": true,
                 "capabilities": {
-                  "drop": [
-                    "ALL"
-                  ]
+                  "drop": ["ALL"]
                 }
               },
               "resources": {
@@ -113,9 +111,7 @@
           "namespace": "edge"
         }
       ],
-      "hostnames": [
-        "factory.jomcgi.dev"
-      ],
+      "hostnames": ["factory.jomcgi.dev"],
       "rules": [
         {
           "matches": [

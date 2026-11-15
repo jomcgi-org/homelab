@@ -78,7 +78,7 @@
         - peer: "github"
           fqdn: "api.github.com"
           port: 0
-  error: "peer github: an explicit port is required"
+  error: "peer github: port must be between 1 and 65535"
 - set:
     workloads/app/network:
       egress:
