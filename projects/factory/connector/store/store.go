@@ -728,6 +728,41 @@ func (s *Store) GetAttempt(ctx context.Context, id int64) (*Attempt, error) {
 // ErrAttemptChanged means an observation no longer describes the current turn.
 var ErrAttemptChanged = errors.New("store: attempt or work generation changed")
 
+func lockAttempt(ctx context.Context, tx *sql.Tx, workID, attemptID int64) error {
+	for _, lock := range []struct {
+		query string
+		id    int64
+	}{
+		{`SELECT id FROM work_item WHERE id = $1 FOR UPDATE`, workID},
+		{`SELECT id FROM run WHERE work_item_id = $1 ORDER BY id FOR UPDATE`, workID},
+		{`SELECT id FROM delivery_attempt WHERE id = $1 FOR UPDATE`, attemptID},
+	} {
+		if _, err := tx.ExecContext(ctx, lock.query, lock.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SupersededGrantFailure locks a waiting grant failure and reports whether
+// another run has since started work on the same issue. Call from Writer.Tx
+// and resolve only the old run in that transaction; newer work keeps its state.
+func (s *Store) SupersededGrantFailure(ctx context.Context, tx *sql.Tx, r *Run, a *Attempt) (bool, error) {
+	if err := lockAttempt(ctx, tx, r.WorkItemID, a.ID); err != nil {
+		return false, err
+	}
+	var superseded bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM run r JOIN delivery_attempt a ON a.run_id = r.id
+		WHERE r.id = $1 AND r.work_item_id = $2 AND r.attempt = $3 AND r.state = 'waiting'
+			AND a.id = $4 AND a.state = 'failed' AND a.error_class IN ('credential', 'quota')
+			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = r.id)
+			AND EXISTS (SELECT 1 FROM delivery_attempt newer JOIN run nr ON nr.id = newer.run_id
+				WHERE nr.work_item_id = r.work_item_id AND nr.id <> r.id AND newer.id > a.id))`,
+		r.ID, r.WorkItemID, r.Attempt, a.ID).Scan(&superseded)
+	return superseded, err
+}
+
 // AttemptTx applies a task outcome under the executing writer's authority.
 // Lock the work item, its runs and the attempt in send-admission order, then
 // validate the snapshots used to read the task. Locking all runs also fences
@@ -738,17 +773,8 @@ var ErrAttemptChanged = errors.New("store: attempt or work generation changed")
 // a successor must be able to finish an inherited task.
 func (s *Store) AttemptTx(ctx context.Context, writer *Writer, r *Run, wi *WorkItem, a *Attempt, fn func(*sql.Tx) error) error {
 	return writer.Tx(ctx, func(tx *sql.Tx) error {
-		for _, lock := range []struct {
-			query string
-			id    int64
-		}{
-			{`SELECT id FROM work_item WHERE id = $1 FOR UPDATE`, wi.ID},
-			{`SELECT id FROM run WHERE work_item_id = $1 ORDER BY id FOR UPDATE`, wi.ID},
-			{`SELECT id FROM delivery_attempt WHERE id = $1 FOR UPDATE`, a.ID},
-		} {
-			if _, err := tx.ExecContext(ctx, lock.query, lock.id); err != nil {
-				return err
-			}
+		if err := lockAttempt(ctx, tx, wi.ID, a.ID); err != nil {
+			return err
 		}
 		var current bool
 		err := tx.QueryRowContext(ctx, `SELECT EXISTS (

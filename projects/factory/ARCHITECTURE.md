@@ -638,9 +638,11 @@ carry no requester identity, and a mention can come from an agent. Failed
 runs and runs claimed meanwhile wait without holding a concurrency slot,
 keeping their itsaplan leases alive. After unblock, failed runs consume
 an engineering retry and send a fresh deterministic retry message in the same
-session within the agent key's concurrency. Polling while blocked spends no
-retries. An exhausted run reports the existing engineering-retries-exhausted
-failure only after unblock. Running or ambiguous tasks keep their existing
+session within the agent key's concurrency. If a newer run has already started
+another turn on the same work item, the waiting failure closes as superseded
+under the writer transaction, preserving newer work and spending no retry.
+Polling while blocked spends no retries. An exhausted run reports the existing
+engineering-retries-exhausted failure only after unblock. Running or ambiguous tasks keep their existing
 reconciliation path. The reported
 usage is the last model call's, read from `kagent.dev/a2a/usage`.
 

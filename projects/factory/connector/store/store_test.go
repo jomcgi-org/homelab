@@ -233,6 +233,56 @@ func TestTaskOutcomeRejectsChangedGenerations(t *testing.T) {
 	}
 }
 
+func TestSupersededGrantFailureRequiresCurrentWaitingFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		query      string
+		superseded bool
+	}{
+		{"newer run working", "", true},
+		{"quota failure", `UPDATE delivery_attempt SET error_class = 'quota' WHERE run_id = 1`, true},
+		{"newer run finished", `UPDATE run SET state = 'closed' WHERE id = 2;
+			UPDATE delivery_attempt SET state = 'completed' WHERE run_id = 2`, true},
+		{"no newer attempt", `DELETE FROM delivery_attempt WHERE run_id = 2`, false},
+		{"closed run", `UPDATE run SET state = 'closed' WHERE id = 1`, false},
+		{"redelivered run", `UPDATE run SET attempt = attempt + 1 WHERE id = 1`, false},
+		{"accepted attempt", `UPDATE delivery_attempt SET state = 'accepted' WHERE run_id = 1`, false},
+		{"engineering failure", `UPDATE delivery_attempt SET error_class = 'engineering' WHERE run_id = 1`, false},
+		{"different work", `UPDATE run SET work_item_id = NULL WHERE id = 2`, false},
+		{"own retry", `UPDATE delivery_attempt SET run_id = 1, seq = 2 WHERE run_id = 2`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, r := terminalFixture(t)
+			f.must(f.st.FinishAttempt(f.ctx, f.st.DB, f.target.ID, store.AttemptFailed, "credential", "login required"))
+			f.must(f.st.SetRunState(f.ctx, f.st.DB, r.ID, store.RunWaiting, ""))
+			var err error
+			r, err = f.st.GetRun(f.ctx, r.ID)
+			f.must(err)
+			f.target, err = f.st.GetAttempt(f.ctx, f.target.ID)
+			f.must(err)
+			_, err = f.st.DB.Exec(`INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+				SELECT 2, agent_key, work_item_id, trigger, prompt, system_prompt, 1, 'dispatched' FROM run WHERE id = 1`)
+			f.must(err)
+			_, err = f.st.RecordAttempt(f.ctx, f.st.DB, store.Attempt{
+				RunID: 2, RunAttempt: 1, WorkItemEpoch: f.work.Epoch, DecisionID: "initial", Kind: "initial",
+				MessageID: "itsaplan-run/2/initial", KagentNamespace: "ns", KagentAgent: "coder", WriterEpoch: f.w.Epoch,
+			})
+			f.must(err)
+			if tc.query != "" {
+				_, err = f.st.DB.Exec(tc.query)
+				f.must(err)
+			}
+			f.must(f.w.Tx(f.ctx, func(tx *sql.Tx) error {
+				superseded, err := f.st.SupersededGrantFailure(f.ctx, tx, r, f.target)
+				if err == nil && superseded != tc.superseded {
+					t.Errorf("superseded = %v, want %v", superseded, tc.superseded)
+				}
+				return err
+			}))
+		})
+	}
+}
+
 func TestTaskOutcomeLocksGenerationsThroughCommit(t *testing.T) {
 	f, r := terminalFixture(t)
 	_, err := f.st.DB.Exec(`INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)

@@ -1479,6 +1479,73 @@ func TestInflightGrantFailuresRecoverAfterUnblock(t *testing.T) {
 	}
 }
 
+func TestNewerRunResolvesWaitingGrantFailure(t *testing.T) {
+	for _, reviewRound := range []bool{false, true} {
+		for _, failure := range []string{"codex_login_required", "usage_limit_reached"} {
+			t.Run(fmt.Sprintf("round=%t/%s", reviewRound, failure), func(t *testing.T) {
+				v := newDeliveryEnv(t)
+				var runID int64 = 1
+				if reviewRound {
+					round, _ := v.startRound()
+					runID = round.ID
+				} else {
+					v.its.add(1, "coder", 101, "HL-7", "Do it.")
+					v.tick(v.e)
+				}
+				v.kg.finish(v.kg.lastTask(), kagent.StateFailed, failure, nil)
+				v.tick(v.e)
+				if v.run(runID).State != store.RunWaiting || v.work(101).State != store.WorkBlocked {
+					t.Fatal("grant failure did not wait for unblock")
+				}
+				failed := v.latest(runID)
+				wantSends := len(v.kg.Sends()) + 1
+				w := v.work(101)
+				if ok, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope(w.KagentNamespace, w.KagentAgent)); err != nil || !ok {
+					t.Fatalf("unblock = %v, %v", ok, err)
+				}
+				// Claims precede waiting runs. With spare concurrency, this
+				// claim starts a new turn before the failed turn can retry.
+				v.its.add(2, "coder", 101, "HL-7", "Continue working.")
+				v.tick(v.e)
+				newTask := v.latest(2).TaskID
+				if v.run(2).State != store.RunDispatched || v.kg.state(newTask) != kagent.StateWorking {
+					t.Fatal("newer run did not dispatch before the retry")
+				}
+				assertResolved := func() {
+					t.Helper()
+					if v.run(runID).State != store.RunClosed || !reflect.DeepEqual(v.latest(runID), failed) {
+						t.Fatalf("superseded run was not resolved with its failure intact: %+v", v.run(runID))
+					}
+					if w := v.work(101); w.EngineeringRetries != 0 || len(v.kg.Sends()) != wantSends {
+						t.Fatalf("superseded run spent a retry: work=%+v sends=%d", w, len(v.kg.Sends()))
+					}
+					if reviewRound {
+						if !strings.Contains(v.run(runID).ClosedReason, "superseded") {
+							t.Fatal("review round lost its superseded reason")
+						}
+					} else if res := v.its.Run(runID).results; len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "superseded") {
+						t.Fatalf("superseded result = %+v", res)
+					}
+				}
+				assertResolved()
+				v.e.Release()
+				v.e = v.engine("connector-restarted")
+				v.tick(v.e)
+				assertResolved()
+				if v.work(101).State != store.WorkActive || len(v.gh.Enqueues()) != 0 {
+					t.Fatal("resolving a superseded run enabled delivery during the newer turn")
+				}
+				v.kg.finish(newTask, kagent.StateCompleted, "done", nil)
+				v.tick(v.e)
+				assertResolved()
+				if res := v.its.Run(2).results; len(res) != 1 || res[0].Status != "success" {
+					t.Fatalf("newer run could not complete: %+v", res)
+				}
+			})
+		}
+	}
+}
+
 func TestGrantBlockPreservesSiblingOutcomesAndOtherGrants(t *testing.T) {
 	v := newEnv(t)
 	other := v.cfg.Bindings[0]
