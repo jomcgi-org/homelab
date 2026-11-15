@@ -47,6 +47,108 @@ afterEach(async () => {
 });
 
 describe("Codex authorization", () => {
+  test.each(["prod", "dev"])("checks persistence and retries failed saves in %s without another approval", async (environment) => {
+    const scope =
+      environment === "dev" ? { environment, grant: "codex-cluster" } : {};
+    const response = (body) => Response.json({ ...body, ...scope });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({ state: "pending", persistence_retry: true }),
+      )
+      .mockResolvedValueOnce(response({ state: "pending" }))
+      .mockResolvedValueOnce(response({ state: "persistence_pending" }))
+      .mockResolvedValueOnce(
+        response({ state: "pending", persistence_retry: true }),
+      )
+      .mockResolvedValueOnce(response({ state: "granted" }));
+    vi.stubGlobal("fetch", fetch);
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target, onNotice } = await render(vi.fn(), {
+      environment,
+      initialUserCode: "USED-CODE",
+      initialVerificationUrl: "https://example.test/device",
+    });
+    const clickAndWait = async (label) => {
+      target.querySelector("button").click();
+      await tick();
+      await vi.waitFor(() => {
+        expect(target.querySelector("button")?.disabled).toBe(false);
+        expect(target.querySelector("button")?.textContent.trim()).toBe(label);
+      });
+    };
+    await clickAndWait("Check login status");
+    await clickAndWait("Check login status");
+    expect(onNotice).toHaveBeenLastCalledWith(
+      "The approved login is still being saved. Check again shortly.",
+    );
+    await clickAndWait("Retry saving login");
+    expect(target.querySelector("code")).toBeNull();
+    await clickAndWait("Check login status");
+    target.querySelector("button").click();
+    await vi.waitFor(() =>
+      expect(target.textContent).toContain("Codex connected"),
+    );
+    expect(target.querySelector("button")).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+    const startQuery =
+      environment === "dev" ? "?grant=codex-cluster&environment=dev" : "";
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      `/private/factory/execution/codex-login/start${startQuery}`,
+      `/private/factory/execution/codex-login/status?grant=codex-cluster&environment=${environment}`,
+      `/private/factory/execution/codex-login/status?grant=codex-cluster&environment=${environment}`,
+      `/private/factory/execution/codex-login/start${startQuery}`,
+      `/private/factory/execution/codex-login/status?grant=codex-cluster&environment=${environment}`,
+    ]);
+    expect(
+      fetch.mock.calls.filter(([, options]) => options.method === "POST"),
+    ).toHaveLength(2);
+  });
+
+  test.each(["network error", "wrong scope"])("keeps the persistence check usable after %s", async (failure) => {
+    const fetch = vi.fn().mockResolvedValueOnce(
+      Response.json({
+        state: "pending",
+        persistence_retry: true,
+        environment: "dev",
+        grant: "codex-cluster",
+      }),
+    );
+    if (failure === "network error") {
+      fetch.mockRejectedValueOnce(new Error("offline"));
+    } else {
+      fetch.mockResolvedValueOnce(
+        Response.json({ state: "granted", environment: "prod" }),
+      );
+    }
+    fetch.mockResolvedValueOnce(
+      Response.json({
+        state: "persistence_pending",
+        environment: "dev",
+        grant: "codex-cluster",
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const { target, onError } = await render(vi.fn(), { environment: "dev" });
+    target.querySelector("button").click();
+    await vi.waitFor(() =>
+      expect(target.querySelector("button").textContent.trim()).toBe(
+        "Check login status",
+      ),
+    );
+    target.querySelector("button").click();
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenLastCalledWith(P.labels.codexLoginUnavailable),
+    );
+    expect(target.querySelector("button").disabled).toBe(false);
+    target.querySelector("button").click();
+    await vi.waitFor(() =>
+      expect(target.querySelector("button").textContent.trim()).toBe(
+        "Retry saving login",
+      ),
+    );
+  });
+
   test("a persistence retry clears the previous device code and never opens approval", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ state: "pending", persistence_retry: true })));
     const open = vi.spyOn(window, "open").mockImplementation(() => null);

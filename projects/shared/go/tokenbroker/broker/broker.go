@@ -404,8 +404,9 @@ func (b *Broker) SaveGrant(grant store.Grant) error {
 	// Assign the persistence order only once the preceding refresh has finished.
 	grant.LastRefresh = time.Time{}
 	// Refresh preserves this identity, including across broker replicas. The
-	// login order stays fixed even if persistence is retried much later.
+	// durable generation is assigned below; LoginAt never orders credentials.
 	grant.LoginID, grant.LoginAt = rand.Text(), time.Now().UTC()
+	grant.LoginGeneration = 0
 	// Secret timestamps round-trip through RFC3339 without monotonic data or
 	// local timezone pointers. Normalize for ambiguous-write confirmation.
 	grant.TokenBundle.ExpiresAt = grant.TokenBundle.ExpiresAt.UTC()
@@ -446,11 +447,14 @@ func (b *Broker) persistLogin(s *grantState, grant store.Grant) error {
 		err = b.persistLoginAttempt(ctx, s, &grant)
 		if errors.Is(err, store.ErrGrantNotNewer) {
 			// A lost write response may have been followed by another replica
-			// rotating this login, or a later device login superseding it. Adopt
-			// that durable version without replaying a consumed refresh token.
+			// rotating this login, or another device login winning this or a
+			// later generation. Adopt that durable version without replaying a
+			// consumed refresh token. A prior login's refresh keeps its generation
+			// and cannot satisfy this check, regardless of either replica's clock.
 			saved, loadErr := b.loadGrant(ctx, grant.Name)
 			if loadErr == nil && saved.TokenBundle.AccessToken != "" && saved.TokenBundle.RefreshToken != "" &&
 				(store.CompareGrantVersion(saved, grant) > 0 ||
+					(saved.LoginGeneration == grant.LoginGeneration && saved.LoginID != grant.LoginID) ||
 					(store.CompareGrantVersion(saved, grant) == 0 && saved.TokenBundle == grant.TokenBundle)) {
 				grant = saved
 				err = nil
@@ -515,6 +519,14 @@ func (b *Broker) persistLoginAttempt(ctx context.Context, s *grantState, grant *
 		if err != nil {
 			return err
 		}
+		// Propose the next durable authorization generation once. Secret
+		// resourceVersion CAS serializes competing installs. Retaining this
+		// proposal across ambiguous writes prevents a retry from superseding
+		// a login installed after it or replaying an already-rotated bundle.
+		if saved.LoginGeneration == ^uint64(0) {
+			return errors.New("login generation exhausted")
+		}
+		grant.LoginGeneration = saved.LoginGeneration + 1
 		// Include both the durable refresh and any rotation awaiting its own
 		// persistence retries. Keep this timestamp fixed across login retries.
 		stamp := time.Now().UTC()

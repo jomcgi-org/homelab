@@ -21,9 +21,10 @@
   let copied = $state(false);
   let requestedUserCode = $state(null);
   let requestedVerificationUrl = $state(null);
-  let savingLogin = $state(false);
+  let persistenceState = $state(null);
+  const savingLogin = $derived(persistenceState === "pending");
   const userCode = $derived(
-    savingLogin ? null : requestedUserCode ?? initialUserCode,
+    persistenceState ? null : requestedUserCode ?? initialUserCode,
   );
   const verificationUrl = $derived(
     requestedVerificationUrl ?? initialVerificationUrl,
@@ -33,7 +34,7 @@
 
   $effect(() => {
     if (!initialUserCode) return;
-    savingLogin = false;
+    persistenceState = null;
     requestedUserCode = null;
     requestedVerificationUrl = null;
   });
@@ -42,6 +43,43 @@
     disposed = true;
     clearTimeout(copiedTimer);
   });
+
+  async function checkPersistence() {
+    if (authorizing) return;
+    authorizing = true;
+    onError(null);
+    try {
+      const query = new URLSearchParams({ grant: "codex-cluster", environment });
+      const response = await fetch(
+        `/private/factory/execution/codex-login/status?${query}`,
+        { signal: AbortSignal.timeout(10000), cache: "no-store" },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (disposed) return;
+      if (
+        !response.ok ||
+        !["none", "pending", "persistence_pending", "granted", "failed"].includes(
+          body.state,
+        ) ||
+        (environment === "dev" &&
+          (body.environment !== "dev" || body.grant !== "codex-cluster"))
+      ) {
+        throw new Error(invalidResponseLabel);
+      }
+      persistenceState = body.state;
+      onNotice(
+        body.state === "pending"
+          ? "The approved login is still being saved. Check again shortly."
+          : body.state === "granted"
+            ? "Codex is connected."
+            : "Saving the login needs another attempt. Retry saving login.",
+      );
+    } catch {
+      if (!disposed) onError(unavailableLabel);
+    } finally {
+      authorizing = false;
+    }
+  }
 
   async function authorize() {
     if (authorizing) return;
@@ -82,7 +120,7 @@
         return;
       }
       if (body.state === "pending" && body.persistence_retry === true) {
-        savingLogin = true;
+        persistenceState = "pending";
         requestedUserCode = null;
         requestedVerificationUrl = null;
         onNotice("Saving the approved login. Check the connection shortly.");
@@ -96,7 +134,7 @@
       }
 
       const previousUserCode = userCode;
-      savingLogin = false;
+      persistenceState = null;
       requestedUserCode = body.user_code;
       requestedVerificationUrl = body.verification_url;
       if (navigator.clipboard?.writeText) {
@@ -144,14 +182,22 @@
     </button>
     {#if copied}<span class="copied" role="status">{copiedLabel}</span>{/if}
   </div>
+{:else if persistenceState === "granted"}
+  <span role="status">Codex connected</span>
 {:else}
   <button
     class="primary-action"
     type="button"
-    disabled={authorizing || savingLogin}
-    onclick={authorize}
+    disabled={authorizing}
+    onclick={savingLogin ? checkPersistence : authorize}
   >
-    {savingLogin ? "Saving login" : authorizing ? authorizingLabel : authorizeLabel}
+    {authorizing
+      ? authorizingLabel
+      : savingLogin
+        ? "Check login status"
+        : persistenceState
+          ? "Retry saving login"
+          : authorizeLabel}
   </button>
 {/if}
 
