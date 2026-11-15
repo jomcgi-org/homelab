@@ -12,6 +12,39 @@ submits geometry changes only for positions that can still move, at the
 existing four-updates-per-second cadence. It preserves the full fleet and
 snapshot freshness policy.
 
+## Snapshot response
+
+The snapshot selects its fifteen output fields directly instead of loading
+complete position and vessel models. It serializes the resulting JSON primitives
+once. The left join, full fleet, nulls, name fallback, timestamps, ETag and cache
+policy are unchanged; this adds no server-side snapshot cache or age cutoff.
+
+Local actual-route measurements used three interleaved fresh Python processes
+per version, FastAPI 0.139.0, SQLModel 0.0.37 and SQLAlchemy 2.0.48:
+
+| Request | Before median | After median |
+| --- | ---: | ---: |
+| First snapshot | 480.9 ms | 156.3 ms |
+| Matching ETag (304) | 288.3 ms | 114.0 ms |
+
+The file-backed SQLite fixture reconstructs all 7,786 captured public positions
+and 5,684 vessel metadata rows. It preserves each response field and defaults
+unused metadata; it is not a production database copy. All six responses have
+identical headers and 2,926,063 body bytes, SHA-256
+`730111f6c93162c0f0f50c78388411561099efaaa7e94b32e60323053bfab806`.
+The public source capture has SHA-256
+`40ee85124646917c6afb759604a5757e925c3161e68197be2018aa152ded4c53`.
+The 304 request follows the first request in each process. Neither query promises
+row order. These timings isolate local route work; they do not establish
+PostgreSQL, production network or mobile latency. Verify the deployed route
+separately before claiming a live improvement.
+
+Local PostgreSQL 16.14 `EXPLAIN (ANALYZE, BUFFERS)` on the same reconstructed
+rows and migrated schema used a hash join in both versions: median execution
+3.417 ms before and 3.624 ms after, across three read-only runs. This does not
+show a faster database plan; the measured route saving is in Python model
+hydration and JSON encoding. No index or production database change was made.
+
 ## Cache windows
 
 | Responses | TTL | SWR | Normal maximum | SIE | Error allowance |
