@@ -669,17 +669,15 @@ previews).
   toward an approval or code-owner rule. Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings and human gate in a hidden block, at most
-  48,000 characters, for the next head. Checks belong to commits: a duplicate
-  ready PR holds every PR at that head and stops model work. Once one remains,
-  it needs a new review and human approval, even without labels. Label and
-  duplicate holds survive new commits; complete label history recovers failed
-  writes. Each restart uses GitHub's latest all-state PR creation time to hold
-  preexisting PRs, including later reopenings, for exact-head approval until
-  merge. Newer PRs remain autonomous. Recovery captures up to 64 review IDs;
-  a new ID or verified nonce acknowledges the hold despite clock skew. Nonces
-  also resolve ambiguous timestamps. Author, current editor, state, commit and
-  PR are verified together. Overflow requires a nonce. Failed reads or writes
-  block recovery; revoking a remote pass still requires an accepted GitHub write.
+  48,000 characters, for the next head. Duplicate ready PRs stop model work;
+  duplicate or foreign checks require a fresh review and human approval.
+  Holds survive new commits; complete label history recovers failed writes.
+  Each restart uses GitHub's latest all-state PR creation time to hold existing
+  and reopened PRs for exact-head approval until merge. Newer PRs stay autonomous
+  unless their check is foreign. Recovery records up to 64 review IDs; a new ID
+  or verified nonce clears its hold despite clock skew. Nonces also resolve
+  ambiguous timestamps and overflow; author, editor, state, commit and PR must
+  match. Read/write failures block recovery; revocation requires a GitHub write.
 - **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
   one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
   and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
