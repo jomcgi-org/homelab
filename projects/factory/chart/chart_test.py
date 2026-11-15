@@ -37,7 +37,9 @@ _DEFAULTS_FILE.write_text(
 
 
 def _render(
-    overrides: list[str] | None = None, binding: bool = True
+    overrides: list[str] | None = None,
+    binding: bool = True,
+    values: Path = _DEPLOY_VALUES,
 ) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
@@ -48,10 +50,10 @@ def _render(
         "kagent",
         "--include-crds",
         "--values",
-        str(_DEPLOY_VALUES),
+        str(values),
     ]
     if not binding:
-        argv[argv.index(str(_DEPLOY_VALUES))] = str(_DEFAULTS_FILE)
+        argv[argv.index(str(values))] = str(_DEFAULTS_FILE)
     else:
         # These tests describe the factory without its reviewer, which
         # reviewer_test.py covers; the deploy render lock covers both.
@@ -595,7 +597,11 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
     agent = _in(docs, "Agent", ns, "homelab-codex")["spec"]
     assert agent["harnessRef"] == {"name": "codex"}
     assert agent["template"]["inline"]["modelConfig"] == {"name": "codex"}
-    assert agent["egressPolicyRefs"] == [{"name": "github-git"}]
+    # Deploy values enable the homelab toolchain's download origins.
+    assert agent["egressPolicyRefs"] == [
+        {"name": "github-git"},
+        {"name": "homelab-tools"},
+    ]
     harness = _in(docs, "Harness", ns, "codex")["spec"]
     assert harness["codex"] == {}
     assert harness["substrate"] == {
@@ -629,12 +635,24 @@ def test_binding_workspace_holds_only_placeholders() -> None:
     assert sa["automountServiceAccountToken"] is False
 
 
-def test_toolchain_is_opt_in_and_grants_only_public_download_origins() -> None:
+def test_toolchain_is_opt_in_and_grants_only_public_download_origins(
+    tmp_path: Path,
+) -> None:
+    # The deploy values without the toolchain, the chart default.
+    deploy = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    for repository in deploy["repositories"]:
+        repository.pop("toolchain", None)
+    untooled = tmp_path / "values.yaml"
+    untooled.write_text(yaml.safe_dump(deploy))
+    off = _render(values=untooled)
     assert not [
         d
-        for d in _render()
+        for d in off
         if d["kind"] == "EgressPolicy" and d["metadata"]["name"] == "homelab-tools"
     ]
+    assert _in(off, "Agent", "factory-r-homelab", "homelab-codex")["spec"][
+        "egressPolicyRefs"
+    ] == [{"name": "github-git"}]
     docs = _render(["repositories[0].toolchain=homelab"])
     ns = "factory-r-homelab"
     policy = _in(docs, "EgressPolicy", ns, "homelab-tools")
@@ -656,7 +674,7 @@ def test_toolchain_is_opt_in_and_grants_only_public_download_origins() -> None:
     assert "ci lint, ci regen and ci ratchet" in prompt
     assert "no\nBuildBuddy credential" in prompt
     # Enabling tools changes no worker image, credentials or harness env.
-    defaults = _render()
+    defaults = off
     for kind, name in (
         ("Harness", "codex"),
         ("WorkerPool", "homelab-codex"),
