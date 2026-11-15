@@ -635,7 +635,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return err
 	}
 	if !gateOpen(&b.Review, b.BaseBranch, pr, d, checks, statuses) {
-		return nil
+		return e.idleRound(ctx, wi, pr, d)
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -859,7 +859,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
 	pr *store.PullRequest, d *github.PullRequestDetail, prompt string,
 ) (*store.Run, error) {
-	round, err := e.st.StartRound(ctx, tx, wi, prompt)
+	round, err := e.st.StartRound(ctx, tx, wi, prompt, d.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -868,6 +868,33 @@ func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.Wor
 			"The factory started review round %d of %d for %s on PR #%d (%s) at %s, in kagent session %s.",
 			wi.ReviewRounds+1, b.Review.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.SessionID)})
 	return round, err
+}
+
+// idleRound reports, once per round, a review round that closed with the PR
+// still at the head it was asked to change. The agent pushed nothing, so no
+// new check or review on that head can start another round: without this the
+// PR waits silently (HOME-15 and HOME-18 on 2026-11-14). A person's push or a
+// trusted reviewer's request for changes still starts the next round.
+func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, pr *store.PullRequest, d *github.PullRequestDetail) error {
+	if wi.State != store.WorkReview {
+		return nil
+	}
+	last, err := e.st.LastRound(ctx, wi.ID)
+	if err != nil || last == nil || last.State != store.RunClosed || last.HeadSHA == "" || last.HeadSHA != d.HeadSHA {
+		return err
+	}
+	posted, err := e.st.EnqueueOnce(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/round-idle/%d", last.RunID), 0, "",
+		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+			"Review round %d for %s ended without a new commit: PR #%d (%s) is still at %s, so nothing on that head "+
+				"can start another round. It waits for a person to push a fix or request changes.",
+			wi.ReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA))})
+	if err != nil || !posted {
+		return err
+	}
+	e.m.IdleRounds.Inc()
+	e.log.WarnContext(ctx, "review round ended without a new commit", "work_item", wi.ID, "run", last.RunID,
+		"pr", pr.Number, "head", d.HeadSHA)
+	return nil
 }
 
 func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {

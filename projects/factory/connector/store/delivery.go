@@ -320,7 +320,7 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (boo
 // StartRound records a review round: a connector run in the work item's
 // session, counted against its bound. The run waits until the work item and
 // its agent key's concurrency let dispatch send it.
-func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt string) (*Run, error) {
+func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt, head string) (*Run, error) {
 	res, err := q.ExecContext(ctx, `
 		UPDATE work_item SET review_rounds = review_rounds + 1, state = 'active', updated_at = now()
 		WHERE id = $1 AND state = 'review'`, w.ID)
@@ -335,9 +335,34 @@ func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt s
 	}
 	return scanRun(q.QueryRowContext(ctx, `
 		INSERT INTO run (id, origin, agent_key, work_item_id, issue_id, issue_key, trigger, prompt, system_prompt,
-			attempt, state, seen_visible)
-		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'review', $5, '', 1, 'waiting', true)
-		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt))
+			attempt, state, seen_visible, round_head_sha)
+		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'review', $5, '', 1, 'waiting', true, nullif($6, ''))
+		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt, head))
+}
+
+// Round is a work item's latest review round: its run, state and the head it
+// was asked to change.
+type Round struct {
+	RunID   int64
+	State   string
+	HeadSHA string
+}
+
+// LastRound returns the work item's most recent review round, or nil.
+// Round run IDs count down, so the order is by creation.
+func (s *Store) LastRound(ctx context.Context, workID int64) (*Round, error) {
+	r := &Round{}
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, state, coalesce(round_head_sha, '') FROM run
+		WHERE work_item_id = $1 AND origin = 'connector' AND trigger = 'review'
+		ORDER BY created_at DESC, id ASC LIMIT 1`, workID).Scan(&r.RunID, &r.State, &r.HeadSHA)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // LatestTurn returns the work item's latest completed attempt and its run,

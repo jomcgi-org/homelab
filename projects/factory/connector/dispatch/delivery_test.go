@@ -1612,6 +1612,67 @@ func TestReviewRoundsAreBounded(t *testing.T) {
 	}
 }
 
+// idleComments counts the issue comments reporting a round that pushed
+// nothing.
+func (v *env) idleComments() []string {
+	v.t.Helper()
+	var out []string
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "ended without a new commit") {
+			out = append(out, c.body)
+		}
+	}
+	return out
+}
+
+func TestRoundWithoutANewCommitIsReportedOnce(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix it.")
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want 1", n)
+	}
+	// The agent ends the round without pushing: nothing on sha-1 is new, so
+	// no event can start another round.
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No commit pushed: the failure is undiagnosed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.poll()
+	v.poll()
+	idle := v.idleComments()
+	if len(idle) != 1 {
+		t.Fatalf("idle-round comments = %q, want exactly one", idle)
+	}
+	for _, want := range []string{"Review round 1 for HL-7", "PR #1", "still at sha-1", "waits for a person"} {
+		if !strings.Contains(idle[0], want) {
+			t.Errorf("comment lacks %q: %s", want, idle[0])
+		}
+	}
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want no new round from the idle head", n)
+	}
+	if w := v.work(101); w.State != store.WorkReview {
+		t.Fatalf("work item = %s, want review", w.State)
+	}
+}
+
+func TestRoundThatPushesIsNotReportedIdle(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix it.")
+	v.poll()
+	v.gh.push("factory/HL-7", "sha-2", "fix: feedback")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed the fix.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.poll()
+	v.poll()
+	if idle := v.idleComments(); len(idle) != 0 {
+		t.Fatalf("idle-round comments = %q, want none after a push", idle)
+	}
+}
+
 // startRound delivers HL-7 and starts a review round, returning the round
 // and its kagent task.
 func (v *env) startRound() (*store.Run, string) {

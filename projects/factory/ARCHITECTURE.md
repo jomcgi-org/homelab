@@ -523,6 +523,15 @@ itsaplan; its record lives in the connector database and on the issue. A
 round holds a slot of its agent key's concurrency and waits for one. A
 failed round returns the work item to review.
 
+A round records the head it was asked to change. If it closes with the PR
+still at that head, the agent pushed nothing, and every event on that head
+has already acted, so no new round can start. The connector then says so on
+the issue once per round: the PR waits for a person to push a fix or
+request changes, either of which starts the next round within the bound.
+`factory_connector_idle_review_rounds_total` counts these. Before this,
+HOME-15 and HOME-18 waited silently for eight hours after rounds whose
+agent could not read the CI failure.
+
 **Stopping delivery.** A round has no itsaplan run to cancel, and its
 kagent session belongs to the connector, so the connector watches for the
 signals a person gives. It reads the issue before a round starts, every
