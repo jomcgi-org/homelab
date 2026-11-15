@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 import fastapi.routing
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlmodel import SQLModel, Session, create_engine
 
 from core.db import get_session
@@ -140,6 +141,149 @@ class TestSnapshot:
         r = client.get("/api/ships/snapshot")
         assert r.status_code == 200
         assert r.json() == {"count": 0, "vessels": []}
+
+    def test_exact_wire_body_preserves_nulls_zeroes_and_name_fallback(
+        self, client, session
+    ):
+        session.add(
+            Vessel(
+                mmsi="316001234",
+                name="ÉTOILE",
+                ship_type=0,
+                destination="",
+                eta=T0 + timedelta(hours=5),
+                imo="unused",
+                dimension_a=99,
+            )
+        )
+        session.add(
+            LatestPosition(
+                mmsi="316001234",
+                lat=0.0,
+                lon=-123.0,
+                speed=0.0,
+                course=0.0,
+                heading=0,
+                nav_status=0,
+                ship_name="",
+                recorded_at=T0,
+                updated_at=T0,
+            )
+        )
+        session.commit()
+
+        r = client.get("/api/ships/snapshot")
+        assert (
+            r.content
+            == (
+                '{"count":1,"vessels":[{"mmsi":"316001234","lat":0.0,"lon":-123.0,'
+                '"speed":0.0,"course":0.0,"heading":0,"nav_status":0,'
+                '"ship_name":"ÉTOILE","recorded_at":"2026-06-10T12:00:00+00:00",'
+                '"first_seen_at_location":null,"updated_at":"2026-06-10T12:00:00+00:00",'
+                '"name":"ÉTOILE","ship_type":0,"destination":"",'
+                '"eta":"2026-06-10T17:00:00+00:00"}]}'
+            ).encode()
+        )
+        assert r.headers["content-type"] == "application/json"
+        assert int(r.headers["content-length"]) == len(r.content)
+        assert r.headers["etag"] == '"2026-06-10T12:00:00+00:00-1"'
+
+    @pytest.mark.parametrize("ship_name", [None, "", "SOLO"])
+    def test_keeps_positions_without_vessel_metadata(self, client, session, ship_name):
+        session.add(
+            LatestPosition(
+                mmsi="999001234",
+                lat=49.0,
+                lon=-123.0,
+                ship_name=ship_name,
+                recorded_at=T0,
+                updated_at=T0,
+            )
+        )
+        session.commit()
+        r = client.get("/api/ships/snapshot")
+        assert r.status_code == 200
+        assert r.json() == {
+            "count": 1,
+            "vessels": [
+                {
+                    "mmsi": "999001234",
+                    "lat": 49.0,
+                    "lon": -123.0,
+                    "speed": None,
+                    "course": None,
+                    "heading": None,
+                    "nav_status": None,
+                    "ship_name": ship_name or None,
+                    "recorded_at": T0.isoformat(),
+                    "first_seen_at_location": None,
+                    "updated_at": T0.isoformat(),
+                    "name": None,
+                    "ship_type": None,
+                    "destination": None,
+                    "eta": None,
+                }
+            ],
+        }
+
+    def test_snapshot_does_not_hydrate_fleet_models(self, client, session):
+        _seed_snapshot(session)
+        session.expunge_all()
+        loaded = []
+
+        def on_load(instance, _context):
+            loaded.append(type(instance).__name__)
+
+        for model in (LatestPosition, Vessel):
+            event.listen(model, "load", on_load)
+        try:
+            assert client.get("/api/ships/snapshot").json()["count"] == 2
+        finally:
+            for model in (LatestPosition, Vessel):
+                event.remove(model, "load", on_load)
+        assert loaded == []
+
+    def test_snapshot_avoids_recursive_json_copy(self, client, session, monkeypatch):
+        _seed_snapshot(session)
+
+        def unexpected_copy(*_args, **_kwargs):
+            raise AssertionError("snapshot primitives must not be recursively copied")
+
+        monkeypatch.setattr(fastapi.routing, "jsonable_encoder", unexpected_copy)
+        assert client.get("/api/ships/snapshot").json()["count"] == 2
+
+    def test_snapshot_reads_updates_and_removals_without_changing_cache_policy(
+        self, client, session
+    ):
+        _seed_snapshot(session)
+        first = client.get("/api/ships/snapshot")
+        pos = session.get(LatestPosition, "316001234")
+        pos.lat = 50.0
+        pos.updated_at = T0 + timedelta(hours=1)
+        session.commit()
+        updated = client.get(
+            "/api/ships/snapshot", headers={"If-None-Match": first.headers["etag"]}
+        )
+        assert updated.status_code == 200
+        assert updated.headers["etag"] != first.headers["etag"]
+        assert {v["mmsi"]: v for v in updated.json()["vessels"]}["316001234"][
+            "lat"
+        ] == 50.0
+        session.delete(session.get(LatestPosition, "316005678"))
+        session.commit()
+        removed = client.get(
+            "/api/ships/snapshot", headers={"If-None-Match": updated.headers["etag"]}
+        )
+        assert removed.status_code == 200
+        assert removed.json()["count"] == 1
+        assert removed.headers["etag"] != updated.headers["etag"]
+        assert removed.headers["cache-control"] == first.headers["cache-control"]
+        unchanged = client.get(
+            "/api/ships/snapshot", headers={"If-None-Match": removed.headers["etag"]}
+        )
+        assert unchanged.status_code == 304
+        assert unchanged.content == b""
+        assert unchanged.headers["cache-control"] == first.headers["cache-control"]
 
 
 def _seed_track(session: Session) -> None:
