@@ -333,6 +333,15 @@ func writeFileList(b *strings.Builder, files []github.PullRequestFile) {
 	}
 }
 
+// lineBreaks maps every character a reader may take as a line break to
+// "\n", so quote prefixes every line a reader sees.
+var lineBreaks = strings.NewReplacer(
+	"\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n",
+	"\u0085", "\n", "\u2028", "\n", "\u2029", "\n",
+)
+
+// quote prefixes each line of s with "> ", so no line of it starts a line
+// of the prompt.
 func quote(s string) string {
-	return "> " + strings.ReplaceAll(s, "\n", "\n> ")
+	return "> " + strings.ReplaceAll(lineBreaks.Replace(s), "\n", "\n> ")
 }
