@@ -21,6 +21,12 @@ type Metrics struct {
 	KagentErrors     *prometheus.CounterVec // binding, call
 	Conditional      *prometheus.CounterVec // result
 	CommentWrites    *prometheus.CounterVec // binding, outcome
+
+	// Session paths and usage of reviews (review/session.go).
+	ReviewSessions  *prometheus.CounterVec   // binding, path, reason
+	ReviewTaskBytes *prometheus.HistogramVec // binding, path
+	ReviewTokens    *prometheus.CounterVec   // binding, path, kind
+	ReviewUsage     *prometheus.CounterVec   // binding, path, usage
 }
 
 // New registers the metrics with reg; a nil reg leaves them unregistered.
@@ -76,7 +82,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}, []string{"binding", "call"}),
 		KagentErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_kagent_errors_total",
-			Help: "Failed or unresolved kagent calls by binding and call (send, get_task, cancel).",
+			Help: "Failed or unresolved kagent calls by binding and call (send, get_task, cancel, get_session).",
 		}, []string{"binding", "call"}),
 		Conditional: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_github_conditional_reads_total",
@@ -87,10 +93,32 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help: "Writes of the reviewer's PR comment by binding and outcome (created, updated, error). An error leaves " +
 				"the check run as it is; each is also logged as \"the review comment was not written\".",
 		}, []string{"binding", "outcome"}),
+		ReviewSessions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_reviewer_review_sessions_total",
+			Help: "Review tasks kagent accepted, by binding, path (fresh, resumed: in the session that reviewed the PR's " +
+				"previous head) and reason: resumed, or why the task did not resume (none, retry, disabled, foreign, size, " +
+				"missing, deleted, crashed, failed, unreadable, refused).",
+		}, []string{"binding", "path", "reason"}),
+		ReviewTaskBytes: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "factory_reviewer_review_task_bytes",
+			Help: "Bytes of text and data kagent keeps on a completed review's task (prompt, replies, tool calls and " +
+				"results), by binding and path (fresh, resumed). Each is also logged as \"review usage\".",
+			Buckets: prometheus.ExponentialBuckets(16<<10, 2, 8),
+		}, []string{"binding", "path"}),
+		ReviewTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_reviewer_review_tokens_total",
+			Help: "Tokens of completed reviews' tasks that kagent reported, by binding, path (fresh, resumed) and kind " +
+				"(input_uncached, input_cached, output including reasoning).",
+		}, []string{"binding", "path", "kind"}),
+		ReviewUsage: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_reviewer_review_usage_total",
+			Help: "Completed reviews by binding, path (fresh, resumed) and usage: reported when kagent stamped the " +
+				"task's token usage, else unreported (kagent v1.0.1's Codex harness reports none on the task).",
+		}, []string{"binding", "path", "usage"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.ReviewsStarted, m.ReviewsCompleted, m.Findings, m.Withdrawals, m.HumanGates, m.Retries, m.SplitRequests, m.InFlight, m.Enqueues, m.MergeGroupChecks,
-			m.GitHubErrors, m.KagentErrors, m.Conditional, m.CommentWrites)
+			m.GitHubErrors, m.KagentErrors, m.Conditional, m.CommentWrites, m.ReviewSessions, m.ReviewTaskBytes, m.ReviewTokens, m.ReviewUsage)
 	}
 	return m
 }

@@ -882,12 +882,14 @@ func (f *fakeGitHub) ownComments(number int) []github.Comment {
 
 // fakeKagent models the gateway's handling of a task-opening message: a
 // repeated message ID is answered with the task holding it, and rejected
-// when its content differs.
+// when its content differs. A message naming a context opens its task in
+// that session, which must exist for the same agent.
 type fakeKagent struct {
 	mu         sync.Mutex
 	tasks      map[string]*fakeTask
 	initial    map[string]string // message ID -> task ID
 	texts      map[string]string // message ID -> first text sent
+	gone       map[string]bool   // context IDs whose sessions were deleted
 	sends      []kagent.Message
 	executions int
 	cancels    []string
@@ -907,7 +909,17 @@ type fakeTask struct {
 }
 
 func newFakeKagent() *fakeKagent {
-	return &fakeKagent{tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}}
+	return &fakeKagent{tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}, gone: map[string]bool{}}
+}
+
+// session reports the agent whose task opened a context, and whether one did.
+func (k *fakeKagent) session(contextID string) (kagent.AgentRef, bool) {
+	for _, t := range k.tasks {
+		if t.task.ContextID == contextID {
+			return t.agent, !k.gone[contextID]
+		}
+	}
+	return kagent.AgentRef{}, false
 }
 
 func copyTask(t *kagent.Task) *kagent.Task {
@@ -934,6 +946,11 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 		k.sendErr = k.sendErr[1:]
 		return nil, err
 	}
+	if msg.ContextID != "" {
+		if owner, ok := k.session(msg.ContextID); !ok || owner != agent {
+			return nil, fmt.Errorf("%w: context", kagent.ErrTaskNotFound)
+		}
+	}
 	text := msg.Parts[0].Text
 	if first, ok := k.texts[msg.MessageID]; ok && first != text {
 		k.rejected++
@@ -945,7 +962,10 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	}
 	id := fmt.Sprintf("task-%d", len(k.tasks)+1)
 	m := msg
-	m.Role, m.TaskID, m.ContextID = "ROLE_USER", id, "ctx-"+id
+	m.Role, m.TaskID = "ROLE_USER", id
+	if m.ContextID == "" {
+		m.ContextID = "ctx-" + id
+	}
 	k.tasks[id] = &fakeTask{agent: agent, task: kagent.Task{
 		ID: id, ContextID: m.ContextID, Status: kagent.TaskStatus{State: kagent.StateWorking}, History: []*kagent.Message{&m},
 	}}
@@ -996,6 +1016,21 @@ func (k *fakeKagent) finish(id, state, text string) {
 	t.task.Status = kagent.TaskStatus{State: state, Message: reply}
 }
 
+// pad adds an artifact of n bytes to a task, as a tool's output would.
+func (k *fakeKagent) pad(id string, n int) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	t := k.tasks[id]
+	t.task.Artifacts = append(t.task.Artifacts, &kagent.Artifact{ArtifactID: id + "-tool", Parts: []kagent.Part{{Text: strings.Repeat("x", n)}}})
+}
+
+// stamp sets the task-lifetime usage kagent's ADK runtimes report.
+func (k *fakeKagent) stamp(id string, usage map[string]any) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.tasks[id].task.Metadata = map[string]any{usageExtension: usage}
+}
+
 // finishOpen ends every task still working with the same reply.
 func (k *fakeKagent) finishOpen(state, text string) {
 	k.mu.Lock()
@@ -1037,10 +1072,59 @@ func (k *fakeKagent) state() (executions int, cancels []string) {
 
 var testAgent = kagent.AgentRef{Namespace: "factory-review", Name: "reviewer"}
 
+// fakeSessions answers GetSession for every context the fake kagent opened,
+// as a READY session of the agent that opened it, unless a test sets
+// another answer.
+type fakeSessions struct {
+	k     *fakeKagent
+	mu    sync.Mutex
+	set   map[string]*kagent.Session
+	errs  map[string]error
+	calls []string
+}
+
+func (s *fakeSessions) GetSession(_ context.Context, id string) (*kagent.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, id)
+	if err := s.errs[id]; err != nil {
+		return nil, err
+	}
+	if sess := s.set[id]; sess != nil {
+		c := *sess
+		return &c, nil
+	}
+	s.k.mu.Lock()
+	defer s.k.mu.Unlock()
+	agent, ok := s.k.session(id)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", kagent.ErrSessionNotFound, id)
+	}
+	return &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady, AgentNamespace: agent.Namespace, AgentName: agent.Name}, nil
+}
+
+func (s *fakeSessions) answer(id string, sess *kagent.Session, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess != nil {
+		s.set[id] = sess
+	}
+	if err != nil {
+		s.errs[id] = err
+	}
+}
+
+func (s *fakeSessions) reads() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.calls...)
+}
+
 type harness struct {
 	t               *testing.T
 	gh              *fakeGitHub
 	k               *fakeKagent
+	sessions        *fakeSessions
 	m               *metrics.Metrics
 	log             *syncBuffer
 	cfg             Config
@@ -1067,8 +1151,10 @@ func (s *syncBuffer) String() string {
 
 func newHarness(t *testing.T) *harness {
 	gh, srv := newFakeGitHub(t)
+	k := newFakeKagent()
 	h := &harness{
-		t: t, gh: gh, k: newFakeKagent(), m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
+		t: t, gh: gh, k: k, m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
+		sessions: &fakeSessions{k: k, set: map[string]*kagent.Session{}, errs: map[string]error{}},
 		cfg: Config{
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
@@ -1106,6 +1192,9 @@ func (h *harness) engine() *Engine {
 	gh := &github.Client{BaseURL: h.srv.URL, Tokens: reviewerTokens{}, ETags: &github.ETagCache{}}
 	log := slog.New(slog.NewJSONHandler(h.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := h.cfg
+	if cfg.Sessions == nil && h.sessions != nil {
+		cfg.Sessions = h.sessions
+	}
 	if cfg.CommentAuthor != "" && cfg.Comments == nil {
 		cfg.Comments = &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}}
 	}
@@ -1152,9 +1241,13 @@ func (h *harness) msgID(number int, sha string, attempt int) string {
 	return AttemptMessageID(testRepo, number, sha, c.ID, attempt)
 }
 
-// taskOn is the task of an attempt of the head's latest review, or empty.
+// taskOn is the task of an attempt of the head's latest review, or empty:
+// the continuation of the previous head's session, else a fresh one.
 func (h *harness) taskOn(number int, sha string, attempt int) string {
 	if m := h.msgID(number, sha, attempt); m != "" {
+		if id := h.k.taskFor(m + "/resume"); id != "" {
+			return id
+		}
 		return h.k.taskFor(m)
 	}
 	return ""

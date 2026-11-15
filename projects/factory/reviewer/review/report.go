@@ -532,6 +532,10 @@ type State struct {
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`
 	Gate           *Gate `json:"gate,omitempty"`
+
+	// Session is the kagent session that reviewed the head, which the next
+	// head's review may resume (session.go).
+	Session *SessionRef `json:"session,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -929,7 +933,7 @@ func encodeState(st State) string {
 			return out
 		}
 		// Without the cleared record, so it says the record is partial.
-		small := State{Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0}
+		small := State{Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.
 			gate.Paths, gate.Findings = nil, shrink(g.Findings)

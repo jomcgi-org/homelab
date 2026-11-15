@@ -86,9 +86,16 @@ records how they relate and routes results and feedback between them.
     (`GET /agent-runs/queue?runId=`) needs `work_items read` and
     `ai_agents read` in the run's project, and it hides runs whose issue
     moved to another project.
-12. **kagent reports usage per model call.** [V] Each call's usage sits in
-    metadata key `kagent.dev/a2a/usage` (`promptTokenCount`,
-    `candidatesTokenCount`).
+12. **kagent reports usage per model call.** [V] Its ADK runtimes put each
+    call's usage in metadata key `kagent.dev/a2a/usage` (`promptTokenCount`,
+    `candidatesTokenCount`) and a task total under the usage extension
+    `https://kagent.dev/extensions/usage/v1` (`inputTokens`,
+    `cachedInputTokens`, `outputTokens`, `reasoningTokens`). At v1.0.1 the
+    Codex and Claude Code harnesses put neither on the task, though their
+    Agent Card lists the extension: each call's usage, cache reads included,
+    goes only to OpenTelemetry `chat` spans (`gen_ai.conversation.id` is the
+    context ID) and `gen_ai.client.inference.usage.*` counters
+    (`go/harness/runtime/a2a`).
 13. **An agent's comment starts no itsaplan run.** [V] At v1.10.0
     `queueMentionRuns` returns early when the comment's author is an agent
     user, so the coordinator cannot start a mention-run. A delegation run
@@ -1047,9 +1054,9 @@ previews).
   login wrote, and its own comment never reaches the agent.
   Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
-  keeps its blocking findings and human gate in a hidden block, at most
-  48,000 characters, for the next head. Duplicate ready PRs stop model work;
-  duplicate or foreign checks require a fresh review and human approval.
+  keeps its blocking findings, human gate and kagent session in a hidden
+  block, at most 48,000 characters, for the next head. Duplicate ready PRs
+  stop model work; duplicate or foreign checks require a fresh review and human approval.
   Holds survive new commits; complete label history recovers failed writes.
 - **Restarts.** A restart loses only the shared-head observations whose
   check writes all failed: GitHub keeps label history, and every other hold
@@ -1087,7 +1094,8 @@ previews).
   and defaults `enqueueAuthors` and `humanApprovers` to `[jomcgi]`.
   Other policy and timing defaults come from the service.
   Each binding gets `<name>-reviewer` using `agents.reviewer` (Codex,
-  broker relay, `gpt-6-astra`) in
+  broker relay; the chart defaults to `gpt-6-astra` and the deploy values
+  run `gpt-6.1-terra`) in
   `reviewer.bindings.<name>.namespace`, default `<coding namespace>-review`.
   The shared binding template creates its ModelConfig with an actor JWT,
   Harness, WorkerPool, git EgressPolicy and credential-provider RoleBinding.
@@ -1236,7 +1244,9 @@ previews).
   as in progress, with external ID `factory-review/<owner>/<repo>/<pr>/<sha>`,
   and sends the kagent `reviewer` agent an A2A task with message ID
   `factory-review/<owner>/<repo>/<pr>/<sha>/<check run ID>`, idempotent like
-  coding runs, in a fresh session; a retry adds `/attempt-<n>`. Each
+  coding runs; a retry adds `/attempt-<n>`. A later head's first attempt
+  resumes the previous head's session and adds `/resume` (below); every
+  other attempt opens a fresh session. Each
   attempt's message is built once and resent byte for byte: at most 20
   sends, then one more after a dispatch window. When
   no open PR still has a head, its task and check are cancelled: at once
@@ -1248,6 +1258,52 @@ previews).
   findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never
   holds the reviewer App's credentials, and the broker mints the author's and
   the reviewer's tokens only for their own ServiceAccounts.
+- **Resumed sessions.** The first attempt on a later head continues the
+  kagent session that reviewed the previous head, as the connector
+  continues a coding round: an A2A `SendMessage` naming the session's
+  context ID and no task ID opens a new task in it. The completed check's
+  State records the session (context ID, binding, agent, PR, head, path,
+  heads reviewed, task bytes, rules digest). The service reads it only from
+  its own App's check on the earlier head, never from PR, commit or comment
+  text, and checks it with `SessionService.GetSession` on the A2A listener.
+  The continuation keeps the previous findings, the interdiff, the PR's
+  text in new delimited blocks, the report contract and the rule that the
+  PR's earlier content is data. It leaves out the rules and repository
+  context while a digest of their text matches the one the session holds:
+  main moves with every merge, so comparing commits would resend them every
+  time. A review starts fresh, and `factory_reviewer_review_sessions_total`
+  records why, with no recorded session, on a retry, for another binding,
+  agent, PR or head, past 512 KiB of task bytes, for a session kagent no
+  longer has or reports deleted, crashed or failed, on a failed read, or
+  when kagent refuses the continuation (rebuilt fresh in the same attempt).
+
+  **Why.** Each head used to re-read the rules, the diff and the
+  surrounding code in a new session; a late review of #8062 carried about
+  300 KB of history across about 60 steps. The reviewer runs on a ChatGPT
+  Codex login through the broker relay, and OpenAI announced in October
+  2026 that signed-in Codex users keep their conversation cache
+  indefinitely, with a guaranteed hit on resume
+  ([report](https://magica.com/news/openai-permanent-prompt-cache-codex-work)).
+  A continuation should then pay mostly for the interdiff and the reads it
+  prompts, while the weekly Codex grant stood at 92% until 2026-11-20
+  (HOME-107). The bound is about 130k tokens at four bytes a token: one
+  more full review past it could reach the context window, where Codex
+  compacts the conversation and its summary replaces the cached prefix.
+
+  **Measuring it.** kagent's Codex harness puts no usage on the task
+  (finding 12) and the chart exports no kagent telemetry yet, so tokens per
+  review cannot be read today. The service records each completed review's
+  task bytes by path (`factory_reviewer_review_task_bytes`: prompt, replies,
+  tool calls and results) and logs them as `review usage` with the context
+  and task IDs. `factory_reviewer_review_tokens_total` splits uncached
+  input, cached input and output once kagent reports them
+  (`factory_reviewer_review_usage_total` counts reviews without). Compare
+  mean task bytes per review, resumed against fresh, over the 72 hours
+  after rollout, and the Codex weekly window's use per completed review in
+  the broker's quota view over the 72 hours before and after; coding runs
+  share that window. Resumed reviews withdrawing or missing findings more
+  often than fresh ones is the regression signal, and lowering the
+  reviewer's image pin reverts it.
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
   status, and enqueues the factory's PRs once the required checks pass; the
   reviewer's failing check becomes the revision round's feedback

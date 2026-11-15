@@ -11,6 +11,7 @@ go_library(
         "prompt.go",
         "report.go",
         "rules.go",
+        "session.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/reviewer/review",
     visibility = ["//visibility:public"],
@@ -31,6 +32,7 @@ go_test(
         "fakes_test.go",
         "report_test.go",
         "rules_test.go",
+        "session_test.go",
     ],
     embed = [":review"],
     deps = [

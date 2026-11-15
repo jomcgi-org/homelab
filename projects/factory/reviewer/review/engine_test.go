@@ -1151,9 +1151,11 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	}}))
 	eventually(t, "the check to fail", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
 	st, ok := LoadState(h.gh.check(shaA).Text)
+	session := st.Session // session_test.go covers the session reference.
+	st.Session = nil
 	b, _ := json.Marshal(st)
-	if !ok || string(b) != `{"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
-		t.Fatalf("stored = %s, %v", b, ok)
+	if !ok || session == nil || string(b) != `{"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
+		t.Fatalf("stored = %s, %v, session %+v", b, ok, session)
 	}
 }
 

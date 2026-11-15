@@ -138,6 +138,10 @@ type Config struct {
 	// comment on each PR showing its review; either unset posts none.
 	Comments      Comments
 	CommentAuthor string
+	// Sessions reads kagent sessions, so a later head's review can resume
+	// the session that reviewed the previous head; nil starts every review
+	// in a fresh session.
+	Sessions Sessions
 }
 
 // Engine runs the reviewer.
@@ -999,15 +1003,19 @@ type inputs struct {
 	// when GitHub no longer has priorHead.
 	since    *github.CommitComparison
 	compared bool
+	// plan is the session plan of the last message this process built.
+	plan sessionPlan
 }
 
 // review drives one head's review to a completed check run. It makes at
 // most MaxAttempts attempts. Each builds its message once and sends those
-// exact bytes until kagent answers with a task, which runs in a fresh
-// session for at most Timeout. An attempt that ends without a report (a
-// failed, rejected or timed-out task, an unusable reply, or reads that kept
-// failing) is followed by the next one after RetryBackoff; the last one
-// fails the check. A restart finds the task the check run records, else
+// exact bytes until kagent answers with a task, which runs for at most
+// Timeout: the first attempt on a later head in the session that reviewed
+// the previous one when it can (session.go), else in a fresh session. A
+// continuation kagent refuses is rebuilt for a fresh session. An attempt
+// that ends without a report (a failed, rejected or timed-out task, an
+// unusable reply, or reads that kept failing) is followed by the next one
+// after RetryBackoff; the last one fails the check. A restart finds the task the check run records, else
 // sends the recorded attempt's message again.
 func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, l *slog.Logger) {
 	local := *run
@@ -1026,6 +1034,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		msg      *kagent.Message
 		sends    int
 		lastSend time.Time
+		refused  bool
 	)
 	// next ends the attempt without a report. It reports true when that was
 	// the last attempt and the check is complete.
@@ -1112,7 +1121,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		}
 		if rec.ID == "" {
 			if msg == nil {
-				m, err := e.message(ctx, b, pr, run, in, attempt, l)
+				m, err := e.message(ctx, b, pr, run, in, attempt, refused, l)
 				switch {
 				case err == nil:
 					msg, sends = m, 0
@@ -1144,8 +1153,15 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend}
-				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends)
+				e.m.ReviewSessions.WithLabelValues(b.Name, in.plan.path(), in.plan.reason).Inc()
+				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends,
+					"path", in.plan.path(), "reason", in.plan.reason, "context_id", t.ContextID)
 				e.recordProgress(ctx, b, run, in.gate, rec, "", l)
+			case in.plan.resume != nil && (errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrTaskNotFound)):
+				// The session went away or will not take the continuation.
+				e.kagentError(ctx, l, b, "send", err)
+				l.WarnContext(ctx, "kagent refused the review in its recorded session; starting a fresh one", "context_id", in.plan.resume.ContextID)
+				refused, msg = true, nil
 			case errors.Is(err, kagent.ErrRejected):
 				e.kagentError(ctx, l, b, "send", err)
 				if next("kagent rejected the review task.") {
@@ -1239,6 +1255,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
 				e.observe(ctx, b, res.r, res.a, l)
+				e.observeSession(ctx, b, t, res.session, l)
 			}
 			return
 		case errors.Is(err, kagent.ErrTaskNotFound):
@@ -1379,9 +1396,10 @@ func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.Pull
 }
 
 // message builds an attempt's review task. It is built once per attempt:
-// kagent rejects a message ID sent again with other content. The message
-// names no session, so kagent opens a fresh one for it.
-func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, in *inputs, attempt int, l *slog.Logger) (*kagent.Message, error) {
+// kagent rejects a message ID sent again with other content. A message that
+// resumes the previous head's session names it and adds "/resume" to its
+// ID; any other names no session, so kagent opens a fresh one for it.
+func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, in *inputs, attempt int, refused bool, l *slog.Logger) (*kagent.Message, error) {
 	repo := b.repo()
 	rules, err := LoadRules(ctx, e.gh, repo, b.BaseBranch, changedPaths(in.files), b.ContextDocs)
 	if err != nil {
@@ -1399,15 +1417,24 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		return nil, err
 	}
 	commits := e.commitMessages(ctx, b, pr, in.priorHead, l)
+	plan := sessionPlan{rules: rulesDigest(rules)}
+	plan.resume, plan.reason = e.resumable(ctx, b, pr, in, attempt, refused, l)
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
+		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		CheckName: e.cfg.CheckName,
 	})
+	id, contextID := AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt), ""
+	if plan.resume != nil {
+		id, contextID = id+"/resume", plan.resume.ContextID
+	}
+	in.plan = plan
 	msg := &kagent.Message{
-		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
+		MessageID: id,
+		ContextID: contextID,
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/repository":   repo,
@@ -1418,7 +1445,8 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	l.InfoContext(ctx, "review task built", "message_id", msg.MessageID, "attempt", attempt,
 		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead, "previous_unknown", in.priorUnknown,
 		"previous_findings", len(in.prior.Previous()), "trusted_comments", len(comments), "dropped_comments", dropped,
-		"cited", len(cited), "commits", len(commits.List), "commits_since", commits.Since, "commits_unread", commits.Unread)
+		"cited", len(cited), "commits", len(commits.List), "commits_since", commits.Since, "commits_unread", commits.Unread,
+		"path", plan.path(), "reason", plan.reason, "context_id", contextID, "prompt_bytes", len(text))
 	return msg, nil
 }
 
@@ -1474,10 +1502,11 @@ func (e *Engine) footer(b *Binding, pr github.PullRequest, taskID string) string
 // result is how a quiescent task ends its review: an outcome with the
 // report and assessment behind it, or the reason it gave no report.
 type result struct {
-	o      Outcome
-	r      *Report
-	a      *Assessment
-	reason string
+	o       Outcome
+	r       *Report
+	a       *Assessment
+	session *SessionRef
+	reason  string
 }
 
 // outcome reads a quiescent task. Only a parsed report can pass, and a
@@ -1546,6 +1575,8 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			a.Conclusion = ConclusionFailure
 		}
 		o := Render(a, r, gate, footer)
+		session := sessionAfter(b, pr, in, task)
+		o.Output.Text = withSession(o.Output.Text, session)
 		o.Comment = reviewComment(a, r, b, gate)
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
@@ -1553,7 +1584,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			o.Output.Summary = clip(fmt.Sprintf("The review of an earlier head could not be found (%s), so this head was reviewed in full.\n\n",
 				clip(in.priorUnknown, maxPreface-200)), maxPreface) + o.Output.Summary
 		}
-		return result{o: o, r: r, a: &a}
+		return result{o: o, r: r, a: &a, session: session}
 	}
 	state := strings.ToLower(strings.TrimPrefix(task.Status.State, "TASK_STATE_"))
 	status := ""
@@ -1746,7 +1777,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, !gate.approved() || len(st.Blocking) > 0
 	}
 	l := e.prLog(b, pr)
-	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Cleared: st.Cleared, ClearedPartial: st.ClearedPartial, Gate: gate}, conclusion, title, summary, u, l)
+	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Cleared: st.Cleared, ClearedPartial: st.ClearedPartial, Gate: gate, Session: st.Session}, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")
 	}
