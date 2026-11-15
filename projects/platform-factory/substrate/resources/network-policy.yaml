@@ -198,9 +198,11 @@ spec:
             - port: "8080"
               protocol: TCP
     # git over HTTPS for factory repository bindings, with the broker-minted
-    # token the gateway injects (EgressPolicy github-git).
+    # token the gateway injects (EgressPolicy github-git), and the reviewer's
+    # read-only REST API reads with the same token (EgressPolicy github-api).
     - toFQDNs:
         - matchName: github.com
+        - matchName: api.github.com
       toPorts:
         - ports:
             - port: "443"

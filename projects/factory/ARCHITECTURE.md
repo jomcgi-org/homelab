@@ -984,6 +984,12 @@ previews).
   `reviewer.bindings.<name>.namespace`, default `<coding namespace>-review`.
   The shared binding template creates its ModelConfig with an actor JWT,
   Harness, WorkerPool, git EgressPolicy and credential-provider RoleBinding.
+  The reviewer's agent also gets EgressPolicy `github-api`: REST reads at
+  `https://api.github.com` with the same `contents: read` token, so it can
+  inspect PR, check-run and merge-queue evidence a PR cites. The API refuses
+  that token every write. Chart validation allows `github-api` only for
+  `agents.reviewer`, because the coder's token can write. Substrate's egress
+  gateway policy allows `api.github.com` alongside `github.com`.
   The namespace cannot overlap any coding or review binding: both Apps
   write `github-git`. The broker admits the review atespaces to its relay,
   mounts the separate reviewer App's key files from 1Password and writes

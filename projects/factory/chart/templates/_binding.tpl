@@ -163,6 +163,30 @@ spec:
           name: github-git
           key: basic
 {{- end }}
+{{- if has "github-api" $a.egress }}
+---
+# GitHub's REST API with the same broker-minted token. Only the reviewer may
+# list this (validate.yaml): its token is contents:read, so the API serves it
+# reads of PR, check-run and merge-queue evidence and refuses every write.
+apiVersion: api.kagent.dev/v1alpha3
+kind: EgressPolicy
+metadata:
+  name: github-api
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  destinations:
+    - origin: https://api.github.com
+      authentication:
+        header: Authorization
+        prefix: "Basic "
+        secretKeyRef:
+          name: github-git
+          key: basic
+{{- end }}
 {{- if $toolchain }}
 ---
 # Public tool downloads for this binding only. GitHub itself remains in

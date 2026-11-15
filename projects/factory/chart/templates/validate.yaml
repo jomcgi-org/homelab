@@ -20,6 +20,14 @@ instead of silently rendering nothing.
 {{- $runtime := .Values.kagent.config.runtimeDefaults }}
 {{- $watched := .Values.kagent.rbac.namespaces }}
 {{- $seen := dict }}
+{{- range $name, $a := .Values.agents }}
+{{- if and (has "github-api" ($a.egress | default list)) (ne $name "reviewer") }}
+{{- fail (printf "agents.%s.egress: github-api is reviewer-only; other agents' tokens can write" $name) }}
+{{- end }}
+{{- if and (has "github-api" ($a.egress | default list)) (not (has "github-git" $a.egress)) }}
+{{- fail (printf "agents.%s.egress: github-api reuses github-git's token and needs github-git" $name) }}
+{{- end }}
+{{- end }}
 {{- range $r := .Values.repositories }}
 {{- $a := index $.Values.agents $r.agent }}
 {{- if not $a }}
