@@ -36,6 +36,46 @@ cells. Heat is a density history, not a live-position layer. The acceptable
 source age and outage behavior remain in
 [#7960](https://github.com/jomcgi-org/homelab/issues/7960).
 
+## Heat request cost
+
+The backend reads `lat_bin`, `lon_bin` and `count` directly from each rollup
+table. It sums overlapping cells with the existing merge and colour-stop
+functions, then returns `JSONResponse`. This avoids hydrating an ORM object and
+unused timestamp per row, and avoids FastAPI recursively copying the completed
+grid before JSON encoding. Both rollup tables are still read on every request;
+the hourly job and cache windows are unchanged.
+
+The November 15, 2026 hosted probe recorded uncached `/app/ships/heat` p50 of
+5,281 ms and p95 of 6,473 ms. Its ordinary cached requests met the 100 ms API
+target. These are measurements before this backend change.
+
+Three fresh Python processes per version measured the real FastAPI route with
+a local, file-backed SQLite fixture:
+
+| Measurement | Before | Scalar reads and direct JSON |
+| --- | ---: | ---: |
+| Median route time | 3,339 ms | 626 ms |
+| Median process peak RSS | 269.8 MiB | 120.7 MiB |
+| Response bytes | 2,386,369 | 2,386,369 |
+
+The fixture uses the captured public grid's 145,247 cells. Its split into
+10,000 live rows and 145,020 historical rows is synthetic; the public response
+does not disclose that split. Every measured response matched the captured
+JSON bytes and cache headers. Neither SQL query specifies `ORDER BY`, so this
+local byte equality does not guarantee row order across PostgreSQL query plans.
+Cell coordinates, summed counts and colour stops retain their existing meaning.
+
+A separate stage profile located most local cost in historical ORM hydration
+(2,579 ms) and FastAPI's recursive encoder (443 ms). These SQLite and Python
+results do not measure PostgreSQL, the SvelteKit proxy or production network
+latency. No local PostgreSQL instance was available for `EXPLAIN ANALYZE`.
+Production rollout and uncached remeasurement remain required before claiming
+a live speedup.
+
+The endpoint regressions run in `//projects/monolith:ships_router_test` and cover
+exact HTTP JSON, cache headers, selected SQL columns, direct encoding and reading
+updated rollup data on the next request.
+
 ## Build budgets
 
 Gzip bytes, summed per emitted JavaScript file:
