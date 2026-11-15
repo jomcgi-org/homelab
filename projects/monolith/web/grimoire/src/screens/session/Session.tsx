@@ -275,6 +275,7 @@ function TableView({ table }: { table: Table }) {
             table={table}
             playing={playing}
             onReply={setReply}
+            pinPending={pin.isPending}
             onPin={(event: SessionEvent) =>
               pin.run({ campaignId, eventId: event.id })
             }

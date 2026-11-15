@@ -14,6 +14,7 @@ export interface HandoutCardProps {
   dm: boolean;
   /** Pin this handout to the viewer's notes. */
   onPin: (event: SessionEvent) => void;
+  pinPending: boolean;
   onOpenKnowledge: (entityId: string) => void;
   /** The title's heading level; headings in the text sit below it. */
   headingLevel?: 3 | 4;
@@ -26,6 +27,7 @@ export function HandoutCard({
   handout,
   dm,
   onPin,
+  pinPending,
   onOpenKnowledge,
   headingLevel = 3,
 }: HandoutCardProps) {
@@ -70,6 +72,7 @@ export function HandoutCard({
               label={`Pin ${title} to my notes`}
               size="sm"
               variant="ghost"
+              isDisabled={pinPending}
               onClick={() => onPin(handout)}
             >
               Pin to my notes

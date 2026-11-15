@@ -23,6 +23,7 @@ function card(props: Partial<HandoutCardProps> = {}) {
           sessionId={sessionId}
           dm={false}
           onPin={onPin}
+          pinPending={false}
           onOpenKnowledge={onOpenKnowledge}
           {...props}
           handout={handout}

@@ -84,6 +84,7 @@ interface FeedProps {
   playing: boolean;
   onReply: (target: ReplyTarget) => void;
   onPin: (event: SessionEvent) => void;
+  pinPending: boolean;
   onGiveItem: (prefill: InventoryPrefill) => void;
   onOpenKnowledge: (entityId: string) => void;
 }
@@ -94,6 +95,7 @@ export function Feed({
   playing,
   onReply,
   onPin,
+  pinPending,
   onGiveItem,
   onOpenKnowledge,
 }: FeedProps) {
@@ -239,6 +241,7 @@ export function Feed({
                     handout={event}
                     dm={dm}
                     onPin={onPin}
+                    pinPending={pinPending}
                     onOpenKnowledge={onOpenKnowledge}
                   />
                 ) : event.kind === "turn" && !gone ? (
@@ -292,6 +295,7 @@ export function Feed({
                         label={`Pin ${subject(event)} to notes`}
                         size="sm"
                         variant="ghost"
+                        isDisabled={pinPending}
                         onClick={() => onPin(event)}
                       >
                         Pin to notes
