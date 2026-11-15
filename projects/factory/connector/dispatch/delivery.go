@@ -912,6 +912,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 
 // conflictEvent gives mergeability a durable identity per PR head. An ejection
 // that includes the conflict consumes the same event without a second round.
+// A limited ejection fences it even before mergeability is known.
 func conflictEvent(pr *store.PullRequest, d *github.PullRequestDetail) store.ReviewEvent {
 	return store.ReviewEvent{
 		PullRequestID: pr.ID, NodeID: fmt.Sprintf("factory-rebase/%d/%s", pr.ID, d.HeadSHA),
@@ -1277,14 +1278,15 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 			outcome = fmt.Sprintf("Review round %d of %d will address the ejection in the mapped session.",
 				wi.ReviewRounds+1, b.Review.MaxReviewRounds)
 		}
-		if latest.Mergeable == "CONFLICTING" && (limited || round != nil) {
+		if limited || (latest.Mergeable == "CONFLICTING" && round != nil) {
 			ev := conflictEvent(pr, latest)
 			ev.Disposition = store.EventRoundLimit
 			if round != nil {
 				ev.Disposition, ev.RoundRunID = store.EventActed, round.ID
 			}
-			// An exhausted ejection stays at the review bound. Persist its
-			// conflict too, so a later poll cannot switch to the rebase budget.
+			// Fence this head's conflict trigger when the ejection is already at
+			// the review limit, even if mergeability is UNKNOWN or MERGEABLE.
+			// A later conflict must not switch it to the separate rebase budget.
 			if _, err := e.st.RecordEvent(ctx, tx, ev); err != nil {
 				return err
 			}

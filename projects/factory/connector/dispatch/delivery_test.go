@@ -1438,8 +1438,8 @@ func TestEjectionAndRevisionCommitTogether(t *testing.T) {
 }
 
 func TestEjectionsShareTheReviewRoundBound(t *testing.T) {
-	for _, conflicting := range []bool{false, true} {
-		t.Run(fmt.Sprintf("conflicting=%t", conflicting), func(t *testing.T) {
+	for _, mergeability := range []string{"MERGEABLE", "UNKNOWN", "CONFLICTING"} {
+		t.Run(mergeability, func(t *testing.T) {
 			v := newDeliveryEnv(t)
 			v.delivered()
 			// Spend the first round on ordinary review feedback.
@@ -1451,16 +1451,35 @@ func TestEjectionsShareTheReviewRoundBound(t *testing.T) {
 				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Fixed.", nil)
 				v.gh.green(head)
 				v.poll()
-				if conflicting && i == 3 {
-					v.gh.conflict(1)
+				if i == 3 {
+					v.gh.mergeability(1, mergeability)
 				}
 				v.gh.eject(1)
 				v.poll()
+			}
+			if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 || w.RebaseRounds != 0 || len(v.rounds()) != 2 {
+				t.Fatalf("work item = %+v, want the exhausted ejection recorded", w)
+			}
+			// Fence the head at the ejection decision, before GitHub necessarily
+			// reports a conflict. The event records the limit, not a round.
+			conflicts := 0
+			for _, ev := range v.events() {
+				if ev.Kind == store.EventConflicting {
+					conflicts++
+					if ev.CommitSHA != "sha-3" || ev.Disposition != store.EventRoundLimit || ev.RoundRunID != 0 {
+						t.Fatalf("conflict = %+v, want the ejection's limit decision", ev)
+					}
+				}
+			}
+			if conflicts != 1 {
+				t.Fatalf("conflict events = %d, want one", conflicts)
 			}
 			// The ejection's limit decision survives a restart and later polls,
 			// even though the separate rebase budget is still untouched.
 			v.e.Release()
 			v.e = v.engine("connector-b")
+			v.poll()
+			v.gh.conflict(1)
 			v.poll()
 			v.gh.check("sha-3", "test", 100, "failure")
 			v.poll()
@@ -1471,20 +1490,6 @@ func TestEjectionsShareTheReviewRoundBound(t *testing.T) {
 			if len(v.gh.Enqueues()) != 2 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("started")) != 0 {
 				t.Fatalf("limited ejection was enqueued or rebased: %v", v.gh.Enqueues())
 			}
-			if conflicting {
-				conflicts := 0
-				for _, ev := range v.events() {
-					if ev.Kind == store.EventConflicting {
-						conflicts++
-						if ev.CommitSHA != "sha-3" || ev.Disposition != store.EventRoundLimit || ev.RoundRunID != 0 {
-							t.Fatalf("conflict = %+v, want the ejection's limit decision", ev)
-						}
-					}
-				}
-				if conflicts != 1 {
-					t.Fatalf("conflict events = %d, want one", conflicts)
-				}
-			}
 			said := 0
 			for _, c := range v.its.Comments() {
 				if strings.Contains(c.body, "bound of 2 review rounds") {
@@ -1493,6 +1498,13 @@ func TestEjectionsShareTheReviewRoundBound(t *testing.T) {
 			}
 			if said != 1 {
 				t.Fatalf("round-limit comments = %d, want one", said)
+			}
+			// The fence belongs to the ejected head. A person pushing a new
+			// conflicting head can still use the independent rebase budget.
+			v.gh.push("factory/HL-7", "sha-4", "fix: follow up after ejection")
+			v.poll()
+			if w := v.work(101); w.State != store.WorkActive || w.ReviewRounds != 2 || w.RebaseRounds != 1 || len(v.rounds()) != 3 {
+				t.Fatalf("work item = %+v, want a rebase only on the new head", w)
 			}
 		})
 	}
