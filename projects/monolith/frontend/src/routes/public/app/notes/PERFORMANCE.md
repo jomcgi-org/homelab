@@ -41,6 +41,6 @@ Gzip bytes, summed per emitted JavaScript file:
 
 | Route | Initial | Deferred | External worker |
 | --- | ---: | ---: | ---: |
-| `/app/notes` | 105,000 | 50,000 | 0 |
+| `/app/notes` | 75,000 | 50,000 | 0 |
 
 Budget categories and measurement targets are in [the shared contract](../../../../../docs/public-app-cache-windows.md).

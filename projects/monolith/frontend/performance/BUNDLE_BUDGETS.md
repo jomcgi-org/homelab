@@ -17,8 +17,8 @@ pages are excluded. Worker scripts have a separate budget. Every file is
 compressed independently with gzip level 9, matching the units in the JSON.
 The check also rejects MapLibre or Mermaid in the initial import closure.
 
-These are regression limits based on the 2026-11-14 build. They do not establish
-the mobile targets of LCP below 1.5 seconds, CLS below 0.05 or INP below 200 ms.
+These are regression limits based on measured builds, lowered as reductions
+land. They do not establish the mobile targets of LCP below 1.5 seconds, CLS below 0.05 or INP below 200 ms.
 They exclude SSR HTML, inline data, CSS, fonts, images, map tiles and API
 responses. The production measurement harness records those transfers and
 browser timings separately. In particular, the stars and ships inline
@@ -28,10 +28,12 @@ snapshots are larger than their JavaScript bundles.
 
 The baseline uses `main` at `1f536d94934ccfef73aa3a2129f00be60f8a44ca` with
 the public source exclusions from `:src_public`: private routes, friends
-routes and `src/lib/private` are absent. Values are bytes. The budget check changes no client behavior. Rebuilt gzip sizes differ by
-7 to 16 bytes because generated version strings and chunk names change.
+routes and `src/lib/private` are absent. Values are bytes. The budget-only
+rebuild changes no client behavior. Its gzip sizes differ by 7 to 16 bytes
+because generated version strings and chunk names change. The last column
+shows current limits; the Notes reduction is measured below.
 
-| Route | Baseline gzip | After gzip | Initial gzip limit |
+| Route | Baseline gzip | Budget-only rebuild gzip | Current initial gzip limit |
 | --- | ---: | ---: | ---: |
 | `/app/hikes` | 72,096 | 72,085 | 85,000 |
 | `/app/ships` | 68,017 | 68,004 | 80,000 |
@@ -40,7 +42,7 @@ routes and `src/lib/private` are absent. Values are bytes. The budget check chan
 | `/app/trips/[slug]` | 69,684 | 69,677 | 85,000 |
 | `/app/trips/[slug]/day/[day]` | 72,402 | 72,394 | 85,000 |
 | `/app/trips/[slug]/timeline` | 69,555 | 69,543 | 85,000 |
-| `/app/notes` | 91,207 | 91,198 | 105,000 |
+| `/app/notes` | 91,207 | 91,198 | 75,000 |
 | `/app/llm-leaderboard` | 72,534 | 72,526 | 85,000 |
 | `/scotland` | 67,463 | 67,454 | 80,000 |
 | `/scotland/privacy` | 66,832 | 66,823 | 80,000 |
@@ -63,9 +65,9 @@ limited to 330,000 bytes. Hikes, ships and stars also load an external worker
 measured at 146,653 gzip bytes, limited to 170,000 bytes. Trip detail views now
 use that same emitted worker and limit. The library default previously pointed
 to an absent chunk, so the initial zero-worker budget described a broken map.
-The other pages have no deferred JavaScript in this baseline. Notes has a
-50,000-byte deferred allowance for separating its interactive graph from the
-first view; its initial limit still applies independently.
+The other pages have no deferred JavaScript in this baseline. Notes now uses
+a 50,000-byte deferred allowance for its interactive graph; its initial limit
+still applies independently.
 
 ## Trip maps use the emitted worker
 
@@ -114,6 +116,28 @@ page cannot bypass the budget. Its destination
 initial limit. `/app/frank` serves one
 static HTML document with inline scripts, measured at 10,080 gzip bytes and
 limited to 12,000 bytes for the whole document.
+
+## Notes budget reduction
+
+The Notes initial limit is 75,000 gzip bytes, reduced from 105,000 after the
+first-view and lease fixes landed. Both build variants pass. The same checker
+rejects the original 91,207-byte initial closure under the new limit.
+
+| Build | Initial gzip | Deferred gzip | Worker gzip |
+| --- | ---: | ---: | ---: |
+| Public integration | 64,211 | 29,199 | 0 |
+| Full frontend | 65,949 | 29,849 | 0 |
+| Limits | 75,000 | 50,000 | 0 |
+
+The public artifacts were built from integration commit
+`3a1cd8f5b5364325beb9cb0f0e1b805206e6498e`. Its Notes sources are identical to
+landed commit `afc613a4b74ac2c677197b95b4ea4413698806f4`, including the device-sleep
+guard. The full build uses `main` at
+`a3d1ade2f322fa5550ed427100217b59896a533d` with only the lower budget applied.
+The public Notes closure was rechecked from the emitted manifests and files;
+the full build ran the adapter gate for all routes. These are gzip level 9
+artifact sizes, excluding browser wire overhead. This budget change adds no
+runtime speedup.
 
 ## Run and inspect
 

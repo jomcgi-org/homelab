@@ -53,7 +53,7 @@ private or no-store snapshot leases produce an unavailable overview.
 ## Budgets and evidence
 
 The first response contains at most eight titles and no complete graph arrays.
-JavaScript budgets are 105,000 gzip bytes for the initial route and shared
+JavaScript budgets are 75,000 gzip bytes for the initial route and shared
 imports, 50,000 gzip bytes for deferred imports, and no dedicated worker.
 Mobile targets remain LCP below 1.5 seconds, CLS below 0.05 and
 interaction latency below 200ms. Production verification must measure them;
@@ -89,7 +89,11 @@ The lease fix was measured separately with the same eight synthetic titles
 before and after, one warmup and three renders. Component HTML remained
 4,812 bytes, 1,235 gzip bytes, with eight titles. Serialized page data grew
 from 772 to 864 bytes for the lease and timing token. Median component rendering
-was 0.435ms before and 0.276ms after. Its bundle size awaits the integrated build.
+was 0.435ms before and 0.276ms after. With the lease and device-sleep fixes,
+the integrated public build measures 64,211 initial and 29,199 deferred gzip
+bytes. The full frontend build measures 65,949 initial and 29,849 deferred
+gzip bytes. Both pass the reduced initial limit; see the
+[bundle budget evidence](performance/BUNDLE_BUDGETS.md#notes-budget-reduction).
 
 The device-sleep guard adds no server data fields or first-view markup. Its
 additional 3,600 clock checks took 2.281ms at the median of three local Node
