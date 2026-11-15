@@ -22,9 +22,11 @@ from pathlib import Path
 import jwt
 from auth.api import AuthError, auth_error_handler
 from auth.browser_cookie import BROWSER_COOKIE
+from auth.platform.models import PlatformGrant, PlatformIdentity, PlatformUser
+from auth.platform.router import router as platform_router
 from core.db import get_engine
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from grimoire import register as register_grimoire
 from grimoire.models import (
@@ -36,6 +38,7 @@ from grimoire.models import (
     EntityNpc,
     GameSession,
     PlayerCharacter,
+    SessionEvent,
 )
 from grimoire.sheets import CharacterSheetV1, derive_sheet
 from pydantic import BaseModel
@@ -43,6 +46,45 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, select
 
 EMBEDDING_DIM = 1024
+PEOPLE = {"dm": "Rowan", "a": "Elowen", "b": "Bram"}
+
+
+def seed_local_profiles(engine, issuer):
+    """Expose the existing demo seats to the read-only profile, without grants."""
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__ for model in (PlatformUser, PlatformIdentity, PlatformGrant)
+        ],
+    )
+    with Session(engine) as session:
+        for role, name in PEOPLE.items():
+            identity = session.exec(
+                select(PlatformIdentity).where(
+                    PlatformIdentity.issuer == issuer,
+                    PlatformIdentity.subject == role,
+                )
+            ).first()
+            if identity is not None:
+                continue
+            user = PlatformUser(
+                username=role, email=f"{role}@example.test", display_name=name
+            )
+            session.add(user)
+            session.flush()
+            session.add(PlatformIdentity(user_id=user.id, issuer=issuer, subject=role))
+        session.commit()
+
+
+def register_local_profile(app):
+    """Keep the production private GET handler, excluding every management route."""
+    local = APIRouter()
+    local.routes.extend(
+        route
+        for route in platform_router.routes
+        if route.path == "/api/auth/platform/self" and route.methods == {"GET"}
+    )
+    app.include_router(local)
 
 
 class EmbeddingRequest(BaseModel):
@@ -76,6 +118,7 @@ def build_app() -> FastAPI:
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         connection.execute(text("CREATE SCHEMA IF NOT EXISTS grimoire"))
+        connection.execute(text("CREATE SCHEMA IF NOT EXISTS platform_auth"))
         # Ending a session queues content-free extraction jobs even when off.
         # Use the existing queue migration in this isolated rehearsal database;
         # no drainer runs here, and production still owns its migration rollout.
@@ -93,7 +136,8 @@ def build_app() -> FastAPI:
         tables=[t for t in SQLModel.metadata.tables.values() if t.schema == "grimoire"],
     )
     issuer = os.environ["GRIMOIRE_AUTH_ISSUER"]
-    people = {"dm": "Rowan", "a": "Elowen", "b": "Bram"}
+    seed_local_profiles(engine, issuer)
+    people = PEOPLE
     with Session(engine) as session:
         campaign = session.exec(select(Campaign)).first()
         if campaign is None:
@@ -243,6 +287,42 @@ def build_app() -> FastAPI:
                     ),
                 ]
             )
+            session.flush()
+            # Invented extraction output gives the real search/dispute UI
+            # something to exercise without enabling any model or job drainer.
+            # The existing writer still validates the evidence and viewer.
+            from grimoire.character_facts import write_character_facts
+
+            evidence = SessionEvent(
+                campaign_id=campaign.id,
+                session_id=history.id,
+                seq=1,
+                kind="narration",
+                audience="table",
+                body={
+                    "text": "The party saw a glass comet, a silver compass and a copper key."
+                },
+            )
+            session.add(evidence)
+            session.flush()
+            for viewer, statement in (
+                (
+                    characters[0].id,
+                    "FACT_A_SILVER_COMPASS: Elowen remembers a silver compass.",
+                ),
+                (characters[1].id, "FACT_B_COPPER_KEY: Bram remembers a copper key."),
+                ("party", "FACT_PARTY_GLASS_COMET: The party saw a glass comet."),
+            ):
+                result = write_character_facts(
+                    session,
+                    campaign.id,
+                    history.id,
+                    viewer,
+                    "local-rehearsal-v1",
+                    [{"statement": statement, "evidence_event_ids": [evidence.id]}],
+                )
+                if result.rejections or len(result.written) != 1:
+                    raise RuntimeError("Local fact fixture failed normal validation")
             session.commit()
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -255,6 +335,7 @@ def build_app() -> FastAPI:
     if not (Path(os.environ["GRIMOIRE_WEB_DIR"]) / "index.html").is_file():
         raise RuntimeError("The playground requires the built Grimoire web app")
     register_grimoire(app)
+    register_local_profile(app)
 
     @app.get("/__local/jwks")
     def jwks():
@@ -299,6 +380,8 @@ def build_app() -> FastAPI:
                 "email": f"{role}@example.test",
                 "email_verified": True,
                 "name": people[role],
+                "preferred_username": role,
+                "platform_user_type": "external",
                 "exp": int(time.time()) + 86400,
             },
             key,

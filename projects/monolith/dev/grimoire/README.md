@@ -60,13 +60,82 @@ Run and inspect the browser rehearsal:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse
 ```
 
+Run the complete regression gate with one command:
+
+```bash
+grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --all --output /tmp/grimoire-all
+```
+
+The launcher builds once, then runs the session and invitation scenarios at
+1280px and 390px. Each of the four runs has a fresh database and separate
+Rowan, Elowen and Bram browser contexts. Every run executes even if an earlier
+one fails. The top-level `report.json` and `report.md` link the four reports
+under `session/1280`, `session/390`, `join-links/1280` and `join-links/390`.
+A missing report, an incomplete journey, a failing child, a console error or
+a missed timing budget makes the command fail. `--viewport 390` runs one
+scenario with all seats at that width; omitting it retains the original mixed
+desktop-DM and phone-player setup.
+
+There are 53 required session checks and nine invitation checks. The added
+journeys cover feedback drafts and votes, sheet returns and edits across open
+tabs, concurrent sheet edits and conflict recovery, character reassignment,
+disadvantage, own-fact disputes, shared pin progress and retry, the read-aloud
+queue, first-read failure and Retry, pending Enter submissions, private replies
+across sign-in renewal, session changes, cancellation and reassignment, clearing
+private notes after an account change, and refusing private reads until the first identity check succeeds.
+The local profile checks exercise the real read-only `/api/auth/platform/self`
+route using the same three signed demo identities. They verify profile identity
+changes even when Grimoire access is denied; the fixture registers no platform
+management, account-write, or enrollment route.
+Member and sheet-history checks wait for visible updates without reloading the page.
+The pure report tests enforce the required inventory and matrix completeness.
+
+The six-second live assignment step added by #8003 to the onboarding journey
+waits on [#8001](https://github.com/jomcgi-org/homelab/issues/8001): after the DM
+creates Wren, the player reloads as on main. The invitation, character creation,
+sheet submission, approval and approved-roll checks remain required, with their
+original budgets. All 124 matrix checks remain required. The separate open-page
+reassignment regression still waits for the authoritative lobby response and
+checks private canary removal, denied old sheet reads and retained sheet history;
+the private-reply reassignment regression is unchanged.
+
+Also deferred to #8001 are the five-second character-list refresh (including a
+new assignment appearing in an already open sheets page or character picker),
+the accelerated lobby assignment refresh, and dirty-sheet clear/swap recovery.
+The UI tests cover on-demand character reads and the existing fifteen-second
+lobby refresh. No recovery after revoked access is implemented here.
+
+`budgets.json` records the unchanged-main baseline and each step's budget.
+The original 33 session steps and nine link steps were timed on 2026-11-14;
+the baseline source SHA and durations are included. Step budgets include
+assertions and screenshots, with headroom for the viewport matrix. Existing
+three-second delivery and fifteen-second reveal assertions still apply.
+Normal API requests have a two-second budget; the observed maximum was 459ms.
+Explicitly held or delayed requests remain in the report with `injected: true`.
+`steps`, `requests` and `slow_requests` preserve the measured results.
+
+Application console errors and uncaught page errors fail the run. Deliberate
+refusals and dropped responses record each exact seat, method, URL and status
+or network failure before the action. A browser resource diagnostic is expected
+only when its location, observed request and current scenario step match that
+declaration; each declaration accounts for one message. These remain visible in
+`expected_console_diagnostics`. An application `console.error`, CSP failure,
+unrelated resource error or additional diagnostic fails the gate.
+
+Fact fixtures use the normal validating writer and deterministic local embedder.
+The speech check replaces only the device voice engine and observes the app's
+real audience-filtered queue. Audible device playback is listed as unavailable.
+Transcript capture stays disabled; all three consent reads must return 404 and
+the report lists the absent UI as unavailable. Neither capability is reported
+as a completed real audio journey.
+
 Rehearse single-use links for registered players in a fresh local campaign:
 
 ```bash
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --join-links --output /tmp/grimoire-join-links
 ```
 
-The flag selects the link rehearsal instead of the default table and its 33
+The flag selects the link rehearsal instead of the default table and its 53
 session checks. `report.json` lists passed checks in `checks` and any check the
 app fails in `failed_checks`, with what was observed. A failed check that is
 already understood is recorded and the rehearsal continues, so one defect does
@@ -99,14 +168,19 @@ Postgres 16 with pgvector, and Chromium's system libraries:
 GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/ci.sh
 ```
 
+Every report records its source SHA, tracked-file dirty state, Playwright version
+and actual browser version. The November 2026 timing baseline used Chromium
+headless shell 156 as supplemental local evidence; CI's repository-pinned browser
+remains authoritative.
+
 The wrapper installs the pinned runtime and Playwright, builds the React bundle
-once from the checkout (`web-build.log`), and runs the full browser scenario
-twice with fresh databases. A third fresh launch runs the link scenarios. Every
+once from the checkout (`web-build.log`), and runs the session scenario
+twice with fresh databases, followed by the complete four-run matrix. Every
 stage runs even when an earlier one fails, so the run log and evidence are
 complete; the wrapper then exits nonzero. Browser reports are under
 `cold-start-1/` and `cold-start-2/`; `startup.log` counts the launches whose
-shell and assets were served. Link reports, screenshots and traces are under `join-links/`, with
-their launcher log in `join-links.log`. It removes only its
+shell and assets were served. Matrix reports, screenshots and traces are under
+`all/`, with their launcher log in `all.log`. It removes only its
 own temporary Python environment. The BuildBuddy PR gate calls `ci-runner.sh`
 after Bazel for relevant changes. It provisions Ubuntu dependencies and uses
 the repository tools image for Node/pnpm. Reports, screenshots, traces and logs

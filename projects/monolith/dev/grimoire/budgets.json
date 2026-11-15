@@ -1,0 +1,257 @@
+{
+  "basis": {
+    "source_sha": "f7cdd00a4bcde9e902dac80453e186bdb27ddb6e",
+    "measured_on": "2026-11-14",
+    "browser": "Chromium headless shell 156; supplemental local evidence with real signed seats and PostgreSQL. CI uses the repository-pinned Playwright browser and remains authoritative.",
+    "step_method": "Wall time between completed named checks, including assertions and evidence; seat setup excluded. Budgets round up 2.5 times observed duration plus 1.5s, with 3s minimum. Existing 3s delivery and 15s reveal assertions remain unchanged. New regression journeys use the measured related journey plus explicit protocol waits.",
+    "api_max_normal_seconds": 0.459,
+    "api_budget_reason": "2s exceeds four times the observed 459ms maximum; exact injected delays are recorded separately.",
+    "recovery_max_seconds": 1.509,
+    "assignment_budget_reason": "The measured 8.3s assignment journey has 23s headroom plus 20s for the existing 15s authoritative lobby poll; old-character DOM and sheet access are checked before restoring assignments.",
+    "profile_budget_reason": "The profile identity poll has a 15s protocol interval; 22s covers that wait and reload. Initial identity recovery budgets use the measured 1.509s first-read recovery baseline plus navigation and signed self reads.",
+    "sheet_conflict_budget_reason": "Concurrency checks retain individual 6s refresh limits. 45s covers nonoverlapping merge, a real stale-save 409, and explicit overlapping-conflict recovery; 35s covers submission, clipboard recovery, return, new version and approval. Based on the measured 17.22s four-refresh sheet loop plus additional protocol waits.",
+    "pin_budget_reason": "The focused real-browser success/refusal/retry journey measured 2.495s at 1280px and 2.536s at 390px. The 8s budget follows the same 2.5-times-plus-1.5s rule. Removing only the two disabled props made this check fail at both widths.",
+    "reply_reassignment_budget_reason": "35s covers the measured single-expiry recovery (~10s), cancellation/reselection, and real assignment/restoration interactions. The earlier four-change assignment journey measured 8.3s; existing 6s UI refresh and exact audience assertions remain unchanged."
+  },
+  "request_seconds": 2,
+  "baseline_steps": {
+    "session": [
+      {
+        "check": "Empty feeds explain the next step; an in-flight write shows a disabled Sending control",
+        "seconds": 3.7540057870000965
+      },
+      {
+        "check": "A successful in-flight write preserves the next draft; DM has no unsupported private pin control",
+        "seconds": 0.14829974400026913
+      },
+      {
+        "check": "Table narration reaches player A",
+        "seconds": 1.4347764639996967
+      },
+      {
+        "check": "Keyboard Tab and Shift+Tab move between the composer and audience selector",
+        "seconds": 0.21802986700004112
+      },
+      {
+        "check": "Visible-tab polling delivers narration within three seconds without duplicate entries or stealing composer focus",
+        "seconds": 1.70309341400025
+      },
+      {
+        "check": "Partial grant reveal reaches only its recipient without the DM canary",
+        "seconds": 3.0291627349997725
+      },
+      {
+        "check": "Field preview and knowledge drawer enforce partial A/full B scopes and preserve the session draft",
+        "seconds": 5.999753201000203
+      },
+      {
+        "check": "Targeted message appears for A and is absent from B's page and payload",
+        "seconds": 1.2750943859996369
+      },
+      {
+        "check": "Private player action reaches DM and sender, never B after reload",
+        "seconds": 2.9695577660004346
+      },
+      {
+        "check": "DM replies privately to the sender and resolves the waiting action",
+        "seconds": 2.004291605999697
+      },
+      {
+        "check": "Backend rejects player attempts to end the session or narrate as DM",
+        "seconds": 0.23154459800025506
+      },
+      {
+        "check": "Quick saving throws use the approved sheet bonus and advantage",
+        "seconds": 0.930876318999708
+      },
+      {
+        "check": "Server dice supports advantage, modifiers, public rolls and private rolls",
+        "seconds": 3.564915196000129
+      },
+      {
+        "check": "A delayed successful poll preserves the unsent draft and returns to a live feed",
+        "seconds": 4.166364528000031
+      },
+      {
+        "check": "Polling recovers and preserves the unsent draft",
+        "seconds": 5.927487735999875
+      },
+      {
+        "check": "Lost send response retains an actionable error and draft; retry creates exactly one event",
+        "seconds": 1.1192150430001675
+      },
+      {
+        "check": "DM phone controls pause, resume and narrate without horizontal overflow",
+        "seconds": 1.1387011339998026
+      },
+      {
+        "check": "DM desktop and player phone views have no horizontal overflow",
+        "seconds": 0.3520628599999327
+      },
+      {
+        "check": "DM editor retracts old knowledge and atomically shares with both players",
+        "seconds": 7.109125337000023
+      },
+      {
+        "check": "An in-flight note save locks its fields and audience until completion",
+        "seconds": 4.800931593000314
+      },
+      {
+        "check": "Pin to notes copies visible knowledge, stays private, and links back to its event",
+        "seconds": 3.695660267999756
+      },
+      {
+        "check": "Notes editor enforces private default, DM opt-in, party sharing, deletion and draft retention",
+        "seconds": 2.9874000119889388e-5
+      },
+      {
+        "check": "Journal uses latest visible knowledge, own rolls and resolved threads; party journal excludes private events",
+        "seconds": 1.2358328549998987
+      },
+      {
+        "check": "DM grants matrix edits partial details, reduces scope and retracts; players cannot open it",
+        "seconds": 5.1304122800002006
+      },
+      {
+        "check": "Incoming grouped knowledge preserves the reader's scroll position and keyboard focus",
+        "seconds": 0.7504594980000547
+      },
+      {
+        "check": "Grouped reveal renders and pins both items; retracting one hides its projection while preserving the other",
+        "seconds": 1.902537110999674
+      },
+      {
+        "check": "Initiative orders both PCs and a hidden monster; only the active player sees their turn banner, the monster stays masked in pages and payloads, and the DM ends the encounter",
+        "seconds": 8.982283036000354
+      },
+      {
+        "check": "Handouts reach the table and one PC; Bram never receives Elowen's handout in page or payload, and Elowen pins it to private notes",
+        "seconds": 2.1830680939997364
+      },
+      {
+        "check": "Give item turns a handout into a party-pool item both players see; a hidden party item never reaches player pages or payloads",
+        "seconds": 2.080307836999964
+      },
+      {
+        "check": "Player knowledge search finds granted knowledge and a full reveal after the play embedder runs; retracting that grant removes it without re-embedding; DM-only and other-PC text stays out of results",
+        "seconds": 5.07206138499987
+      },
+      {
+        "check": "DM can pause, resume and end; ended story remains readable",
+        "seconds": 0.4570499490000657
+      },
+      {
+        "check": "Invited players accept into a new campaign; player creates Nyx and DM creates and assigns Wren",
+        "seconds": 5.040815070999997
+      },
+      {
+        "check": "Both invited players submit sheets, DM approves them, and the new table enters a session with approved-sheet rolls",
+        "seconds": 7.601991034000093
+      }
+    ],
+    "join-links": [
+      {
+        "check": "Owner creates recipient-bound links for a fresh campaign; hide and a fresh lobby read do not restore the private link",
+        "seconds": 5.7818253800001
+      },
+      {
+        "check": "Anonymous landing removes the fragment, stores a Secure HttpOnly Lax scoped cookie, resumes on reload and clears it on close",
+        "seconds": 0.7587687059999553
+      },
+      {
+        "check": "Wrong signed account is rejected by the real backend and receives no membership",
+        "seconds": 1.16345533599997
+      },
+      {
+        "check": "Closing authenticated acceptance clears the resume cookie; browser back cannot accept the dismissed invitation",
+        "seconds": 1.3028230009999788
+      },
+      {
+        "check": "Opening another recipient's link in a second tab cannot switch the invitation accepted by a stale form",
+        "seconds": 1.6112039479999112
+      },
+      {
+        "check": "Correct account explicitly joins as one unassigned player; a retry keeps the same membership and a used link has no accept control",
+        "seconds": 1.4335765750001883
+      },
+      {
+        "check": "Owner removes the player; reopening or replaying the accepted capability cannot regrant membership",
+        "seconds": 1.538372635000087
+      },
+      {
+        "check": "Revocation blocks an already-open acceptance form, a fresh landing and direct replay without granting membership",
+        "seconds": 1.918356092999602
+      },
+      {
+        "check": "Browser URLs and referrers contain no raw link capability; the anonymous landing loads no external resources and no browser contacts Authentik",
+        "seconds": 0.0009638050000830845
+      }
+    ]
+  },
+  "session": {
+    "Empty feeds explain the next step; an in-flight write shows a disabled Sending control": 11,
+    "A successful in-flight write preserves the next draft; DM has no unsupported private pin control": 3,
+    "Table narration reaches player A": 6,
+    "Keyboard Tab and Shift+Tab move between the composer and audience selector": 3,
+    "Visible-tab polling delivers narration within three seconds without duplicate entries or stealing composer focus": 6,
+    "Partial grant reveal reaches only its recipient without the DM canary": 10,
+    "Field preview and knowledge drawer enforce partial A/full B scopes and preserve the session draft": 17,
+    "Targeted message appears for A and is absent from B's page and payload": 5,
+    "Private player action reaches DM and sender, never B after reload": 9,
+    "DM replies privately to the sender and resolves the waiting action": 7,
+    "Backend rejects player attempts to end the session or narrate as DM": 3,
+    "Quick saving throws use the approved sheet bonus and advantage": 4,
+    "Server dice supports advantage, modifiers, public rolls and private rolls": 11,
+    "A delayed successful poll preserves the unsent draft and returns to a live feed": 12,
+    "Polling recovers and preserves the unsent draft": 17,
+    "Lost send response retains an actionable error and draft; retry creates exactly one event": 5,
+    "DM phone controls pause, resume and narrate without horizontal overflow": 5,
+    "DM desktop and player phone views have no horizontal overflow": 3,
+    "DM editor retracts old knowledge and atomically shares with both players": 20,
+    "An in-flight note save locks its fields and audience until completion": 14,
+    "Pin to notes copies visible knowledge, stays private, and links back to its event": 11,
+    "Notes editor enforces private default, DM opt-in, party sharing, deletion and draft retention": 3,
+    "Journal uses latest visible knowledge, own rolls and resolved threads; party journal excludes private events": 5,
+    "DM grants matrix edits partial details, reduces scope and retracts; players cannot open it": 15,
+    "Incoming grouped knowledge preserves the reader's scroll position and keyboard focus": 4,
+    "Grouped reveal renders and pins both items; retracting one hides its projection while preserving the other": 7,
+    "Initiative orders both PCs and a hidden monster; only the active player sees their turn banner, the monster stays masked in pages and payloads, and the DM ends the encounter": 24,
+    "Handouts reach the table and one PC; Bram never receives Elowen's handout in page or payload, and Elowen pins it to private notes": 7,
+    "Give item turns a handout into a party-pool item both players see; a hidden party item never reaches player pages or payloads": 7,
+    "Player knowledge search finds granted knowledge and a full reveal after the play embedder runs; retracting that grant removes it without re-embedding; DM-only and other-PC text stays out of results": 15,
+    "DM can pause, resume and end; ended story remains readable": 3,
+    "Invited players accept into a new campaign; player creates Nyx and DM creates and assigns Wren": 15,
+    "Both invited players submit sheets, DM approves them, and the new table enters a session with approved-sheet rolls": 21,
+    "Feedback preserves drafts through Escape and browser Back, submits once, and records votes": 12,
+    "Returned sheets can be edited, resubmitted and approved across open tabs without reloads": 40,
+    "Disadvantage rolls use the lower die plus modifier and respect public and private audiences": 23,
+    "Read-aloud controls persist and the synthetic speech queue respects each seat's audience": 30,
+    "Character reassignment changes access and retains sheet history": 43,
+    "Changing the signed-in demo account clears the previous player's private note": 32,
+    "Repeated Enter while campaign creation is pending creates exactly one campaign": 12,
+    "Repeated Enter while a dice roll is pending creates exactly one roll": 12,
+    "A private DM reply survives confirmed sign-in expiry and resolves the same action": 25,
+    "Both players can dispute their own facts; other-player and party facts stay protected": 12,
+    "Disabled transcript capability is recorded without activating capture": 3,
+    "A failed first session feed read offers Retry and loads the real story": 6,
+    "A failed first journal read offers Retry and keeps its audience controls": 6,
+    "A failed first identity read blocks private Grimoire reads and recovers through Retry": 10,
+    "A platform profile establishes the demo identity without Grimoire access": 8,
+    "A platform account switch clears the previous profile while the lobby stays denied": 22,
+    "Concurrent sheet edits merge without loss and stale saves are rejected": 45,
+    "Remote submission preserves unsaved sheet edits for copying and recovery": 35,
+    "Feed pins disable every target while pending and recover after success or refusal": 8,
+    "Private replies respect reassigned authors and reset cancelled sends": 35
+  },
+  "join-links": {
+    "Owner creates recipient-bound links for a fresh campaign; hide and a fresh lobby read do not restore the private link": 16,
+    "Anonymous landing removes the fragment, stores a Secure HttpOnly Lax scoped cookie, resumes on reload and clears it on close": 4,
+    "Wrong signed account is rejected by the real backend and receives no membership": 5,
+    "Closing authenticated acceptance clears the resume cookie; browser back cannot accept the dismissed invitation": 5,
+    "Opening another recipient's link in a second tab cannot switch the invitation accepted by a stale form": 6,
+    "Correct account explicitly joins as one unassigned player; a retry keeps the same membership and a used link has no accept control": 6,
+    "Owner removes the player; reopening or replaying the accepted capability cannot regrant membership": 6,
+    "Revocation blocks an already-open acceptance form, a fresh landing and direct replay without granting membership": 7,
+    "Browser URLs and referrers contain no raw link capability; the anonymous landing loads no external resources and no browser contacts Authentik": 3
+  }
+}

@@ -1,21 +1,17 @@
 import { useQueries } from "@tanstack/react-query";
-import { api } from "../../api/client";
 import { useCharacters, useLobby, useMembers } from "../../api/lobby";
 import {
-  sessionKeys,
   useEvents,
   useInitiative,
   useSessions,
   useVoices,
-  type ApprovedSheet,
   type SessionEvent,
   type TurnOrder,
 } from "../../api/session";
+import { sheetHistoryOptions } from "../../api/sheets";
 import type { GameSessionView, MemberView } from "../../api/schema";
 import type { VoicePreset } from "../../voices/voices";
 import type { TableCharacter, Viewer } from "./table";
-
-const SLOW_MS = 15_000;
 
 export interface Table {
   viewer: Viewer;
@@ -63,25 +59,9 @@ export function useTable(
   const events = useEvents(campaignId, session);
   const initiative = useInitiative(campaignId, session);
   const sheets = useQueries({
-    queries: (characters.data ?? []).map((character) => ({
-      queryKey: sessionKeys.sheets(campaignId, character.id),
-      queryFn: async (): Promise<ApprovedSheet | null> => {
-        const history = await api(
-          "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets",
-          {
-            params: {
-              campaign_id: campaignId,
-              player_character_id: character.id,
-            },
-          },
-        );
-        const approved = history.versions
-          .filter((version) => version.status === "approved")
-          .sort((a, b) => b.version - a.version)[0];
-        return (approved?.derived as ApprovedSheet | undefined) ?? null;
-      },
-      refetchInterval: SLOW_MS * 4,
-    })),
+    queries: (characters.data ?? []).map((character) =>
+      sheetHistoryOptions(campaignId, character.id),
+    ),
   });
 
   const blocking = [
@@ -116,7 +96,10 @@ export function useTable(
       viewer: { user: lobby.data.user, campaign, dm },
       characters: (characters.data ?? []).map((character, index) => ({
         ...character,
-        approved: sheets[index]?.data ?? null,
+        approved:
+          sheets[index]?.data?.versions.find(
+            (version) => version.status === "approved",
+          )?.derived ?? null,
       })),
       sessions: sessions.data,
       session,

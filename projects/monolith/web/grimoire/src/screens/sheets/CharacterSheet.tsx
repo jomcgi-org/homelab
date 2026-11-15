@@ -77,20 +77,17 @@ export function CharacterSheet({ character }: { character: CharacterView }) {
 function Workspace({ history }: { history: SheetHistory }) {
   const { character, viewer_role: role, versions } = history;
   const latest = versions[0] ?? null;
-  const draft = latest?.status === "draft" ? latest : null;
   const submitted = latest?.status === "submitted" ? latest : null;
   const editing = role === "player" && !submitted;
   return (
     <>
-      {editing && (
+      {role === "player" && (
         <SheetForm
-          // A saved or newly opened version replaces what the form started from.
-          key={latest ? `${latest.id}:${latest.updated_at}` : "new"}
+          // Keep the local buffer mounted even when another tab submits it.
           campaignId={character.campaign_id}
           characterId={character.id}
           characterName={character.character_name}
-          draft={draft}
-          base={latest?.sheet ?? null}
+          version={latest}
         />
       )}
       {submitted && (
