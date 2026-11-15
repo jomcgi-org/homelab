@@ -696,6 +696,31 @@ def test_toolchain_configuration_fails_closed(overrides) -> None:
         _render(overrides)
 
 
+def test_coding_binding_gets_no_github_api_egress() -> None:
+    docs = _render()
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "EgressPolicy"
+        and d["metadata"]["name"] == "github-api"
+        and d["metadata"]["namespace"] == "factory-r-homelab"
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # The coder's token can write; only the reviewer's is read-only.
+        ["agents.codex.egress={github-git,github-api}"],
+        # github-api reuses github-git's Secret.
+        ["agents.reviewer.egress={github-api}"],
+    ],
+)
+def test_github_api_egress_fails_closed(overrides) -> None:
+    with pytest.raises(RuntimeError):
+        _render(overrides)
+
+
 def test_binding_worker_pool_sets_resources_and_concurrency() -> None:
     docs = _render()
     pool = _in(docs, "WorkerPool", "factory-r-homelab", "homelab-codex")

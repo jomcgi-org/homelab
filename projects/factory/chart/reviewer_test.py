@@ -286,7 +286,7 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
         == "you review pull requests read-only per the rules in your task; you never push, commit or open PRs"
     )
     assert agent["harnessRef"] == {"name": "codex"}
-    assert agent["egressPolicyRefs"] == [{"name": "github-git"}]
+    assert agent["egressPolicyRefs"] == [{"name": "github-git"}, {"name": "github-api"}]
     model = _in(docs, "ModelConfig", _REVIEW_NS, "reviewer")["spec"]
     assert model == {
         "provider": "OpenAI",
@@ -319,6 +319,19 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
         "destinations": [
             {
                 "origin": "https://github.com",
+                "authentication": {
+                    "header": "Authorization",
+                    "prefix": "Basic ",
+                    "secretKeyRef": {"name": "github-git", "key": "basic"},
+                },
+            }
+        ]
+    }
+    # Read-only REST reads reuse the reviewer's contents:read token.
+    assert _in(docs, "EgressPolicy", _REVIEW_NS, "github-api")["spec"] == {
+        "destinations": [
+            {
+                "origin": "https://api.github.com",
                 "authentication": {
                     "header": "Authorization",
                     "prefix": "Basic ",
