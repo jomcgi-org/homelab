@@ -120,7 +120,7 @@ var (
 	}
 	DefaultHumanGateLabels = []string{"human", "needs-human"}
 	DefaultHumanApprovers  = []string{"jomcgi"}
-	DefaultTrustedItsaplanAuthors = []string{"joe", "joe-sessions"}
+	DefaultTrustedItsaplanAuthors = []string{"joe", "joesessions"}
 	DefaultContextDocs     = []string{"AGENTS.md", "docs/agents/reference.md"}
 	DefaultGeneratedPaths  = []string{
 		"**/*.lock", "**/*.lock.json", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum",

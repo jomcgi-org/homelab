@@ -511,7 +511,7 @@ reviewer:
   # With itsaplan enabled, bootstrap creates factory-reviewer with work_items
   # read only. The service mounts its key; review agents never receive it.
   # Issue project and branch prefix follow the connector's binding. Trusted
-  # itsaplan authors default to [joe, joe-sessions]; agent accounts never count.
+  # itsaplan authors default to [joe, joesessions]; agent accounts never count.
   # Service defaults: poll 30s, taskPoll/reissue 15s, timeout 45m,
   # retryBackoff 5m. Values use Go duration strings.
   intervals: {}

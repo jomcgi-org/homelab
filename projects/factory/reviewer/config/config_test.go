@@ -48,7 +48,7 @@ func TestParseAppliesDefaults(t *testing.T) {
 		t.Fatalf("intervals = %+v", iv)
 	}
 	b := c.Bindings[0]
-	if strings.Join(b.TrustedItsaplanAuthors, ",") != "joe,joe-sessions" || b.BranchPrefix != "factory/" {
+	if strings.Join(b.TrustedItsaplanAuthors, ",") != "joe,joesessions" || b.BranchPrefix != "factory/" {
 		t.Fatalf("issue defaults = %+v", b)
 	}
 	if len(b.SkipLabels) != 0 || b.RequiredChecks[0].StatusCreator != "buildbuddy-io[bot]" {

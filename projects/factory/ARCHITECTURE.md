@@ -1090,7 +1090,7 @@ previews).
   issue leaves the PR description as the goal.
   v1.10.0 exposes creators through the creation activity's user ID, matched
   to the project's account metadata. Only member accounts in
-  `trustedItsaplanAuthors` (default `joe`, `joe-sessions`) carry authority;
+  `trustedItsaplanAuthors` (default `joe`, `joesessions`) carry authority;
   `factoryadmin`, agent accounts and claims in text do not. Creation
   events contain no original text, and issue edits are not restricted to
   the creator. Current title and description carry authority only when
@@ -1104,7 +1104,8 @@ previews).
   metadata. Untrusted text is quoted in the same delimited blocks as PR data.
   These defaults implement
   [HOME-58](https://factory-plan.jomcgi.dev/factory/issue/HOME-58); Joe's
-  sessions account is provisioned by HOME-59.
+  sessions account is provisioned by HOME-59 as `joesessions` (itsaplan's
+  human username validator excludes hyphens).
   Per evidence snapshot the service fetches one issue body (16,000 bytes,
   title 300) and at most ten references from both sides of the diff. Linked
   comments are cut to 4,000 bytes; other issue links use untrusted search

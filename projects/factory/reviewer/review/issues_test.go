@@ -100,7 +100,7 @@ func issueSetup() (*Engine, *Binding, *issueAPI, github.PullRequest) {
 		Columns: []itsaplan.Column{{ID: 2, Name: "In progress"}},
 		Assignees: []itsaplan.Account{
 			{UserID: "human", Username: "joe", Kind: "member"},
-			{UserID: "sessions", Username: "joe-sessions", Kind: "member"},
+			{UserID: "sessions", Username: "joesessions", Kind: "member"},
 			{UserID: "bot", Username: "joe", Kind: "agent"},
 			{UserID: "admin", Username: "factoryadmin", Kind: "member"},
 		},
@@ -112,7 +112,7 @@ func issueSetup() (*Engine, *Binding, *issueAPI, github.PullRequest) {
 		comments: map[int64]*itsaplan.FeedItem{},
 	}
 	e := &Engine{cfg: Config{Itsaplan: a}, gh: &issueCommits{}}
-	b := &Binding{ItsaplanProject: "HOME", TrustedItsaplanAuthors: []string{"joe", "joe-sessions", "factoryadmin"}}
+	b := &Binding{ItsaplanProject: "HOME", TrustedItsaplanAuthors: []string{"joe", "joesessions", "factoryadmin"}}
 	pr := github.PullRequest{Author: "jomcgi-factory[bot]", HeadRef: "factory/HOME-58", HeadSHA: shaA}
 	return e, b, a, pr
 }
@@ -162,7 +162,7 @@ func TestDecisionLinks(t *testing.T) {
 		if d.Trusted != (i == 0 || i == 1) || d.Exists != (i != 4) { t.Errorf("decision %d = %+v", i, d) }
 	}
 	p := Prompt(PromptInput{SHA: shaA, Issues: in})
-	if !strings.Contains(p, "joe-sessions") || !strings.Contains(p, "untrusted-pr-decision-2-") { t.Fatal("decision trust placement missing") }
+	if !strings.Contains(p, "joesessions") || !strings.Contains(p, "untrusted-pr-decision-2-") { t.Fatal("decision trust placement missing") }
 }
 
 func TestIssueEvidenceBounds(t *testing.T) {
@@ -457,5 +457,45 @@ func TestIssueRecoveryDoesNotResetExhaustedModelAttempts(t *testing.T) {
 	c := h.gh.check(shaA)
 	if c.Conclusion != ConclusionFailure || c.Title != "No review report" || len(h.k.sent()) != MaxAttempts {
 		t.Fatal("issue recovery or approval reset model exhaustion or passed without a report")
+	}
+}
+
+func TestIssueEvidenceHoldAndRecoveryUpdateTheExistingComment(t *testing.T) {
+	for _, refuseUpdate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refuseUpdate=%t", refuseUpdate), func(t *testing.T) {
+			h, api := issueHarness(t)
+			withComments(h)
+			e, ctx, _ := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			initial := onlyComment(t, h, 7)
+			if !commentHas(h, 7, verdictHeading[VerdictApproved]) {
+				t.Fatal("completed issue review was not mirrored")
+			}
+			api.fail = "issue"
+			if refuseUpdate {
+				path := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+				h.gh.failWith(path, 502)
+			}
+			e.Tick(ctx)
+			e.Wait()
+			if !commentHas(h, 7, verdictHeading[VerdictHold], "Waiting for current issue evidence", "no push is required") {
+				t.Fatal("comment retained approval after the evidence hold")
+			}
+			if onlyComment(t, h, 7).ID != initial.ID {
+				t.Fatal("evidence hold posted another comment")
+			}
+			api.fail = ""
+			fresh := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(fresh, kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			if h.gh.check(shaA).Conclusion != ConclusionSuccess || !commentHas(h, 7, verdictHeading[VerdictApproved]) {
+				t.Fatal("fresh review did not update the check and comment")
+			}
+			if onlyComment(t, h, 7).ID != initial.ID {
+				t.Fatal("recovery posted another comment")
+			}
+		})
 	}
 }

@@ -647,7 +647,7 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
     assert binding["MaxDiffFiles"] == 150
     # The deploy values turn enqueues off; the required check gates merges.
     assert binding["EnqueueAuthors"] == []
-    assert binding["TrustedItsaplanAuthors"] == ["joe", "joe-sessions"]
+    assert binding["TrustedItsaplanAuthors"] == ["joe", "joesessions"]
     assert binding["ItsaplanProject"] == "HOME"
 
 
