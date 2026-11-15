@@ -22,6 +22,13 @@ _CHART_DIR = Path(__file__).resolve().parent
 _DEPLOY_VALUES = Path(
     os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
 )
+_SUBSTRATE_NETWORK_POLICY = Path(
+    os.environ.get(
+        "SUBSTRATE_NETWORK_POLICY",
+        _CHART_DIR.parents[2]
+        / "projects/platform-factory/substrate/resources/network-policy.yaml",
+    )
+)
 _KEEP = {
     "argocd.argoproj.io/sync-options": "Prune=false,Delete=false",
     "helm.sh/resource-policy": "keep",
@@ -633,6 +640,34 @@ def test_binding_workspace_holds_only_placeholders() -> None:
     }
     sa = _in(docs, "ServiceAccount", ns, "homelab-codex-worker")
     assert sa["automountServiceAccountToken"] is False
+
+
+def test_egress_gateway_admits_every_rendered_egress_origin() -> None:
+    # An EgressPolicy admits an origin per actor, but the egress gateway's own
+    # Cilium policy (platform-factory/substrate) must also allow its name, or
+    # every request times out at the gateway (HOME-19's toolchain did).
+    gateway = next(
+        d
+        for d in yaml.safe_load_all(_SUBSTRATE_NETWORK_POLICY.read_text())
+        if d and d["metadata"]["name"] == "atenet-egress"
+    )
+    allowed = {
+        fqdn["matchName"]
+        for rule in gateway["spec"]["egress"]
+        if {"port": "443", "protocol": "TCP"}
+        in [p for t in rule.get("toPorts", []) for p in t["ports"]]
+        for fqdn in rule.get("toFQDNs", [])
+    }
+    origins = {
+        dest["origin"]
+        for d in _render(["repositories[0].toolchain=homelab"])
+        if d["kind"] == "EgressPolicy"
+        for dest in d["spec"]["destinations"]
+    }
+    assert origins
+    for origin in sorted(origins):
+        assert origin.startswith("https://") and ":" not in origin[8:], origin
+        assert origin[8:] in allowed, f"{origin} is not allowed by atenet-egress"
 
 
 def test_toolchain_is_opt_in_and_grants_only_public_download_origins(

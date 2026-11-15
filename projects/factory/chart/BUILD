@@ -73,6 +73,7 @@ py_test(
         "values.schema.json",
         "values.yaml",
         "//projects/factory/deploy:deploy_values",
+        "//projects/platform-factory/substrate/resources:network-policy.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "charts/**",
@@ -83,6 +84,7 @@ py_test(
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "SUBSTRATE_NETWORK_POLICY": "$(rootpath //projects/platform-factory/substrate/resources:network-policy.yaml)",
     },
     deps = [
         "@pip//pytest",
