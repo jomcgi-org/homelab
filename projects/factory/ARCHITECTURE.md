@@ -433,6 +433,9 @@ lookup holds the run and announces the missing input once on the issue.
 Terminal HTTP errors and prolonged auth failures never start a session with
 a placeholder. The lookup retries until the issue is available or the run
 is canceled. This also applies to a review round that opens a session.
+A run waiting for its brief keeps its existing work-item admission and
+honors later delivery stops. Only a new itsaplan run can resume a stopped
+work item.
 HOME-1, the first live run, ended "blocked" without this. A new send uses message
 ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
 connector's record of why it sends (initial, revision or engineering retry).
