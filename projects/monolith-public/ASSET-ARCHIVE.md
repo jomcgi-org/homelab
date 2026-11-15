@@ -79,6 +79,21 @@ source declarations alone are not production verification.
 
 ## Validation
 
+Archive-stage acceptance records the exact backend/frontend image digests,
+successful packaged publisher smoke, and PreSync completion with the sealed
+build ID, path/object counts and verified readback. It proves publication of
+this release's assets; the frontend still serves local files and no cross-release
+fallback claim follows from that result. Any lifecycle-unverified result must
+remain explicit in the evidence.
+
+The subsequent activation stage must verify backend readiness before frontend
+startup, the frontend's current-entry read through the read-only identity,
+and an A-to-B rollout serving retained A assets with exact content, MIME and
+encoding after B replaces the local files. Record uncached-origin evidence and
+browser navigation without `_fresh` separately from archive publication.
+[#7998](https://github.com/jomcgi-org/homelab/issues/7998) remains open until that
+serving and cross-release acceptance is complete.
+
 `//projects/monolith:public_assets_chart_test` renders both the base and GKE
 charts and checks publication/Deployment ordering, exact image reuse, writer
 namespace, token/RBAC absence, read-only public runtime identities and bounded
