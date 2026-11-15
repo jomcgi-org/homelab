@@ -308,7 +308,9 @@ func TestWriterTransactionCannotCommitAfterConnectionTakeover(t *testing.T) {
 		if _, err := tx.ExecContext(f.ctx, `UPDATE work_item SET engineering_retries=9`); err != nil {
 			return err
 		}
-		if _, err := f.st.DB.Exec(`SELECT pg_terminate_backend($1)`, pid); err != nil {
+		// Wait for the backend to exit: its advisory lock is released only
+		// then, and the takeover below must see it free.
+		if _, err := f.st.DB.Exec(`SELECT pg_terminate_backend($1, 5000)`, pid); err != nil {
 			return err
 		}
 		var err error
