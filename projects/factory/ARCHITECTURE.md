@@ -427,6 +427,12 @@ never send again while kagent could still accept it. Agents have no itsaplan
 tools, and itsaplan's run prompt only names the issue, so a send that opens
 a session quotes the issue's title and description, read with the
 coordinator key and recorded with the attempt so resends stay identical.
+Descriptions over 8,000 bytes carry a marker with the retained and original
+byte counts; clipping preserves UTF-8 characters. A failed or empty issue
+lookup holds the run and announces the missing input once on the issue.
+Terminal HTTP errors and prolonged auth failures never start a session with
+a placeholder. The lookup retries until the issue is available or the run
+is canceled. This also applies to a review round that opens a session.
 HOME-1, the first live run, ended "blocked" without this. A new send uses message
 ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
 connector's record of why it sends (initial, revision or engineering retry).
@@ -436,6 +442,10 @@ not-accepted response leaves the attempt ready to retry, spaced by 15 s;
 after 20 refusals it tries once per dispatch window three more times. The
 ready state is persisted only after that response. A crash before the write
 leaves ambiguity and cannot resend.
+An engineering retry that opens a session reuses its recorded context,
+including a replacement's PR, branch and review threads. If no context was
+recorded, it requires an issue lookup. Exhausted retries finish without
+reading the issue.
 
 After any ambiguous response, the connector only reads every task state and
 page looking for the original message ID. A positive match attaches the
@@ -824,11 +834,11 @@ The chart passes this same authority to the connector in
   backs off as for any other failure. After 12 tries, about 27 minutes, the
   connector abandons the item as it would a refused one and logs that
   itsaplan keeps refusing its key. The Done move reads the issue first and
-  waits while it cannot. Coordinator lookups that hold a run's slot have a
-  30-minute bound, kept in memory per attempt: the initial-session path then
-  proceeds without issue text, and a dispatched run whose attempt itsaplan
-  no longer accepts closes. Fenced recovery requires authoritative issue text
-  before creating a replacement and waits beyond this bound. Lookups that hold
+  waits while it cannot. A run-state lookup has a 30-minute auth-refusal
+  bound, kept in memory per attempt; past it, a dispatched run whose attempt
+  itsaplan no longer accepts closes. Required issue lookups for initial
+  sessions, new-session review rounds and fenced recovery wait until
+  authoritative issue text is available, beyond this bound. Lookups that hold
   no slot, the issue check before PR updates, rounds and the merge queue and
   a stale run's lookup, retry
   until the key works. `factory_connector_credential_refusals_total` counts
