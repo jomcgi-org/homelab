@@ -947,8 +947,10 @@ body:has(.td) {
   margin-top: calc(-0.85rem - 1px);
 }
 
-.sheet .prose figure.fig + table th:first-child,
-.sheet .prose figure.fig + table td:first-child {
+/* Key columns belong to a drawn figure's numbered key. A data table kept
+   below a chart (figure.ix) has ordinary columns. */
+.sheet .prose figure.fig:not(.ix) + table th:first-child,
+.sheet .prose figure.fig:not(.ix) + table td:first-child {
   width: 3.5em;
   font-family: var(--font-code);
   text-align: center;
@@ -976,6 +978,18 @@ body:has(.td) {
 @media (max-width: 760px) {
   .sheet {
     padding: 1rem 1em 4em;
+  }
+
+  /* Tables keep whole words on a phone. One still wider than the screen
+     scrolls inside itself, so the page never scrolls sideways. */
+  .sheet .prose table {
+    display: block;
+    overflow-x: auto;
+  }
+
+  .sheet .prose th,
+  .sheet .prose td {
+    padding-inline: 0.6rem;
   }
 
   .sheet .journal {
