@@ -21,6 +21,7 @@
   "vulnerabilityAlerts": {
     "enabled": true,
     "groupName": "{{#if groupSlug}}{{{groupSlug}}}{{else}}{{{datasource}}}-{{{depNameSanitized}}}-vulnerability{{/if}}",
+    "vulnerabilityFixStrategy": "highest",
     "labels": ["dependencies", "security"],
     "schedule": ["at any time"],
     "minimumReleaseAge": null,
@@ -242,8 +243,20 @@
       "matchPackageNames": ["opentelemetry-*"],
       "groupName": "OpenTelemetry Python packages",
       "groupSlug": "opentelemetry-python-packages",
+      "internalChecksFilter": "none",
       "separateMajorMinor": false,
       "separateMinorPatch": false
+    },
+    {
+      "description": "Follow the OpenTelemetry beta release train across minor versions while keeping API, SDK and exporters on stable releases.",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": [
+        "opentelemetry-semantic-conventions",
+        "opentelemetry-instrumentation*",
+        "opentelemetry-util-http",
+        "opentelemetry-configuration"
+      ],
+      "ignoreUnstable": false
     },
     {
       "description": "Update Pydantic with the exact pydantic-core release it requires.",
@@ -251,6 +264,7 @@
       "matchPackageNames": ["pydantic", "pydantic-core"],
       "groupName": "Pydantic Python packages",
       "groupSlug": "pydantic-python-packages",
+      "internalChecksFilter": "none",
       "separateMajorMinor": false,
       "separateMinorPatch": false
     },

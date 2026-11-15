@@ -59,6 +59,7 @@ py_test(
         "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
     },
     deps = [
+        "@pip//packaging",
         "@pip//pytest",
         "@pip//pyyaml",
     ],

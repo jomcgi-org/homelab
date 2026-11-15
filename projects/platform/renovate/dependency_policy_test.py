@@ -9,6 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from packaging.version import Version
 import pytest
 import yaml
 
@@ -169,6 +170,163 @@ def test_security_alerts_preserve_explicit_lockstep_groups():
     assert config["vulnerabilityAlerts"]["schedule"] == ["at any time"]
     assert config["vulnerabilityAlerts"]["minimumReleaseAge"] is None
     assert config["vulnerabilityAlerts"]["prCreation"] == "immediate"
+
+
+def _python_update_config(config, name, *, security=False):
+    """Apply matching rules and the forced GitHub vulnerability configuration."""
+    inputs = {
+        "matchDatasources": "pypi",
+        "matchManagers": "pip_requirements",
+        "matchPackageNames": re.sub(r"[-_.]+", "-", name).lower(),
+        "matchDepNames": name,
+        "matchFileNames": "projects/model-bench/requirements-venv.txt",
+        "matchDepTypes": "",
+        "matchUpdateTypes": "minor",
+    }
+    effective = {
+        "ignoreUnstable": True,
+        "vulnerabilityFixStrategy": "lowest",
+        **config,
+    }
+    for rule in config["packageRules"]:
+        matchers = {key for key in rule if key.startswith("match")}
+        assert matchers <= inputs.keys(), "Extend the policy fixture for new matchers"
+        if all(
+            any(
+                fnmatch.fnmatchcase(inputs[key].casefold(), pattern.casefold())
+                for pattern in rule[key]
+            )
+            for key in matchers
+        ):
+            effective.update(rule)
+    if security:
+        # init/vulnerability.ts appends a rule whose force object overrides
+        # package rules. A package-scoped strategy would be overwritten here.
+        effective.update(config["vulnerabilityAlerts"])
+    return effective
+
+
+def _selected_python_release(config, name, current, releases, *, first_fixed=None):
+    """Replay the relevant Renovate 44.14.10 lookup stages for PEP 440 fixtures.
+
+    filter.ts handles ignoreUnstable; index.ts narrows vulnerability releases;
+    filter-checks.ts selects the newest candidate passing internal checks.
+    This models proposed updates, not pip resolution or a live Renovate run.
+    """
+    effective = _python_update_config(config, name, security=first_fixed is not None)
+    current = Version(current)
+    candidates = sorted(
+        (Version(version), age)
+        for version, age in releases
+        if Version(version) > current
+    )
+    if effective["ignoreUnstable"]:
+        candidates = [
+            (version, age)
+            for version, age in candidates
+            if not version.is_prerelease
+            or (
+                current.is_prerelease
+                and (version.major, version.minor, version.micro)
+                == (current.major, current.minor, current.micro)
+            )
+        ]
+    if first_fixed is not None:
+        candidates = [
+            (version, age)
+            for version, age in candidates
+            if version >= Version(first_fixed)
+        ]
+        if effective["vulnerabilityFixStrategy"] == "lowest":
+            candidates = candidates[:1]
+        else:
+            assert effective["vulnerabilityFixStrategy"] == "highest"
+    if effective["internalChecksFilter"] == "strict":
+        minimum_age = effective["minimumReleaseAge"]
+        if minimum_age:
+            assert minimum_age == "3 days"
+            candidates = [(version, age) for version, age in candidates if age >= 3]
+    else:
+        assert effective["internalChecksFilter"] == "none"
+    return str(candidates[-1][0]) if candidates else None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "opentelemetry-semantic-conventions",
+        "opentelemetry-instrumentation",
+        "opentelemetry-instrumentation-fastapi",
+        "opentelemetry-instrumentation-httpx",
+        "opentelemetry-util-http",
+        "opentelemetry-configuration",
+    ],
+)
+def test_next_opentelemetry_beta_minor_is_selected_with_stable_sdk(name):
+    config = json.loads((ROOT / "renovate.json").read_text())
+    assert _selected_python_release(
+        config, name, "0.66b2", [("0.66b3", 7), ("0.67b0", 4)]
+    ) == "0.67b0"
+    for stable_name in (
+        "opentelemetry-api",
+        "opentelemetry-sdk",
+        "opentelemetry-exporter-otlp-proto-grpc",
+        "opentelemetry-proto",
+    ):
+        assert _selected_python_release(
+            config, stable_name, "1.45.2", [("1.46.0", 4), ("1.47.0rc1", 4)]
+        ) == "1.46.0"
+
+
+@pytest.mark.parametrize("family", ["opentelemetry", "pydantic"])
+@pytest.mark.parametrize("peer_age", [1, 7])
+def test_security_updates_select_a_matched_family_including_pending_peers(
+    family, peer_age
+):
+    config = json.loads((ROOT / "renovate.json").read_text())
+    # Synthetic publisher-matched release sets: the first patch fixes the
+    # advisory, but a newer release requires a newer exact peer version.
+    if family == "opentelemetry":
+        releases = {
+            "opentelemetry-api": ("1.45.2", "1.45.3", "1.46.0"),
+            "opentelemetry-sdk": ("1.45.2", "1.45.3", "1.46.0"),
+            "opentelemetry-semantic-conventions": ("0.66b2", "0.66b3", "0.67b0"),
+        }
+    else:
+        releases = {
+            "pydantic": ("2.13.4", "2.13.5", "2.14.0"),
+            "pydantic_core": ("2.46.4", "2.46.5", "2.47.0"),
+        }
+    # An advisory on any member must select the same newest release set.
+    for vulnerable in releases:
+        selected = {
+            name: _selected_python_release(
+                config,
+                name,
+                current,
+                [(fixed, 7), (latest, peer_age)],
+                first_fixed=fixed if name == vulnerable else None,
+            )
+            for name, (current, fixed, latest) in releases.items()
+        }
+        assert selected == {name: versions[2] for name, versions in releases.items()}
+        for name in releases:
+            effective = _python_update_config(config, name, security=name == vulnerable)
+            # internalChecksFilter=none includes pending peers in lookup;
+            # update/branch/index.ts still checks each peer's release age.
+            assert effective["minimumReleaseAge"] == (
+                None if name == vulnerable else "3 days"
+            )
+
+
+def test_unrelated_updates_keep_strict_age_and_stability_filtering():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    assert _selected_python_release(
+        config,
+        "fastapi",
+        "0.138.2",
+        [("0.139.0", 7), ("0.140.0", 1), ("0.141.0rc1", 7)],
+    ) == "0.139.0"
 
 
 def test_compatibility_holds_override_non_major_automerge():
