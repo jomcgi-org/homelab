@@ -68,6 +68,11 @@ type Binding struct {
 
 // Config holds dispatch settings.
 type Config struct {
+	// ArtifactTranscripts admits artifact text into journals. This release
+	// leaves it off until a journal-aware binary is the pinned rollback target.
+	// Existing artifact journals always resume, even when admission is off.
+	ArtifactTranscripts bool
+
 	Caller    Caller
 	Holder    string
 	Agents    []Agent
@@ -1318,6 +1323,11 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 	}
 	if offset < base || offset > base+len(events) {
 		return false, fmt.Errorf("transcript offset %d outside persisted range [%d, %d]", offset, base, base+len(events))
+	}
+	// Persist raw text for cursor validation and replay. The destination's
+	// JSONB storage needs NUL replaced without changing the journal's offsets.
+	for i := range events {
+		events[i].Delta = itsaplanText(events[i].Delta)
 	}
 	for {
 		start := offset - base

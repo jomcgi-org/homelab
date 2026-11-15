@@ -10,7 +10,8 @@ import (
 // Transcript is a task's durable event journal and source cursors. Base is its
 // first offset within the itsaplan attempt, including earlier kagent tasks.
 type Transcript struct {
-	Base  int
+	Base int
+	// State is JSON stored in bytea; jsonb cannot retain escaped U+0000.
 	State json.RawMessage
 }
 
