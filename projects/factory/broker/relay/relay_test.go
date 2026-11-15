@@ -340,14 +340,15 @@ func TestRelayDeadGrant(t *testing.T) {
 	}
 }
 
-func TestRelayConsumedRefreshTokenIsCredentialBlock(t *testing.T) {
+func TestRelayOverlappingRotationWaitsForDelayedWrite(t *testing.T) {
 	for _, expired := range []bool{false, true} {
 		t.Run(fmt.Sprintf("expired-%t", expired), func(t *testing.T) {
 			h := newHarness(t, true)
-			// The replacement never reached durable storage.
-			h.auth.Rotate()
+			// Another broker consumed the token and has yet to persist its
+			// successful rotation. Hold that write until after repeated calls.
+			rotated := h.auth.Rotate()
+			st := &store.SecretStore{Client: h.client, Namespace: "factory", NamePrefix: "factory-broker-grant-"}
 			if expired {
-				st := &store.SecretStore{Client: h.client, Namespace: "factory", NamePrefix: "factory-broker-grant-"}
 				g, err := st.LoadGrant("codex-primary")
 				if err != nil {
 					t.Fatal(err)
@@ -357,15 +358,15 @@ func TestRelayConsumedRefreshTokenIsCredentialBlock(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				h.backend.set(func(b *backend) { b.accepts = func(string) bool { return false } })
+				h.backend.set(func(b *backend) { b.accepts = func(token string) bool { return token != h.access } })
 			}
 			for i := 0; i < 3; i++ {
 				resp := h.post("/v1/responses", h.actorJWT())
-				if resp.StatusCode != http.StatusUnauthorized || factoryError(t, resp)["factory_error"] != ErrLoginRequired {
-					t.Fatalf("consumed token response status = %d, want codex_login_required", resp.StatusCode)
+				if resp.StatusCode != http.StatusServiceUnavailable || factoryError(t, resp)["factory_error"] != ErrGrantUnavailable {
+					t.Fatalf("overlapping rotation response status = %d, want codex_grant_unavailable", resp.StatusCode)
 				}
-				if resp.Header.Get("Retry-After") != "" {
-					t.Fatal("credential block advertised a transient retry")
+				if resp.Header.Get("Retry-After") == "" {
+					t.Fatal("reconciliation did not advertise a transient retry")
 				}
 			}
 			if h.auth.RefreshCalls() != 2 {
@@ -373,6 +374,24 @@ func TestRelayConsumedRefreshTokenIsCredentialBlock(t *testing.T) {
 			}
 			if expired && h.backend.count() != 0 {
 				t.Fatal("expired credential reached the backend")
+			}
+			if testutil.ToFloat64(h.metrics.GrantState.WithLabelValues("codex-primary", "login_required")) != 0 {
+				t.Fatal("overlapping rotation reported login_required")
+			}
+			g, err := st.LoadGrant("codex-primary")
+			if err != nil {
+				t.Fatal(err)
+			}
+			g.LastRefresh = time.Now().UTC()
+			g.TokenBundle.RefreshToken = rotated
+			g.TokenBundle.ExpiresAt = time.Now().Add(5 * 24 * time.Hour)
+			g.TokenBundle.AccessToken = fakes.AccessToken("acct-1", g.TokenBundle.ExpiresAt, "replacement")
+			if err := st.SaveGrant(g); err != nil {
+				t.Fatal(err)
+			}
+			resp := h.post("/v1/responses", h.actorJWT())
+			if resp.StatusCode != http.StatusOK || h.auth.RefreshCalls() != 2 {
+				t.Fatalf("delayed write did not restore relay serving: status %d", resp.StatusCode)
 			}
 		})
 	}

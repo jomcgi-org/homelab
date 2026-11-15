@@ -1048,9 +1048,14 @@ OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
 window configured per consumer; EmberVM keeps its defaults. No Lease: grant
 writes are newer-only and a `refresh_token_reused` answer rereads the Secret
 and retries once, using a newer durable grant when available. Repeated reuse
-blocks further provider calls for that grant and marks it `login_required`.
-A newer stored grant with a different refresh token or a completed device
-login clears the block; transient provider and storage failures do not set it.
+stops further provider calls for that token and starts five minutes of storage
+reconciliation. Calls remain transient during that period so an overlapping
+refresher can finish writing its rotation without causing the connector to
+persist a credential block. The first refresh check begun after the deadline
+marks `login_required` only if storage successfully confirms the same token
+is still current. A failed read or storage lagging an in-memory rotation stays
+transient. A newer stored grant with a different refresh token or a completed
+device login clears the reuse state. Valid cached access tokens remain usable.
 
 - **Codex relay.** The ModelConfig uses `provider: OpenAI`,
   `openAI.apiFormat: responses`, `openAI.baseUrl` set to the broker's
@@ -1075,16 +1080,16 @@ login clears the block; transient provider and storage failures do not set it.
   run. Provider credentials exist only in the broker.
 - **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
   (401); `codex_login_required` (401, for an empty grant, `invalid_grant`, or
-  `refresh_token_reused` after the bounded recovery retry); `codex_quota_exhausted`
-  (429 with `resets_at`, from the `x-codex-*` headers or a
+  a reused token still current after the five-minute reconciliation period);
+  `codex_quota_exhausted` (429 with `resets_at`, from the `x-codex-*` headers or a
   `usage_limit_reached` body; a current exhausted window blocks before the
   backend is called). It sends no `Retry-After`: Codex sleeps until that
   deadline, so on 2026-11-16 three turns held coding slots for 12 hours.
   Without it, Codex 0.161.0 fails the turn at once, and the connector pauses
   the grant until `GET /codex/quota` reads usable
   (HOME-127); `codex_grant_unavailable` (503, transient: a failed
-  refresh, a missing grant Secret, or the backend refusing a freshly
-  refreshed token); `relay_busy` (503). A backend 401 replaces the token
+  refresh, pending rotation reconciliation, a missing grant Secret, or the
+  backend refusing a freshly refreshed token); `relay_busy` (503). A backend 401 replaces the token
   once, and concurrent 401s for the same token wait on that one refresh.
   Other backend 429s pass through for Codex to retry. The connector treats
   the login and quota codes as credential and quota failures.
