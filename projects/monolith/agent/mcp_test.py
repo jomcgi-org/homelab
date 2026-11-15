@@ -19,9 +19,13 @@ async def test_factory_notify_cannot_override_channel(monkeypatch):
     issuer = "https://auth.example/application/o/factory-notify/"
     monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", issuer)
     principal = replace(
-        anonymous_principal(), subject="factory", issuer=issuer,
-        username="factory-notify-sa", groups=("factory-notify",),
-        kind=PrincipalKind.WORKLOAD, authority=Authority.STANDING,
+        anonymous_principal(),
+        subject="factory",
+        issuer=issuer,
+        username="factory-notify-sa",
+        groups=("factory-notify",),
+        kind=PrincipalKind.WORKLOAD,
+        authority=Authority.STANDING,
     )
     calls = []
 
@@ -39,6 +43,7 @@ async def test_factory_notify_cannot_override_channel(monkeypatch):
     finally:
         reset_current_principal(token)
     assert calls == [("live", {"level": "info", "channel": None, "dedupe_key": "key"})]
+
 
 EXPECTED_TOOLS = {
     "monolith_agent_completed_raw_recovery",

@@ -39,11 +39,15 @@ def _enqueue_sync(
             session.commit()
         except IntegrityError:
             session.rollback()
-            if dedupe_key is None or session.exec(
-                select(DiscordOutbox.id).where(
-                    DiscordOutbox.dedupe_key == kwargs["dedupe_key"]
-                )
-            ).first() is None:
+            if (
+                dedupe_key is None
+                or session.exec(
+                    select(DiscordOutbox.id).where(
+                        DiscordOutbox.dedupe_key == kwargs["dedupe_key"]
+                    )
+                ).first()
+                is None
+            ):
                 raise
             return False
         return True

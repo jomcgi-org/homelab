@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	Timeout = 15 * time.Second
-	MaxText = 1000
+	Timeout  = 15 * time.Second
+	MaxText  = 1000
 	SmokeKey = "factory-notify-live-v1"
 )
 
@@ -31,11 +31,11 @@ const (
 // and statuses are a fixed vocabulary; links admit only canonical item URLs.
 // Key is never sent as text. Unknown JSON fields are discarded by decoding.
 type Text struct {
-	Key string
-	Title string
-	Link string
+	Key    string
+	Title  string
+	Link   string
 	Status string
-	Count int
+	Count  int
 }
 
 var itemLink = regexp.MustCompile(`^https://(github\.com/jomcgi-org/homelab/(issues|pull)/[1-9][0-9]{0,9}|factory-plan\.jomcgi\.dev/issue/([1-9][0-9]{0,9}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))$`)
@@ -77,26 +77,28 @@ func (t Text) render() (string, error) {
 // AppPasswordFile is an Authentik service account app password from 1Password,
 // read for every mint so rotation does not require a connector restart.
 type Config struct {
-	URL string
-	TokenURL string
+	URL             string
+	TokenURL        string
 	AppPasswordFile string
 	// BeforeRequest checks the writer epoch and durably records each attempt.
 	BeforeRequest func(context.Context, string, string) error
 }
 
 type Client struct {
-	config Config
-	http *http.Client
-	lock chan struct{}
-	seen map[string]bool
-	day string
-	now func() time.Time
+	config  Config
+	http    *http.Client
+	lock    chan struct{}
+	seen    map[string]bool
+	day     string
+	now     func() time.Time
 	timeout time.Duration
 	backoff time.Duration
 }
 
 func New(cfg Config) (*Client, error) {
-	if cfg.URL == "" && cfg.TokenURL == "" && cfg.AppPasswordFile == "" { return &Client{}, nil }
+	if cfg.URL == "" && cfg.TokenURL == "" && cfg.AppPasswordFile == "" {
+		return &Client{}, nil
+	}
 	for _, endpoint := range []string{cfg.URL, cfg.TokenURL} {
 		u, err := url.Parse(endpoint)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -111,8 +113,8 @@ func New(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		config: cfg,
-		http: &http.Client{Timeout: 4 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		lock: make(chan struct{}, 1), seen: make(map[string]bool), now: time.Now,
+		http:   &http.Client{Timeout: 4 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		lock:   make(chan struct{}, 1), seen: make(map[string]bool), now: time.Now,
 		timeout: Timeout, backoff: 250 * time.Millisecond,
 	}, nil
 }
@@ -164,7 +166,7 @@ func (c *Client) Notify(ctx context.Context, level string, text Text) error {
 		if !retry || attempt == 2 {
 			return err
 		}
-		timer := time.NewTimer(c.backoff * time.Duration(1 << attempt))
+		timer := time.NewTimer(c.backoff * time.Duration(1<<attempt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -192,7 +194,10 @@ func (c *Client) send(ctx context.Context, level, message, key string) (bool, er
 	if err != nil {
 		return retry, err
 	}
-	var token struct { AccessToken string `json:"access_token"`; ExpiresIn int `json:"expires_in"` }
+	var token struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
 	if json.Unmarshal(body, &token) != nil || token.AccessToken == "" || token.ExpiresIn <= 0 {
 		return false, errors.New("notify: invalid token response")
 	}
@@ -216,9 +221,12 @@ func (c *Client) send(ctx context.Context, level, message, key string) (bool, er
 		return retry, err
 	}
 	var call struct {
-		IsError bool `json:"isError"`
+		IsError           bool            `json:"isError"`
 		StructuredContent json.RawMessage `json:"structuredContent"`
-		Content []struct { Type string `json:"type"`; Text string `json:"text"` } `json:"content"`
+		Content           []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	}
 	if json.Unmarshal(result, &call) != nil || call.IsError {
 		return false, errors.New("notify: tool refused notification")
@@ -227,7 +235,10 @@ func (c *Client) send(ctx context.Context, level, message, key string) (bool, er
 	if len(data) == 0 && len(call.Content) == 1 && call.Content[0].Type == "text" {
 		data = []byte(call.Content[0].Text)
 	}
-	var status struct { OK bool `json:"ok"`; Queued *bool `json:"queued"` }
+	var status struct {
+		OK     bool  `json:"ok"`
+		Queued *bool `json:"queued"`
+	}
 	if json.Unmarshal(data, &status) != nil || !status.OK || status.Queued == nil {
 		return false, errors.New("notify: invalid tool result")
 	}
@@ -257,7 +268,9 @@ func (c *Client) rpc(ctx context.Context, token, key, method string, id int, par
 		for scanner.Scan() {
 			if line := scanner.Text(); strings.HasPrefix(line, "data:") {
 				candidate := []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-				var event struct { ID int `json:"id"` }
+				var event struct {
+					ID int `json:"id"`
+				}
 				if json.Unmarshal(candidate, &event) == nil && event.ID == id {
 					body = candidate
 					break
@@ -265,7 +278,11 @@ func (c *Client) rpc(ctx context.Context, token, key, method string, id int, par
 			}
 		}
 	}
-	var response struct { ID int `json:"id"`; Result json.RawMessage `json:"result"`; Error json.RawMessage `json:"error"` }
+	var response struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
 	if json.Unmarshal(body, &response) != nil || response.ID != id || len(response.Error) != 0 || len(response.Result) == 0 {
 		return nil, false, errors.New("notify: invalid MCP response")
 	}
@@ -280,7 +297,7 @@ func (c *Client) post(ctx context.Context, endpoint, contentType, bearer string,
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer " + bearer)
+		req.Header.Set("Authorization", "Bearer "+bearer)
 		req.Header.Set("MCP-Protocol-Version", "2025-03-26")
 	}
 	if err := c.config.BeforeRequest(ctx, key, phase); err != nil {

@@ -620,13 +620,22 @@
         "notify": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "hostname", "tokenHostname", "secretName", "itemPath"],
+          "required": [
+            "enabled",
+            "hostname",
+            "tokenHostname",
+            "secretName",
+            "itemPath"
+          ],
           "properties": {
             "enabled": { "type": "boolean" },
             "hostname": { "type": "string", "minLength": 1 },
             "tokenHostname": { "type": "string", "minLength": 1 },
             "secretName": { "type": "string", "minLength": 1 },
-            "itemPath": { "type": "string", "pattern": "^vaults/[^/]+/items/[^/]+$" }
+            "itemPath": {
+              "type": "string",
+              "pattern": "^vaults/[^/]+/items/[^/]+$"
+            }
           }
         },
         "enabled": { "type": "boolean" },

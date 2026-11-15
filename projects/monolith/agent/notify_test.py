@@ -24,10 +24,12 @@ def test_dedupe_is_atomic_and_survives_concurrent_callers(tmp_path, monkeypatch)
     monkeypatch.setattr(notify_mod, "get_engine", lambda: engine)
     key = "factory/2026-11-15/smoke"
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(
-            lambda _: notify_mod._enqueue_sync("123", "live", "info", key),
-            range(4),
-        ))
+        results = list(
+            pool.map(
+                lambda _: notify_mod._enqueue_sync("123", "live", "info", key),
+                range(4),
+            )
+        )
     assert results.count(True) == 1
     assert results.count(False) == 3
     # A fresh session after a lost response sees the committed key.

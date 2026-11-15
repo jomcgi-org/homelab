@@ -21,7 +21,9 @@ async def test_factory_notify_quarantines_ambiguous_discord_send():
         patch.object(outbox, "_claim_pending", return_value=[row]),
         patch.object(outbox, "_resolve_channel", new=AsyncMock(return_value=object())),
         patch.object(outbox, "_mark_sending", return_value=True) as sending,
-        patch.object(outbox, "_post_row", new=AsyncMock(side_effect=TimeoutError("unknown"))),
+        patch.object(
+            outbox, "_post_row", new=AsyncMock(side_effect=TimeoutError("unknown"))
+        ),
         patch.object(outbox, "_mark_uncertain") as uncertain,
         patch.object(outbox, "_mark_failed") as failed,
         patch.object(outbox, "_mark_posted") as posted,

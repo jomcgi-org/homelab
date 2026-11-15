@@ -65,19 +65,29 @@ def test_factory_grant_is_one_tool_even_with_escape_hatch(monkeypatch):
     async def listed(_context):
         return [NOTIFY, GATED, PUBLIC]
 
-    result = _run(FACTORY, lambda: mcp_policy.GroupPolicyMiddleware().on_list_tools(
-        _list_context(), listed
-    ))
+    result = _run(
+        FACTORY,
+        lambda: mcp_policy.GroupPolicyMiddleware().on_list_tools(
+            _list_context(), listed
+        ),
+    )
     assert result == [NOTIFY]
 
 
-@pytest.mark.parametrize("changes", [
-    {"issuer": "untrusted"}, {"username": "other"},
-    {"groups": ("factory-notify", "operators")}, {"groups": ()},
-    {"kind": PrincipalKind.HUMAN}, {"authority": Authority.DELEGATED},
-    {"authority": Authority.ANONYMOUS}, {"actor": ("actor",)},
-    {"delegation_claim_present": True},
-])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"issuer": "untrusted"},
+        {"username": "other"},
+        {"groups": ("factory-notify", "operators")},
+        {"groups": ()},
+        {"kind": PrincipalKind.HUMAN},
+        {"authority": Authority.DELEGATED},
+        {"authority": Authority.ANONYMOUS},
+        {"actor": ("actor",)},
+        {"delegation_claim_present": True},
+    ],
+)
 def test_factory_identity_is_verified_and_narrow(monkeypatch, changes):
     monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", FACTORY.issuer)
     principal = replace(FACTORY, **changes)
@@ -93,7 +103,12 @@ def test_factory_arguments_use_default_channel_and_bounded_message(monkeypatch):
     for channel in ("", "default", "other"):
         with pytest.raises(AuthorizationError):
             check_notify_arguments(FACTORY, "hello", channel, "key")
-    for message, key in (("", "key"), ("x" * 1001, "key"), ("é" * 501, "key"), ("hi", None)):
+    for message, key in (
+        ("", "key"),
+        ("x" * 1001, "key"),
+        ("é" * 501, "key"),
+        ("hi", None),
+    ):
         with pytest.raises(ValueError):
             check_notify_arguments(FACTORY, message, None, key)
     # Operators retain their established explicit-channel API.
