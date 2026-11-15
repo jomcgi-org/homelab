@@ -137,11 +137,15 @@ func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
+			withComments(h)
 			h.gh.addPR(authoredPR())
 			e, ctx, _ := h.start()
 			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
 			eventually(t, "authorship pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
 			eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			if !commentHas(h, 7, "### ✅ Approved", "Human gate cleared by authorship", "Joe's approval by authorship", "Rename x") {
+				t.Fatalf("comment does not explain the waiver: %s", onlyComment(t, h, 7).Body)
+			}
 			before := h.gh.countCalls("GET /repos/" + testRepo + "/activity")
 			e.Tick(ctx)
 			if h.gh.countCalls("GET /repos/"+testRepo+"/activity") <= before {
@@ -152,12 +156,16 @@ func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
 			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || strings.Contains(c.Summary, "Joe's approval by authorship") {
 				t.Fatalf("waiver survived revocation: %s %s", c.Conclusion, c.Summary)
 			}
+			if !commentHas(h, 7, "### 🙋 Waiting for a human approval", "Rename x") || strings.Contains(onlyComment(t, h, 7).Body, authorshipPrefix) {
+				t.Fatalf("comment kept a revoked waiver or lost the findings: %s", onlyComment(t, h, 7).Body)
+			}
 		})
 	}
 }
 
 func TestAuthorshipCannotClearOtherFindings(t *testing.T) {
 	h := newHarness(t)
+	withComments(h)
 	h.gh.addPR(authoredPR())
 	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 	e, ctx, _ := h.start()
@@ -175,10 +183,21 @@ func TestAuthorshipCannotClearOtherFindings(t *testing.T) {
 	if c.Conclusion != ConclusionFailure || len(st.Blocking) != 1 || st.Blocking[0].ID != "x.go:correctness" || len(h.gh.enqueues()) != 0 || strings.Contains(c.Summary, gateOnlyMarker) {
 		t.Fatalf("other finding cleared: %s %s, state %+v", c.Conclusion, c.Summary, st)
 	}
+	if !commentHas(h, 7, "### ❌ Changes requested", authorshipPrefix, "Breaks the service") {
+		t.Fatalf("comment cleared other findings: %s", onlyComment(t, h, 7).Body)
+	}
 	h.gh.failWith("GET /repos/"+testRepo+"/activity", 502)
 	e.Tick(ctx)
 	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || strings.Contains(c.Summary, authorshipPrefix) {
 		t.Fatalf("revoked waiver still displayed alongside other findings: %s", c.Summary)
+	}
+	if !commentHas(h, 7, "### ❌ Changes requested", "Breaks the service") || strings.Contains(onlyComment(t, h, 7).Body, authorshipPrefix) {
+		t.Fatalf("comment kept a revoked waiver or cleared other findings: %s", onlyComment(t, h, 7).Body)
+	}
+	h.gh.failWith("GET /repos/"+testRepo+"/activity", 0)
+	e.Tick(ctx)
+	if !commentHas(h, 7, "### ❌ Changes requested", authorshipPrefix, "Breaks the service") || h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatalf("restored waiver cleared other findings: %s", onlyComment(t, h, 7).Body)
 	}
 }
 
@@ -222,6 +241,7 @@ func TestAuthorshipOnInitialBranchPush(t *testing.T) {
 
 func TestOtherFindingsSurviveHoldHistoryReadFailure(t *testing.T) {
 	h := newHarness(t)
+	withComments(h)
 	addPR7(h)
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
@@ -231,12 +251,18 @@ func TestOtherFindingsSurviveHoldHistoryReadFailure(t *testing.T) {
 	eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.failWith("GET /repos/"+testRepo+"/issues/7/events", 502)
 	e.Tick(ctx)
+	if !commentHas(h, 7, "### ⏸️ On hold", "Breaks the service") {
+		t.Fatalf("comment lost the hold or the findings: %s", onlyComment(t, h, 7).Body)
+	}
 	h.gh.failWith("GET /repos/"+testRepo+"/issues/7/events", 0)
 	e.Tick(ctx)
 	c := h.gh.check(shaA)
 	st, _ := LoadState(c.Text)
 	if c.Conclusion != ConclusionFailure || len(st.Blocking) != 1 || st.Blocking[0].ID != "x.go:correctness" {
 		t.Fatalf("hold history recovery cleared other findings: %s, state %+v", c.Summary, st)
+	}
+	if !commentHas(h, 7, "### ❌ Changes requested", "Breaks the service") {
+		t.Fatalf("comment cleared other findings after hold history recovery: %s", onlyComment(t, h, 7).Body)
 	}
 }
 

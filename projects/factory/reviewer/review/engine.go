@@ -1467,7 +1467,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	if gate.Authorship != "" {
 		title, summary = "Human gate cleared by authorship", gate.Authorship
 	}
-	u := &CommentUpdate{Verdict: VerdictApproved, Headline: title, Gate: gate}
+	u := &CommentUpdate{Verdict: VerdictApproved, Headline: title, Note: gate.Authorship, Gate: gate}
 	if !gate.approved() {
 		conclusion = ConclusionFailure
 		f := gateFinding(b, gate)
