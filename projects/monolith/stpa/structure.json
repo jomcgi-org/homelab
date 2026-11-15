@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "65df40be0",
+  "commit": "233f93b14",
   "nodes": [
     {
       "key": "console-caller",
@@ -398,7 +398,7 @@
     },
     {
       "key": "grimoire-verifier",
-      "label": "Grimoire entity verifier and transactional writer",
+      "label": "Grimoire report-only verifier with an internal apply implementation",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -410,7 +410,7 @@
       "view": "logical",
       "layer": "feedback_source",
       "maturity": "built",
-      "evidence": "projects/monolith/grimoire/verifier.py:148; projects/monolith/chart/templates/cronworkflows.yaml:302"
+      "evidence": "projects/monolith/grimoire/verifier.py:148; projects/monolith/chart/templates/cronworkflows.yaml:244,310"
     }
   ],
   "control_actions": [
@@ -911,12 +911,12 @@
     },
     {
       "key": "argo-workflows.verify-grimoire",
-      "label": "Invoke the bounded manual entity verifier with a workflow mutex",
+      "label": "Invoke the bounded report-only verifier with a workflow mutex",
       "view": "logical",
       "from": "argo-workflows",
       "to": "grimoire-verifier",
       "maturity": "built",
-      "evidence": "projects/monolith/chart/values.yaml:1153; projects/monolith/chart/templates/cronworkflows.yaml:69"
+      "evidence": "projects/monolith/chart/values.yaml:1153; projects/monolith/chart/templates/cronworkflows.yaml:69; projects/monolith/app/jobs_main.py:993; projects/monolith/grimoire/jobs.py:410"
     },
     {
       "key": "grimoire-verifier.request",
@@ -925,16 +925,16 @@
       "from": "grimoire-verifier",
       "to": "grimoire-verifier-model",
       "maturity": "built",
-      "evidence": "projects/monolith/grimoire/verifier.py:197; projects/monolith/grimoire/verifier.py:532"
+      "evidence": "projects/monolith/grimoire/verifier.py:197; projects/monolith/grimoire/verifier.py:539"
     },
     {
       "key": "grimoire-verifier.commit",
-      "label": "Commit accepted corrections or field nulls with the entity/version marker",
+      "label": "Internal apply path: commit corrections or nulls with a version marker",
       "view": "logical",
       "from": "grimoire-verifier",
       "to": "postgres",
       "maturity": "built",
-      "evidence": "projects/monolith/grimoire/verifier.py:407; projects/monolith/grimoire/verifier.py:455"
+      "evidence": "projects/monolith/grimoire/verifier.py:407,455,572; projects/monolith/grimoire/jobs.py:410"
     }
   ],
   "feedback": [
