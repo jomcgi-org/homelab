@@ -22,6 +22,10 @@
     "enabled": true,
     "groupName": "{{#if groupSlug}}{{{groupSlug}}}{{else}}{{{datasource}}}-{{{depNameSanitized}}}-vulnerability{{/if}}",
     "vulnerabilityFixStrategy": "highest",
+    "prConcurrentLimit": 0,
+    "prHourlyLimit": 0,
+    "branchConcurrentLimit": 0,
+    "commitHourlyLimit": 0,
     "labels": ["dependencies", "security"],
     "schedule": ["at any time"],
     "minimumReleaseAge": null,
@@ -243,6 +247,8 @@
       "matchPackageNames": ["opentelemetry-*"],
       "groupName": "OpenTelemetry Python packages",
       "groupSlug": "opentelemetry-python-packages",
+      "schedule": ["at any time"],
+      "prCreation": "immediate",
       "internalChecksFilter": "none",
       "separateMajorMinor": false,
       "separateMinorPatch": false
@@ -264,6 +270,8 @@
       "matchPackageNames": ["pydantic", "pydantic-core"],
       "groupName": "Pydantic Python packages",
       "groupSlug": "pydantic-python-packages",
+      "schedule": ["at any time"],
+      "prCreation": "immediate",
       "internalChecksFilter": "none",
       "separateMajorMinor": false,
       "separateMinorPatch": false
