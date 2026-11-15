@@ -33,4 +33,6 @@ test("the static figure keeps its drawing and key", () => {
     "<figcaption>One layer: 10 of 512 routed experts run for a token</figcaption>",
   );
   expect(html.match(/<table class="fig-key">/g)).toHaveLength(1);
+  // The key docks under its drawing, so it never gets a table scroller.
+  expect(html).not.toMatch(/table-scroll"><table class="fig-key"/);
 });

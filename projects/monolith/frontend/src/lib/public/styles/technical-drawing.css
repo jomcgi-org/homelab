@@ -854,9 +854,10 @@ body:has(.td) {
    rather than scrolling the page. The table fills it. A scroller clips at
    its padding edge, so 1px of block padding keeps the outer half of the
    collapsed top and bottom rules inside the clip at fractional pixel
-   ratios. Its margins give that pixel back, so the table keeps its place;
-   only a heading or rule after it, whose larger margin wins the collapse,
-   sits 1px lower. */
+   ratios. Its margins give that pixel back, so the table keeps its place
+   beside paragraphs and lists. A neighbour whose margin exceeds
+   1rem - 1px (a heading, rule, code block, figure, quote or another
+   table) wins the collapse and sits 1px further from it. */
 .sheet .prose .table-scroll {
   width: calc(100% + 2rem);
   margin: calc(1rem - 1px) -1rem;

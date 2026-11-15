@@ -14,6 +14,10 @@ from urllib.parse import urlsplit
 
 PREFIX = "/homelab/pr/42/" + "a" * 40 + "/"
 VIEWPORTS = [(360, 640), (390, 844), (1440, 1000)]
+# Whether the fixture's six-column table outgrows its scroller at each viewport
+# width. Measured: it does below about 457px, and again between 761 and 905px,
+# where the desktop panel narrows and full cell padding returns.
+WIDE_TABLE_SCROLLS = {360: True, 390: True, 1440: False}
 
 
 def digest_tree(root):
@@ -105,35 +109,70 @@ def check_blog(root, output):
                         "document.documentElement.scrollWidth > innerWidth + 1"
                     ), "horizontal page overflow"
                     # Each data table sits in its own scroller, which really
-                    # scrolls. The table starts at the box's left edge and its
-                    # rows fill the box, so a narrow table runs to the panel's
-                    # edges. Only the six-column table, on a phone, is wider
-                    # than its box; it scrolls there instead of the page.
+                    # scrolls and spans its panel edge to edge. The table
+                    # starts at the box's left edge and its rows fill the box.
+                    # It sits inside the box's 1px block padding, so the clip
+                    # keeps its outer rules whole at fractional pixel ratios,
+                    # and it keeps an unwrapped table's place: 1rem below a
+                    # paragraph, on the rule of a band above it, and closing a
+                    # panel it ends. The six-column table outgrows its box only
+                    # at some widths, so each viewport says whether it scrolls.
                     boxes = page.evaluate(
                         """[...document.querySelectorAll('.prose .table-scroll')].map(box => {
                           const b = box.getBoundingClientRect();
+                          const panel = box.parentElement.getBoundingClientRect();
+                          const t = box.querySelector('table').getBoundingClientRect();
                           const row = box.querySelector('tr').getBoundingClientRect();
+                          const prev = box.previousElementSibling;
+                          const above = prev && t.top - prev.getBoundingClientRect().bottom;
+                          const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
                           return {
                             overflow: getComputedStyle(box).overflowX,
                             columns: box.querySelector('tr').children.length,
                             scrolls: box.scrollWidth > box.clientWidth + 1,
+                            spans: Math.abs(b.left - panel.left) <= 1 &&
+                              Math.abs(b.right - panel.right) <= 1,
+                            inset: Math.min(t.top - b.top, b.bottom - t.bottom),
+                            after: prev?.tagName === 'P' ? above - rem : null,
+                            dock: prev?.tagName === 'H2' ? above : null,
+                            close: box === box.parentElement.lastElementChild
+                              ? t.bottom - panel.bottom : null,
                             aligned: Math.abs(row.left - b.left) <= 1,
                             fills: row.width >= box.clientWidth - 1,
                           };
                         })"""
                     )
-                    assert [b["columns"] for b in boxes] == [2, 6], (
-                        f"expected a narrow and a six-column fixture table: {boxes}"
+                    assert [b["columns"] for b in boxes] == [2, 6, 2], (
+                        f"expected narrow, six-column and docked fixture tables: {boxes}"
                     )
-                    narrow, wide = boxes
+                    narrow, wide, docked = boxes
                     for b in boxes:
                         assert b["overflow"] in ("auto", "scroll"), (
                             f"table scroller does not scroll: {b}"
                         )
+                        assert b["spans"], f"table scroller misses the panel edges: {b}"
+                        assert b["inset"] >= 0.5, (
+                            f"scroller clips the table's rules: {b}"
+                        )
                         assert b["aligned"], f"table is offset in its scroller: {b}"
                         assert b["fills"], f"table rows stop short: {b}"
+                        assert b["close"] is not None and abs(b["close"]) <= 0.5, (
+                            f"table does not close its panel: {b}"
+                        )
+                    assert [b["dock"] is not None for b in boxes] == [
+                        False,
+                        False,
+                        True,
+                    ], f"expected only the last fixture table under a band: {boxes}"
+                    for b in (narrow, wide):
+                        assert b["after"] is not None and abs(b["after"]) <= 0.5, (
+                            f"table moved off its paragraph: {b}"
+                        )
+                    assert abs(docked["dock"] + 1) <= 0.5, (
+                        f"table misses its band's rule: {docked}"
+                    )
                     assert not narrow["scrolls"], f"narrow table scrolls: {narrow}"
-                    assert wide["scrolls"] == (width < 760), (
+                    assert wide["scrolls"] == WIDE_TABLE_SCROLLS[width], (
                         f"six-column table scrolling is wrong at {width}px: {wide}"
                     )
                     assert (
