@@ -88,32 +88,48 @@ def test_chart_default_is_exactly_disabled() -> None:
 
 
 def test_factory_notify_route_and_verifier_are_staged_together():
-    assert not any(o["metadata"]["name"] == "monolith-factory-notify" for o in _render())
+    assert not any(
+        o["metadata"]["name"] == "monolith-factory-notify" for o in _render()
+    )
     objects = _render(settings=("factoryNotify.enabled=true",))
     route = _object(objects, "HTTPRoute", "monolith-factory-notify")
     assert route["spec"]["hostnames"] == ["factory-notify.jomcgi.dev"]
-    rule, = route["spec"]["rules"]
+    (rule,) = route["spec"]["rules"]
     assert rule["matches"] == [{"path": {"type": "Exact", "value": "/mcp/"}}]
     assert rule["backendRefs"][0]["name"] == "monolith"
     assert rule["backendRefs"][0]["port"] == 8000
     assert "ingress-tier" not in route["metadata"]["labels"]
     policy = _object(objects, "SecurityPolicy", "monolith-factory-notify")["spec"]
-    assert policy["targetRefs"] == [{
-        "group": "gateway.networking.k8s.io", "kind": "HTTPRoute",
-        "name": "monolith-factory-notify",
-    }]
-    provider, = policy["jwt"]["providers"]
+    assert policy["targetRefs"] == [
+        {
+            "group": "gateway.networking.k8s.io",
+            "kind": "HTTPRoute",
+            "name": "monolith-factory-notify",
+        }
+    ]
+    (provider,) = policy["jwt"]["providers"]
     assert provider["issuer"] == "https://auth.jomcgi.dev/application/o/factory-notify/"
     assert provider["audiences"] == ["https://private.jomcgi.dev"]
-    assert provider["extractFrom"] == {"headers": [{"name": "Authorization", "valuePrefix": "Bearer "}]}
+    assert provider["extractFrom"] == {
+        "headers": [{"name": "Authorization", "valuePrefix": "Bearer "}]
+    }
     assert policy["authorization"]["defaultAction"] == "Deny"
     assert policy["authorization"]["rules"][0]["principal"]["jwt"]["claims"] == [
         {"name": "groups", "valueType": "StringArray", "values": ["factory-notify"]},
     ]
     deployment = _object(objects, "Deployment", "monolith")
-    env = {e["name"]: e.get("value") for c in deployment["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])}
-    assert env["AUTH_FACTORY_NOTIFY_ISSUER"] == "https://auth.jomcgi.dev/application/o/factory-notify/"
-    assert env["AUTH_FACTORY_NOTIFY_JWKS_URL"].endswith("/application/o/factory-notify/jwks/")
+    env = {
+        e["name"]: e.get("value")
+        for c in deployment["spec"]["template"]["spec"]["containers"]
+        for e in c.get("env", [])
+    }
+    assert (
+        env["AUTH_FACTORY_NOTIFY_ISSUER"]
+        == "https://auth.jomcgi.dev/application/o/factory-notify/"
+    )
+    assert env["AUTH_FACTORY_NOTIFY_JWKS_URL"].endswith(
+        "/application/o/factory-notify/jwks/"
+    )
     assert env["AUTH_FACTORY_NOTIFY_AUDIENCE"] == "https://private.jomcgi.dev"
 
 

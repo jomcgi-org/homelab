@@ -22,10 +22,11 @@ func client(t *testing.T, handler http.HandlerFunc) *Client {
 	srv := httptest.NewTLSServer(handler)
 	t.Cleanup(srv.Close)
 	path := filepath.Join(t.TempDir(), "password")
-	if err := os.WriteFile(path, []byte("test-app-password"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("test-app-password"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c, err := New(Config{URL: srv.URL + "/mcp/", TokenURL: srv.URL + "/token", AppPasswordFile: path,
+	c, err := New(Config{
+		URL: srv.URL + "/mcp/", TokenURL: srv.URL + "/token", AppPasswordFile: path,
 		BeforeRequest: func(context.Context, string, string) error { return nil },
 	})
 	if err != nil {
@@ -52,12 +53,16 @@ func protocol(t *testing.T, tool func(http.ResponseWriter, map[string]any)) http
 		if r.Header.Get("Authorization") != "Bearer test-bearer" {
 			t.Error("missing bearer")
 		}
-		var request struct { Method string; Params map[string]any }
+		var request struct {
+			Method string
+			Params map[string]any
+		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
 		switch request.Method {
-		case "initialize": fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1"}}}`)
+		case "initialize":
+			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1"}}}`)
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/call":
@@ -121,7 +126,8 @@ func TestOffAndPartialConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cfg := range []Config{
-		{URL: "http://example.com"}, {AppPasswordFile: "password"},
+		{URL: "http://example.com"},
+		{AppPasswordFile: "password"},
 		{URL: "https://user:password@example.com", TokenURL: "https://auth.example.com", AppPasswordFile: "password"},
 	} {
 		if _, err := New(cfg); err == nil {
@@ -176,7 +182,12 @@ func TestDedupeConcurrentAndNextDay(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); if err := c.Notify(context.Background(), "info", smoke()); err != nil { t.Error(err) } }()
+		go func() {
+			defer wg.Done()
+			if err := c.Notify(context.Background(), "info", smoke()); err != nil {
+				t.Error(err)
+			}
+		}()
 	}
 	wg.Wait()
 	if calls != 1 {
@@ -247,7 +258,9 @@ func TestRetryBudgetAndTransientTimeout(t *testing.T) {
 						time.Sleep(80 * time.Millisecond)
 					}
 					accepted(w)
-				} else { w.WriteHeader(429) }
+				} else {
+					w.WriteHeader(429)
+				}
 			}))
 			if timeout {
 				c.http.Timeout = 40 * time.Millisecond
@@ -294,9 +307,12 @@ func TestRedirectAndResponseBounds(t *testing.T) {
 					w.WriteHeader(302)
 				case "large":
 					fmt.Fprint(w, strings.Repeat("x", 65537))
-				case "tool-error": fmt.Fprint(w, `{"id":2,"result":{"isError":true,"content":[{"type":"text","text":"secret"}]}}`)
-				case "false": fmt.Fprint(w, `{"id":2,"result":{"structuredContent":{"ok":false,"queued":false}}}`)
-				case "duplicate": fmt.Fprint(w, `{"id":2,"result":{"content":[{"type":"text","text":"{\"ok\":true,\"queued\":false}"}]}}`)
+				case "tool-error":
+					fmt.Fprint(w, `{"id":2,"result":{"isError":true,"content":[{"type":"text","text":"secret"}]}}`)
+				case "false":
+					fmt.Fprint(w, `{"id":2,"result":{"structuredContent":{"ok":false,"queued":false}}}`)
+				case "duplicate":
+					fmt.Fprint(w, `{"id":2,"result":{"content":[{"type":"text","text":"{\"ok\":true,\"queued\":false}"}]}}`)
 				}
 			}))
 			err := c.Notify(context.Background(), "info", smoke())

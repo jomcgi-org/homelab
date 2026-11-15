@@ -24,13 +24,13 @@ type Config struct {
 	KagentAuthority  string // FACTORY_CONNECTOR_KAGENT_AUTHORITY, exactly kagent's configured authority
 	// BrokerURL turns delivery on: the connector's GitHub tokens come from
 	// the broker, authenticated with the projected token in BrokerTokenFile.
-	BrokerURL       string // FACTORY_CONNECTOR_BROKER_URL
-	BrokerTokenFile string // FACTORY_CONNECTOR_BROKER_TOKEN_FILE
-	GitHubURL       string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
-	MetricsAddr     string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
-	Holder          string // POD_NAME, default hostname
-	NotifyURL       string // FACTORY_CONNECTOR_NOTIFY_URL; empty disables notify
-	NotifyTokenURL  string // FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
+	BrokerURL          string // FACTORY_CONNECTOR_BROKER_URL
+	BrokerTokenFile    string // FACTORY_CONNECTOR_BROKER_TOKEN_FILE
+	GitHubURL          string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
+	MetricsAddr        string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
+	Holder             string // POD_NAME, default hostname
+	NotifyURL          string // FACTORY_CONNECTOR_NOTIFY_URL; empty disables notify
+	NotifyTokenURL     string // FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
 	NotifyPasswordFile string // FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE
 
 	File File
@@ -126,19 +126,19 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 // Load reads the environment and the file it names.
 func Load(getenv func(string) string) (*Config, error) {
 	c := &Config{
-		DatabaseURL:      getenv("FACTORY_CONNECTOR_DATABASE_URL"),
-		ItsaplanURL:      strings.TrimSuffix(getenv("FACTORY_CONNECTOR_ITSAPLAN_URL"), "/"),
-		KagentURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_KAGENT_URL"), "/"),
-		KagentGRPCTarget: getenv("FACTORY_CONNECTOR_KAGENT_GRPC"),
-		KagentTokenFile:  getenv("FACTORY_CONNECTOR_KAGENT_TOKEN_FILE"),
-		KagentAuthority:  getenv("FACTORY_CONNECTOR_KAGENT_AUTHORITY"),
-		BrokerURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_BROKER_URL"), "/"),
-		BrokerTokenFile:  getenv("FACTORY_CONNECTOR_BROKER_TOKEN_FILE"),
-		GitHubURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
-		MetricsAddr:      getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
-		Holder:           getenv("POD_NAME"),
-		NotifyURL:        getenv("FACTORY_CONNECTOR_NOTIFY_URL"),
-		NotifyTokenURL:   getenv("FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"),
+		DatabaseURL:        getenv("FACTORY_CONNECTOR_DATABASE_URL"),
+		ItsaplanURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_ITSAPLAN_URL"), "/"),
+		KagentURL:          strings.TrimSuffix(getenv("FACTORY_CONNECTOR_KAGENT_URL"), "/"),
+		KagentGRPCTarget:   getenv("FACTORY_CONNECTOR_KAGENT_GRPC"),
+		KagentTokenFile:    getenv("FACTORY_CONNECTOR_KAGENT_TOKEN_FILE"),
+		KagentAuthority:    getenv("FACTORY_CONNECTOR_KAGENT_AUTHORITY"),
+		BrokerURL:          strings.TrimSuffix(getenv("FACTORY_CONNECTOR_BROKER_URL"), "/"),
+		BrokerTokenFile:    getenv("FACTORY_CONNECTOR_BROKER_TOKEN_FILE"),
+		GitHubURL:          strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
+		MetricsAddr:        getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
+		Holder:             getenv("POD_NAME"),
+		NotifyURL:          getenv("FACTORY_CONNECTOR_NOTIFY_URL"),
+		NotifyTokenURL:     getenv("FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"),
 		NotifyPasswordFile: getenv("FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE"),
 	}
 	if c.MetricsAddr == "" {

@@ -478,15 +478,20 @@ async def test_factory_notify_provider_is_explicit_and_checks_bearer():
     issuer = "https://auth.example/application/o/factory-notify/"
     key, jwk = _key_and_jwk()
     fetch, _ = _fetcher({"keys": [jwk]})
-    configured = build_default_resolver(_settings(
-        factory_notify_jwks_url=issuer + "jwks/",
-        factory_notify_issuer=issuer,
-        factory_notify_audience=AUDIENCE,
-    ))
+    configured = build_default_resolver(
+        _settings(
+            factory_notify_jwks_url=issuer + "jwks/",
+            factory_notify_issuer=issuer,
+            factory_notify_audience=AUDIENCE,
+        )
+    )
     factory = configured._verifiers[-1]
     factory._jwks = AuthentikStandingVerifier(factory._settings, fetch=fetch)._jwks
     token = _token(
-        key, iss=issuer, email=None, preferred_username="factory-notify-sa",
+        key,
+        iss=issuer,
+        email=None,
+        preferred_username="factory-notify-sa",
         groups=["factory-notify"],
     )
     principal = await configured.resolve(token)
