@@ -99,7 +99,7 @@ func (e *Engine) recoverHeld(ctx context.Context, r *store.Run, wi *store.WorkIt
 	// Cancellation and exhausted-budget completion need no replacement context.
 	// Recheck cancellation under locks below if it arrives during these reads.
 	if hold.Action == "retry" && !canceled && b != nil && retries < b.MaxEngineeringRetries {
-		background, err = e.replacementContext(ctx, wi, b, a, a.ContextID, "operator attested fencing")
+		background, err = e.replacementContext(ctx, wi, b, a.ContextID, "operator attested fencing")
 		if err != nil {
 			return err
 		}

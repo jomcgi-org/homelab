@@ -1663,10 +1663,8 @@ func TestRefusedStaleRunLookupDoesNotCancel(t *testing.T) {
 	}
 }
 
-// TestRefusedReplacementIssueStartsWithoutItAfterBound: a replacement
-// session reads its issue with the coordinator key. While the key is
-// refused it waits; past the bound it starts without the issue.
-func TestRefusedReplacementIssueStartsWithoutItAfterBound(t *testing.T) {
+// Fencing attestation does not replace the issue text a new session requires.
+func TestRefusedReplacementIssueWaitsForAuthoritativeText(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
@@ -1687,15 +1685,17 @@ func TestRefusedReplacementIssueStartsWithoutItAfterBound(t *testing.T) {
 	if n := v.refusals("coordinator", "replacement"); n == 0 {
 		t.Fatal("the refused replacement lookup was not counted")
 	}
-	v.tickUntil(time.Minute, 40, func() bool { return len(v.kg.Sends()) == 2 })
+	v.tickReconciliation(40, time.Minute)
+	if len(v.kg.Sends()) != 1 || v.currentRecovery().State != "attested" {
+		t.Fatal("authentication timeout consumed recovery without issue text")
+	}
+	v.setIssueErr(nil)
+	v.tick(v.e)
 	text := v.kg.Sends()[1].msg.Parts[0].Text
-	for _, want := range []string{"## Replacement session", "### Issue HL-1", "unavailable", "refused the coordinator key"} {
+	for _, want := range []string{"## Replacement session", "### Issue HL-1", "Issue 101 description."} {
 		if !strings.Contains(text, want) {
 			t.Errorf("replacement text lacks %q:\n%s", want, text)
 		}
-	}
-	if strings.Contains(text, "Issue 101 description.") {
-		t.Errorf("replacement text has the issue it could not read:\n%s", text)
 	}
 }
 
