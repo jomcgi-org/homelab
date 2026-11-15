@@ -187,7 +187,11 @@ The stop has settled when the state is `stopped`, `open_runs` and `pending`
 are 0 (a cancellation is confirmed only after kagent confirms the task
 stopped), and GitHub shows the PR closed or merged
 (`gh pr view <pr> --json state`). The connector's own PR fields are its last
-poll and can be stale. If `factory-db-1` is not the primary, take the name
+poll and can be stale. When the query shows no PR, look on GitHub for one
+from the issue's branch, which the connector may have opened after its last
+write: `gh pr list --head factory/HOME-N --state all`. Close any open one.
+With no open PR and no open runs, none follows: a stopped work item gets no
+PR updates. If `factory-db-1` is not the primary, take the name
 from `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get cluster
 factory-db`.
 
