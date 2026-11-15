@@ -988,7 +988,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 		map[string]any{"id": "a.go:correctness", "status": "fixed", "note": "The newest draft now wins."},
 	}})
 	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
-	for _, want := range []string{"Block only on what changed since then", "names the listed file whose change causes it in \"cause\"", "- cause: "} {
+	for _, want := range []string{"Block only on what changed since then", "must name, in \"cause\", the listed file whose change causes it", "- cause: required"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the second prompt lacks %q", want)
 		}
@@ -1014,7 +1014,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 
 // TestRestartedReviewerStillLowersLateFindings reattaches to a later
 // head's task after a restart. No prompt was built in that process, so the
-// outcome reads the interdiff itself.
+// review reads the interdiff itself, and waits while it cannot.
 func TestRestartedReviewerStillLowersLateFindings(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
@@ -1030,11 +1030,25 @@ func TestRestartedReviewerStillLowersLateFindings(t *testing.T) {
 	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
 		map[string]any{"id": "x.go:correctness", "severity": "high", "path": "x.go", "title": "Late race"},
 	}}))
+	// The prompt told the agent to treat late findings as low, so an
+	// unreadable interdiff must not complete the check: it waits.
+	compare := "GET /repos/" + testRepo + "/compare/" + shaA + "..." + shaB
+	h.gh.failWith(compare, 502)
 	e2, ctx2, _ := h.start()
 	e2.Tick(ctx2)
-	eventually(t, "the check on "+shaB, func() bool { return h.gh.check(shaB).Status == "completed" })
+	eventually(t, "the wait for the interdiff", func() bool {
+		return strings.Contains(h.gh.check(shaB).Summary, "Waiting for the changes since the previous review.")
+	})
+	if c := h.gh.check(shaB); c.Status == "completed" {
+		t.Fatalf("the check completed without the interdiff: %s:\n%s", c.Conclusion, c.Summary)
+	}
+	h.gh.failWith(compare, 0)
+	eventually(t, "the check on "+shaB, func() bool { e2.Tick(ctx2); return h.gh.check(shaB).Status == "completed" })
 	if c := h.gh.check(shaB); c.Conclusion != ConclusionSuccess || !strings.Contains(c.Summary, "Reported high; lowered") {
 		t.Fatalf("check = %s:\n%s", c.Conclusion, c.Summary)
+	}
+	if n := len(h.k.sent()); n != 2 {
+		t.Fatalf("sent %d review messages, want 2: waiting for the interdiff must not start another attempt", n)
 	}
 }
 

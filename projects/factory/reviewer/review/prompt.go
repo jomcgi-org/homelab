@@ -212,7 +212,13 @@ func Prompt(in PromptInput) string {
 		}
 		b.WriteString("\n")
 		if len(in.Cleared) > 0 {
-			b.WriteString("Reviews of earlier heads cleared these findings. Do not raise one again unless this head changes that code:\n\n")
+			if LaterScope(in.PreviousHead, in.Interdiff) != nil {
+				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. Raise one again only when a change since %s, "+
+					"in any file, affects it:\n\n", in.PreviousHead)
+			} else {
+				b.WriteString("Reviews of earlier heads cleared these findings. The interdiff below cannot show that they stay " +
+					"cleared, so check each again as part of the full review:\n\n")
+			}
 			for _, c := range in.Cleared {
 				fmt.Fprintf(&b, "- `%s` %s: %s", oneLine(c.ID, maxTitle), oneLine(c.Status, 20), oneLine(c.Title, maxTitle))
 				if c.Note != "" {
@@ -238,8 +244,10 @@ func Prompt(in PromptInput) string {
 			b.WriteString(" Block only on what changed since then and what that change affects: a new finding on code the earlier " +
 				"review covered and this head left alone is low with defer, unless its harm survives a revert.")
 			if LaterScope(in.PreviousHead, d) != nil {
-				b.WriteString(" A new finding whose path is not in that list names the listed file whose change causes it in \"cause\"; " +
-					"the reviewer service lowers a new high or medium finding with neither to a deferred low one.")
+				b.WriteString(" A new finding whose path is not in that list must name, in \"cause\", the listed file whose change " +
+					"causes it, such as a caller broken by a changed function. The reviewer service lowers a new high or medium " +
+					"finding with a path outside the list and no listed cause to a deferred low one, so an omitted cause drops a " +
+					"regression. Findings with no path keep their severity.")
 			}
 			b.WriteString("\n\n")
 		}
@@ -323,7 +331,8 @@ func Prompt(in PromptInput) string {
 	b.WriteString("- title: the failure in one line. detail: the input or state, what happens, why it matters and what resolves it.\n")
 	b.WriteString("- defer: true for a low finding worth a follow-up issue.\n")
 	if LaterScope(in.PreviousHead, in.Interdiff) != nil {
-		fmt.Fprintf(&b, "- cause: for a new finding outside the files changed since %s, the changed file whose change causes it; omit it otherwise.\n",
+		fmt.Fprintf(&b, "- cause: required for a new finding outside the files changed since %s that this head's changes cause: "+
+			"the changed file whose change causes it. Omit it for a finding inside those files or on code this head did not affect.\n",
 			in.PreviousHead)
 	}
 	b.WriteString("- previous: one entry per finding under \"Previous review\", or empty.\n")
