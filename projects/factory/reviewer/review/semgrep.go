@@ -54,11 +54,11 @@ type SemgrepFinding struct {
 // SemgrepEvidence belongs to one PR head. Unavailable is service-owned text;
 // nonempty means a mandatory medium finding, regardless of the agent's reply.
 type SemgrepEvidence struct {
-	Repository  string          `json:"repository"`
-	Ref         string          `json:"ref"`
-	Head        string          `json:"head"`
+	Repository  string           `json:"repository"`
+	Ref         string           `json:"ref"`
+	Head        string           `json:"head"`
 	Findings    []SemgrepFinding `json:"findings"`
-	Unavailable string          `json:"unavailable,omitempty"`
+	Unavailable string           `json:"unavailable,omitempty"`
 }
 
 func (s *SemgrepEvidence) digest() string {
@@ -118,7 +118,7 @@ func (s *SemgrepClient) fetch(ctx context.Context, gh GitHub, repo, ref, head st
 			"deploymentId": parts[3], "issueType": product, "limit": limit,
 			"filter": map[string]any{
 				"repositoryNames": []string{repo}, "refs": []string{ref},
-				"status": []string{"ISSUE_TAB_OPEN", "ISSUE_TAB_REVIEWING", "ISSUE_TAB_FIXING", "ISSUE_TAB_IGNORED"},
+				"status":     []string{"ISSUE_TAB_OPEN", "ISSUE_TAB_REVIEWING", "ISSUE_TAB_FIXING", "ISSUE_TAB_IGNORED"},
 				"severities": []string{}, "confidences": []string{}, "aiVerdicts": []string{},
 			},
 		})
@@ -168,8 +168,10 @@ func (s *SemgrepClient) fetch(ctx context.Context, gh GitHub, repo, ref, head st
 			if len(f.Message) > 4000 || len(f.FilePath) > 1000 || len(f.RulePath) > 1000 || len(f.URL) > 2000 || len(f.Severity) > 100 || len(f.Triage) > 100 {
 				return fail("a Semgrep finding exceeds the review evidence size limit")
 			}
-			out.Findings = append(out.Findings, SemgrepFinding{ID: id, Product: product, Path: f.FilePath,
-				Line: f.Line, Rule: f.RulePath, Message: f.Message, Severity: f.Severity, Triage: f.Triage, URL: f.URL})
+			out.Findings = append(out.Findings, SemgrepFinding{
+				ID: id, Product: product, Path: f.FilePath,
+				Line: f.Line, Rule: f.RulePath, Message: f.Message, Severity: f.Severity, Triage: f.Triage, URL: f.URL,
+			})
 			if encoded, _ := json.Marshal(out); len(encoded) > semgrepMaxEvidence {
 				out.Findings = out.Findings[:len(out.Findings)-1]
 				return fail("the Semgrep findings exceed the 64000-byte prompt evidence limit")
@@ -262,7 +264,7 @@ func enforceSemgrep(a *Assessment, evidence *SemgrepEvidence) {
 	}
 	a.Blocking = append(a.Blocking, Blocked{Finding: Finding{
 		ID: semgrepUnverified, Severity: SeverityMedium,
-		Title: "Semgrep evidence for this head is unverified",
+		Title:  "Semgrep evidence for this head is unverified",
 		Detail: evidence.Unavailable + ". Obtain complete Semgrep findings after a successful scan of this head, then rerun the review.",
 	}})
 }

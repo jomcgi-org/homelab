@@ -112,14 +112,18 @@ func TestLoadReadsTheNamedFile(t *testing.T) {
 
 func TestSemgrepOptionalAndValidated(t *testing.T) {
 	c, err := Parse([]byte(sample))
-	if err != nil || c.Semgrep != nil { t.Fatalf("disabled: %+v, %v", c, err) }
+	if err != nil || c.Semgrep != nil {
+		t.Fatalf("disabled: %+v, %v", c, err)
+	}
 	const settings = `
 semgrep:
   apiURL: https://semgrep.dev/api/agent/deployments/17/issues/v2
   scanCheck: {name: Semgrep scan, appId: 123}
 `
 	c, err = Parse([]byte(sample + settings))
-	if err != nil || c.Semgrep.TokenFile != "/var/run/secrets/semgrep/API_KEY" { t.Fatalf("enabled: %+v, %v", c, err) }
+	if err != nil || c.Semgrep.TokenFile != "/var/run/secrets/semgrep/API_KEY" {
+		t.Fatalf("enabled: %+v, %v", c, err)
+	}
 	for _, invalid := range []string{
 		strings.Replace(settings, "https://", "http://", 1),
 		strings.Replace(settings, "https://", "https://user:password@", 1),
@@ -132,6 +136,8 @@ semgrep:
 		strings.Replace(settings, "appId: 123", "appId: 123, statusCreator: bot", 1),
 		"semgrep: {}\n",
 	} {
-		if _, err := Parse([]byte(sample + invalid)); err == nil { t.Errorf("accepted invalid Semgrep config: %s", invalid) }
+		if _, err := Parse([]byte(sample + invalid)); err == nil {
+			t.Errorf("accepted invalid Semgrep config: %s", invalid)
+		}
 	}
 }
