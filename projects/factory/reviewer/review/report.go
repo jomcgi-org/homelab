@@ -417,6 +417,7 @@ const (
 	enqueuedMarker      = markerStart + "enqueued -->"
 	gateOnlyMarker      = markerStart + "human-gate-only -->"
 	duplicateHeadMarker = markerStart + "duplicate-head -->"
+	labelHistoryMarker  = markerStart + "label-history-unavailable -->"
 	statePrefix         = markerStart + "state v1 "
 	stateSuffix         = " -->"
 )

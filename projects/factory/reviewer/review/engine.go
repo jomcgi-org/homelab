@@ -35,6 +35,8 @@ type GitHub interface {
 	PullRequestFiles(ctx context.Context, repo string, number int) ([]github.PullRequestFile, error)
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
+	PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]github.LabelEvent, error)
+	PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*github.ReviewAcknowledgement, error)
 	PullRequestComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
 	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
@@ -135,9 +137,10 @@ type Engine struct {
 	log   *slog.Logger
 	rules map[string]bool
 
-	mu       sync.Mutex
-	inflight map[headKey]*running
-	wg       sync.WaitGroup
+	mu           sync.Mutex
+	inflight     map[headKey]*running
+	pendingHolds map[headKey]*github.CheckRun
+	wg           sync.WaitGroup
 
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
@@ -226,7 +229,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules,
-		inflight: map[headKey]*running{}, groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
+		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
 	}
 }
 
@@ -289,7 +292,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft {
 			continue
 		}
-		if !complete || counts[pr.HeadSHA] > 1 {
+		if !complete || counts[pr.HeadSHA] > 1 || e.pendingHold(headKey{b.Name, pr.HeadSHA}) != nil {
 			cur, held := heldHeads[pr.HeadSHA]
 			if !held {
 				// Await the worker before replacing its check, so even a
@@ -381,15 +384,16 @@ func sharedHeadOutcome(prev *github.CheckRun, labels []string, now time.Time) Ou
 	o := Outcome{Conclusion: ConclusionFailure, Output: github.CheckRunOutput{
 		Title: "One ready PR per head required",
 		Summary: "The reviewer cannot establish one ready open PR for this commit. Close, draft or move duplicate PRs; the open PR listing must also be complete. " +
-			"The remaining PR will receive a new review, and any human gate will require fresh approval.\n\n" + duplicateHeadMarker + "\n\n" + gateOnlyMarker,
+			"The remaining PR will receive a new review and require fresh human approval.\n\n" + duplicateHeadMarker + "\n\n" + gateOnlyMarker,
 	}}
 	var st State
 	if prev != nil {
 		st, _ = LoadState(prev.Text) // Keep prior findings available to a later head.
 	}
-	if st.Gate == nil && len(labels) > 0 {
+	if st.Gate == nil {
 		st.Gate = &Gate{}
 	}
+	st.Gate.SharedHead = true
 	for _, label := range labels {
 		if !slices.Contains(st.Gate.Labels, label) {
 			st.Gate.Labels = append(st.Gate.Labels, label)
@@ -420,9 +424,14 @@ func (e *Engine) stopSharedHead(ctx context.Context, b *Binding, sha string) boo
 }
 
 func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, labels []string) *github.CheckRun {
+	key := headKey{b.Name, pr.HeadSHA}
+	pending := e.pendingHold(key)
+	if pending != nil {
+		prev = pending
+	}
 	now := e.cfg.Now().UTC()
 	o := sharedHeadOutcome(prev, labels, now)
-	if sharedHeadHeld(prev) && o.Output.Text == prev.Text {
+	if pending == nil && sharedHeadHeld(prev) && o.Output.Text == prev.Text {
 		return prev
 	}
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
@@ -431,9 +440,41 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	})
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "create_check", err)
-		return nil
+		// Revoke an existing pass even if creating its replacement failed.
+		if prev != nil && prev.ID > 0 {
+			run, err = e.gh.UpdateCheckRun(ctx, b.repo(), prev.ID, github.CheckRunWrite{
+				Status: "completed", Conclusion: o.Conclusion, CompletedAt: &now, Output: &o.Output,
+			})
+		}
+		if err != nil {
+			e.rememberHold(key, prev, o)
+			return nil
+		}
 	}
+	e.mu.Lock()
+	delete(e.pendingHolds, key)
+	e.mu.Unlock()
 	return run
+}
+
+func (e *Engine) pendingHold(key headKey) *github.CheckRun {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pendingHolds[key]
+}
+
+// Pending intent fences this process until GitHub accepts a durable write.
+// If every write fails, a restart cannot recover that unrecorded observation.
+func (e *Engine) rememberHold(key headKey, prev *github.CheckRun, o Outcome) {
+	run := &github.CheckRun{HeadSHA: key.sha}
+	if prev != nil {
+		*run = *prev
+	}
+	run.Status, run.Conclusion = "completed", o.Conclusion
+	run.Summary, run.Text = o.Output.Summary, o.Output.Text
+	e.mu.Lock()
+	e.pendingHolds[key] = run
+	e.mu.Unlock()
 }
 
 // prioritize orders a listing for the review slots: PRs whose authors the
@@ -551,6 +592,9 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			if st.Gate == nil {
 				st.Gate = &Gate{}
 			}
+			// Older duplicate markers also prove ambiguous ownership. This
+			// hold survives a failed update that would record a new label.
+			st.Gate.SharedHead = true
 			st.Gate.observeLabels(gateLabels(b, pr.Labels), now)
 			st.Gate.resetApproval(now) // Prior approval belonged to an ambiguous PR context.
 		}
@@ -722,6 +766,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 						if in.gate == nil {
 							in.gate = &Gate{}
 						}
+						in.gate.SharedHead = st.Gate.SharedHead
 						for _, p := range st.Gate.Paths {
 							if len(in.gate.Paths) < maxGatePaths && !slices.Contains(in.gate.Paths, p) {
 								in.gate.Paths = append(in.gate.Paths, p)
@@ -731,6 +776,8 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 							in.gate.Labels, in.gate.ObservedLabels = st.Gate.Labels, st.Gate.ObservedLabels
 							in.gate.ApprovalAfter = st.Gate.ApprovalAfter
 							in.gate.ApprovalSnapshot = st.Gate.ApprovalSnapshot
+							in.gate.ApprovalNonce = st.Gate.ApprovalNonce
+							in.gate.LabelHistory = st.Gate.LabelHistory
 							sameSnapshot = true
 						}
 					}
@@ -844,6 +891,17 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				return
 			}
 			currentPR.Labels = prs[listed].Labels
+			if in.gate == nil {
+				in.gate = &Gate{ObservedLabels: []string{}}
+			}
+			in.gate.observeLabels(gateLabels(b, currentPR.Labels), e.cfg.Now())
+			events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
+			if err != nil {
+				e.ghError(ctx, l, b, "label_events", err)
+				e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for complete hold history.", l)
+				return // Reattach the completed task once durable hold history is readable.
+			}
+			in.gate.observeLabelEvents(b, events)
 			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if res.reason != "" {
 				if next(res.reason) {
@@ -1145,7 +1203,30 @@ func (e *Engine) approval(ctx context.Context, b *Binding, pr github.PullRequest
 	if !gate.ApprovalAfter.IsZero() && gate.ApprovalSnapshot == nil {
 		gate.ApprovalSnapshot = snapshotReviews(reviews, gate.ApprovalAfter)
 	}
-	return approvedBy(b, reviews, pr.HeadSHA, gate.ApprovalAfter, gate.ApprovalSnapshot), nil
+	acknowledged := map[int64]bool{}
+	// Mutable review text is authority only when one coherent response
+	// authenticates both its author and current editor. A writer editing
+	// another person's review cannot acknowledge their hold for them.
+	latest := latestDecisions(reviews)
+	for _, author := range b.HumanApprovers {
+		r := latest[strings.ToLower(author)]
+		if r.ID <= 0 || r.NodeID == "" || r.State != "APPROVED" || r.CommitSHA != pr.HeadSHA ||
+			!containsFold(b.HumanApprovers, r.Author) || !r.SubmittedAt.Equal(gate.ApprovalAfter.Truncate(time.Second)) ||
+			!acknowledges(r.Body, gate.ApprovalNonce) || approvalAfter(r, gate.ApprovalAfter, gate.ApprovalSnapshot, false) {
+			continue
+		}
+		proof, err := e.gh.PullRequestReviewAcknowledgement(ctx, b.repo(), pr.Number, r.NodeID)
+		if err != nil {
+			e.ghError(ctx, e.prLog(b, pr), b, "review_acknowledgement", err)
+			continue
+		}
+		if proof.State == "APPROVED" && proof.CommitSHA == pr.HeadSHA && strings.EqualFold(proof.Author, r.Author) &&
+			((proof.Editor == "" && proof.LastEditedAt == nil) || (proof.LastEditedAt != nil && strings.EqualFold(proof.Editor, r.Author))) &&
+			acknowledges(proof.Body, gate.ApprovalNonce) {
+			acknowledged[r.ID] = true
+		}
+	}
+	return approvedBy(b, reviews, pr.HeadSHA, gate.ApprovalAfter, gate.ApprovalSnapshot, acknowledged), nil
 }
 
 // rule is a finding ID's rule when REVIEW.md or the configuration names it:
@@ -1211,9 +1292,6 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, false
 	}
 	labels := gateLabels(b, pr.Labels)
-	if st.Gate == nil && len(labels) == 0 {
-		return run, false
-	}
 	gate := &Gate{}
 	if st.Gate != nil {
 		*gate = *st.Gate
@@ -1224,6 +1302,26 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		gate.ApprovalSnapshot = nil
 	}
 	changed := gate.observeLabels(labels, e.cfg.Now()) || foreign
+	events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
+	if err != nil {
+		e.ghError(ctx, e.prLog(b, pr), b, "label_events", err)
+		if gate.Needed() {
+			st.Gate = gate
+		}
+		if !changed && run.Conclusion == ConclusionFailure && strings.Contains(run.Summary, labelHistoryMarker) {
+			return run, true
+		}
+		cur := e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Waiting for hold history",
+			"The reviewer could not read complete label history. It will retry before allowing this head to pass.\n\n"+labelHistoryMarker, e.prLog(b, pr))
+		return cur, true
+	}
+	changed = gate.observeLabelEvents(b, events) || changed
+	if !gate.Needed() {
+		if strings.Contains(run.Summary, labelHistoryMarker) {
+			return e.gateCheck(ctx, b, pr, run, st, ConclusionSuccess, "Hold history checked", "The complete label history contains no human hold.", e.prLog(b, pr)), true
+		}
+		return run, false
+	}
 	// A read error means approval is unknown. Close a previous pass and
 	// keep retrying the read on later polls; the error creates no new hold.
 	before := gate.ApprovalSnapshot
@@ -1269,7 +1367,11 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 		return nil
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, conclusion).Inc()
-	l.InfoContext(ctx, "human gate check posted", "conclusion", conclusion, "approver", st.Gate.Approver)
+	approver := ""
+	if st.Gate != nil {
+		approver = st.Gate.Approver
+	}
+	l.InfoContext(ctx, "human gate check posted", "conclusion", conclusion, "approver", approver)
 	return run
 }
 
@@ -1294,6 +1396,9 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)
 		l.ErrorContext(ctx, "completing the review check failed; the next poll re-attaches", "conclusion", o.Conclusion)
+		if strings.Contains(o.Output.Summary, duplicateHeadMarker) {
+			e.rememberHold(headKey{b.Name, run.HeadSHA}, run, o)
+		}
 		return false
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()

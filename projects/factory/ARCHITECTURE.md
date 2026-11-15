@@ -671,10 +671,19 @@ previews).
   keeps its blocking findings and human gate in a hidden block, at most
   48,000 characters, for the next head. Checks are keyed by commit, so
   multiple ready PRs at one head are held without further model tasks.
-  Once only one remains, it gets a new review and any human gate requires
-  fresh approval. A duplicate PR can therefore hold another author's PR
-  until it is closed, drafted or moved to another head. A cancelled check
-  on a current head is reviewed again.
+  Once only one remains, it gets a new review and requires fresh human
+  approval, even if no hold label was recorded. A duplicate PR can therefore
+  hold another author's PR until it is closed, drafted or moved and the
+  remaining PR is approved. Complete GitHub label-event history preserves
+  removed holds across failed check writes, restarts and later commits.
+  Incomplete history blocks a pass. GitHub records reviews to the second;
+  an ambiguous approval can acknowledge the check's random token in its
+  body. The service verifies that review's author, current editor, state,
+  commit and PR together before accepting the token. A cancelled check
+  on a current head is reviewed again. During a total GitHub write outage,
+  the controller skips enqueue and retains pending holds in memory; it
+  cannot revoke a remote pass until GitHub accepts a write. A restart loses
+  observations for which no durable write or label event exists.
 - **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
   one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
   and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
