@@ -724,7 +724,17 @@ and retries once, so a brief overlap during a rollout is safe.
   Other backend 429s pass through for Codex to retry. The connector treats
   the login and quota codes as credential and quota failures.
 - **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
-  requests in flight, and an upstream stream silent for 5 minutes is cut.
+  requests in flight, and any upstream response silent for 5 minutes is cut.
+  The body watchdog starts at response headers for each attempt. Initial
+  and retried 401 drains and 429 inspection each read at most 64 KiB within
+  `StreamIdleTimeout` (5 minutes by default), even if bytes keep arriving.
+  A timed-out 401 drain still permits the one token refresh and retry;
+  two stalled 401 bodies spend at most twice that limit reading bodies,
+  plus the separately bounded refresh and response-header waits. A stalled
+  429 returns `codex_upstream_unreachable` (502) unless quota exhaustion is
+  already known. Other responses reset the idle deadline as bytes arrive,
+  so active SSE has no overall time limit. Actor cancellation aborts body
+  reads immediately; completion or failure releases the concurrency slot.
   Quota observations are committed off the request path, latest only.
 - **Refresh.** One grant, `codex-primary`, from the broker's own device
   login: `POST /admin/codex/login` returns the user code, `GET` reports
