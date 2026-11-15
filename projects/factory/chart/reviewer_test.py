@@ -197,6 +197,8 @@ def test_semgrep_secret_and_egress_belong_only_to_the_reviewer_service() -> None
         if doc["metadata"]["name"] not in ("factory-reviewer", "factory-reviewer-semgrep"):
             assert "semgrep" not in json.dumps(doc).lower()
     renamed = _render(_SEMGREP + [
+        "connector.enabled=false",
+        "itsaplan.enabled=false",
         "broker.namespace=other-factory",
         "reviewer.semgrep.apiURL=https://api.semgrep.example:443/api/agent/deployments/17/issues/v2",
     ])
