@@ -9,25 +9,13 @@ landing under `/grimoire` and the API under `/api/grimoire`. There is no Node
 server at run time. Three signed demo identities share one campaign:
 Rowan (DM), Elowen (ranger), and Bram (fighter). Each launch starts fresh.
 
-The #8001 recovery implementation and full #8003 browser gate are split to
-fit the review budget. PR #8062 (`factory/HOME-26`) contains hidden sheet
-recovery, the restored character poll, API and role/name UI tests, and the
-local sign-out fixture. Its existing session rehearsal checks live assignment
-within six seconds without reloading the player page.
-
-`rehearse_sheet_recovery.py` stages four signed DM/player journeys for clearing
-and swapping assignments, account switch, session expiry, membership removal
-and explicit sign-out. These require the companion runner and are not called
-by this branch's existing session or invitation rehearsal. `budgets.json` and
-`rehearsal_report.py` retain all 124 original matrix checks and budgets, plus
-eight recovery checks across the two widths, for a 132-check inventory.
-
-The dependent `factory/HOME-26-journeys` branch activates that inventory,
-`--rehearse --all`, and the CI matrix. Review it against `factory/HOME-26`,
-then replay its single commit onto main after #8062 lands and retarget its PR
-for final review. It includes the deferred `factory/HOME-25-journeys` changes
-and supersedes that delivery branch. HOME-26's browser acceptance remains
-incomplete until the companion lands and the full gate passes.
+This gate is the `factory/HOME-26-journeys` companion to PR #8062. Review it
+against `factory/HOME-26`; it requires that branch's recovery implementation,
+signed recovery journeys and sign-out fixture. After #8062 lands, replay this
+companion's single commit onto main and retarget its PR for final review.
+It supersedes `factory/HOME-25-journeys` and activates every deferred journey.
+Browser acceptance requires the full gate to pass; no journey is waived by
+the split.
 
 Install the repository's Node/pnpm tools with `./bootstrap.sh`, and install
 Postgres 16 plus pgvector. On Ubuntu these are `postgresql-16` and
@@ -80,13 +68,79 @@ Run and inspect the browser rehearsal:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse
 ```
 
+Run the complete regression gate with one command:
+
+```bash
+grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --all --output /tmp/grimoire-all
+```
+
+The launcher builds once, then runs the session and invitation scenarios at
+1280px and 390px. Each of the four runs has a fresh database and separate
+Rowan, Elowen and Bram browser contexts. Every run executes even if an earlier
+one fails. The top-level `report.json` and `report.md` link the four reports
+under `session/1280`, `session/390`, `join-links/1280` and `join-links/390`.
+A missing report, an incomplete journey, a failing child, a console error or
+a missed timing budget makes the command fail. `--viewport 390` runs one
+scenario with all seats at that width; omitting it retains the original mixed
+desktop-DM and phone-player setup.
+
+There are 57 required session checks and nine invitation checks. The added
+journeys cover feedback drafts and votes, sheet returns and edits across open
+tabs, concurrent sheet edits and conflict recovery, character reassignment,
+disadvantage, own-fact disputes, shared pin progress and retry, the read-aloud
+queue, first-read failure and Retry, pending Enter submissions, private replies
+across sign-in renewal, session changes, cancellation and reassignment, clearing
+private notes after an account change, and refusing private reads until the first identity check succeeds.
+The local profile checks exercise the real read-only `/api/auth/platform/self`
+route using the same three signed demo identities. They verify profile identity
+changes even when Grimoire access is denied; the fixture registers no platform
+management, account-write, or enrollment route.
+Member and sheet-history checks wait for visible updates without reloading the page.
+The pure report tests enforce the required inventory and matrix completeness.
+
+The six-second live assignment step from #8003 now runs without a manual reload.
+All original 124 matrix checks and budgets remain required. Four additional
+session journeys at both widths bring the matrix to 132 checks. They exercise
+Joe's [hidden sheet recovery decision](https://github.com/jomcgi-org/homelab/issues/8001#issuecomment-6891228067)
+using a dirty editor and separate signed DM/player contexts. Clearing and
+swapping assignments, account switch, expiry and membership removal hide the
+old private data and deny old sheet reads and writes. Only renewed access to
+the same account and character restores the edits. The explicit sign-out link
+clears recovery; a loopback-only gateway stand-in deletes the signed cookie.
+The existing reassignment and private-reply privacy assertions remain intact.
+Inspect `sheet-recovery-0.png` through `sheet-recovery-3.png` for these journeys.
+
+`budgets.json` records the unchanged-main baseline and each step's budget.
+The original 33 session steps and nine link steps were timed on 2026-11-14;
+the baseline source SHA and durations are included. Step budgets include
+assertions and screenshots, with headroom for the viewport matrix. Existing
+three-second delivery and fifteen-second reveal assertions still apply.
+Normal API requests have a two-second budget; the observed maximum was 459ms.
+Explicitly held or delayed requests remain in the report with `injected: true`.
+`steps`, `requests` and `slow_requests` preserve the measured results.
+
+Application console errors and uncaught page errors fail the run. Deliberate
+refusals and dropped responses record each exact seat, method, URL and status
+or network failure before the action. A browser resource diagnostic is expected
+only when its location, observed request and current scenario step match that
+declaration; each declaration accounts for one message. These remain visible in
+`expected_console_diagnostics`. An application `console.error`, CSP failure,
+unrelated resource error or additional diagnostic fails the gate.
+
+Fact fixtures use the normal validating writer and deterministic local embedder.
+The speech check replaces only the device voice engine and observes the app's
+real audience-filtered queue. Audible device playback is listed as unavailable.
+Transcript capture stays disabled; all three consent reads must return 404 and
+the report lists the absent UI as unavailable. Neither capability is reported
+as a completed real audio journey.
+
 Rehearse single-use links for registered players in a fresh local campaign:
 
 ```bash
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --join-links --output /tmp/grimoire-join-links
 ```
 
-The flag selects the link rehearsal instead of the default table and its 33
+The flag selects the link rehearsal instead of the default table and its 57
 session checks. `report.json` lists passed checks in `checks` and any check the
 app fails in `failed_checks`, with what was observed. A failed check that is
 already understood is recorded and the rehearsal continues, so one defect does
@@ -119,14 +173,19 @@ Postgres 16 with pgvector, and Chromium's system libraries:
 GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/ci.sh
 ```
 
+Every report records its source SHA, tracked-file dirty state, Playwright version
+and actual browser version. The November 2026 timing baseline used Chromium
+headless shell 156 as supplemental local evidence; CI's repository-pinned browser
+remains authoritative.
+
 The wrapper installs the pinned runtime and Playwright, builds the React bundle
-once from the checkout (`web-build.log`), and runs the full browser scenario
-twice with fresh databases. A third fresh launch runs the link scenarios. Every
+once from the checkout (`web-build.log`), and runs the session scenario
+twice with fresh databases, followed by the complete four-run matrix. Every
 stage runs even when an earlier one fails, so the run log and evidence are
 complete; the wrapper then exits nonzero. Browser reports are under
 `cold-start-1/` and `cold-start-2/`; `startup.log` counts the launches whose
-shell and assets were served. Link reports, screenshots and traces are under `join-links/`, with
-their launcher log in `join-links.log`. It removes only its
+shell and assets were served. Matrix reports, screenshots and traces are under
+`all/`, with their launcher log in `all.log`. It removes only its
 own temporary Python environment. The BuildBuddy PR gate calls `ci-runner.sh`
 after Bazel for relevant changes. It provisions Ubuntu dependencies and uses
 the repository tools image for Node/pnpm. Reports, screenshots, traces and logs
