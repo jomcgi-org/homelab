@@ -205,6 +205,7 @@ const (
 	EventChangesRequested = "changes_requested"
 	EventCheckFailed      = "check_failed"
 	EventStatusFailed     = "status_failed"
+	EventConflicting      = "conflicting"
 )
 
 // ReviewEvent is one GitHub event on an owned PR that could request changes.
@@ -321,9 +322,20 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (boo
 // session, counted against its bound. The run waits until the work item and
 // its agent key's concurrency let dispatch send it.
 func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt, head string) (*Run, error) {
+	return s.startRound(ctx, q, w, prompt, head, "review")
+}
+
+// StartRebaseRound uses the separate rebase budget, preserving review rounds.
+func (s *Store) StartRebaseRound(ctx context.Context, q Querier, w *WorkItem, prompt, head string) (*Run, error) {
+	return s.startRound(ctx, q, w, prompt, head, "rebase")
+}
+
+func (s *Store) startRound(ctx context.Context, q Querier, w *WorkItem, prompt, head, trigger string) (*Run, error) {
 	res, err := q.ExecContext(ctx, `
-		UPDATE work_item SET review_rounds = review_rounds + 1, state = 'active', updated_at = now()
-		WHERE id = $1 AND state = 'review'`, w.ID)
+		UPDATE work_item SET review_rounds = review_rounds + CASE WHEN $2 = 'review' THEN 1 ELSE 0 END,
+			rebase_rounds = rebase_rounds + CASE WHEN $2 = 'rebase' THEN 1 ELSE 0 END,
+			state = 'active', updated_at = now()
+		WHERE id = $1 AND state = 'review'`, w.ID, trigger)
 	if err != nil {
 		return nil, err
 	}
@@ -336,8 +348,8 @@ func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt, 
 	return scanRun(q.QueryRowContext(ctx, `
 		INSERT INTO run (id, origin, agent_key, work_item_id, issue_id, issue_key, trigger, prompt, system_prompt,
 			attempt, state, seen_visible, round_head_sha)
-		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'review', $5, '', 1, 'waiting', true, nullif($6, ''))
-		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt, head))
+		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, $7, $5, '', 1, 'waiting', true, nullif($6, ''))
+		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt, head, trigger))
 }
 
 // Round is a work item's latest review round: its run, state and the head it
@@ -346,6 +358,7 @@ type Round struct {
 	RunID   int64
 	State   string
 	HeadSHA string
+	Trigger string
 }
 
 // LastRound returns the work item's most recent review round, or nil.
@@ -353,9 +366,9 @@ type Round struct {
 func (s *Store) LastRound(ctx context.Context, workID int64) (*Round, error) {
 	r := &Round{}
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, state, coalesce(round_head_sha, '') FROM run
-		WHERE work_item_id = $1 AND origin = 'connector' AND trigger = 'review'
-		ORDER BY created_at DESC, id ASC LIMIT 1`, workID).Scan(&r.RunID, &r.State, &r.HeadSHA)
+		SELECT id, state, coalesce(round_head_sha, ''), trigger FROM run
+		WHERE work_item_id = $1 AND origin = 'connector' AND trigger IN ('review', 'rebase')
+		ORDER BY created_at DESC, id ASC LIMIT 1`, workID).Scan(&r.RunID, &r.State, &r.HeadSHA, &r.Trigger)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeGitHub models one repository: branches, at most one open PR per head
@@ -228,9 +229,13 @@ func (g *fakeGitHub) mergeGroup(pr int, sha string) {
 }
 
 func (g *fakeGitHub) conflict(pr int) {
+	g.mergeability(pr, "CONFLICTING")
+}
+
+func (g *fakeGitHub) mergeability(pr int, state string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.byNumber(pr).mergeable = "CONFLICTING"
+	g.byNumber(pr).mergeable = state
 }
 
 func (g *fakeGitHub) PRs() []fakePR {
@@ -457,6 +462,7 @@ func newDeliveryEnv(t *testing.T) *env {
 		ReviewerCheck:    &dispatch.Check{Name: "semgrep-review", AppID: 200},
 		HoldLabels:       dispatch.DefaultHoldLabels,
 		MaxReviewRounds:  2,
+		MaxRebaseRounds:  3,
 	}
 	v.cfg.Links = dispatch.Links{
 		Issue:   "https://plan.example/issue/{issue}",
@@ -1072,6 +1078,218 @@ func TestMergeQueueConflictAsksForRebase(t *testing.T) {
 	v.poll()
 	if rounds := v.rounds(); len(rounds) != 1 || !strings.Contains(rounds[0].Prompt, "conflicts with main: rebase on origin/main and resolve") {
 		t.Fatalf("rounds = %+v, want a rebase request", rounds)
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
+	v.poll()
+	v.poll()
+	if w := v.work(101); w.ReviewRounds != 1 || w.RebaseRounds != 0 || len(v.rounds()) != 1 || len(v.gh.Enqueues()) != 1 {
+		t.Fatalf("ejection started another round or enqueued again: %+v", w)
+	}
+}
+
+func TestConflictingHeadStartsOneRebaseRound(t *testing.T) {
+	for _, trigger := range []string{"green", "pending", "missing", "failed check", "failed status", "review"} {
+		t.Run(trigger, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			session := v.delivered()
+			v.gh.conflict(1)
+			// A spent review budget must not prevent main's conflict repair.
+			if _, err := v.st.DB.Exec(`UPDATE work_item SET review_rounds = 2`); err != nil {
+				t.Fatal(err)
+			}
+			var feedback string
+			switch trigger {
+			case "green":
+				v.gh.green("sha-1")
+			case "pending":
+				v.gh.check("sha-1", "test", 100, "")
+			case "failed check":
+				v.gh.check("sha-1", "test", 100, "failure")
+				feedback = `Check "test" concluded failure`
+			case "failed status":
+				v.cfg.Bindings[0].Review.RequiredChecks = append(v.cfg.Bindings[0].Review.RequiredChecks,
+					dispatch.Check{Name: "build", StatusCreator: "ci-bot"})
+				v.gh.status("sha-1", "build", "ci-bot", "failure")
+				feedback = `Status "build" is failure`
+			case "review":
+				v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix the bug.")
+				feedback = "Fix the bug."
+			}
+			v.poll()
+			rounds := v.rounds()
+			if len(rounds) != 1 || rounds[0].Trigger != "rebase" {
+				t.Fatalf("rounds = %+v, want one rebase", rounds)
+			}
+			for _, want := range []string{"Rebase round 1", "conflicts with main", "rebase on origin/main", "resolve", "rerun the affected tests", "push", feedback} {
+				if !strings.Contains(rounds[0].Prompt, want) {
+					t.Errorf("prompt lacks %q: %s", want, rounds[0].Prompt)
+				}
+			}
+			if w := v.work(101); w.ReviewRounds != 2 || w.RebaseRounds != 1 || w.State != store.WorkActive {
+				t.Fatalf("work item = %+v", w)
+			}
+			sends := v.kg.Sends()
+			if len(sends) != 2 || sends[1].msg.ContextID != session {
+				t.Fatalf("rebase did not continue session %s: %+v", session, sends)
+			}
+			announced := 0
+			for _, c := range v.its.Comments() {
+				if strings.Contains(c.body, "started rebase round 1 of 3") {
+					announced++
+				}
+			}
+			if announced != 1 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("started")) != 1 {
+				t.Fatalf("rebase announcements = %d, want one and its metric", announced)
+			}
+			// Persist deduplication across a takeover, including later failures
+			// on this head. Pending checks do not hide an idle rebase.
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
+			v.poll()
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Later feedback.")
+			v.poll()
+			v.poll()
+			if len(v.rounds()) != 1 || len(v.gh.Enqueues()) != 0 || len(v.idleComments()) != 1 {
+				t.Fatalf("rounds = %d, enqueues = %v, idle comments = %v", len(v.rounds()), v.gh.Enqueues(), v.idleComments())
+			}
+			if testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("idle")) != 1 {
+				t.Fatal("missing idle rebase metric")
+			}
+		})
+	}
+}
+
+func TestUnknownMergeabilityWaits(t *testing.T) {
+	for _, conclusion := range []string{"success", "failure"} {
+		t.Run(conclusion, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.gh.check("sha-1", "test", 100, conclusion)
+			v.gh.mergeability(1, "UNKNOWN")
+			v.poll()
+			if len(v.rounds()) != 0 || len(v.gh.Enqueues()) != 0 || len(v.events()) != 0 {
+				t.Fatal("unknown mergeability acted")
+			}
+			v.gh.conflict(1)
+			v.poll()
+			if len(v.rounds()) != 1 {
+				t.Fatal("known conflict did not start a round on the next poll")
+			}
+		})
+	}
+}
+
+func TestConflictRespectsHoldsAndStops(t *testing.T) {
+	for _, hold := range []string{"human", "needs-human", "marker", "stopped", "stop during checks", "canceled issue"} {
+		t.Run(hold, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.conflict(1)
+			v.gh.check("sha-1", "test", 100, "failure")
+			switch hold {
+			case "human", "needs-human":
+				v.gh.label(1, hold)
+			case "marker":
+				v.gh.check("sha-1", "semgrep-review", 200, "failure")
+				v.gh.summarize("sha-1", "semgrep-review", humanHold)
+			case "stopped", "stop during checks":
+				stop := func() {
+					if _, err := v.st.StopWork(v.ctx, v.work(101).ID, "operator stop", "operator"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if hold == "stopped" {
+					stop()
+				} else {
+					v.gh.onChecks = stop
+				}
+			case "canceled issue":
+				v.its.moveTo(101, 4, "HL-7")
+			}
+			v.poll()
+			if w := v.work(101); w.RebaseRounds != 0 || w.ReviewRounds != 0 || len(v.rounds()) != 0 || len(v.gh.Enqueues()) != 0 {
+				t.Fatalf("held conflict acted: %+v", w)
+			}
+			if hold == "human" || hold == "needs-human" || hold == "marker" {
+				if len(v.events()) != 0 {
+					t.Fatal("held events were consumed")
+				}
+				v.gh.label(1)
+				v.gh.check("sha-1", "semgrep-review", 200, "success")
+				v.poll()
+				if len(v.rounds()) != 1 {
+					t.Fatal("cleared hold did not allow rebase")
+				}
+			}
+		})
+	}
+}
+
+func TestRebaseRoundsHaveASeparateBound(t *testing.T) {
+	for _, bound := range []int{0, 3} {
+		t.Run(fmt.Sprint(bound), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.cfg.Bindings[0].Review.MaxRebaseRounds = bound
+			v.delivered()
+			v.gh.conflict(1)
+			for i := 1; i <= bound; i++ {
+				v.poll()
+				if len(v.rounds()) != i {
+					t.Fatalf("rounds = %d, want %d", len(v.rounds()), i)
+				}
+				v.gh.push("factory/HL-7", fmt.Sprintf("sha-%d", i+1), "fix: rebase")
+				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Rebased.", nil)
+				v.clk.Advance(5 * time.Second)
+				v.tick(v.e)
+			}
+			v.poll()
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			v.poll()
+			// Even another conflicting head gets no round or repeated notice.
+			v.gh.push("factory/HL-7", "sha-over-bound", "fix: still conflicts")
+			v.gh.check("sha-over-bound", "test", 100, "failure")
+			v.poll()
+			if w := v.work(101); w.RebaseRounds != bound || w.ReviewRounds != 0 || w.State != store.WorkReview || len(v.rounds()) != bound {
+				t.Fatalf("work item = %+v, rounds = %d", w, len(v.rounds()))
+			}
+			notices := 0
+			for _, c := range v.its.Comments() {
+				if strings.Contains(c.body, "rebase rounds;") && strings.Contains(c.body, "conflicts with main and waits for a person") {
+					notices++
+				}
+			}
+			if notices != 1 || len(v.gh.Enqueues()) != 0 || testutil.ToFloat64(v.m.RebaseRounds.WithLabelValues("limited")) != 1 {
+				t.Fatalf("limit notices = %d, enqueues = %v", notices, v.gh.Enqueues())
+			}
+		})
+	}
+}
+
+func TestRebasedHeadNeedsFreshChecksAndReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.conflict(1)
+	v.poll()
+	v.gh.push("factory/HL-7", "sha-2", "fix: rebase")
+	v.gh.mergeability(1, "MERGEABLE")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Rebased.", nil)
+	v.poll()
+	if len(v.gh.Enqueues()) != 0 {
+		t.Fatal("rebased head enqueued before fresh checks")
+	}
+	v.gh.check("sha-2", "test", 100, "success")
+	v.poll()
+	if len(v.gh.Enqueues()) != 0 {
+		t.Fatal("rebased head enqueued before independent review")
+	}
+	v.gh.check("sha-2", "semgrep-review", 200, "success")
+	v.poll()
+	if got := v.gh.Enqueues(); len(got) != 1 || got[0] != "sha-2" || len(v.idleComments()) != 0 {
+		t.Fatalf("enqueues = %v, idle comments = %v", got, v.idleComments())
 	}
 }
 

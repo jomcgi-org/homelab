@@ -421,6 +421,7 @@ type WorkItem struct {
 	BlockedClass       string
 	BlockedReason      string
 	ReviewRounds       int
+	RebaseRounds       int
 	// TurnAttemptID is the completed turn the PR must reflect, and
 	// SyncedAttemptID the last one it does.
 	TurnAttemptID   int64
@@ -433,7 +434,7 @@ type WorkItem struct {
 
 const workCols = `id, binding_name, issue_id, issue_key, branch, agent_key, kagent_namespace, kagent_agent,
 	coalesce(session_id, ''), session_generation, epoch, engineering_retries, state,
-	coalesce(blocked_class, ''), coalesce(blocked_reason, ''), review_rounds,
+	coalesce(blocked_class, ''), coalesce(blocked_reason, ''), review_rounds, rebase_rounds,
 	coalesce(turn_attempt_id, 0), coalesce(synced_attempt_id, 0), coalesce(stopped_reason, ''),
 	coalesce(caller_identity, '')`
 
@@ -441,7 +442,7 @@ func scanWork(row interface{ Scan(...any) error }) (*WorkItem, error) {
 	w := &WorkItem{}
 	err := row.Scan(&w.ID, &w.BindingName, &w.IssueID, &w.IssueKey, &w.Branch, &w.AgentKey,
 		&w.KagentNamespace, &w.KagentAgent, &w.SessionID, &w.SessionGeneration, &w.Epoch,
-		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason, &w.ReviewRounds,
+		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason, &w.ReviewRounds, &w.RebaseRounds,
 		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason, &w.CallerIdentity)
 	return w, err
 }
