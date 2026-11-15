@@ -87,7 +87,11 @@ type fakeGitHub struct {
 	queue     []github.MergeQueueEntry
 	queued    map[int]string // PR number -> merge queue state
 	// queueHead overrides the head the GraphQL PR read reports.
-	queueHead   map[int]string
+	queueHead map[int]string
+	// cited answers the cited-PR read by number with a PullRequest's
+	// GraphQL fields, or FORBIDDEN for a nil entry; any other number is
+	// NOT_FOUND, as for an issue.
+	cited       map[int]map[string]any
 	enqueued    []string
 	calls       []string
 	gql         []string // GraphQL calls by kind
@@ -120,7 +124,7 @@ type fakeGitHub struct {
 func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
 	f := &fakeGitHub{
 		t: t, prs: map[int]*fakePR{}, statuses: map[string][]map[string]any{}, baseHead: "base-1",
-		baseFiles: map[string]string{}, queued: map[int]string{}, queueHead: map[int]string{},
+		baseFiles: map[string]string{}, queued: map[int]string{}, queueHead: map[int]string{}, cited: map[int]map[string]any{},
 		fail: map[string]int{}, failGQL: map[string]bool{},
 		now: time.Now,
 	}
@@ -662,7 +666,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	defer func() { f.gql = append(f.gql, kind) }()
 	for k, fail := range f.failGQL {
 		if fail && strings.Contains(req.Query, map[string]string{
-			"enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
+			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
 		}[k]) {
 			kind = k
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
@@ -670,6 +674,21 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case strings.Contains(req.Query, "ADDED_TO_MERGE_QUEUE_EVENT"):
+		kind = "cited"
+		item, ok := f.cited[number]
+		if ok && item == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
+			return
+		}
+		if !ok {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data":   map[string]any{"repository": map[string]any{"pullRequest": nil}},
+				"errors": []map[string]string{{"type": "NOT_FOUND", "message": "no such pull request"}},
+			})
+			return
+		}
+		reply(map[string]any{"repository": map[string]any{"pullRequest": item}})
 	case strings.Contains(req.Query, "... on PullRequestReview"):
 		kind = "review_acknowledgement"
 		id, _ := req.Variables["id"].(string)

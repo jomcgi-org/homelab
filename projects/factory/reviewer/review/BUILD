@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "review",
     srcs = [
+        "cited.go",
         "comment.go",
         "engine.go",
         "gate.go",
@@ -22,6 +23,7 @@ go_library(
 go_test(
     name = "review_test",
     srcs = [
+        "cited_test.go",
         "comment_test.go",
         "engine_test.go",
         "fakes_test.go",

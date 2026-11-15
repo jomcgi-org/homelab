@@ -789,7 +789,7 @@
             "type": "array",
             "uniqueItems": true,
             "items": {
-              "enum": ["github-git", "github-api"]
+              "enum": ["github-git"]
             }
           },
           "systemPrompt": {

@@ -203,7 +203,7 @@ func TestLoadRulesReadsTheBaseBranch(t *testing.T) {
 	}
 }
 
-var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|content)-([0-9a-f]{12})-([0-9a-f]{32})>\n`)
+var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|content|cited)-([0-9a-f]{12})-([0-9a-f]{32})>\n`)
 
 // untrustedBlocks checks the prompt's delimiters: "untrusted-pr-" appears
 // only in one opener and one closer per block, each naming the head and the
@@ -211,16 +211,15 @@ var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|content)-([0-9
 // prompt outside the blocks.
 func untrustedBlocks(t *testing.T, p string) (inside map[string]string, outside string) {
 	t.Helper()
-	if n := strings.Count(strings.ToLower(p), "untrusted-pr-"); n != 4 {
-		t.Fatalf("\"untrusted-pr-\" appears %d times, want 4 (two blocks):\n%s", n, p)
-	}
+	// Every "untrusted-pr-" is a delimiter: the description and content
+	// blocks, and the cited block when the description cites PRs.
 	tags := blockTag.FindAllStringSubmatchIndex(p, -1)
-	if len(tags) != 4 {
-		t.Fatalf("%d delimiters, want 4:\n%s", len(tags), p)
+	if n := strings.Count(strings.ToLower(p), "untrusted-pr-"); n != len(tags) || (n != 4 && n != 6) {
+		t.Fatalf("\"untrusted-pr-\" appears %d times in %d delimiters, want two or three blocks:\n%s", n, len(tags), p)
 	}
 	inside = map[string]string{}
 	outside = p[:tags[0][0]]
-	for i := 0; i < 4; i += 2 {
+	for i := 0; i < len(tags); i += 2 {
 		open, end := tags[i], tags[i+1]
 		kind, sha, sum := p[open[4]:open[5]], p[open[6]:open[7]], p[open[8]:open[9]]
 		if p[open[2]:open[3]] != "" || p[end[2]:end[3]] != "/" || p[end[4]:end[5]] != kind || p[end[6]:end[7]] != sha || p[end[8]:end[9]] != sum {

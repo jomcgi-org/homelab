@@ -725,3 +725,122 @@ func (c *Client) CompareCommits(ctx context.Context, repo, base, head string) (*
 	}
 	return &CommitComparison{Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles}, nil
 }
+
+// CitedPullRequest is fixed-class evidence about a pull request another PR
+// cites: states, flags, times, commit IDs and account logins. It never holds
+// a title, body, branch name or other text an author chose.
+type CitedPullRequest struct {
+	Number         int
+	State          string // OPEN | CLOSED | MERGED
+	Merged         bool
+	MergedAt       time.Time
+	MergeCommitSHA string
+	BaseRef        string
+	HeadSHA        string
+	Author         string
+	MergedBy       string
+	// Queued says the PR's timeline has an AddedToMergeQueueEvent.
+	Queued bool
+	// AutoMergeBy is who requested auto-merge, while the request is pending.
+	AutoMergeBy string
+	// HeadCommitAuthor is the GitHub account behind the head commit's
+	// author, and HeadSignature its signature state (VALID, ...), empty
+	// when the head commit is unsigned or not the PR's last commit.
+	HeadCommitAuthor   string
+	HeadSignature      string
+	HeadSignedByGitHub bool
+}
+
+const citedPullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number state merged mergedAt baseRefName headRefOid
+      mergeCommit { oid }
+      author { login }
+      mergedBy { login }
+      autoMergeRequest { enabledBy { login } }
+      timelineItems(itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT], first: 1) { filteredCount }
+      commits(last: 1) {
+        nodes { commit { oid author { user { login } } signature { state wasSignedByGitHub } } }
+      }
+    }
+  }
+}`
+
+// CitedPullRequest reads a pull request another PR cites. A number that
+// names an issue or nothing gives ErrNotFound; reading through
+// pullRequest(number:) needs no issues permission.
+func (c *Client) CitedPullRequest(ctx context.Context, repo string, number int) (*CitedPullRequest, error) {
+	owner, name, _ := strings.Cut(repo, "/")
+	var out struct {
+		Repository struct {
+			Item *struct {
+				Number           int        `json:"number"`
+				State            string     `json:"state"`
+				Merged           bool       `json:"merged"`
+				MergedAt         *time.Time `json:"mergedAt"`
+				BaseRefName      string     `json:"baseRefName"`
+				HeadRefOid       string     `json:"headRefOid"`
+				MergeCommit      *oid       `json:"mergeCommit"`
+				Author           *login     `json:"author"`
+				MergedBy         *login     `json:"mergedBy"`
+				AutoMergeRequest *struct {
+					EnabledBy *login `json:"enabledBy"`
+				} `json:"autoMergeRequest"`
+				TimelineItems struct {
+					FilteredCount int `json:"filteredCount"`
+				} `json:"timelineItems"`
+				Commits struct {
+					Nodes []struct {
+						Commit struct {
+							OID    string `json:"oid"`
+							Author *struct {
+								User *login `json:"user"`
+							} `json:"author"`
+							Signature *struct {
+								State             string `json:"state"`
+								WasSignedByGitHub bool   `json:"wasSignedByGitHub"`
+							} `json:"signature"`
+						} `json:"commit"`
+					} `json:"nodes"`
+				} `json:"commits"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.graphql(ctx, repo, citedPullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number}, &out); err != nil {
+		return nil, err
+	}
+	p := out.Repository.Item
+	if p == nil {
+		return nil, ErrNotFound
+	}
+	cp := &CitedPullRequest{
+		Number: p.Number, State: p.State, Merged: p.Merged, BaseRef: p.BaseRefName, HeadSHA: p.HeadRefOid,
+		Queued: p.TimelineItems.FilteredCount > 0,
+	}
+	if p.MergedAt != nil {
+		cp.MergedAt = *p.MergedAt
+	}
+	if p.MergeCommit != nil {
+		cp.MergeCommitSHA = p.MergeCommit.OID
+	}
+	if p.Author != nil {
+		cp.Author = p.Author.Login
+	}
+	if p.MergedBy != nil {
+		cp.MergedBy = p.MergedBy.Login
+	}
+	if p.AutoMergeRequest != nil && p.AutoMergeRequest.EnabledBy != nil {
+		cp.AutoMergeBy = p.AutoMergeRequest.EnabledBy.Login
+	}
+	if n := p.Commits.Nodes; len(n) == 1 && n[0].Commit.OID == p.HeadRefOid {
+		hc := n[0].Commit
+		if hc.Author != nil && hc.Author.User != nil {
+			cp.HeadCommitAuthor = hc.Author.User.Login
+		}
+		if hc.Signature != nil {
+			cp.HeadSignature, cp.HeadSignedByGitHub = hc.Signature.State, hc.Signature.WasSignedByGitHub
+		}
+	}
+	return cp, nil
+}
