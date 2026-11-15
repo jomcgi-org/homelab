@@ -18,7 +18,7 @@ describe("same-commit blog loader contract", () => {
     expect(actual).toStrictEqual(fixture);
     expect(headers.etag).toContain("blog-125b-on-a-4090");
     expect(actual.toc[0].children).toHaveLength(1);
-    expect(actual.sections).toHaveLength(2);
+    expect(actual.sections).toHaveLength(3);
   });
   it("retains the real loader's missing-post failure", () => {
     expect(() =>
