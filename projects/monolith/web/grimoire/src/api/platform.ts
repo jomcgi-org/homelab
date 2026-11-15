@@ -90,9 +90,11 @@ export type Keyed<T> = T & { request_id: string };
 
 export const platformKeys = {
   all: ["platform"] as const,
+  directories: ["platform", "directory"] as const,
   directory: (selectedInvitation: string | null) =>
     ["platform", "directory", selectedInvitation] as const,
   self: ["platform", "self"] as const,
+  operatorAccess: ["platform", "operator-access"] as const,
 };
 
 const read = <T>(path: string, signal: AbortSignal) =>
@@ -148,6 +150,16 @@ export const useOwnAccount = (enabled = true) =>
   useQuery({
     queryKey: platformKeys.self,
     queryFn: ({ signal }) => read<PlatformUser>("/self", signal),
+    refetchInterval: 15_000,
+    enabled,
+  });
+
+/** This existing management read requires an active operator, unlike /self. */
+export const useOperatorAccess = (enabled: boolean) =>
+  useQuery({
+    queryKey: platformKeys.operatorAccess,
+    queryFn: ({ signal }) =>
+      read<PlatformPermission[]>("/management/permissions", signal),
     refetchInterval: 15_000,
     enabled,
   });

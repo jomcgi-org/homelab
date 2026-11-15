@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
@@ -6,7 +13,12 @@ import { useAnnounce } from "@astryxdesign/core/hooks";
 import { ApiError } from "../api/client";
 import { useLobby } from "../api/lobby";
 import type { LobbyView } from "../api/schema";
-import { useOwnAccount, type PlatformUser } from "../api/platform";
+import {
+  platformKeys,
+  useOperatorAccess,
+  useOwnAccount,
+  type PlatformUser,
+} from "../api/platform";
 import { dropDraft } from "../lib/session-expiry.js";
 
 /** New memberships add access; changes to an existing seat invalidate its cache. */
@@ -25,6 +37,10 @@ function changedViewer(previous: LobbyView, current: LobbyView): boolean {
   });
 }
 
+function accessDenied(error: unknown): boolean {
+  return error instanceof ApiError && [403, 404].includes(error.status);
+}
+
 /**
  * Another tab can replace the sign-in cookie. Every screen shares cached
  * queries, so a confirmed viewer change removes the whole previous view.
@@ -34,17 +50,48 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
   // second request or querying when Providers renders a standalone component.
   const lobby = useLobby(false);
   const client = useQueryClient();
-  const announce = useAnnounce();
   const [confirmed, setConfirmed] = useState<{
     viewer: LobbyView | undefined;
     account: PlatformUser | undefined;
+    operator: boolean;
     changed: boolean;
-  }>({ viewer: undefined, account: undefined, changed: false });
+  }>({
+    viewer: undefined,
+    account: undefined,
+    operator: false,
+    changed: false,
+  });
+  const cache = client.getQueryCache();
+  const subscribe = useCallback(
+    (notify: () => void) =>
+      confirmed.changed ? () => {} : cache.subscribe(notify),
+    [cache, confirmed.changed],
+  );
+  const knownDirectory = useSyncExternalStore(
+    subscribe,
+    () =>
+      !confirmed.changed &&
+      cache
+        .findAll({ queryKey: platformKeys.directories })
+        .some((query) => query.state.data !== undefined),
+  );
+  const directoryDenied = useSyncExternalStore(
+    subscribe,
+    () =>
+      !confirmed.changed &&
+      cache
+        .findAll({ queryKey: platformKeys.directories })
+        .some((query) => accessDenied(query.state.error)),
+  );
+  const announce = useAnnounce();
   // Platform pages can be available without Grimoire permission. Once seen,
   // keep their own authoritative identity current even after leaving them.
   const account = useOwnAccount(
     Boolean(confirmed.account) && !confirmed.changed,
   );
+  // A successful directory establishes operator access. Keep checking the
+  // authoritative management endpoint after navigation, even without lobby access.
+  const operator = useOperatorAccess(confirmed.operator && !confirmed.changed);
   const reloading = useRef(false);
 
   // Adjust this component's state before React renders its children. An
@@ -55,9 +102,8 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     ((confirmed.viewer &&
       lobby.error instanceof ApiError &&
       lobby.error.status === 403) ||
-      (confirmed.account &&
-        account.error instanceof ApiError &&
-        [403, 404].includes(account.error.status)))
+      (confirmed.account && accessDenied(account.error)) ||
+      (confirmed.operator && (accessDenied(operator.error) || directoryDenied)))
   ) {
     setConfirmed({ ...confirmed, changed: true });
   } else if (
@@ -80,6 +126,8 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
         ? { ...confirmed, changed: true }
         : { ...confirmed, account: account.data },
     );
+  } else if (knownDirectory && !confirmed.operator && !confirmed.changed) {
+    setConfirmed({ ...confirmed, operator: true });
   }
 
   useEffect(() => {
@@ -90,6 +138,9 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     // Also drops the feedback draft and cancels reads still in flight.
     client.clear();
     document.title = "Grimoire";
+    // Astryx keeps shared announcement regions outside the unmounted viewport.
+    announce("", "assertive");
+    announce("", "polite");
     announce("Your account or campaign access changed. Reloading Grimoire.");
     location.reload();
   }, [announce, client, confirmed]);
