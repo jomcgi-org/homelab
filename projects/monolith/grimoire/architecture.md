@@ -1118,16 +1118,23 @@ signed-out notice and leave the reload to the player. A restored draft never
 widens its audience, and a draft kept for another viewer is dropped.
 
 Grimoire routes wait for the first successful lobby identity before mounting
-screens or starting their private reads. A failed first identity read offers a
-retry without retaining independently fetched private content. Platform pages
-remain available without Grimoire access: their baseline is the existing
-`/api/auth/platform/self` response. Account management waits for that baseline
-before reading its directory; an initial 403 still offers explicit operator
-bootstrap. Once a platform identity is known, it refreshes every fifteen
+screens or starting their private reads. A failed first identity read offers
+retry and sign-out actions without retaining independently fetched private
+content. Platform pages remain available without Grimoire access: their
+baseline is the existing `/api/auth/platform/self` response. Account management
+waits for that baseline before reading its directory; an initial 403 still
+offers explicit operator bootstrap. Once a platform identity is known, it refreshes every fifteen
 seconds, including after navigating away. A changed platform account or a
 subsequent self-read denial (403 or 404) uses the same cache fence. Temporary
 failures preserve an already established view. These checks do not change API
 permissions or compare platform and Grimoire account IDs.
+
+A successful directory read also establishes operator access. The existing
+management permissions endpoint rechecks it every fifteen seconds, including
+after leaving the directory. A subsequent 403 or 404 from that check or a
+directory read triggers the same whole-view cache fence, removing directory
+rows, open dialogs, private signup links and toasts before reloading. An initial
+directory refusal still offers bootstrap; temporary failures retain the view.
 
 Every screen shares the lobby identity check through `ViewerBoundary`. A
 confirmed account change, removal of an existing campaign membership, change

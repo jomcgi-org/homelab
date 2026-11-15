@@ -10,7 +10,7 @@ import {
   platformOther,
   platformUser,
 } from "../test/fixtures/platform";
-import { paths } from "./paths";
+import { gateway, paths } from "./paths";
 
 const SELF = "GET /api/auth/platform/self";
 const ENTITY = "GET /campaigns/{campaign_id}/entities/{entity_id}";
@@ -56,6 +56,37 @@ function profile(lobbyStatus = 403) {
 }
 
 describe("viewer identity bootstrap", () => {
+  it.each([
+    paths.lobby,
+    paths.entity(ids.owned, projection.cases[0]!.expected.id),
+  ])(
+    "keeps sign-out available on an initial identity refusal at %s",
+    async (path) => {
+      const app = openApp(
+        {
+          "GET /lobby": {
+            status: 403,
+            detail: "This account cannot use Grimoire.",
+          },
+          [ENTITY]: projection.cases[0]!.expected,
+        },
+        path,
+      );
+      await screen.findByRole("heading", {
+        name: "Could not load your account",
+      });
+      expect(
+        screen.getByRole("link", { name: "Sign out" }).getAttribute("href"),
+      ).toBe(gateway.signOut);
+      expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Feedback" })).toBeNull();
+      expect(
+        screen.queryByRole("heading", { name: "Start a campaign" }),
+      ).toBeNull();
+      expect(app.backend.callsTo(ENTITY)).toHaveLength(0);
+    },
+  );
+
   it("waits for the platform identity before reading its private directory", async () => {
     let own: unknown = {
       status: 503,

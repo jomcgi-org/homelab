@@ -1,10 +1,12 @@
 import { lazy, Suspense } from "react";
 import { Outlet, Route, Routes } from "react-router";
+import { Button } from "@astryxdesign/core/Button";
 import { Skeleton } from "@astryxdesign/core/Skeleton";
 import { useLobby } from "./api/lobby";
 import { ChunkBoundary } from "./app/ChunkBoundary";
 import { Loaded } from "./app/Loaded";
 import { Page } from "./app/Page";
+import { gateway } from "./app/paths";
 import { NotFound } from "./screens/NotFound";
 import { Lobby } from "./screens/lobby/Lobby";
 
@@ -61,7 +63,13 @@ function GrimoireIdentity() {
   const lobby = useLobby();
   if (lobby.data) return <Outlet />;
   return (
-    <Page title="Grimoire" showFeedback={false}>
+    <Page
+      title="Grimoire"
+      showFeedback={false}
+      actions={
+        <Button label="Sign out" variant="ghost" href={gateway.signOut} />
+      }
+    >
       <Loaded query={lobby} what="your account">
         {() => null}
       </Loaded>
