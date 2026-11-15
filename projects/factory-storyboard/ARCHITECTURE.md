@@ -1,31 +1,26 @@
 # Factory storyboard
 
-The browser reads versioned, sanitized snapshots. It has no connection to
-private factory APIs. The current package serves invented fixtures in Vite
-development; its production build is static and has no snapshot files.
+The storyboard reads versioned, sanitized snapshots without connecting to
+private factory APIs. This first part of
+[HOME-68](https://factory-plan.jomcgi.dev/factory/issue/HOME-68) defines the
+wire contract and invented fixtures. The Astryx reader follows separately.
 
-**Why.** [HOME-68](https://factory-plan.jomcgi.dev/factory/issue/HOME-68)
-separates the new public contract from the retiring monolith publication
-payloads. A mutable manifest points to immutable objects so each publication
-can identify its current records, readers can reuse unchanged objects, and
-one unavailable transcript does not make a goal unreadable. Hashes establish
-byte identity, not publisher authenticity. The later publisher and Worker
-own the publication and origin boundaries.
+**Why.** The contract replaces the monolith's publication payloads. A mutable
+manifest points to immutable objects so a publication identifies its current
+records, readers can reuse unchanged objects, and an unavailable transcript
+does not make a goal unreadable. Hashes establish byte identity, not publisher
+authenticity. The later publisher and Worker own the publication and origin
+boundaries.
 
 The JSON Schema is the wire contract. The TypeScript types describe the same
-records. The browser interprets the schema's supported keywords without
-runtime code generation, verifies hashes, and accepts only typed IDs for
-links. A withheld turn's schema excludes every content field. Narrative
-numbers are filled from the current story stats.
+records. Readers must validate objects, verify hashes and construct links
+only from typed IDs. A withheld turn's schema excludes every content field.
+Narrative numbers come from the current story stats. Snapshot text must never
+become HTML, Markdown, CSS or a URL.
 
-Astryx's built neutral theme and Vite's extracted stylesheet satisfy
-`style-src 'self'`. Charts are SVG with a table for each series. No snapshot
-text becomes HTML, Markdown, CSS or a URL. Browser routes retain native
-anchors and disclosure controls.
+The independent schema test validates the fixtures with draft-07 JSON Schema,
+checks their hashes and cross-links, and exercises rejected inputs. The
+[README](README.md) describes fixture updates and the future Worker contract.
 
-| Direction | Work |
-| --- | --- |
-| Publisher, Garage-to-R2 mirror, narrative agent and Worker | Later slices of [HOME-65](https://factory-plan.jomcgi.dev/factory/issue/HOME-65) |
-
-The [README](README.md) describes the snapshot format, fixture updates and
-the Worker serving contract.
+The publisher, Garage-to-R2 mirror, narrative agent and Worker are later
+slices of [HOME-65](https://factory-plan.jomcgi.dev/factory/issue/HOME-65).
