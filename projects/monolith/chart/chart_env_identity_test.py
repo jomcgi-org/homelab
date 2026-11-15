@@ -1469,8 +1469,43 @@ def test_calendar_feed_is_job_only_and_keeps_its_secret_producer(environment, re
     assert producer["spec"]["itemPath"] == "vaults/k8s-homelab/items/private-homepage"
 
 
-def test_codex_synthetic_uses_release_derived_internal_api():
-    docs = _cron_docs(_render("alternate", [], namespace="another-namespace"))
+_EMBERVM_JOBS = (
+    "faas-reconcile",
+    "ember-codex-session-synthetic",
+    "ember-spark-session-synthetic",
+)
+
+
+def _embervm_url_values(tmp_path, url):
+    path = tmp_path / "embervm-url.yaml"
+    path.write_text(yaml.safe_dump({"semgrep": {"embervmUrl": url}}))
+    return path
+
+
+def test_embervm_jobs_suspend_without_an_embervm_url(tmp_path):
+    """An EmberVM job has nothing to call without EMBERVM_URL, so clearing
+    semgrep.embervmUrl suspends it in the same sync, whatever its own flag."""
+    configured = _cron_docs(
+        _render("monolith", [_embervm_url_values(tmp_path, "http://embervm.test")])
+    )
+    cleared = _cron_docs(_render("monolith", [_embervm_url_values(tmp_path, "")]))
+    for name in _EMBERVM_JOBS:
+        assert configured[name]["spec"]["suspend"] is False, name
+        assert cleared[name]["spec"]["suspend"] is True, name
+    others = set(configured) - set(_EMBERVM_JOBS)
+    assert others
+    for name in others:
+        assert cleared[name]["spec"]["suspend"] == configured[name]["spec"]["suspend"]
+
+
+def test_codex_synthetic_uses_release_derived_internal_api(tmp_path):
+    docs = _cron_docs(
+        _render(
+            "alternate",
+            [_embervm_url_values(tmp_path, "http://embervm.test")],
+            namespace="another-namespace",
+        )
+    )
     job = docs["ember-codex-session-synthetic"]
     workflow = job["spec"]["workflowSpec"]
     container = workflow["templates"][0]["container"]
@@ -1484,8 +1519,7 @@ def test_codex_synthetic_uses_release_derived_internal_api():
         }
     ]
     assert job["spec"]["schedules"] == ["0 * * * *"]
-    # Suspended since EmberVM, which ran the probed sessions, left the hub.
-    assert job["spec"]["suspend"] is True
+    assert job["spec"]["suspend"] is False
     assert job["spec"]["concurrencyPolicy"] == "Forbid"
     assert workflow["activeDeadlineSeconds"] == 300
     assert container["resources"] == {"requests": {"cpu": "100m", "memory": "256Mi"}}
@@ -1506,6 +1540,7 @@ def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
     names = (
         "monolith",
+        "embervm",
         "monolith-public",
         "monolith-agents",
         "scotland-connector",

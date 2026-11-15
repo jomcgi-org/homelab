@@ -7,9 +7,14 @@ one source of truth for the agent-lane probes.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from ember_public.synthetic import read_probe
+
+# The probes run against EMBERVM_URL. Unset means this deployment has no
+# EmberVM, so a stale or failed latch says nothing about it.
+EMBERVM_URL_ENV = "EMBERVM_URL"
 
 # The Codex lane synthetic runs hourly (the ember-codex-session-synthetic
 # CronWorkflow, see the jobs.cronWorkflows entry). 2.5x that cadence, so a
@@ -25,6 +30,13 @@ def synthetic_probe_health(demo: str, staleness_s: float):
     """Build a health component backed by one synthetic probe latch row."""
 
     async def check() -> dict:
+        if not os.environ.get(EMBERVM_URL_ENV, "").strip():
+            return {
+                "ok": True,
+                "status": "unknown",
+                "detail": "EmberVM is not configured on this deployment",
+                "trace_id": None,
+            }
         row = await read_probe(demo)
         # Fail open on bootstrap: a missing row means the prober has not run
         # yet (or the table is not migrated yet on a fresh database).

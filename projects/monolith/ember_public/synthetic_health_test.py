@@ -6,6 +6,31 @@ import ember_public.health as health
 from ember_public.synthetic_models import EmberSyntheticProbe
 
 
+@pytest.fixture(autouse=True)
+def _embervm_configured(monkeypatch):
+    monkeypatch.setenv(health.EMBERVM_URL_ENV, "http://embervm.test:8080")
+
+
+@pytest.mark.asyncio
+async def test_no_embervm_reports_unknown_even_with_a_failed_latch(monkeypatch):
+    """Once EmberVM is removed its probe is suspended and its last latch only
+    ages or stays failed, so the component must not fail /api/health."""
+
+    async def read(_):
+        return _row(ok=False, detail="connection refused")
+
+    monkeypatch.setattr(health, "read_probe", read)
+    monkeypatch.delenv(health.EMBERVM_URL_ENV)
+    assert await health.synthetic_probe_health(
+        "codex", health.EMBER_CODEX_STALENESS_S
+    )() == {
+        "ok": True,
+        "status": "unknown",
+        "detail": "EmberVM is not configured on this deployment",
+        "trace_id": None,
+    }
+
+
 def _row(**kwargs):
     values = {
         "demo": "codex",

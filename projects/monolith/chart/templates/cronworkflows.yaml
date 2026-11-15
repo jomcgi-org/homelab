@@ -53,6 +53,10 @@ spec:
   concurrencyPolicy: {{ .concurrencyPolicy | default "Forbid" }}
   {{- if .knowledgePublishFacts }}
   suspend: {{ $.Values.knowledge.publishFacts.suspend }}
+  {{- else if and .embervm (not $.Values.semgrep.embervmUrl) }}
+  {{- /* An EmberVM job has nothing to call without EMBERVM_URL, so it
+         suspends in the same sync that clears the URL. */}}
+  suspend: true
   {{- else }}
   suspend: {{ .suspend | default false }}
   {{- end }}
