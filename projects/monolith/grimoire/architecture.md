@@ -92,6 +92,17 @@ the database trigger and return 500. Row locking keeps the route's conflict
 response consistent with the stored state. PostgreSQL tests inspect waiting
 transactions and verify stale ORM rows cannot overwrite a decision (#7965).
 
+Draft edits may include `expected_updated_at`, the unchanged timestamp returned
+with the draft. The route checks it after locking and refreshing the version;
+a mismatch returns 409 without changing the saved sheet. Every successful edit
+advances the timestamp, including when the application clock has not advanced.
+The field is optional for older clients and is never part of the stored sheet.
+
+**Why.** Status locking alone permits two tabs to overwrite each other's draft
+fields. The browser sends the revision it edited so a save between the latest
+poll and the PATCH cannot silently replace another tab's changes. PostgreSQL
+tests cover cached ORM state and two writers waiting on the same draft row.
+
 ### Shared corpus and play state
 
 The `grimoire` schema uses a typed entity spine rather than the standalone
@@ -401,8 +412,10 @@ DM entries include `player_character_id`; player entries never carry other PC
 or member attribution IDs. Non-silent revocation keeps an identity-only entry
 marked `retracted`. Silent revocation drops entries whose current
 `KnowledgeGrant` pair no longer exists. A later re-grant restores the entry.
-Downgrades emit no event: Learned records what the player saw, including a
-historical snapshot that can be broader than today's grant.
+Changing a grant's scope or its partial details retracts the earlier reveal
+snapshots. During an active or paused session the update appends a replacement
+with the new projection. Learned therefore loses the earlier details and uses
+that replacement; without a current session no replacement is appended.
 
 **Why.** Silent revocation events deliberately contain no entity identity.
 Current grant pairs remove the earlier live snapshot without adding identity
@@ -452,9 +465,11 @@ has an active or paused session. Creation defaults an omitted
 `granted_in_session` to that session; an explicit session is preserved, while
 the event always targets the current session. Grant and event share one
 transaction. The event's author is the DM member and its audience is the
-grantee PC. Scope upgrades emit only for a strict increase in
-`name_only < partial < full`, after applying `revealed_details`. Downgrades,
-same-scope edits and details-only edits emit nothing.
+grantee PC. An update that changes scope in either direction, or changes the
+details of a partial grant, retracts the matching historical reveals and
+appends the new grantee projection when a current session exists. An unchanged
+scope and unchanged partial details append nothing. Retraction also updates
+dependent embeddings and facts in the same transaction.
 
 Each reveal body has exactly `entity_id`, `name`, `entity_type`, and
 `grant_scope`. Full and partial bodies also have `entity`, computed through
@@ -715,8 +730,27 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   `src/api/session.ts`). While the tab is visible and the session has not
   ended, it fetches events after the last sequence number it holds every two
   seconds and re-reads the whole feed every fifteen, because a retraction
-  edits an old event in place. The lobby, the session list, the voice map and
-  the turn order refresh every fifteen seconds; approved sheets every sixty.
+  edits an old event in place. Members and sheet histories refresh every five
+  seconds, so open rosters receive membership changes and open sheets receive
+  submissions or DM decisions. The lobby keeps its fifteen-second refresh and
+  characters keep their on-demand reads; neither access check is accelerated. The
+  session's approved mechanics and roll bonuses use the same
+  history query as the sheet editor and take only the newest approved version.
+  A sheet refresh updates a clean editor. A dirty editor merges changes to
+  different fields against its prior saved snapshot; conflicting fields block
+  saving and submission until the player chooses their edits or the saved
+  values. Browser draft updates carry that snapshot's `expected_updated_at`.
+  A rejected stale save refreshes the history without automatically retrying
+  the old payload. If another tab submits the version, unsaved edits remain
+  visible in a read-only, copyable buffer; saving stays unavailable while the
+  version is submitted. A return restores those edits to the editor, and an
+  explicit discard removes the buffer.
+  This buffer does not survive the existing character access or viewer boundary.
+  Reassignment of a dirty sheet and any recovery after access loss await the
+  decision in [#8001](https://github.com/jomcgi-org/homelab/issues/8001).
+  The active session list, voice map and turn order refresh every fifteen
+  seconds. With no active session, the session list refreshes every two seconds
+  so players see the DM start or resume.
   A new event refreshes the journal, and a `turn` event refreshes the turn
   order. Inventory, notes, voices, initiative, grants and reveals call their
   own API routes. The table waits for its first feed and turn order reads,

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@astryxdesign/core/Button";
 import { Grid } from "@astryxdesign/core/Grid";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -10,6 +11,9 @@ import {
 import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Text } from "@astryxdesign/core/Text";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { useToast } from "@astryxdesign/core/Toast";
+import { useAnnounce, useClipboard } from "@astryxdesign/core/hooks";
 import type { CharacterSheetV1 } from "../../api/schema";
 import {
   ABILITIES,
@@ -25,15 +29,23 @@ import {
 import { Loaded } from "../../app/Loaded";
 import { useAction } from "../../app/useAction";
 import { previewSheet } from "../../lib/sheet-preview.js";
+import {
+  describeSheet,
+  fieldValue,
+  mergeSheet,
+  sheetFields,
+  takeSavedFields,
+  withNumericText,
+  type NumericText,
+  type SheetField,
+} from "./merge";
 
 interface SheetFormProps {
   campaignId: string;
   characterId: string;
   characterName: string;
-  /** The open draft, when there is one. Saving without it starts a version. */
-  draft: SheetVersion | null;
-  /** The facts the form starts from: the latest version's, or none. */
-  base: CharacterSheetV1 | null;
+  /** Latest authoritative version, including its status and save revision. */
+  version: SheetVersion | null;
 }
 
 // A long list gets a search box inside the same control.
@@ -106,13 +118,38 @@ function Editor({
   campaignId,
   characterId,
   characterName,
-  draft,
-  base,
+  version,
   options,
 }: SheetFormProps & { options: SheetOptions }) {
-  const [saved] = useState(() => facts(base));
+  const [seenVersion, setSeenVersion] = useState(version);
+  const [saved, setSaved] = useState(() => facts(version?.sheet ?? null));
   const [sheet, setSheet] = useState(saved);
+  const [conflicts, setConflicts] = useState<SheetField[]>([]);
+  const [numericText, setNumericText] = useState<NumericText>({});
   const [checked, setChecked] = useState(false);
+  const local = withNumericText(sheet, numericText);
+  // Compare both sets of changes with the previous saved snapshot. A poll
+  // must never turn untouched, old fields into deliberate local edits.
+  if (seenVersion !== version) {
+    const next = facts(version?.sheet ?? null);
+    const merged = mergeSheet(
+      saved,
+      local,
+      next,
+      conflicts,
+      Object.keys(numericText) as SheetField[],
+    );
+    setSeenVersion(version);
+    setSaved(next);
+    setSheet(merged.sheet);
+    setConflicts(merged.conflicts);
+  }
+  const client = useQueryClient();
+  const announce = useAnnounce();
+  const clipboard = useClipboard();
+  const toast = useToast();
+  const draft = version?.status === "draft" ? version : null;
+  const locked = version?.status === "submitted";
   const invalidate = [keys.sheets(campaignId, characterId)];
   const save = useAction(saveDraft, { invalidate, success: "Draft saved." });
   const submit = useAction(submitDraft, {
@@ -120,11 +157,26 @@ function Editor({
     success: "Submitted to the DM.",
   });
 
-  const ancestry = named(options.ancestries, sheet.ancestry);
-  const characterClass = named(options.classes, sheet.class_name);
-  const preview = previewSheet(sheet, characterClass);
+  const ancestry = named(options.ancestries, local.ancestry);
+  const characterClass = named(options.classes, local.class_name);
+  const preview = previewSheet(local, characterClass);
   const complete = ancestry !== null && characterClass !== null;
-  const unsaved = JSON.stringify(sheet) !== JSON.stringify(saved);
+  const unsaved =
+    JSON.stringify(local) !== JSON.stringify(saved) ||
+    Object.entries(numericText).some(
+      ([name, value]) =>
+        value !== String(fieldValue(saved, name as SheetField)),
+    );
+  useEffect(() => {
+    if (locked && unsaved)
+      announce(
+        "This version was submitted. Your unsaved changes are kept for copying or a later return.",
+      );
+    else if (conflicts.length)
+      announce(
+        "Another tab changed the same sheet fields. Resolve the changes before saving.",
+      );
+  }, [announce, locked, unsaved, conflicts.length]);
 
   const choice = (
     what: "ancestry" | "class",
@@ -147,20 +199,42 @@ function Editor({
   const noChoices =
     options.ancestries.length === 0 || options.classes.length === 0;
 
-  const setScore = (ability: Ability) => (value: number) =>
-    setSheet({
-      ...sheet,
-      ability_scores: { ...sheet.ability_scores, [ability]: value },
+  const clearNumeric = (name: "level" | Ability) =>
+    setNumericText((current) => {
+      const next = { ...current };
+      delete next[name];
+      return next;
     });
-  const onSave = () => {
+  const setScore = (ability: Ability) => (value: number) => {
+    setSheet({
+      ...local,
+      ability_scores: { ...local.ability_scores, [ability]: value },
+    });
+    clearNumeric(ability);
+  };
+  const onSave = async () => {
     setChecked(true);
-    if (!complete) return;
-    save.run({
+    if (
+      !complete ||
+      locked ||
+      conflicts.length ||
+      save.isPending ||
+      submit.isPending
+    )
+      return;
+    const result = await save.run({
       campaignId,
       characterId,
       versionId: draft?.id ?? null,
-      sheet,
+      sheet: local,
+      expectedUpdatedAt: draft?.updated_at ?? null,
     });
+    // A stale-revision or status conflict requires fresh facts, not an
+    // automatic retry with an old payload. Keep the local buffer meanwhile.
+    if (!result)
+      await client.invalidateQueries({
+        queryKey: keys.sheets(campaignId, characterId),
+      });
   };
   const { saving_throw_bonuses: saves, proficient_saves: proficient } = preview;
   const classItems = saves &&
@@ -179,9 +253,106 @@ function Editor({
       )),
     ];
   // One primary action: submit once the draft is saved, save until then.
-  const readyToSubmit = draft !== null && !unsaved && complete;
+  const readyToSubmit =
+    draft !== null && !unsaved && complete && conflicts.length === 0;
+  if (locked) {
+    if (!unsaved) return null;
+    const copyText = describeSheet(local, numericText);
+    return (
+      <VStack gap={3} as="section" aria-label="Unsaved sheet changes">
+        <Heading level={4}>Your unsaved changes are kept</Heading>
+        <Text type="body">
+          This version was submitted in another tab. Copy your edits before
+          leaving, or continue editing if the DM returns it.
+        </Text>
+        <TextArea
+          label="Your unsaved sheet changes"
+          value={copyText}
+          isReadOnly
+          rows={10}
+        />
+        <HStack gap={2} wrap="wrap">
+          <Button
+            label="Copy my unsaved changes"
+            onClick={async () => {
+              const copied = await clipboard.copy(copyText);
+              toast(
+                copied
+                  ? { body: "Unsaved sheet changes copied." }
+                  : {
+                      body: "Could not copy. Select the text above and copy it manually.",
+                      type: "error",
+                    },
+              );
+            }}
+          />
+          <Button
+            label="Discard my unsaved changes"
+            variant="secondary"
+            onClick={() => {
+              setSheet(saved);
+              setNumericText({});
+              setConflicts([]);
+            }}
+          />
+        </HStack>
+      </VStack>
+    );
+  }
+  // Observe native input in the bubble phase. A capture-phase parent update
+  // can restore the old value before NumberInput receives its change event.
   return (
-    <VStack gap={4}>
+    <VStack
+      gap={4}
+      onInput={(event: FormEvent<HTMLDivElement>) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement)) return;
+        const name = input.name;
+        const text = input.value;
+        if (
+          name === "level" ||
+          ABILITIES.some((ability) => ability.name === name)
+        )
+          setNumericText((current) => ({ ...current, [name]: text }));
+      }}
+    >
+      {conflicts.length > 0 && (
+        <VStack gap={2} as="section" aria-label="Resolve sheet changes">
+          <Text type="body">
+            This sheet changed in another tab. Choose which values to keep
+            before saving.
+          </Text>
+          {sheetFields
+            .filter(({ name }) => conflicts.includes(name))
+            .map(({ name, label }) => (
+              <Text key={name} type="body">
+                {label}: your edit {fieldValue(local, name)}; saved value{" "}
+                {fieldValue(saved, name)}.
+              </Text>
+            ))}
+          <HStack gap={2} wrap="wrap">
+            <Button
+              label="Keep my conflicting edits"
+              onClick={() => setConflicts([])}
+            />
+            <Button
+              label="Use saved values"
+              variant="secondary"
+              onClick={() => {
+                setSheet(takeSavedFields(local, saved, conflicts));
+                setNumericText((current) =>
+                  Object.fromEntries(
+                    Object.entries(current).filter(
+                      ([name]) => !conflicts.includes(name as SheetField),
+                    ),
+                  ),
+                );
+                setConflicts([]);
+              }}
+            />
+          </HStack>
+        </VStack>
+      )}
       <Grid columns={{ minWidth: 220, max: 2, repeat: "fit" }} gap={3}>
         <VStack gap={1}>
           <Selector
@@ -199,7 +370,11 @@ function Editor({
             )}
             statusVariant="detached"
             hasSearch={options.ancestries.length >= SEARCH_FROM}
-            isDisabled={options.ancestries.length === 0}
+            isDisabled={
+              options.ancestries.length === 0 ||
+              save.isPending ||
+              submit.isPending
+            }
             width="100%"
           />
           {ancestry && ancestryFacts(ancestry) && (
@@ -222,7 +397,9 @@ function Editor({
             )}
             statusVariant="detached"
             hasSearch={options.classes.length >= SEARCH_FROM}
-            isDisabled={options.classes.length === 0}
+            isDisabled={
+              options.classes.length === 0 || save.isPending || submit.isPending
+            }
             width="100%"
           />
           {characterClass && classFacts(characterClass) && (
@@ -232,8 +409,14 @@ function Editor({
       </Grid>
       <NumberInput
         label="Level"
+        htmlName="level"
+        onBlur={() => clearNumeric("level")}
         value={sheet.level}
-        onChange={(level) => setSheet({ ...sheet, level })}
+        onChange={(level) => {
+          setSheet({ ...local, level });
+          clearNumeric("level");
+        }}
+        isDisabled={save.isPending || submit.isPending}
         min={BOUNDS.level.min}
         max={BOUNDS.level.max}
         isIntegerOnly
@@ -251,9 +434,12 @@ function Editor({
             <NumberInput
               key={name}
               label={label}
+              htmlName={name}
+              onBlur={() => clearNumeric(name)}
               description={`Modifier ${signed(preview.ability_modifiers[name])}`}
               value={sheet.ability_scores[name]}
               onChange={setScore(name)}
+              isDisabled={save.isPending || submit.isPending}
               min={BOUNDS.score.min}
               max={BOUNDS.score.max}
               isIntegerOnly
@@ -291,7 +477,12 @@ function Editor({
           label={draft ? "Save draft" : "Start new draft"}
           variant={readyToSubmit ? "secondary" : "primary"}
           isLoading={save.isPending}
-          isDisabled={noChoices}
+          isDisabled={
+            noChoices ||
+            conflicts.length > 0 ||
+            save.isPending ||
+            submit.isPending
+          }
           onClick={onSave}
         />
         {draft && (

@@ -2,9 +2,10 @@
  * The live table: sessions, the event feed and the commands a seat can send.
  *
  * Polling is tiered. The feed asks only for events after the last one it
- * holds, every two seconds while the tab is visible. Slower reads (characters,
- * sheets, voices, members, the lobby) refresh every fifteen seconds, and the
- * journal and turn order refresh when an event that changes them arrives.
+ * holds, every two seconds while the tab is visible. Members and sheet histories
+ * refresh every five seconds; voices and the lobby every fifteen seconds.
+ * Characters retain their on-demand reads. The journal and turn order refresh
+ * when an event that changes them arrives.
  */
 import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,8 +43,6 @@ const PAGE = 500;
 export const sessionKeys = {
   sessions: (campaignId: string) =>
     ["campaign", campaignId, "sessions"] as const,
-  sheets: (campaignId: string, characterId: string) =>
-    ["campaign", campaignId, "sheets", characterId] as const,
   voices: (campaignId: string) => ["campaign", campaignId, "voices"] as const,
   session: (campaignId: string, sessionId: string) =>
     ["campaign", campaignId, "session", sessionId] as const,
@@ -82,14 +81,6 @@ export const useVoices = (campaignId: string) =>
       }),
     refetchInterval: SLOW_MS,
   });
-
-/** The numbers the table shows from a character's latest approved sheet. */
-export interface ApprovedSheet {
-  max_hit_points?: number;
-  unarmored_armor_class?: number;
-  ability_modifiers?: Record<string, number>;
-  [key: string]: unknown;
-}
 
 async function eventsAfter(
   campaignId: string,

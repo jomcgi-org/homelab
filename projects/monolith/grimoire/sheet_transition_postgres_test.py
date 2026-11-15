@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 from threading import Event
 from types import SimpleNamespace
 from uuid import uuid4
@@ -124,7 +125,9 @@ def _transition(lane, session, operation, *, level=6):
     if operation == "edit":
         return routes.update_character_sheet_draft(
             *arguments,
-            CharacterSheetV1.model_validate({**lane.sheet, "level": level}),
+            routes.CharacterSheetDraftUpdate.model_validate(
+                {**lane.sheet, "level": level}
+            ),
             lane.player_email,
             session,
         )
@@ -260,3 +263,110 @@ def test_sheet_transitions_serialize_on_the_version_row(
     else:
         assert version["status"] == "approved"
         assert pc["sheet"] == version["sheet"]
+
+
+def _edit_with_revision(lane, session, revision, **changes):
+    return routes.update_character_sheet_draft(
+        lane.campaign_id,
+        lane.pc_id,
+        lane.version_id,
+        routes.CharacterSheetDraftUpdate.model_validate(
+            {**lane.sheet, **changes, "expected_updated_at": revision}
+        ),
+        lane.player_email,
+        session,
+    )
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_stale_draft_revision_preserves_the_other_tabs_changes(lane, cached):
+    initial, _ = _snapshot(lane)
+    with Session(lane.engine("stale-edit")) as stale:
+        if cached:
+            cached_version = stale.get(CharacterSheetVersion, lane.version_id)
+            assert cached_version.updated_at == initial["updated_at"]
+        with Session(lane.engine("winning-edit")) as winner:
+            _edit_with_revision(
+                lane,
+                winner,
+                initial["updated_at"],
+                ability_scores={**lane.sheet["ability_scores"], "strength": 18},
+            )
+        before = _snapshot(lane)
+        with pytest.raises(HTTPException) as caught:
+            _edit_with_revision(lane, stale, initial["updated_at"], level=6)
+        assert caught.value.status_code == 409
+        assert caught.value.detail == (
+            "This sheet changed since you opened it. "
+            "Review the latest version before saving."
+        )
+        stale.rollback()
+        assert _snapshot(lane) == before
+        assert before[0]["sheet"]["ability_scores"]["strength"] == 18
+        assert before[0]["sheet"]["level"] == 5
+
+
+def test_concurrent_draft_edits_check_revision_after_the_row_lock(lane, monkeypatch):
+    initial, _ = _snapshot(lane)
+    first_read = Event()
+    release_first = Event()
+    second_started = Event()
+    pids = {}
+    original = routes._get_sheet_version_or_404
+
+    def hold_first(session, *args, **kwargs):
+        version = original(session, *args, **kwargs)
+        if session.info.get("sheet_actor") == "first":
+            first_read.set()
+            assert release_first.wait(WAIT_SECONDS + 5)
+        return version
+
+    monkeypatch.setattr(routes, "_get_sheet_version_or_404", hold_first)
+
+    def run(actor, level):
+        with Session(lane.engine(actor)) as session:
+            session.info["sheet_actor"] = actor
+            pids[actor] = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            if actor == "second":
+                second_started.set()
+            try:
+                _edit_with_revision(lane, session, initial["updated_at"], level=level)
+                return 200
+            except HTTPException as exc:
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(run, "first", 6)
+        try:
+            assert first_read.wait(WAIT_SECONDS)
+            second = pool.submit(run, "second", 7)
+            assert second_started.wait(WAIT_SECONDS)
+            _wait_for_blocker(lane, pids["second"], pids["first"], second)
+        finally:
+            release_first.set()
+        assert first.result(timeout=WAIT_SECONDS) == 200
+        assert second.result(timeout=WAIT_SECONDS) == 409
+    version, _ = _snapshot(lane)
+    assert version["sheet"]["level"] == 6
+    assert version["updated_at"] > initial["updated_at"]
+    assert "expected_updated_at" not in version["sheet"]
+
+
+def test_draft_edit_without_revision_remains_backward_compatible(lane):
+    with Session(lane.observer) as session:
+        edited = _edit_with_revision(lane, session, None, level=6)
+        assert edited.sheet == {**lane.sheet, "level": 6}
+
+
+def test_draft_revision_advances_when_clock_does_not(lane, monkeypatch):
+    initial, _ = _snapshot(lane)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return initial["updated_at"].astimezone(tz or timezone.utc)
+
+    monkeypatch.setattr(routes, "datetime", FrozenDatetime)
+    with Session(lane.observer) as session:
+        saved = _edit_with_revision(lane, session, initial["updated_at"], level=6)
+        assert saved.updated_at > initial["updated_at"]

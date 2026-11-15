@@ -218,6 +218,7 @@ describe("Character sheets, as the player", () => {
     expect(call?.params.sheet_version_id).toBe(versionIds.fresh);
     expect(call?.body).toEqual({
       ...miraSheet,
+      expected_updated_at: miraDraft.updated_at,
       ability_scores: { ...miraSheet.ability_scores, wisdom: 15 },
     });
     expect(backend.callsTo(CREATE)).toHaveLength(0);
@@ -239,6 +240,7 @@ describe("Character sheets, as the player", () => {
     await waitFor(() => expect(backend.callsTo(UPDATE)).toHaveLength(1));
     expect(backend.callsTo(UPDATE)[0]?.body).toEqual({
       ...miraSheet,
+      expected_updated_at: miraDraft.updated_at,
       level: 20,
       ability_scores: {
         ...miraSheet.ability_scores,
@@ -429,6 +431,7 @@ describe("Character sheets, as the player", () => {
     await waitFor(() => expect(backend.callsTo(UPDATE)).toHaveLength(1));
     expect(backend.callsTo(UPDATE)[0]?.body).toEqual({
       ...miraSheet,
+      expected_updated_at: miraDraft.updated_at,
       class_name: "Lamplighter",
     });
   });

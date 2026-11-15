@@ -1,5 +1,5 @@
 /** Character sheet reads and writes: drafts, submission and the DM's decision. */
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "./client";
 import { keys as lobbyKeys } from "./lobby";
 import type {
@@ -103,8 +103,9 @@ const versionParams = (ref: VersionRef) => ({
   sheet_version_id: ref.versionId,
 });
 
-export const useSheetHistory = (campaignId: string, characterId: string) =>
-  useQuery({
+/** Shared by the editor and the session's approved mechanics and roll tray. */
+export const sheetHistoryOptions = (campaignId: string, characterId: string) =>
+  queryOptions({
     queryKey: keys.sheets(campaignId, characterId),
     queryFn: async (): Promise<SheetHistory> => {
       const history = await api(
@@ -113,7 +114,11 @@ export const useSheetHistory = (campaignId: string, characterId: string) =>
       );
       return { ...history, versions: history.versions.map(toVersion) };
     },
+    refetchInterval: 5_000,
   });
+
+export const useSheetHistory = (campaignId: string, characterId: string) =>
+  useQuery(sheetHistoryOptions(campaignId, characterId));
 
 /**
  * What `derive_sheet` would accept for this character: global corpus entries
@@ -131,14 +136,21 @@ export const useSheetOptions = (campaignId: string, characterId: string) =>
 
 /** Updates the open draft, or starts the next version when there is none. */
 export const saveDraft = (
-  input: CharacterRef & { versionId: string | null; sheet: CharacterSheetV1 },
+  input: CharacterRef & {
+    versionId: string | null;
+    sheet: CharacterSheetV1;
+    expectedUpdatedAt: string | null;
+  },
 ) =>
   input.versionId
     ? api(
         "PATCH /campaigns/{campaign_id}/characters/{player_character_id}/sheets/{sheet_version_id}",
         {
           params: versionParams({ ...input, versionId: input.versionId }),
-          body: input.sheet,
+          body: {
+            ...input.sheet,
+            expected_updated_at: input.expectedUpdatedAt,
+          },
         },
       )
     : api(

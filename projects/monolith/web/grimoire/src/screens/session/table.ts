@@ -4,11 +4,11 @@ import type {
   LobbyCampaignView,
   LobbyUserView,
 } from "../../api/schema";
-import type { ApprovedSheet } from "../../api/session";
+import type { SheetDerived } from "../../api/sheets";
 
 /** A character with the numbers from its latest approved sheet, if any. */
 export interface TableCharacter extends CharacterView {
-  approved: ApprovedSheet | null;
+  approved: SheetDerived | null;
 }
 
 /** Who is looking: the campaign entry carries their role and character. */

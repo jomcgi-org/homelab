@@ -208,6 +208,60 @@ def _version_count(engine) -> int:
         return len(observer.exec(select(CharacterSheetVersion)).all())
 
 
+def test_draft_patch_revision_conflict_preserves_the_saved_sheet(
+    session: Session, request_client: TestClient, table
+):
+    campaign, character = table
+    created = _post(request_client, _draft_path(campaign, character), PLAYER, _sheet())
+    assert created.status_code == 200
+    version_id = created.json()["id"]
+    path = _version_path(campaign, character, version_id)
+    engine = session.get_bind()
+    initial = _version_snapshot(engine, version_id)
+    expected_updated_at = initial["updated_at"].isoformat()
+    first = request_client.patch(
+        path,
+        headers=_auth(PLAYER),
+        json={**_sheet(level=6), "expected_updated_at": expected_updated_at},
+    )
+    assert first.status_code == 200, first.text
+    saved = _version_snapshot(engine, version_id)
+    assert saved["sheet"] == _sheet(level=6)
+    assert saved["updated_at"] > initial["updated_at"]
+
+    stale = request_client.patch(
+        path,
+        headers=_auth(PLAYER),
+        json={**_sheet(level=7), "expected_updated_at": expected_updated_at},
+    )
+    assert stale.status_code == 409
+    assert stale.json() == {
+        "detail": (
+            "This sheet changed since you opened it. "
+            "Review the latest version before saving."
+        )
+    }
+    assert _version_snapshot(engine, version_id) == saved
+
+
+@pytest.mark.parametrize("revision", ["not-a-date", "2026-01-01T00:00:00"])
+def test_draft_patch_requires_a_timestamp_with_timezone_when_supplied(
+    session: Session, request_client: TestClient, table, revision
+):
+    campaign, character = table
+    created = _post(request_client, _draft_path(campaign, character), PLAYER, _sheet())
+    assert created.status_code == 200
+    version_id = created.json()["id"]
+    before = _version_snapshot(session.get_bind(), version_id)
+    response = request_client.patch(
+        _version_path(campaign, character, version_id),
+        headers=_auth(PLAYER),
+        json={**_sheet(level=6), "expected_updated_at": revision},
+    )
+    assert response.status_code == 422
+    assert _version_snapshot(session.get_bind(), version_id) == before
+
+
 _BAD_CLASS_FACTS = [
     pytest.param(key, facts, detail, id=f"{key}-{case}")
     for key, valid_other, values, detail in (
