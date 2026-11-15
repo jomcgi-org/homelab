@@ -70,7 +70,8 @@ type Relay struct {
 	Logger          *slog.Logger
 	MaxRequestBytes int64
 	// StreamIdleTimeout cancels an upstream response that sends nothing
-	// for this long.
+	// for this long. It also caps the total time spent reading each 401
+	// or 429 body, even if bytes keep arriving.
 	StreamIdleTimeout time.Duration
 	// MaxConcurrent caps requests in flight to the backend.
 	MaxConcurrent int
@@ -224,11 +225,7 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if !ok {
 		return failure
 	}
-	// The upstream context is cancelled when the actor goes away or the
-	// stream idles past StreamIdleTimeout.
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	resp, err := rl.forward(ctx, r, rt, body, tok)
+	resp, err := rl.forward(r.Context(), r, rt, body, tok)
 	if err != nil {
 		return rl.upstreamFailure(w, r, err)
 	}
@@ -236,6 +233,9 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		// The backend refused the access token. Replace it once, sharing
 		// the refresh with concurrent callers, and retry.
 		drain(resp)
+		if err := r.Context().Err(); err != nil {
+			return rl.upstreamFailure(w, r, err)
+		}
 		retry, err := rl.Tokens.RefreshRejected(r.Context(), tok.AccessToken)
 		switch {
 		case errors.Is(err, grant.ErrLoginRequired):
@@ -244,13 +244,16 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 			w.Header().Set("Retry-After", "60")
 			return writeError(w, http.StatusServiceUnavailable, ErrGrantUnavailable, "grant_unavailable", nil)
 		}
-		if resp, err = rl.forward(ctx, r, rt, body, retry); err != nil {
+		if resp, err = rl.forward(r.Context(), r, rt, body, retry); err != nil {
 			return rl.upstreamFailure(w, r, err)
 		}
 		if resp.StatusCode == http.StatusUnauthorized {
 			// A freshly refreshed token refused again is not proof the
 			// refresh token is dead; only invalid_grant is.
 			drain(resp)
+			if err := r.Context().Err(); err != nil {
+				return rl.upstreamFailure(w, r, err)
+			}
 			rl.Logger.Error("codex backend refused a freshly refreshed token", "grant", rl.Tokens.Grant())
 			w.Header().Set("Retry-After", "60")
 			return writeError(w, http.StatusServiceUnavailable, ErrGrantUnavailable, "grant_unavailable", nil)
@@ -263,13 +266,19 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		rl.quotaRec.record(obs, rl.now().UTC())
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		errBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		if r.Context().Err() != nil {
+			return rl.upstreamFailure(w, r, r.Context().Err())
+		}
 		if isUsageLimit(obs, errBody) {
 			return writeQuota(w, latestReset(obs))
 		}
+		if err != nil {
+			return rl.upstreamFailure(w, r, err)
+		}
 		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 	}
-	return rl.stream(w, resp, cancel)
+	return rl.stream(w, resp)
 }
 
 func (rl *Relay) upstreamFailure(w http.ResponseWriter, r *http.Request, err error) outcome {
@@ -347,6 +356,9 @@ func (rl *Relay) withEffort(r *http.Request, body []byte) []byte {
 }
 
 func (rl *Relay) forward(ctx context.Context, r *http.Request, rt route, body []byte, tok grant.Token) (*http.Response, error) {
+	// Each attempt owns its cancellation. A timed-out 401 drain must not
+	// cancel token refresh or the next attempt.
+	ctx, cancel := context.WithCancel(ctx)
 	target := strings.TrimRight(rl.Upstream, "/") + "/" + rt.suffix
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
@@ -357,6 +369,7 @@ func (rl *Relay) forward(ctx context.Context, r *http.Request, rt route, body []
 	}
 	req, err := http.NewRequestWithContext(ctx, rt.method, target, reader)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	for name, values := range r.Header {
@@ -370,16 +383,56 @@ func (rl *Relay) forward(ctx context.Context, r *http.Request, rt route, body []
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	idle := rl.streamIdleTimeout()
+	readerBody := &responseBody{
+		ReadCloser: resp.Body,
+		cancel:     cancel,
+		timer:      time.AfterFunc(idle, cancel),
+		idle:       idle,
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests {
+		// These bodies are drained or buffered with a 64 KiB limit. Give
+		// them a fixed time budget too, including a trickling error body.
+		readerBody.idle = 0
+	}
+	resp.Body = readerBody
+	return resp, nil
+}
+
+// responseBody starts its watchdog at response headers, before any read.
+// A zero idle keeps the fixed deadline; otherwise progress resets it.
+type responseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	timer  *time.Timer
+	idle   time.Duration
+}
+
+func (b *responseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 && b.idle > 0 {
+		b.timer.Reset(b.idle)
+	}
+	if err != nil {
+		b.timer.Stop()
+	}
+	return n, err
+}
+
+func (b *responseBody) Close() error {
+	b.timer.Stop()
+	b.cancel()
+	return b.ReadCloser.Close()
 }
 
 // stream copies the response to the actor, flushing as bytes arrive so SSE
-// events are not held back. cancel aborts the upstream request when it
-// sends nothing for StreamIdleTimeout.
-func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) outcome {
-	idle := rl.streamIdleTimeout()
-	timer := time.AfterFunc(idle, cancel)
-	defer timer.Stop()
+// events are not held back. The response body owns the idle watchdog.
+func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response) outcome {
 	for name, values := range resp.Header {
 		if !hopHeaders[http.CanonicalHeaderKey(name)] {
 			w.Header()[name] = append([]string(nil), values...)
@@ -392,7 +445,6 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, cancel conte
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			timer.Reset(idle)
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return outcome{"client_canceled", resp.StatusCode}
 			}
@@ -402,7 +454,7 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, cancel conte
 			break
 		}
 		if err != nil {
-			rl.Logger.Warn("codex upstream stream ended early", "err", err, "idle_timeout", idle.String())
+			rl.Logger.Warn("codex upstream stream ended early", "err", err, "idle_timeout", rl.streamIdleTimeout().String())
 			return outcome{"upstream_stream_error", resp.StatusCode}
 		}
 	}

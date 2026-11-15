@@ -466,6 +466,174 @@ func TestRelayLimits(t *testing.T) {
 	}
 }
 
+// Use a real HTTP transport with no overall client timeout: only the relay
+// can release these reads. Each case also runs with actor cancellation and
+// a long body timeout so cancellation cannot be mistaken for the watchdog.
+func TestRelayErrorBodiesBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		statuses    []int
+		stalled     []bool
+		prefix      string
+		trickle     bool
+		quota       bool
+		wantStatus  int
+		wantCode    string
+		wantRefresh int
+	}{
+		{name: "initial_401", statuses: []int{401, 200}, stalled: []bool{true, false}, wantStatus: 200, wantRefresh: 1},
+		{name: "retried_401", statuses: []int{401, 401}, stalled: []bool{false, true}, wantStatus: 503, wantCode: ErrGrantUnavailable, wantRefresh: 1},
+		{name: "both_401", statuses: []int{401, 401}, stalled: []bool{true, true}, wantStatus: 503, wantCode: ErrGrantUnavailable, wantRefresh: 1},
+		{name: "429", statuses: []int{429}, stalled: []bool{true}, wantStatus: 502, wantCode: ErrUpstreamUnreachable},
+		{name: "retried_429", statuses: []int{401, 429}, stalled: []bool{false, true}, wantStatus: 502, wantCode: ErrUpstreamUnreachable, wantRefresh: 1},
+		{name: "quota_429", statuses: []int{429}, stalled: []bool{true}, quota: true, wantStatus: 429, wantCode: ErrQuotaExhausted},
+		{name: "quota_body_429", statuses: []int{429}, stalled: []bool{true}, prefix: `{"error":{"type":"usage_limit_reached"}}`, wantStatus: 429, wantCode: ErrQuotaExhausted},
+		{name: "partial_429", statuses: []int{429}, stalled: []bool{true}, prefix: `{"error":`, wantStatus: 502, wantCode: ErrUpstreamUnreachable},
+		{name: "trickling_401", statuses: []int{401, 200}, stalled: []bool{true, false}, trickle: true, wantStatus: 200, wantRefresh: 1},
+		{name: "trickling_429", statuses: []int{429}, stalled: []bool{true}, trickle: true, wantStatus: 502, wantCode: ErrUpstreamUnreachable},
+		{name: "streamed_500", statuses: []int{500}, stalled: []bool{true}, wantStatus: 500},
+	} {
+		for _, actorCancel := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancel=%t", tc.name, actorCancel), func(t *testing.T) {
+				h := newHarness(t, true)
+				rl := h.relayHandler()
+				rl.MaxConcurrent = 1
+				rl.StreamIdleTimeout = 100 * time.Millisecond
+				if actorCancel {
+					rl.StreamIdleTimeout = 5 * time.Second
+				}
+				stalled := make(chan struct{}, 2)
+				canceled := make(chan struct{}, 2)
+				h.backend.set(func(b *backend) {
+					b.respond = func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Query().Has("probe") {
+							sse(w, nil)
+							return
+						}
+						attempt := b.count() - 1
+						if attempt >= len(tc.statuses) {
+							t.Error("unexpected extra backend attempt")
+							w.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						if tc.statuses[attempt] == http.StatusOK {
+							// A retry after a timed-out drain must still support
+							// a stream lasting several idle intervals.
+							w.Header().Set("Content-Type", "text/event-stream")
+							for i := 0; i < 12; i++ {
+								fmt.Fprint(w, "data: {}\n\n")
+								w.(http.Flusher).Flush()
+								select {
+								case <-r.Context().Done():
+									return
+								case <-time.After(25 * time.Millisecond):
+								}
+							}
+							fmt.Fprint(w, "event: response.completed\ndata: {}\n\n")
+							return
+						}
+						if tc.quota {
+							w.Header().Set("x-codex-rate-limit-reached-type", "primary")
+						}
+						w.WriteHeader(tc.statuses[attempt])
+						if !tc.stalled[attempt] {
+							return
+						}
+						fmt.Fprint(w, tc.prefix)
+						w.(http.Flusher).Flush()
+						stalled <- struct{}{}
+						ticker := time.NewTicker(10 * time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-r.Context().Done():
+								canceled <- struct{}{}
+								return
+							case <-ticker.C:
+								if tc.trickle {
+									fmt.Fprint(w, " ")
+									w.(http.Flusher).Flush()
+								}
+							}
+						}
+					}
+				})
+				jwt := h.actorJWT()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				request := func(ctx context.Context, path string) *http.Request {
+					r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`)).WithContext(ctx)
+					r.Header.Set("Authorization", "Bearer "+jwt)
+					return r
+				}
+				wait := func(ch <-chan struct{}, what string) {
+					t.Helper()
+					select {
+					case <-ch:
+					case <-time.After(2 * time.Second):
+						t.Fatalf("timed out waiting for %s", what)
+					}
+				}
+				rec := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() {
+					rl.ServeHTTP(rec, request(ctx, "/v1/responses"))
+					close(done)
+				}()
+				wait(stalled, "error body headers")
+				busy := httptest.NewRecorder()
+				rl.ServeHTTP(busy, request(ctx, "/v1/responses?probe"))
+				if busy.Code != http.StatusServiceUnavailable || !strings.Contains(busy.Body.String(), ErrRelayBusy) {
+					t.Fatalf("request did not hold the slot: %d %s", busy.Code, busy.Body.String())
+				}
+				wantRefresh := tc.wantRefresh
+				wantCanceled := 0
+				for _, stalls := range tc.stalled {
+					if stalls {
+						wantCanceled++
+					}
+				}
+				if actorCancel {
+					wantCanceled = 1
+					if tc.stalled[0] {
+						wantRefresh = 0
+					}
+					cancel()
+				}
+				wait(done, "handler completion and slot release")
+				for i := 0; i < wantCanceled; i++ {
+					wait(canceled, "upstream cancellation")
+				}
+				if h.auth.RefreshCalls() != wantRefresh {
+					t.Fatalf("refresh calls = %d, want %d", h.auth.RefreshCalls(), wantRefresh)
+				}
+				if !actorCancel {
+					if rec.Code != tc.wantStatus || (tc.wantCode != "" && !strings.Contains(rec.Body.String(), tc.wantCode)) {
+						t.Fatalf("response = %d %s, want %d %s", rec.Code, rec.Body.String(), tc.wantStatus, tc.wantCode)
+					}
+					if tc.wantStatus == http.StatusOK && !strings.Contains(rec.Body.String(), "response.completed") {
+						t.Fatal("active retry stream was cut short")
+					}
+				} else if tc.statuses[0] != http.StatusInternalServerError {
+					if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("client_canceled", "4xx")); got != 1 {
+						t.Fatalf("client cancellation metric = %v", got)
+					}
+				}
+				if got := len(rl.slots); got != 0 {
+					t.Fatalf("held slots = %d, want 0", got)
+				}
+				probeCtx, stopProbe := context.WithTimeout(context.Background(), 2*time.Second)
+				defer stopProbe()
+				probe := httptest.NewRecorder()
+				rl.ServeHTTP(probe, request(probeCtx, "/v1/responses?probe"))
+				if probe.Code != http.StatusOK || !strings.Contains(probe.Body.String(), "response.completed") {
+					t.Fatalf("capacity was not reusable: %d %s", probe.Code, probe.Body.String())
+				}
+			})
+		}
+	}
+}
+
 func TestRelayQuota(t *testing.T) {
 	h := newHarness(t, true)
 	reset := time.Now().Add(2 * time.Hour).Truncate(time.Second)
@@ -516,6 +684,7 @@ func TestRelayPassesThroughTransient429(t *testing.T) {
 // longer than it must arrive whole.
 func TestRelayStreamOutlivesServerReadTimeout(t *testing.T) {
 	h := newHarness(t, true)
+	h.handler.StreamIdleTimeout = 250 * time.Millisecond
 	h.backend.set(func(b *backend) {
 		b.respond = func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
