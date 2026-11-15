@@ -847,6 +847,11 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	if grantFailure(a) && a.WorkItemEpoch != wi.Epoch {
 		return e.failRun(ctx, e.st.DB, r, "superseded: the work item was reassigned to another agent")
 	}
+	if grantFailure(a) {
+		if finished, err := e.finishSupersededGrantFailure(ctx, r, a); err != nil || finished {
+			return err
+		}
+	}
 	ready, err := e.ready(ctx, r, wi)
 	if err != nil || !ready {
 		return err
@@ -861,6 +866,25 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 		return e.engineeringFailure(ctx, r, wi, a, a.Error)
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
+}
+
+// finishSupersededGrantFailure resolves a failed turn that a newer run overtook
+// after unblock. It never returns the newer work to review or spends a retry.
+func (e *Engine) finishSupersededGrantFailure(ctx context.Context, r *store.Run, a *store.Attempt) (bool, error) {
+	var superseded bool
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		superseded, err = e.st.SupersededGrantFailure(ctx, tx, r, a)
+		if err != nil || !superseded {
+			return err
+		}
+		const reason = "superseded: a newer run started work on this issue"
+		if r.Connector() {
+			return e.st.SetRunState(ctx, tx, r.ID, store.RunClosed, reason)
+		}
+		return e.failRun(ctx, tx, r, reason)
+	})
+	return superseded && err == nil, err
 }
 
 // grantFailure is durable evidence that a terminal external task needs a
