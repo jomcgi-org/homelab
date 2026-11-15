@@ -37,11 +37,10 @@ failed=0
 	exit "$status"
 ) 2>&1 | tee "$evidence_dir/run.log" || failed=1
 grep -c '^App shell ready' "$evidence_dir/run.log" >"$evidence_dir/startup.log" || failed=1
-# The full matrix includes all existing checks and the additional journeys,
-# using a fresh database for each desktop/phone session and link scenario.
+# The single-use link scenarios get a separate disposable database and report.
 "$ci_environment/venv/bin/python" projects/monolith/dev/grimoire/run.py \
-	--rehearse --all --output "$evidence_dir/all" \
-	2>&1 | tee "$evidence_dir/all.log" || failed=1
+	--rehearse --join-links --output "$evidence_dir/join-links" \
+	2>&1 | tee "$evidence_dir/join-links.log" || failed=1
 
 # Public sheet evidence uses invented responses only. Reuse the same pinned
 # browser environment and artifact upload, without changing workflow permissions

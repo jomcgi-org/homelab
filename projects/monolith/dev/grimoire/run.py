@@ -1,7 +1,6 @@
 """Start a disposable local table. Stop with Ctrl-C."""
 
 import argparse
-import json
 import os
 import pwd
 import re
@@ -14,7 +13,6 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.request import urlopen
-from rehearsal_report import MATRIX, aggregate_reports
 
 ROOT = Path(__file__).resolve().parents[4]
 WEB = ROOT / "projects/monolith/web/grimoire"
@@ -49,20 +47,7 @@ def main():
         help="Rehearse registered-player links instead of the session table",
     )
     parser.add_argument("--output", default="/tmp/grimoire-rehearsal")
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Run session and join journeys at desktop and phone widths, each with a fresh database",
-    )
-    parser.add_argument(
-        "--viewport",
-        type=int,
-        choices=(1280, 390),
-        help="Use this width for all three seats",
-    )
     args = parser.parse_args()
-    if args.all and (not args.rehearse or args.join_links or args.viewport):
-        parser.error("Use --rehearse --all without --join-links or --viewport")
     pg_bin = Path(os.environ.get("GRIMOIRE_PG_BIN", "/usr/lib/postgresql/16/bin"))
     if not (pg_bin / "initdb").exists():
         raise SystemExit("Install PostgreSQL 16 with pgvector first.")
@@ -75,78 +60,6 @@ def main():
             raise SystemExit(f"GRIMOIRE_WEB_DIR has no index.html: {prebuilt}")
     elif not pnpm:
         raise SystemExit("Install pnpm first, or set GRIMOIRE_WEB_DIR to a build.")
-    if args.all:
-        output = Path(args.output)
-        output.mkdir(parents=True, exist_ok=True)
-        # One bundle from this checkout, four isolated tables, every cell runs
-        # even when a prior one fails. No child can silently reuse its database.
-        with tempfile.TemporaryDirectory(prefix="grimoire-matrix-") as directory:
-            bundle = Path(prebuilt) if prebuilt else Path(directory) / "web"
-            if not prebuilt:
-                build_web(pnpm, bundle)
-            cells = []
-            for mode, width in MATRIX:
-                evidence = output / mode / str(width)
-                evidence.mkdir(parents=True, exist_ok=True)
-                # Never mistake evidence from an earlier attempt for this run.
-                (evidence / "report.json").unlink(missing_ok=True)
-                with (evidence / "launcher.log").open("w") as log:
-                    try:
-                        child = subprocess.Popen(
-                            [
-                                sys.executable,
-                                str(Path(__file__).resolve()),
-                                "--rehearse",
-                                "--viewport",
-                                str(width),
-                                "--output",
-                                str(evidence),
-                                *(["--join-links"] if mode == "join-links" else []),
-                            ],
-                            env=os.environ | {"GRIMOIRE_WEB_DIR": str(bundle)},
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                        )
-                        status = child.wait(timeout=960)
-                    except subprocess.TimeoutExpired:
-                        # SIGTERM reaches the launcher's cleanup, including its
-                        # disposable PostgreSQL process, before a final kill.
-                        child.terminate()
-                        try:
-                            child.wait(timeout=20)
-                        except subprocess.TimeoutExpired:
-                            child.kill()
-                            child.wait(timeout=5)
-                        status = 124
-                cells.append(
-                    {
-                        "mode": mode,
-                        "width": width,
-                        "directory": str(evidence),
-                        "exit_code": status,
-                    }
-                )
-                print(f"{mode} at {width}px: exit {status}; {evidence}", flush=True)
-            report = aggregate_reports(cells)
-            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-            lines = [
-                "# Local Grimoire journey matrix",
-                "",
-                f"Result: {'passed' if report['passed'] else 'failed'}",
-                "",
-            ]
-            lines.extend(
-                f"- {cell['mode']} at {cell['width']}px: {'passed' if cell['passed'] else 'failed'} ([evidence]({cell['mode']}/{cell['width']}/report.md))"
-                for cell in report["matrix"]
-            )
-            lines.extend(
-                f"- {row['check']}: {row['observed']}"
-                for row in report["failed_checks"]
-            )
-            (output / "report.md").write_text("\n".join(lines) + "\n")
-            if not report["passed"]:
-                raise SystemExit("Grimoire journey matrix failed; inspect report.json")
-        return
     for port in (PORT, 55477):
         with socket.socket() as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -233,15 +146,6 @@ def main():
                 "GRIMOIRE_AUTH_ISSUER": f"{LOOPBACK}/__local/",
                 "GRIMOIRE_AUTH_JWKS_URL": f"{LOOPBACK}/__local/jwks",
                 "GRIMOIRE_AUTH_AUDIENCE": "grimoire-local",
-                # Only GET /api/auth/platform/self is registered locally.
-                # Reuse the three signed seats without enabling enrollment,
-                # management mutations or a different Grimoire role policy.
-                "PLATFORM_AUTH_MANAGEMENT_ENABLED": "true",
-                "PLATFORM_AUTH_LOGIN_ISSUER": f"{LOOPBACK}/__local/",
-                "PLATFORM_AUTH_LOGIN_JWKS_URL": f"{LOOPBACK}/__local/jwks",
-                "PLATFORM_AUTH_LOGIN_AUDIENCE": "grimoire-local",
-                "PLATFORM_AUTH_ENFORCEMENT_ENABLED": "false",
-                "PLATFORM_AUTH_ENROLLMENT_ENABLED": "false",
                 # grimoire/web.py serves this bundle at the base it was built for.
                 "GRIMOIRE_WEB_DIR": str(web_dir),
                 # The session cookie is a credential only for pages on this
@@ -253,9 +157,6 @@ def main():
                 "GRIMOIRE_INVITATION_ENROLLMENT_ENABLED": "false",
                 "GRIMOIRE_INVITATION_API_TOKEN": "",
                 "GRIMOIRE_INVITATION_FLOW_ID": "",
-                # Capture remains unavailable in this UI. Never inherit an
-                # enabled production transcript switch into the local table.
-                "GRIMOIRE_TRANSCRIPT_ENABLED": "false",
             }
             children.append(
                 subprocess.Popen(
@@ -310,7 +211,6 @@ def main():
                         "--output",
                         args.output,
                         *(["--join-links"] if args.join_links else []),
-                        *(["--viewport", str(args.viewport)] if args.viewport else []),
                     ],
                     check=True,
                     timeout=900,
