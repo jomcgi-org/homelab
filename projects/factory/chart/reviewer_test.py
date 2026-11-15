@@ -519,8 +519,8 @@ def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> No
         "spec"
     ]["egress"]
     for rule, ns, port in (
-        (rules[0], "other-factory", "8181"),
-        (rules[1], "other-kagent", "8183"),
+        (rules[1], "other-factory", "8181"),
+        (rules[2], "other-kagent", "8183"),
     ):
         assert (
             rule["toEndpoints"][0]["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
