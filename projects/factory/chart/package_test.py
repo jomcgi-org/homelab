@@ -107,7 +107,9 @@ def test_packaged_render_matches_the_lock_with_published_images(
 ) -> None:
     archive, values = package
     source_render = _render(_CHART, _DEPLOY)
-    normalized = re.sub(r"(helm\.sh/chart: factory-)\S+", r"\g<1>VERSION", source_render)
+    normalized = re.sub(
+        r"(helm\.sh/chart: factory-)\S+", r"\g<1>VERSION", source_render
+    )
     assert hashlib.sha256(normalized.encode()).hexdigest() == _LOCK.read_text().strip()
 
     published = yaml.safe_load((values / "values.yaml").read_text())
