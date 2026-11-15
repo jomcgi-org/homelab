@@ -1702,22 +1702,30 @@ func TestIdleRoundCommentIsNotResentAfterAnUnknownOutcome(t *testing.T) {
 	}
 }
 
-func TestIdleRoundCommentRetriesARequestThatNeverLeft(t *testing.T) {
-	v := newDeliveryEnv(t)
-	v.idleRound()
-	v.gh.green("sha-1")
-	v.its.mu.Lock()
-	v.its.commentErr = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
-	v.its.mu.Unlock()
-	v.poll()
-	v.its.mu.Lock()
-	v.its.commentErr = nil
-	v.its.mu.Unlock()
-	for i := 0; i < 3; i++ {
-		v.poll()
-	}
-	if idle := v.idleComments(); len(idle) != 1 {
-		t.Fatalf("idle-round comments = %q, want one after the dial failure", idle)
+func TestIdleRoundCommentRetriesARequestThatCreatedNothing(t *testing.T) {
+	for name, refusal := range map[string]error{
+		"dial":           &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")},
+		"credential 401": &itsaplan.HTTPError{Status: 401, Body: "unauthorized"},
+		"credential 403": &itsaplan.HTTPError{Status: 403, Body: "forbidden"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.idleRound()
+			v.gh.green("sha-1")
+			v.its.mu.Lock()
+			v.its.commentErr = refusal
+			v.its.mu.Unlock()
+			v.poll()
+			v.its.mu.Lock()
+			v.its.commentErr = nil
+			v.its.mu.Unlock()
+			for i := 0; i < 3; i++ {
+				v.poll()
+			}
+			if idle := v.idleComments(); len(idle) != 1 {
+				t.Fatalf("idle-round comments = %q, want one after a refusal that created nothing", idle)
+			}
+		})
 	}
 }
 

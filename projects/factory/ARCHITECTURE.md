@@ -531,8 +531,9 @@ the connector says so on the issue once per round. The PR waits for a
 person; a new commit restarts CI and review, and the comment says how many
 rounds remain. itsaplan comments carry no idempotency key, so this one is
 sent at most once: `outbox.send_started_at` is set before the send, a send
-whose outcome is unknown is abandoned rather than repeated, and only a
-connection that was never made is retried.
+whose outcome is unknown is abandoned rather than repeated, and only a send
+that provably created nothing (no connection, or a 4xx refusal such as a 401
+during a key rotation) is retried under the outbox's usual bounds.
 `factory_connector_idle_review_rounds_total` counts these. Before this,
 HOME-15 and HOME-18 waited silently for eight hours after rounds whose
 agent could not read the CI failure.

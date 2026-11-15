@@ -1207,15 +1207,24 @@ type commentPayload struct {
 	Once bool `json:"once,omitempty"`
 }
 
-// unsent reports an error that proves the request never reached itsaplan:
-// the connection was never made.
-func unsent(err error) bool {
+// notCreated reports an error that proves itsaplan created nothing: the
+// connection was never made, or itsaplan answered with a 4xx refusal, such
+// as a 401 or 403 while a coordinator key rotates. A 5xx or a lost response
+// proves neither.
+func notCreated(err error) bool {
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
 		return true
 	}
 	var dns *net.DNSError
-	return errors.As(err, &dns)
+	if errors.As(err, &dns) {
+		return true
+	}
+	var he *itsaplan.HTTPError
+	if errors.As(err, &he) && he.Status >= 400 && he.Status < 500 {
+		return true
+	}
+	return errors.Is(err, itsaplan.ErrConflict)
 }
 
 // progress follows a dispatched run's latest attempt: send or reconcile it,
@@ -1886,7 +1895,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 			return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 		case e.refused(ctx, it, err):
 			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
-		case p.Once && unsent(err):
+		case p.Once && notCreated(err):
+			// Retry under the usual bounds, including the credential-refusal
+			// policy above; nothing was posted, so a resend is safe.
 			if cerr := e.st.OutboxSendCleared(ctx, it.ID); cerr != nil {
 				return cerr
 			}
