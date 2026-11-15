@@ -13,6 +13,7 @@ import {
   instances,
   initialization,
 } from "../../../../../test/stars/maplibre.js";
+import { shareForecastHours } from "../../../../lib/server/stars-payload.js";
 
 vi.mock("$app/environment", () => ({ browser: true }));
 vi.mock(
@@ -136,6 +137,27 @@ async function click(text) {
 }
 
 describe("stars through the real page and public/root layouts", () => {
+  it("reads shared forecast hours without changing other sites' card data", async () => {
+    const snapshot = shareForecastHours(structuredClone(data.snapshot));
+    expect(snapshot.sites[0].best_hours[0]).toBe(
+      snapshot.sites[3].best_hours[0],
+    );
+    for (const site of snapshot.sites) {
+      site.best_hours.forEach(Object.freeze);
+      Object.freeze(site.best_hours);
+    }
+    const original = JSON.stringify(snapshot);
+    const map = await render("", { ...data, snapshot });
+    map.fire("click", { features: [{ properties: { id: 1 } }] }, "sites-cells");
+    await settle();
+    const first = target.querySelector(".card-windows").textContent;
+    expect(first).toContain("Cloud");
+    map.fire("click", { features: [{ properties: { id: 4 } }] }, "sites-cells");
+    await settle();
+    expect(target.querySelector(".card-windows").textContent).toBe(first);
+    expect(JSON.stringify(snapshot)).toBe(original);
+  });
+
   it.each(["", "?mode=historical&month=10"])(
     "renders one sheet and working controls for %s",
     async (query) => {

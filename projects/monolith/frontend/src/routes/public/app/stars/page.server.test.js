@@ -50,6 +50,38 @@ describe("/public/app/stars load", () => {
     expect(result.renderedAt).toEqual(expect.any(Number));
   });
 
+  it("shares identical forecast hours while retaining every upstream field", async () => {
+    const hour = {
+      time: "2026-11-14T22:00:00+00:00",
+      cloud_area_fraction: 4.5,
+      dark: true,
+      future_metadata: { confidence: [0.5, 0.9] },
+    };
+    const snapshot = {
+      ...SNAPSHOT,
+      future_metadata: "retained",
+      sites: [
+        {
+          id: "first",
+          future_field: null,
+          best_hours: [structuredClone(hour)],
+        },
+        { id: "second", best_hours: [structuredClone(hour)] },
+      ],
+    };
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: makeHeaders(),
+      json: async () => snapshot,
+    });
+    const { snapshot: result } = await load({ fetch, setHeaders: vi.fn() });
+    expect(JSON.stringify(result)).toBe(JSON.stringify(snapshot));
+    expect(result.sites[0].best_hours[0]).toBe(result.sites[1].best_hours[0]);
+    expect(snapshot.sites[0].best_hours[0]).not.toBe(
+      snapshot.sites[1].best_hours[0],
+    );
+  });
+
   it("leaves HTML validation to SvelteKit when the upstream data is unchanged", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
