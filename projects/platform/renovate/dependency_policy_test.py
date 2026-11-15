@@ -264,18 +264,22 @@ def _selected_python_release(config, name, current, releases, *, first_fixed=Non
 )
 def test_next_opentelemetry_beta_minor_is_selected_with_stable_sdk(name):
     config = json.loads((ROOT / "renovate.json").read_text())
-    assert _selected_python_release(
-        config, name, "0.66b2", [("0.66b3", 7), ("0.67b0", 4)]
-    ) == "0.67b0"
+    assert (
+        _selected_python_release(config, name, "0.66b2", [("0.66b3", 7), ("0.67b0", 4)])
+        == "0.67b0"
+    )
     for stable_name in (
         "opentelemetry-api",
         "opentelemetry-sdk",
         "opentelemetry-exporter-otlp-proto-grpc",
         "opentelemetry-proto",
     ):
-        assert _selected_python_release(
-            config, stable_name, "1.45.2", [("1.46.0", 4), ("1.47.0rc1", 4)]
-        ) == "1.46.0"
+        assert (
+            _selected_python_release(
+                config, stable_name, "1.45.2", [("1.46.0", 4), ("1.47.0rc1", 4)]
+            )
+            == "1.46.0"
+        )
 
 
 @pytest.mark.parametrize("family", ["opentelemetry", "pydantic"])
@@ -321,12 +325,15 @@ def test_security_updates_select_a_matched_family_including_pending_peers(
 
 def test_unrelated_updates_keep_strict_age_and_stability_filtering():
     config = json.loads((ROOT / "renovate.json").read_text())
-    assert _selected_python_release(
-        config,
-        "fastapi",
-        "0.138.2",
-        [("0.139.0", 7), ("0.140.0", 1), ("0.141.0rc1", 7)],
-    ) == "0.139.0"
+    assert (
+        _selected_python_release(
+            config,
+            "fastapi",
+            "0.138.2",
+            [("0.139.0", 7), ("0.140.0", 1), ("0.141.0rc1", 7)],
+        )
+        == "0.139.0"
+    )
 
 
 def test_compatibility_holds_override_non_major_automerge():
