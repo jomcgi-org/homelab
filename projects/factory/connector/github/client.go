@@ -181,18 +181,26 @@ func (c *Client) base() string {
 // do sends one call with the repository's token. A 401 drops the cached
 // token and tries once more with a fresh one.
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, true)
+	return c.send(ctx, repo, method, path, body, out, true, nil)
 }
 
 // doUncached is do without the ETag cache, for large reads of immutable
 // resources that would only crowd it.
 func (c *Client) doUncached(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, false)
+	return c.send(ctx, repo, method, path, body, out, false, nil)
 }
 
-func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool) error {
+// doWithHeaders bypasses the body-only ETag cache so pagination headers and
+// the response body always describe the same read.
+func (c *Client) doWithHeaders(ctx context.Context, repo, method, path string, body, out any) (http.Header, error) {
+	var headers http.Header
+	err := c.send(ctx, repo, method, path, body, out, false, &headers)
+	return headers, err
+}
+
+func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, headers *http.Header) error {
 	for try := 0; ; try++ {
-		err := c.once(ctx, repo, method, path, body, out, cache)
+		err := c.once(ctx, repo, method, path, body, out, cache, headers)
 		var h *HTTPError
 		if try == 0 && errors.As(err, &h) && h.Status == http.StatusUnauthorized {
 			c.Tokens.Invalidate(repo)
@@ -202,7 +210,7 @@ func (c *Client) send(ctx context.Context, repo, method, path string, body, out 
 	}
 }
 
-func (c *Client) once(ctx context.Context, repo, method, path string, body, out any, cache bool) error {
+func (c *Client) once(ctx context.Context, repo, method, path string, body, out any, cache bool, headers *http.Header) error {
 	tok, err := c.Tokens.Token(ctx, repo)
 	if err != nil {
 		return err
@@ -269,6 +277,9 @@ func (c *Client) once(ctx context.Context, repo, method, path string, body, out 
 		return ErrPRExists
 	case status < 200 || status > 299:
 		return &HTTPError{Status: status, Body: truncate(string(data), 300)}
+	}
+	if headers != nil {
+		*headers = resp.Header.Clone()
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)

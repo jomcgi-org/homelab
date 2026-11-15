@@ -178,10 +178,10 @@ type Engine struct {
 
 	// heads (under mu) is each listed PR's head. commentMu serializes
 	// comment writes and guards comments, the reviewer's comment on each PR
-	// as last read or written.
+	// as last read or written, including absent or unreadable comments.
 	heads     map[prKey]string
 	commentMu sync.Mutex
-	comments  map[prKey]github.Comment
+	comments  map[prKey]*commentState
 
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
@@ -321,7 +321,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
-		heads: map[prKey]string{}, comments: map[prKey]github.Comment{},
+		heads: map[prKey]string{}, comments: map[prKey]*commentState{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
 }
@@ -539,6 +539,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	if pending == nil && sharedHeadHeld(prev) && o.Output.Text == prev.Text {
 		return prev
 	}
+	o.Output.Summary = e.commentSummary(ctx, b, pr, o.Output.Summary)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: o.Conclusion, StartedAt: &now, CompletedAt: &now, Output: &o.Output,
@@ -1921,6 +1922,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 	}
 	summary += "."
 	summary = keepEnqueueHistory(summary, prev)
+	summary = e.commentSummary(ctx, b, pr, summary)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
@@ -1973,6 +1975,7 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 
 // finish completes the check run, then shows the outcome in the PR comment.
 func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, o Outcome, l *slog.Logger) bool {
+	o.Output.Summary = e.commentSummary(ctx, b, pr, o.Output.Summary)
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
@@ -2074,7 +2077,11 @@ func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullReq
 }
 
 func (e *Engine) markEnqueued(ctx context.Context, b *Binding, run *github.CheckRun, what string, l *slog.Logger) {
-	summary := clip(run.Summary, maxSummary) + fmt.Sprintf("\n\n%s%s at %s.", enqueuedMarker, what, e.cfg.Now().UTC().Format(time.RFC3339))
+	limit := maxSummary
+	if strings.Contains(run.Summary, commentLimitNote) {
+		limit += len(commentLimitNote) + 2
+	}
+	summary := clip(run.Summary, limit) + fmt.Sprintf("\n\n%s%s at %s.", enqueuedMarker, what, e.cfg.Now().UTC().Format(time.RFC3339))
 	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
 		Output: &github.CheckRunOutput{Title: run.Title, Summary: summary, Text: run.Text},
 	})

@@ -751,6 +751,85 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	}
 }
 
+func TestIssueCommentsWithLimitUsesPaginationHeaders(t *testing.T) {
+	for _, n := range []int{0, 1000, 2500, 10000, 10001} {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
+			srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/comments", n, func(i int) string {
+				return fmt.Sprintf(`{"id":%d,"user":{"login":"u"},"body":"b"}`, i)
+			})
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
+			cms, complete, err := c.IssueCommentsWithLimit(context.Background(), "example-org/homelab", 7, 100)
+			if err != nil || complete != (n <= 10000) || len(cms) != min(n, 10000) {
+				t.Fatalf("comments = %d, complete %v, err %v", len(cms), complete, err)
+			}
+			if want := max(1, min(100, (n+99)/100)); len(*seen) != want {
+				t.Fatalf("pages read = %d, want %d", len(*seen), want)
+			}
+		})
+	}
+}
+
+func TestIssueCommentsWithLimitFollowsShortPagesAndBypassesBodyCache(t *testing.T) {
+	reads := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reads++
+		if r.Header.Get("If-None-Match") != "" {
+			t.Error("pagination used the body-only ETag cache")
+		}
+		w.Header().Set("ETag", `"same"`)
+		if r.URL.Query().Get("page") == "1" {
+			w.Header().Set("Link", `</comments?page=2>; rel="next", </comments?page=2>; rel="last"`)
+		} else {
+			w.Header().Set("Link", `</comments?page=1>; rel="prev"`)
+		}
+		_, _ = w.Write([]byte(`[{"id":1,"body":"b","user":{"login":"u"}}]`))
+	}))
+	t.Cleanup(srv.Close)
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
+	path := "/repos/example-org/homelab/issues/7/comments?page=1&per_page=100"
+	c.ETags.put(path, `"same"`, []byte(`[]`))
+	comments, complete, err := c.IssueCommentsWithLimit(context.Background(), "example-org/homelab", 7, 100)
+	if err != nil || !complete || len(comments) != 2 || reads != 2 {
+		t.Fatalf("comments = %d, complete %v, reads %d, err %v", len(comments), complete, reads, err)
+	}
+}
+
+func TestIssueCommentsWithLimitDiscardsFailedReads(t *testing.T) {
+	for _, body := range []string{"", "null", "[", `{"message":"not a listing"}`} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") == "1" {
+					w.Header().Set("Link", `</comments?page=2>; rel="next"`)
+					_, _ = w.Write([]byte(`[{"id":1,"body":"b","user":{"login":"u"}}]`))
+					return
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(srv.Close)
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			comments, complete, err := c.IssueCommentsWithLimit(context.Background(), "example-org/homelab", 7, 100)
+			if err == nil || complete || len(comments) != 0 {
+				t.Fatalf("failed read returned %d comments, complete %v, err %v", len(comments), complete, err)
+			}
+		})
+	}
+}
+
+func TestIssueCommentsKeepsItsOriginalLimitAndCompleteness(t *testing.T) {
+	for _, n := range []int{999, 1000, 1001, 2500} {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
+			srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/comments", n, func(i int) string {
+				return fmt.Sprintf(`{"id":%d,"user":{"login":"u"},"body":"b"}`, i)
+			})
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			comments, complete, err := c.IssueComments(context.Background(), "example-org/homelab", 7)
+			if err != nil || complete != (n < 1000) || len(comments) != min(n, 1000) || len(*seen) != 10 {
+				t.Fatalf("comments = %d, complete %v, pages %d, err %v", len(comments), complete, len(*seen), err)
+			}
+		})
+	}
+}
+
 func TestIssueCommentsAreListedCreatedAndUpdated(t *testing.T) {
 	srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/comments", 2*MaxListed+5, func(i int) string {
 		return fmt.Sprintf(`{"id": %d, "user": {"login": "u%d"}, "body": "c%d"}`, i, i, i)
@@ -842,6 +921,11 @@ func pagedServer(t *testing.T, path string, n int, item func(i int) string) (*ht
 		var items []string
 		for i := (page-1)*per + 1; i <= min(page*per, n); i++ {
 			items = append(items, item(i))
+		}
+		if page*per < n {
+			w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d&per_page=%d>; rel="next"`, path, page+1, per))
+		} else if page > 1 {
+			w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d&per_page=%d>; rel="prev"`, path, page-1, per))
 		}
 		_, _ = w.Write([]byte("[" + strings.Join(items, ",") + "]"))
 	}))
