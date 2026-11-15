@@ -32,6 +32,7 @@ func (s *testStore) SaveGrant(g store.Grant) error {
 	s.mu.Unlock()
 	return nil
 }
+
 func (s *testStore) SaveGrantIfNewer(g store.Grant) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
