@@ -201,6 +201,86 @@ func TestInvalidGrant(t *testing.T) {
 	})
 }
 
+func TestLostRotationRequiresLoginAndPreservesCachedAccess(t *testing.T) {
+	for _, validAccess := range []bool{false, true} {
+		name := "expired access"
+		if validAccess {
+			name = "valid access"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.mgr.opts.RetryAfter = time.Nanosecond
+			now := time.Now().UTC()
+			expiry := now.Add(-time.Minute)
+			if validAccess {
+				expiry = now.Add(time.Hour)
+			}
+			access, _ := h.seed(t, now.Add(-time.Hour), expiry)
+			original := h.stored(t)
+			h.auth.DropNextRefreshResponse()
+			// The first failure is only a transport error, so it stays transient.
+			tok, err := h.mgr.AccessToken(context.Background())
+			if validAccess {
+				if err != nil || tok.AccessToken != access {
+					t.Fatal("lost response discarded the still-valid access token")
+				}
+			} else if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("lost response error = %v, want ErrUnavailable", err)
+			}
+			if h.state("login_required") != 0 || h.auth.RefreshCalls() != 1 {
+				t.Fatal("transport failure was classified as a consumed token")
+			}
+			for i := 0; i < 3; i++ {
+				tok, err = h.mgr.AccessToken(context.Background())
+				if validAccess {
+					if err != nil || tok.AccessToken != access {
+						t.Fatal("consumed refresh token discarded the still-valid access token")
+					}
+				} else if !errors.Is(err, ErrLoginRequired) {
+					t.Fatalf("recovery error = %v, want ErrLoginRequired", err)
+				}
+			}
+			if h.auth.RefreshCalls() != 3 || h.state("login_required") != 1 {
+				t.Fatal("lost rotation did not stop after one bounded recovery retry")
+			}
+			if h.stored(t) != original {
+				t.Fatal("failed recovery changed the stored grant")
+			}
+			if validAccess {
+				original.TokenBundle.ExpiresAt = now.Add(-time.Minute)
+				if err := h.store.SaveGrant(original); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.mgr.AccessToken(context.Background()); !errors.Is(err, ErrLoginRequired) {
+					t.Fatalf("expired cache error = %v, want ErrLoginRequired", err)
+				}
+			}
+			if err := h.mgr.ForceRefresh(context.Background()); !errors.Is(err, ErrLoginRequired) {
+				t.Fatalf("forced refresh error = %v, want ErrLoginRequired", err)
+			}
+			if _, err := h.mgr.RefreshRejected(context.Background(), access); !errors.Is(err, ErrLoginRequired) {
+				t.Fatalf("rejected refresh error = %v, want ErrLoginRequired", err)
+			}
+			rr := httptest.NewRecorder()
+			h.mgr.AdminHandler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/codex/login", nil))
+			var status map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &status); err != nil || status["grant_state"] != "login_required" {
+				t.Fatalf("admin status did not expose the credential block: %v", err)
+			}
+			if h.auth.RefreshCalls() != 3 {
+				t.Fatal("blocked entry points retried the consumed token")
+			}
+			// A later durable replacement also recovers the manager's early
+			// NeedsLogin path, without requiring a broker restart.
+			replacement, _ := h.seed(t, time.Now().UTC(), now.Add(5*24*time.Hour))
+			tok, err = h.mgr.AccessToken(context.Background())
+			if err != nil || tok.AccessToken != replacement || h.state("ready") != 1 || h.state("login_required") != 0 {
+				t.Fatalf("durable replacement did not recover: %v", err)
+			}
+		})
+	}
+}
+
 func TestMissingGrantSecretIsNotLoginRequired(t *testing.T) {
 	h := newHarness(t)
 	if err := h.client.CoreV1().Secrets(namespace).Delete(context.Background(), prefix+grantName, metav1.DeleteOptions{}); err != nil {

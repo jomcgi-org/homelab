@@ -32,14 +32,37 @@ type grantState struct {
 	lastAccess    string
 	lastExpiry    time.Time
 	needsLogin    bool
+	reusedGrant   *store.Grant
 	authoritative *store.Grant
 	pendingLogin  *store.Grant
+}
+
+// acceptReplacement clears a consumed-token block only for a newer grant with
+// a different refresh token. The caller holds s.mu.
+func (s *grantState) acceptReplacement(grant store.Grant) {
+	if s.reusedGrant != nil && grant.LastRefresh.After(s.reusedGrant.LastRefresh) &&
+		grant.TokenBundle.RefreshToken != "" && grant.TokenBundle.RefreshToken != s.reusedGrant.TokenBundle.RefreshToken {
+		s.reusedGrant = nil
+		s.needsLogin = false
+	}
 }
 
 func (b *Broker) NeedsLogin(grantName string) bool {
 	s, err := b.state(grantName)
 	if err != nil {
 		return false
+	}
+	s.mu.Lock()
+	blocked := s.reusedGrant != nil
+	s.mu.Unlock()
+	// Another refresher may finish persisting its rotation after we block. Keep
+	// observing storage so that replacement can recover without a device login.
+	if blocked {
+		if grant, err := b.store.LoadGrant(grantName); err == nil {
+			s.mu.Lock()
+			s.acceptReplacement(grant)
+			s.mu.Unlock()
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -53,6 +76,7 @@ func (b *Broker) ClearNeedsLogin(grantName string) {
 	}
 	s.mu.Lock()
 	s.needsLogin = false
+	s.reusedGrant = nil
 	s.mu.Unlock()
 }
 
@@ -184,6 +208,11 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 			s.authoritative = nil
 		}
 	}
+	s.acceptReplacement(grant)
+	if s.reusedGrant != nil {
+		s.mu.Unlock()
+		return "", time.Time{}, provider.ErrRefreshTokenReused
+	}
 	s.mu.Unlock()
 	if grant.ProviderName == "" {
 		b.mu.RLock()
@@ -212,8 +241,15 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
 			b.metrics.ReusedRetries.Inc()
 			b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
-			grant, err = b.loadGrant(ctx, grantName)
+			var stored store.Grant
+			stored, err = b.loadGrant(ctx, grantName)
 			if err == nil {
+				// Never fall back behind an in-memory rotation whose save is
+				// still retrying. An unchanged grant gets one confirmation;
+				// repeated reuse below blocks further attempts with that token.
+				if stored.LastRefresh.After(grant.LastRefresh) {
+					grant = stored
+				}
 				result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
 			}
 		}
@@ -227,8 +263,14 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 				b.ClearNeedsLogin(grantName)
 				return saved.TokenBundle.AccessToken, saved.TokenBundle.ExpiresAt, nil
 			}
+		}
+		if errors.Is(err, provider.ErrInvalidGrant) || errors.Is(err, provider.ErrRefreshTokenReused) {
 			s.mu.Lock()
 			s.needsLogin = true
+			if errors.Is(err, provider.ErrRefreshTokenReused) {
+				copy := grant
+				s.reusedGrant = &copy
+			}
 			s.mu.Unlock()
 		}
 		b.metrics.RefreshFailures.Inc()

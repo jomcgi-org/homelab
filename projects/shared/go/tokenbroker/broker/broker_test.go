@@ -16,14 +16,15 @@ import (
 )
 
 type testStore struct {
-	mu     sync.Mutex
-	grants map[string]store.Grant
+	mu      sync.Mutex
+	grants  map[string]store.Grant
+	loadErr error
 }
 
 func (s *testStore) LoadGrant(name string) (store.Grant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.grants[name], nil
+	return s.grants[name], s.loadErr
 }
 
 func (s *testStore) SaveGrant(g store.Grant) error {
@@ -181,6 +182,7 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 		st.mu.Lock()
 		grant := st.grants["one"]
 		grant.TokenBundle.RefreshToken = "durable"
+		grant.LastRefresh = now.Add(time.Nanosecond)
 		st.grants["one"] = grant
 		st.mu.Unlock()
 	}}
@@ -192,6 +194,110 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 	defer adapter.mu.Unlock()
 	if adapter.calls != 2 || len(adapter.refreshInput) != 2 || adapter.refreshInput[0] != "old" || adapter.refreshInput[1] != "durable" {
 		t.Fatalf("refresh calls = %d, inputs = %v, want exactly one retry with durable token", adapter.calls, adapter.refreshInput)
+	}
+}
+
+func TestRepeatedReuseBlocksProviderCallsUntilReplacement(t *testing.T) {
+	for _, checkNeedsLogin := range []bool{false, true} {
+		t.Run(fmt.Sprintf("check-needs-login-%t", checkNeedsLogin), func(t *testing.T) {
+			now := time.Now().UTC()
+			original := store.Grant{Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{
+				AccessToken: "expired", RefreshToken: "consumed", ExpiresAt: now.Add(-time.Minute),
+			}}
+			st := &testStore{grants: map[string]store.Grant{"one": original}}
+			adapter := &testAdapter{refreshErr: fmt.Errorf("consumed: %w", provider.ErrRefreshTokenReused)}
+			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+			for i := 0; i < 3; i++ {
+				if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
+					t.Fatalf("refresh error = %v, want ErrRefreshTokenReused", err)
+				}
+				if !b.NeedsLogin("one") {
+					t.Fatal("repeated reuse did not require login")
+				}
+				if _, _, err := b.GetAccessToken("one", context.Background()); !errors.Is(err, ErrRefreshFailed) {
+					t.Fatalf("token error = %v, want ErrRefreshFailed", err)
+				}
+			}
+			if adapter.calls != 2 {
+				t.Fatalf("provider calls = %d, want one attempt and one retry", adapter.calls)
+			}
+			if stored, _ := st.LoadGrant("one"); stored != original {
+				t.Fatal("failed refresh changed the stored grant")
+			}
+			// A timestamp-only update must not unblock the consumed token.
+			replacement := original
+			replacement.LastRefresh = now
+			_ = st.SaveGrant(replacement)
+			if !b.NeedsLogin("one") {
+				t.Fatal("unchanged refresh token cleared the block")
+			}
+			replacement.TokenBundle.RefreshToken = "replacement"
+			_ = st.SaveGrant(replacement)
+			adapter.refreshErr = nil
+			if checkNeedsLogin && b.NeedsLogin("one") {
+				t.Fatal("newer durable replacement did not clear the block")
+			}
+			if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if b.NeedsLogin("one") || adapter.calls != 3 || adapter.refreshInput[2] != "replacement" {
+				t.Fatal("refresh did not recover using the durable replacement")
+			}
+		})
+	}
+}
+
+func TestReuseRecoveryTransientFailurePreservesGrant(t *testing.T) {
+	for _, storageFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("storage-failure-%t", storageFailure), func(t *testing.T) {
+			original := store.Grant{Name: "one", ProviderName: "test", LastRefresh: time.Now().UTC(), TokenBundle: store.TokenBundle{
+				AccessToken: "cached", RefreshToken: "old", ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			st := &testStore{grants: map[string]store.Grant{"one": original}}
+			transient := errors.New("temporarily unavailable")
+			adapter := &testAdapter{firstReused: true, refreshErr: transient}
+			if storageFailure {
+				adapter.onFirst = func() { st.loadErr = transient }
+			}
+			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+			if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, transient) {
+				t.Fatalf("refresh error = %v, want transient failure", err)
+			}
+			if b.NeedsLogin("one") {
+				t.Fatal("transient recovery failure required login")
+			}
+			st.loadErr = nil
+			if stored, _ := st.LoadGrant("one"); stored != original {
+				t.Fatal("transient failure changed the stored grant")
+			}
+			if access, _, err := b.CachedAccessToken("one", context.Background()); err != nil || access != "cached" {
+				t.Fatal("transient failure lost the cached access token")
+			}
+			adapter.refreshErr = nil
+			if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestReuseRecoveryDoesNotRetryOlderDurableGrant(t *testing.T) {
+	now := time.Now().UTC()
+	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
+	adapter := &testAdapter{refreshErr: provider.ErrRefreshTokenReused}
+	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	s, _ := b.state("one")
+	s.authoritative = &store.Grant{Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "rotated"}}
+	for i := 0; i < 3; i++ {
+		if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
+			t.Fatalf("refresh error = %v", err)
+		}
+		if !b.NeedsLogin("one") {
+			t.Fatal("older durable grant cleared the consumed-token block")
+		}
+	}
+	if adapter.calls != 2 || adapter.refreshInput[0] != "rotated" || adapter.refreshInput[1] != "rotated" {
+		t.Fatal("reuse recovery retried an older token or exceeded its retry bound")
 	}
 }
 

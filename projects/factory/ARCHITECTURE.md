@@ -1047,7 +1047,10 @@ OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
 (`factory-broker-grant-`), metric prefix (`factory_broker_`) and refresh
 window configured per consumer; EmberVM keeps its defaults. No Lease: grant
 writes are newer-only and a `refresh_token_reused` answer rereads the Secret
-and retries once, so a brief overlap during a rollout is safe.
+and retries once, using a newer durable grant when available. Repeated reuse
+blocks further provider calls for that grant and marks it `login_required`.
+A newer stored grant with a different refresh token or a completed device
+login clears the block; transient provider and storage failures do not set it.
 
 - **Codex relay.** The ModelConfig uses `provider: OpenAI`,
   `openAI.apiFormat: responses`, `openAI.baseUrl` set to the broker's
@@ -1071,8 +1074,8 @@ and retries once, so a brief overlap during a rollout is safe.
   Responses request Codex sends in API-key mode is [I] until the first live
   run. Provider credentials exist only in the broker.
 - **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
-  (401); `codex_login_required` (401, only for an empty grant or a refresh
-  token the provider answered `invalid_grant`); `codex_quota_exhausted`
+  (401); `codex_login_required` (401, for an empty grant, `invalid_grant`, or
+  `refresh_token_reused` after the bounded recovery retry); `codex_quota_exhausted`
   (429 with `resets_at`, from the `x-codex-*` headers or a
   `usage_limit_reached` body; a current exhausted window blocks before the
   backend is called). It sends no `Retry-After`: Codex sleeps until that
