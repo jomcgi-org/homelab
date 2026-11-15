@@ -319,8 +319,9 @@ jobs:
     # Older orphans stay untouched and need a manual delete. The live embervm
     # namespace has 13 chart-managed unmarked Workloads; this sweep is inert
     # for all of them.
-    # Suspended 2026-11-15: EmberVM left the hub, so there are no FaaS
-    # Workloads to reconcile and no Role to list them.
+    # Suspended 2026-11-15 ahead of EmberVM's removal from the hub: no FaaS
+    # Workloads will remain to reconcile. Joe's decision:
+    # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810
     - name: faas-reconcile
       args: ["faas-reconcile"]
       schedule: "0 * * * *"
@@ -1238,8 +1239,8 @@ jobs:
         limits:
           memory: 512Mi
     # Agent lane probes cover production factory execution. Public demos are retired.
-    # Both suspended 2026-11-15: EmberVM, which ran the sessions they probe,
-    # left the hub with the hub factory.
+    # Both suspended 2026-11-15 ahead of EmberVM's removal from the hub (see
+    # faas-reconcile above): it runs the sessions they probe.
     - name: ember-codex-session-synthetic
       args: ["ember-codex-synthetic-trigger"]
       schedule: "0 * * * *"

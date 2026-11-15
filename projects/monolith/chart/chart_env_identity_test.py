@@ -548,7 +548,7 @@ def _rbac_objects(rendered):
     }
 
 
-def _expected_rbac(release, enabled, kargo_namespaces=None):
+def _expected_rbac(release, enabled):
     subject = {"kind": "ServiceAccount", "name": release, "namespace": release}
     expected = {}
     for gate, kind, namespace, name, rules, subjects in [
@@ -592,11 +592,7 @@ def _expected_rbac(release, enabled, kargo_namespaces=None):
                 _DEFAULT_KARGO_PROMOTE_RULES,
                 [subject],
             )
-            for namespace in (
-                _KARGO_PROJECT_NAMESPACES
-                if kargo_namespaces is None
-                else kargo_namespaces
-            )
+            for namespace in _KARGO_PROJECT_NAMESPACES
         ),
     ]:
         if not enabled[gate]:
@@ -619,22 +615,14 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
     rendered = (
         _render(release, []) if environment == "defaults" else renders[environment]
     )
-    # The hub dropped EmberVM on 2026-11-15: no FaaS Role in the embervm
-    # namespace and no promote Role in kargo-embervm.
-    hub = environment == "gke"
     assert _rbac_objects(rendered) == _expected_rbac(
         release,
         {
             "clusterAccess": True,
             "schedulerWorkflows": True,
-            "faas": not hub,
+            "faas": True,
             "kargoPromote": True,
         },
-        kargo_namespaces=(
-            [n for n in _KARGO_PROJECT_NAMESPACES if n != "kargo-embervm"]
-            if hub
-            else None
-        ),
     )
 
 
