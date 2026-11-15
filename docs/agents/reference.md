@@ -119,12 +119,13 @@ behind Authentik, holds outstanding work. An issue's link is
 `#comment-<id>`. Columns are 1 Backlog, 2 Todo, 3 In Progress, 4 Done and
 5 Canceled; priorities are `urgent`, `high`, `medium` and `low`.
 
-A session on Joe's account acts for Joe. Until it has its own itsaplan
-account (HOME-59), it signs in as the break-glass `factoryadmin`, which the
-bootstrap Job also uses, so that author alone shows nothing about who wrote a
-comment. A comment recording Joe's decision quotes him and names the session
-and time it came from. Dispatched agents have no itsaplan access; their
-issues come from the connector.
+A session on Joe's account uses the API. Until HOME-59 gives sessions their
+own `joe-sessions` account, it signs in as the break-glass `factoryadmin`,
+which the bootstrap Job also uses. A `factoryadmin` comment is never evidence
+of a decision. Record Joe's decisions from an account that is his alone:
+`joe` or `joe-sessions` in itsaplan, or, until `joe-sessions` exists, a
+`jomcgi` comment on GitHub. Link that record from the HOME issue. Dispatched
+agents have no itsaplan access; their issues come from the connector.
 
 
 - Port-forward the API: `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory
@@ -155,12 +156,12 @@ A HOME issue in Todo or In Progress that is assigned to Joe with no delegate
 is Joe's: no run starts on it, and the "Needs Joe" view
 (`/factory/HOME/view/1`) lists it.
 
-To take delegated work from the factory, stop it first: move the issue to
-Canceled, close its PR, or run `connector cancel <ISSUE>`. Changing the
-assignee or removing the delegate stops nothing. Then return the issue to
-Todo, assigned to Joe with no delegate, with a comment naming what remains.
-Hand it back explicitly: a comment saying so, then a new delegation, whose
-run resumes delivery.
+To take delegated work from the factory, stop it with
+`connector cancel <ISSUE> --by joe`, or move the issue to Canceled and leave
+it there; the connector announces the stop on the issue. Changing the
+assignee or removing the delegate stops nothing. Then file a new HOME issue,
+assigned to Joe with no delegate, that links the canceled one and names what
+remains. To hand the work back, delegate that new issue.
 
 On a PR, `human` means a
 person owns it and `needs-human` asks for a decision. Both hold the PR at the
@@ -226,7 +227,7 @@ when its row applies.
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
-| Recording a decision | Joe's comment on the HOME issue, then a `**Why.**` paragraph in the domain's ARCHITECTURE.md linking it and a Direction row with its HOME issue; no ADRs (#4667) |
+| Recording a decision | Joe's decision from an account that is his alone ("Tracker" above), linked from its HOME issue; then a `**Why.**` paragraph in the domain's ARCHITECTURE.md linking it and a Direction row with its HOME issue; no ADRs (#4667) |
 | Filing, delegating or updating work | "Tracker" above |
 
 **Runbooks** (`docs/runbooks/`) are explicit-only: open one when Joe names it,

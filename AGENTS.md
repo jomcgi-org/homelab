@@ -56,15 +56,14 @@ Deployment claims need a verified live rollout. Role completion, merged code
 and operational acceptance are distinct; report the actual state.
 
 itsaplan project HOME tracks outstanding work; commits and PRs say
-`Refs HOME-N`. A decision of Joe's is a comment on the HOME issue it
-concerns; a session on his account may record it for him, quoting him and
-naming the session
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-57#comment-292)).
-Domain `ARCHITECTURE.md` files record decisions and link that comment. New
-work goes to HOME; open GitHub issues stay valid until closed or moved there,
-and GitHub Issues otherwise take outside reports. Read failure evidence
-before retrying and confirm inherited claims against current code, checks or
-live state.
+`Refs HOME-N`
+([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6892196446)).
+A session on Joe's account may record his decisions, from an account that is
+his alone (`docs/agents/reference.md` "Tracker"); domain `ARCHITECTURE.md`
+files record decisions and link that record. New work goes to HOME; open
+GitHub issues stay valid until closed or moved there, and GitHub Issues
+otherwise take outside reports. Read failure evidence before retrying and
+confirm inherited claims against current code, checks or live state.
 
 ## Evolution
 
