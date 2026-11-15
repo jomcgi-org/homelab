@@ -99,6 +99,7 @@ export function apiUrl<K extends Operation>(
 export interface RequestOptions {
   expectedViewerId?: string;
   method?: string;
+  cache?: RequestCache;
   /** Sent as JSON, or as multipart when it is FormData. */
   body?: unknown;
   signal?: AbortSignal;
@@ -114,35 +115,10 @@ export async function requestJson<T>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const upload = options.body instanceof FormData;
-  const signals = [AbortSignal.timeout(TIMEOUT_MS)];
-  if (options.signal) signals.push(options.signal);
-  const response = await fetch(url, {
-    method: options.method ?? "GET",
-    // A login redirect must surface as a sign-in signal, not be followed.
-    redirect: "manual",
-    credentials: "same-origin",
-    signal: AbortSignal.any(signals),
-    headers:
-      options.body === undefined || upload
-        ? undefined
-        : { "content-type": "application/json" },
-    body:
-      options.body === undefined
-        ? undefined
-        : upload
-          ? (options.body as FormData)
-          : JSON.stringify(options.body),
-  });
-  if (signInExpired(response)) {
-    signIn.signal();
-    throw new SignInError();
-  }
-  signIn.answered();
+  const response = await requestResponse(url, options);
   if (response.status === 204) return undefined as T;
   const type = response.headers.get("content-type") ?? "";
-  // The gateway's static fallback must never answer for data. If it does,
-  // say so plainly instead of failing inside JSON.parse.
+  // The gateway's static fallback must never answer for data.
   if (!type.includes("json")) {
     throw new UnexpectedResponseError(
       response.status,
@@ -162,6 +138,51 @@ export async function requestJson<T>(
   )
     throw new ApiError(403, "Your account changed. Reload Grimoire.");
   return body as T;
+}
+
+/** HEAD metadata is deliberately outside the generated JSON contract. */
+export async function requestViewerId(url: string): Promise<string | null> {
+  const response = await requestResponse(url, {
+    method: "HEAD",
+    cache: "no-store",
+  });
+  const viewer = response.headers.get("X-Grimoire-Viewer-Id");
+  if (response.status !== 204 || viewer === null)
+    throw new ApiError(
+      response.status,
+      "Could not verify your account for sign-out. Try again.",
+    );
+  return viewer || null;
+}
+
+async function requestResponse(url: string, options: RequestOptions) {
+  const upload = options.body instanceof FormData;
+  const signals = [AbortSignal.timeout(TIMEOUT_MS)];
+  if (options.signal) signals.push(options.signal);
+  const response = await fetch(url, {
+    method: options.method ?? "GET",
+    // A login redirect must surface as a sign-in signal, not be followed.
+    redirect: "manual",
+    credentials: "same-origin",
+    cache: options.expectedViewerId ? "no-store" : options.cache,
+    signal: AbortSignal.any(signals),
+    headers:
+      options.body === undefined || upload
+        ? undefined
+        : { "content-type": "application/json" },
+    body:
+      options.body === undefined
+        ? undefined
+        : upload
+          ? (options.body as FormData)
+          : JSON.stringify(options.body),
+  });
+  if (signInExpired(response)) {
+    signIn.signal();
+    throw new SignInError();
+  }
+  signIn.answered();
+  return response;
 }
 
 export function api<K extends Operation>(

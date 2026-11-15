@@ -141,15 +141,14 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
   useEffect(() => {
     const accountId = confirmed.viewer?.user.id ?? confirmed.account?.id;
     if (!accountId) return;
-    const localSignOut = (event: Event) => {
-      const owner = (event as CustomEvent<string>).detail;
-      if (!owner || owner === accountId) {
-        setSigningOut(true);
-        setConfirmed((current) => ({ ...current, changed: true }));
-      }
+    const localSignOut = () => {
+      // The shared cookie may already belong to another account. Hide this
+      // tab too, without deleting its previous account's recovery records.
+      setSigningOut(true);
+      setConfirmed((current) => ({ ...current, changed: true }));
     };
     const otherTabSignOut = (event: StorageEvent) => {
-      if (isSheetSignOut(event.key, accountId))
+      if (isSheetSignOut(event.key, accountId, event.newValue))
         setConfirmed((current) => ({ ...current, changed: true }));
     };
     window.addEventListener(sheetSignOutEvent, localSignOut);

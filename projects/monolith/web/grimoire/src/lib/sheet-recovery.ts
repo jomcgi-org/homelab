@@ -117,30 +117,39 @@ export function purgeSheetRecovery(now = Date.now()) {
   }
 }
 
-/** Fences late effects and other open editors after explicit sign-out. */
+/** Reserve the fence before an editor can persist anything. Sign-out only deletes. */
 export function sheetRecoveryEpoch(accountId: string) {
   try {
-    return storage()?.getItem(SIGN_OUT + accountId) ?? "";
+    const store = storage();
+    if (!store) return null;
+    const existing = store.getItem(SIGN_OUT + accountId);
+    if (existing) return existing;
+    const epoch = crypto.randomUUID();
+    store.setItem(SIGN_OUT + accountId, epoch);
+    return epoch;
   } catch {
-    return "";
+    return null;
   }
 }
 
-export function clearAccountSheetRecovery(accountId?: string) {
+export function clearAccountSheetRecovery(accountId: string) {
   try {
     const store = storage();
     if (store) {
-      if (accountId) store.setItem(SIGN_OUT + accountId, crypto.randomUUID());
+      // Removing the preallocated epoch fences all old writers, including
+      // tabs that have not processed their storage event. No quota is needed.
+      try {
+        store.removeItem(SIGN_OUT + accountId);
+      } catch {
+        // A refused fence removal must not skip the independent record cleanup.
+      }
       for (const name of Object.keys(store)) {
         if (!name.startsWith(PREFIX)) continue;
         try {
           const owner = JSON.parse(name.slice(PREFIX.length))[0];
-          if (!accountId || owner === accountId) {
-            if (!accountId) store.setItem(SIGN_OUT + owner, crypto.randomUUID());
-            store.removeItem(name);
-          }
+          if (owner === accountId) store.removeItem(name);
         } catch {
-          store.removeItem(name);
+          // Continue to the remaining records if one removal fails.
         }
       }
     }
@@ -153,8 +162,12 @@ export function clearAccountSheetRecovery(accountId?: string) {
   }
 }
 
-export function isSheetSignOut(key: string | null, accountId: string) {
-  return key === SIGN_OUT + accountId;
+export function isSheetSignOut(
+  key: string | null,
+  accountId: string,
+  newValue: string | null,
+) {
+  return key === SIGN_OUT + accountId && newValue === null;
 }
 
 export function dropSheetRecovery(scope: SheetScope) {
@@ -168,7 +181,7 @@ export function dropSheetRecovery(scope: SheetScope) {
 /** Persist only changed fields and their merge bases, never a fetched sheet. */
 export function keepSheetRecovery(
   scope: SheetScope,
-  epoch: string,
+  epoch: string | null,
   editedAt: number,
   saved: CharacterSheetV1,
   sheet: CharacterSheetV1,
@@ -177,7 +190,14 @@ export function keepSheetRecovery(
   writer = "default",
   claim = false,
 ) {
-  if (sheetRecoveryEpoch(scope.accountId) !== epoch) return false;
+  try {
+    // Never initialize a new epoch here: an old editor cannot reauthorize
+    // itself after sign-out, even before its unmount/storage event arrives.
+    if (!epoch || storage()?.getItem(SIGN_OUT + scope.accountId) !== epoch)
+      return false;
+  } catch {
+    return false;
+  }
   const local = withNumericText(sheet, numericText);
   const changes: Buffer["changes"] = {};
   const typing: NumericText = {};

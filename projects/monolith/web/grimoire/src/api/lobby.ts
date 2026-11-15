@@ -1,6 +1,10 @@
 /** Lobby and campaign-membership reads and writes. */
 import { useQuery } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, requestViewerId } from "./client";
+
+/** Fresh signed identity, independent of cached lobby data or app permission. */
+export const readSignOutAccount = () =>
+  requestViewerId("/api/grimoire/lobby/identity");
 
 const ROSTER_MS = 5_000;
 

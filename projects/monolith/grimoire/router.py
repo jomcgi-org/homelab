@@ -1511,6 +1511,7 @@ def list_character_sheet_versions(
     # Bind browser recovery to the account authorized by this exact request,
     # even if another tab changed the sign-in cookie since the lobby read.
     response.headers["X-Grimoire-Viewer-Id"] = member.app_user_id
+    response.headers["Cache-Control"] = "private, no-store"
     versions = session.exec(
         select(CharacterSheetVersion)
         .where(
@@ -1536,6 +1537,7 @@ def list_character_sheet_versions(
 def list_character_sheet_options(
     campaign_id: str,
     player_character_id: str,
+    response: Response,
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -1544,7 +1546,11 @@ def list_character_sheet_options(
     The same selection ``derive_sheet`` validates against, with the class
     facts it calculates from, so the form offers only what a draft accepts.
     """
-    _require_character_reader(session, campaign_id, player_character_id, email)
+    member, _ = _require_character_reader(
+        session, campaign_id, player_character_id, email
+    )
+    response.headers["X-Grimoire-Viewer-Id"] = member.app_user_id
+    response.headers["Cache-Control"] = "private, no-store"
     return sheet_options(session, campaign_id, player_character_id)
 
 
@@ -4054,6 +4060,37 @@ def _invitation_view(
         campaign_id=campaign.id,
         campaign_name=campaign.name,
         status=invitation.status,
+    )
+
+
+@router.head("/lobby/identity", status_code=204)
+def get_sign_out_identity(
+    principal: Principal = Depends(get_authenticated_identity),
+    session: Session = Depends(get_session),
+) -> Response:
+    """Identify only the caller's existing recovery owner, even without app access.
+
+    Do not provision/link an account or read campaign data. A signed identity
+    must match issuer/subject; its email cannot claim another account's edits.
+    An empty header confirms that this identity has no Grimoire account.
+    """
+    query = select(AppUser)
+    if principal.issuer:
+        query = query.where(
+            AppUser.issuer == principal.issuer, AppUser.subject == principal.subject
+        )
+    else:
+        query = query.where(
+            AppUser.issuer.is_(None),
+            AppUser.email == (principal.email or "").strip().lower(),
+        )
+    user = session.exec(query).first()
+    return Response(
+        status_code=204,
+        headers={
+            "X-Grimoire-Viewer-Id": user.id if user else "",
+            "Cache-Control": "private, no-store",
+        },
     )
 
 

@@ -1,8 +1,7 @@
-import type { ComponentProps } from "react";
+import { useRef, type ComponentProps } from "react";
 import { Link } from "react-router";
-import { useQueryClient } from "@tanstack/react-query";
-import { keys } from "../api/lobby";
-import type { LobbyView } from "../api/schema";
+import { useToast } from "@astryxdesign/core/Toast";
+import { readSignOutAccount } from "../api/lobby";
 import { clearAccountSheetRecovery } from "../lib/sheet-recovery";
 import { gateway } from "./paths";
 
@@ -17,13 +16,26 @@ export function RouterLink({
   onClick,
   ...props
 }: ComponentProps<"a"> & { href?: string }) {
-  const client = useQueryClient();
-  const click: ComponentProps<"a">["onClick"] = (event) => {
+  const toast = useToast();
+  const pending = useRef(false);
+  const click: ComponentProps<"a">["onClick"] = async (event) => {
     onClick?.(event);
     if (event.defaultPrevented || href !== gateway.signOut) return;
-    clearAccountSheetRecovery(
-      client.getQueryData<LobbyView>(keys.lobby)?.user.id,
-    );
+    event.preventDefault();
+    if (pending.current) return;
+    pending.current = true;
+    try {
+      const accountId = await readSignOutAccount();
+      if (accountId) clearAccountSheetRecovery(accountId);
+      location.assign(gateway.signOut);
+    } catch {
+      // An unknown identity is never permission to erase another account's work.
+      pending.current = false;
+      toast({
+        type: "error",
+        body: "Could not verify your account for sign-out. Try again.",
+      });
+    }
   };
   const external =
     /^[a-z][a-z0-9+.-]*:/i.test(href) ||

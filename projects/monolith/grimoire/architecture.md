@@ -996,17 +996,29 @@ app load purges expired or malformed records. Storage failures leave the live
 editor usable and show that a recovery copy could not be kept.
 
 Recovery waits for fresh successful sheet and option reads on each mount.
-The sheet response's `X-Grimoire-Viewer-Id` identifies the account authorized
-by that request; the client rejects a missing or different identity, including
-when a cookie changed before the lobby poll. Cached responses cannot authorize
-recovery. Restored fields merge against the freshly fetched sheet, with
+Both responses carry `X-Grimoire-Viewer-Id`, identifying the account authorized
+by each request. Both queries are scoped to the recovery account and reject a
+missing or different identity, including a cookie switch between history and
+options reads. Cached responses cannot authorize recovery. Restored fields
+merge against the freshly fetched sheet, with
 overlapping changes requiring an explicit choice. Current sheet status,
 revision and server authorization govern every save; submitted versions remain
 read-only. Saving or discarding clears that editor's buffer. Session expiry
 and account switching preserve hidden buffers. Explicit sign-out clears the
 signing-out account's buffers on this browser and fences late writes from its
-other editors; if identity is unavailable, sign-out clears all sheet buffers.
-Platform account IDs are never used as Grimoire account IDs.
+other editors. Each editor must reserve a durable account epoch before storing
+edits. Sign-out removes that epoch and independently removes the account's
+records; it needs no new storage allocation, even at full quota. Old writers
+cannot create a replacement epoch, and other tabs fence on its removal event.
+
+The sign-out link first makes an uncached `HEAD /api/grimoire/lobby/identity`
+read. This verifies the signed human identity and returns only its existing
+Grimoire account ID, matching issuer/subject even if application access was
+revoked. It neither provisions an account nor grants campaign access. A
+confirmed identity with no Grimoire account can sign out without deleting
+anyone's buffers. A failed identity read leaves every buffer intact and offers
+retry before navigating to the gateway. Cached lobby and platform account IDs
+never select whose recovery records to erase.
 
 An accepted player without a character uses
 `POST /campaigns/{campaign_id}/characters/self` with `{name}` to create and

@@ -6,17 +6,22 @@ import { signIn } from "../../app/signIn";
 import { openApp } from "../../test/app";
 import type { Routes } from "../../test/backend";
 import { campaigns, ids, lobby } from "../../test/fixtures";
-import { mira, miraDraft, miraSheet, playerHistory, sheetsRoutes } from "../../test/fixtures/sheets";
+import { mira, miraDraft, miraSheet, playerHistory, sheetOptions, sheetsRoutes } from "../../test/fixtures/sheets";
 
 const SHEETS = "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets";
 const CHARACTERS = "GET /campaigns/{campaign_id}/characters";
+const OPTIONS = "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options";
 const viewer = lobby({ campaigns: [campaigns.joined] });
 const history = playerHistory([{ ...miraDraft, decision_comment: "PRIVATE_SHEET_CANARY" }]);
 const routes: Routes = { ...sheetsRoutes, "GET /lobby": viewer, [SHEETS]: history };
 const level = () => screen.getByRole<HTMLInputElement>("spinbutton", { name: "Level" });
 const remount = (app: ReturnType<typeof openApp>, next: Routes = routes) => {
   cleanup(); app.client.clear(); app.backend.restore();
-  return openApp(next, "/sheets");
+  return openApp(next, "/sheets", {
+    "HEAD /api/grimoire/lobby/identity": () => new Response(null, {
+      status: 204, headers: { "X-Grimoire-Viewer-Id": viewer.user.id },
+    }),
+  });
 };
 async function dirty() {
   const app = openApp(routes, "/sheets");
@@ -90,6 +95,8 @@ describe("authorized sheet recovery", () => {
   });
 
   it("keeps recovery through expiry, then clears it on the real sign-out link", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { origin: "https://friends.example.test", assign });
     let app = await dirty();
     act(() => signIn.signal());
     app = remount(app);
@@ -97,10 +104,33 @@ describe("authorized sheet recovery", () => {
     expect(level().value).toBe("4");
     await app.user.click(screen.getByRole("link", { name: "Your campaigns" }));
     await app.user.click(screen.getByRole("link", { name: "Sign out" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledOnce());
     expect(Object.keys(localStorage).some((key) => key.startsWith("grimoire-sheet-recovery:"))).toBe(false);
     app = remount(app);
     await screen.findByRole("spinbutton", { name: "Level" });
     expect(level().value).toBe("3");
+  });
+
+  it.each(["other-authorized-account", null])("does not restore A after history succeeds as A but options identify %s", async (accountId) => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { origin: "https://friends.example.test", reload });
+    let app = await dirty();
+    const headers = new Headers({ "content-type": "application/json" });
+    if (accountId) headers.set("X-Grimoire-Viewer-Id", accountId);
+    app = remount(app, {
+      ...routes,
+      [OPTIONS]: () => new Response(JSON.stringify(sheetOptions()), { headers }),
+    });
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(app.backend.callsTo(SHEETS)).toHaveLength(1);
+    expect(app.backend.callsTo(OPTIONS)).toHaveLength(1);
+    expect(screen.queryByRole("spinbutton", { name: "Level" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Recovered sheet changes" })).toBeNull();
+    expect(screen.queryByText("PRIVATE_SHEET_CANARY")).toBeNull();
+    // A's buffer survives the failed authorization and still needs fresh reads.
+    app = remount(app);
+    await screen.findByRole("region", { name: "Recovered sheet changes" });
+    expect(level().value).toBe("4");
   });
 
   it("restores a submitted sheet only as a read-only buffer until the DM returns it", async () => {

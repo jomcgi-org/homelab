@@ -118,7 +118,11 @@ const ancestryFacts = (option: SheetOptions["ancestries"][number]) =>
  * hold for this character. Grimoire calculates the rest.
  */
 export function SheetForm(props: SheetFormProps) {
-  const options = useSheetOptions(props.campaignId, props.characterId);
+  const options = useSheetOptions(
+    props.campaignId,
+    props.characterId,
+    props.accountId,
+  );
   return (
     <Loaded query={options} what="the choices for this sheet" requireFresh>
       {(data) => <Editor {...props} options={data} />}

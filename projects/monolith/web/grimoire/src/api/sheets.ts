@@ -139,14 +139,21 @@ export const useSheetHistory = (
  * What `derive_sheet` would accept for this character: global corpus entries
  * and ones the DM shared in full, with the class facts it calculates from.
  */
-export const useSheetOptions = (campaignId: string, characterId: string) =>
+export const useSheetOptions = (
+  campaignId: string,
+  characterId: string,
+  accountId: string,
+) =>
   useQuery({
-    queryKey: keys.options(campaignId, characterId),
+    queryKey: [...keys.options(campaignId, characterId), "viewer", accountId],
     refetchOnMount: "always",
     queryFn: (): Promise<SheetOptions> =>
       api(
         "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options",
-        { params: characterParams({ campaignId, characterId }) },
+        {
+          params: characterParams({ campaignId, characterId }),
+          expectedViewerId: accountId,
+        },
       ),
   });
 
