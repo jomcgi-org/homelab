@@ -554,7 +554,7 @@ func TestForceRefreshFailureReturnsNeedsLogin(t *testing.T) {
 	}
 }
 
-func TestConsumedRefreshTokenReconcilesBeforeRequiringLogin(t *testing.T) {
+func TestConsumedRefreshTokenExposesRecoverableBlock(t *testing.T) {
 	now := time.Now().UTC()
 	st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
 		Name: "codex-cluster", ProviderName: "test", LastRefresh: now.Add(-time.Hour),
@@ -563,8 +563,9 @@ func TestConsumedRefreshTokenReconcilesBeforeRequiringLogin(t *testing.T) {
 	adapter := &fakeAdapter{refreshErr: provider.ErrRefreshTokenReused}
 	s := newTestServer(st, adapter)
 	response := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/refresh")
-	if response.Code != http.StatusServiceUnavailable || decodeBody(t, response)["needs_login"] != false {
-		t.Fatal("forced refresh required login before storage reconciliation")
+	body := decodeBody(t, response)
+	if response.Code != http.StatusServiceUnavailable || body["needs_login"] != false || body["refresh_blocked"] != true {
+		t.Fatal("forced refresh did not report a recoverable block")
 	}
 	for i := 0; i < 3; i++ {
 		response = requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
@@ -576,8 +577,8 @@ func TestConsumedRefreshTokenReconcilesBeforeRequiringLogin(t *testing.T) {
 		t.Fatalf("provider calls = %d, want one attempt and one retry", calls)
 	}
 	status := decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
-	if status["state"] != "granted" || status["detail"] != "stored grant present" {
-		t.Fatal("login status required login before storage reconciliation")
+	if status["state"] != "blocked" || status["detail"] != "refresh token consumed; await a stored replacement or a new device login" {
+		t.Fatal("login status did not expose operator recovery options")
 	}
 	g, _ := st.LoadGrant("codex-cluster")
 	g.LastRefresh = now
@@ -585,8 +586,12 @@ func TestConsumedRefreshTokenReconcilesBeforeRequiringLogin(t *testing.T) {
 	_ = st.SaveGrant(g)
 	adapter.refreshErr = nil
 	response = requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
-	if response.Code != http.StatusOK || adapter.refreshCalls.Load() != 3 || s.broker.NeedsLogin("codex-cluster") {
+	if response.Code != http.StatusOK || adapter.refreshCalls.Load() != 3 || s.broker.NeedsLogin("codex-cluster") || s.broker.RefreshBlocked("codex-cluster") {
 		t.Fatal("newer durable grant did not restore token serving")
+	}
+	status = decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+	if status["state"] != "granted" {
+		t.Fatal("durable replacement did not clear the operator state")
 	}
 }
 

@@ -31,6 +31,17 @@ releases their original queued turns through normal admission and claim handling
 The sweep and any surviving watcher share a conditional transition, so a late
 callback cannot reactivate a session that has already resumed or been stopped.
 
+## Consumed refresh tokens
+
+After a provider reports reuse twice, the broker stops refreshing that token.
+The login status route reports `state: blocked` with recovery guidance, and
+the forced refresh route returns 503 with `refresh_blocked: true` and
+`needs_login: false`. Another broker may have a successful rotation waiting
+for storage, so this state never becomes login-required based on elapsed time.
+A newer stored grant with a different refresh token restores serving
+automatically. If the replacement was lost, complete a new device login to
+clear the block. The stored access token is preserved.
+
 ## Quota observation durability
 
 The broker persists its complete provider and grant quota snapshot in the

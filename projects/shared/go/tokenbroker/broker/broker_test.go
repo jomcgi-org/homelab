@@ -198,76 +198,57 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 }
 
 func TestRepeatedReuseBlocksProviderCallsUntilReplacement(t *testing.T) {
-	for _, checkNeedsLogin := range []bool{false, true} {
-		t.Run(fmt.Sprintf("check-needs-login-%t", checkNeedsLogin), func(t *testing.T) {
-			now := time.Now().UTC()
-			original := store.Grant{Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{
-				AccessToken: "expired", RefreshToken: "consumed", ExpiresAt: now.Add(-time.Minute),
-			}}
-			st := &testStore{grants: map[string]store.Grant{"one": original}}
-			adapter := &testAdapter{refreshErr: fmt.Errorf("consumed: %w", provider.ErrRefreshTokenReused)}
-			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
-			clockNow := now
-			b.now = func() time.Time { return clockNow }
-			for i := 0; i < 3; i++ {
-				if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
-					t.Fatalf("refresh error = %v, want ErrRefreshTokenReused", err)
-				}
-				if b.NeedsLogin("one") {
-					t.Fatal("reuse required login before storage reconciliation")
-				}
-				if _, _, err := b.GetAccessToken("one", context.Background()); !errors.Is(err, ErrRefreshFailed) {
-					t.Fatalf("token error = %v, want ErrRefreshFailed", err)
-				}
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now().UTC()
+		original := store.Grant{Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{
+			AccessToken: "expired", RefreshToken: "consumed", ExpiresAt: now.Add(-time.Minute),
+		}}
+		st := &testStore{grants: map[string]store.Grant{"one": original}}
+		adapter := &testAdapter{refreshErr: fmt.Errorf("consumed: %w", provider.ErrRefreshTokenReused)}
+		b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+		for i := 0; i < 3; i++ {
+			if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
+				t.Fatalf("refresh error = %v, want ErrRefreshTokenReused", err)
 			}
-			if adapter.calls != 2 {
-				t.Fatalf("provider calls = %d, want one attempt and one retry", adapter.calls)
+			if b.NeedsLogin("one") || !b.RefreshBlocked("one") {
+				t.Fatal("consumed token must expose a recoverable refresh block")
 			}
-			if stored, _ := st.LoadGrant("one"); stored != original {
-				t.Fatal("failed refresh changed the stored grant")
+			if _, _, err := b.GetAccessToken("one", context.Background()); !errors.Is(err, ErrRefreshFailed) {
+				t.Fatalf("token error = %v, want ErrRefreshFailed", err)
 			}
-			clockNow = clockNow.Add(reuseReconciliationPeriod - time.Nanosecond)
-			_, _, _ = b.RefreshAccessToken("one", context.Background())
-			if b.NeedsLogin("one") {
-				t.Fatal("reconciliation ended before its deadline")
-			}
-			clockNow = clockNow.Add(time.Nanosecond)
-			// An unavailable store at the deadline is not evidence of loss.
-			st.loadErr = errors.New("storage unavailable")
-			_, _, _ = b.RefreshAccessToken("one", context.Background())
-			if b.NeedsLogin("one") {
-				t.Fatal("storage failure was classified as a lost rotation")
-			}
-			st.loadErr = nil
-			for i := 0; i < 3; i++ {
-				if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) || !b.NeedsLogin("one") {
-					t.Fatalf("unchanged token after reconciliation: %v, needs login = %t", err, b.NeedsLogin("one"))
-				}
-			}
-			if adapter.calls != 2 {
-				t.Fatal("storage reconciliation retried the consumed token")
-			}
-			// A timestamp-only update must not unblock the consumed token.
-			replacement := original
-			replacement.LastRefresh = now
-			_ = st.SaveGrant(replacement)
-			if !b.NeedsLogin("one") {
-				t.Fatal("unchanged refresh token cleared the block")
-			}
-			replacement.TokenBundle.RefreshToken = "replacement"
-			_ = st.SaveGrant(replacement)
-			adapter.refreshErr = nil
-			if checkNeedsLogin && b.NeedsLogin("one") {
-				t.Fatal("newer durable replacement did not clear the block")
-			}
-			if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if b.NeedsLogin("one") || adapter.calls != 3 || adapter.refreshInput[2] != "replacement" {
-				t.Fatal("refresh did not recover using the durable replacement")
-			}
-		})
-	}
+			// A lost replacement stays explicitly blocked without sending
+			// the consumed token again or assuming no writer can recover it.
+			time.Sleep(24 * time.Hour)
+		}
+		if adapter.calls != 2 {
+			t.Fatalf("provider calls = %d, want one attempt and one retry", adapter.calls)
+		}
+		if stored, _ := st.LoadGrant("one"); stored != original {
+			t.Fatal("failed refresh changed the stored grant")
+		}
+		st.loadErr = errors.New("storage unavailable")
+		_, _, _ = b.RefreshAccessToken("one", context.Background())
+		if b.NeedsLogin("one") || !b.RefreshBlocked("one") {
+			t.Fatal("storage failure changed the recovery classification")
+		}
+		st.loadErr = nil
+		// A timestamp-only update must not unblock the consumed token.
+		replacement := original
+		replacement.LastRefresh = time.Now().UTC()
+		_ = st.SaveGrant(replacement)
+		if !b.RefreshBlocked("one") {
+			t.Fatal("unchanged refresh token cleared the block")
+		}
+		replacement.TokenBundle.RefreshToken = "replacement"
+		_ = st.SaveGrant(replacement)
+		adapter.refreshErr = nil
+		if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if b.NeedsLogin("one") || b.RefreshBlocked("one") || adapter.calls != 3 || adapter.refreshInput[2] != "replacement" {
+			t.Fatal("refresh did not recover using the durable replacement")
+		}
+	})
 }
 
 func TestReuseRecoveryTransientFailurePreservesGrant(t *testing.T) {
@@ -309,7 +290,6 @@ func TestReuseRecoveryDoesNotRetryOlderDurableGrant(t *testing.T) {
 	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
 	adapter := &testAdapter{refreshErr: provider.ErrRefreshTokenReused}
 	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
-	b.now = func() time.Time { return now }
 	s, _ := b.state("one")
 	s.authoritative = &store.Grant{Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "rotated"}}
 	for i := 0; i < 3; i++ {
@@ -319,7 +299,6 @@ func TestReuseRecoveryDoesNotRetryOlderDurableGrant(t *testing.T) {
 		if b.NeedsLogin("one") {
 			t.Fatal("lagging durable storage was classified as a lost rotation")
 		}
-		now = now.Add(reuseReconciliationPeriod)
 	}
 	if adapter.calls != 2 || adapter.refreshInput[0] != "rotated" || adapter.refreshInput[1] != "rotated" {
 		t.Fatal("reuse recovery retried an older token or exceeded its retry bound")
@@ -328,14 +307,28 @@ func TestReuseRecoveryDoesNotRetryOlderDurableGrant(t *testing.T) {
 
 type delayedStore struct {
 	*testStore
-	pending chan store.Grant
-	release chan struct{}
+	mu       sync.Mutex
+	pending  store.Grant
+	writable bool
+	attempts int
 }
 
 func (s *delayedStore) SaveGrantIfNewer(g store.Grant) error {
-	s.pending <- g
-	<-s.release
+	s.mu.Lock()
+	s.pending = g
+	s.attempts++
+	writable := s.writable
+	s.mu.Unlock()
+	if !writable {
+		return errors.New("Secret updates unavailable")
+	}
 	return s.testStore.SaveGrantIfNewer(g)
+}
+
+func (s *delayedStore) allowWrites() {
+	s.mu.Lock()
+	s.writable = true
+	s.mu.Unlock()
 }
 
 type rotatingAdapter struct {
@@ -355,61 +348,53 @@ func (a *rotatingAdapter) RefreshToken(_ context.Context, token string) (provide
 }
 
 func TestOverlappingRotationDelayedWriteNeverRequiresLogin(t *testing.T) {
-	now := time.Now().UTC()
-	st := &testStore{grants: map[string]store.Grant{"one": {
-		Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour),
-		TokenBundle: store.TokenBundle{AccessToken: "expired", RefreshToken: "old", ExpiresAt: now.Add(-time.Minute)},
-	}}}
-	delayed := &delayedStore{testStore: st, pending: make(chan store.Grant, 1), release: make(chan struct{})}
-	var release sync.Once
-	t.Cleanup(func() { release.Do(func() { close(delayed.release) }) })
-	adapter := &rotatingAdapter{current: "old"}
-	adapters := map[string]provider.Adapter{"test": adapter}
-	configs := []GrantConfig{{Name: "one", ProviderName: "test"}}
-	winner := New(delayed, adapters, nil, configs, nil, nil)
-	other := New(st, adapters, nil, configs, nil, nil)
-	other.now = func() time.Time { return now }
-	done := make(chan error, 1)
-	go func() {
-		_, _, err := winner.RefreshAccessToken("one", context.Background())
-		done <- err
-	}()
-	var pending store.Grant
-	select {
-	case pending = <-delayed.pending:
-	case <-time.After(5 * time.Second):
-		t.Fatal("successful rotation did not reach persistence")
-	}
-	// The provider consumed the old token, but the winner's save is held.
-	// Repeated callers remain transient even just before the deadline.
-	for i := 0; i < 3; i++ {
-		if _, _, err := other.GetAccessToken("one", context.Background()); !errors.Is(err, ErrRefreshFailed) || other.NeedsLogin("one") {
-			t.Fatalf("overlapping refresh became a credential block: %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now().UTC()
+		st := &testStore{grants: map[string]store.Grant{"one": {
+			Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour),
+			TokenBundle: store.TokenBundle{AccessToken: "expired", RefreshToken: "old", ExpiresAt: now.Add(-time.Minute)},
+		}}}
+		delayed := &delayedStore{testStore: st}
+		// Let the background persistence goroutine finish even on failure.
+		defer func() {
+			delayed.allowWrites()
+			time.Sleep(30 * time.Second)
+			synctest.Wait()
+		}()
+		adapter := &rotatingAdapter{current: "old"}
+		adapters := map[string]provider.Adapter{"test": adapter}
+		configs := []GrantConfig{{Name: "one", ProviderName: "test"}}
+		winner := New(delayed, adapters, nil, configs, nil, nil)
+		other := New(st, adapters, nil, configs, nil, nil)
+		if _, _, err := winner.RefreshAccessToken("one", context.Background()); err == nil {
+			t.Fatal("rotation should await persistence while updates fail")
 		}
-		if i == 0 {
-			now = now.Add(reuseReconciliationPeriod - time.Nanosecond)
+		// Reads work while every foreground and background Secret update
+		// fails. Cross the former five-minute deadline with no saved token.
+		for i := 0; i < 3; i++ {
+			if _, _, err := other.GetAccessToken("one", context.Background()); !errors.Is(err, ErrRefreshFailed) || other.NeedsLogin("one") || !other.RefreshBlocked("one") {
+				t.Fatalf("overlapping refresh became a permanent credential block: %v", err)
+			}
+			time.Sleep(5 * time.Minute)
 		}
-	}
-	release.Do(func() { close(delayed.release) })
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		delayed.mu.Lock()
+		pending, attempts := delayed.pending, delayed.attempts
+		delayed.mu.Unlock()
+		if attempts <= 5 {
+			t.Fatal("test did not exercise background persistence retries")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("delayed save did not finish")
-	}
-	// The next call arrives after the deadline. It must observe the completed
-	// write before classifying the earlier reuse as permanently lost.
-	now = now.Add(time.Second)
-	if access, _, err := other.GetAccessToken("one", context.Background()); err != nil || access != pending.TokenBundle.AccessToken || other.NeedsLogin("one") {
-		t.Fatalf("delayed durable replacement did not recover: %v", err)
-	}
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if adapter.calls != 3 {
-		t.Fatalf("provider calls = %d, want one rotation and two reuse responses", adapter.calls)
-	}
+		delayed.allowWrites()
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		if access, _, err := other.GetAccessToken("one", context.Background()); err != nil || access != pending.TokenBundle.AccessToken || other.NeedsLogin("one") || other.RefreshBlocked("one") {
+			t.Fatalf("delayed durable replacement did not recover: %v", err)
+		}
+		adapter.mu.Lock()
+		defer adapter.mu.Unlock()
+		if adapter.calls != 3 {
+			t.Fatalf("provider calls = %d, want one rotation and two reuse responses", adapter.calls)
+		}
+	})
 }
 
 func TestRefreshAccessTokenUsesRefreshTokenWhenAvailable(t *testing.T) {

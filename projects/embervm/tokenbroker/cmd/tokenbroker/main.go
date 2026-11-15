@@ -633,7 +633,7 @@ func (s *server) forceRefresh(name string, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		needsLogin := s.broker.NeedsLogin(name)
 		s.logger.Error("tokenbroker forced refresh failed", "grant", name, "needs_login", needsLogin, "err", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"reason": "refresh_failed", "needs_login": needsLogin})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"reason": "refresh_failed", "needs_login": needsLogin, "refresh_blocked": s.broker.RefreshBlocked(name)})
 		return
 	}
 	s.logger.Info("tokenbroker forced refresh succeeded", "grant", name, "expires_at", expiry.UTC().Format(time.RFC3339))
@@ -786,6 +786,10 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 	}
 	if s.broker.NeedsLogin(name) {
 		writeJSON(w, http.StatusOK, map[string]string{"state": "none", "detail": "refresh failed, device login required"})
+		return
+	}
+	if s.broker.RefreshBlocked(name) {
+		writeJSON(w, http.StatusOK, map[string]string{"state": "blocked", "detail": "refresh token consumed; await a stored replacement or a new device login"})
 		return
 	}
 	grant, err := s.store.LoadGrant(name)

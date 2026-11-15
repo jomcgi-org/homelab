@@ -123,6 +123,9 @@ func (m *Manager) AccessToken(ctx context.Context) (Token, error) {
 	if m.broker.NeedsLogin(grant) {
 		return m.cached(ctx, ErrLoginRequired)
 	}
+	if m.refreshBlocked() {
+		return m.cached(ctx, ErrUnavailable)
+	}
 	m.mu.Lock()
 	backoff := !m.lastFailure.IsZero() && time.Since(m.lastFailure) < m.opts.RetryAfter
 	m.mu.Unlock()
@@ -142,6 +145,8 @@ func (m *Manager) AccessToken(ctx context.Context) (Token, error) {
 		m.opts.Metrics.SetGrantState(grant, "login_required")
 		m.opts.Logger.Error("codex grant needs a new device login", "grant", grant)
 		return m.cached(ctx, ErrLoginRequired)
+	case m.refreshBlocked():
+		return m.cached(ctx, ErrUnavailable)
 	}
 	m.mu.Lock()
 	m.lastFailure = time.Now()
@@ -156,6 +161,17 @@ func (m *Manager) AccessToken(ctx context.Context) (Token, error) {
 	m.opts.Metrics.SetGrantState(grant, state)
 	m.opts.Logger.Error("codex grant refresh failed", "grant", grant, "state", state, "err", err)
 	return m.cached(ctx, ErrUnavailable)
+}
+
+// refreshBlocked exposes a consumed token as an operator recovery condition.
+// Relay failures stay transient because another broker may still save the
+// replacement. Calling this also observes and clears a completed rotation.
+func (m *Manager) refreshBlocked() bool {
+	if !m.broker.RefreshBlocked(m.opts.Grant) {
+		return false
+	}
+	m.opts.Metrics.SetGrantState(m.opts.Grant, "refresh_blocked")
+	return true
 }
 
 // cached serves the stored access token while it is valid, else fallback.
@@ -197,6 +213,9 @@ func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, 
 	if m.broker.NeedsLogin(grant) {
 		return Token{}, ErrLoginRequired
 	}
+	if m.refreshBlocked() {
+		return Token{}, ErrUnavailable
+	}
 	select {
 	case m.rejectSlot <- struct{}{}:
 		defer func() { <-m.rejectSlot }()
@@ -223,7 +242,9 @@ func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, 
 			m.opts.Metrics.SetGrantState(grant, "login_required")
 			return Token{}, ErrLoginRequired
 		}
-		m.opts.Metrics.SetGrantState(grant, "error")
+		if !m.refreshBlocked() {
+			m.opts.Metrics.SetGrantState(grant, "error")
+		}
 		m.opts.Logger.Error("codex grant refresh after backend 401 failed", "grant", grant, "err", err)
 		return Token{}, ErrUnavailable
 	}
@@ -238,6 +259,9 @@ func (m *Manager) ForceRefresh(ctx context.Context) error {
 	if m.broker.NeedsLogin(grant) {
 		return ErrLoginRequired
 	}
+	if m.refreshBlocked() {
+		return ErrUnavailable
+	}
 	m.mu.Lock()
 	if !m.lastForced.IsZero() && time.Since(m.lastForced) < m.opts.ForceCooldown {
 		m.mu.Unlock()
@@ -251,7 +275,9 @@ func (m *Manager) ForceRefresh(ctx context.Context) error {
 			m.opts.Metrics.SetGrantState(grant, "login_required")
 			return ErrLoginRequired
 		}
-		m.opts.Metrics.SetGrantState(grant, "error")
+		if !m.refreshBlocked() {
+			m.opts.Metrics.SetGrantState(grant, "error")
+		}
 		return ErrUnavailable
 	}
 	m.recordSuccess(expiry)
@@ -280,6 +306,8 @@ func (m *Manager) Check(ctx context.Context) {
 	switch {
 	case errors.Is(err, ErrLoginRequired):
 		outcome = "login_required"
+	case m.broker.RefreshBlocked(m.opts.Grant):
+		outcome = "refresh_blocked"
 	case err != nil:
 		outcome = "error"
 	}
@@ -406,6 +434,9 @@ func (m *Manager) loginStatus(w http.ResponseWriter, r *http.Request) {
 		resp["grant_state"] = "error"
 	case m.broker.NeedsLogin(m.opts.Grant):
 		resp["grant_state"] = "login_required"
+	case m.broker.RefreshBlocked(m.opts.Grant):
+		resp["grant_state"] = "refresh_blocked"
+		resp["recovery"] = "Await a stored replacement or complete a new device login."
 	case g.TokenBundle.RefreshToken != "":
 		resp["grant_state"] = "present"
 		resp["expires_at"] = g.TokenBundle.ExpiresAt.UTC().Format(time.RFC3339)
@@ -418,6 +449,8 @@ func (m *Manager) refreshNow(w http.ResponseWriter, r *http.Request) {
 	switch err := m.ForceRefresh(r.Context()); {
 	case errors.Is(err, ErrLoginRequired):
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"factory_error": ErrLoginRequired.Error()})
+	case m.broker.RefreshBlocked(m.opts.Grant):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"factory_error": ErrUnavailable.Error(), "grant_state": "refresh_blocked"})
 	case err != nil:
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"factory_error": ErrUnavailable.Error()})
 	default:
