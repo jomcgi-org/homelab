@@ -1,6 +1,6 @@
 {
-  "head": "b8614098883cd0ce5df8d893e9c9c46e82a179a1",
-  "baseline": "1f536d94934ccfef73aa3a2129f00be60f8a44ca",
+  "head": "bad858ad03b87f5f466d8a3e41d50c7f29c614b1",
+  "baseline": "f2a480147f9e04609b4eacda4454fbe9d3507f0a",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -638,7 +638,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-full.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-full.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1024
@@ -657,7 +657,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -676,7 +676,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-full.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-full.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1024
@@ -999,7 +999,7 @@
       "after": "captures/review/after-gaps-audit-390-light.png",
       "before": "captures/review/before-gaps-audit-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1227,7 +1227,7 @@
       "after": "captures/review/after-notes-pending-390-light.png",
       "before": "captures/review/before-notes-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1322,7 +1322,7 @@
       "after": "captures/trips/after-day-1440-light-map-controls.png",
       "before": "captures/trips/before-day-1440-light-map-controls.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1029
@@ -2933,12 +2933,12 @@
       "before": "49ed0f54a02a546efa64440da2609a9eddfdc67200dd8d41d26bd986bc9f5314"
     },
     "trips": {
-      "head": "93a2391681cf450230c57e124750b26d731ff84c84bd2d3d5ae12b3c6a3b2020",
-      "before": "93a2391681cf450230c57e124750b26d731ff84c84bd2d3d5ae12b3c6a3b2020"
+      "head": "133141b69ee09ccd5fe65f48f797b993d7e1b113584d4cb1b5a124509c7c7d26",
+      "before": "133141b69ee09ccd5fe65f48f797b993d7e1b113584d4cb1b5a124509c7c7d26"
     },
     "stars": {
-      "head": "e745a1665f1b79d7e82813eac4e2aca00d0814c3e3dcebd339b4e5dd82a2b7a1",
-      "before": "e745a1665f1b79d7e82813eac4e2aca00d0814c3e3dcebd339b4e5dd82a2b7a1"
+      "head": "e5b80ac4a14cb0382fab4163f266dae40563547e8924a695cfe62fdaff019f05",
+      "before": "e5b80ac4a14cb0382fab4163f266dae40563547e8924a695cfe62fdaff019f05"
     },
     "agents": {
       "head": "608392d374550512c04799aaeab4ea0e9c5e6f154e8c88e747000a596cdca51a",
