@@ -154,6 +154,8 @@ def test_deploy_values_enable_the_reviewer() -> None:
     # The required check gates merges: the reviewer enqueues nothing, and the
     # connector waits for its check before enqueueing the factory's PRs.
     assert deploy["reviewer"]["bindings"]["homelab"]["enqueueAuthors"] == []
+    # The reviewer keeps one comment on each PR, written as its App's bot.
+    assert deploy["reviewer"]["commentAuthor"] == "jomcgi-factory-review[bot]"
     assert deploy["connector"]["bindings"]["homelab"]["reviewerCheck"] == {
         "name": "factory review",
         "appId": 5758326,
@@ -161,10 +163,12 @@ def test_deploy_values_enable_the_reviewer() -> None:
 
 
 def test_comments_are_off_unless_an_author_is_set() -> None:
-    # Unset, the config names no author and the reviewer posts no comment.
+    # Unset (the chart default), the config names no author and the reviewer
+    # posts no comment. The deploy values set it, so clear it here.
     values = yaml.safe_load((_CHART / "values.yaml").read_text())
     assert values["reviewer"]["commentAuthor"] == ""
-    assert "commentAuthor" not in _config(_render(), "factory-reviewer")
+    off = _config(_render(["reviewer.commentAuthor="]), "factory-reviewer")
+    assert "commentAuthor" not in off
     bot = "jomcgi-factory-review[bot]"
     config = _config(_render([f"reviewer.commentAuthor={bot}"]), "factory-reviewer")
     assert config["commentAuthor"] == bot
