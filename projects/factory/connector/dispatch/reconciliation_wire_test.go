@@ -128,8 +128,10 @@ func newReconciliationWire(t *testing.T, retries int) (*env, *reconciliationWire
 }
 
 func TestPendingNativeCleanupCannotProveMessageAbsent(t *testing.T) {
-	for _, state := range []string{kagent.StateCompleted, kagent.StateFailed, kagent.StateCanceled,
-		kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired} {
+	for _, state := range []string{
+		kagent.StateCompleted, kagent.StateFailed, kagent.StateCanceled,
+		kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired,
+	} {
 		for _, cancel := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/cancel=%t", state, cancel), func(t *testing.T) {
 				retries := 0
