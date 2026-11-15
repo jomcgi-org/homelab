@@ -29,6 +29,20 @@ helm_chart(
     visibility = ["//visibility:public"],
 )
 
+py_test(
+    name = "cnpg_backup_test",
+    srcs = ["cnpg_backup_test.py"],
+    data = [
+        ":chart",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 argocd_app(
     name = "authentik-gke",
     chart = "projects/platform/authentik",

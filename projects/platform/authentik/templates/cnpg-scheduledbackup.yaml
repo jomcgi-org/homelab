@@ -4,6 +4,10 @@ kind: ScheduledBackup
 metadata:
   name: {{ .Values.cnpg.name }}-daily
   namespace: {{ .Release.Namespace }}
+  {{- if eq .Values.cnpg.backup.provider "s3" }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  {{- end }}
   labels:
     app.kubernetes.io/name: authentik-postgresql
     app.kubernetes.io/part-of: authentik
@@ -12,6 +16,9 @@ spec:
   schedule: {{ .Values.cnpg.backup.scheduledBackup.cron | quote }}
   immediate: true
   backupOwnerReference: self
+  {{- if eq .Values.cnpg.backup.provider "s3" }}
+  method: barmanObjectStore
+  {{- end }}
   cluster:
     name: {{ .Values.cnpg.name }}
 {{- end }}

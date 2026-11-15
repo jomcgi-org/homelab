@@ -1,0 +1,35 @@
+# Authentik's backup key stays in authentik, outside every agent namespace.
+# garage-init creates authentik-pg-backups and fills this Secret idempotently.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: authentik-pg-s3
+  namespace: authentik
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: authentik
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [authentik-pg-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: authentik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage

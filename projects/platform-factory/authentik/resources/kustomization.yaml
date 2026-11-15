@@ -5,6 +5,7 @@ kind: Kustomization
 # (projects/platform/authentik, values-factory.yaml): the Job that generates
 # its secrets, the grant for the edge route, and the namespace's allowlist.
 resources:
+  - backup-key-wait.yaml
   - secret-init.yaml
   - reference-grant.yaml
   - network-policy.yaml

@@ -203,6 +203,8 @@ cnpg:
   enabled: true
   name: authentik-pg
   instances: 1
+  annotations: {}
+  affinity: {}
   storage:
     size: 20Gi
     # Empty inherits the cluster default (longhorn at home); the GKE overlay
@@ -224,6 +226,10 @@ cnpg:
   externalClusters: []
   backup:
     enabled: true
+    # gcs uses the 1Password item below; s3 reads AWS_ACCESS_KEY_ID,
+    # AWS_SECRET_ACCESS_KEY and AWS_REGION from credentialsSecret.
+    provider: gcs
+    endpointURL: ""
     retentionPolicy: "14d"
     destinationPath: "gs://h0melab-cnpg-backups/authentik-pg/"
     serverName: ""

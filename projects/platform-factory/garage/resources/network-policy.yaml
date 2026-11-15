@@ -35,13 +35,16 @@ spec:
     # still needs that bucket's key. Substrate (ate-snapshots) is added with
     # its grant.
     - fromEndpoints:
-        # kagent-pg's and factory-db's WAL archives and base backups.
+        # Database WAL archives and base backups.
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kagent-pg
             cnpg.io/cluster: kagent-pg
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-db
             cnpg.io/cluster: factory-db
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+            cnpg.io/cluster: authentik-pg
         # itsaplan's attachments: its api and worker (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory

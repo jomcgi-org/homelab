@@ -56,7 +56,7 @@ spec:
             - port: "5432"
               protocol: TCP
 ---
-# The CloudNativePG instance and its bootstrap Jobs.
+# The CloudNativePG instances and their bootstrap Jobs.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -73,21 +73,44 @@ spec:
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: authentik
+        # Replication and pg_basebackup between instances.
+        - matchLabels:
+            cnpg.io/cluster: authentik-pg
       toPorts:
         - ports:
             - port: "5432"
               protocol: TCP
-    # The operator's calls to the instance manager.
+    # The operator and peers checking instance status during failover.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: cnpg-system
             app.kubernetes.io/name: cloudnative-pg
+        - matchLabels:
+            cnpg.io/cluster: authentik-pg
       toPorts:
         - ports:
             - port: "8000"
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: authentik-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+    # WAL archives and base backups.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
