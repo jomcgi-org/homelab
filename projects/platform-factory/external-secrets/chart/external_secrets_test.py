@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -168,6 +169,42 @@ def test_application_pins_upstream_and_installs_guards():
     assert application["spec"]["destination"]["namespace"] == "external-secrets"
     assert application["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "1"
     assert "ServerSideApply=true" in application["spec"]["syncPolicy"]["syncOptions"]
+
+
+def test_argocd_can_fetch_the_upstream_chart():
+    root = Path(__file__).resolve().parent.parent
+    application = yaml.safe_load(
+        Path(os.environ.get("ESO_APPLICATION", root / "application.yaml")).read_text()
+    )
+    upstream = next(
+        source
+        for source in application["spec"]["sources"]
+        if source.get("chart") == "external-secrets"
+    )
+    host = urlsplit(upstream["repoURL"]).hostname
+    policy_path = Path(
+        os.environ.get(
+            "ESO_ARGOCD_NETWORK_POLICY",
+            root.parent / "network-policy/resources/argocd.yaml",
+        )
+    )
+    policy = next(
+        doc
+        for doc in yaml.safe_load_all(policy_path.read_text())
+        if doc and doc["metadata"]["name"] == "repo-server-sources"
+    )
+    assert policy["metadata"]["namespace"] == "argocd"
+    assert policy["spec"]["endpointSelector"]["matchLabels"] == {
+        "app.kubernetes.io/name": "argocd-repo-server"
+    }
+    assert any(
+        {"matchName": host} in rule.get("toFQDNs", [])
+        and any(
+            {"port": "443", "protocol": "TCP"} in ports.get("ports", [])
+            for ports in rule.get("toPorts", [])
+        )
+        for rule in policy["spec"]["egress"]
+    )
 
 
 def test_upstream_values_disable_unused_controllers_and_budget_every_component():

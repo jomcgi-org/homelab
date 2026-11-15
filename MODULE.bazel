@@ -67,6 +67,41 @@ http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_
 
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 
+# Private API server for the factory credential admission test. Match the
+# factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
+# come from controller-tools/envtest-releases.yaml and the ESO chart index.
+http_archive(
+    name = "envtest_1_37_0_linux_amd64",
+    build_file_content = """
+exports_files(["etcd", "kube-apiserver", "kubectl"], visibility = ["//visibility:public"])
+filegroup(
+    name = "assets",
+    srcs = ["etcd", "kube-apiserver", "kubectl"],
+    visibility = ["//visibility:public"],
+)
+""",
+    integrity = "sha512-HRxFNjO3LBYaXVqIbN56yFC+GirHlqnh1P+srMZIaClb3S1XqmbNDBWPXOUQ9d/j+8YawhvT3PuHW9cGWKpmOg==",
+    strip_prefix = "controller-tools/envtest",
+    urls = ["https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.37.0/envtest-v1.37.0-linux-amd64.tar.gz"],
+)
+
+# Render the released CRDs with the deployment's values, rather than maintaining
+# permissive test-only schemas. The admission test checks this pin against Argo.
+http_archive(
+    name = "external_secrets_chart_2_15_0",
+    build_file_content = """
+exports_files(["Chart.yaml"], visibility = ["//visibility:public"])
+filegroup(
+    name = "chart_files",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "ed94d41cc67e392ea45e370345eb491b0fdc21387f1aaaefcf8e2e6c85089e1d",
+    strip_prefix = "external-secrets",
+    urls = ["https://github.com/external-secrets/external-secrets/releases/download/helm-chart-2.15.0/external-secrets-2.15.0.tgz"],
+)
+
 # Loom 0.2.0 templates from weave-hand/loom#691. Package publication is an
 # operator check in #6605; the unregistered hub Application stays default-off.
 http_archive(

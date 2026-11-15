@@ -34,6 +34,7 @@ spec:
         # first syncs from it.
         - matchName: helm.cilium.io
         - matchName: cloudnative-pg.github.io
+        - matchName: charts.external-secrets.io
         # This repository's published OCI charts; blobs come from
         # pkg-containers.githubusercontent.com, matched above.
         - matchName: ghcr.io

@@ -54,6 +54,8 @@ The built-in view/edit/admin roles receive no aggregated ESO permissions.
 Cilium allows ESO egress only to the API server (TCP 443/6443) and webhook
 ingress only from the API server (TCP 10250). The cluster baseline supplies
 DNS to CoreDNS. There is no internet egress allowance in this slice.
+Argo CD's repo-server separately allows HTTPS to `charts.external-secrets.io`
+to fetch the upstream chart, alongside its existing GitHub release asset access.
 
 ## Add the next consumers
 
@@ -95,7 +97,32 @@ helm template external-secrets external-secrets \
 
 The render test has a Bazel target at
 `//projects/platform-factory/external-secrets/chart:external_secrets_test`.
-BUILD generation and remote tests run in PR CI.
+It also verifies that Argo CD can reach the chart repository through its
+network policy.
+
+`//projects/platform-factory/external-secrets/admission:admission_test` runs the
+rendered guards against a private Kubernetes 1.37 API server and etcd using
+envtest. Bazel pins the control-plane binaries and the released ESO chart by
+checksum. The test verifies the chart version matches the Application and
+installs its real CRD schemas, with the deployment's values. It never starts
+ESO controllers or uses a kubeconfig or real credentials.
+
+The test first verifies every fixture is schema-valid without the guards,
+then installs all five policies and their bindings. It checks both CREATE and
+UPDATE admission for every allowed and denied fixture, including widening
+existing Roles and GitHub scopes. Additional cases cover empty repository and
+permission collections and entries, wildcard Role rules, and forbidden
+verbs. A denial must name the expected policy and its validation message;
+schema, RBAC and CEL evaluation errors cannot count as success. Missing tools
+or an API server startup failure fail the test instead of skipping it.
+
+BUILD generation and these tests run in PR CI. With the repository's normal
+Bazel test environment, the scoped admission command is:
+
+```bash
+bazel test //projects/platform-factory/external-secrets/admission:admission_test \
+  --test_output=errors
+```
 
 ## Verify after rollout
 
@@ -122,11 +149,12 @@ kubectl apply --dry-run=server \
   -f projects/platform-factory/external-secrets/checks/denied.yaml
 ```
 
-Both resources in `checks/allowed.yaml` must succeed: a scoped GitHub generator
-and a named, get-only Role. All eight resources in `checks/denied.yaml` must
-be refused by the following admission policies. A missing CRD, schema error,
+All five resources in `checks/allowed.yaml` must succeed: a scoped GitHub
+generator, a named get-only Role, a Webhook in `factory-credentials`, and a
+Pod and broader Role outside it. All twelve resources in `checks/denied.yaml`
+must be refused by the following admission policies. A missing CRD, schema error,
 webhook timeout or RBAC denial does not pass this check. The last command is
-expected to exit nonzero. All commands use dry-run; they create no resources
+expected to exit nonzero. The fixture commands use dry-run; they create no resources
 and need no real App key.
 
 | Manifest name | Expected policy (prefix `factory-credentials-`) |
@@ -139,6 +167,10 @@ and need no real App key.
 | `home-70-denied-cluster-generator` | `no-cluster-or-push` |
 | `home-70-denied-list` | `secret-readers` |
 | `home-70-denied-unnamed-read` | `secret-readers` |
+| `home-70-denied-cluster-store` | `no-cluster-or-push` |
+| `home-70-denied-cluster-external` | `no-cluster-or-push` |
+| `home-70-denied-push` | `no-cluster-or-push` |
+| `home-70-denied-cluster-push` | `no-cluster-or-push` |
 
 The `checks/` fixtures sit outside both Application source paths. ArgoCD never
 applies them. Paste the commands and manifest list above into the PR body for

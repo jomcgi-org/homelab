@@ -1,4 +1,5 @@
-# Only use with kubectl apply --dry-run=server. No credential values are needed.
+# On a real cluster, only use with kubectl apply --dry-run=server.
+# The admission test also loads these into its disposable API server.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -97,3 +98,56 @@ rules:
   - apiGroups: ["*"]
     resources: ["*"]
     verbs: [get]
+---
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: home-70-denied-cluster-store
+spec:
+  provider:
+    fake:
+      data:
+        - key: home-70-fixture
+          value: synthetic
+---
+apiVersion: external-secrets.io/v1
+kind: ClusterExternalSecret
+metadata:
+  name: home-70-denied-cluster-external
+spec:
+  externalSecretSpec:
+    secretStoreRef:
+      name: home-70-nonexistent-store
+      kind: SecretStore
+    target:
+      name: home-70-fixture
+    data:
+      - secretKey: token
+        remoteRef:
+          key: home-70-fixture
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: PushSecret
+metadata:
+  name: home-70-denied-push
+  namespace: factory-credentials
+spec:
+  secretStoreRefs:
+    - name: home-70-nonexistent-store
+      kind: SecretStore
+  selector:
+    secret:
+      name: home-70-fixture
+---
+apiVersion: external-secrets.io/v1alpha1
+kind: ClusterPushSecret
+metadata:
+  name: home-70-denied-cluster-push
+spec:
+  pushSecretSpec:
+    secretStoreRefs:
+      - name: home-70-nonexistent-store
+        kind: SecretStore
+    selector:
+      secret:
+        name: home-70-fixture

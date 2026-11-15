@@ -1,9 +1,11 @@
 exports_files(
     [
         "application.yaml",
+        "checks/allowed.yaml",
+        "checks/denied.yaml",
         "values.yaml",
     ],
-    visibility = ["//projects/platform-factory/external-secrets/chart:__pkg__"],
+    visibility = ["//projects/platform-factory/external-secrets:__subpackages__"],
 )
 
 # This package boundary excludes the README from //projects:repo_docs.

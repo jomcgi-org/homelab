@@ -1,4 +1,5 @@
-# Positive controls, also dry-run only. A generator alone never mints a token.
+# Positive controls: dry-run only on a real cluster. The admission test uses a
+# disposable API server without ESO controllers or real credential material.
 apiVersion: generators.external-secrets.io/v1alpha1
 kind: GithubAccessToken
 metadata:
@@ -29,3 +30,33 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, list]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: home-70-allowed-outside-pod
+  namespace: default
+spec:
+  containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.10
+---
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Webhook
+metadata:
+  name: home-70-allowed-webhook
+  namespace: factory-credentials
+spec:
+  url: https://example.invalid/credentials
+  result:
+    jsonPath: $.token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: home-70-allowed-outside-role
+  namespace: default
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
