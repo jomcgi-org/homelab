@@ -14,6 +14,26 @@ from chat.models import DiscordOutbox
 from chat.outbox import drain_once, enqueue_message
 
 
+@pytest.mark.asyncio
+async def test_factory_notify_quarantines_ambiguous_discord_send():
+    row = {"id": 42, "kind": "factory_notify"}
+    with (
+        patch.object(outbox, "_claim_pending", return_value=[row]),
+        patch.object(outbox, "_resolve_channel", new=AsyncMock(return_value=object())),
+        patch.object(outbox, "_mark_sending", return_value=True) as sending,
+        patch.object(outbox, "_post_row", new=AsyncMock(side_effect=TimeoutError("unknown"))),
+        patch.object(outbox, "_mark_uncertain") as uncertain,
+        patch.object(outbox, "_mark_failed") as failed,
+        patch.object(outbox, "_mark_posted") as posted,
+    ):
+        engine = object()
+        assert await drain_once(object(), engine) == 0
+    sending.assert_called_once_with(engine, 42)
+    uncertain.assert_called_once_with(engine, 42, "unknown")
+    failed.assert_not_called()
+    posted.assert_not_called()
+
+
 def _directive_proposal_row(row_id: int = 8) -> dict:
     """A pending directive-proposal outbox row as _claim_pending would hand it
     to the drain (a plain content post carrying kind/payload_json)."""

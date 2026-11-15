@@ -424,6 +424,13 @@ itsaplan:
 # queue. One replica in the broker's namespace, as ServiceAccount
 # factory-connector, which the chart keeps.
 connector:
+  # Staged off until the hub route and dedicated Authentik app password exist.
+  notify:
+    enabled: false
+    hostname: factory-notify.jomcgi.dev
+    tokenHostname: auth.jomcgi.dev
+    secretName: factory-notify
+    itemPath: vaults/k8s-homelab/items/factory-notify
   # Off by default. Turning it on needs itsaplan and the broker on, and kagent
   # authenticating ServiceAccount tokens:
   # kagent.config.server.auth.serviceAccount.authority, which is part of every

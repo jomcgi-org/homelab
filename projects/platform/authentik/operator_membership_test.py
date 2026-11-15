@@ -32,6 +32,24 @@ SERVICE_GROUP = "kg-agents"
 REQUIRED_GRANTS = ("authentik Admins", "homelab-admin", "family", OPERATORS)
 
 
+def test_factory_notify_has_an_isolated_provider_and_only_its_own_group():
+    path = pathlib.Path(__file__).parent / "blueprints" / "mcp-auth.yaml"
+    entries = _map_get(yaml.compose(path.read_text()), "entries").value
+    by_id = {_scalar(_map_get(e, "id")): e for e in entries}
+    user = _map_get(by_id["factory-notify-sa"], "attrs")
+    assert _scalar(_map_get(user, "type")) == "service_account"
+    assert [_resolve_group_ref(g) for g in _map_get(user, "groups").value] == ["factory-notify"]
+    provider = _map_get(by_id["factory-notify-provider"], "attrs")
+    assert _scalar(_map_get(provider, "client_id")) == "factory-notify"
+    assert _scalar(_map_get(provider, "issuer_mode")) == "per_provider"
+    assert [_scalar(v) for v in _map_get(provider, "grant_types").value] == ["client_credentials"]
+    assert not _map_get(provider, "redirect_uris").value
+    bindings = [e for e in entries if _scalar(_map_get(e, "model")) == "authentik_policies.policybinding"
+                and _scalar(_map_get(_map_get(e, "identifiers"), "target")) == "factory-notify-app"]
+    assert len(bindings) == 1
+    assert _resolve_group_ref(_map_get(_map_get(bindings[0], "identifiers"), "group")) == "factory-notify"
+
+
 def _scalar(node):
     if isinstance(node, yaml.ScalarNode):
         return node.value

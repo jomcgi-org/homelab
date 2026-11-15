@@ -4,6 +4,7 @@ go_library(
     name = "store",
     srcs = [
         "delivery.go",
+        "notify.go",
         "recovery.go",
         "store.go",
         "transcript.go",

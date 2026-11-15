@@ -34,6 +34,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
 	"github.com/jomcgi/homelab/projects/factory/connector/migrations"
+	"github.com/jomcgi/homelab/projects/factory/connector/notify"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
@@ -226,6 +227,13 @@ func run(log *slog.Logger) error {
 		ReviewPoll:      time.Duration(cfg.File.Intervals.ReviewPoll),
 		Links:           dispatch.Links(cfg.File.Links),
 	}, st, its, a2a, sessions, gh, m, log)
+	notifier, err := notify.New(notify.Config{
+		URL: cfg.NotifyURL, TokenURL: cfg.NotifyTokenURL, AppPasswordFile: cfg.NotifyPasswordFile,
+		BeforeRequest: eng.RecordNotifyAttempt,
+	})
+	if err != nil {
+		return err
+	}
 
 	// Wait for the writer lock: during a Recreate rollout the old pod may
 	// still hold it.
@@ -264,7 +272,15 @@ func run(log *slog.Logger) error {
 
 	tick := time.NewTicker(time.Duration(cfg.File.Intervals.Poll))
 	defer tick.Stop()
+	smokeDone := false
 	for {
+		if !smokeDone {
+			if err := notifier.Notify(ctx, "info", notify.Text{Key: notify.SmokeKey, Title: "Factory notify sink is live"}); err != nil {
+				log.Warn("notify smoke pending", "error", err)
+			} else {
+				smokeDone = true
+			}
+		}
 		if err := eng.Tick(ctx); err != nil {
 			if errors.Is(err, store.ErrNotWriter) {
 				// Another process took over; exit so nothing writes twice.

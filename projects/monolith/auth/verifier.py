@@ -275,4 +275,18 @@ def build_default_resolver(settings: AuthSettings | None = None) -> TokenResolve
     if configured.cloudflare_access_is_configured:
         verifiers.append(CloudflareAccessVerifier(configured))
 
+    if configured.factory_notify_issuer:
+        # Only the private monolith configures this provider. Its tokens are
+        # not accepted by the broader monolith-agents knowledge surface.
+        verifiers.append(
+            AuthentikStandingVerifier(
+                replace(
+                    configured,
+                    authentik_jwks_url=configured.factory_notify_jwks_url,
+                    authentik_issuer=configured.factory_notify_issuer,
+                    authentik_audience=configured.factory_notify_audience,
+                )
+            )
+        )
+
     return TokenResolver(verifiers)

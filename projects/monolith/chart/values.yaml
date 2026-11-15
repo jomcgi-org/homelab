@@ -116,6 +116,15 @@ auth:
     agentAudience: "https://private.jomcgi.dev"
   jwksCacheTtlSeconds: 300
 
+# Direct machine MCP route, separate from Context Forge's human endpoint.
+# Uses the existing Authentik bearer verifier and factory-notify tool policy.
+factoryNotify:
+  enabled: false
+  hostname: factory-notify.jomcgi.dev
+  jwksUrl: "http://authentik-server.authentik.svc/application/o/factory-notify/jwks/"
+  issuer: "https://auth.jomcgi.dev/application/o/factory-notify/"
+  audience: "https://private.jomcgi.dev"
+
 # Progress-ingest listener (ADR agents/051): its own container and port so the
 # EmberVM egress allowlist entry exposes exactly one write-only route.
 # progress.image is injected (digest-pinned) at build time by

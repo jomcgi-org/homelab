@@ -9,6 +9,38 @@ from agent import notify as agent_notify_mod
 from shared import notify as notify_mod
 
 
+def test_dedupe_is_atomic_and_survives_concurrent_callers(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlalchemy import func
+    from sqlmodel import Session, create_engine, select
+    from chat.models import DiscordOutbox
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'notify.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"chat": None}},
+    )
+    DiscordOutbox.__table__.create(engine)
+    monkeypatch.setattr(notify_mod, "get_engine", lambda: engine)
+    key = "factory/2026-11-15/smoke"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(
+            lambda _: notify_mod._enqueue_sync("123", "live", "info", key),
+            range(4),
+        ))
+    assert results.count(True) == 1
+    assert results.count(False) == 3
+    # A fresh session after a lost response sees the committed key.
+    assert not notify_mod._enqueue_sync("123", "live", "info", key)
+    assert notify_mod._enqueue_sync("123", "live", "info", "factory/2026-11-16/smoke")
+    with Session(engine) as session:
+        assert session.exec(select(func.count()).select_from(DiscordOutbox)).one() == 2
+        row = session.exec(select(DiscordOutbox)).first()
+        assert row.kind == "factory_notify"
+        assert "smoke" not in row.dedupe_key
+    engine.dispose()
+
+
 @pytest.fixture
 def discord_env(monkeypatch):
     monkeypatch.setenv("MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "S1")

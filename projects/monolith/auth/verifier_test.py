@@ -473,6 +473,33 @@ def test_unconfigured_agent_provider_creates_single_verifier():
     assert len(configured._verifiers) == 2
 
 
+@pytest.mark.asyncio
+async def test_factory_notify_provider_is_explicit_and_checks_bearer():
+    issuer = "https://auth.example/application/o/factory-notify/"
+    key, jwk = _key_and_jwk()
+    fetch, _ = _fetcher({"keys": [jwk]})
+    configured = build_default_resolver(_settings(
+        factory_notify_jwks_url=issuer + "jwks/",
+        factory_notify_issuer=issuer,
+        factory_notify_audience=AUDIENCE,
+    ))
+    factory = configured._verifiers[-1]
+    factory._jwks = AuthentikStandingVerifier(factory._settings, fetch=fetch)._jwks
+    token = _token(
+        key, iss=issuer, email=None, preferred_username="factory-notify-sa",
+        groups=["factory-notify"],
+    )
+    principal = await configured.resolve(token)
+    assert principal.username == "factory-notify-sa"
+    assert principal.kind is PrincipalKind.WORKLOAD
+    with pytest.raises(AuthError) as error:
+        await build_default_resolver(_settings()).resolve(token)
+    assert error.value.reason is AuthErrorReason.UNRECOGNIZED
+    for overrides in ({"aud": "wrong"}, {"exp": 1}):
+        with pytest.raises(AuthError):
+            await configured.resolve(_token(key, iss=issuer, **overrides))
+
+
 def test_configured_cloudflare_access_provider_extends_verifier_chain():
     configured = build_default_resolver(
         _settings(

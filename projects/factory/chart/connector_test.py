@@ -481,3 +481,49 @@ def test_broker_is_required() -> None:
         _render(
             ["broker.enabled=false", "repositories=null", "connector.bindings=null"]
         )
+
+
+def test_notify_is_off_until_configured() -> None:
+    docs = _render()
+    assert not any(key.startswith("FACTORY_CONNECTOR_NOTIFY_") for key in _env(docs))
+    assert not any(v["name"] == "notify-password" for v in _pod(docs)["spec"]["volumes"])
+    assert not any(d["metadata"]["name"] == "factory-notify" for d in docs)
+
+
+def test_notify_secret_config_and_connector_only_egress() -> None:
+    docs = _render(["connector.notify.enabled=true"])
+    env = _env(docs)
+    assert env["FACTORY_CONNECTOR_NOTIFY_URL"] == "https://factory-notify.jomcgi.dev/mcp/"
+    assert env["FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"] == "https://auth.jomcgi.dev/application/o/token/"
+    assert env["FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE"] == "/var/run/secrets/factory-notify/app-password"
+    item = _in(docs, "OnePasswordItem", _NS, "factory-notify")
+    assert item["spec"] == {"itemPath": "vaults/k8s-homelab/items/factory-notify"}
+    pod = _pod(docs)["spec"]
+    volume = next(v for v in pod["volumes"] if v["name"] == "notify-password")
+    assert volume["secret"] == {
+        "secretName": "factory-notify",
+        "items": [{"key": "app-password", "path": "app-password"}],
+    }
+    assert {"name": "notify-password", "mountPath": "/var/run/secrets/factory-notify", "readOnly": True} in pod["containers"][0]["volumeMounts"]
+    policies = [d for d in docs if d["kind"] == "CiliumNetworkPolicy"]
+    rules = [(d, r) for d in policies for r in d["spec"].get("egress", [])
+             if {"matchName": "factory-notify.jomcgi.dev"} in r.get("toFQDNs", [])]
+    assert len(rules) == 1
+    policy, rule = rules[0]
+    assert policy["metadata"]["name"] == "factory-connector"
+    assert policy["spec"]["endpointSelector"]["matchLabels"] == {
+        k: v for k, v in _pod(docs)["metadata"]["labels"].items()
+        if k != "app.kubernetes.io/part-of"
+    }
+    assert rule["toFQDNs"] == [{"matchName": "factory-notify.jomcgi.dev"}, {"matchName": "auth.jomcgi.dev"}]
+    assert rule["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+
+
+@pytest.mark.parametrize("override", [
+    "connector.notify.hostname=example.com/path", "connector.notify.hostname=*.example.com",
+    "connector.notify.tokenHostname=example.com:8080", "networkPolicy.cilium=false",
+    "connector.notify.secretName=", "connector.notify.itemPath=",
+])
+def test_notify_rejects_incomplete_or_broad_configuration(override) -> None:
+    with pytest.raises(RuntimeError):
+        _render(["connector.notify.enabled=true", override])
