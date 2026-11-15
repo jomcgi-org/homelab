@@ -9,6 +9,15 @@ The grant, refresh, store, quota and Codex ChatGPT provider packages live in
 `projects/shared/go/tokenbroker` so other brokers can reuse them. This
 directory keeps the binary, its HTTP server and the authentik adapter.
 
+A completed device-code exchange waits for any active refresh before its
+credentials are installed. Secret persistence retries at most five times,
+with a 10-second deadline per attempt. If writes still fail, login status
+reports `persistence_pending`. POST `/grants/<grant>/login/start` again to
+retry saving the retained credentials without repeating the exchange. The
+pending bundle stays in memory until saved; restarting the broker loses it.
+Refresh waits for installation and cannot rotate the older grant while
+persistence remains pending.
+
 ## Quota observation durability
 
 The broker persists its complete provider and grant quota snapshot in the

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
@@ -31,7 +32,15 @@ func (s *testStore) SaveGrant(g store.Grant) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *testStore) SaveGrantIfNewer(g store.Grant) error { return s.SaveGrant(g) }
+func (s *testStore) SaveGrantIfNewer(g store.Grant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if previous := s.grants[g.Name]; !previous.LastRefresh.IsZero() && !g.LastRefresh.After(previous.LastRefresh) {
+		return store.ErrGrantNotNewer
+	}
+	s.grants[g.Name] = g
+	return nil
+}
 
 type testAdapter struct {
 	mu           sync.Mutex
@@ -324,4 +333,194 @@ func TestRefreshPolicy(t *testing.T) {
 	if token, _, err := b.GetAccessToken("one", context.Background()); err != nil || token == "current" {
 		t.Fatalf("max-age policy GetAccessToken = %q, %v; want a refreshed token", token, err)
 	}
+}
+
+type blockedRefreshAdapter struct {
+	*testAdapter
+	started, release chan struct{}
+	err              error
+}
+
+func (a *blockedRefreshAdapter) RefreshToken(context.Context, string) (provider.TokenResponse, error) {
+	close(a.started)
+	<-a.release
+	return provider.TokenResponse{AccessToken: "older-refresh-access", RefreshToken: "older-refresh-token", ExpiresAt: time.Now().Add(time.Hour)}, a.err
+}
+
+func loginGrant() store.Grant {
+	now := time.Now().UTC()
+	return store.Grant{Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{
+		IDToken: "login-id", AccessToken: "login-access", RefreshToken: "login-refresh", AccountID: "login-account",
+		LastRefresh: now, ExpiresAt: now.Add(24 * time.Hour),
+	}}
+}
+
+func TestLoginWaitsForRefreshAndReplacesItsResult(t *testing.T) {
+	for _, refreshErr := range []error{nil, provider.ErrInvalidGrant} {
+		for _, proactive := range []bool{false, true} {
+			t.Run(fmt.Sprintf("proactive=%t/invalid=%t", proactive, refreshErr != nil), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					old := loginGrant()
+					old.LastRefresh = time.Now().Add(-time.Hour)
+					old.TokenBundle.ExpiresAt = time.Now().Add(time.Minute)
+					st := &testStore{grants: map[string]store.Grant{"one": old}}
+					a := &blockedRefreshAdapter{testAdapter: &testAdapter{}, started: make(chan struct{}), release: make(chan struct{}), err: refreshErr}
+					b := New(st, map[string]provider.Adapter{"test": a}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+					refreshed := make(chan struct{})
+					go func() {
+						defer close(refreshed)
+						if proactive {
+							_, _, _ = b.GetAccessToken("one", context.Background())
+						} else {
+							_, _, _ = b.RefreshAccessToken("one", context.Background())
+						}
+					}()
+					<-a.started
+					login := loginGrant()
+					saved := make(chan error, 1)
+					go func() { saved <- b.SaveGrant(login) }()
+					synctest.Wait()
+					select {
+					case <-saved:
+						t.Fatal("login did not wait for the refresh")
+					default:
+					}
+					// The refresh completes after the exchange, so its timestamp
+					// would reject the login if the exchange time were retained.
+					time.Sleep(time.Second)
+					close(a.release)
+					<-refreshed
+					if err := <-saved; err != nil {
+						t.Fatal(err)
+					}
+					g, _ := st.LoadGrant("one")
+					if g.TokenBundle.AccessToken != login.TokenBundle.AccessToken || g.TokenBundle.RefreshToken != login.TokenBundle.RefreshToken || !g.LastRefresh.After(login.LastRefresh) || b.NeedsLogin("one") {
+						t.Fatal("refresh result or login-required state survived the login")
+					}
+					if access, _, err := b.GetAccessToken("one", context.Background()); err != nil || access != login.TokenBundle.AccessToken {
+						t.Fatal("token serving did not adopt the login")
+					}
+				})
+			})
+		}
+	}
+}
+
+type failingLoginStore struct {
+	*testStore
+	failures  int
+	timeout   bool
+	ambiguous bool
+	attempts  []store.Grant
+}
+
+func (s *failingLoginStore) SaveGrantIfNewerContext(ctx context.Context, g store.Grant) error {
+	s.attempts = append(s.attempts, g)
+	if s.failures > 0 {
+		s.failures--
+		if s.timeout {
+			<-ctx.Done()
+		}
+		// Deliberately include sensitive data to verify it never escapes.
+		return fmt.Errorf("Secret write failed: %s", g.TokenBundle.RefreshToken)
+	}
+	err := s.testStore.SaveGrantIfNewer(g)
+	if s.ambiguous {
+		s.ambiguous = false
+		return errors.New("update response lost")
+	}
+	return err
+}
+
+func TestLoginPersistenceIsBoundedAndRecoverable(t *testing.T) {
+	for _, timeout := range []bool{false, true} {
+		t.Run(fmt.Sprintf("timeout=%t", timeout), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st := &failingLoginStore{testStore: &testStore{grants: map[string]store.Grant{}}, failures: 5, timeout: timeout}
+				a := &testAdapter{}
+				b := New(st, map[string]provider.Adapter{"test": a}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+				login := loginGrant()
+				start := time.Now()
+				if err := b.SaveGrant(login); err != ErrGrantPersistencePending {
+					t.Fatal("failed persistence did not return the fixed pending error")
+				}
+				budget := 3750 * time.Millisecond
+				if timeout {
+					budget += 50 * time.Second
+				}
+				if len(st.attempts) != 5 || time.Since(start) != budget {
+					t.Fatal("persistence exceeded its attempt or time budget")
+				}
+				if _, _, err := b.RefreshAccessToken("one", context.Background()); err != ErrGrantPersistencePending || a.calls != 0 {
+					t.Fatal("refresh used the old grant while login persistence was pending")
+				}
+				if err := b.SaveGrant(loginGrant()); err != ErrGrantPersistencePending {
+					t.Fatal("another login replaced the retained bundle")
+				}
+				if err := b.RetryPendingGrant("one"); err != nil {
+					t.Fatal(err)
+				}
+				if len(st.attempts) != 6 {
+					t.Fatal("retry did not make exactly one successful write")
+				}
+				for _, attempt := range st.attempts {
+					if attempt != st.attempts[0] {
+						t.Fatal("persistence changed the retained bundle or its ordering")
+					}
+				}
+				g, _ := st.LoadGrant("one")
+				if g.TokenBundle.RefreshToken != login.TokenBundle.RefreshToken {
+					t.Fatal("recovered grant differs from the exchanged login")
+				}
+			})
+		})
+	}
+}
+
+func TestLoginConfirmsAmbiguousWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		st := &failingLoginStore{testStore: &testStore{grants: map[string]store.Grant{}}, ambiguous: true}
+		b := New(st, nil, nil, []GrantConfig{{Name: "one"}}, nil, nil)
+		if err := b.SaveGrant(loginGrant()); err != nil {
+			t.Fatal(err)
+		}
+		if len(st.attempts) != 2 {
+			t.Fatal("ambiguous commit was not confirmed on retry")
+		}
+	})
+}
+
+type delayedRotationStore struct {
+	*testStore
+	rotationWrites int
+}
+
+func (s *delayedRotationStore) SaveGrantIfNewer(g store.Grant) error {
+	if g.TokenBundle.RefreshToken == "new" {
+		s.rotationWrites++
+		if s.rotationWrites <= 5 {
+			return errors.New("temporarily unavailable")
+		}
+	}
+	return s.testStore.SaveGrantIfNewer(g)
+}
+
+func TestLoginFencesDetachedRotationRetry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		st := &delayedRotationStore{testStore: &testStore{grants: map[string]store.Grant{"one": loginGrant()}}}
+		b := New(st, map[string]provider.Adapter{"test": &testAdapter{}}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+		if _, _, err := b.RefreshAccessToken("one", context.Background()); err == nil {
+			t.Fatal("rotation unexpectedly persisted")
+		}
+		login := loginGrant()
+		if err := b.SaveGrant(login); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		g, _ := st.LoadGrant("one")
+		if st.rotationWrites != 6 || g.TokenBundle.RefreshToken != login.TokenBundle.RefreshToken {
+			t.Fatal("detached older rotation overwrote the login")
+		}
+	})
 }

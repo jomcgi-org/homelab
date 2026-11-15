@@ -25,6 +25,7 @@ go_test(
     deps = [
         "//projects/factory/broker/internal/fakes",
         "//projects/factory/broker/metrics",
+        "//projects/shared/go/tokenbroker/provider",
         "//projects/shared/go/tokenbroker/provider/codexchatgpt",
         "//projects/shared/go/tokenbroker/store",
         "@com_github_prometheus_client_golang//prometheus/testutil",

@@ -302,6 +302,13 @@ func (m *Manager) AdminHandler() http.Handler {
 
 func (m *Manager) startLogin(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
+	if m.login.state == "persistence_pending" {
+		m.login = loginState{state: "pending", detail: "saving exchanged credentials"}
+		m.mu.Unlock()
+		go func() { m.finishLogin(m.broker.RetryPendingGrant(m.opts.Grant)) }()
+		writeJSON(w, http.StatusAccepted, map[string]string{"state": "pending", "detail": "retrying credential persistence"})
+		return
+	}
 	if m.login.state == "pending" {
 		resp := map[string]any{"state": "pending"}
 		if c := m.login.code; c != nil {
@@ -332,19 +339,26 @@ func (m *Manager) startLogin(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) completeLogin(code provider.DeviceCodeResponse) {
 	ctx, cancel := context.WithTimeout(m.opts.Context, 16*time.Minute)
 	defer cancel()
-	err := m.exchange(ctx, code)
+	m.finishLogin(m.exchange(ctx, code))
+}
+
+func (m *Manager) finishLogin(err error) {
+	if errors.Is(err, broker.ErrGrantPersistencePending) {
+		m.setLogin(loginState{state: "persistence_pending", detail: "credentials retained in memory; POST login to retry saving"})
+		m.opts.Logger.Warn("codex device login persistence pending", "grant", m.opts.Grant)
+		return
+	}
 	if err != nil {
-		m.opts.Logger.Error("codex device login failed", "grant", m.opts.Grant, "err", err)
+		m.opts.Logger.Error("codex device login failed", "grant", m.opts.Grant)
 		m.setLogin(loginState{state: "failed", detail: "device login failed"})
 		return
 	}
-	m.broker.ClearNeedsLogin(m.opts.Grant)
 	m.mu.Lock()
 	m.lastFailure = time.Time{}
 	m.mu.Unlock()
 	m.setLogin(loginState{state: "granted", detail: "device authorization complete"})
 	m.opts.Logger.Info("codex device login complete", "grant", m.opts.Grant)
-	m.Check(ctx)
+	m.Check(m.opts.Context)
 }
 
 func (m *Manager) exchange(ctx context.Context, code provider.DeviceCodeResponse) error {
@@ -361,6 +375,7 @@ func (m *Manager) exchange(ctx context.Context, code provider.DeviceCodeResponse
 	}
 	account, _ := codexchatgpt.AccountID(tok.AccessToken)
 	now := time.Now().UTC()
+	m.setLogin(loginState{state: "pending", detail: "saving exchanged credentials"})
 	return m.broker.SaveGrant(store.Grant{
 		Name: m.opts.Grant, ProviderName: ProviderName, LastRefresh: now,
 		TokenBundle: store.TokenBundle{
