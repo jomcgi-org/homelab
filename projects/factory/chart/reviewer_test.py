@@ -160,6 +160,21 @@ def test_deploy_values_enable_the_reviewer() -> None:
     }
 
 
+def test_comments_are_off_unless_an_author_is_set() -> None:
+    # Unset, the config names no author and the reviewer posts no comment.
+    values = yaml.safe_load((_CHART / "values.yaml").read_text())
+    assert values["reviewer"]["commentAuthor"] == ""
+    assert "commentAuthor" not in _config(_render(), "factory-reviewer")
+    bot = "jomcgi-factory-review[bot]"
+    config = _config(_render([f"reviewer.commentAuthor={bot}"]), "factory-reviewer")
+    assert config["commentAuthor"] == bot
+    # The comment token comes from the broker's own defaults (issues write),
+    # never from chart values that could widen the check token.
+    broker = _config(_render(), "factory-broker")
+    assert "commentPermissions" not in broker.get("githubReview", {})
+    assert "connectorPermissions" not in broker.get("githubReview", {})
+
+
 def test_one_kept_identity_and_private_image() -> None:
     docs = _render(["reviewer.image.digest=sha256:" + "c" * 64])
     deploy = _in(docs, "Deployment", "factory", "factory-reviewer")
@@ -559,6 +574,7 @@ def test_long_default_namespace_requires_an_explicit_review_namespace() -> None:
     "overrides",
     [
         [],
+        ["reviewer.commentAuthor=jomcgi-factory-review[bot]"],
         [
             "reviewer.bindings.homelab.enqueueAuthors=[]",
             "reviewer.bindings.homelab.requiredChecks[0].name=pr-checks",
@@ -615,6 +631,7 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
             "cannot also be a required check",
         ),
         ("agents.reviewer.resources.memory=1Gi", "runtimeDefaults"),
+        ("reviewer.commentAuthor=some one", "commentAuthor"),
         (
             "broker.operatorServiceAccount=factory-reviewer",
             "ServiceAccount the chart's Pods use",

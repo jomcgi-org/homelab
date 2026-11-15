@@ -363,10 +363,15 @@ func SplitOutcome(b *Binding, d DiffSize, footer string) Outcome {
 	if d.Capped {
 		size = "more files than GitHub lists"
 	}
-	return Outcome{Conclusion: ConclusionFailure, Output: github.CheckRunOutput{
-		Title: "Split this PR",
-		Summary: fmt.Sprintf("This PR has %s, not counting %d generated files. The review budget is %d lines in %d files, "+
-			"and the reviewer never reviews part of a diff. Split this PR into smaller ones.\n\n%s",
-			size, d.Generated, b.MaxDiffLines, b.MaxDiffFiles, footer),
-	}}
+	return Outcome{
+		Conclusion: ConclusionFailure,
+		Output: github.CheckRunOutput{Title: "Split this PR", Summary: fmt.Sprintf(
+			"This PR has %s, not counting %d generated files. The review budget is %d lines in %d files, "+
+				"and the reviewer never reviews part of a diff. Split this PR into smaller ones.\n\n%s",
+			size, d.Generated, b.MaxDiffLines, b.MaxDiffFiles, footer)},
+		Comment: &CommentUpdate{
+			Verdict: VerdictChanges, Headline: "Split this PR",
+			Note: fmt.Sprintf("%s; the budget is %d lines in %d files.", size, b.MaxDiffLines, b.MaxDiffFiles),
+		},
+	}
 }

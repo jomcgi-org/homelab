@@ -35,6 +35,11 @@ type Config struct {
 	// GitHub App's ID, which only that App's check runs carry.
 	CheckName string `yaml:"checkName"`
 	AppID     int64  `yaml:"appId"`
+	// CommentAuthor is the reviewer App's bot login (jomcgi-factory-review[bot]).
+	// When set, the reviewer keeps one comment on each PR it reviews, posted
+	// with the broker's comment token and edited only when this login wrote
+	// it. Empty posts no comments.
+	CommentAuthor string `yaml:"commentAuthor"`
 	// Concurrency bounds the reviews in flight across all bindings.
 	Concurrency int       `yaml:"concurrency"`
 	Intervals   Intervals `yaml:"intervals"`
@@ -188,6 +193,10 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.CheckName == "" {
 		c.CheckName = DefaultCheckName
+	}
+	c.CommentAuthor = strings.TrimSpace(c.CommentAuthor)
+	if strings.ContainsAny(c.CommentAuthor, " \t\n/") {
+		return nil, fmt.Errorf("config: commentAuthor %q is not a GitHub login", c.CommentAuthor)
 	}
 	if c.Concurrency == 0 {
 		c.Concurrency = 2

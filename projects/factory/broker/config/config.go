@@ -49,7 +49,8 @@ type Config struct {
 	Bindings    []Binding   `json:"bindings"`
 	// GitHubReview is the reviewer App (jomcgi-factory-review). It mints a
 	// read-only git token for each ReviewBindings namespace and serves
-	// reviewer tokens (checks and merge queue) to ReviewerSubjects. It is
+	// reviewer tokens (checks and merge queue) and comment tokens (issues)
+	// to ReviewerSubjects. It is
 	// separate from GitHub so the identity that writes code can never post
 	// the review or merge ("Merge authority").
 	GitHubReview   GitHub    `json:"githubReview"`
@@ -125,6 +126,10 @@ type GitHub struct {
 	AgentSecretName      string            `json:"agentSecretName"`
 	AgentPermissions     map[string]string `json:"agentPermissions"`
 	ConnectorPermissions map[string]string `json:"connectorPermissions"`
+	// CommentPermissions scope the reviewer's PR comment token, served
+	// apart from its check token so a permission the App lacks fails only
+	// the comment. Only githubReview has them; empty serves none.
+	CommentPermissions map[string]string `json:"commentPermissions"`
 }
 
 // Binding is one repository binding: the access boundary for an agent.
@@ -187,6 +192,9 @@ func Defaults() Config {
 				"checks": "write", "pull_requests": "read", "contents": "read",
 				"statuses": "read", "merge_queues": "write",
 			},
+			// The reviewer's own PR comment. Issues write covers PR
+			// conversation comments without allowing a PR review.
+			CommentPermissions: map[string]string{"issues": "write"},
 		},
 	}
 }
@@ -202,6 +210,7 @@ func Load(path string, getenv func(string) string) (Config, error) {
 		// Permission maps replace the defaults instead of merging into them.
 		cfg.GitHub.AgentPermissions, cfg.GitHub.ConnectorPermissions = nil, nil
 		cfg.GitHubReview.AgentPermissions, cfg.GitHubReview.ConnectorPermissions = nil, nil
+		cfg.GitHubReview.CommentPermissions = nil
 		if err := yaml.UnmarshalStrict(data, &cfg); err != nil {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
@@ -218,6 +227,9 @@ func Load(path string, getenv func(string) string) (Config, error) {
 		}
 		if cfg.GitHubReview.ConnectorPermissions == nil {
 			cfg.GitHubReview.ConnectorPermissions = review.ConnectorPermissions
+		}
+		if cfg.GitHubReview.CommentPermissions == nil {
+			cfg.GitHubReview.CommentPermissions = review.CommentPermissions
 		}
 	}
 	for key, target := range map[string]*string{
@@ -318,6 +330,9 @@ func (c Config) Validate() error {
 	if c.GitHubEnabled() && (c.GitHub.AppID == "" || c.GitHub.InstallationID == "") {
 		errs = append(errs, errors.New("github appId and installationId are required with a private key"))
 	}
+	if len(c.GitHub.CommentPermissions) > 0 {
+		errs = append(errs, errors.New("github.commentPermissions: only the reviewer App's githubReview serves comment tokens"))
+	}
 	errs = append(errs, c.validateReview()...)
 	seen, namespaces := map[string]bool{}, map[string]bool{}
 	for i, b := range c.Bindings {
@@ -374,6 +389,13 @@ func (c Config) validateReview() []error {
 	for k, v := range r.ConnectorPermissions {
 		if v == "write" && k != "checks" && k != "merge_queues" {
 			errs = append(errs, fmt.Errorf("githubReview.connectorPermissions %s: the reviewer may write only checks and merge_queues", k))
+		}
+	}
+	// Its comment token may write only issues, which posts the reviewer's PR
+	// comment; pull_requests write would let it approve.
+	for k, v := range r.CommentPermissions {
+		if v != "read" && (k != "issues" || v != "write") {
+			errs = append(errs, fmt.Errorf("githubReview.commentPermissions %s: the comment token may write only issues", k))
 		}
 	}
 	author := map[string]bool{}

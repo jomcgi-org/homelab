@@ -621,26 +621,81 @@ func (c *Client) PullRequestLabelEvents(ctx context.Context, repo string, number
 
 // Comment is a PR conversation comment.
 type Comment struct {
+	ID     int64
 	Author string
 	Body   string
+}
+
+type restComment struct {
+	ID   int64  `json:"id"`
+	User login  `json:"user"`
+	Body string `json:"body"`
+}
+
+func (cm restComment) comment() Comment {
+	return Comment{ID: cm.ID, Author: cm.User.Login, Body: cm.Body}
 }
 
 // PullRequestComments lists the first 100 conversation comments on a PR,
 // oldest first.
 func (c *Client) PullRequestComments(ctx context.Context, repo string, number int) ([]Comment, error) {
-	var out []struct {
-		User login  `json:"user"`
-		Body string `json:"body"`
-	}
+	var out []restComment
 	path := repoPath(repo) + "/issues/" + strconv.Itoa(number) + "/comments?per_page=" + strconv.Itoa(MaxListed)
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	comments := make([]Comment, 0, len(out))
 	for _, cm := range out {
-		comments = append(comments, Comment{Author: cm.User.Login, Body: cm.Body})
+		comments = append(comments, cm.comment())
 	}
 	return comments, nil
+}
+
+// MaxCommentPages bounds a PR's conversation comment listing: 1000 comments.
+const MaxCommentPages = 10
+
+// IssueComments lists a PR's conversation comments, oldest first, page by
+// page. complete is false when MaxCommentPages full pages were read, so more
+// may follow.
+func (c *Client) IssueComments(ctx context.Context, repo string, number int) (comments []Comment, complete bool, err error) {
+	for page := 1; page <= MaxCommentPages; page++ {
+		var out []restComment
+		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		path := repoPath(repo) + "/issues/" + strconv.Itoa(number) + "/comments?" + q.Encode()
+		if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
+			return nil, false, err
+		}
+		for _, cm := range out {
+			comments = append(comments, cm.comment())
+		}
+		if len(out) < MaxListed {
+			return comments, true, nil
+		}
+	}
+	return comments, false, nil
+}
+
+// CreateIssueComment posts a conversation comment on a PR or issue.
+func (c *Client) CreateIssueComment(ctx context.Context, repo string, number int, body string) (*Comment, error) {
+	var out restComment
+	path := repoPath(repo) + "/issues/" + strconv.Itoa(number) + "/comments"
+	if err := c.do(ctx, repo, http.MethodPost, path, map[string]string{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	cm := out.comment()
+	return &cm, nil
+}
+
+// UpdateIssueComment replaces a conversation comment's body. A deleted
+// comment is ErrNotFound.
+func (c *Client) UpdateIssueComment(ctx context.Context, repo string, id int64, body string) (*Comment, error) {
+	var out restComment
+	path := repoPath(repo) + "/issues/comments/" + strconv.FormatInt(id, 10)
+	if err := c.do(ctx, repo, http.MethodPatch, path, map[string]string{"body": body}, &out); err != nil {
+		return nil, err
+	}
+	cm := out.comment()
+	return &cm, nil
 }
 
 // MaxCompareFiles is how many files GitHub lists in a comparison; it lists

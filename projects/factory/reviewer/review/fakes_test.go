@@ -29,6 +29,8 @@ const (
 	testRepo  = "example-org/homelab"
 	testAppID = 5758326
 	ciCreator = "buildbuddy-io[bot]"
+	// botLogin writes comments made with the comment token.
+	botLogin = "jomcgi-factory-review[bot]"
 )
 
 type fakePR struct {
@@ -104,11 +106,12 @@ type fakeGitHub struct {
 	afterReviewsRead func()
 	// fail answers "METHOD /path" with a status code; failGQL fails a
 	// GraphQL call by kind.
-	fail        map[string]int
-	failGQL     map[string]bool
-	nextID      int64
-	nextEventID int64
-	now         func() time.Time
+	fail          map[string]int
+	failGQL       map[string]bool
+	nextID        int64
+	nextEventID   int64
+	nextCommentID int64
+	now           func() time.Time
 	// closeAfterPage closes PR [1] once the open PR listing's page [0] is
 	// served, as a PR that closes between two page reads would.
 	closeAfterPage [2]int
@@ -301,7 +304,19 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-	if r.Header.Get("Authorization") != "Bearer ghs_reviewer" {
+	prefix := "/repos/" + testRepo
+	path := strings.TrimPrefix(r.URL.Path, prefix)
+	q := r.URL.Query()
+	// The check token reads comments but cannot write them; the comment
+	// token reaches comments only.
+	comments := strings.HasPrefix(path, "/issues/") && strings.Contains(path, "comments")
+	switch auth := r.Header.Get("Authorization"); {
+	case auth == "Bearer ghs_comment" && comments:
+	case auth == "Bearer ghs_reviewer" && comments && r.Method != http.MethodGet:
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+		return
+	case auth != "Bearer ghs_reviewer":
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
@@ -310,9 +325,6 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":"injected failure"}`))
 		return
 	}
-	prefix := "/repos/" + testRepo
-	path := strings.TrimPrefix(r.URL.Path, prefix)
-	q := r.URL.Query()
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 		f.graphql(w, r)
@@ -449,9 +461,35 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
 		out := []map[string]any{}
 		for _, c := range f.prs[n].Comments {
-			out = append(out, map[string]any{"user": map[string]string{"login": c.Author}, "body": c.Body})
+			out = append(out, map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
 		}
-		f.get(w, r, out)
+		f.get(w, r, page(out, q))
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
+		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
+		var body struct {
+			Body string `json:"body"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.nextCommentID++
+		c := github.Comment{ID: 1000 + f.nextCommentID, Author: botLogin, Body: body.Body}
+		f.prs[n].Comments = append(f.prs[n].Comments, c)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
+	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/issues/comments/"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(path, "/issues/comments/"), 10, 64)
+		var body struct {
+			Body string `json:"body"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		for _, pr := range f.prs {
+			for i := range pr.Comments {
+				if c := &pr.Comments[i]; c.ID == id {
+					c.Body = body.Body
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
+					return
+				}
+			}
+		}
+		http.NotFound(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/compare/"):
 		base, head, _ := strings.Cut(strings.TrimPrefix(path, "/compare/"), "...")
 		var pr *fakePR
@@ -556,7 +594,8 @@ func checkJSON(c *fakeCheck) map[string]any {
 	m := map[string]any{
 		"id": c.ID, "node_id": fmt.Sprintf("CR_%d", c.ID), "name": c.Name, "head_sha": c.SHA, "status": c.Status,
 		"conclusion": nil, "external_id": c.ExternalID, "app": map[string]any{"id": c.AppID},
-		"output": map[string]any{"title": c.Title, "summary": c.Summary, "text": c.Text},
+		"html_url": fmt.Sprintf("https://github.com/%s/runs/%d", testRepo, c.ID),
+		"output":   map[string]any{"title": c.Title, "summary": c.Summary, "text": c.Text},
 	}
 	if c.Conclusion != "" {
 		m["conclusion"] = c.Conclusion
@@ -735,6 +774,25 @@ type reviewerTokens struct{}
 
 func (reviewerTokens) Token(context.Context, string) (string, error) { return "ghs_reviewer", nil }
 func (reviewerTokens) Invalidate(string)                             {}
+
+// commentTokens is the broker's comment token.
+type commentTokens struct{}
+
+func (commentTokens) Token(context.Context, string) (string, error) { return "ghs_comment", nil }
+func (commentTokens) Invalidate(string)                             {}
+
+// ownComments are the comments the reviewer wrote on a PR.
+func (f *fakeGitHub) ownComments(number int) []github.Comment {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []github.Comment
+	for _, c := range f.prs[number].Comments {
+		if c.Author == botLogin {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // fakeKagent models the gateway's handling of a task-opening message: a
 // repeated message ID is answered with the task holding it, and rejected
@@ -956,10 +1014,16 @@ func newHarness(t *testing.T) *harness {
 }
 
 // engine builds a fresh engine, as a new process would, sharing the fakes.
+// With a CommentAuthor and no Comments, it writes comments with the comment
+// token.
 func (h *harness) engine() *Engine {
 	gh := &github.Client{BaseURL: h.srv.URL, Tokens: reviewerTokens{}, ETags: &github.ETagCache{}}
 	log := slog.New(slog.NewJSONHandler(h.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	e := New(h.cfg, gh, h.k, h.m, log)
+	cfg := h.cfg
+	if cfg.CommentAuthor != "" && cfg.Comments == nil {
+		cfg.Comments = &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}}
+	}
+	e := New(cfg, gh, h.k, h.m, log)
 	if !h.startupRecovery { // Most cases isolate steady-state behavior; recovery cases exercise the startup scan.
 		e.epoch = "steady-state-test"
 		for i := range e.cfg.Bindings {

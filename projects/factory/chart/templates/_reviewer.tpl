@@ -41,7 +41,7 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- end }}
 {{- $bindings = append $bindings $binding }}
 {{- end }}
-{{- dict
+{{- $config := dict
   "brokerURL" (printf "http://%s.%s.svc:%d" (include "factory.brokerName" .) .Values.broker.namespace (int .Values.broker.adminPort))
   "brokerTokenFile" "/var/run/secrets/factory-broker/token"
   "kagentURL" (printf "http://%s" (include "factory.kagentControllerAddress" .))
@@ -53,6 +53,9 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
   "intervals" $c.intervals
   "ruleIds" $c.ruleIds
   "bindings" $bindings
-  | toYaml
 }}
+{{- with $c.commentAuthor }}
+{{- $_ := set $config "commentAuthor" . }}
+{{- end }}
+{{- $config | toYaml }}
 {{- end }}

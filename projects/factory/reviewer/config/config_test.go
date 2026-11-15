@@ -34,8 +34,12 @@ func TestParseAppliesDefaults(t *testing.T) {
 		c.MetricsAddr != ":9090" {
 		t.Fatalf("endpoints = %+v", c)
 	}
-	if c.CheckName != "factory review" || c.Concurrency != 2 {
-		t.Fatalf("check %q, concurrency %d", c.CheckName, c.Concurrency)
+	if c.CheckName != "factory review" || c.Concurrency != 2 || c.CommentAuthor != "" {
+		t.Fatalf("check %q, concurrency %d, comment author %q", c.CheckName, c.Concurrency, c.CommentAuthor)
+	}
+	c, err = Parse([]byte(sample + "commentAuthor: ' jomcgi-factory-review[bot] '\n"))
+	if err != nil || c.CommentAuthor != "jomcgi-factory-review[bot]" {
+		t.Fatalf("comment author = %q, %v", c.CommentAuthor, err)
 	}
 	iv := c.Intervals
 	if time.Duration(iv.Poll) != 30*time.Second || time.Duration(iv.TaskPoll) != 15*time.Second ||
@@ -87,6 +91,7 @@ func TestParseRejectsInvalidFiles(t *testing.T) {
 		"bad glob":            sample + "    humanGatePaths: [\"[\"]\n",
 		"gate, no approvers":  sample + "    humanApprovers: []\n",
 		"negative budget":     sample + "    maxDiffFiles: -1\n",
+		"bad comment author":  sample + "commentAuthor: some one\n",
 	} {
 		if _, err := Parse([]byte(file)); err == nil {
 			t.Errorf("%s: accepted", name)

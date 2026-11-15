@@ -464,6 +464,10 @@
           "type": "string",
           "minLength": 1
         },
+        "commentAuthor": {
+          "type": "string",
+          "pattern": "^[^\\s/]*$"
+        },
         "concurrency": {
           "type": "integer",
           "minimum": 1

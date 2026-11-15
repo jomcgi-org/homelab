@@ -869,13 +869,18 @@ and retries once, so a brief overlap during a rollout is safe.
   in each `reviewBindings` namespace, which must not be a coding binding's,
   and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
   only, with checks and merge queues write, pull requests, contents and
-  statuses read. `merge_queues: write` alone does not let this token
+  statuses read. `GET /github/reviewer-comment-token?repository=` serves the
+  same subjects a separate token with only `issues: write`
+  (`githubReview.commentPermissions`) for the reviewer's PR comment: an App
+  without that permission fails only the comment, and the check token never
+  gains it. `merge_queues: write` alone does not let this token
   enqueue: the first live attempt was refused with `FORBIDDEN` (2026-11-14),
   so the reviewer enqueues nothing ("Merge authority"). With `reviewer.enabled`, the chart mounts the separate App from
   `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
   namespaces, and admits only `factory-reviewer` in `reviewerSubjects`.
   The config refuses the same App as `github`, a writable
-  agent token, any reviewer write besides checks and merge queues, and a
+  agent token, any reviewer write besides checks and merge queues, a
+  comment token writing anything but issues, and a
   subject that is also a connector or admin subject.
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
   second port serves the admin endpoints, connector tokens and metrics, and
@@ -932,7 +937,8 @@ previews).
   them as it gates every PR. The agent's token is contents write on its own
   repository only. Neither can post the review check.
 - **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
-  merge queues write, and contents, pull requests and commit statuses read.
+  merge queues write, issues write for its PR comment, and contents, pull
+  requests and commit statuses read.
   `projects/factory/reviewer` posts the `factory review` check run on every
   head of every open PR into the base branch, whatever its author, and on
   each merge group commit (success when the queued PR's head passed, since
@@ -944,7 +950,15 @@ previews).
   write, as the author App holds. Either would let the reviewer push code
   or approve, so Joe chose the required check as the gate instead. It never
   posts a PR approval, so it can never count
-  toward an approval or code-owner rule. Check runs are its only state: the
+  toward an approval or code-owner rule. With `reviewer.commentAuthor` set
+  to its bot login, it also keeps one comment on each PR it reviews, created
+  with the first verdict and edited in place on every head, approval and
+  hold: the verdict, the human gate's reasons, the agent's summary, findings
+  by severity and what the review cleared. The comment mirrors the
+  assessment behind the check and gates nothing; a failed write is logged
+  and counted (`factory_reviewer_comment_writes_total`). It edits only a
+  comment its bot login wrote, and its own comment never reaches the agent.
+  Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings and human gate in a hidden block, at most
   48,000 characters, for the next head. Duplicate ready PRs stop model work;
@@ -1132,8 +1146,9 @@ Each step is its own PR with live evidence recorded on #7817.
   `installation-id`. Created 2026-11-14.
 - **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
   review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
-  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks and merge
-  queues write, contents, pull requests and commit statuses read) owns
+  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks, merge
+  queues and issues write, contents, pull requests and commit statuses
+  read; issues write only for its PR comment) owns
   review and enqueueing ("Merge authority"). Its 1Password item is
   `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
   For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
