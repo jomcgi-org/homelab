@@ -195,7 +195,7 @@ func (e *Engine) retainGateLocked(b *Binding, pr github.PullRequest, g *Gate, fr
 	if g == nil {
 		g = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
 	}
-	key := prKey(b, pr.Number)
+	key := contextKey(b, pr.Number)
 	m := e.contexts[key]
 	if m == nil {
 		m = &heldContext{Head: pr.HeadSHA, Token: g.ContextToken, Labels: append([]string(nil), g.Labels...), Shared: g.SharedHead}

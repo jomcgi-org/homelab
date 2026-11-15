@@ -44,7 +44,7 @@ type durableState struct {
 	EnqueueAfter map[string]time.Time
 }
 
-func prKey(b *Binding, number int) string { return fmt.Sprintf("%s#%d", b.repo(), number) }
+func contextKey(b *Binding, number int) string { return fmt.Sprintf("%s#%d", b.repo(), number) }
 
 func cloneGate(g *Gate) *Gate {
 	if g == nil {
@@ -194,7 +194,7 @@ func (e *Engine) load(ctx context.Context) bool {
 			if !g.Needed() {
 				g = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
 			}
-			imported[prKey(b, pr.Number)] = &heldContext{Head: pr.HeadSHA, Token: g.ContextToken, Labels: append([]string(nil), g.Labels...), Shared: g.SharedHead, Gate: g, Restored: true}
+			imported[contextKey(b, pr.Number)] = &heldContext{Head: pr.HeadSHA, Token: g.ContextToken, Labels: append([]string(nil), g.Labels...), Shared: g.SharedHead, Gate: g, Restored: true}
 		}
 	}
 	e.mu.Lock()
@@ -215,7 +215,7 @@ func (e *Engine) stateFor(b *Binding, pr github.PullRequest, run *github.CheckRu
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if m := e.contexts[prKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Restored {
+	if m := e.contexts[contextKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Restored {
 		st.Gate = cloneGate(m.Gate)
 	}
 	return st
@@ -226,7 +226,7 @@ func (e *Engine) stateFor(b *Binding, pr github.PullRequest, run *github.CheckRu
 // listing observations are provisional and cannot replace its recorded gate.
 func (e *Engine) restoreContext(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) bool {
 	e.mu.Lock()
-	m := e.contexts[prKey(b, pr.Number)]
+	m := e.contexts[contextKey(b, pr.Number)]
 	restored := m != nil && m.Restored
 	e.mu.Unlock()
 	if restored {
@@ -252,7 +252,8 @@ func (e *Engine) restoreContext(ctx context.Context, b *Binding, pr github.PullR
 			// pass. A new head with no review must still receive a review.
 			st.Gate = g
 			e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Waiting for hold history",
-				"The reopened PR's complete hold history could not be read.\n\n"+labelHistoryMarker, e.prLog(b, pr))
+				"The reopened PR's complete hold history could not be read.\n\n"+labelHistoryMarker,
+				&CommentUpdate{Verdict: VerdictHold, Headline: "Waiting for complete label history"}, e.prLog(b, pr))
 		}
 		return false
 	}
@@ -260,7 +261,7 @@ func (e *Engine) restoreContext(ctx context.Context, b *Binding, pr github.PullR
 	g.observeLabelEvents(b, events)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	m = e.contexts[prKey(b, pr.Number)]
+	m = e.contexts[contextKey(b, pr.Number)]
 	if m == nil || m.Head != pr.HeadSHA {
 		return false
 	}
@@ -289,7 +290,7 @@ func (e *Engine) restoreContext(ctx context.Context, b *Binding, pr github.PullR
 func (e *Engine) persistGate(ctx context.Context, b *Binding, pr github.PullRequest, g *Gate) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	key := prKey(b, pr.Number)
+	key := contextKey(b, pr.Number)
 	m := e.contexts[key]
 	if m == nil {
 		m = &heldContext{Head: pr.HeadSHA}
@@ -313,7 +314,7 @@ func (e *Engine) observeListing(ctx context.Context, b *Binding, prs []github.Pu
 			continue
 		}
 		g := &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
-		if m := e.contexts[prKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Gate != nil {
+		if m := e.contexts[contextKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Gate != nil {
 			g = cloneGate(m.Gate)
 		}
 		before := g.ApprovalNonce

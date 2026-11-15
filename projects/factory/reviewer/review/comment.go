@@ -170,9 +170,6 @@ func gateItems(g *Gate) []string {
 	if g.SharedHead {
 		out = append(out, "shares its commit with another ready PR")
 	}
-	if g.RecoveryEpoch != "" {
-		out = append(out, "context to confirm after a reviewer restart")
-	}
 	for _, f := range g.Findings {
 		out = append(out, mdInline(f.Title, maxTitle, false)+" (`"+codeText(f.ID)+"`)")
 	}
