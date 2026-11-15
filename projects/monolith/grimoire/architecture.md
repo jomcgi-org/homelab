@@ -1102,6 +1102,9 @@ after leaving the directory. A subsequent 403 or 404 from that check or a
 directory read triggers the same whole-view cache fence, removing directory
 rows, open dialogs, private signup links and toasts before reloading. An initial
 directory refusal still offers bootstrap; temporary failures retain the view.
+Refusals already cached when operator access is established do not revoke that
+new access. Only a new refusal after that baseline triggers the fence, including
+a retried, reset or recreated directory query.
 
 Every screen shares the lobby identity check through `ViewerBoundary`. A
 confirmed account change, removal of an existing campaign membership, change
