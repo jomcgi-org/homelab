@@ -52,6 +52,9 @@ DB_STATEMENT_TIMEOUT_MS = 5000
 # embervm_capacity
 CREATE_FAILURE_STREAK = timedelta(minutes=15)
 BRICK_NAMESPACE_ENV = "EMBERVM_BRICK_NAMESPACE"
+# The session transport's EmberVM URL. Unset means this deployment has no
+# EmberVM, so there is nothing to measure.
+EMBERVM_URL_ENV = "EMBERVM_URL"
 BRICK_LABEL_SELECTOR = "app.kubernetes.io/component=noded-brick"
 BRICK_CLASS_LABEL = "embervm.jomcgi.dev/size-class"
 
@@ -215,6 +218,10 @@ def evaluate_create_streak(latest, since, now: datetime) -> tuple[bool, str]:
 
 
 async def _embervm_capacity() -> dict:
+    if not os.environ.get(EMBERVM_URL_ENV, "").strip():
+        # A stored create-failure streak clears only on a successful create,
+        # which cannot happen without EmberVM, so neither half is evaluated.
+        return _unknown("EmberVM is not configured on this deployment")
     replicas, brick_note = await _brick_replicas()
     try:  # nosemgrep: no-broad-except-swallow - reported in detail
         latest, since = await asyncio.to_thread(_create_streak_sync)

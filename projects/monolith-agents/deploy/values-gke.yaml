@@ -1,9 +1,10 @@
 # GKE hub destination overrides, layered after deploy/values.yaml by
 # projects/gke-apps/monolith-agents/application.yaml.
 
-# EmberVM left the hub on 2026-11-15, taking the embervm and kargo-embervm
-# namespaces. A Role rendered into a missing namespace fails the sync, so the
-# hub lists drop them. Helm replaces lists, so each is written out in full.
+# EmberVM is being removed from the hub (Joe's decision: https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810), taking the
+# embervm and kargo-embervm namespaces. A Role rendered into a missing
+# namespace fails the sync, so the hub lists drop them first. Helm replaces
+# lists, so each is written out in full.
 kubernetesRead:
   observationNamespaces:
     - argocd

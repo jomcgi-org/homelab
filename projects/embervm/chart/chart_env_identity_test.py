@@ -3043,12 +3043,9 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         application["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"]
         == "kargo-embervm:dev"
     )
-    # Both releases render the cluster-scoped Workload CRD. The finalizer was
-    # kept off so a cascading delete of dev could not take production's CRD.
-    # Both leave the hub together (2026-11-15), so dev now cascades cleanly.
-    assert application["metadata"]["finalizers"] == [
-        "resources-finalizer.argocd.argoproj.io"
-    ]
+    # Both releases render the cluster-scoped Workload CRD; a cascading delete
+    # of dev must never be able to take production's CRD with it.
+    assert "finalizers" not in application["metadata"]
 
     rendered = _render(
         release,

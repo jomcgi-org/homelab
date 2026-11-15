@@ -57,6 +57,7 @@ def engine(tmp_path, monkeypatch):
         ],
     )
     monkeypatch.setattr(core.db, "get_engine", lambda: engine)
+    monkeypatch.setenv(ops_health.EMBERVM_URL_ENV, "http://embervm.test:8080")
     ops_health.reset_caches()
     yield engine
     ops_health.reset_caches()
@@ -282,6 +283,29 @@ def test_capacity_unhealthy_on_sustained_create_failures(engine, monkeypatch):
     result = asyncio.run(ops_health.embervm_capacity_health())
     assert not result["ok"]
     assert result["detail"].startswith("session creates failing since")
+
+
+def test_capacity_is_unknown_without_embervm_even_with_a_failed_latch(
+    engine, monkeypatch
+):
+    """A streak recorded before EmberVM was removed can never clear, because
+    no create can succeed. With no EmberVM URL the check reports unknown, so
+    health alerts stop instead of reminding about a retired service."""
+    _bricks(monkeypatch, {})
+    now = datetime.now(timezone.utc)
+    create_outcome._record_sync(
+        False, "connect refused", now=now - timedelta(minutes=40)
+    )
+    create_outcome._record_sync(
+        False, "connect refused", now=now - timedelta(minutes=1)
+    )
+    monkeypatch.delenv(ops_health.EMBERVM_URL_ENV)
+    result = asyncio.run(ops_health.embervm_capacity_health())
+    assert result == {
+        "ok": True,
+        "status": "unknown",
+        "detail": "EmberVM is not configured on this deployment",
+    }
 
 
 def test_unreadable_bricks_are_not_a_failure(engine, monkeypatch):
