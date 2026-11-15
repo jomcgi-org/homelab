@@ -613,20 +613,24 @@ Bad inputs fail or dead-letter without partially publishing a book.
 `grimoire-verify-entities` is a private-tier CronWorkflow, suspended with an
 inert yearly schedule. It uses the extraction model and endpoint, exposed as
 `GRIMOIRE_VERIFY_MODEL` and `GRIMOIRE_VERIFY_BASE_URL`. The production overlay
-selects direct DeepSeek V4 Flash; `GRIMOIRE_VERIFY_API_KEY` references the
-existing optional `goosecracker/DEEPSEEK_API_KEY` field. A missing hosted-provider
-key skips the run. No new credential is provisioned.
+selects direct DeepSeek V4 Flash. The verifier inherits `GRIMOIRE_EXTRACT_API_KEY`:
+the shared template selects the existing optional `goosecracker/DEEPSEEK_API_KEY`
+field for the DeepSeek HTTPS endpoint and `goosecracker/OPENROUTER_API_KEY` for
+OpenRouter, including the chart-default empty endpoint. Other endpoints receive
+no hosted-provider credential. A missing hosted-provider key skips the run.
 
 The job caps each run at 25 entities and six evidence chunks per entity, with a
 25-minute deadline and a 512Mi memory limit. A Workflow mutex serializes manual
-submissions as well as any future scheduled run. `GRIMOIRE_VERIFIER_VERSION=v1`
-is the replay marker: an entity already processed at that version is skipped;
-changing the version deliberately requests another pass. Accepted field changes
-and the version marker commit atomically per entity. Provider failures and
-rejected model output remain pending.
+submissions as well as any future scheduled run. The handler always calls the
+verifier in report-only mode. It logs proposed verified, corrected and null
+counts without changing entity fields or writing version markers, including
+when evidence is missing or incomplete. The command requires `--dry-run`, which
+the template supplies; an older image without this option rejects the invocation.
+There is no apply flag or environment switch. `GRIMOIRE_VERIFIER_VERSION=v1`
+skips any existing marker at that version;
+a report creates no marker, so another submission repeats pending model calls.
 
-After resolving the evidence-value validation gap in #7190 and inspecting the
-intended corpus, an operator can submit the existing template:
+An operator can submit a report through the existing template:
 
 ```bash
 argo submit --from cronworkflow/grimoire-verify-entities -n monolith-workflows
@@ -639,10 +643,11 @@ transcript capture or session-to-KG extraction. No live verifier run is claimed
 by this wiring change (#7022).
 
 **Why.** The verifier command existed without an Argo invocation path. Manual
-submission exposes the bounded job while leaving scheduling and model spend
-under operator control. Citation shape and field markers alone do not prove a
-corrected value is supported by the cited text; #7190 tracks that remaining
-validation requirement before operational use.
+submission exposes a bounded report while leaving scheduling and model spend
+under operator control. The internal apply implementation accepts unsupported
+corrections and nulls fields when evidence is absent or incomplete. It remains
+inaccessible through this command. #7190 must resolve evidence-value validation
+and evidence-driven data loss before operational use or exposing mutation.
 
 ## Alias review and merge
 

@@ -1148,11 +1148,11 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
-    # Entity verification writes corrections and version markers. Keep manual-only;
-    # #7190 tracks evidence-value validation required before operational use.
+    # The handler enforces report-only execution; no fields or markers are written.
+    # Keep manual-only. #7190 remains required before exposing mutation.
     - name: grimoire-verify-entities
       replaces: grimoire.verify_entities
-      args: ["grimoire-verify-entities"]
+      args: ["grimoire-verify-entities", "--dry-run"]
       schedule: "0 0 1 1 *" # inert; suspended, manual-only
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 1500
@@ -1163,11 +1163,6 @@ jobs:
         GRIMOIRE_VERIFY_LIMIT: "25"
         GRIMOIRE_VERIFY_EVIDENCE_LIMIT: "6"
         GRIMOIRE_VERIFIER_VERSION: "v1"
-      secretEnv:
-        GRIMOIRE_VERIFY_API_KEY:
-          secretName: goosecracker
-          key: DEEPSEEK_API_KEY
-          optional: true
       resources:
         requests:
           cpu: 250m

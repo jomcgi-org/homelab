@@ -980,13 +980,18 @@ def grimoire_backfill_hierarchy() -> None:
 
 
 @app.command("grimoire-verify-entities")
-def grimoire_verify_entities() -> None:
-    """Verify extracted details against marker-bearing mention chunks.
+def grimoire_verify_entities(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without writing"),
+) -> None:
+    """Report verification outcomes without changing stored details or markers.
 
     Set GRIMOIRE_VERIFIER_VERSION to deliberately re-run a revised verifier.
     GRIMOIRE_VERIFY_LIMIT and GRIMOIRE_VERIFY_EVIDENCE_LIMIT bound each run.
     Provider settings default to the existing GRIMOIRE_EXTRACT_* values.
+    Applying corrections or nulls is unavailable until #7190 is resolved.
     """
+    if not dry_run:
+        raise typer.BadParameter("only --dry-run is available until #7190 is resolved")
     _run_job("grimoire-verify-entities", "grimoire.jobs", "grimoire_verify_entities")
 
 

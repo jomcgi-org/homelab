@@ -505,6 +505,7 @@ async def verify_entities(
     *,
     limit: int = DEFAULT_LIMIT,
     evidence_limit: int = DEFAULT_EVIDENCE_LIMIT,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """Verify pending entities and return entity and committed-field counts.
 
@@ -512,6 +513,10 @@ async def verify_entities(
     ``no_evidence``, and ``markers_written`` count entities or calls.
     ``verified``, ``corrected``, ``nulled``, and ``unverifiable`` count fields
     from successful transactions.
+
+    In dry-run mode, ``reported`` counts entities and ``would_verify``,
+    ``would_correct`` and ``would_null`` count proposed field outcomes. No
+    entity fields or version markers are written, including without evidence.
     """
     version = client.verifier_version
     pending, skipped = _pending_entities(session, version, limit)
@@ -528,6 +533,8 @@ async def verify_entities(
         "unverifiable": 0,
         "markers_written": 0,
     }
+    if dry_run:
+        summary.update(reported=0, would_verify=0, would_correct=0, would_null=0)
     for entity, stored_fields in pending:
         evidence = _evidence_for_entity(
             session, entity, set(stored_fields), evidence_limit
@@ -562,6 +569,16 @@ async def verify_entities(
                     exc,
                 )
                 continue
+        if dry_run:
+            summary["reported"] += 1
+            for result in results:
+                report_key = {
+                    "verified": "would_verify",
+                    "corrected": "would_correct",
+                    "unverifiable": "would_null",
+                }[result["status"]]
+                summary[report_key] += 1
+            continue
         try:
             counts = _apply_validated(session, entity, version, results)
         except Exception as exc:  # noqa: BLE001 - persistence failures roll back

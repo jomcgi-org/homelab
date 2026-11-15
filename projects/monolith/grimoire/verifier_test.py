@@ -355,6 +355,73 @@ def test_conflicting_evidence_nulls_only_conflicted_field(session: Session):
     assert summary["unverifiable"] == 1
 
 
+@pytest.mark.parametrize("verdict", ["verified", "corrected", "unverifiable"])
+def test_report_only_preserves_fields_and_leaves_repeat_runs_pending(
+    session: Session, verdict
+):
+    entity = _add_creature(session, ac=12, hp_avg=59)
+    chunk = _mention(session, entity, "Armor Class 13")
+    result = {
+        "field": "ac",
+        "status": verdict,
+        "evidence_chunk_ids": [chunk.id],
+    }
+    if verdict == "corrected":
+        # The known #7190 gap accepts this unsupported, well-typed correction.
+        result["correction"] = 999
+    client = FakeVerifierClient(
+        {
+            "fields": [
+                result,
+                {
+                    "field": "hp_avg",
+                    "status": "unverifiable",
+                    "evidence_chunk_ids": [],
+                },
+            ]
+        }
+    )
+
+    for _ in range(2):
+        summary = _run(verify_entities(session, client, dry_run=True))
+        assert summary["reported"] == 1
+        assert summary["would_verify"] == int(verdict == "verified")
+        assert summary["would_correct"] == int(verdict == "corrected")
+        assert summary["would_null"] == 1 + int(verdict == "unverifiable")
+        assert summary["processed"] == summary["markers_written"] == 0
+        assert summary["corrected"] == summary["nulled"] == summary["failed"] == 0
+        assert not session.dirty
+        assert not session.new
+        session.expire_all()
+        assert session.get(EntityCreature, entity.id).ac == 12
+        assert session.get(EntityCreature, entity.id).hp_avg == 59
+        assert session.execute(select(EntityVerification)).scalars().all() == []
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize("content", [None, "The hermit prefers a quiet life."])
+def test_report_only_preserves_generic_fields_without_matching_evidence(
+    session: Session, content
+):
+    entity = _add_generic_entity(
+        session, "background", "Hermit", {"equipment": "Original kit"}
+    )
+    if content is not None:
+        _mention(session, entity, content)
+    client = FakeVerifierClient(AssertionError("client must not be called"))
+
+    summary = _run(verify_entities(session, client, dry_run=True))
+
+    assert summary["reported"] == summary["no_evidence"] == summary["would_null"] == 1
+    assert summary["processed"] == summary["markers_written"] == summary["nulled"] == 0
+    assert not session.dirty
+    assert not session.new
+    session.expire_all()
+    assert session.get(Entity, entity.id).detail == {"equipment": "Original kit"}
+    assert session.execute(select(EntityVerification)).scalars().all() == []
+    assert client.calls == []
+
+
 @pytest.mark.parametrize(
     "response",
     [

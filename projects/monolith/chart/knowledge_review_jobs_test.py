@@ -286,7 +286,7 @@ def test_grimoire_verifier_is_bounded_suspended_and_manually_addressable(values)
         "mutexes": [{"name": "grimoire-verify-entities"}]
     }
     container = workflow["templates"][0]["container"]
-    assert container["args"] == ["grimoire-verify-entities"]
+    assert container["args"] == ["grimoire-verify-entities", "--dry-run"]
     assert container["resources"] == {
         "requests": {"cpu": "250m", "memory": "512Mi"},
         "limits": {"memory": "512Mi"},
@@ -297,7 +297,8 @@ def test_grimoire_verifier_is_bounded_suspended_and_manually_addressable(values)
     assert env["GRIMOIRE_VERIFY_BASE_URL"]["value"] == (
         "https://api.deepseek.com/chat/completions"
     )
-    assert env["GRIMOIRE_VERIFY_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+    assert "GRIMOIRE_VERIFY_API_KEY" not in env
+    assert env["GRIMOIRE_EXTRACT_API_KEY"]["valueFrom"]["secretKeyRef"] == {
         "name": "goosecracker",
         "key": "DEEPSEEK_API_KEY",
         "optional": True,
@@ -309,7 +310,20 @@ def test_grimoire_verifier_is_bounded_suspended_and_manually_addressable(values)
     assert jobs["grimoire-extract-entities"]["spec"]["suspend"] is True
 
 
-def test_grimoire_verifier_tracks_configured_extraction_model_and_endpoint(tmp_path):
+@pytest.mark.parametrize(
+    "endpoint, secret_key",
+    [
+        ("", "OPENROUTER_API_KEY"),
+        ("https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY"),
+        ("https://api.deepseek.com/chat/completions", "DEEPSEEK_API_KEY"),
+        ("https://inference.invalid/chat/completions", None),
+        ("http://api.deepseek.com/chat/completions", None),
+        ("https://api.deepseek.com.invalid/chat/completions", None),
+    ],
+)
+def test_grimoire_verifier_tracks_extraction_provider_and_credential(
+    tmp_path, endpoint, secret_key
+):
     override = tmp_path / "verifier-provider.yaml"
     override.write_text(
         yaml.safe_dump(
@@ -317,20 +331,30 @@ def test_grimoire_verifier_tracks_configured_extraction_model_and_endpoint(tmp_p
                 "grimoire": {
                     "enabled": True,
                     "extractModel": "test-model",
-                    "extractBaseUrl": "https://inference.invalid/chat/completions",
+                    "extractBaseUrl": endpoint,
                 }
             }
         )
     )
-    job = _render(override)["grimoire-verify-entities"]
+    jobs = _render(override)
+    job = jobs["grimoire-verify-entities"]
     container = job["workflowSpec"]["templates"][0]["container"]
     env = {entry["name"]: entry.get("value") for entry in container["env"]}
     assert env["GRIMOIRE_VERIFY_MODEL"] == env["GRIMOIRE_EXTRACT_MODEL"] == "test-model"
-    assert (
-        env["GRIMOIRE_VERIFY_BASE_URL"]
-        == env["GRIMOIRE_EXTRACT_BASE_URL"]
-        == ("https://inference.invalid/chat/completions")
-    )
+    assert env["GRIMOIRE_VERIFY_BASE_URL"] == endpoint
+    assert env.get("GRIMOIRE_EXTRACT_BASE_URL", "") == endpoint
+    for name in ("grimoire-verify-entities", "grimoire-extract-entities"):
+        container = jobs[name]["workflowSpec"]["templates"][0]["container"]
+        entries = {entry["name"]: entry for entry in container["env"]}
+        assert "GRIMOIRE_VERIFY_API_KEY" not in entries
+        if secret_key is None:
+            assert "GRIMOIRE_EXTRACT_API_KEY" not in entries
+        else:
+            assert entries["GRIMOIRE_EXTRACT_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+                "name": "goosecracker",
+                "key": secret_key,
+                "optional": True,
+            }
 
 
 @pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
