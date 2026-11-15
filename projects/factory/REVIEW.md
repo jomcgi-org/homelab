@@ -22,11 +22,29 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   text: agents have no itsaplan tools (#7908). Text from GitHub, a model or
   a provider reaches a prompt or an issue comment only from a trusted
   reviewer login or the reviewer App; the rest is dropped or reduced to a
-  fixed class name. The reviewer's own prompt is the one exception: it
+  fixed class name. The reviewer's own prompt is an exception: it
   receives PR text, file names and diffs from any author, because reviewing
   them is its job, and only inside a delimited untrusted block, quoted and
   sanitized so no text closes the block or starts a line of its own.
   Critical.
+- **Planner exception.** Only `homelab-planner` may receive arbitrary-author
+  text under this exception: a read-only repository token, no push, no
+  coding-agent key or session, no itsaplan tools or column moves, and a fresh
+  repository-bound session per run. Untrusted prompt input stays inside a
+  delimited block, quoted and sanitized as for the reviewer.
+  Only the connector's validated proposal path may carry planner output
+  into itsaplan, with bounded title and body and required evidence links.
+  A schedule's config sets the ceiling: delegated fix, task assigned to Joe
+  with no delegate, or Backlog issue. The planner may only lower that
+  disposition, never raise it. Joe chose delegated fixes for the three
+  pilots on 2026-11-15 ([#7935](https://github.com/jomcgi-org/homelab/issues/7935)).
+  The connector constructs each issue from validated fields; quoted
+  excerpts go only in a delimited evidence block, sanitized as for the
+  reviewer and treated as data by the coder's brief, so untrusted text
+  cannot become delegated instructions. Digests and alerts leave the
+  cluster only through the notify sink (HOME-51), carrying titles, links
+  and fixed fields, never issue bodies, logs or secrets. The coder's input
+  path otherwise stays as in "What the agent sees". Critical.
 - **Credentials.** Provider and GitHub credentials never enter a sandbox, a
   log or the evidence bucket; they are injected at egress. A minted token
   names exactly the repository and permissions it needs. Critical.

@@ -361,6 +361,38 @@ the monolith's, embedded in the binary and applied at startup under an
 advisory lock. Database tests start PostgreSQL 16 from `@postgres_test`, as
 the monolith's pytest plugin does.
 
+**Planner proposals.** On 2026-11-15 Joe selected delegated fixes for the
+delivery health, trust drift and documentation drift pilots
+([#7935](https://github.com/jomcgi-org/homelab/issues/7935), HOME-39). This
+supersedes the Backlog-only proposal in
+[`scheduled-agents.md`](../../docs/agents/scheduled-agents.md#use-the-planner-contract).
+The contract in `REVIEW.md` lands before HOME-40 implements the planner,
+because the reviewer loads its rules from main.
+
+**Why.** CI logs, PRs and issues can contain arbitrary-author instructions.
+The planner needs that evidence to propose work. Its exception requires a
+separate `homelab-planner` identity with a read-only repository token, no
+push, no coding-agent key or session, no itsaplan tools or column moves,
+and a fresh repository-bound session per run. Untrusted prompt input stays
+quoted inside a delimited block and sanitized as for the reviewer: it
+cannot close the block or start a line of its own.
+
+Only the connector's validated proposal path may send planner output to
+itsaplan. It requires bounded title and body and evidence links, then
+constructs each issue from the validated fields. A schedule's config sets
+the highest permitted disposition: delegated fix, task assigned to Joe
+with no delegate, or Backlog issue. The planner can lower a delegated fix
+to a Joe task or Backlog, or a Joe task to Backlog; it cannot raise the
+configured ceiling. Quoted excerpts belong only in a delimited evidence
+block, sanitized as for the reviewer. The coder's brief treats that block
+as data, keeping untrusted text out of delegated instructions. The coder's
+existing input path otherwise stays unchanged.
+
+Planner digests and alerts leave the cluster only through the notify sink
+(HOME-51), containing titles, links and fixed fields. Issue bodies, logs
+and secrets never enter that sink. HOME-40 and HOME-51 supply these paths;
+this decision enables no schedule or publication by itself.
+
 **Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
 none of these is a Pro feature (status-triggered schedules are Pro and are
 not used). Claim runs per agent key. A claimed run with an open attempt
@@ -1022,14 +1054,17 @@ previews).
   contains it. Joe's approval of the head clears the reviewer's hold. The
   connector never re-enqueues an ejected head, so Joe requeues it; the
   label still holds the factory's enqueue of any new head.
-- **Only the factory's own loop acts.** Work starts only from itsaplan
+- **Only the factory's own loop acts.** Coding work starts only from itsaplan
   (invite-only, behind Authentik); GitHub issues, PRs and comments never
-  start a run. The connector adopts and enqueues only PRs whose author is the
-  factory App and whose head branch is the bound repository's
+  directly dispatch a coder. Planner proposals follow the validated path
+  in "Connector". The connector adopts and enqueues only PRs whose author
+  is the factory App and whose head branch is the bound repository's
   `<branchPrefix><issue key>`; a fork or other author is refused and
   reported. Today adoption matches the bound repository's own head
-  (`<owner>:<branch>`), which excludes forks; the author check is #7920. Only `trustedReviewers` and the reviewer App reach an agent's
-  prompt.
+  (`<owner>:<branch>`), which excludes forks; the author check is #7920.
+  External review feedback reaches a coder's prompt only from
+  `trustedReviewers` or the reviewer App. The reviewer and planner receive
+  untrusted data only under their scoped exceptions in `REVIEW.md`.
 - **No third-party writers in the trust path.** No other App holds
   `administration` (it can edit the ruleset) or bypass, and the required
   checks come from identities the factory runs. Build and artifact
@@ -1043,6 +1078,12 @@ previews).
 
 Until the reviewer App exists, local review agents approve as `jomcgi` and
 the connector enqueues (bootstrap).
+
+## Direction
+
+| Work | Next step | Tracking |
+| --- | --- | --- |
+| Planner input and proposal contract | Joe merges the rule through the human gate before HOME-40 adds the mechanism; HOME-51 supplies the notify sink. | [#7935](https://github.com/jomcgi-org/homelab/issues/7935), HOME-39 |
 
 ## Delivery plan
 
