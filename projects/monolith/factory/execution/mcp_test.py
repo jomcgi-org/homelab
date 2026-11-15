@@ -2613,7 +2613,7 @@ def test_dev_broker_login_start_is_separate_and_allowlists_response(
 
 
 @pytest.mark.parametrize(
-    "state", ["none", "pending", "persistence_pending", "granted", "failed"]
+    "state", ["none", "pending", "persistence_pending", "granted", "failed", "blocked"]
 )
 def test_dev_broker_status_never_returns_provider_error_detail(monkeypatch, state):
     async def dev_request(method, path, *, timeout):

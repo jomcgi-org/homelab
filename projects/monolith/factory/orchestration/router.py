@@ -75,6 +75,7 @@ class StartStatusResponse(BaseModel):
     refusal_code: str | None = None
     message: str | None = None
     login_required: bool | None = None
+    refresh_blocked: bool | None = None
     verification_url: str | None = None
     user_code: str | None = None
     grant: str | None = None
@@ -663,6 +664,7 @@ def _start_status_response(snapshot: dict) -> StartStatusResponse:
         refusal_code=payload.get("refusal_code"),
         message=payload.get("message"),
         login_required=True if payload.get("login_required") else None,
+        refresh_blocked=True if payload.get("refresh_blocked") else None,
         verification_url=payload.get("verification_url"),
         user_code=payload.get("user_code"),
         grant=payload.get("grant"),
@@ -797,9 +799,10 @@ async def _classify_and_resolve_body(context: _StartContext, progress: dict) -> 
     if result.get("session_id") is None:
         raise RuntimeError(result.get("error", "session unavailable"))
     payload = {}
-    if result.get("login_required"):
+    if result.get("login_required") or result.get("refresh_blocked"):
         payload = {
-            "login_required": True,
+            "login_required": bool(result.get("login_required")),
+            "refresh_blocked": bool(result.get("refresh_blocked")),
             "verification_url": result.get("verification_url"),
             "user_code": result.get("user_code"),
             "grant": result.get("grant"),

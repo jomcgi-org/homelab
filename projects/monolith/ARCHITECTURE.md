@@ -110,6 +110,15 @@ The private page at `/factory/execution/codex-login` defaults to production;
 and **Check connection** reads its status. The execution console retains its
 production default.
 
+A broker status of `blocked` means a consumed refresh token is awaiting a
+replacement or operator recovery. Session preflight retains the pending turn
+under the existing `awaiting_login` credential wait, reports `refresh_blocked`
+instead of `login_required`, and starts no device flow. Its watcher continues
+through this state without a device-flow deadline and resumes the turn once
+the broker reports `granted`. A recovered stored grant takes precedence over
+an already pending device flow. The login page offers both a status check and
+an explicit device login if the replacement was lost, in production and dev.
+
 Routine-job reconciliation uses the narrow existing contracts in `factory.api`.
 The domain boundary test checks factory internals
 and requires its dependencies on other domains to pass through their APIs.

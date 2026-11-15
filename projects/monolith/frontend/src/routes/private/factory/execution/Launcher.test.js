@@ -136,7 +136,12 @@ describe("launcher submit path", () => {
   test("the page refreshes paused sessions instead of throwing login responses", () => {
     const pageSource = pageSurface();
 
-    expect(pageSource).toContain("if (body.login_required) {");
+    expect(pageSource).toContain(
+      "if (body.login_required || body.refresh_blocked) {",
+    );
+    expect(pageSource).toContain(
+      "if (result.login_required || result.refresh_blocked) {",
+    );
     expect(pageSource).toContain("await loadSessions();");
     expect(pageSource).toContain(
       "errorMessage = body.message || P.labels.codexLoginRequired;",

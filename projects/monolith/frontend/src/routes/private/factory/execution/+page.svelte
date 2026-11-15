@@ -998,7 +998,7 @@
       },
     );
     const body = await response.json();
-    if (body.login_required) {
+    if (body.login_required || body.refresh_blocked) {
       codexLoginHint = {
         sessionId: session_id,
         verificationUrl: body.verification_url ?? null,
@@ -1070,7 +1070,7 @@
     }
     if (result.kind === "session" && result.session_id) {
       pendingStart = null;
-      if (result.login_required) {
+      if (result.login_required || result.refresh_blocked) {
         codexLoginHint = {
           sessionId: result.session_id,
           verificationUrl: result.verification_url ?? null,
@@ -1080,7 +1080,7 @@
         await loadSessions();
       }
       selectSession(result.session_id);
-      if (result.login_required) {
+      if (result.login_required || result.refresh_blocked) {
         errorMessage = result.login_message || P.labels.codexLoginRequired;
       }
       return;

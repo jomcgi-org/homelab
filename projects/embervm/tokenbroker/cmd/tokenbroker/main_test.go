@@ -560,7 +560,13 @@ func TestConsumedRefreshTokenExposesRecoverableBlock(t *testing.T) {
 		Name: "codex-cluster", ProviderName: "test", LastRefresh: now.Add(-time.Hour),
 		TokenBundle: store.TokenBundle{AccessToken: "expired", RefreshToken: "consumed", ExpiresAt: now.Add(-time.Minute)},
 	}}}
-	adapter := &fakeAdapter{refreshErr: provider.ErrRefreshTokenReused}
+	release := make(chan struct{})
+	defer close(release)
+	adapter := &fakeAdapter{
+		refreshErr: provider.ErrRefreshTokenReused,
+		deviceCode: provider.DeviceCodeResponse{VerificationURL: "https://auth.example/device", UserCode: "ABCD-EFGH", ExpiresIn: 900},
+		pollWait:   release,
+	}
 	s := newTestServer(st, adapter)
 	response := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/refresh")
 	body := decodeBody(t, response)
@@ -580,10 +586,24 @@ func TestConsumedRefreshTokenExposesRecoverableBlock(t *testing.T) {
 	if status["state"] != "blocked" || status["detail"] != "refresh token consumed; await a stored replacement or a new device login" {
 		t.Fatal("login status did not expose operator recovery options")
 	}
+	// An operator or an older preflight may already have started a flow.
+	// Its pending approval must not hide a later durable replacement.
+	response = requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
+	if response.Code != http.StatusOK {
+		t.Fatalf("operator recovery start = %d", response.Code)
+	}
+	status = decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+	if status["state"] != "pending" {
+		t.Fatal("operator-started flow was not reported pending")
+	}
 	g, _ := st.LoadGrant("codex-cluster")
 	g.LastRefresh = now
 	g.TokenBundle.RefreshToken = "replacement"
 	_ = st.SaveGrant(g)
+	status = decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+	if status["state"] != "granted" || adapter.refreshCalls.Load() != 2 {
+		t.Fatal("pending approval hid the durable replacement from waiting sessions")
+	}
 	adapter.refreshErr = nil
 	response = requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
 	if response.Code != http.StatusOK || adapter.refreshCalls.Load() != 3 || s.broker.NeedsLogin("codex-cluster") || s.broker.RefreshBlocked("codex-cluster") {

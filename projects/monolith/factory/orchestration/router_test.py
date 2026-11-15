@@ -391,18 +391,26 @@ def test_planned_resubmission_reuses_task_id(monkeypatch, start_engine):
         assert row.task_text == "fix the edited wording"
 
 
-def test_one_shot_resolves_session_and_login_payload(monkeypatch, start_engine):
+@pytest.mark.parametrize("blocked", [False, True])
+def test_one_shot_resolves_session_and_credential_wait_payload(
+    monkeypatch, start_engine, blocked
+):
     async def classify(_task):
         return "one_shot", 1, "success", None
 
     async def start_session(_triggered_by, _task_id, _body):
         return {
             "session_id": 42,
-            "login_required": True,
-            "verification_url": "https://example.test/device",
-            "user_code": "CODE-123",
+            "login_required": not blocked,
+            "refresh_blocked": blocked,
+            "verification_url": None if blocked else "https://example.test/device",
+            "user_code": None if blocked else "CODE-123",
             "grant": "codex-cluster",
-            "message": "Approve the Codex login in your browser.",
+            "message": (
+                "Wait for refreshed credentials."
+                if blocked
+                else "Approve the Codex login in your browser."
+            ),
         }
 
     monkeypatch.setattr(
@@ -419,8 +427,11 @@ def test_one_shot_resolves_session_and_login_payload(monkeypatch, start_engine):
     status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
     assert status["kind"] == "session"
     assert status["session_id"] == 42
-    assert status["login_required"] is True
-    assert status["user_code"] == "CODE-123"
+    assert bool(status["login_required"]) is not blocked
+    assert bool(status["refresh_blocked"]) is blocked
+    assert status["user_code"] == (None if blocked else "CODE-123")
+    if blocked:
+        assert status["login_message"] == "Wait for refreshed credentials."
 
 
 def test_classifier_refusal_never_starts_session(monkeypatch, start_engine):

@@ -1337,7 +1337,9 @@ class ChatBot(discord.Client):
                 effective_repo or None,
                 model=model,
             )
-            if isinstance(start_result, dict) and start_result.get("login_required"):
+            if isinstance(start_result, dict) and (
+                start_result.get("login_required") or start_result.get("refresh_blocked")
+            ):
                 await thread.send(_format_codex_login_message(start_result))
                 return AgentFlowOutcome(thread=thread)
             # ADR 036: the orchestrator wrote its telemetry row BEFORE this
@@ -1603,7 +1605,7 @@ class ChatBot(discord.Client):
             # Lost a race with session teardown; let normal handling take it.
             return False
 
-        if result.get("login_required"):
+        if result.get("login_required") or result.get("refresh_blocked"):
             await message.channel.send(_format_codex_login_message(result))
             await asyncio.to_thread(self._complete_lock, msg_id)
             return True

@@ -780,23 +780,30 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 	state.mu.RLock()
 	stateValue, detail := state.state, state.detail
 	state.mu.RUnlock()
+	needsLogin := s.broker.NeedsLogin(name)
+	refreshBlocked := s.broker.RefreshBlocked(name)
+	// An overlapping refresher can restore the grant while a device flow
+	// is pending or has failed. Report usable credentials first so sessions
+	// waiting for recovery do not depend on completing that unrelated flow.
+	if !needsLogin && !refreshBlocked {
+		grant, err := s.store.LoadGrant(name)
+		if err != nil {
+			s.logger.Error("tokenbroker login status grant load failed", "grant", name, "err", err)
+		} else if grant.TokenBundle.RefreshToken != "" {
+			writeJSON(w, http.StatusOK, map[string]string{"state": "granted", "detail": "stored grant present"})
+			return
+		}
+	}
 	if stateValue == "pending" || stateValue == "persistence_pending" {
 		writeJSON(w, http.StatusOK, map[string]string{"state": stateValue, "detail": detail})
 		return
 	}
-	if s.broker.NeedsLogin(name) {
+	if needsLogin {
 		writeJSON(w, http.StatusOK, map[string]string{"state": "none", "detail": "refresh failed, device login required"})
 		return
 	}
-	if s.broker.RefreshBlocked(name) {
+	if refreshBlocked {
 		writeJSON(w, http.StatusOK, map[string]string{"state": "blocked", "detail": "refresh token consumed; await a stored replacement or a new device login"})
-		return
-	}
-	grant, err := s.store.LoadGrant(name)
-	if err != nil {
-		s.logger.Error("tokenbroker login status grant load failed", "grant", name, "err", err)
-	} else if grant.TokenBundle.RefreshToken != "" {
-		writeJSON(w, http.StatusOK, map[string]string{"state": "granted", "detail": "stored grant present"})
 		return
 	}
 	if stateValue == "failed" {
