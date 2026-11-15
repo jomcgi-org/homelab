@@ -17,6 +17,18 @@ import (
 // conversation comments.
 const DefaultCommentsPath = "/github/reviewer-comments"
 
+// The broker lists BrokerCommentPageSize comments a page, so a page,
+// however escaped, stays under maxBrokerCommentPageBytes: 20 bodies of
+// 65536 characters at 6 bytes each is 7.5 MiB. Both match
+// projects/factory/broker/github (CommentPageSize, MaxCommentPageBytes).
+const (
+	BrokerCommentPageSize     = 20
+	maxBrokerCommentPageBytes = 8 << 20
+	// maxBrokerCommentPages keeps the listing at MaxCommentPages pages of
+	// MaxListed comments: 1,000.
+	maxBrokerCommentPages = MaxCommentPages * MaxListed / BrokerCommentPageSize
+)
+
 // BrokerComments lists, creates and edits the reviewer's PR conversation
 // comments through the broker. GitHub needs pull_requests write for a PR
 // comment, which could approve, so the comment token stays in the broker
@@ -41,10 +53,10 @@ func (c brokerComment) comment() Comment {
 }
 
 // IssueComments lists a PR's conversation comments, oldest first, page by
-// page. complete is false when MaxCommentPages pages were read and GitHub
-// named a next page.
+// page. complete is false when maxBrokerCommentPages pages were read and
+// GitHub named a next page.
 func (b *BrokerComments) IssueComments(ctx context.Context, repo string, number int) (comments []Comment, complete bool, err error) {
-	for page := 1; page <= MaxCommentPages; page++ {
+	for page := 1; page <= maxBrokerCommentPages; page++ {
 		var out struct {
 			Comments []brokerComment `json:"comments"`
 			Next     bool            `json:"next"`
@@ -120,9 +132,12 @@ func (b *BrokerComments) do(ctx context.Context, method, query string, in, out a
 		return fmt.Errorf("broker: %w", err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBrokerCommentPageBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(data) > maxBrokerCommentPageBytes {
+		return fmt.Errorf("broker: %s %s: answer over %d bytes", method, path, maxBrokerCommentPageBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var e struct {

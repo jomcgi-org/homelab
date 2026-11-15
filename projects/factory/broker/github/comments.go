@@ -18,8 +18,26 @@ import (
 // GitHub takes 65536 characters.
 const MaxCommentBody = 65536
 
-// maxCommentPage bounds the page a listing may ask for: 100 pages of 100.
-const maxCommentPage = 100
+// JSON escaping turns one byte into at most six (\u0026), so a request or a
+// page is bounded by its decoded size times jsonExpansion.
+const jsonExpansion = 6
+
+// maxCommentRequest bounds a create or update request: the largest body,
+// escaped, plus the other fields.
+const maxCommentRequest = jsonExpansion*MaxCommentBody + 4096
+
+// CommentPageSize is how many comments one listing page carries. At 20,
+// the largest page fits MaxCommentPageBytes however GitHub or the proxy
+// escapes it: 20 bodies of 65536 characters at 6 bytes each is 7.5 MiB,
+// plus GitHub's per-comment fields.
+const CommentPageSize = 20
+
+// MaxCommentPageBytes bounds one listing page read from GitHub, and the
+// page the proxy returns.
+const MaxCommentPageBytes = 8 << 20
+
+// maxCommentPage bounds the page a listing may ask for: 10,000 comments.
+const maxCommentPage = 10000 / CommentPageSize
 
 // CommentProxy writes the reviewer's PR conversation comments with the
 // reviewer App's comment token, which GitHub requires to hold
@@ -76,7 +94,7 @@ func (p *CommentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // list serves GET ?repository=owner/name&number=N&page=P: one page of up to
-// 100 comments, oldest first, and whether another page follows.
+// CommentPageSize comments, oldest first, and whether another page follows.
 func (p *CommentProxy) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	repo := q.Get("repository")
@@ -87,7 +105,7 @@ func (p *CommentProxy) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out []ghComment
-	v := url.Values{"per_page": {"100"}, "page": {strconv.Itoa(page)}}
+	v := url.Values{"per_page": {strconv.Itoa(CommentPageSize)}, "page": {strconv.Itoa(page)}}
 	next, err := p.call(r.Context(), repo, http.MethodGet, "/issues/"+strconv.Itoa(number)+"/comments?"+v.Encode(), nil, &out)
 	if err != nil {
 		p.failCall(w, "list", repo, err)
@@ -175,7 +193,7 @@ func validBody(b string) bool {
 }
 
 func (p *CommentProxy) decode(w http.ResponseWriter, r *http.Request, op string, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, MaxCommentBody+4096))
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxCommentRequest))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		p.fail(w, op, "", http.StatusBadRequest, "bad_request", err)
@@ -216,9 +234,12 @@ func (p *CommentProxy) call(ctx context.Context, repo, method, path string, body
 		return false, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxCommentPageBytes+1))
 	if err != nil {
 		return false, err
+	}
+	if len(data) > MaxCommentPageBytes {
+		return false, fmt.Errorf("GitHub %s %s: answer over %d bytes", method, strings.SplitN(path, "?", 2)[0], MaxCommentPageBytes)
 	}
 	switch {
 	case resp.StatusCode == http.StatusNotFound:

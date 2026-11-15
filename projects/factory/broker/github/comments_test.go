@@ -174,7 +174,7 @@ func TestCommentProxyListsAPage(t *testing.T) {
 	for _, target := range []string{
 		"/github/reviewer-comments?repository=example-org/homelab&number=0&page=1",
 		"/github/reviewer-comments?repository=example-org/homelab&number=7&page=0",
-		"/github/reviewer-comments?repository=example-org/homelab&number=7&page=101",
+		"/github/reviewer-comments?repository=example-org/homelab&number=7&page=501",
 		"/github/reviewer-comments?repository=example-org/homelab&number=x&page=1",
 	} {
 		if rec := doProxy(p, http.MethodGet, target, ""); rec.Code != http.StatusBadRequest {
@@ -253,5 +253,41 @@ func TestCommentProxyServesNothingElse(t *testing.T) {
 	}
 	if len(f.writes()) != 0 {
 		t.Fatalf("GitHub writes = %v", f.writes())
+	}
+}
+
+// Escaping can make a valid body six times longer on the wire: a create or
+// edit near the size limit, and a full page of the largest comments, still
+// go through.
+func TestCommentProxyHandlesEscapedNearLimitComments(t *testing.T) {
+	_, f, p := newCommentHarness(t)
+	big := strings.Repeat("&", 60000)
+	req, _ := json.Marshal(map[string]any{"repository": "example-org/homelab", "number": 7, "body": big})
+	if len(req) < 6*60000 {
+		t.Fatalf("request is %d bytes; the test needs an escaped body", len(req))
+	}
+	if rec := doProxy(p, http.MethodPost, "/github/reviewer-comments", string(req)); rec.Code != http.StatusCreated {
+		t.Fatalf("escaped create = %d %.200s", rec.Code, rec.Body)
+	}
+	req, _ = json.Marshal(map[string]any{"repository": "example-org/homelab", "id": 100, "body": big})
+	if rec := doProxy(p, http.MethodPatch, "/github/reviewer-comments", string(req)); rec.Code != http.StatusOK {
+		t.Fatalf("escaped update = %d %.200s", rec.Code, rec.Body)
+	}
+	f.mu.Lock()
+	for i := range CommentPageSize {
+		f.comments[int64(300+i)] = ghCommentFixture{number: 8, pr: true, login: "someone", body: strings.Repeat("&", MaxCommentBody)}
+	}
+	f.next = 300 + CommentPageSize
+	f.mu.Unlock()
+	rec := doProxy(p, http.MethodGet, "/github/reviewer-comments?repository=example-org/homelab&number=8&page=1", "")
+	if rec.Code != http.StatusOK || rec.Body.Len() > MaxCommentPageBytes {
+		t.Fatalf("full page = %d, %d bytes", rec.Code, rec.Body.Len())
+	}
+	var out struct {
+		Comments []ProxiedComment `json:"comments"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out.Comments) != CommentPageSize ||
+		len(out.Comments[0].Body) != MaxCommentBody {
+		t.Fatalf("full page decoded %d comments, %v", len(out.Comments), err)
 	}
 }
