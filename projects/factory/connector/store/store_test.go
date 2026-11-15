@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -177,4 +178,128 @@ func TestRecordingAMessageIDTwiceReturnsTheAttempt(t *testing.T) {
 	if n, err := st.CountSends(ctx, 1); err != nil || n != 1 {
 		t.Fatalf("attempts = %d, %v", n, err)
 	}
+}
+
+func terminalFixture(t *testing.T) (*recoveryFixture, *store.Run) {
+	t.Helper()
+	f := newRecoveryFixture(t)
+	f.must(f.st.SetRunState(f.ctx, f.st.DB, 1, store.RunDispatched, ""))
+	f.must(f.st.SetSession(f.ctx, f.st.DB, f.work.ID, "session"))
+	f.must(f.st.MarkAccepted(f.ctx, f.st.DB, f.target.ID, "session", "task"))
+	var err error
+	f.work, err = f.st.GetWorkItem(f.ctx, f.work.ID)
+	f.must(err)
+	f.target, err = f.st.GetAttempt(f.ctx, f.target.ID)
+	f.must(err)
+	r, err := f.st.GetRun(f.ctx, 1)
+	f.must(err)
+	return f, r
+}
+
+func TestTaskOutcomeRejectsChangedGenerations(t *testing.T) {
+	for name, query := range map[string]string{
+		"closed run":       `UPDATE run SET state = 'closed'`,
+		"finishing run":    `UPDATE run SET state = 'finishing'`,
+		"canceling run":    `UPDATE run SET state = 'canceling'`,
+		"redelivery":       `UPDATE run SET attempt = attempt + 1`,
+		"reassignment":     `UPDATE work_item SET epoch = epoch + 1`,
+		"session":          `UPDATE work_item SET session_id = 'new-session', session_generation = session_generation + 1`,
+		"review round":     `UPDATE work_item SET review_rounds = review_rounds + 1`,
+		"retry":            `UPDATE work_item SET engineering_retries = engineering_retries + 1`,
+		"completed turn":   `UPDATE work_item SET turn_attempt_id = (SELECT id FROM delivery_attempt LIMIT 1)`,
+		"stop":             `UPDATE work_item SET state = 'stopped'`,
+		"block":            `UPDATE work_item SET state = 'blocked'`,
+		"finished attempt": `UPDATE delivery_attempt SET state = 'completed'`,
+		"different task":   `UPDATE delivery_attempt SET task_id = 'new-task'`,
+		"cancellation": `INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
+			SELECT id, run_id, 'run_canceled', 'pending' FROM delivery_attempt`,
+		"newer attempt": `INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch,
+			decision_id, kind, message_id, kagent_namespace, kagent_agent, state, writer_epoch)
+			SELECT run_id, seq + 1, run_attempt, work_item_epoch, 'retry', kind, 'new-message',
+				kagent_namespace, kagent_agent, 'sending', writer_epoch FROM delivery_attempt`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, r := terminalFixture(t)
+			_, err := f.st.DB.Exec(query)
+			f.must(err)
+			err = f.st.AttemptTx(f.ctx, f.w, r, f.work, f.target, func(*sql.Tx) error {
+				t.Fatal("stale task outcome was admitted")
+				return nil
+			})
+			if !errors.Is(err, store.ErrAttemptChanged) {
+				t.Fatalf("stale outcome: %v", err)
+			}
+		})
+	}
+}
+
+func TestTaskOutcomeLocksGenerationsThroughCommit(t *testing.T) {
+	f, r := terminalFixture(t)
+	_, err := f.st.DB.Exec(`INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+		SELECT 2, agent_key, work_item_id, trigger, prompt, system_prompt, 1, 'waiting' FROM run WHERE id = 1`)
+	f.must(err)
+	f.must(f.st.AttemptTx(f.ctx, f.w, r, f.work, f.target, func(tx *sql.Tx) error {
+		for _, query := range []string{
+			`UPDATE writer SET epoch = epoch + 1`,
+			`UPDATE work_item SET state = 'stopped'`,
+			`UPDATE run SET attempt = attempt + 1`,
+			`UPDATE delivery_attempt SET state = 'canceled'`,
+			`INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+				SELECT 3, agent_key, work_item_id, trigger, prompt, system_prompt, 1, 'waiting' FROM run WHERE id = 1`,
+			`INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch,
+				decision_id, kind, message_id, kagent_namespace, kagent_agent, state, writer_epoch)
+				SELECT 2, 1, 1, work_item_epoch, 'next-run', kind, 'new-message',
+					kagent_namespace, kagent_agent, 'sending', writer_epoch FROM delivery_attempt`,
+			`INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
+				SELECT id, run_id, 'run_canceled', 'pending' FROM delivery_attempt`,
+		} {
+			ctx, cancel := context.WithTimeout(f.ctx, 100*time.Millisecond)
+			_, err := f.st.DB.ExecContext(ctx, query)
+			blocked := ctx.Err() != nil
+			cancel()
+			if err == nil || !blocked {
+				t.Fatalf("generation write did not wait for the terminal transaction: %s: %v", query, err)
+			}
+		}
+		if err := f.st.FinishAttempt(f.ctx, tx, f.target.ID, store.AttemptCompleted, "", ""); err != nil {
+			return err
+		}
+		if err := f.st.FinishTurn(f.ctx, tx, f.work.ID, f.target.ID); err != nil {
+			return err
+		}
+		return f.st.SetRunState(f.ctx, tx, r.ID, store.RunClosed, "completed")
+	}))
+	work, err := f.st.GetWorkItem(f.ctx, f.work.ID)
+	f.must(err)
+	if work.State != store.WorkReview || work.TurnAttemptID != f.target.ID {
+		t.Fatalf("current task outcome did not commit: %+v", work)
+	}
+}
+
+func TestSuccessorCanFinishInheritedTaskAfterRedelivery(t *testing.T) {
+	f, r := terminalFixture(t)
+	f.w.Release()
+	var next *store.Writer
+	var err error
+	for deadline := time.Now().Add(5 * time.Second); next == nil && time.Now().Before(deadline); {
+		next, err = f.st.TryAcquireWriter(f.ctx, "successor")
+		f.must(err)
+		if next == nil {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if next == nil || next.Epoch <= f.target.WriterEpoch {
+		t.Fatal("successor did not acquire a new epoch")
+	}
+	defer next.Release()
+	r, _, err = f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: r.ID, AgentKey: r.AgentKey, Attempt: r.Attempt + 1})
+	f.must(err)
+	// Delivery metadata retains the original sender and transport attempt;
+	// the current run snapshot and executing writer authorize this completion.
+	f.must(f.st.AttemptTx(f.ctx, next, r, f.work, f.target, func(tx *sql.Tx) error {
+		if err := f.st.FinishAttempt(f.ctx, tx, f.target.ID, store.AttemptCompleted, "", ""); err != nil {
+			return err
+		}
+		return f.st.FinishTurn(f.ctx, tx, f.work.ID, f.target.ID)
+	}))
 }

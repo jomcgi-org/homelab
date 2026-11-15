@@ -725,6 +725,59 @@ func (s *Store) GetAttempt(ctx context.Context, id int64) (*Attempt, error) {
 	return scanAttempt(s.DB.QueryRowContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt WHERE id = $1`, id))
 }
 
+// ErrAttemptChanged means an observation no longer describes the current turn.
+var ErrAttemptChanged = errors.New("store: attempt or work generation changed")
+
+// AttemptTx applies a task outcome under the executing writer's authority.
+// Lock the work item, its runs and the attempt in send-admission order, then
+// validate the snapshots used to read the task. Locking all runs also fences
+// new attempts on another existing run through their foreign keys.
+// Keep those locks through commit:
+// a separate check would let a stop, redelivery or newer turn race the writes.
+// The attempt's WriterEpoch is its original sender, not the executing writer;
+// a successor must be able to finish an inherited task.
+func (s *Store) AttemptTx(ctx context.Context, writer *Writer, r *Run, wi *WorkItem, a *Attempt, fn func(*sql.Tx) error) error {
+	return writer.Tx(ctx, func(tx *sql.Tx) error {
+		for _, lock := range []struct {
+			query string
+			id    int64
+		}{
+			{`SELECT id FROM work_item WHERE id = $1 FOR UPDATE`, wi.ID},
+			{`SELECT id FROM run WHERE work_item_id = $1 ORDER BY id FOR UPDATE`, wi.ID},
+			{`SELECT id FROM delivery_attempt WHERE id = $1 FOR UPDATE`, a.ID},
+		} {
+			if _, err := tx.ExecContext(ctx, lock.query, lock.id); err != nil {
+				return err
+			}
+		}
+		var current bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM delivery_attempt a
+			JOIN run r ON r.id = a.run_id JOIN work_item w ON w.id = r.work_item_id
+			WHERE a.id = $1 AND r.id = $2 AND w.id = $3
+				AND r.attempt = $4 AND r.state = $5 AND r.state IN ('dispatched', 'waiting')
+				AND w.epoch = $6 AND a.work_item_epoch = w.epoch
+				AND w.session_generation = $7 AND coalesce(w.session_id, '') = $8
+				AND w.state = $9 AND w.state NOT IN ('stopped', 'blocked')
+				AND w.review_rounds = $10 AND w.engineering_retries = $11
+				AND coalesce(w.turn_attempt_id, 0) = $12
+				AND a.state = $13 AND coalesce(a.task_id, '') = $14 AND coalesce(a.context_id, '') = $15
+				AND a.id = (SELECT max(other.id) FROM delivery_attempt other
+					JOIN run other_run ON other_run.id = other.run_id WHERE other_run.work_item_id = w.id)
+				AND NOT EXISTS (SELECT 1 FROM cancellation c JOIN run cr ON cr.id = c.run_id
+					WHERE cr.work_item_id = w.id AND c.state = 'pending'))`,
+			a.ID, r.ID, wi.ID, r.Attempt, r.State, wi.Epoch, wi.SessionGeneration, wi.SessionID,
+			wi.State, wi.ReviewRounds, wi.EngineeringRetries, wi.TurnAttemptID, a.State, a.TaskID, a.ContextID).Scan(&current)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return ErrAttemptChanged
+		}
+		return fn(tx)
+	})
+}
+
 // OpenAttemptForWork returns the open attempt of any run on a work item, or nil.
 func (s *Store) OpenAttemptForWork(ctx context.Context, workID int64) (*Attempt, error) {
 	a, err := scanAttempt(s.DB.QueryRowContext(ctx, `
