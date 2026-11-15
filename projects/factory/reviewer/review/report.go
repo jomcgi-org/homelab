@@ -432,6 +432,10 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*)
 type State struct {
 	Blocking []Finding `json:"blocking"`
 	Gate     *Gate     `json:"gate,omitempty"`
+	// IssueDigest binds the report to the external evidence it reviewed.
+	// IssuesPending revokes that report until a fresh review can run.
+	IssueDigest   string `json:"issueDigest,omitempty"`
+	IssuesPending bool   `json:"issuesPending,omitempty"`
 }
 
 // Previous is what the next head's review accounts for: the blocking
@@ -727,7 +731,7 @@ func encodeState(st State) string {
 			}
 			return out
 		}
-		small := State{Blocking: shrink(st.Blocking)}
+		small := State{Blocking: shrink(st.Blocking), IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.
 			gate.Paths, gate.Findings = nil, shrink(g.Findings)

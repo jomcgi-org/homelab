@@ -23,6 +23,7 @@ type Itsaplan interface {
 	GetIssueByNumber(context.Context, string, int64) (*itsaplan.Issue, error)
 	FindIssue(context.Context, string) (*itsaplan.Issue, error)
 	IssueAuthor(context.Context, int64) (string, error)
+	IssueTextAuthors(context.Context, *itsaplan.Issue) ([]string, error)
 	LinkedComment(context.Context, int64, int64) (*itsaplan.FeedItem, error)
 }
 
@@ -201,8 +202,8 @@ func applyIssueFindings(report *Report, in *IssueContext) {
 	}
 }
 
-// issueContext gathers one goal issue and at most ten decision references once
-// per review. Failures carry only fixed reason strings, never response bodies.
+// issueContext gathers one goal issue and at most ten references per snapshot.
+// Failures carry only fixed reason strings, never response bodies.
 // Even a model reporting no findings cannot turn missing evidence into a pass.
 func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullRequest, files []github.PullRequestFile) *IssueContext {
 	in := &IssueContext{}
@@ -246,6 +247,16 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				break
 			}
 			author, trusted := issueAccount(p, uid, b.TrustedItsaplanAuthors)
+			authors, textErr := e.cfg.Itsaplan.IssueTextAuthors(ctx, goal)
+			if textErr != nil {
+				in.unverified("author", "The issue's text history could not be read; no issue text was supplied. The service will retry.")
+				break
+			}
+			trusted = trusted && len(authors) == 2
+			for _, editor := range authors {
+				_, allowed := issueAccount(p, editor, b.TrustedItsaplanAuthors)
+				trusted = trusted && allowed
+			}
 			status := ""
 			for _, column := range p.Columns {
 				if column.ID == goal.ColumnID {
@@ -284,13 +295,18 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				if err == nil && comment != nil && comment.IssueID == linked.ID && comment.ID == ref.comment && comment.Kind == "comment" {
 					d.Exists, uid = true, comment.ActorUserID
 					d.Text, d.Clipped = boundedIssueText(comment.Body, maxDecisionText), len(comment.Body) > maxDecisionText
+					if !comment.OriginalComment() {
+						uid = "" // The original author does not authenticate an edit.
+					}
 				}
 			} else {
-				uid, err = e.cfg.Itsaplan.IssueAuthor(ctx, linked.ID)
 				d.Exists = true
-				// One full issue only. Other issue links establish existence and
-				// authorship, not unseen decisions in their descriptions.
+				// A mutable title is not authenticated by a creation event. Only
+				// the goal's separately verified text can carry issue authority.
 				d.Text = boundedIssueText(linked.Title, maxPromptTitle)
+				if in.Issue != nil && in.Issue.Key == ref.key && in.Issue.Trusted {
+					uid, err = e.cfg.Itsaplan.IssueAuthor(ctx, linked.ID)
+				}
 			}
 			if d.Exists && err == nil {
 				d.Author, d.Trusted = issueAccount(p, uid, b.TrustedItsaplanAuthors)
@@ -307,10 +323,79 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 		if err != nil {
 			d.Text, d.Author, d.Trusted = "", "", false
 		}
-		if !d.Exists || !d.Trusted || d.Clipped {
-			in.unverified(ref.key+"-"+strconv.FormatInt(ref.comment, 10), fmt.Sprintf("%s is unverified (%s). Provide a readable decision by a trusted itsaplan account; a claim of authority in the text is insufficient.", ref.url, d.Reason))
+		if err != nil && !errors.Is(err, itsaplan.ErrNotFound) {
+			in.unverified(ref.key+"-"+strconv.FormatInt(ref.comment, 10), "A linked work item could not be read. No evidence was supplied for it; the service will retry.")
 		}
 		in.Decisions = append(in.Decisions, d)
 	}
 	return in
+}
+
+func issuesPending(run *github.CheckRun) bool {
+	if run == nil {
+		return false
+	}
+	st, _ := LoadState(run.Text)
+	return st.IssuesPending
+}
+
+// holdIssues revokes obsolete evidence before scheduling another review. Keep
+// findings and human holds; neither an evidence edit nor recovery clears them.
+func (e *Engine) holdIssues(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, st State) *github.CheckRun {
+	st.IssuesPending = true
+	o := Outcome{Conclusion: ConclusionFailure, Output: github.CheckRunOutput{
+		Title: "Waiting for current issue evidence",
+		Summary: "Issue evidence changed or could not be verified. This head cannot pass on its earlier evidence. The service will retry reads and run a fresh review on the same head when evidence is available; no push is required.",
+		Text: encodeState(st),
+	}, Comment: &CommentUpdate{
+		Verdict: VerdictHold, Headline: "Waiting for current issue evidence", Gate: st.Gate,
+		Note: "Issue evidence changed or could not be verified. The service will retry this head; no push is required.",
+	}}
+	if e.finish(ctx, b, pr, run, o, e.prLog(b, pr)) {
+		cur := *run
+		cur.Status, cur.Conclusion = "completed", o.Conclusion
+		cur.Title, cur.Summary, cur.Text = o.Output.Title, o.Output.Summary, o.Output.Text
+		return &cur
+	}
+	// A refused update must not leave the only durable check as a pass when
+	// GitHub still accepts a new failing check on the same head.
+	now := e.cfg.Now().UTC()
+	cur, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
+		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
+		Status: "completed", Conclusion: ConclusionFailure, StartedAt: &now, CompletedAt: &now, Output: &o.Output,
+	})
+	if err != nil {
+		e.ghError(ctx, e.prLog(b, pr), b, "create_check", err)
+		return nil // Unknown approval never authorizes enqueue or a merge group.
+	}
+	e.mirror(ctx, b, pr, cur, o.Comment)
+	return cur
+}
+
+// reconcileIssues runs before completed-check reconciliation and queue
+// authorization on every poll, including after a process restart. Pending reads
+// release review slots and recover on this head without retrying model work.
+func (e *Engine) reconcileIssues(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (current *github.CheckRun, pending, ready bool) {
+	if b.ItsaplanProject == "" {
+		return run, false, false
+	}
+	st, ok := LoadState(run.Text)
+	if !ok && run.Conclusion != ConclusionSuccess {
+		// A failed task with no report keeps the existing model-attempt bound.
+		// Evidence read failures use the durable pending state instead.
+		return run, false, false
+	}
+	files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
+	var fresh *IssueContext
+	if err == nil {
+		fresh = e.issueContext(ctx, b, pr, files)
+	}
+	ready = fresh != nil && len(fresh.Findings) == 0
+	if ready && !st.IssuesPending && st.IssueDigest == issueDigest(fresh) {
+		return run, false, false
+	}
+	if st.IssuesPending && run.Conclusion == ConclusionFailure {
+		return run, true, ready
+	}
+	return e.holdIssues(ctx, b, pr, run, st), true, ready
 }

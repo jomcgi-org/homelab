@@ -66,12 +66,62 @@ func (c *Client) FindIssue(ctx context.Context, identifier string) (*Issue, erro
 }
 
 type FeedItem struct {
-	ID          int64  `json:"id"`
-	IssueID     int64  `json:"issueId"`
-	Kind        string `json:"kind"`
-	Action      string `json:"action"`
-	ActorUserID string `json:"actorUserId"`
-	Body        string `json:"body"`
+	ID          int64           `json:"id"`
+	IssueID     int64           `json:"issueId"`
+	Kind        string          `json:"kind"`
+	Action      string          `json:"action"`
+	ActorUserID string          `json:"actorUserId"`
+	Body        string          `json:"body"`
+	EditedAt    json.RawMessage `json:"editedAt"`
+	Payload     struct {
+		To *struct {
+			Value *string `json:"value"`
+		} `json:"to"`
+	} `json:"payload"`
+}
+
+// OriginalComment requires the API's explicit null stamp. An edited comment
+// retains its original author, and the API supplies no authenticated editor.
+func (f *FeedItem) OriginalComment() bool {
+	return string(f.EditedAt) == "null"
+}
+
+// IssueTextAuthors authenticates current text against immutable change-log
+// snapshots, never against the issue's creator. Creation events have no text;
+// absence of a snapshot therefore grants no authority. Read newest first so an
+// older trusted value cannot mask a later untrusted edit of the same field.
+func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, error) {
+	q := url.Values{"filter": {"history"}, "order": {"desc"}, "limit": {"100"}}
+	want := map[string]string{"title": issue.Title, "description": issue.Description}
+	seen := map[string]bool{}
+	authors := map[string]string{}
+	for range 10 {
+		var out feedPage
+		path := "/issues/" + strconv.FormatInt(issue.ID, 10) + "/feed?" + q.Encode()
+		if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
+			return nil, err
+		}
+		for _, item := range out.Items {
+			value, relevant := want[item.Action]
+			if !relevant || seen[item.Action] || item.Kind != "activity" || item.IssueID != issue.ID {
+				continue
+			}
+			seen[item.Action] = true
+			if item.Payload.To != nil && item.Payload.To.Value != nil && *item.Payload.To.Value == value {
+				authors[item.Action] = item.ActorUserID
+			}
+		}
+		if len(seen) == 2 || out.NextCursor == nil {
+			return []string{authors["title"], authors["description"]}, nil
+		}
+		cursor, err := json.Marshal(out.NextCursor)
+		if err != nil {
+			return nil, err
+		}
+		q.Set("cursor", string(cursor))
+	}
+	// The bounded history does not establish the remaining fields' provenance.
+	return []string{authors["title"], authors["description"]}, nil
 }
 
 type feedCursor struct {

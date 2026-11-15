@@ -431,6 +431,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		http.NotFound(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && strings.HasSuffix(path, "/commits"):
+		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/pulls/"), "/commits"))
+		f.get(w, r, []map[string]any{{"sha": f.prs[n].Head, "commit": map[string]string{"message": "No issue reference"}}})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && strings.HasSuffix(path, "/files"):
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/pulls/"), "/files"))
 		pr := f.prs[n]

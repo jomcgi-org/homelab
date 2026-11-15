@@ -29,7 +29,11 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   sanitized so no text closes the block or starts a line of its own.
   itsaplan account IDs and member kind, resolved by the service, establish
   authorship; display names and claims in text never do. Only configured
-  trusted member accounts confer decision authority.
+  trusted member accounts confer decision authority, and only for text
+  whose current provenance is verified. Creation authorship cannot
+  authenticate edited issue text or comments. A passing review stays bound
+  to current issue and decision evidence; edits or failed reads revoke it
+  until a fresh review completes.
   Critical.
 - **Credentials.** Provider and GitHub credentials never enter a sandbox, a
   log or the evidence bucket; they are injected at egress. A minted token

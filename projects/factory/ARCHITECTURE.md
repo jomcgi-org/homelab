@@ -1088,26 +1088,43 @@ previews).
   whether the change is safe and whether it meets the issue's goal and
   criteria. Live acceptance remains with the delivery owner. No resolvable
   issue leaves the PR description as the goal.
-  v1.10.0 exposes authors through the creation activity's user ID, matched
+  v1.10.0 exposes creators through the creation activity's user ID, matched
   to the project's account metadata. Only member accounts in
   `trustedItsaplanAuthors` (default `joe`, `joe-sessions`) carry authority;
-  `factoryadmin`, agent accounts and claims in text do not. Untrusted text
-  is quoted in the same delimited blocks as PR data. These defaults implement
+  `factoryadmin`, agent accounts and claims in text do not. Creation
+  events contain no original text, and issue edits are not restricted to
+  the creator. Current title and description carry authority only when
+  both match their latest immutable text-change snapshots, also written by
+  trusted members. History reads stop at ten pages; absent or mismatched
+  snapshots leave the text untrusted. This includes newly created issues
+  with no text-change snapshots: their goals still guide the review, but
+  authority requires verified text or an unedited trusted decision comment.
+  Comments must have an explicit null `editedAt`: edits retain the original
+  author and do not identify the editor. Workflow status remains untrusted
+  metadata. Untrusted text is quoted in the same delimited blocks as PR data.
+  These defaults implement
   [HOME-58](https://factory-plan.jomcgi.dev/factory/issue/HOME-58); Joe's
   sessions account is provisioned by HOME-59.
-  Per head the service fetches one issue body (16,000 bytes, title 300) and
-  at most ten decision links from both sides of the diff. Linked
-  comments are cut to 4,000 bytes; other issue links use search metadata and
-  creation authorship without importing another description. Bare issue
-  authorship never proves an unseen decision. Comment reads search at most
+  Per evidence snapshot the service fetches one issue body (16,000 bytes,
+  title 300) and at most ten references from both sides of the diff. Linked
+  comments are cut to 4,000 bytes; other issue links use untrusted search
+  metadata without importing another description. Bare issue authorship
+  never proves an unseen decision. Comment reads search at most
   ten feed pages because upstream has no individual comment GET. The whole
-  evidence read has a 30-second deadline. Missing, untrusted, unreadable or
-  clipped decisions and exhausted bounds produce service-owned medium
-  `unverified` findings that model justifications cannot clear. Read errors
-  never supply issue text or a pass. The agent receives no itsaplan key.
-  An in-progress check records the evidence digest. After restart, a task
-  with missing or changed evidence is cancelled and retried within the
-  normal attempt bound; its earlier prompt cannot certify a new issue.
+  evidence read has a 30-second deadline. Reference checks supply existence
+  and provenance, not automatic findings: the agent distinguishes decision
+  claims from ordinary tracking, follow-up and contextual links. A decision
+  claim needs verified quoted evidence or an `unverified` finding. Read
+  errors and exhausted bounds hold the check; no failed read supplies a pass.
+  The agent receives no itsaplan key.
+  Running and completed checks record the evidence digest. The service
+  re-reads evidence before accepting a report and on every completed-check
+  poll before enqueue or merge-group authorization. Changes or read failures
+  revoke the old review, retain its findings and human holds, and schedule a
+  fresh review of the same head once reads succeed. Waiting reads release
+  review slots and retry on the next poll without dispatching model work or
+  requiring a new push. The digest and pending state survive restarts and
+  human-gate reconciliation; a legacy pass without a digest needs review.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
   and narrowed it the same day to what could weaken the gate itself

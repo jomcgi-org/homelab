@@ -414,7 +414,15 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
 		default:
-			cur, held := e.reconcileGate(ctx, b, pr, run)
+			cur, pending, ready := e.reconcileIssues(ctx, b, pr, run)
+			reviews[pr.Number] = cur
+			if pending {
+				if ready && cur != nil {
+					start = append(start, candidate{pr, cur})
+				}
+				continue
+			}
+			cur, held := e.reconcileGate(ctx, b, pr, cur)
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
 			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
@@ -671,7 +679,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 
 	l := e.prLog(b, pr)
 	kind := "reattach"
-	if run == nil || sharedHeadHeld(run) {
+	if run == nil || sharedHeadHeld(run) || issuesPending(run) {
 		kind = "new"
 		now := e.cfg.Now().UTC()
 		st := State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}}
@@ -682,9 +690,12 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			if st.Gate == nil {
 				st.Gate = &Gate{}
 			}
-			st.Gate.SharedHead = true
+			if sharedHeadHeld(run) {
+				st.Gate.SharedHead = true
+				st.Gate.resetApproval(now) // Prior approval belonged to an ambiguous PR context.
+			}
 			st.Gate.observeLabels(gateLabels(b, pr.Labels), now)
-			st.Gate.resetApproval(now) // Prior approval belonged to an ambiguous PR context.
+			st.IssueDigest, st.IssuesPending = "", false
 		}
 		st.Gate, _ = e.recoveryGate(b, pr, st.Gate)
 		st.Gate, _ = e.retainGate(b, pr, st.Gate, false)
@@ -920,6 +931,15 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				return
 			}
 		}
+		if b.ItsaplanProject != "" && len(in.issues.Findings) > 0 {
+			if rec.ID != "" {
+				e.cancelTask(ctx, b, rec.ID, l)
+			}
+			st := in.prior
+			st.Gate = in.gate
+			e.holdIssues(ctx, b, pr, run, st)
+			return // Release the slot; every poll retries without another push.
+		}
 		if rec.ID != "" && b.ItsaplanProject != "" && rec.Issues != issueDigest(in.issues) {
 			// An old task may predate issue-aware review, or its issue may
 			// have changed while the service was down. It cannot certify
@@ -1020,7 +1040,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}}, l)
 				return
 			}
-			currentPR.Labels = prs[listed].Labels
+			currentPR = prs[listed] // Body/branch references can change on the same head.
 			if in.gate == nil {
 				in.gate = &Gate{ObservedLabels: []string{}}
 			}
@@ -1041,6 +1061,19 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					return
 				}
 				continue
+			}
+			if b.ItsaplanProject != "" {
+				fresh := e.issueContext(ctx, b, currentPR, in.files)
+				if len(fresh.Findings) > 0 || issueDigest(fresh) != rec.Issues {
+					// The completed report only covers the old snapshot. Preserve
+					// its findings and human holds, then review the same head anew.
+					st, _ := LoadState(res.o.Output.Text)
+					e.holdIssues(ctx, b, currentPR, run, st)
+					return
+				}
+				st, _ := LoadState(res.o.Output.Text)
+				st.IssueDigest = rec.Issues
+				res.o.Output.Text = encodeState(st)
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
 				e.observe(ctx, b, res.r, res.a, l)
@@ -1485,7 +1518,8 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, approver == ""
 	}
 	l := e.prLog(b, pr)
-	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Gate: gate}, conclusion, title, summary, u, l)
+	st.Gate = gate
+	cur := e.gateCheck(ctx, b, pr, run, st, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")
 	}
