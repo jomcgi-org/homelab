@@ -41,6 +41,29 @@ describe("public app measurement statistics", () => {
     expect(totals.unknownSizeRequests).toBe(1);
   });
 
+  it("rejects worker header bytes misclassified as a small body", () => {
+    const worker = workerTransferSize(
+      {
+        url: "worker.js",
+        type: "Script",
+        complete: true,
+        status: 200,
+        responseBodySize: 586,
+        responseHeadersSize: 0,
+        contentLength: "120658",
+        transferBytes: 586,
+      },
+      new Set(["worker.js"]),
+    );
+    expect(worker.transferBytes).toBeNull();
+    expect(worker.reportedTransferBytes).toBe(586);
+    const totals = responseTransferTotals([worker]);
+    expect(totals.transferBytes).toBeNull();
+    expect(totals.javascriptBytes).toBeNull();
+    expect(totals.completedResponseBytes).toBe(0);
+    expect(totals.unknownSizeRequests).toBe(1);
+  });
+
   it("retains a worker's measured body or explicit empty body", () => {
     const urls = new Set(["worker.js"]);
     for (const item of [
