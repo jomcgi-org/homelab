@@ -5,6 +5,7 @@ import re
 from urllib.parse import urlsplit
 
 from playwright.sync_api import expect
+from rehearsal_report import expect_network_diagnostic, record_console
 
 # One origin serves the app, the anonymous landing and the API (see run.py).
 ORIGIN = "http://friends.localhost:8177"
@@ -31,8 +32,10 @@ def redact_join_artifact(value):
     return value
 
 
-def observe_page(page, report):
+def observe_page(page, report, seat):
     """Record page errors, console errors and failed requests in ``report``."""
+    page.rehearsal_report = report
+    page.rehearsal_seat = seat
     page.on(
         "pageerror",
         lambda error: report["errors"].append(error.stack or str(error)),
@@ -40,7 +43,13 @@ def observe_page(page, report):
     page.on(
         "console",
         lambda message: (
-            report["console_errors"].append(message.text)
+            record_console(
+                report,
+                message.text,
+                message.location,
+                seat,
+                argument_count=len(message.args),
+            )
             if message.type == "error"
             else None
         ),
@@ -52,17 +61,49 @@ def observe_page(page, report):
                 "url": request.url,
                 "method": request.method,
                 "failure": request.failure,
+                "seat": seat,
             }
         ),
     )
+    page.on(
+        "response",
+        lambda response: report["responses"].append(
+            {
+                "seat": seat,
+                "url": response.url,
+                "method": response.request.method,
+                "status": response.status,
+            }
+        ),
+    )
+
+    def completed(request):
+        if not any(
+            path in request.url
+            for path in ("/api/grimoire/", "/grimoire/join", "/api/auth/platform/self")
+        ):
+            return
+        milliseconds = request.timing.get("responseEnd", -1)
+        if milliseconds >= 0:
+            report["requests"].append(
+                {
+                    "seat": seat,
+                    "url": request.url,
+                    "method": request.method,
+                    "seconds": milliseconds / 1000,
+                    "injected": getattr(request, "rehearsal_injected", False),
+                }
+            )
+
+    page.on("requestfinished", completed)
 
 
 def rehearse_join_links(browser, output, report, contexts, use_loopback_requests):
     """Keep mutations and all credentials inside run.py's disposable database."""
     requests = []
 
-    def observe(page):
-        observe_page(page, report)
+    def observe(page, role):
+        observe_page(page, report, role)
         page.on(
             "request",
             lambda request: requests.append(
@@ -72,11 +113,13 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
         return page
 
     def seat(role):
-        context = browser.new_context(viewport={"width": 1280, "height": 844})
+        context = browser.new_context(
+            viewport={"width": report["width"], "height": 844}
+        )
         contexts.append((f"join-{role}", context))
         use_loopback_requests(context)
         context.tracing.start(screenshots=True, snapshots=True, sources=True)
-        page = observe(context.new_page())
+        page = observe(context.new_page(), role)
         if role != "guest":
             page.goto(f"{ORIGIN}/__local/login/{role}")
             expect(
@@ -98,11 +141,15 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
             "Native invitation forms must preserve their same-origin Origin"
         )
 
-    def accept(page):
+    def accept(page, role, expected_status=200):
         """Press Accept on the signed-in screen and return the backend's answer.
 
         The React screen posts with fetch; the backend requires its Origin.
         """
+        if expected_status >= 400:
+            expect_network_diagnostic(
+                report, role, "POST", f"{ACCEPT}/confirm", status=expected_status
+            )
         with page.expect_response(
             lambda response: (
                 response.request.method == "POST"
@@ -223,6 +270,8 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
         return metadata
 
     dm, a, b, guest = (seat(role) for role in ("dm", "a", "b", "guest"))
+    if hasattr(report["checks"], "ready"):
+        report["checks"].ready()
     lobby = api(dm, "get", "/lobby").json()
     assert lobby["invitation_enrollment_enabled"] is False
     dm.get_by_label("Campaign name", exact=True).fill(CAMPAIGN)
@@ -277,7 +326,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     expect(
         b.get_by_text("The invited email differs from your account", exact=True).first
     ).to_be_visible()
-    refused = accept(b)
+    refused = accept(b, "b", 400)
     assert refused.status == 400
     assert refused.json() == {
         "error": "Sign in with the account this invitation was created for."
@@ -293,6 +342,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     a.get_by_role("button", name="Close", exact=True).click()
     expect(a).to_have_url(LOBBY)
     assert not resume_cookies(a)
+    expect_network_diagnostic(report, "a", "GET", f"{ACCEPT}/state", status=400)
     a.go_back()
     expect(a).to_have_url(ACCEPT)
     expect(
@@ -307,10 +357,10 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     )
 
     accept_page(a, link_a, "a@example.test")
-    second_tab = observe(a.context.new_page())
+    second_tab = observe(a.context.new_page(), "a")
     capture(second_tab, link_b, "b@example.test")
     a.bring_to_front()
-    changed = accept(a)
+    changed = accept(a, "a", 400)
     assert changed.status == 400
     assert changed.json() == {
         "error": "Invitation changed. Reopen the original link before continuing."
@@ -332,7 +382,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
 
     accept_page(a, link_a, "a@example.test")
     a.screenshot(path=str(output / "join-review.png"), full_page=True)
-    assert accept(a).status == 200
+    assert accept(a, "a").status == 200
     expect(a).to_have_url(LOBBY)
     expect(campaign_article(a)).to_be_visible()
     assert not resume_cookies(a)
@@ -373,6 +423,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     ).click()
     notice(dm, "Player removed.")
     assert_players([])
+    expect_network_diagnostic(report, "a", "POST", JOIN, status=400)
     open_link(a, link_a)
     expect(a.get_by_role("alert")).to_contain_text(
         "invalid, expired, revoked, or already used"
@@ -396,13 +447,17 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
         has_text="b@example.test"
     ).get_by_role("button", name="Revoke link", exact=True).click()
     notice(dm, "Link revoked.")
-    revoked_accept = accept(b)
+    # A refused confirmation refreshes the invitation state. This second
+    # request independently refuses the now-revoked capability.
+    expect_network_diagnostic(report, "b", "GET", f"{ACCEPT}/state", status=400)
+    revoked_accept = accept(b, "b", 400)
     assert revoked_accept.status == 400
     assert (
         "invalid, expired, revoked, or already used" in revoked_accept.json()["error"]
     )
     notice(b, "invalid, expired, revoked, or already used")
     assert_players([])
+    expect_network_diagnostic(report, "b", "POST", JOIN, status=400)
     open_link(b, link_b)
     expect(b.get_by_role("alert")).to_contain_text(
         "invalid, expired, revoked, or already used"
