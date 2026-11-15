@@ -787,6 +787,14 @@ those Secrets and its Role come from the `factory-db-secrets` Application
 primary fails over in about 20 s although itsaplan holds its connections
 open.
 
+Run `python3 -m pytest -q projects/platform-factory/factory-db/provisioning_test.py`
+to check provisioning. The test runs the initializer against the declared Secret
+placeholders and RBAC grants, checking that adding the reviewer preserves existing
+passwords and connection strings. It also covers reruns, delayed Secret creation,
+database ownership and ingress scope. PR CI runs the same test through
+`//projects/platform-factory/factory-db:provisioning_test`. Live ArgoCD health and
+Secret key presence are checked after deployment.
+
 ## itsaplan
 
 itsaplan (`projects/factory/ARCHITECTURE.md`, "itsaplan") serves
