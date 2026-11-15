@@ -171,6 +171,20 @@ def _version_path(campaign: dict, character: dict, version_id: str) -> str:
     )
 
 
+def test_sheet_read_binds_recovery_to_the_authorized_account(client, table):
+    campaign, character = table
+    path = _draft_path(campaign, character).removesuffix("/drafts")
+    for email in (PLAYER, DM):
+        viewer = client.get("/api/grimoire/lobby", headers=_auth(email))
+        assert viewer.status_code == 200
+        response = client.get(path, headers=_auth(email))
+        assert response.status_code == 200
+        assert response.headers["X-Grimoire-Viewer-Id"] == viewer.json()["user"]["id"]
+    denied = client.get(path, headers=_auth(OTHER_PLAYER))
+    assert denied.status_code in (403, 404)
+    assert "X-Grimoire-Viewer-Id" not in denied.headers
+
+
 @pytest.fixture(name="request_client")
 def request_client_fixture(session: Session, client: TestClient, table):
     """Keep legacy setup helpers, then match production request-session cleanup."""

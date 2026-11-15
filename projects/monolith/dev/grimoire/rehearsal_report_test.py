@@ -219,7 +219,7 @@ def test_aggregate_rejects_incomplete_or_nonobject_child_report(tmp_path, payloa
 
 def test_required_journey_inventory_and_measured_budgets_remain_complete():
     budgets = json.loads(Path(__file__).with_name("budgets.json").read_text())
-    assert len(budgets["session"]) == 53
+    assert len(budgets["session"]) == 57
     assert len(budgets["join-links"]) == 9
     assert len(budgets["baseline_steps"]["session"]) == 33
     assert len(budgets["baseline_steps"]["join-links"]) == 9

@@ -8,13 +8,22 @@ the same /api/grimoire routes the app calls.
 import argparse
 import json
 import re
+import subprocess
+import sys
 import time
 from contextlib import contextmanager
+from importlib.metadata import version
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import expect, sync_playwright
+from rehearsal_report import (
+    CheckRecorder,
+    expect_network_diagnostic,
+    finish_report,
+    new_report,
+)
 from rehearse_join_links import (
     observe_page,
     redact_join_artifact,
@@ -156,9 +165,61 @@ def choose(scope, control, option):
     box.click()
     listbox = box.page.locator(f"[id='{box.get_attribute('aria-controls')}']")
     target = listbox.get_by_role("option", name=option, exact=True)
+    # Keep the fallback index while the menu is open. A genuine missed click
+    # can dismiss it, but must not prevent the remaining checks from running.
+    index = [row.inner_text() for row in listbox.get_by_role("option").all()].index(
+        option
+    )
     try:
-        target.click(timeout=3000)
-    except PlaywrightError as error:
+        # Locator.click scrolls even an already visible anchored popover. In
+        # Chromium this can move its anchor after the click point is chosen.
+        # Use the actual painted, hit-tested point and real pointer input.
+        deadline = time.monotonic() + 3
+        previous = None
+        while time.monotonic() < deadline:
+            remaining = max(1, (deadline - time.monotonic()) * 1000)
+            assert target.is_enabled(timeout=remaining), "Option is disabled"
+            point = target.evaluate(
+                """el => {
+                  const b = el.getBoundingClientRect();
+                  const left = Math.max(0, b.left), right = Math.min(innerWidth, b.right);
+                  const top = Math.max(0, b.top), bottom = Math.min(innerHeight, b.bottom);
+                  const x = (left + right) / 2, y = (top + bottom) / 2;
+                  return {x, y, hit: right > left && bottom > top &&
+                    el.contains(document.elementFromPoint(x, y))};
+                }""",
+                timeout=remaining,
+            )
+            if (
+                point["hit"]
+                and previous
+                and abs(point["x"] - previous["x"]) < 0.5
+                and abs(point["y"] - previous["y"]) < 0.5
+            ):
+                observed = target.evaluate_handle(
+                    """el => {
+                      const state = {hit: false};
+                      const listener = event => { state.hit = event.isTrusted; };
+                      el.addEventListener('pointerdown', listener, {capture: true, once: true});
+                      state.stop = () => el.removeEventListener('pointerdown', listener, true);
+                      return state;
+                    }""",
+                    timeout=max(1, (deadline - time.monotonic()) * 1000),
+                )
+                try:
+                    box.page.mouse.click(point["x"], point["y"])
+                    assert observed.evaluate("state => state.hit"), (
+                        "The option did not receive a trusted pointerdown"
+                    )
+                finally:
+                    observed.evaluate("state => state.stop()")
+                    observed.dispose()
+                break
+            previous = point
+            box.page.wait_for_timeout(16)
+        else:
+            raise AssertionError(f"Pointer cannot reach the option: {previous}")
+    except (PlaywrightError, AssertionError) as error:
         POINTER_MISSES.append(
             {
                 "control": control,
@@ -167,9 +228,6 @@ def choose(scope, control, option):
                 if "outside of the viewport" in str(error)
                 else str(error).splitlines()[0],
             }
-        )
-        index = [row.inner_text() for row in listbox.get_by_role("option").all()].index(
-            option
         )
         box.page.keyboard.press("Escape")
         box.focus()
@@ -301,6 +359,16 @@ def assert_fits(page):
 
 def shot(page, path):
     page.screenshot(path=str(path), full_page=True)
+    report = getattr(page, "rehearsal_report", None)
+    if report is not None:
+        report.setdefault("screenshots", []).append(
+            {
+                "file": path.name,
+                "seat": page.rehearsal_seat,
+                "width": page.viewport_size["width"],
+                "url": page.url,
+            }
+        )
 
 
 def open_seat(page, role):
@@ -312,23 +380,43 @@ def open_seat(page, role):
 
 
 def main():
+    # Additional journeys import the same helper module and pointer-failure
+    # collector when this entrypoint is executed as a script.
+    sys.modules.setdefault("rehearse", sys.modules[__name__])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("/tmp/grimoire-rehearsal"))
     parser.add_argument(
         "--join-links", action="store_true", help="Rehearse registered-player links"
     )
+    parser.add_argument("--viewport", type=int, choices=(1280, 390))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    report = {
-        "simulated": True,
-        "mode": "join-links" if args.join_links else "session",
-        "checks": [],
-        "failed_checks": [],
-        "errors": [],
-        "timings": {},
-        "console_errors": [],
-        "network_failures": [],
+    report = new_report(
+        "join-links" if args.join_links else "session", args.viewport or 1280
+    )
+    repository = Path(__file__).resolve().parents[4]
+    report["source"] = {
+        "sha": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+        ).strip(),
+        "dirty": bool(
+            subprocess.check_output(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                cwd=repository,
+                text=True,
+            ).strip()
+        ),
+        "playwright": version("playwright"),
     }
+    report["seat_widths"] = {
+        role: args.viewport or width
+        for role, width in (("dm", 1280), ("a", 390), ("b", 390))
+    }
+    budgets = json.loads(Path(__file__).with_name("budgets.json").read_text())
+    report["budget_basis"] = budgets["basis"]
+    report["request_budget_seconds"] = budgets["request_seconds"]
+    report["checks"] = CheckRecorder(report, budgets[report["mode"]])
+    POINTER_MISSES.clear()
 
     @contextmanager
     def defect(check):
@@ -349,6 +437,7 @@ def main():
         browser = playwright.chromium.launch(
             args=["--host-resolver-rules=MAP friends.localhost 127.0.0.1"]
         )
+        report["source"]["browser"] = browser.version
         try:
             if args.join_links:
                 rehearse_join_links(
@@ -359,15 +448,18 @@ def main():
                 return
             pages = []
             for role, width in [("dm", 1280), ("a", 390), ("b", 390)]:
-                context = browser.new_context(viewport={"width": width, "height": 844})
+                context = browser.new_context(
+                    viewport={"width": args.viewport or width, "height": 844}
+                )
                 contexts.append((role, context))
                 use_loopback_requests(context)
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
-                observe_page(page, report)
+                observe_page(page, report, role)
                 open_seat(page, role)
                 pages.append(page)
             dm, a, b = pages
+            report["checks"].ready()
             dm.bring_to_front()
             dm.get_by_role("button", name="Start session", exact=True).click()
             expect(composer(dm)).to_be_visible()
@@ -400,6 +492,7 @@ def main():
 
             def hold_first_write(route):
                 if route.request.method in ("POST", "PATCH"):
+                    route.request.rehearsal_injected = True
                     held_write.append(route)
                 else:
                     route.continue_()
@@ -531,7 +624,15 @@ def main():
             entity_url = f"{LOBBY}/campaigns/{campaign_of(a)}/entities/{entity_id}"
             for seat, shown in ((a, True), (b, False)):
                 entity_page = seat.context.new_page()
-                observe_page(entity_page, report)
+                observe_page(entity_page, report, "a" if shown else "b")
+                if not shown:
+                    expect_network_diagnostic(
+                        report,
+                        "b",
+                        "GET",
+                        f"{API}/campaigns/{campaign_of(b)}/entities/{entity_id}",
+                        status=404,
+                    )
                 entity_page.goto(entity_url)
                 if shown:
                     expect(
@@ -760,6 +861,7 @@ def main():
 
             def delay_poll(route):
                 if route.request.method == "GET" and not delayed_polls:
+                    route.request.rehearsal_injected = True
                     response = fetch_loopback_route(route)
                     time.sleep(1)
                     delayed_polls.append(route.request.url)
@@ -778,7 +880,18 @@ def main():
             report["checks"].append(
                 "A delayed successful poll preserves the unsent draft and returns to a live feed"
             )
-            a.route(EVENTS, lambda route: route.abort())
+
+            def fail_poll(route):
+                expect_network_diagnostic(
+                    report,
+                    "a",
+                    route.request.method,
+                    route.request.url,
+                    failure="net::ERR_FAILED",
+                )
+                route.abort()
+
+            a.route(EVENTS, fail_poll)
             dropped = time.monotonic()
             expect(connection(a, "Reconnecting")).to_be_visible(timeout=6000)
             report["timings"]["reconnecting_shown_seconds"] = time.monotonic() - dropped
@@ -793,6 +906,13 @@ def main():
 
             def lose_write_response(route):
                 if route.request.method == "POST":
+                    expect_network_diagnostic(
+                        report,
+                        "a",
+                        "POST",
+                        route.request.url,
+                        failure="net::ERR_FAILED",
+                    )
                     fetch_loopback_route(
                         route
                     )  # Commit normally, then lose the response.
@@ -838,7 +958,7 @@ def main():
             expect(dm.get_by_text(mobile_scene, exact=True)).to_be_visible()
             assert_fits(dm)
             shot(dm, args.output / "dm-phone-controls.png")
-            dm.set_viewport_size({"width": 1280, "height": 844})
+            dm.set_viewport_size({"width": args.viewport or 1280, "height": 844})
             report["checks"].append(
                 "DM phone controls pause, resume and narrate without horizontal overflow"
             )
@@ -1074,7 +1194,7 @@ def main():
             campaign_id = campaign_of(dm)
             grants_url = f"{LOBBY}/campaigns/{campaign_id}/grants"
             matrix = dm.context.new_page()
-            observe_page(matrix, report)
+            observe_page(matrix, report, "dm")
             matrix.goto(grants_url)
             expect(
                 matrix.get_by_role(
@@ -1085,7 +1205,7 @@ def main():
             # refusal is the grants read itself plus the page's own notice.
             assert a.request.get(f"{API}/campaigns/{campaign_id}/grants").status == 403
             player_matrix = a.context.new_page()
-            observe_page(player_matrix, report)
+            observe_page(player_matrix, report, "a")
             player_matrix.goto(grants_url)
             expect(
                 player_matrix.get_by_text(
@@ -1555,6 +1675,7 @@ def main():
                 drawer.get_by_role("heading", name="Harbourmaster Ilsa", exact=True)
             ).to_be_visible()
             drawer.get_by_role("button", name="Retract from Bram", exact=True).click()
+            toast(dm, "Knowledge retracted.")
 
             def bram_lost_ilsa():
                 assert ilsa_secret not in state_text(b)
@@ -1660,7 +1781,9 @@ def main():
             expect(a.get_by_role("heading", name="Nyx", exact=True)).to_be_visible()
             a.goto(LOBBY)
             expect(new_a.get_by_text("Your character: Nyx", exact=True)).to_be_visible()
-            dm.reload()
+            expect(open_players(dm).get_by_text("Nyx", exact=False)).to_be_visible(
+                timeout=6000
+            )
             newcomers = open_players(dm)
             newcomers.get_by_role("listitem").filter(
                 has_text="b@example.test"
@@ -1669,10 +1792,9 @@ def main():
             manage.get_by_label("New character name", exact=True).fill("Wren")
             manage.get_by_role("button", name="Create and assign", exact=True).click()
             toast(dm, "Character assignment saved.")
-            b.reload()
             expect(
                 campaign_card(b).get_by_text("Your character: Wren", exact=True)
-            ).to_be_visible()
+            ).to_be_visible(timeout=6000)
             assert {
                 row["email"]: row["character_name"]
                 for row in read(dm, f"/campaigns/{newcomers_id}/members").json()
@@ -1747,6 +1869,37 @@ def main():
             report["checks"].append(
                 "Both invited players submit sheets, DM approves them, and the new table enters a session with approved-sheet rolls"
             )
+            from rehearse_facts import rehearse_facts
+            from rehearse_extended import rehearse_extended
+            from rehearse_recovery import rehearse_recovery
+            from rehearse_submission import rehearse_submission
+            from rehearse_bootstrap import rehearse_bootstrap
+            from rehearse_pins import rehearse_pins
+            from rehearse_sheet_conflicts import rehearse_sheet_conflicts
+            from rehearse_sheet_recovery import rehearse_sheet_recovery
+
+            rehearse_facts({"dm": dm, "a": a, "b": b}, args.output, report)
+            rehearse_recovery(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_pins(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_extended(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_sheet_conflicts(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_submission(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_bootstrap(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_sheet_recovery(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
             assert not report["errors"], report["errors"]
         except Exception as error:
             report["passed"] = False
@@ -1769,7 +1922,7 @@ def main():
             report["passed"] = bool(
                 report.get("passed", True) and not report["failed_checks"]
             )
-            report["capture_errors"] = []
+            report.setdefault("capture_errors", [])
             for role, context in contexts:
                 for index, page in enumerate(context.pages):
                     try:
@@ -1808,8 +1961,8 @@ def main():
                 report["capture_errors"].append(f"browser close: {error}")
             if report["capture_errors"]:
                 report["passed"] = False
-            if args.join_links:
-                report = redact_join_artifact(report)
+            finish_report(report)
+            report = redact_join_artifact(report)
             (args.output / "report.json").write_text(
                 json.dumps(report, indent=2) + "\n"
             )
@@ -1855,9 +2008,9 @@ def main():
                 raise RuntimeError(
                     "Rehearsal evidence capture failed; inspect report.json"
                 )
-            if report["failed_checks"]:
+            if not report["passed"]:
                 raise SystemExit(
-                    f"{len(report['failed_checks'])} rehearsal check(s) failed; inspect report.json"
+                    "Rehearsal failed; inspect failed_checks, console_errors, errors and slow_requests in report.json"
                 )
 
 

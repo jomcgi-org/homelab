@@ -1501,12 +1501,16 @@ def _derive_sheet_or_422(
 def list_character_sheet_versions(
     campaign_id: str,
     player_character_id: str,
+    response: Response,
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> CharacterSheetHistoryView:
     member, character = _require_character_reader(
         session, campaign_id, player_character_id, email
     )
+    # Bind browser recovery to the account authorized by this exact request,
+    # even if another tab changed the sign-in cookie since the lobby read.
+    response.headers["X-Grimoire-Viewer-Id"] = member.app_user_id
     versions = session.exec(
         select(CharacterSheetVersion)
         .where(

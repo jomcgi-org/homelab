@@ -88,9 +88,9 @@ const rules: Rule[] = [
     name: "no browser storage outside the modules that own it",
     pattern: /\b(localStorage|sessionStorage)\b/,
     instead:
-      "src/lib/session-expiry.js for the kept draft; read-aloud settings go through src/lib/read-aloud.js",
+      "src/lib/session-expiry.js for messages, src/lib/sheet-recovery.ts for authorized sheet recovery; read-aloud settings go through src/lib/read-aloud.js",
     // Passes window.localStorage to lib/read-aloud.js, which does the reading.
-    allow: ["src/voices/ReadAloud.tsx"],
+    allow: ["src/voices/ReadAloud.tsx", "src/lib/sheet-recovery.ts"],
   },
 ];
 

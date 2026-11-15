@@ -18,9 +18,8 @@ export const useLobby = (enabled = true) =>
   useQuery({
     queryKey: keys.lobby,
     queryFn: () => api("GET /lobby"),
-    // This read also drives the viewer privacy fence. Keep its existing cadence
-    // until dirty-sheet reassignment is decided in #8001.
-    refetchInterval: 15_000,
+    // Also drives the identity fence and characterless-seat onboarding.
+    refetchInterval: ROSTER_MS,
     enabled,
   });
 
@@ -43,6 +42,7 @@ export const useCharacters = (campaignId: string, enabled = true) =>
         params: { campaign_id: campaignId },
       }),
     enabled,
+    refetchInterval: ROSTER_MS,
   });
 
 export const useInvitations = (campaignId: string, enabled = true) =>

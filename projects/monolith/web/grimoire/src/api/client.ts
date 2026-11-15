@@ -40,6 +40,8 @@ export class SignInError extends ApiError {
 }
 
 export interface CallOptions<K extends Operation> {
+  /** Require the server's authorized sheet reader to match this identity. */
+  expectedViewerId?: string;
   /** Values for the `{name}` segments of the path. */
   params?: Record<string, string>;
   query?: Query<K>;
@@ -95,6 +97,7 @@ export function apiUrl<K extends Operation>(
 }
 
 export interface RequestOptions {
+  expectedViewerId?: string;
   method?: string;
   /** Sent as JSON, or as multipart when it is FormData. */
   body?: unknown;
@@ -153,6 +156,11 @@ export async function requestJson<T>(
       detail(body) ?? "Grimoire could not complete that request.",
     );
   }
+  if (
+    options.expectedViewerId &&
+    response.headers.get("X-Grimoire-Viewer-Id") !== options.expectedViewerId
+  )
+    throw new ApiError(403, "Your account changed. Reload Grimoire.");
   return body as T;
 }
 
@@ -164,6 +172,7 @@ export function api<K extends Operation>(
     method: operation.slice(0, operation.indexOf(" ")),
     body: options.body,
     signal: options.signal,
+    expectedViewerId: options.expectedViewerId,
   });
 }
 

@@ -20,6 +20,11 @@ import {
   type PlatformUser,
 } from "../api/platform";
 import { dropDraft } from "../lib/session-expiry.js";
+import {
+  isSheetSignOut,
+  purgeSheetRecovery,
+  sheetSignOutEvent,
+} from "../lib/sheet-recovery";
 
 /** New memberships add access; changes to an existing seat invalidate its cache. */
 function changedViewer(previous: LobbyView, current: LobbyView): boolean {
@@ -61,6 +66,7 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     operator: null,
     changed: false,
   });
+  const [signingOut, setSigningOut] = useState(false);
   const cache = client.getQueryCache();
   const subscribe = useCallback(
     (notify: () => void) =>
@@ -75,6 +81,33 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
         .findAll({ queryKey: platformKeys.directories })
         .some((query) => query.state.data !== undefined),
   );
+  const characterAccessChanged = useSyncExternalStore(subscribe, () => {
+    if (confirmed.changed || !confirmed.viewer) return false;
+    return cache.getAll().some((query) => {
+      const [area, campaignId, resource, , child] = query.queryKey;
+      if (area !== "campaign" || resource !== "characters") return false;
+      const campaign = confirmed.viewer?.campaigns.find(
+        (row) => row.id === campaignId,
+      );
+      if (!campaign) return false;
+      if (query.state.data !== undefined && accessDenied(query.state.error))
+        return true;
+      // A refused recovery read (including an account-mismatched response)
+      // must also fence caches populated by the session's separate query.
+      if (
+        child === "sheets" && query.state.error instanceof ApiError &&
+        [401, 403, 404].includes(query.state.error.status)
+      ) return true;
+      if (
+        query.queryKey.length !== 3 || campaign.role !== "player" ||
+        !Array.isArray(query.state.data)
+      ) return false;
+      const ids = query.state.data.map((row: { id: string }) => row.id);
+      return campaign.player_character_id === null
+        ? ids.length > 0
+        : ids.length !== 1 || ids[0] !== campaign.player_character_id;
+    });
+  });
   const directoryDenied = useSyncExternalStore(
     subscribe,
     () =>
@@ -102,15 +135,40 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     confirmed.operator !== null && !confirmed.changed,
   );
   const reloading = useRef(false);
+  useEffect(() => {
+    purgeSheetRecovery();
+  }, []);
+  useEffect(() => {
+    const accountId = confirmed.viewer?.user.id ?? confirmed.account?.id;
+    if (!accountId) return;
+    const localSignOut = (event: Event) => {
+      const owner = (event as CustomEvent<string>).detail;
+      if (!owner || owner === accountId) {
+        setSigningOut(true);
+        setConfirmed((current) => ({ ...current, changed: true }));
+      }
+    };
+    const otherTabSignOut = (event: StorageEvent) => {
+      if (isSheetSignOut(event.key, accountId))
+        setConfirmed((current) => ({ ...current, changed: true }));
+    };
+    window.addEventListener(sheetSignOutEvent, localSignOut);
+    window.addEventListener("storage", otherTabSignOut);
+    return () => {
+      window.removeEventListener(sheetSignOutEvent, localSignOut);
+      window.removeEventListener("storage", otherTabSignOut);
+    };
+  }, [confirmed.viewer?.user.id, confirmed.account?.id]);
 
   // Adjust this component's state before React renders its children. An
   // effect alone would let the old account's data render once more. Keep the
   // fence latched: clearing the lobby query must never reveal the old page.
   if (
     !confirmed.changed &&
-    ((confirmed.viewer &&
-      lobby.error instanceof ApiError &&
-      lobby.error.status === 403) ||
+    (characterAccessChanged ||
+      (confirmed.viewer &&
+        lobby.error instanceof ApiError &&
+        lobby.error.status === 403) ||
       (confirmed.account && accessDenied(account.error)) ||
       (confirmed.operator && (accessDenied(operator.error) || directoryDenied)))
   ) {
@@ -161,10 +219,12 @@ export function ViewerBoundary({ children }: { children: ReactNode }) {
     // Astryx keeps shared announcement regions outside the unmounted viewport.
     announce("", "assertive");
     announce("", "polite");
+    if (signingOut) return;
     announce("Your account or campaign access changed. Reloading Grimoire.");
     location.reload();
-  }, [announce, client, confirmed]);
+  }, [announce, client, confirmed, signingOut]);
 
+  if (signingOut) return null;
   if (confirmed.changed)
     return (
       <Banner

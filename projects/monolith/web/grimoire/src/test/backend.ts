@@ -108,9 +108,12 @@ export function installBackend(
         );
       }
       if (result === undefined) return new Response(null, { status: 204 });
+      const viewer = routes["GET /lobby"];
+      const viewerId = viewer && typeof viewer === "object" && "user" in viewer
+        ? viewer.user.id : "99999999-9999-4999-8999-999999999999";
       return new Response(JSON.stringify(result), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "X-Grimoire-Viewer-Id": viewerId },
       });
     }
     throw new Error(`Unrouted fixture call: ${method} ${url.pathname}`);

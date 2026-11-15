@@ -1,4 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@astryxdesign/core/Button";
 import { Grid } from "@astryxdesign/core/Grid";
@@ -30,6 +36,11 @@ import { Loaded } from "../../app/Loaded";
 import { useAction } from "../../app/useAction";
 import { previewSheet } from "../../lib/sheet-preview.js";
 import {
+  keepSheetRecovery,
+  restoreSheetRecovery,
+  sheetRecoveryEpoch,
+} from "../../lib/sheet-recovery";
+import {
   describeSheet,
   fieldValue,
   mergeSheet,
@@ -41,6 +52,7 @@ import {
 } from "./merge";
 
 interface SheetFormProps {
+  accountId: string;
   campaignId: string;
   characterId: string;
   characterName: string;
@@ -108,13 +120,14 @@ const ancestryFacts = (option: SheetOptions["ancestries"][number]) =>
 export function SheetForm(props: SheetFormProps) {
   const options = useSheetOptions(props.campaignId, props.characterId);
   return (
-    <Loaded query={options} what="the choices for this sheet">
+    <Loaded query={options} what="the choices for this sheet" requireFresh>
       {(data) => <Editor {...props} options={data} />}
     </Loaded>
   );
 }
 
 function Editor({
+  accountId,
   campaignId,
   characterId,
   characterName,
@@ -123,9 +136,21 @@ function Editor({
 }: SheetFormProps & { options: SheetOptions }) {
   const [seenVersion, setSeenVersion] = useState(version);
   const [saved, setSaved] = useState(() => facts(version?.sheet ?? null));
-  const [sheet, setSheet] = useState(saved);
-  const [conflicts, setConflicts] = useState<SheetField[]>([]);
-  const [numericText, setNumericText] = useState<NumericText>({});
+  const scope = { accountId, campaignId, characterId };
+  const [recovery] = useState(() => restoreSheetRecovery(scope, saved));
+  const [recovered, setRecovered] = useState(recovery !== null);
+  const [epoch] = useState(() => sheetRecoveryEpoch(accountId));
+  const [writer] = useState(() => crypto.randomUUID());
+  const claimRecovery = useRef(recovery !== null);
+  const editedAt = useRef(recovery?.editedAt ?? 0);
+  const [sheet, setSheet] = useState(recovery?.sheet ?? saved);
+  const [conflicts, setConflicts] = useState<SheetField[]>(
+    recovery?.conflicts ?? [],
+  );
+  const [numericText, setNumericText] = useState<NumericText>(
+    recovery?.numericText ?? {},
+  );
+  const [durable, setDurable] = useState(true);
   const [checked, setChecked] = useState(false);
   const local = withNumericText(sheet, numericText);
   // Compare both sets of changes with the previous saved snapshot. A poll
@@ -167,6 +192,41 @@ function Editor({
       ([name, value]) =>
         value !== String(fieldValue(saved, name as SheetField)),
     );
+  // Persist synchronously in input handlers, before an access-change render
+  // can unmount this editor. Polls may update merge bases, never retention.
+  const edit = (next: CharacterSheetV1, typing: NumericText = numericText) => {
+    const values = withNumericText(next, typing);
+    if (
+      sheetFields.some(
+        ({ name }) => fieldValue(values, name) !== fieldValue(local, name),
+      ) ||
+      Object.entries(typing).some(
+        ([name, value]) => value !== numericText[name as keyof NumericText],
+      )
+    )
+      editedAt.current = Date.now();
+    setDurable(
+      keepSheetRecovery(
+        scope, epoch, editedAt.current, saved, next, typing, conflicts, writer,
+      ),
+    );
+    setSheet(next);
+    setNumericText(typing);
+  };
+  useLayoutEffect(() => {
+    setDurable(
+      keepSheetRecovery(
+        { accountId, campaignId, characterId },
+        epoch, editedAt.current, saved, sheet, numericText, conflicts, writer,
+        claimRecovery.current,
+      ),
+    );
+    claimRecovery.current = false;
+    if (!unsaved) setRecovered(false);
+  }, [
+    accountId, campaignId, characterId, epoch, writer,
+    saved, sheet, numericText, conflicts, unsaved,
+  ]);
   useEffect(() => {
     if (locked && unsaved)
       announce(
@@ -176,7 +236,11 @@ function Editor({
       announce(
         "Another tab changed the same sheet fields. Resolve the changes before saving.",
       );
-  }, [announce, locked, unsaved, conflicts.length]);
+    else if (recovered && unsaved)
+      announce(
+        "Recovered your unsaved edits for this character. Review them before saving.",
+      );
+  }, [announce, locked, unsaved, conflicts.length, recovered]);
 
   const choice = (
     what: "ancestry" | "class",
@@ -206,11 +270,15 @@ function Editor({
       return next;
     });
   const setScore = (ability: Ability) => (value: number) => {
-    setSheet({
-      ...local,
-      ability_scores: { ...local.ability_scores, [ability]: value },
-    });
-    clearNumeric(ability);
+    const typing = { ...numericText };
+    delete typing[ability];
+    edit(
+      {
+        ...local,
+        ability_scores: { ...local.ability_scores, [ability]: value },
+      },
+      typing,
+    );
   };
   const onSave = async () => {
     setChecked(true);
@@ -313,9 +381,39 @@ function Editor({
           name === "level" ||
           ABILITIES.some((ability) => ability.name === name)
         )
-          setNumericText((current) => ({ ...current, [name]: text }));
+          edit(sheet, { ...numericText, [name]: text });
       }}
     >
+      {recovered && unsaved && (
+        <VStack gap={2} as="section" aria-label="Recovered sheet changes">
+          <Text type="body">
+            Recovered your unsaved edits for this character. Review them before saving.
+          </Text>
+          {Object.keys(numericText).length > 0 && (
+            <TextArea
+              label="Recovered sheet input"
+              value={describeSheet(local, numericText)}
+              isReadOnly
+              rows={10}
+            />
+          )}
+          <Button
+            label="Discard recovered changes"
+            variant="secondary"
+            onClick={() => {
+              setSheet(saved);
+              setNumericText({});
+              setConflicts([]);
+              setRecovered(false);
+            }}
+          />
+        </VStack>
+      )}
+      {unsaved && !durable && (
+        <Text type="body">
+          This browser could not keep a recovery copy. Save your changes before leaving.
+        </Text>
+      )}
       {conflicts.length > 0 && (
         <VStack gap={2} as="section" aria-label="Resolve sheet changes">
           <Text type="body">
@@ -360,7 +458,7 @@ function Editor({
             placeholder="Choose an ancestry"
             options={options.ancestries.map(({ name }) => name)}
             value={ancestry?.name}
-            onChange={(name) => setSheet({ ...sheet, ancestry: name })}
+            onChange={(name) => edit({ ...sheet, ancestry: name })}
             status={choice(
               "ancestry",
               "an",
@@ -387,7 +485,7 @@ function Editor({
             placeholder="Choose a class"
             options={options.classes.map(({ name }) => name)}
             value={characterClass?.name}
-            onChange={(name) => setSheet({ ...sheet, class_name: name })}
+            onChange={(name) => edit({ ...sheet, class_name: name })}
             status={choice(
               "class",
               "a",
@@ -413,8 +511,9 @@ function Editor({
         onBlur={() => clearNumeric("level")}
         value={sheet.level}
         onChange={(level) => {
-          setSheet({ ...local, level });
-          clearNumeric("level");
+          const typing = { ...numericText };
+          delete typing.level;
+          edit({ ...local, level }, typing);
         }}
         isDisabled={save.isPending || submit.isPending}
         min={BOUNDS.level.min}

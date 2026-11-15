@@ -11,7 +11,8 @@
     "profile_budget_reason": "The profile identity poll has a 15s protocol interval; 22s covers that wait and reload. Initial identity recovery budgets use the measured 1.509s first-read recovery baseline plus navigation and signed self reads.",
     "sheet_conflict_budget_reason": "Concurrency checks retain individual 6s refresh limits. 45s covers nonoverlapping merge, a real stale-save 409, and explicit overlapping-conflict recovery; 35s covers submission, clipboard recovery, return, new version and approval. Based on the measured 17.22s four-refresh sheet loop plus additional protocol waits.",
     "pin_budget_reason": "The focused real-browser success/refusal/retry journey measured 2.495s at 1280px and 2.536s at 390px. The 8s budget follows the same 2.5-times-plus-1.5s rule. Removing only the two disabled props made this check fail at both widths.",
-    "reply_reassignment_budget_reason": "35s covers the measured single-expiry recovery (~10s), cancellation/reselection, and real assignment/restoration interactions. The earlier four-change assignment journey measured 8.3s; existing 6s UI refresh and exact audience assertions remain unchanged."
+    "reply_reassignment_budget_reason": "35s covers the measured single-expiry recovery (~10s), cancellation/reselection, and real assignment/restoration interactions. The earlier four-change assignment journey measured 8.3s; existing 6s UI refresh and exact audience assertions remain unchanged.",
+    "sheet_recovery_budget_reason": "New recovery checks use the existing assignment and sheet-conflict baselines plus explicit five-second polls: 45s for four assignment transitions; 25s each for account/expiry and membership; 15s for explicit sign-out and re-login. Every individual access-loss and restore assertion retains its six-second deadline. Existing budgets are unchanged."
   },
   "request_seconds": 2,
   "baseline_steps": {
@@ -241,7 +242,11 @@
     "Concurrent sheet edits merge without loss and stale saves are rejected": 45,
     "Remote submission preserves unsaved sheet edits for copying and recovery": 35,
     "Feed pins disable every target while pending and recover after success or refusal": 8,
-    "Private replies respect reassigned authors and reset cancelled sends": 35
+    "Private replies respect reassigned authors and reset cancelled sends": 35,
+    "Dirty sheets stay hidden through clear and swap and recover only after renewed access": 45,
+    "Sheet recovery survives expiry without crossing an account boundary": 25,
+    "Membership removal denies old sheet reads and writes until fresh admission": 25,
+    "Explicit sign-out clears sheet recovery and revokes the local signed session": 15
   },
   "join-links": {
     "Owner creates recipient-bound links for a fresh campaign; hide and a fresh lobby read do not restore the private link": 16,

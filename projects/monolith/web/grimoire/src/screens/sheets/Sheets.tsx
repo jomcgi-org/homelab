@@ -34,7 +34,11 @@ export function Sheets() {
                 sheet.
               </Text>
               {data.campaigns.map((campaign) => (
-                <CampaignSheets key={campaign.id} campaign={campaign} />
+                <CampaignSheets
+                  key={campaign.id}
+                  campaign={campaign}
+                  accountId={data.user.id}
+                />
               ))}
             </>
           )
@@ -45,7 +49,13 @@ export function Sheets() {
 }
 
 /** One campaign's characters: all of them for the DM, their own for a player. */
-function CampaignSheets({ campaign }: { campaign: LobbyCampaignView }) {
+function CampaignSheets({
+  campaign,
+  accountId,
+}: {
+  campaign: LobbyCampaignView;
+  accountId: string;
+}) {
   const characters = useCharacters(campaign.id);
   const headingId = `campaign-${campaign.id}`;
   return (
@@ -66,7 +76,11 @@ function CampaignSheets({ campaign }: { campaign: LobbyCampaignView }) {
             </Text>
           ) : (
             rows.map((character) => (
-              <CharacterSheet key={character.id} character={character} />
+              <CharacterSheet
+                key={`${accountId}:${character.id}`}
+                character={character}
+                accountId={accountId}
+              />
             ))
           )
         }

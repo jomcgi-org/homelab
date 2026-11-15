@@ -104,21 +104,36 @@ const versionParams = (ref: VersionRef) => ({
 });
 
 /** Shared by the editor and the session's approved mechanics and roll tray. */
-export const sheetHistoryOptions = (campaignId: string, characterId: string) =>
+export const sheetHistoryOptions = (
+  campaignId: string,
+  characterId: string,
+  expectedViewerId?: string,
+) =>
   queryOptions({
     queryKey: keys.sheets(campaignId, characterId),
     queryFn: async (): Promise<SheetHistory> => {
       const history = await api(
         "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets",
-        { params: characterParams({ campaignId, characterId }) },
+        {
+          params: characterParams({ campaignId, characterId }),
+          expectedViewerId,
+        },
       );
       return { ...history, versions: history.versions.map(toVersion) };
     },
     refetchInterval: 5_000,
   });
 
-export const useSheetHistory = (campaignId: string, characterId: string) =>
-  useQuery(sheetHistoryOptions(campaignId, characterId));
+export const useSheetHistory = (
+  campaignId: string,
+  characterId: string,
+  accountId: string,
+) =>
+  useQuery({
+    ...sheetHistoryOptions(campaignId, characterId, accountId),
+    queryKey: [...keys.sheets(campaignId, characterId), "viewer", accountId],
+    refetchOnMount: "always",
+  });
 
 /**
  * What `derive_sheet` would accept for this character: global corpus entries
@@ -127,6 +142,7 @@ export const useSheetHistory = (campaignId: string, characterId: string) =>
 export const useSheetOptions = (campaignId: string, characterId: string) =>
   useQuery({
     queryKey: keys.options(campaignId, characterId),
+    refetchOnMount: "always",
     queryFn: (): Promise<SheetOptions> =>
       api(
         "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets/options",

@@ -51,7 +51,8 @@ recalling an API.
 - Text renders as text. Nothing injects HTML: `src/handouts/HandoutText.tsx`
   parses handout markup into React elements.
 - Colours, spacing and radius come from theme tokens. No inline styles.
-- No `localStorage` or `sessionStorage` outside `src/lib/session-expiry.js`
+- No `localStorage` or `sessionStorage` outside `src/lib/session-expiry.js`,
+  `src/lib/sheet-recovery.ts` (the authorized #8001 recovery exception),
   and `src/voices/ReadAloud.tsx`, which hands storage to `src/lib/read-aloud.js`.
 
 ## Layout
