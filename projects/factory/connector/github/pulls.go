@@ -428,6 +428,7 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 // PullRequestReview is a submitted PR review, from REST.
 type PullRequestReview struct {
 	ID          int64
+	NodeID      string
 	Author      string
 	State       string // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
 	CommitSHA   string
@@ -450,6 +451,7 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 	for page := 1; page <= MaxReviewPages; page++ {
 		var out []struct {
 			ID          int64     `json:"id"`
+			NodeID      string    `json:"node_id"`
 			User        login     `json:"user"`
 			State       string    `json:"state"`
 			CommitID    string    `json:"commit_id"`
@@ -465,13 +467,146 @@ func (c *Client) PullRequestReviews(ctx context.Context, repo string, number int
 			return nil, errors.New("github: missing review listing")
 		}
 		for _, r := range out {
-			reviews = append(reviews, PullRequestReview{ID: r.ID, Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body, SubmittedAt: r.SubmittedAt})
+			reviews = append(reviews, PullRequestReview{ID: r.ID, NodeID: r.NodeID, Author: r.User.Login, State: r.State, CommitSHA: r.CommitID, Body: r.Body, SubmittedAt: r.SubmittedAt})
 		}
 		if len(out) < MaxListed {
 			return reviews, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: more than %d reviews on PR %d", ErrTooMany, MaxReviewPages*MaxListed, number)
+}
+
+// ReviewAcknowledgement keeps a review's body and edit provenance from one
+// read. An absent author or editor remains unknown, represented by empty login.
+type ReviewAcknowledgement struct {
+	Author       string
+	Editor       string
+	LastEditedAt *time.Time
+	Body         string
+	State        string
+	CommitSHA    string
+}
+
+const pullRequestReviewAcknowledgementQuery = `query($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReview {
+      id author { login } editor { login } lastEditedAt body state commit { oid }
+      pullRequest { number repository { nameWithOwner } }
+    }
+  }
+}`
+
+// PullRequestReviewAcknowledgement reads one review with its body editor,
+// rejecting responses that do not belong to the requested PR and node.
+func (c *Client) PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*ReviewAcknowledgement, error) {
+	if repo == "" || number <= 0 || nodeID == "" {
+		return nil, errors.New("github: incomplete review acknowledgement context")
+	}
+	var out struct {
+		Node *struct {
+			Type         string          `json:"__typename"`
+			ID           string          `json:"id"`
+			Author       *login          `json:"author"`
+			Editor       json.RawMessage `json:"editor"`
+			LastEditedAt json.RawMessage `json:"lastEditedAt"`
+			Body         *string         `json:"body"`
+			State        string          `json:"state"`
+			Commit       *oid            `json:"commit"`
+			PullRequest  *struct {
+				Number     int `json:"number"`
+				Repository *struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"repository"`
+			} `json:"pullRequest"`
+		} `json:"node"`
+	}
+	if err := c.graphql(ctx, repo, pullRequestReviewAcknowledgementQuery, map[string]any{"id": nodeID}, &out); err != nil {
+		return nil, err
+	}
+	n := out.Node
+	if n == nil {
+		return nil, ErrNotFound
+	}
+	if n.Type != "PullRequestReview" || n.ID != nodeID || n.PullRequest == nil || n.PullRequest.Number != number ||
+		n.PullRequest.Repository == nil || !strings.EqualFold(n.PullRequest.Repository.NameWithOwner, repo) {
+		return nil, errors.New("github: review acknowledgement context mismatch")
+	}
+	// Null editor/time is valid; omitted fields cannot establish that a
+	// review was never edited. Preserve a null editor even after an edit.
+	if len(n.Editor) == 0 || len(n.LastEditedAt) == 0 || n.Body == nil || n.State == "" {
+		return nil, errors.New("github: incomplete review acknowledgement")
+	}
+	result := &ReviewAcknowledgement{Body: *n.Body, State: n.State}
+	var editor *login
+	if err := json.Unmarshal(n.Editor, &editor); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(n.LastEditedAt, &result.LastEditedAt); err != nil {
+		return nil, err
+	}
+	if n.Author != nil {
+		result.Author = n.Author.Login
+	}
+	if editor != nil {
+		result.Editor = editor.Login
+	}
+	if n.Commit != nil {
+		result.CommitSHA = n.Commit.OID
+	}
+	return result, nil
+}
+
+// LabelEvent records when a label was added, including labels later removed.
+// Its ID identifies the event; it does not order it against a review.
+type LabelEvent struct {
+	ID        int64
+	Label     string
+	CreatedAt time.Time
+}
+
+// MaxIssueEventPages bounds the complete history read to 3000 issue events,
+// including events unrelated to labels.
+const MaxIssueEventPages = 30
+
+// PullRequestLabelEvents reads every issue-event page before returning label
+// additions. Missing or truncated history is an error, never a partial list.
+func (c *Client) PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]LabelEvent, error) {
+	var events []LabelEvent
+	for page := 1; page <= MaxIssueEventPages; page++ {
+		var out []struct {
+			ID        int64     `json:"id"`
+			Event     string    `json:"event"`
+			CreatedAt time.Time `json:"created_at"`
+			Label     struct {
+				Name string `json:"name"`
+			} `json:"label"`
+		}
+		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		path := repoPath(repo) + "/issues/" + strconv.Itoa(number) + "/events?" + q.Encode()
+		if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
+			return nil, err
+		}
+		if out == nil {
+			return nil, errors.New("github: missing issue event listing")
+		}
+		for _, event := range out {
+			if event.Event == "" {
+				return nil, errors.New("github: missing issue event type")
+			}
+			if event.Event != "labeled" {
+				continue
+			}
+			if event.ID <= 0 || event.Label.Name == "" || event.CreatedAt.IsZero() {
+				return nil, errors.New("github: incomplete label event")
+			}
+			events = append(events, LabelEvent{ID: event.ID, Label: event.Label.Name, CreatedAt: event.CreatedAt})
+		}
+		if len(out) < MaxListed {
+			return events, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: PR %d reached the %d-event read limit", ErrTooMany, number, MaxIssueEventPages*MaxListed)
 }
 
 // Comment is a PR conversation comment.

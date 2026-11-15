@@ -785,7 +785,7 @@ func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 	}
 	// The service announces the gate on the check before the model answers.
 	eventually(t, "the gate on the in-progress check", func() bool {
-		return strings.Contains(h.gh.check(shaA).Summary, "Only an APPROVED review of this exact commit by jomcgi clears it")
+		return strings.Contains(h.gh.check(shaA).Summary, "Only an APPROVED review of this exact commit by jomcgi clears this hold")
 	})
 	h.gh.review(7, "jomcgi", "APPROVED", "0ld", "approved an older head")
 	h.gh.review(7, "someone", "APPROVED", shaA, "not a configured human")
@@ -998,6 +998,247 @@ func TestFreshSameSecondApprovalAfterTheRecordedHoldClearsIt(t *testing.T) {
 	}
 }
 
+func TestFreshSameSecondApprovalCanAcknowledgeHoldBeforeFirstSnapshot(t *testing.T) {
+	h := newHarness(t)
+	second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.label(7, "human")
+	reviews := "GET /repos/" + testRepo + "/pulls/7/reviews"
+	h.gh.failWith(reviews, 502)
+	e.Tick(ctx)
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.Gate == nil || st.Gate.ApprovalNonce == "" || !strings.Contains(h.gh.check(shaA).Summary, approvalAcknowledgement(st.Gate.ApprovalNonce)) {
+		t.Fatal("the hold did not publish an acknowledgement before the first review snapshot")
+	}
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, approvalAcknowledgement(st.Gate.ApprovalNonce))
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[0].SubmittedAt = second
+	h.gh.mu.Unlock()
+	h.gh.failWith(reviews, 0)
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("a fresh same-second approval before the first snapshot remained rejected")
+	}
+}
+
+func TestAnAmbiguousApprovalCanAcknowledgeTheHoldByEditingItsBody(t *testing.T) {
+	h := newHarness(t)
+	second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
+	addPR7(h)
+	e, ctx, stop := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.label(7, "human")
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the label, before the first snapshot")
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[0].SubmittedAt = second
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("an ambiguous plain approval cleared the hold")
+	}
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	stop()
+	h.gh.mu.Lock()
+	h.gh.prs[7].Reviews[0].Body = approvalAcknowledgement(st.Gate.ApprovalNonce)
+	h.gh.prs[7].ReviewEditors = map[int64]string{h.gh.prs[7].Reviews[0].ID: "jomcgi"}
+	h.gh.prs[7].ReviewEditedAt = map[int64]time.Time{h.gh.prs[7].Reviews[0].ID: second.Add(time.Second)}
+	h.gh.mu.Unlock()
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("editing the same approving review to acknowledge the persisted hold did not clear it")
+	}
+}
+
+func TestAcknowledgementAuthenticatesTheCurrentReviewBody(t *testing.T) {
+	for _, change := range []string{"other editor", "unknown editor", "missing edit time", "dismissed", "wrong head", "wrong author", "different body", "read failure", "old nonce"} {
+		t.Run(change, func(t *testing.T) {
+			h := newHarness(t)
+			second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+			h.cfg.Now = func() time.Time { return second.Add(400 * time.Millisecond) }
+			addPR7(h)
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h.gh.label(7, "human")
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "ambiguous approval")
+			e.Tick(ctx)
+			st, _ := LoadState(h.gh.check(shaA).Text)
+			h.gh.mu.Lock()
+			pr := h.gh.prs[7]
+			pr.Reviews[0].Body = approvalAcknowledgement(st.Gate.ApprovalNonce)
+			pr.ReviewEditors = map[int64]string{pr.Reviews[0].ID: "jomcgi"}
+			pr.ReviewEditedAt = map[int64]time.Time{pr.Reviews[0].ID: second.Add(time.Second)}
+			h.gh.afterReviewsRead = func() {
+				switch change {
+				case "other editor":
+					pr.ReviewEditors[pr.Reviews[0].ID] = "writer"
+				case "unknown editor":
+					delete(pr.ReviewEditors, pr.Reviews[0].ID)
+				case "missing edit time":
+					delete(pr.ReviewEditedAt, pr.Reviews[0].ID)
+				case "dismissed":
+					pr.Reviews[0].State = "DISMISSED"
+				case "wrong head":
+					pr.Reviews[0].CommitSHA = "another-head"
+				case "wrong author":
+					pr.Reviews[0].Author = "writer"
+				case "different body":
+					pr.Reviews[0].Body = "no acknowledgement"
+				case "read failure":
+					h.gh.failGQL["review_acknowledgement"] = true
+				}
+			}
+			h.gh.mu.Unlock()
+			if change == "old nonce" {
+				h.gh.label(7)
+				e.Tick(ctx)
+				h.gh.label(7, "human")
+			}
+			e.Tick(ctx)
+			if h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("an unauthenticated or stale acknowledgement cleared the hold")
+			}
+		})
+	}
+}
+
+func TestRunningReviewRetainsAHoldRemovedBeforeCompletion(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the hold")
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.gh.label(7, "needs-human")
+	e.Tick(ctx)
+	h.gh.label(7)
+	stop()
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	eventually(t, "the recovered review to finish", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("a hold observed during the task was lost after removal and restart")
+	}
+}
+
+func TestRemovedHoldHistorySurvivesFailedWritesAndNewHeads(t *testing.T) {
+	for _, newHead := range []bool{false, true} {
+		t.Run(fmt.Sprint("new head ", newHead), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, stop := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			h.gh.label(7, "human")
+			writes := "POST /repos/" + testRepo + "/check-runs"
+			h.gh.failWith(writes, 502)
+			e.Tick(ctx)
+			h.gh.label(7)
+			stop()
+			h.gh.failWith(writes, 0)
+			head := shaA
+			if newHead {
+				head = strings.Repeat("b", 40)
+				h.gh.push(7, head)
+			}
+			e, ctx, _ = h.start()
+			if newHead {
+				h.k.finish(runReview(t, h, e, ctx, 7, head), kagent.StateCompleted, report(t, passing))
+				eventually(t, "the new head review", func() bool { return h.gh.check(head).Status == "completed" })
+			} else {
+				e.Tick(ctx)
+			}
+			if h.gh.check(head).Conclusion != ConclusionFailure {
+				t.Fatal("removed durable hold history was forgotten")
+			}
+		})
+	}
+}
+
+func TestLabelHistoryReadFailureRevokesAndRecoversWithoutChurn(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	reads := "GET /repos/" + testRepo + "/issues/7/events"
+	h.gh.failWith(reads, 502)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "the failed final history read", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	if h.gh.check(shaA).Status != "in_progress" {
+		t.Fatal("incomplete history let a task complete")
+	}
+	h.gh.failWith(reads, 0)
+	e.Tick(ctx)
+	eventually(t, "the recovered pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.failWith(reads, 502)
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("unreadable history retained a pass")
+	}
+	n := h.gh.checkCount()
+	e.Tick(ctx)
+	if h.gh.checkCount() != n {
+		t.Fatal("an unchanged history outage churned checks")
+	}
+	h.gh.failWith(reads, 0)
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("history recovery became a sticky failure")
+	}
+	if n, _ := h.k.state(); n != 1 {
+		t.Fatal("history retry started another model task")
+	}
+}
+
+func TestObservedHoldSurvivesUnavailableThenLaggingHistory(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprint("running ", running), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, stop := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			if !running {
+				h.k.finish(task, kagent.StateCompleted, report(t, passing))
+				eventually(t, "the initial pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+				eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			}
+			h.gh.label(7, "human")
+			reads := "GET /repos/" + testRepo + "/issues/7/events"
+			h.gh.failWith(reads, 502)
+			if running {
+				h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			} else {
+				e.Tick(ctx)
+			}
+			eventually(t, "the history failure", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			stop()
+			h.gh.label(7)
+			h.gh.failWith(reads, 0)
+			h.gh.mu.Lock()
+			h.gh.prs[7].LabelEvents = nil
+			h.gh.mu.Unlock() // Simulate a lagging complete history response.
+			e, ctx, _ = h.start()
+			e.Tick(ctx)
+			eventually(t, "the completed hold", func() bool { return h.gh.check(shaA).Status == "completed" })
+			if h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("the observed label was lost while history was unreadable")
+			}
+		})
+	}
+}
+
 func TestSameSecondSnapshotWaitsForACompleteRead(t *testing.T) {
 	h := newHarness(t)
 	second := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
@@ -1207,6 +1448,70 @@ func TestLabelsObservedDuringADuplicateHoldStayStickyAcrossRestart(t *testing.T)
 	}
 }
 
+func TestFailedDuplicateLabelWriteCannotClearTheHoldAfterRestart(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+	e, ctx, stop := h.start()
+	e.Tick(ctx)
+	h.gh.mu.Lock()
+	h.gh.checks[len(h.gh.checks)-1].Text = encodeState(State{}) // Legacy duplicate marker without a stored Gate.
+	h.gh.mu.Unlock()
+	h.gh.label(8, "needs-human")
+	writes := "POST /repos/" + testRepo + "/check-runs"
+	h.gh.failWith(writes, 502)
+	updates := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+	h.gh.failWith(updates, 502)
+	e.Tick(ctx)
+	h.gh.label(8)
+	stop()
+	h.gh.mu.Lock()
+	h.gh.prs[8].Closed = true
+	h.gh.mu.Unlock()
+	h.gh.failWith(writes, 0)
+	h.gh.failWith(updates, 0)
+	e, ctx, _ = h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("the failed duplicate-period hold write became an ungated pass after restart")
+	}
+}
+
+func TestFailedInitialDuplicateWriteFencesRecovery(t *testing.T) {
+	for _, failUpdate := range []bool{false, true} {
+		t.Run(fmt.Sprint("update fails ", failUpdate), func(t *testing.T) {
+			h, e, ctx := approvedQueuedHead(t)
+			h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+			writes := "POST /repos/" + testRepo + "/check-runs"
+			updates := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+			h.gh.failWith(writes, 502)
+			if failUpdate {
+				h.gh.failWith(updates, 502)
+			}
+			e.Tick(ctx)
+			if !failUpdate && h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("update fallback retained the pass")
+			}
+			h.gh.mu.Lock()
+			h.gh.prs[8].Closed = true
+			h.gh.mu.Unlock()
+			e.Tick(ctx)
+			if len(h.gh.enqueues()) != 0 {
+				t.Fatal("pending duplicate intent allowed enqueue")
+			}
+			h.gh.failWith(writes, 0)
+			h.gh.failWith(updates, 0)
+			if failUpdate {
+				e.Tick(ctx)
+			} // Durably record pending intent before recovery starts.
+			if h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("recovered writes did not persist the duplicate hold")
+			}
+		})
+	}
+}
+
 func TestDuplicateHeadRevokesAPassAndReviewsAgainAfterResolution(t *testing.T) {
 	h, e, ctx := approvedQueuedHead(t)
 	e.Tick(ctx)
@@ -1386,6 +1691,7 @@ func TestCompletedSharedHeadCannotBorrowAnotherPRsLabelSnapshot(t *testing.T) {
 	addPR7(h)
 	h.gh.label(7, "human")
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	h.gh.prs[7].LabelEvents[0].CreatedAt = h.gh.prs[7].Reviews[0].SubmittedAt.Add(-time.Minute)
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
 	eventually(t, "the original approval", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
@@ -1460,11 +1766,14 @@ func TestGateRevalidationErrorsCannotPropagateAnOldPass(t *testing.T) {
 	}
 }
 
-func TestLegacyGateStateKeepsItsBaselineAndRevalidates(t *testing.T) {
+func TestLegacyGateStateCapturesHistoryOnceAndRevalidates(t *testing.T) {
 	h, e, ctx := approvedQueuedHead(t)
 	h.gh.label(7, "needs-human", "HUMAN")
 	legacy := statePrefix + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"gate":{"paths":["REVIEW.md"],"labels":["human","needs-human"],"approver":"jomcgi"}}`)) + stateSuffix
 	h.gh.mu.Lock()
+	for i := range h.gh.prs[7].LabelEvents {
+		h.gh.prs[7].LabelEvents[i].CreatedAt = h.gh.prs[7].Reviews[0].SubmittedAt.Add(-time.Minute)
+	}
 	for _, c := range h.gh.checks {
 		if c.SHA == shaA {
 			c.Text = legacy
@@ -1475,7 +1784,7 @@ func TestLegacyGateStateKeepsItsBaselineAndRevalidates(t *testing.T) {
 	e.Tick(ctx)
 	h.gh.label(7, "human", "Needs-Human") // Order and case do not create a hold.
 	e.Tick(ctx)
-	if h.gh.checkCount() != n || h.gh.check(shaA).Conclusion != ConclusionSuccess {
+	if h.gh.checkCount() != n+1 || h.gh.check(shaA).Conclusion != ConclusionSuccess {
 		t.Fatal("legacy label baseline or label order invalidated an approval")
 	}
 	h.gh.review(7, "jomcgi", "CHANGES_REQUESTED", shaA, "")

@@ -44,9 +44,12 @@ type fakePR struct {
 	Files   []github.PullRequestFile
 	// Heads is the timeline's head history, oldest first; the current head
 	// is appended when it changes.
-	Heads    []string
-	Reviews  []github.PullRequestReview
-	Comments []github.Comment
+	Heads          []string
+	Reviews        []github.PullRequestReview
+	LabelEvents    []github.LabelEvent
+	ReviewEditors  map[int64]string
+	ReviewEditedAt map[int64]time.Time
+	Comments       []github.Comment
 	// TimelineTruncated reports older timeline events than GitHub lists.
 	TimelineTruncated bool
 	Closed            bool
@@ -96,12 +99,15 @@ type fakeGitHub struct {
 	failCheckSHA string
 	// afterQueueRead changes metadata after its GraphQL snapshot was returned.
 	// It runs once under mu, before the caller's subsequent open-PR listing.
-	afterQueueRead func()
+	afterQueueRead   func()
+	afterReviewsRead func()
 	// fail answers "METHOD /path" with a status code; failGQL fails a
 	// GraphQL call by kind.
-	fail    map[string]int
-	failGQL map[string]bool
-	nextID  int64
+	fail        map[string]int
+	failGQL     map[string]bool
+	nextID      int64
+	nextEventID int64
+	now         func() time.Time
 	// closeAfterPage closes PR [1] once the open PR listing's page [0] is
 	// served, as a PR that closes between two page reads would.
 	closeAfterPage [2]int
@@ -112,6 +118,7 @@ func newFakeGitHub(t *testing.T) (*fakeGitHub, *httptest.Server) {
 		t: t, prs: map[int]*fakePR{}, statuses: map[string][]map[string]any{}, baseHead: "base-1",
 		baseFiles: map[string]string{}, queued: map[int]string{}, queueHead: map[int]string{},
 		fail: map[string]int{}, failGQL: map[string]bool{},
+		now: time.Now,
 	}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
@@ -130,6 +137,10 @@ func (f *fakeGitHub) addPR(pr *fakePR) {
 	if len(pr.Heads) == 0 {
 		pr.Heads = []string{pr.Head}
 	}
+	for _, label := range pr.Labels {
+		f.nextEventID++
+		pr.LabelEvents = append(pr.LabelEvents, github.LabelEvent{ID: f.nextEventID, Label: label, CreatedAt: f.now().UTC().Truncate(time.Second).Add(-time.Minute)})
+	}
 	f.prs[pr.Number] = pr
 }
 
@@ -145,13 +156,21 @@ func (f *fakeGitHub) review(number int, author, state, sha, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	pr := f.prs[number]
-	pr.Reviews = append(pr.Reviews, github.PullRequestReview{ID: int64(number*100000 + len(pr.Reviews) + 1), Author: author, State: state, CommitSHA: sha, Body: body, SubmittedAt: time.Now().UTC().Truncate(time.Second)})
+	id := int64(number*100000 + len(pr.Reviews) + 1)
+	pr.Reviews = append(pr.Reviews, github.PullRequestReview{ID: id, NodeID: fmt.Sprintf("REVIEW_%d", id), Author: author, State: state, CommitSHA: sha, Body: body, SubmittedAt: f.now().UTC().Truncate(time.Second)})
 }
 
 func (f *fakeGitHub) label(number int, labels ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.prs[number].Labels = labels
+	pr := f.prs[number]
+	for _, label := range labels {
+		if !containsFold(pr.Labels, label) {
+			f.nextEventID++
+			pr.LabelEvents = append(pr.LabelEvents, github.LabelEvent{ID: f.nextEventID, Label: label, CreatedAt: f.now().UTC().Truncate(time.Second)})
+		}
+	}
+	pr.Labels = labels
 }
 
 // checksOn lists copies of every review check on sha, oldest first.
@@ -381,7 +400,19 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/pulls/"), "/reviews"))
 		out := []map[string]any{}
 		for _, rv := range f.prs[n].Reviews {
-			out = append(out, map[string]any{"id": rv.ID, "user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body, "submitted_at": rv.SubmittedAt})
+			out = append(out, map[string]any{"id": rv.ID, "node_id": rv.NodeID, "user": map[string]string{"login": rv.Author}, "state": rv.State, "commit_id": rv.CommitSHA, "body": rv.Body, "submitted_at": rv.SubmittedAt})
+		}
+		f.get(w, r, page(out, q))
+		if f.afterReviewsRead != nil {
+			hook := f.afterReviewsRead
+			f.afterReviewsRead = nil
+			hook()
+		}
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/events"):
+		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/events"))
+		out := []map[string]any{}
+		for _, event := range f.prs[n].LabelEvents {
+			out = append(out, map[string]any{"id": event.ID, "event": "labeled", "label": map[string]string{"name": event.Label}, "created_at": event.CreatedAt})
 		}
 		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
@@ -562,7 +593,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	defer func() { f.gql = append(f.gql, kind) }()
 	for k, fail := range f.failGQL {
 		if fail && strings.Contains(req.Query, map[string]string{
-			"enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch",
+			"enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
 		}[k]) {
 			kind = k
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
@@ -570,6 +601,30 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case strings.Contains(req.Query, "... on PullRequestReview"):
+		kind = "review_acknowledgement"
+		id, _ := req.Variables["id"].(string)
+		for number, pr := range f.prs {
+			for _, rv := range pr.Reviews {
+				if rv.NodeID != id {
+					continue
+				}
+				var editor, editedAt any
+				if login := pr.ReviewEditors[rv.ID]; login != "" {
+					editor = map[string]string{"login": login}
+				}
+				if tm, ok := pr.ReviewEditedAt[rv.ID]; ok {
+					editedAt = tm
+				}
+				reply(map[string]any{"node": map[string]any{
+					"__typename": "PullRequestReview", "id": id, "author": map[string]string{"login": rv.Author},
+					"editor": editor, "lastEditedAt": editedAt, "body": rv.Body, "state": rv.State, "commit": map[string]string{"oid": rv.CommitSHA},
+					"pullRequest": map[string]any{"number": number, "repository": map[string]string{"nameWithOwner": testRepo}},
+				}})
+				return
+			}
+		}
+		reply(map[string]any{"node": nil})
 	case strings.Contains(req.Query, "enqueuePullRequest"):
 		kind = "enqueue"
 		id, _ := req.Variables["id"].(string)
@@ -837,7 +892,7 @@ func (s *syncBuffer) String() string {
 
 func newHarness(t *testing.T) *harness {
 	gh, srv := newFakeGitHub(t)
-	return &harness{
+	h := &harness{
 		t: t, gh: gh, k: newFakeKagent(), m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
 		cfg: Config{
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
@@ -860,6 +915,13 @@ func newHarness(t *testing.T) *harness {
 			}},
 		},
 	}
+	gh.now = func() time.Time {
+		if h.cfg.Now != nil {
+			return h.cfg.Now()
+		}
+		return time.Now()
+	}
+	return h
 }
 
 // engine builds a fresh engine, as a new process would, sharing the fakes.

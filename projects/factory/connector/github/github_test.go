@@ -576,7 +576,7 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/example-org/homelab/pulls/7/reviews":
-			_, _ = w.Write([]byte(`[{"id": 80, "user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok", "submitted_at": "2026-11-14T12:00:00Z"}]`))
+			_, _ = w.Write([]byte(`[{"id": 80, "node_id": "PRR_80", "user": {"login": "jomcgi"}, "state": "APPROVED", "commit_id": "sha-1", "body": "ok", "submitted_at": "2026-11-14T12:00:00Z"}]`))
 		case "/repos/example-org/homelab/issues/7/comments":
 			_, _ = w.Write([]byte(`[{"user": {"login": "someone"}, "body": "hi"}]`))
 		case "/repos/example-org/homelab/compare/sha-0...sha-1":
@@ -589,7 +589,7 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
 	ctx := context.Background()
 	rv, err := c.PullRequestReviews(ctx, "example-org/homelab", 7)
-	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{ID: 80, Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok", SubmittedAt: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}) {
+	if err != nil || len(rv) != 1 || rv[0] != (PullRequestReview{ID: 80, NodeID: "PRR_80", Author: "jomcgi", State: "APPROVED", CommitSHA: "sha-1", Body: "ok", SubmittedAt: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)}) {
 		t.Fatalf("reviews = %+v, %v", rv, err)
 	}
 	cm, err := c.PullRequestComments(ctx, "example-org/homelab", 7)
@@ -696,6 +696,212 @@ func TestPullRequestReviewsRejectsAMissingPage(t *testing.T) {
 			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
 			if reviews, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7); err == nil || reviews != nil {
 				t.Fatalf("missing page returned a usable snapshot: %v, %v", reviews, err)
+			}
+		})
+	}
+}
+
+func acknowledgementNode() map[string]any {
+	return map[string]any{
+		"__typename": "PullRequestReview", "id": "PRR_80", "author": map[string]string{"login": "jomcgi"},
+		"editor": nil, "lastEditedAt": nil, "body": "factory hold acknowledgement", "state": "APPROVED",
+		"commit":      map[string]string{"oid": "sha-1"},
+		"pullRequest": map[string]any{"number": 7, "repository": map[string]string{"nameWithOwner": "Example-Org/Homelab"}},
+	}
+}
+
+func TestPullRequestReviewAcknowledgementReadsOneReview(t *testing.T) {
+	for _, editor := range []string{"", "jomcgi", "someone-else", "unknown"} {
+		t.Run(editor, func(t *testing.T) {
+			node := acknowledgementNode()
+			if editor != "" {
+				node["lastEditedAt"] = "2026-11-15T12:00:01Z"
+				if editor != "unknown" {
+					node["editor"] = map[string]string{"login": editor}
+				}
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				if r.URL.Path != "/graphql" || r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer ghs_fixed" || req.Variables["id"] != "PRR_80" {
+					t.Errorf("wrong acknowledgement request: %s %s, variables %+v", r.Method, r.URL.Path, req.Variables)
+				}
+				for _, field := range []string{"node(id:", "... on PullRequestReview", "author", "editor", "lastEditedAt", "body", "state", "commit", "pullRequest", "nameWithOwner"} {
+					if !strings.Contains(req.Query, field) {
+						t.Errorf("acknowledgement query omitted %s", field)
+					}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"node": node}})
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80")
+			if err != nil || got == nil || got.Author != "jomcgi" || got.Body != "factory hold acknowledgement" || got.State != "APPROVED" || got.CommitSHA != "sha-1" {
+				t.Fatalf("acknowledgement = %+v, %v", got, err)
+			}
+			wantEditor := editor
+			if editor == "unknown" {
+				wantEditor = ""
+			}
+			if got.Editor != wantEditor || (got.LastEditedAt == nil) != (editor == "") {
+				t.Fatalf("edit provenance changed: %+v", got)
+			}
+			if got.LastEditedAt != nil && !got.LastEditedAt.Equal(time.Date(2026, 11, 15, 12, 0, 1, 0, time.UTC)) {
+				t.Fatalf("edit timestamp = %v", got.LastEditedAt)
+			}
+		})
+	}
+}
+
+func TestPullRequestReviewAcknowledgementRejectsIncompleteOrForeignNode(t *testing.T) {
+	for _, change := range []struct {
+		name  string
+		apply func(map[string]any)
+	}{
+		{"wrong type", func(n map[string]any) { n["__typename"] = "IssueComment" }},
+		{"wrong node", func(n map[string]any) { n["id"] = "PRR_81" }},
+		{"wrong PR", func(n map[string]any) { n["pullRequest"].(map[string]any)["number"] = 8 }},
+		{"wrong repo", func(n map[string]any) {
+			n["pullRequest"].(map[string]any)["repository"] = map[string]string{"nameWithOwner": "other/repo"}
+		}},
+		{"missing PR", func(n map[string]any) { n["pullRequest"] = nil }},
+		{"missing repo", func(n map[string]any) { n["pullRequest"].(map[string]any)["repository"] = nil }},
+		{"missing editor field", func(n map[string]any) { delete(n, "editor") }},
+		{"missing edit timestamp field", func(n map[string]any) { delete(n, "lastEditedAt") }},
+		{"malformed edit timestamp", func(n map[string]any) { n["lastEditedAt"] = "not a timestamp" }},
+		{"missing body", func(n map[string]any) { delete(n, "body") }},
+		{"missing state", func(n map[string]any) { delete(n, "state") }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			node := acknowledgementNode()
+			change.apply(node)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"node": node}})
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			if got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80"); err == nil || got != nil {
+				t.Fatalf("unusable node returned acknowledgement: %+v, %v", got, err)
+			}
+		})
+	}
+	for _, reply := range []string{`{"data":{"node":null}}`, `{"data":{}}`, `{"data":null}`, `{"data":{"node":{}},"errors":[{"type":"FORBIDDEN","message":"no"}]}`} {
+		t.Run(reply, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(reply)) }))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			if got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80"); err == nil || got != nil {
+				t.Fatalf("missing/error node returned acknowledgement: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestPullRequestLabelEventsReadEveryPage(t *testing.T) {
+	srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/events", 250, func(i int) string {
+		kind := "unlabeled"
+		if i == 1 || i == 250 {
+			kind = "labeled"
+		}
+		return fmt.Sprintf(`{"id":%d,"event":%q,"created_at":"2026-11-15T12:00:00Z","label":{"name":"needs-human"}}`, i, kind)
+	})
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7)
+	want := []LabelEvent{
+		{ID: 1, Label: "needs-human", CreatedAt: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
+		{ID: 250, Label: "needs-human", CreatedAt: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
+	}
+	if err != nil || !reflect.DeepEqual(events, want) {
+		t.Fatalf("label events = %+v, %v", events, err)
+	}
+	if len(*seen) != 3 || !strings.Contains((*seen)[2], "page=3") || !strings.Contains((*seen)[0], "per_page=100") {
+		t.Fatalf("queries = %v", *seen)
+	}
+}
+
+func TestPullRequestLabelEventsRejectIncompleteHistory(t *testing.T) {
+	for _, body := range []string{
+		`null`,
+		`[null]`,
+		`[{}]`,
+		`[{"event":"labeled","created_at":"2026-11-15T12:00:00Z","label":{"name":"human"}}]`,
+		`[{"id":1,"event":"labeled","label":{"name":"human"}}]`,
+		`[{"id":1,"event":"labeled","created_at":"2026-11-15T12:00:00Z","label":{}}]`,
+		`[{"id":1,"event":"labeled","created_at":"2026-11-15T12:00:00Z","label":null}]`,
+		`[{"id":1,"event":"labeled","created_at":"invalid","label":{"name":"human"}}]`,
+	} {
+		for _, laterPage := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s later=%v", body, laterPage), func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get("Authorization") != "Bearer ghs_fixed" {
+						t.Error("event history read omitted repository authentication")
+					}
+					if laterPage && r.URL.Query().Get("page") == "1" {
+						items := make([]map[string]any, MaxListed)
+						for i := range items {
+							items[i] = map[string]any{"id": i + 1, "event": "labeled", "created_at": "2026-11-15T12:00:00Z", "label": map[string]string{"name": "human"}}
+						}
+						_ = json.NewEncoder(w).Encode(items)
+						return
+					}
+					_, _ = w.Write([]byte(body))
+				}))
+				defer srv.Close()
+				c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+				if events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7); err == nil || events != nil {
+					t.Fatalf("incomplete history returned usable events: %+v, %v", events, err)
+				}
+			})
+		}
+	}
+}
+
+func TestPullRequestLabelEventsBoundAllEvents(t *testing.T) {
+	srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/events", MaxIssueEventPages*MaxListed+1, func(i int) string {
+		return fmt.Sprintf(`{"id":%d,"event":"closed"}`, i)
+	})
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	if events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7); !errors.Is(err, ErrTooMany) || events != nil {
+		t.Fatalf("oversized history returned usable events: %+v, %v", events, err)
+	}
+	if len(*seen) != MaxIssueEventPages {
+		t.Fatalf("read %d pages, want %d", len(*seen), MaxIssueEventPages)
+	}
+}
+
+func TestPullRequestLabelEventsEmptyAndFailedPages(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(fmt.Sprint("failure=", failure), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if failure && r.URL.Query().Get("page") == "1" {
+					items := make([]map[string]any, MaxListed)
+					for i := range items {
+						items[i] = map[string]any{"id": i + 1, "event": "labeled", "created_at": "2026-11-15T12:00:00Z", "label": map[string]string{"name": "human"}}
+					}
+					_ = json.NewEncoder(w).Encode(items)
+					return
+				}
+				if failure {
+					http.Error(w, "unavailable", http.StatusBadGateway)
+					return
+				}
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7)
+			if failure && (err == nil || events != nil) {
+				t.Fatalf("failed later page returned usable history: %+v, %v", events, err)
+			}
+			if !failure && (err != nil || len(events) != 0) {
+				t.Fatalf("empty history = %+v, %v", events, err)
 			}
 		})
 	}
