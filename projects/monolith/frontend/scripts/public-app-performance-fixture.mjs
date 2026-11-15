@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createNavigationTracker } from "../src/lib/public/performance/navigation.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
@@ -24,6 +25,7 @@ const { chromium } = await import(
 );
 const browser = await chromium.launch({ headless: true });
 const results = [];
+const navigationResults = [];
 const calibration = {
   browser: browser.version(),
   method:
@@ -124,6 +126,68 @@ async function calibrateTiming() {
   } catch (error) {
     calibration.error = error.message;
     throw error;
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function navigationFixture() {
+  const server = createServer((request, response) => {
+    if (request.url === "/redirect") {
+      response.writeHead(302, { location: "/settled", "content-length": 0 });
+      response.end();
+      return;
+    }
+    const body =
+      request.url === "/reload"
+        ? '<!doctype html><title>Before reload</title><iframe src="/child"></iframe><script>setTimeout(() => location.replace("/settled"), 300)</script>'
+        : "<!doctype html><title>Settled</title><p>Local navigation control</p>";
+    response.writeHead(200, {
+      "content-type": "text/html",
+      "cache-control": "no-store",
+      "content-length": Buffer.byteLength(body),
+    });
+    response.end(body);
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    for (const route of ["/redirect", "/reload"]) {
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Network.enable");
+        const { frameTree } = await cdp.send("Page.getFrameTree");
+        const tracker = createNavigationTracker(frameTree.frame.id);
+        cdp.on("Network.requestWillBeSent", (event) => tracker.request(event));
+        cdp.on("Network.responseReceived", (event) => tracker.response(event));
+        await page.goto(`${origin}${route}`, {
+          waitUntil: "domcontentloaded",
+          timeout: 10000,
+        });
+        await page.waitForURL(`${origin}/settled`, {
+          waitUntil: "domcontentloaded",
+          timeout: 10000,
+        });
+        const state = tracker.snapshot();
+        const clock = await page.evaluate(() => ({
+          timeOriginMs: performance.timeOrigin,
+          navigation: performance.getEntriesByType("navigation")[0]?.toJSON(),
+        }));
+        assert.equal(state.navigationCount, route === "/redirect" ? 1 : 2);
+        assert.equal(state.comparisonEligible, route === "/redirect");
+        assert.equal(state.navigations.at(-1).status, 200);
+        if (route === "/redirect")
+          assert.equal(state.navigations[0].urls.length, 2);
+        navigationResults.push({ route, passed: true, ...state, ...clock });
+      } finally {
+        await context.close();
+      }
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -235,6 +299,7 @@ try {
     true,
   );
   await calibrateTiming();
+  await navigationFixture();
   console.log("Content observer and local timing Chromium fixtures passed");
 } catch (error) {
   results.push({ passed: false, error: error.message });
@@ -242,6 +307,10 @@ try {
 } finally {
   await browser.close();
   await mkdir(path.resolve(values.output), { recursive: true });
+  await writeFile(
+    path.join(values.output, "navigation-fixture.json"),
+    JSON.stringify({ results: navigationResults }, null, 2) + "\n",
+  );
   await writeFile(
     path.join(values.output, "calibration.json"),
     JSON.stringify(calibration, null, 2) + "\n",

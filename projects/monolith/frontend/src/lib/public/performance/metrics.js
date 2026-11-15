@@ -191,7 +191,12 @@ export function responseTransferTotals(requests) {
 
 export function summarize(runs) {
   const successful = runs.filter(
-    (r) => !r.error && !r.interactionError && r.status >= 200 && r.status < 400,
+    (r) =>
+      !r.error &&
+      !r.interactionError &&
+      r.comparisonEligible !== false &&
+      r.status >= 200 &&
+      r.status < 400,
   );
   const metrics = [
     "ttfbMs",
@@ -210,6 +215,16 @@ export function summarize(runs) {
   return {
     runs: runs.length,
     successfulRuns: successful.length,
+    comparableInteractionRuns: successful.filter(
+      (r) =>
+        Number.isFinite(r.interactionLatencyMs) &&
+        r.interactionComparable !== false,
+    ).length,
+    unreadyInteractionRuns: successful.filter(
+      (r) => r.interactionComparable === false,
+    ).length,
+    nonComparableRuns: runs.filter((r) => r.comparisonEligible === false)
+      .length,
     failedInteractions: runs.filter((r) => r.interactionError).length,
     completeProfileRuns: successful.filter((r) => r.profileComplete).length,
     unobservedTargetRuns,
@@ -226,7 +241,15 @@ export function summarize(runs) {
           "visibleContentMs",
         ].includes(key) && successful.some((r) => !Number.isFinite(r[key]))
           ? null
-          : median(successful.map((r) => r[key])),
+          : median(
+              successful
+                .filter(
+                  (r) =>
+                    key !== "interactionLatencyMs" ||
+                    r.interactionComparable !== false,
+                )
+                .map((r) => r[key]),
+            ),
       ]),
     ),
     // A synthetic interaction sample is not field INP.
@@ -280,4 +303,17 @@ export function summarizeTimingCalibration(samples) {
       medianAddedLatencyMs >= criteria.minimumAddedLatencyMs &&
       medianAddedLatencyMs <= criteria.maximumAddedLatencyMs,
   };
+}
+
+// A request is ready only after its entire successful response has finished.
+// This says nothing about subsequent parsing, component state or map paint.
+export function interactionResourceReady(requests, url) {
+  return requests.some(
+    (request) =>
+      request.url === url &&
+      request.complete &&
+      !request.failed &&
+      request.status >= 200 &&
+      request.status < 300,
+  );
 }
