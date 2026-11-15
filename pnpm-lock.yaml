@@ -31,6 +31,9 @@ patchedDependencies:
   '@sveltejs/kit':
     hash: f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4
     path: bazel/patches/@sveltejs__kit.patch
+  happy-dom@20.8.9:
+    hash: 32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667
+    path: bazel/patches/happy-dom.patch
   rollup:
     hash: 7167173a2dcac0d8e76b0de67de8e66d27ad65e833cc4268e1de7ae49759c1fd
     path: bazel/patches/rollup.patch
@@ -44,7 +47,7 @@ importers:
         version: 22.19.7
       happy-dom:
         specifier: 20.8.9
-        version: 20.8.9
+        version: 20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667)
       prettier:
         specifier: 3.9.6
         version: 3.9.6
@@ -59,7 +62,7 @@ importers:
         version: 6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)
       vitest:
         specifier: '>=4.1.11 <5'
-        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
 
   projects/design-system: {}
 
@@ -101,7 +104,7 @@ importers:
         version: 19.3.0(@types/react@19.3.0)
       happy-dom:
         specifier: 20.8.9
-        version: 20.8.9
+        version: 20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667)
       typescript:
         specifier: 6.0.2
         version: 6.0.2
@@ -110,7 +113,7 @@ importers:
         version: 6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)
       vitest:
         specifier: '>=4.1.11 <5'
-        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
 
   projects/monolith/frontend:
     dependencies:
@@ -165,7 +168,7 @@ importers:
         version: 6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)
       vitest:
         specifier: '>=4.1.11 <5'
-        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
 
   projects/monolith/web/grimoire:
     dependencies:
@@ -217,7 +220,7 @@ importers:
         version: 19.3.0(@types/react@19.3.0)
       happy-dom:
         specifier: 20.8.9
-        version: 20.8.9
+        version: 20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667)
       typescript:
         specifier: 6.0.2
         version: 6.0.2
@@ -226,7 +229,7 @@ importers:
         version: 6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)
       vitest:
         specifier: '>=4.1.11 <5'
-        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
 
 packages:
 
@@ -3524,7 +3527,7 @@ snapshots:
 
   hachure-fill@0.5.2: {}
 
-  happy-dom@20.8.9:
+  happy-dom@20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667):
     dependencies:
       '@types/node': 22.19.7
       '@types/whatwg-mimetype': 3.0.2
@@ -4081,7 +4084,7 @@ snapshots:
     optionalDependencies:
       vite: 6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)
 
-  vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)):
+  vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)):
     dependencies:
       '@vitest/expect': 4.1.11
       '@vitest/mocker': 4.1.11(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
@@ -4106,7 +4109,7 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
       '@types/node': 22.19.7
-      happy-dom: 20.8.9
+      happy-dom: 20.8.9(patch_hash=32205775f66075ea8db54088f453f036e5b44a8d2d955ada6a9673d8ca2ee667)
     transitivePeerDependencies:
       - msw
 
