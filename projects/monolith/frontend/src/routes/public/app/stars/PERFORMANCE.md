@@ -79,6 +79,46 @@ Tests cover complete JSON equality, differing and future hour fields, separate
 requests, frozen input, separate site arrays, loader integration, identical
 first-view HTML and opening cards for two sites that share frozen hour records.
 
+## Full history HTTP encoding
+
+`/api/stars/history`, exposed at `/app/stars/history`, encodes the builder's
+JSON primitives directly through `JSONResponse`. This avoids FastAPI's second
+recursive walk of the completed site and month arrays. `get_history` still
+returns a dictionary to the materializer, and its queries, ordering, ETag and
+conditional-response logic are unchanged. The map's `/history-map` request
+continues to read its existing materialized object.
+
+On 2026-11-15, three fresh Python processes per version measured the actual
+FastAPI route against a local, file-backed SQLite fixture. Base revision:
+`cc85e454b715ecc32412e11ef8e6035fc3b39e1d`.
+
+| Measurement | Before | HTTP wrapper |
+| --- | ---: | ---: |
+| Median route time | 1,030 ms | 680 ms |
+| Response bytes | 2,513,273 | 2,513,273 |
+
+The raw route samples were 1,097.96, 1,030.01 and 870.82 ms before, then 774.55,
+569.07 and 680.47 ms after. Every response had SHA-256
+`2c913827bd615af8807e6e32eb765995e99a88aadd4655f383ed646a2d4e14dd`,
+the same cache policy and ETag `"v3-14234-20216951-207269252"`. Separate
+conditional requests in each process returned empty 304 responses with the
+same ETag and cache headers.
+
+The fixture reconstructs 14,234 sites and all 170,808 monthly rows from the
+captured public history response, including zero months. Actual PostgreSQL
+occupancy, query plans, the SvelteKit proxy and production network are not
+measured. The change requires a verified rollout and production remeasurement
+before any live speedup claim. These HTTP timings do not measure the Historical
+button interaction.
+
+The registered `//projects/monolith:stars_router_test` covers UTF-8 and escaped
+HTTP bytes, content length, cache and ETag headers, empty 304 responses,
+climatology changes, skipping the recursive encoder and the direct dictionary
+contract used by the materializer. Existing materialization tests still publish
+the real history builder's output. Router and model tests pass together: 50
+tests. The recursive-encoder regression failed against the original route
+before the wrapper was added.
+
 ## Cache windows
 
 | Responses                     |        TTL |     SWR |    Normal maximum |     SIE |   Error allowance |
