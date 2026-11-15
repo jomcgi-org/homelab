@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from agent import config as agent_config
 from agent import routine_jobs
 from factory.execution import execution_api as api
+from factory.execution import codex_login
 from factory.execution import store
 from factory.execution import mcp
 from factory.execution import transport
@@ -1835,6 +1836,31 @@ async def test_codex_login_gate_none_returns_device_login(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["pending", "persistence_pending"])
+async def test_codex_login_gate_recognizes_persistence_retry(monkeypatch, state):
+    calls = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        if method == "GET":
+            return {"state": state}
+        return {"state": "pending", "persistence_retry": True}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+
+    result = await codex_login_gate("luna")
+    assert result["login_required"] is True
+    assert result["pending"] is True
+    assert result["persistence_retry"] is True
+    assert "approved" in result["message"]
+    assert "user_code" not in result
+    assert calls == [
+        ("GET", "/grants/codex-cluster/login/status"),
+        ("POST", "/grants/codex-cluster/login/start"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_codex_login_gate_login_pending_is_not_an_error(monkeypatch):
     async def broker_request(method, path):
         if method == "GET":
@@ -1849,6 +1875,36 @@ async def test_codex_login_gate_login_pending_is_not_an_error(monkeypatch):
     result = await codex_login_gate("luna")
     assert result["pending"] is True
     assert result["login_required"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unreachable", [False, True])
+async def test_codex_login_watch_without_active_flow_still_expires(
+    monkeypatch, unreachable
+):
+    now = 0
+    resumed = []
+
+    async def broker_request(method, path):
+        nonlocal now
+        assert (method, path) == ("GET", "/grants/codex-cluster/login/status")
+        now = 901
+        if unreachable:
+            raise RuntimeError("broker offline")
+        return {"state": "none"}
+
+    async def on_granted():
+        resumed.append(True)
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(codex_login, "monotonic", lambda: now)
+    previous_tasks = codex_login._login_watch_tasks.copy()
+    codex_login.watch_for_login("codex-cluster", on_granted)
+    tasks = codex_login._login_watch_tasks - previous_tasks
+    assert len(tasks) == 1
+    await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+    assert not tasks.intersection(codex_login._login_watch_tasks)
+    assert resumed == []
 
 
 @pytest.mark.asyncio
@@ -1979,8 +2035,9 @@ def test_router_start_non_codex_models_enqueue_without_broker(
     assert calls == []
 
 
+@pytest.mark.parametrize("terminal", ["granted", "failed", "none"])
 def test_router_start_codex_login_required_preserves_session_and_watches(
-    client, session, monkeypatch
+    client, session, monkeypatch, caplog, terminal
 ):
     calls = []
     watched = []
@@ -2041,9 +2098,51 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
         ("POST", "/grants/codex-cluster/login/start"),
     ]
 
-    asyncio.run(watched[0][1]())
-    assert store.get_session(session, body["session_id"]).status == "running"
-    assert scheduled == [body["session_id"]]
+    # Approval/persistence may cross the original 15-minute watcher limit.
+    # A later operator retry must resume the original queued turn exactly once,
+    # even if polling temporarily failed while the credentials were retained.
+    now = 0
+    responses = iter(
+        [
+            (0, {"state": "pending"}),
+            (901, {"state": "pending"}),
+            (1800, {"state": "persistence_pending"}),
+            (3600, RuntimeError("sensitive diagnostic")),
+            (7200, {"state": "persistence_pending"}),
+            (7205, {"state": "pending"}),
+            (7210, {"state": terminal, "detail": "sensitive diagnostic"}),
+        ]
+    )
+    polls = []
+
+    async def poll(method, path):
+        nonlocal now
+        polls.append((method, path))
+        now, response = next(responses, (7215, {"state": "failed"}))
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(mcp, "_broker_request", poll)
+    monkeypatch.setattr(codex_login, "monotonic", lambda: now)
+    monkeypatch.setattr(codex_login, "_LOGIN_POLL_INTERVAL", 0)
+
+    async def finish_watch():
+        previous_tasks = codex_login._login_watch_tasks.copy()
+        codex_login.watch_for_login(*watched[0])
+        tasks = codex_login._login_watch_tasks - previous_tasks
+        assert len(tasks) == 1
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+        assert not tasks.intersection(codex_login._login_watch_tasks)
+
+    asyncio.run(finish_watch())
+    assert polls == [("GET", "/grants/codex-cluster/login/status")] * 7
+    expected_status = "running" if terminal == "granted" else "awaiting_login"
+    assert store.get_session(session, body["session_id"]).status == expected_status
+    assert scheduled == ([body["session_id"]] if terminal == "granted" else [])
+    pending = store.get_pending_message(session, body["session_id"], body["turn"])
+    assert pending.message_text == "Hello"
+    assert "sensitive diagnostic" not in caplog.text
 
 
 def test_send_message_login_required_persists_and_watches(client, session, monkeypatch):
