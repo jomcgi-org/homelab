@@ -625,6 +625,7 @@ js_library(
         "src/lib/public/components/index.js",
         "src/lib/public/components/stars/StarsMap.svelte",
         "src/lib/public/seo.js",
+        "src/lib/public/stars/geojson-url.js",
         "src/lib/public/stars/heat.js",
         "src/lib/public/stars/mapTheme.js",
         "src/lib/public/stars/urlParams.js",
