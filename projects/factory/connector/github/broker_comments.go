@@ -17,20 +17,12 @@ import (
 // conversation comments.
 const DefaultCommentsPath = "/github/reviewer-comments"
 
-// The broker lists BrokerCommentPageSize comments a page, so a page,
-// however escaped, stays under maxBrokerCommentPageBytes: 20 bodies of
-// 65536 characters at 6 bytes each is 7.5 MiB. Both match
-// projects/factory/broker/github (CommentPageSize, MaxCommentPageBytes).
-const (
-	BrokerCommentPageSize     = 20
-	maxBrokerCommentPageBytes = 8 << 20
-	// maxBrokerCommentPages keeps the listing at MaxCommentPages pages of
-	// MaxListed comments: 1,000.
-	maxBrokerCommentPages = MaxCommentPages * MaxListed / BrokerCommentPageSize
-)
+// maxBrokerCommentAnswer bounds a broker answer: one comment of at most
+// 65536 characters at six bytes each when escaped, plus its other fields.
+const maxBrokerCommentAnswer = 1 << 20
 
-// BrokerComments lists, creates and edits the reviewer's PR conversation
-// comments through the broker. GitHub needs pull_requests write for a PR
+// BrokerComments finds, creates and edits the reviewer's PR conversation
+// comment through the broker. GitHub needs pull_requests write for a PR
 // comment, which could approve, so the comment token stays in the broker
 // and this client never holds it.
 type BrokerComments struct {
@@ -52,27 +44,24 @@ func (c brokerComment) comment() Comment {
 	return Comment{ID: c.ID, Author: c.Author, Body: c.Body}
 }
 
-// IssueComments lists a PR's conversation comments, oldest first, page by
-// page. complete is false when maxBrokerCommentPages pages were read and
-// GitHub named a next page.
+// IssueComments returns the reviewer's own comment on a PR, the oldest the
+// broker's configured bot login wrote, as the only element, or none. The
+// broker searches the PR's comments and stops at the first match, so this
+// is one request. complete is false when the broker stopped at its bound
+// with comments left unread.
 func (b *BrokerComments) IssueComments(ctx context.Context, repo string, number int) (comments []Comment, complete bool, err error) {
-	for page := 1; page <= maxBrokerCommentPages; page++ {
-		var out struct {
-			Comments []brokerComment `json:"comments"`
-			Next     bool            `json:"next"`
-		}
-		q := url.Values{"repository": {repo}, "number": {strconv.Itoa(number)}, "page": {strconv.Itoa(page)}}
-		if err := b.do(ctx, http.MethodGet, "?"+q.Encode(), nil, &out); err != nil {
-			return nil, false, err
-		}
-		for _, c := range out.Comments {
-			comments = append(comments, c.comment())
-		}
-		if !out.Next {
-			return comments, true, nil
-		}
+	var out struct {
+		Comment  *brokerComment `json:"comment"`
+		Complete bool           `json:"complete"`
 	}
-	return comments, false, nil
+	q := url.Values{"repository": {repo}, "number": {strconv.Itoa(number)}}
+	if err := b.do(ctx, http.MethodGet, "?"+q.Encode(), nil, &out); err != nil {
+		return nil, false, err
+	}
+	if out.Comment != nil {
+		comments = append(comments, out.Comment.comment())
+	}
+	return comments, out.Complete, nil
 }
 
 // CreateIssueComment posts a conversation comment on a pull request.
@@ -132,12 +121,12 @@ func (b *BrokerComments) do(ctx context.Context, method, query string, in, out a
 		return fmt.Errorf("broker: %w", err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBrokerCommentPageBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBrokerCommentAnswer+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > maxBrokerCommentPageBytes {
-		return fmt.Errorf("broker: %s %s: answer over %d bytes", method, path, maxBrokerCommentPageBytes)
+	if len(data) > maxBrokerCommentAnswer {
+		return fmt.Errorf("broker: %s %s: answer over %d bytes", method, path, maxBrokerCommentAnswer)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var e struct {
