@@ -242,9 +242,11 @@ spec:
             {{- end }}
             {{- if .grimoire }}
             {{- $extractURL := urlParse ($.Values.grimoire.extractBaseUrl | default "https://openrouter.ai/api/v1/chat/completions") }}
-            {{- $extractHost := get $extractURL "host" | lower }}
+            {{- $extractHostParts := splitList ":" (get $extractURL "host" | lower) }}
+            {{- $extractHost := first $extractHostParts }}
+            {{- $standardHTTPSPort := or (eq (len $extractHostParts) 1) (and (eq (len $extractHostParts) 2) (eq (last $extractHostParts) "443")) }}
             {{- $extractKey := "" }}
-            {{- if eq (get $extractURL "scheme") "https" }}
+            {{- if and (eq (get $extractURL "scheme") "https") $standardHTTPSPort }}
               {{- if eq $extractHost "api.deepseek.com" }}
                 {{- $extractKey = "DEEPSEEK_API_KEY" }}
               {{- else if eq $extractHost "openrouter.ai" }}
@@ -256,8 +258,9 @@ spec:
             # GRIMOIRE_EXTRACT_API_KEY + GRIMOIRE_EXTRACT_MODEL/BASE_URL/LIMIT +
             # EMBEDDING_URL. Both get the union (the loader ignores the extract key,
             # the extractor ignores the S3 env) so the grimoire concern is one env
-            # block. Hosted credentials follow the exact HTTPS provider host;
-            # custom endpoints receive no hosted-provider key. The existing
+            # block. Hosted credentials require an exact HTTPS provider hostname
+            # with an omitted port or explicit 443. Custom endpoints and other
+            # ports receive no hosted-provider key. The existing
             # goosecracker Secret is Kyverno-cloned into monolith-workflows.
             # R2 credentials (monolith-r2-s3 Secret) are also Kyverno-cloned.
             {{- /* Only the shared endpoint and credentials below follow the

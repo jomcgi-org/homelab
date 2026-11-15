@@ -616,7 +616,8 @@ inert yearly schedule. It uses the extraction model and endpoint, exposed as
 selects direct DeepSeek V4 Flash. The verifier inherits `GRIMOIRE_EXTRACT_API_KEY`:
 the shared template selects the existing optional `goosecracker/DEEPSEEK_API_KEY`
 field for the DeepSeek HTTPS endpoint and `goosecracker/OPENROUTER_API_KEY` for
-OpenRouter, including the chart-default empty endpoint. Other endpoints receive
+OpenRouter, including the chart-default empty endpoint. Both providers accept
+an omitted port or explicit HTTPS port 443. Other endpoints and ports receive
 no hosted-provider credential. A missing hosted-provider key skips the run.
 
 The job caps each run at 25 entities and six evidence chunks per entity, with a

@@ -315,10 +315,17 @@ def test_grimoire_verifier_is_bounded_suspended_and_manually_addressable(values)
     [
         ("", "OPENROUTER_API_KEY"),
         ("https://openrouter.ai/api/v1/chat/completions", "OPENROUTER_API_KEY"),
+        ("https://openrouter.ai:443/api/v1/chat/completions", "OPENROUTER_API_KEY"),
         ("https://api.deepseek.com/chat/completions", "DEEPSEEK_API_KEY"),
+        ("https://api.deepseek.com:443/chat/completions", "DEEPSEEK_API_KEY"),
+        ("https://openrouter.ai:8443/api/v1/chat/completions", None),
+        ("https://api.deepseek.com:8443/chat/completions", None),
+        ("https://api.deepseek.com:80/chat/completions", None),
         ("https://inference.invalid/chat/completions", None),
         ("http://api.deepseek.com/chat/completions", None),
+        ("http://api.deepseek.com:443/chat/completions", None),
         ("https://api.deepseek.com.invalid/chat/completions", None),
+        ("https://api.deepseek.com.invalid:443/chat/completions", None),
     ],
 )
 def test_grimoire_verifier_tracks_extraction_provider_and_credential(
