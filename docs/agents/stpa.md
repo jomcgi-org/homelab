@@ -28,8 +28,8 @@ Per-lens analyses answer different safety questions:
 - **security**: deliberate attack. "Who can forge/withhold/replay a control action,
   and what does it get an adversary?" Same control structure, attacks on purpose.
   Status (`enforced-prod|enforced-dev|shipped-off|designed|none`) REQUIRED on every
-  UCA and unsafe-feedback row (what safeguard exists now). Issues referenced via
-  `issue` field (label: `security-finding`).
+  UCA and unsafe-feedback row (what safeguard exists now). The `issue` field names
+  its HOME issue.
 - **governance**: data-processing safety. "Does data cross visibility boundaries,
   stay retained too long, process without basis, lose provenance?" Feedback and
   data channels matter more than control arrows. Same rejection bar.
@@ -103,13 +103,14 @@ hazard the change does not yet mitigate: that is the finding most worth
 escalating. When a refresh changes nothing, say so and leave the files alone.
 Commit, push and open the PR only through BLOCK B, never by hand.
 
-## Remediation work goes to GitHub Issues
+## Remediation work goes to itsaplan
 
-File unmitigated UCAs / unsafe-feedback findings as issues (repo's source of truth
-for outstanding work), titled `<system>: <finding> (STPA <key>)`, labeled `bug`
-(broken safeguard) or `enhancement` (missing safeguard), plus `critical` for
-severe losses. Security lens findings add label `security-finding`. Reference
-the issue from the finding's evidence, not a STPA.md checklist.
+File unmitigated UCAs / unsafe-feedback findings as HOME issues (the source of
+truth for outstanding work), titled `<system>: <finding> (STPA <key>)`, with
+`broken safeguard` or `missing safeguard` and, for the security lens,
+`security finding` in the first line of the description. Set priority `urgent`
+for severe losses, otherwise `high`. Reference the issue from the finding's
+evidence, not a STPA.md checklist.
 
 ## Drift minimization (this is an update, not a rewrite)
 
@@ -174,8 +175,8 @@ Every fragment carries `system_dir` so a lens-only run can locate the committed
 structure. `status` is REQUIRED on security-lens UCA/unsafe-feedback rows and
 optional elsewhere; any `status` must be one of
 `enforced-prod|enforced-dev|shipped-off|designed|none`, and a security-lens row
-or hazard with `status: none` MUST carry a tracking `issue` (GitHub Issues are
-the source of truth for unmitigated findings). The validator enforces all
+or hazard with `status: none` MUST carry a tracking `issue`: a HOME issue key, or a
+GitHub `#N` on rows filed before the move to itsaplan. The validator enforces all
 three. Hazards MAY carry `status`/`issue` too: a tracked unsafe STATE with no
 single attacking control action (a missing egress policy, an absent jailer)
 lives on the hazard row rather than being forced onto an unrelated action.

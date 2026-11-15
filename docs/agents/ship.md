@@ -9,11 +9,12 @@ assigned role and result contract; factory prompts schedule the work.
 
 ## Work to completion
 
-- Read the request and existing issue. Infer routine details from the repo,
+- Read the request and its HOME issue. Infer routine details from the repo,
   choose a reversible approach and proceed. Ask only when the escalation
   conditions in `AGENTS.md` apply.
-- Use an existing issue for multi-step work, or create one with the outcome,
-  acceptance criteria and remaining work. A small explicit request can use
+- Use the existing HOME issue for multi-step work, or create one in itsaplan
+  (`docs/agents/reference.md` "Tracker") with the outcome, acceptance
+  criteria and remaining work. A small explicit request can use
   its PR as the record. Do not create a second planning ledger.
 - Keep one PR when the change is coherent. Split independently deliverable
   work when that improves throughput. Delegate independent implementation
@@ -24,7 +25,7 @@ assigned role and result contract; factory prompts schedule the work.
   appropriate to the task.
 - Fix in-scope failures yourself. Read failure evidence before retrying.
   Escalate a specific unresolved decision once; continue unrelated work.
-- Close the issue when its acceptance criteria are met. If rollout or
+- Move the issue to Done when its acceptance criteria are met. If rollout or
   observation is outstanding, leave it open and record the exact remainder.
   Report the PR URL and actual state.
 
@@ -33,7 +34,7 @@ assigned role and result contract; factory prompts schedule the work.
 - **Architecture:** update the domain's `ARCHITECTURE.md` when adding a
   service/integration, changing a data model or cross-service contract,
   moving a trust boundary, or reversing a decision. Record the rationale
-  in a `**Why.**` paragraph; link unbuilt work from Direction to its issue.
+  in a `**Why.**` paragraph; link unbuilt work from Direction to its HOME issue.
 - **Tests:** cover changed behaviour and failure paths. BDD is useful for
   user-visible flows; a separate specification PR is optional. Ordinary
   `bdd_test` targets run in required `pr-checks`; the unused future lane was
