@@ -224,12 +224,26 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
-	ID          int64  `json:"id"`
-	Identifier  string `json:"identifier"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ColumnID    int64  `json:"columnId"`
+	ID          int64       `json:"id"`
+	Identifier  string      `json:"identifier"`
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	ColumnID    int64       `json:"columnId"`
+	Links       []IssueLink `json:"links"`
 }
+
+// IssueLink is the relation as read from this issue. In v1.10.0,
+// blocked_by is stored as blocks and returned with an inward direction.
+type IssueLink struct {
+	Kind      string `json:"kind"`
+	Direction string `json:"direction"`
+	Issue     struct {
+		ID int64 `json:"id"`
+	} `json:"issue"`
+}
+
+// BlockedBy excludes outward, unrelated and undirected links.
+func (l IssueLink) BlockedBy() bool { return l.Kind == "blocks" && l.Direction == "inward" }
 
 // GetIssue reads an issue with the coordinator's key.
 func (c *Client) GetIssue(ctx context.Context, issueID int64) (*Issue, error) {

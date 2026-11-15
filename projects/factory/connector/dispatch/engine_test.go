@@ -1672,12 +1672,10 @@ func TestRefusedReplacementIssueWaitsForAuthoritativeText(t *testing.T) {
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	v.kg.expire(v.work(101).SessionID)
-	v.its.mu.Lock()
-	v.its.issueErr = &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}
-	v.its.mu.Unlock()
 	v.its.add(2, "coder", 101, "HL-1", "Address review.")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+	v.setIssueErr(&itsaplan.HTTPError{Status: 401, Body: "invalid api key"})
 	v.attestLifecycleRecovery(1)
 	if sends := v.kg.Sends(); len(sends) != 1 {
 		t.Fatalf("sends = %d, want the replacement to wait", len(sends))
@@ -1720,10 +1718,9 @@ func TestIssueIsQuotedOnlyWhenASessionOpens(t *testing.T) {
 	}
 }
 
-// TestRefusedBriefStartsWithoutTheIssueAfterBound: the first send reads its
-// issue with the coordinator key. While the key is refused it waits; past
-// the bound the session starts without the issue.
-func TestRefusedBriefStartsWithoutTheIssueAfterBound(t *testing.T) {
+// A missing brief uses the same admission hold as an unresolved dependency.
+// Credential timeouts cannot turn missing evidence into permission to start.
+func TestRefusedBriefWaitsBeyondAuthenticationBound(t *testing.T) {
 	v := newEnv(t)
 	v.its.mu.Lock()
 	v.its.issueErr = &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}
@@ -1733,18 +1730,20 @@ func TestRefusedBriefStartsWithoutTheIssueAfterBound(t *testing.T) {
 	if sends := v.kg.Sends(); len(sends) != 0 {
 		t.Fatalf("sends = %d, want the first send to wait", len(sends))
 	}
-	if n := v.refusals("coordinator", "brief"); n == 0 {
+	if n := v.refusals("coordinator", "admission"); n == 0 {
 		t.Fatal("the refused brief lookup was not counted")
 	}
-	v.tickUntil(time.Minute, 40, func() bool { return len(v.kg.Sends()) == 1 })
-	text := v.kg.Sends()[0].msg.Parts[0].Text
-	for _, want := range []string{"## Issue", "### Issue HL-1", "unavailable", "refused the coordinator key"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("first send lacks %q:\n%s", want, text)
-		}
+	for range 40 {
+		v.clk.Advance(time.Minute)
+		v.tick(v.e)
 	}
-	if strings.Contains(text, "Issue 101 description.") {
-		t.Errorf("first send has the issue it could not read:\n%s", text)
+	if len(v.kg.Sends()) != 0 || v.run(1).State != store.RunWaiting {
+		t.Fatal("missing issue text escaped its hold")
+	}
+	v.setIssueErr(nil)
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 1 || !strings.Contains(v.kg.Sends()[0].msg.Parts[0].Text, "Issue 101 description.") {
+		t.Fatal("run did not resume with its brief")
 	}
 }
 

@@ -227,6 +227,7 @@ type Run struct {
 	SeenVisible     bool
 	ClosedReason    string
 	Origin          string // OriginItsaplan or OriginConnector
+	HoldReason      string
 }
 
 // Run origins. A connector run is a review round the connector started; it
@@ -242,13 +243,13 @@ func (r *Run) Connector() bool { return r.Origin == OriginConnector }
 const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0), coalesce(issue_key, ''),
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
 	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, ''),
-	origin`
+	origin, hold_reason`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
 	err := row.Scan(&r.ID, &r.AgentKey, &r.WorkItemID, &r.IssueID, &r.IssueKey, &r.Trigger,
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
-		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin)
+		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin, &r.HoldReason)
 	return r, err
 }
 
@@ -341,6 +342,7 @@ func (s *Store) CountActiveRuns(ctx context.Context, agentKey string) (int, erro
 	var n int
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT count(*) FROM run r WHERE r.agent_key = $1 AND r.state NOT IN ('closed', 'stale')
+			AND r.hold_reason = ''
 			AND NOT (r.state = 'waiting' AND EXISTS (
 				SELECT 1 FROM work_item w
 				LEFT JOIN grant_block g ON g.scope = 'kagent:' || w.kagent_namespace || '/' || w.kagent_agent

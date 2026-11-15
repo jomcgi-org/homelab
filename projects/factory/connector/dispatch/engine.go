@@ -282,6 +282,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
 		{"outbox", e.flushOutbox},
+		{"admission_metrics", e.admissionMetrics},
 	}
 	for _, p := range phases {
 		if err := p.fn(ctx); err != nil {
@@ -532,9 +533,8 @@ func (e *Engine) stepLocked(ctx context.Context, id int64) error {
 
 // step advances one open run. The caller holds the run's lock.
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
-	// A claimed itsaplan run is new work on the issue: dispatch resumes a
-	// stopped work item for it. Every other open run of a stopped work item
-	// is stopped.
+	// Preserve stop/reassignment semantics for a waiting run whose work item
+	// was already resolved before admission began holding it.
 	live := r.State == store.RunWaiting || r.State == store.RunDispatched || (r.Connector() && r.State == store.RunClaimed)
 	if live && r.WorkItemID != 0 {
 		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
@@ -543,6 +543,26 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 		}
 		if wi.State == store.WorkStopped {
 			return e.stopRun(ctx, r, wi)
+		}
+	}
+	if !r.Connector() && (r.State == store.RunClaimed || r.State == store.RunWaiting || r.State == store.RunDispatched) {
+		a, err := e.st.LatestAttempt(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		if a == nil {
+			if ready, err := e.admit(ctx, r); err != nil || !ready {
+				return err
+			}
+			if r.State == store.RunWaiting {
+				busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
+				if err != nil || busy >= e.concurrency(r.AgentKey) {
+					return err
+				}
+			}
+			if r.WorkItemID == 0 {
+				return e.dispatch(ctx, r)
+			}
 		}
 	}
 	switch r.State {
@@ -925,27 +945,22 @@ func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkIte
 	if wi.SessionID != "" || wi.IssueID == 0 || r.Connector() {
 		return "", nil
 	}
-	if err := e.guard(ctx); err != nil {
+	if err := e.beginAdmissionRead(ctx, r, "brief", strconv.FormatInt(wi.IssueID, 10)); err != nil {
 		return "", err
 	}
 	issue, err := e.its.GetIssue(ctx, wi.IssueID)
-	gaveUp := e.lookupRefused(ctx, refusalKey{lookupBrief, r.ID, r.Attempt}, err)
+	e.countRefusal(roleCoordinator, lookupBrief, err)
+	if err != nil {
+		return "", err
+	}
+	if issue == nil || strings.TrimSpace(issue.Description) == "" {
+		return "", errors.New("issue brief is empty")
+	}
 	var s strings.Builder
 	s.WriteString("## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
 		"reports your final message on the issue and opens the pull request from the work branch once you " +
 		"push commits to it.\n")
-	switch {
-	case err == nil:
-		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
-	case terminalHTTP(err):
-		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %v)\n", wi.IssueKey, err)
-	case gaveUp != "":
-		// Past the bound the session starts without the issue rather than
-		// hold the run's slot until the key works.
-		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %s)\n", wi.IssueKey, gaveUp)
-	default:
-		return "", err
-	}
+	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
 	return s.String(), nil
 }
 
@@ -986,6 +1001,15 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	}
 	brief, err := e.issueBrief(ctx, r, wi)
 	if err != nil {
+		if !r.Connector() {
+			a, lookupErr := e.st.LatestAttempt(ctx, r.ID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if a == nil {
+				return e.admissionFailure(ctx, r, "Waiting for the issue brief to be readable.", err)
+			}
+		}
 		return err
 	}
 	var a *store.Attempt
@@ -1321,6 +1345,16 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 	if err != nil {
 		return false, err
 	}
+	return e.sendEvents(ctx, r, t.ID, events, base)
+}
+
+// sendEvents posts a persisted journal with itsaplan's attempt and offset.
+// Admission and task journals share one transcript without sharing boundaries.
+func (e *Engine) sendEvents(ctx context.Context, r *store.Run, taskID string, events []itsaplan.Event, base int) (bool, error) {
+	offset := r.EventOffset
+	if r.EventAttempt != r.Attempt {
+		offset = 0
+	}
 	if offset < base || offset > base+len(events) {
 		return false, fmt.Errorf("transcript offset %d outside persisted range [%d, %d]", offset, base, base+len(events))
 	}
@@ -1341,6 +1375,9 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 		next, err := e.its.Events(ctx, r.AgentKey, r.ID, r.Attempt, offset, batch)
 		if errors.Is(err, itsaplan.ErrConflict) {
 			e.m.Events.WithLabelValues("conflict").Inc()
+			if err := e.guard(ctx); err != nil {
+				return false, err
+			}
 			next, err = e.its.Events(ctx, r.AgentKey, r.ID, r.Attempt, offset, batch[:1])
 		}
 		switch {
@@ -1357,10 +1394,10 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 			return false, fmt.Errorf("itsaplan acknowledged offset %d at %d", next, offset)
 		}
 		offset = next
-		if err := e.st.SetEventOffset(ctx, r.ID, r.Attempt, offset, t.ID, base); err != nil {
+		if err := e.st.SetEventOffset(ctx, r.ID, r.Attempt, offset, taskID, base); err != nil {
 			return false, err
 		}
-		r.EventAttempt, r.EventOffset, r.EventTaskID, r.EventTaskBase = r.Attempt, offset, t.ID, base
+		r.EventAttempt, r.EventOffset, r.EventTaskID, r.EventTaskBase = r.Attempt, offset, taskID, base
 	}
 	return false, nil
 }
@@ -1802,9 +1839,9 @@ func (e *Engine) countRefusal(role, kind string, err error) bool {
 // authRefusalLimit bounds how long a coordinator lookup that holds a run's
 // slot retries an itsaplan 401 or 403. Like outboxAuthMaxTries, it outlasts
 // a key rotation and the kubelet's refresh of the projected file. Past it
-// the lookup gives up: the initial-session path proceeds without issue text, and
-// a dispatched run whose attempt itsaplan stopped accepting is closed.
-// Fenced recovery requires its issue text regardless of this bound.
+// the lookup gives up: a dispatched run whose attempt itsaplan stopped accepting
+// is closed. Admission and fenced recovery require issue text regardless of
+// this bound and retry without consuming a new delivery attempt.
 // Lookups that hold no slot (the issue check, a stale run) retry without a
 // bound. The clock lives in memory, as the session check's does; a restart
 // starts it again.
@@ -1813,7 +1850,7 @@ const authRefusalLimit = 30 * time.Minute
 // Coordinator lookups, each a metric kind.
 const (
 	lookupReplacement = "replacement" // recovery input is required; retry until available
-	lookupBrief       = "brief"       // a new session's issue, bounded per run attempt
+	lookupBrief       = "brief"       // a new session's issue; required until readable
 	lookupIssue       = "issue_check" // whether the issue still wants delivery; unbounded
 	lookupRun         = "run_check"   // a run's state; bounded per run attempt in runGone
 )

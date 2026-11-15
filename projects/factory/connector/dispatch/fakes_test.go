@@ -65,8 +65,10 @@ type fakeItsaplan struct {
 	// columnsErr fails every ProjectColumns while set.
 	columnsErr error
 	// Event failures exercise journal replay before and after server acceptance.
-	eventErr     error
-	loseEventAck bool
+	eventErr          error
+	loseEventAck      bool
+	beforeIssueRead   func(int64)
+	beforeColumnsRead func()
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -137,6 +139,7 @@ func (f *fakeItsaplan) add(id int64, agent string, issueID int64, key, prompt st
 	if f.issues[issueID] == nil {
 		f.issues[issueID] = &itsaplan.Issue{
 			ID: issueID, Identifier: key, ColumnID: 2,
+			Links: []itsaplan.IssueLink{},
 			Title: fmt.Sprintf("Issue %d title", issueID), Description: fmt.Sprintf("Issue %d description.", issueID),
 		}
 	}
@@ -325,6 +328,9 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.beforeIssueRead != nil {
+		f.beforeIssueRead(issueID)
+	}
 	if f.issueErr != nil {
 		return nil, f.issueErr
 	}
@@ -351,6 +357,9 @@ func (f *fakeItsaplan) ProjectColumns(_ context.Context, _ string) ([]itsaplan.C
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.beforeColumnsRead != nil {
+		f.beforeColumnsRead()
+	}
 	if f.columnsErr != nil {
 		return nil, f.columnsErr
 	}

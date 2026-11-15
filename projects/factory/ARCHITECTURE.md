@@ -434,6 +434,28 @@ after 20 refusals it tries once per dispatch window three more times. The
 ready state is persisted only after that response. A crash before the write
 leaves ambiguity and cannot resend.
 
+Before the first delivery attempt, admission reads the issue and its
+`blocked_by` dependencies. itsaplan v1.10.0 returns these as `blocks` links
+with `direction: inward`; other relations do not gate dispatch. Only a
+`completed` column releases a blocker. An unreadable issue, missing relation
+data, empty brief or unresolved dependency uses the same durable waiting
+hold, without resolving the work item, creating a delivery attempt or
+occupying an agent slot. Heartbeats keep itsaplan's lease alive. Each poll
+reads fresh evidence, including after a restart or transport redelivery;
+when the final blocker completes, the next poll can dispatch within the
+agent's concurrency (HOME-55).
+
+Admission traverses unfinished dependencies to detect cycles. Canceled
+dependencies hold the run and queue one explanatory comment per run and
+blocker; a cyclic component queues one comment on its lowest-ID issue,
+deduplicated across all its runs. People resolve these by completing blockers
+or changing the relations. Reads are journaled in `admission_read` with the
+run attempt and writer epoch before the call. Comments use the durable
+at-most-once outbox protocol: an ambiguous send is never reposted. Hold
+events are journaled before posting at the current itsaplan attempt and
+offset, and drain before task events. `factory_connector_held_runs` and
+`factory_connector_oldest_hold_seconds` reflect persisted active holds.
+
 After any ambiguous response, the connector only reads every task state and
 page looking for the original message ID. A positive match attaches the
 original task, including a task that finished or is waiting for input. It
@@ -787,11 +809,10 @@ The chart passes this same authority to the connector in
   backs off as for any other failure. After 12 tries, about 27 minutes, the
   connector abandons the item as it would a refused one and logs that
   itsaplan keeps refusing its key. The Done move reads the issue first and
-  waits while it cannot. Coordinator lookups that hold a run's slot have a
-  30-minute bound, kept in memory per attempt: the initial-session path then
-  proceeds without issue text, and a dispatched run whose attempt itsaplan
-  no longer accepts closes. Fenced recovery requires authoritative issue text
-  before creating a replacement and waits beyond this bound. Lookups that hold
+  waits while it cannot. A dispatched run whose attempt itsaplan no longer
+  accepts closes after coordinator refusals persist for 30 minutes, tracked
+  in memory per attempt. Admission and fenced recovery require authoritative
+  issue text and wait beyond this bound. Lookups that hold
   no slot, the issue check before PR updates, rounds and the merge queue and
   a stale run's lookup, retry
   until the key works. `factory_connector_credential_refusals_total` counts
