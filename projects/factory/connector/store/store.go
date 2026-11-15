@@ -925,15 +925,26 @@ type OutboxItem struct {
 
 // Enqueue records a side effect; a duplicate dedupe key is ignored.
 func (s *Store) Enqueue(ctx context.Context, q Querier, kind, dedupe string, runID int64, agentKey string, payload any) error {
+	_, err := s.EnqueueOnce(ctx, q, kind, dedupe, runID, agentKey, payload)
+	return err
+}
+
+// EnqueueOnce is Enqueue that reports whether this call added the item, false
+// when its dedupe key was already queued.
+func (s *Store) EnqueueOnce(ctx context.Context, q Querier, kind, dedupe string, runID int64, agentKey string, payload any) (bool, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = q.ExecContext(ctx, `
+	res, err := q.ExecContext(ctx, `
 		INSERT INTO outbox (kind, dedupe_key, run_id, agent_key, payload, next_attempt_at)
 		VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5, $6)
 		ON CONFLICT (dedupe_key) DO NOTHING`, kind, dedupe, runID, agentKey, b, s.now())
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // PendingOutbox lists undelivered side effects that are due, in order. A

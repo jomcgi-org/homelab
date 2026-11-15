@@ -21,6 +21,7 @@ type Metrics struct {
 	PullRequests      *prometheus.CounterVec // outcome
 	ReviewEvents      *prometheus.CounterVec // kind, disposition
 	ReviewRounds      prometheus.Counter
+	IdleRounds        prometheus.Counter
 	MergeQueue        *prometheus.CounterVec // outcome
 	SessionRecoveries *prometheus.CounterVec // kind
 
@@ -86,6 +87,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_review_rounds_total",
 			Help: "Review rounds the connector started.",
 		}),
+		IdleRounds: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "factory_connector_idle_review_rounds_total",
+			Help: "Review rounds that closed with the PR still at the head they were asked to change.",
+		}),
 		MergeQueue: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_merge_queue_total",
 			Help: "Merge queue outcomes (enqueued, enqueue_error, ejected, merged).",
@@ -104,7 +109,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.MergeQueue, m.SessionRecoveries, m.CredentialRefusals)
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.CredentialRefusals)
 	}
 	return m
 }
