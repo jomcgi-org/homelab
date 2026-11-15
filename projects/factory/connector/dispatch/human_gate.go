@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -244,12 +245,18 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 			epoch := e.Epoch()
 			send, err := e.st.StartHumanGateWrite(ctx, e.w, messageID)
 			if err != nil {
+				// A returned send number means the UPDATE ran; COMMIT may
+				// have succeeded without its acknowledgment. This caller has
+				// not made the POST, so preserve that proof before exiting.
+				if send > 0 {
+					e.recoverUnsentHumanGate(ctx, messageID, epoch, send)
+				}
 				return err
 			}
 			found, err = e.its.CreateGateIssue(ctx, b.ItsaplanProject, body)
 			if err != nil {
 				if notCreated(err) {
-					return errors.Join(err, e.st.ClearHumanGateSend(ctx, messageID, epoch, send))
+					e.recoverUnsentHumanGate(ctx, messageID, epoch, send)
 				}
 				return err
 			}
@@ -284,6 +291,26 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 		return err
 	}
 	return e.st.FinishHumanGateWrite(ctx, h, messageID, h.IssueID, true)
+}
+
+// recoverUnsentHumanGate retains the caller's proof until the database
+// acknowledges it. Returning a fatal error or honoring shutdown before then
+// would lose the only distinction between an unsent and an ambiguous POST.
+// Each write is bounded, but recovery has no overall deadline. The epoch and
+// send number fence this cleanup from any successor's work.
+func (e *Engine) recoverUnsentHumanGate(ctx context.Context, messageID string, epoch int64, send int) {
+	ctx = context.WithoutCancel(ctx)
+	delay := time.Second
+	for {
+		if err := e.st.ClearHumanGateSend(ctx, messageID, epoch, send); err != nil {
+			e.log.ErrorContext(ctx, "retrying unsent human-gate recovery", "message_id", messageID,
+				"writer_epoch", epoch, "send", send, "error", err)
+		} else {
+			return
+		}
+		time.Sleep(delay)
+		delay = min(2*delay, 30*time.Second)
+	}
 }
 
 // Reads have stable message IDs too, but always fetch current evidence.

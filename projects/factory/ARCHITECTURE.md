@@ -760,8 +760,16 @@ create message ID; accepted or ambiguous payloads remain frozen. The pre-send
 writer check and send marker commit in one transaction on the advisory-lock
 session, followed immediately by the request. A failed check or aborted
 transaction leaves the attempt unsent even when the database cannot accept a
-cleanup write. An ambiguous create that never becomes visible requires operator
-investigation; it is logged each review poll.
+cleanup write. If the marker COMMIT loses its acknowledgment, the caller knows
+it has not made the POST. It retries cleanup scoped to that writer epoch and
+send number until the database acknowledges that proof, even after cancellation
+or writer loss; normal shutdown waits for this recovery. Cleanup locks the attempt before
+checking its token so an in-flight COMMIT cannot escape it. Individual cleanup
+writes have a five-second timeout, with retry backoff up to 30 seconds and no
+overall deadline. A forced process death before proof is recorded remains an
+unknown outcome, as does an ambiguous POST; neither is automatically repeated.
+An ambiguous create that never becomes visible requires operator investigation;
+it is logged each review poll.
 Absolute state updates retry with the same message ID and payload for
 that revision, and failed terminal moves remain eligible after PR delivery
 ends. The coordinator needs `work_items` create, read and edit. HOME-51's

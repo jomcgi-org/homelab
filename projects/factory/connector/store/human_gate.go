@@ -118,6 +118,8 @@ func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int
 // on the advisory-lock session. A failed guard or aborted transaction leaves
 // the attempt unsent without requiring a compensating write. After commit the
 // caller must send immediately, without another database guard in between.
+// A positive send number with an error includes an ambiguous COMMIT; a create
+// caller must durably clear that unsent marker before returning the error.
 func (s *Store) StartHumanGateWrite(ctx context.Context, w *Writer, messageID string) (int, error) {
 	var send int
 	err := w.Tx(ctx, func(tx *sql.Tx) error {
@@ -134,9 +136,22 @@ func (s *Store) StartHumanGateWrite(ctx context.Context, w *Writer, messageID st
 func (s *Store) ClearHumanGateSend(ctx context.Context, messageID string, epoch int64, send int) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	_, err := s.DB.ExecContext(ctx, `UPDATE human_gate_attempt SET send_started = false
-		WHERE message_id = $1 AND writer_epoch = $2 AND sends = $3 AND finished_at IS NULL`, messageID, epoch, send)
-	return err
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		// Wait for an in-flight marker transaction before testing its token.
+		// A conditional UPDATE alone could see the old send number, affect
+		// zero rows, and return before the unknown COMMIT becomes visible.
+		var locked string
+		if err := tx.QueryRowContext(ctx, `SELECT message_id FROM human_gate_attempt
+			WHERE message_id = $1 FOR UPDATE`, messageID).Scan(&locked); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE human_gate_attempt SET send_started = false
+			WHERE message_id = $1 AND writer_epoch = $2 AND sends = $3 AND finished_at IS NULL`, messageID, epoch, send)
+		return err
+	})
 }
 
 func (s *Store) FinishHumanGateWrite(ctx context.Context, h *HumanGateIssue, messageID string, issueID int64, applied bool) error {
