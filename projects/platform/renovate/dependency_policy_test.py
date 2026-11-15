@@ -399,12 +399,95 @@ def test_lockstep_branch_schedule_and_limits_with_unaffected_first_member(
         assert bool(limit and count >= limit) is (not security)
 
 
+@pytest.mark.parametrize(
+    "members",
+    [
+        ("pydantic", "pydantic_core"),
+        ("pydantic", "pydantic-core"),
+        ("opentelemetry-api", "opentelemetry-sdk"),
+        ("opentelemetry-api", "opentelemetry-semantic-conventions"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("ages", "vulnerable_index", "age_ready"),
+    [
+        ((1, 7), None, False),
+        ((7, 1), None, False),
+        ((None, 7), None, False),
+        ((7, None), None, False),
+        ((3, 3), None, True),
+        ((1, 7), 0, True),
+        ((7, 1), 1, True),
+        ((1, 1), 0, False),
+        ((1, 1), 1, False),
+    ],
+)
+@pytest.mark.parametrize("required_checks_green", [False, True])
+def test_lockstep_automerge_enforces_age_and_preserves_security_exception(
+    members, ages, vulnerable_index, age_ready, required_checks_green
+):
+    config = json.loads((ROOT / "renovate.json").read_text())
+    upgrades = [
+        {
+            **_python_update_config(
+                config, name, security=index == vulnerable_index
+            ),
+            "depName": name,
+            "age": ages[index],
+        }
+        for index, name in enumerate(members)
+    ]
+    upgrades.sort(key=lambda upgrade: upgrade["depName"])
+    branch = upgrades[0]  # Renovate 44.14.10 updates/generate.ts
+    assert branch["automerge"] is True  # Minor updates still use automerge.
+    assert branch["automergeType"] == "pr"
+    assert branch["platformAutomerge"] is False
+    assert branch.get("ignoreTests", False) is False
+    assert (
+        branch.get("statusCheckNames", {}).get(
+            "minimumReleaseAge", "renovate/stability-days"
+        )
+        == "renovate/stability-days"
+    )
+    assert (
+        branch.get("statusCheckWhen", {}).get("minimumReleaseAge", "always")
+        == "always"
+    )
+    for index, upgrade in enumerate(upgrades):
+        assert upgrade["minimumReleaseAge"] == (
+            None if index == vulnerable_index else "3 days"
+        )
+        assert upgrade.get("minimumReleaseAgeBehaviour", "timestamp-required") == (
+            "timestamp-required"
+        )
+
+    # update/branch/index.ts checks EVERY member, including a pending peer
+    # after a security alert. Missing release timestamps also remain pending.
+    stability_pending = any(
+        upgrade["minimumReleaseAge"]
+        and (upgrade["age"] is None or upgrade["age"] < 3)
+        for upgrade in upgrades
+    )
+    # update/pr/index.ts delegates without checking stabilityStatus. In contrast,
+    # update/pr/automerge.ts requires a green combined status, and GitHub's
+    # getBranchStatus retains pending Renovate checks even when not required.
+    # Assume other merge prerequisites pass, so age and CI decide eligibility.
+    delegated = branch["automerge"] and branch["platformAutomerge"]
+    merge_eligible = (
+        branch["automerge"]
+        and required_checks_green
+        and (delegated or not stability_pending)
+    )
+    assert merge_eligible is (age_ready and required_checks_green)
+
+
 def test_unrelated_updates_keep_strict_age_and_stability_filtering():
     config = json.loads((ROOT / "renovate.json").read_text())
     effective = _python_update_config(config, "fastapi")
     assert effective["schedule"] == ["before 6am on monday"]
     assert effective["prConcurrentLimit"] == 5
     assert effective["prHourlyLimit"] == 2
+    assert effective["platformAutomerge"] is True
     assert (
         _selected_python_release(
             config,
