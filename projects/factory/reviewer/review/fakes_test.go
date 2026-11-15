@@ -110,6 +110,8 @@ type fakeGitHub struct {
 	ignoreAppFilter bool
 	// failCheckSHA rejects check creation for one head, leaving group writes available.
 	failCheckSHA string
+	// failCommentPage rejects one page of the reviewer's comment lookup.
+	failCommentPage int
 	// afterQueueRead changes metadata after its GraphQL snapshot was returned.
 	// It runs once under mu, before the caller's subsequent open-PR listing.
 	afterQueueRead   func()
@@ -506,9 +508,18 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
+		p, _ := strconv.Atoi(q.Get("page"))
+		if p > 0 && p == f.failCommentPage {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		out := []map[string]any{}
 		for _, c := range f.prs[n].Comments {
 			out = append(out, map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
+		}
+		per, _ := strconv.Atoi(q.Get("per_page"))
+		if max(p, 1)*per < len(out) {
+			w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d&per_page=%d>; rel="next"`, r.URL.Path, max(p, 1)+1, per))
 		}
 		f.get(w, r, page(out, q))
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):

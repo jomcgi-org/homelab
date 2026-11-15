@@ -761,6 +761,51 @@ func (c *Client) IssueComments(ctx context.Context, repo string, number int) (co
 	return comments, false, nil
 }
 
+// IssueCommentsWithLimit lists conversation comments for the reviewer's
+// one-time lookup. Unlike IssueComments, it uses GitHub's Link header to
+// decide completeness, including a full final page. It reads at most
+// maxPages pages and never returns partial results after a failed read.
+func (c *Client) IssueCommentsWithLimit(ctx context.Context, repo string, number, maxPages int) (comments []Comment, complete bool, err error) {
+	for page := 1; page <= maxPages; page++ {
+		var out []restComment
+		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		path := repoPath(repo) + "/issues/" + strconv.Itoa(number) + "/comments?" + q.Encode()
+		headers, err := c.doWithHeaders(ctx, repo, http.MethodGet, path, nil, &out)
+		if err != nil {
+			return nil, false, err
+		}
+		if out == nil {
+			return nil, false, errors.New("github: missing comment listing")
+		}
+		for _, cm := range out {
+			comments = append(comments, cm.comment())
+		}
+		if !hasNextPage(headers) {
+			return comments, true, nil
+		}
+	}
+	return comments, false, nil
+}
+
+func hasNextPage(headers http.Header) bool {
+	for _, value := range headers.Values("Link") {
+		for _, link := range strings.Split(value, ",") {
+			for _, param := range strings.Split(link, ";")[1:] {
+				key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+				if !ok || key != "rel" {
+					continue
+				}
+				for _, rel := range strings.Fields(strings.Trim(value, "\"")) {
+					if rel == "next" {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // CreateIssueComment posts a conversation comment on a PR or issue.
 func (c *Client) CreateIssueComment(ctx context.Context, repo string, number int, body string) (*Comment, error) {
 	var out restComment

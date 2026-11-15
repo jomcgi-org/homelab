@@ -26,7 +26,7 @@ import (
 // starts with CommentMarker, which the broker finds in one request. An App without those permissions loses
 // only the comment.
 type Comments interface {
-	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
+	IssueCommentsWithLimit(ctx context.Context, repo string, number, maxPages int) ([]github.Comment, bool, error)
 	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
 	UpdateIssueComment(ctx context.Context, repo string, id int64, body string) (*github.Comment, error)
 }
@@ -96,7 +96,10 @@ const (
 	maxSince        = 10000
 	maxSummaryChars = maxAgentSummary
 	commentTimeout  = 30 * time.Second
+	maxCommentPages = 100 // 10,000 conversation comments, for the reviewer only.
 )
+
+const commentLimitNote = "This PR has more than 10,000 comments, so its findings are only in this check."
 
 // reviewComment is a completed review's comment: the verdict from the
 // assessment, the human gate, then the findings section.
@@ -404,6 +407,49 @@ type prKey struct {
 	number  int
 }
 
+// commentState keeps the lookup result even when no comment was found, the
+// limit was reached or a read failed. Each process looks up a PR only once;
+// an incomplete or failed read never authorizes creating a comment.
+type commentState struct {
+	comment  *github.Comment
+	complete bool
+	err      error
+}
+
+// lookupComment is called with commentMu held.
+func (e *Engine) lookupComment(ctx context.Context, b *Binding, pr github.PullRequest) *commentState {
+	key := prKey{b.Name, pr.Number}
+	if cur, ok := e.comments[key]; ok {
+		return cur
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
+	defer cancel()
+	found, complete, err := e.findComment(ctx, b, pr.Number)
+	cur := &commentState{comment: found, complete: complete, err: err}
+	e.comments[key] = cur
+	if err != nil {
+		e.commentFailed(ctx, e.prLog(b, pr), b, "list", err)
+	} else if found == nil && !complete {
+		e.prLog(b, pr).WarnContext(ctx, "the PR has more comments than the reviewer reads; not adding its own")
+	}
+	return cur
+}
+
+// commentSummary keeps feedback visible when the bounded lookup cannot
+// safely create a comment. Findings and the check's conclusion are unchanged.
+func (e *Engine) commentSummary(ctx context.Context, b *Binding, pr github.PullRequest, summary string) string {
+	if e.cfg.Comments == nil || e.cfg.CommentAuthor == "" {
+		return summary
+	}
+	e.commentMu.Lock()
+	defer e.commentMu.Unlock()
+	cur := e.lookupComment(ctx, b, pr)
+	if cur.err == nil && cur.comment == nil && !cur.complete && !strings.Contains(summary, commentLimitNote) {
+		return summary + "\n\n" + commentLimitNote
+	}
+	return summary
+}
+
 // noteHead records the head a listing shows for a PR. The comment follows
 // only that head, so a write for an earlier one cannot overwrite it.
 func (e *Engine) noteHeads(b *Binding, prs []github.PullRequest, complete bool) {
@@ -451,26 +497,16 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 		l.DebugContext(ctx, "the PR has a newer head; its comment follows that one")
 		return
 	}
-	cur, ok := e.comments[key]
-	if !ok {
-		found, complete, err := e.findComment(ctx, b, pr.Number)
-		if err != nil {
-			e.commentFailed(ctx, l, b, "list", err)
-			return
-		}
-		if found == nil && !complete {
-			l.WarnContext(ctx, "the PR has more comments than the reviewer reads; not adding its own")
-			return
-		}
-		if found != nil {
-			cur, ok = *found, true
-		}
+	state := e.lookupComment(ctx, b, pr)
+	cur := state.comment
+	if state.err != nil || (cur == nil && !state.complete) {
+		return
 	}
-	if !ok && u.Verdict == VerdictReviewing {
+	if cur == nil && u.Verdict == VerdictReviewing {
 		return
 	}
 	findingsHead, findings := "", ""
-	if ok {
+	if cur != nil {
 		findingsHead, findings = parseFindings(cur.Body)
 	}
 	if u.Findings != nil {
@@ -481,21 +517,21 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 		url = run.URL
 	}
 	body := renderComment(pr.HeadSHA, u, findings, findingsHead, e.cfg.CheckName, url)
-	if ok && cur.Body == body {
+	if cur != nil && cur.Body == body {
 		return
 	}
-	if ok {
+	if cur != nil {
 		_, err := e.cfg.Comments.UpdateIssueComment(ctx, b.repo(), cur.ID, body)
 		switch {
 		case err == nil:
-			e.comments[key] = github.Comment{ID: cur.ID, Author: cur.Author, Body: body}
+			state.comment = &github.Comment{ID: cur.ID, Author: cur.Author, Body: body}
 			e.m.CommentWrites.WithLabelValues(b.Name, "updated").Inc()
 			return
 		case !errors.Is(err, github.ErrNotFound):
 			e.commentFailed(ctx, l, b, "update", err)
 			return
 		}
-		delete(e.comments, key) // Deleted by someone: post it again.
+		state.comment, state.complete = nil, true // Deleted by someone: post it again.
 		if u.Verdict == VerdictReviewing {
 			return
 		}
@@ -505,7 +541,7 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 		e.commentFailed(ctx, l, b, "create", err)
 		return
 	}
-	e.comments[key] = github.Comment{ID: created.ID, Author: e.cfg.CommentAuthor, Body: body}
+	state.comment = &github.Comment{ID: created.ID, Author: e.cfg.CommentAuthor, Body: body}
 	e.m.CommentWrites.WithLabelValues(b.Name, "created").Inc()
 	l.InfoContext(ctx, "review comment posted", "comment", created.ID, "verdict", string(u.Verdict))
 }
@@ -514,7 +550,7 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 // that starts with the comment marker, or nil. complete is false when the
 // listing stopped before the PR's last comment.
 func (e *Engine) findComment(ctx context.Context, b *Binding, number int) (*github.Comment, bool, error) {
-	all, complete, err := e.cfg.Comments.IssueComments(ctx, b.repo(), number)
+	all, complete, err := e.cfg.Comments.IssueCommentsWithLimit(ctx, b.repo(), number, maxCommentPages)
 	if err != nil {
 		return nil, false, err
 	}
