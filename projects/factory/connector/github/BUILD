@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "github",
     srcs = [
+        "broker_comments.go",
         "checks.go",
         "client.go",
         "etag.go",
@@ -15,6 +16,9 @@ go_library(
 
 go_test(
     name = "github_test",
-    srcs = ["github_test.go"],
+    srcs = [
+        "broker_comments_test.go",
+        "github_test.go",
+    ],
     embed = [":github"],
 )

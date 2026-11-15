@@ -904,15 +904,19 @@ and retries once, so a brief overlap during a rollout is safe.
   in each `reviewBindings` namespace, which must not be a coding binding's,
   and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
   only, with checks and merge queues write, pull requests, contents and
-  statuses read. `GET /github/reviewer-comment-token?repository=` serves the
-  same subjects a separate token with only `issues: write` and
-  `pull_requests: write` (`githubReview.commentPermissions`) for the
-  reviewer's PR comment. GitHub refused a PR conversation comment from a
-  token with `issues: write` alone (HTTP 403, 2026-11-15). An App without
-  those permissions fails only the comment, and the check token never gains
-  them. The reviewer service reaches the comment token only through
-  `review.Comments`, which lists, creates and edits conversation comments,
-  so it never posts a review or an approval. `merge_queues: write` alone does not let this token
+  statuses read. The reviewer's PR comment needs a separate token with
+  `issues: write` and `pull_requests: write`
+  (`githubReview.commentPermissions`): GitHub refused a PR conversation
+  comment from a token with `issues: write` alone (HTTP 403, 2026-11-15).
+  `pull_requests: write` could approve, so that token never leaves the
+  broker. `/github/reviewer-comments` (`github.CommentProxy`), for the same
+  subjects only, does three things with it: lists a PR's conversation
+  comments a page at a time, creates a comment on a pull request (an issue
+  number is refused), and edits a comment on a pull request that
+  `githubReview.commentAuthor`, the reviewer's bot login, wrote. It serves
+  nothing else, and runs only when that login is set. An App without those
+  permissions fails only the comment, and the check token never gains
+  them. `merge_queues: write` alone does not let this token
   enqueue: the first live attempt was refused with `FORBIDDEN` (2026-11-14),
   so the reviewer enqueues nothing ("Merge authority"). With `reviewer.enabled`, the chart mounts the separate App from
   `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
@@ -994,8 +998,9 @@ previews).
   hold: the verdict, the human gate's reasons, the agent's summary, findings
   by severity and what the review cleared. The comment mirrors the
   assessment behind the check and gates nothing. It is written with the
-  broker's separate comment token (`issues: write` and
-  `pull_requests: write`), so an App without them loses only the comment; a failed write is logged and counted
+  broker's comment proxy, which holds the comment token (`issues: write`
+  and `pull_requests: write`), so an App without them loses only the
+  comment; a failed write is logged and counted
   (`factory_reviewer_comment_writes_total`). It edits only a comment its bot
   login wrote, and its own comment never reaches the agent.
   Check runs are its only state: the

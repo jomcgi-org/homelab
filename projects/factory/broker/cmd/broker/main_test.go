@@ -52,7 +52,7 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
-		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
 		{http.MethodGet, "/v1/other", http.StatusNotFound, "not_found"},
 	})
@@ -69,7 +69,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusNotFound, "not_found"},
-		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/metrics", http.StatusNotFound, "not_found"},
 	})
 	checkRoutes(t, d.adminHandler(cfg, metricsOK), []routeCase{
@@ -78,8 +78,10 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
-		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusNotFound, ""},
+		// The comment token is never served; the proxy writes with it.
+		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusNotFound, ""},
 	})
 }
 
@@ -132,8 +134,8 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 	}{
 		{"/github/reviewer-token?repository=o/r", "connector-token", http.StatusForbidden},
 		{"/github/reviewer-token?repository=o/r", "reviewer-token", http.StatusServiceUnavailable},
-		{"/github/reviewer-comment-token?repository=o/r", "connector-token", http.StatusForbidden},
-		{"/github/reviewer-comment-token?repository=o/r", "reviewer-token", http.StatusServiceUnavailable},
+		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "connector-token", http.StatusForbidden},
+		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "reviewer-token", http.StatusServiceUnavailable},
 		{"/github/connector-token?repository=o/r", "reviewer-token", http.StatusForbidden},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -169,9 +171,19 @@ func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Without the bot login there is no comment proxy and no comment token.
+	if d.commentMinter != nil || d.comments != nil {
+		t.Fatalf("comment minter without an author = %+v", d.commentMinter)
+	}
+	cfg.GitHubReview.CommentAuthor = "jomcgi-factory-review[bot]"
+	d, err = build(context.Background(), cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if d.commentMinter == nil || !maps.Equal(d.commentMinter.ConnectorPermissions, map[string]string{"issues": "write", "pull_requests": "write"}) ||
 		d.commentMinter.App != d.reviewMinter.App || d.reviewMinter.ConnectorPermissions["issues"] != "" ||
-		d.reviewMinter.ConnectorPermissions["pull_requests"] != "read" {
+		d.reviewMinter.ConnectorPermissions["pull_requests"] != "read" ||
+		d.comments == nil || d.comments.Minter != d.commentMinter || d.comments.Author != "jomcgi-factory-review[bot]" {
 		t.Fatalf("comment minter = %+v, review minter permissions %v", d.commentMinter, d.reviewMinter.ConnectorPermissions)
 	}
 	cfg.GitHubReview.CommentPermissions = map[string]string{}

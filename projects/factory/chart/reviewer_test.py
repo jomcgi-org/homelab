@@ -167,16 +167,19 @@ def test_comments_are_off_unless_an_author_is_set() -> None:
     # posts no comment. The deploy values set it, so clear it here.
     values = yaml.safe_load((_CHART / "values.yaml").read_text())
     assert values["reviewer"]["commentAuthor"] == ""
-    off = _config(_render(["reviewer.commentAuthor="]), "factory-reviewer")
-    assert "commentAuthor" not in off
+    off_docs = _render(["reviewer.commentAuthor="])
+    assert "commentAuthor" not in _config(off_docs, "factory-reviewer")
+    assert "commentAuthor" not in _config(off_docs, "factory-broker")["githubReview"]
     bot = "jomcgi-factory-review[bot]"
-    config = _config(_render([f"reviewer.commentAuthor={bot}"]), "factory-reviewer")
-    assert config["commentAuthor"] == bot
-    # The comment token comes from the broker's own defaults (issues write),
-    # never from chart values that could widen the check token.
-    broker = _config(_render(), "factory-broker")
-    assert "commentPermissions" not in broker.get("githubReview", {})
-    assert "connectorPermissions" not in broker.get("githubReview", {})
+    docs = _render([f"reviewer.commentAuthor={bot}"])
+    assert _config(docs, "factory-reviewer")["commentAuthor"] == bot
+    # The broker writes the comment, editing only the bot's, with its own
+    # comment token from its code defaults, never from chart values that
+    # could widen the check token.
+    broker = _config(docs, "factory-broker")["githubReview"]
+    assert broker["commentAuthor"] == bot
+    assert "commentPermissions" not in broker
+    assert "connectorPermissions" not in broker
 
 
 def test_one_kept_identity_and_private_image() -> None:
@@ -383,10 +386,12 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
         "factory-r-homelab",
         _REVIEW_NS,
     }
+    # The deploy values set the bot login, so the broker writes its comment.
     assert config["githubReview"] == {
         "appIdFile": "/etc/factory-review-github-app/app-id",
         "installationIdFile": "/etc/factory-review-github-app/installation-id",
         "privateKeyFile": "/etc/factory-review-github-app/private-key",
+        "commentAuthor": "jomcgi-factory-review[bot]",
     }
     item = _in(docs, "OnePasswordItem", "factory", "factory-review-github-app")
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-review-gh-app"

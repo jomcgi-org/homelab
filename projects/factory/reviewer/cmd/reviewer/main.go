@@ -29,10 +29,10 @@ import (
 )
 
 // reviewerTokenPath is the broker endpoint that mints the reviewer App's
-// installation tokens; commentTokenPath mints its PR comment tokens.
+// installation tokens; at commentsPath the broker writes its PR comment.
 const (
 	reviewerTokenPath = "/github/reviewer-token"
-	commentTokenPath  = "/github/reviewer-comment-token"
+	commentsPath      = "/github/reviewer-comments"
 )
 
 func main() {
@@ -101,14 +101,11 @@ func run(log *slog.Logger) error {
 		}},
 	}
 	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: &kagent.TokenSource{Path: cfg.KagentTokenFile}}
-	// The comment client has its own token, so the check client never holds
-	// issues or pull requests write.
+	// The broker writes the PR comment: its token needs pull requests write,
+	// which could approve, so it never reaches the reviewer.
 	var comments review.Comments
 	if cfg.CommentAuthor != "" {
-		comments = &github.Client{
-			BaseURL: cfg.GitHubURL,
-			Tokens:  &github.BrokerTokens{URL: cfg.BrokerURL, Path: commentTokenPath, Bearer: fileToken(cfg.BrokerTokenFile)},
-		}
+		comments = &github.BrokerComments{URL: cfg.BrokerURL, Path: commentsPath, Bearer: fileToken(cfg.BrokerTokenFile)}
 	}
 
 	var bindings []review.Binding

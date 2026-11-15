@@ -19,11 +19,10 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
 
-// Comments writes the reviewer's PR comment. It holds the reviewer App's
-// comment token (issues and pull requests write), apart from the check
-// token, so an App without those permissions loses only the comment. The
-// token could approve a PR; this interface lists, creates and edits
-// conversation comments and nothing else.
+// Comments writes the reviewer's PR comment through the broker, which holds
+// the reviewer App's comment token (issues and pull requests write) and
+// lists, creates and edits only conversation comments with it. An App
+// without those permissions loses only the comment.
 type Comments interface {
 	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
 	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
