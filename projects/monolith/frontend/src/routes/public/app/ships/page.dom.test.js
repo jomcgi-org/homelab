@@ -429,6 +429,8 @@ describe("ships production browser route", () => {
       const preview = target.querySelector(".map-snapshot");
       expect(preview.textContent).toContain("Fixture vessel 1");
       expect(preview.querySelectorAll("li")).toHaveLength(6);
+      expect(button("Heat").disabled).toBe(false);
+      expect(button("Heat").hasAttribute("aria-label")).toBe(false);
 
       // Happy DOM cannot hit-test a pointer. Load the actual component styles
       // and verify the positioned controls stack above the retained snapshot;
@@ -477,6 +479,8 @@ describe("ships production browser route", () => {
     button("Heat").click();
     await settle();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(button("Heat").disabled).toBe(false);
+    expect(button("Vessels").disabled).toBe(false);
     await vi.advanceTimersByTimeAsync(120000);
     expect(invalidateAll).toHaveBeenCalledTimes(1);
     const signal = fetchMock.mock.calls[0][1].signal;
@@ -586,25 +590,49 @@ describe("ships production browser route", () => {
     expect(target.querySelector(".map-snapshot")).toBeNull();
   });
 
-  it("retains snapshot data when WebGL initialization fails", async () => {
-    initialization.error = new Error("WebGL unavailable");
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    setPage("https://jomcgi.dev/app/ships", { snapshot });
-    instance = mount(Route, {
-      target,
-      props: { surface: "ships", data: { snapshot } },
-    });
-    await vi.waitFor(() => expect(log).toHaveBeenCalled());
-    await settle();
-    expect(target.querySelector(".map-snapshot").textContent).toContain(
-      "Fixture vessel 1",
-    );
-    expect(target.querySelector(".snapshot-note").textContent).toContain(
-      "map is unavailable",
-    );
-    expect(maps).toHaveLength(0);
-    expect(fetch).not.toHaveBeenCalled();
-  });
+  it.each(["", "?mode=heat"])(
+    "disables unavailable Heat and retains vessel filters after WebGL failure for %s",
+    async (query) => {
+      initialization.error = new Error("WebGL unavailable");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      setPage(`https://jomcgi.dev/app/ships${query}`, { snapshot });
+      instance = mount(Route, {
+        target,
+        props: { surface: "ships", data: { snapshot } },
+      });
+      await vi.waitFor(() => expect(log).toHaveBeenCalled());
+      await settle();
+      expect(target.querySelector(".map-snapshot").textContent).toContain(
+        "Fixture vessel 1",
+      );
+      expect(target.querySelector(".snapshot-note").textContent).toContain(
+        "map is unavailable",
+      );
+      expect(button("Heat").disabled).toBe(true);
+      expect(button("Heat").getAttribute("aria-label")).toBe(
+        "Heat (interactive map unavailable)",
+      );
+      expect(button("Heat").title).toContain("requires the interactive map");
+      button("Heat").click();
+      await settle();
+      expect(button("Heat").getAttribute("aria-pressed")).toBe(String(!!query));
+
+      expect(button("Vessels").disabled).toBe(false);
+      button("Vessels").click();
+      await settle();
+      expect(button("Vessels").getAttribute("aria-pressed")).toBe("true");
+      expect(page.url.searchParams.has("mode")).toBe(false);
+      button("Passenger").click();
+      await settle();
+      const preview = target.querySelector(".map-snapshot");
+      expect(preview.textContent).toContain("40 vessels");
+      expect(preview.querySelector("li").textContent).toContain(
+        "Fixture vessel 2",
+      );
+      expect(maps).toHaveLength(0);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("defers optional heat warming until vessel data paints", async () => {
     const map = await render();
