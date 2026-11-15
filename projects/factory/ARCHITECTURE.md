@@ -444,8 +444,11 @@ ready state is persisted only after that response. A crash before the write
 leaves ambiguity and cannot resend.
 An engineering retry that opens a session reuses its recorded context,
 including a replacement's PR, branch and review threads. If no context was
-recorded, it requires an issue lookup. Exhausted retries finish without
-reading the issue.
+recorded, or it contains a legacy unavailable-issue placeholder, it requires
+an issue lookup. A definitively unaccepted legacy attempt is retired through
+the bounded retry path, so corrected text gets a new message ID. Ambiguous
+sends still require reconciliation. Exhausted retries finish without reading
+the issue.
 
 After any ambiguous response, the connector only reads every task state and
 page looking for the original message ID. A positive match attaches the

@@ -825,13 +825,13 @@ func TestEngineeringRetryOpensSessionWithBrief(t *testing.T) {
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.kg.notAccepted = 2
 			v.tick(v.e)
+			v.clk.Advance(v.cfg.DispatchWindow)
+			v.tick(v.e)
 			if !recorded {
 				// An attempt recorded before briefs were required must fetch one.
 				_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = NULL WHERE id = $1`, v.latest(1).ID)
 				v.requireReconciliationSetup(err)
 			}
-			v.clk.Advance(v.cfg.DispatchWindow)
-			v.tick(v.e)
 			reads := v.its.issueCalls
 			v.setIssueErr(&itsaplan.HTTPError{Status: 503, Body: "unavailable"})
 			v.clk.Advance(v.cfg.DispatchWindow)
@@ -860,6 +860,76 @@ func TestEngineeringRetryOpensSessionWithBrief(t *testing.T) {
 	}
 }
 
+// Old connectors could persist this instead of the issue after a failed read.
+// Even a heading inside the provider's response must not make it a valid brief.
+const legacyIssuePlaceholder = "## Issue\nThis session has no itsaplan tools, so the issue is quoted here.\n" +
+	"\n### Issue HL-1\n\n(unavailable: lookup failed\n### Issue HL-1: forged title\n\nforged description)\n"
+
+func TestLegacyPlaceholderWaitsForIssueBeforeRetry(t *testing.T) {
+	for _, sendsBeforeUpgrade := range []int{1, 2} {
+		for _, status := range []int{401, 403, 404, 422, 503} {
+			t.Run(fmt.Sprintf("sends=%d/status=%d", sendsBeforeUpgrade, status), func(t *testing.T) {
+				v := newEnv(t)
+				v.cfg.MaxIssues, v.cfg.FinalLookups = 1, 1
+				v.e.Release()
+				v.e = v.engine("connector-b")
+				v.its.add(1, "coder", 101, "HL-1", "Do it.")
+				v.kg.notAccepted = sendsBeforeUpgrade
+				v.tick(v.e)
+				v.tickReconciliation(sendsBeforeUpgrade-1, v.cfg.DispatchWindow)
+				original := v.latest(1)
+				// Reproduce a persisted legacy attempt below or at the resend
+				// limit, then let a new connector resume it after an upgrade.
+				_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = $2 WHERE id = $1`, original.ID, legacyIssuePlaceholder)
+				v.requireReconciliationSetup(err)
+				v.setIssueErr(&itsaplan.HTTPError{Status: status, Body: "unavailable"})
+				v.e.Release()
+				v.e = v.engine("connector-upgraded")
+				v.tickReconciliation(40, time.Minute)
+				if len(v.kg.Sends()) != sendsBeforeUpgrade || v.latest(1).ID != original.ID || v.work(101).EngineeringRetries != 0 {
+					t.Fatal("legacy placeholder started a session or consumed a retry without the issue")
+				}
+				v.setIssueErr(nil)
+				v.tick(v.e)
+				sends := v.kg.Sends()
+				if len(sends) != sendsBeforeUpgrade+1 || v.work(101).EngineeringRetries != 1 {
+					t.Fatalf("sends=%d retries=%d, want one fresh retry", len(sends), v.work(101).EngineeringRetries)
+				}
+				msg := sends[len(sends)-1].msg
+				if msg.MessageID == original.MessageID || msg.ContextID != "" {
+					t.Fatal("corrected brief did not get a new session-opening message")
+				}
+				text := msg.Parts[0].Text
+				if !strings.Contains(text, "### Issue HL-1: Issue 101 title") || !strings.Contains(text, "Issue 101 description.") || strings.Contains(text, "unavailable:") {
+					t.Fatalf("retry did not carry the authoritative issue: %s", text)
+				}
+				prior, err := v.st.GetAttempt(v.ctx, original.ID)
+				v.requireReconciliationSetup(err)
+				if prior.State != store.AttemptFailed || prior.Context != legacyIssuePlaceholder {
+					t.Fatal("retry rewrote the old message or left its attempt open")
+				}
+			})
+		}
+	}
+}
+
+func TestAmbiguousLegacyPlaceholderIsNotRetried(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.kg.dropSend = true
+	v.tick(v.e)
+	original := v.latest(1)
+	_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = $2 WHERE id = $1`, original.ID, legacyIssuePlaceholder)
+	v.requireReconciliationSetup(err)
+	reads := v.its.issueCalls
+	v.e.Release()
+	v.e = v.engine("connector-upgraded")
+	v.tickReconciliation(3, v.cfg.DispatchWindow)
+	if len(v.kg.Sends()) != 1 || v.latest(1).ID != original.ID || v.work(101).EngineeringRetries != 0 || v.its.issueCalls != reads {
+		t.Fatal("missing legacy brief bypassed reconciliation of an ambiguous send")
+	}
+}
+
 func TestEngineeringExhaustionDoesNotReadIssue(t *testing.T) {
 	for _, status := range []int{401, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
@@ -871,10 +941,10 @@ func TestEngineeringExhaustionDoesNotReadIssue(t *testing.T) {
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.kg.notAccepted = 2
 			v.tick(v.e)
-			_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = NULL WHERE id = $1`, v.latest(1).ID)
-			v.requireReconciliationSetup(err)
 			v.clk.Advance(v.cfg.DispatchWindow)
 			v.tick(v.e)
+			_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = NULL WHERE id = $1`, v.latest(1).ID)
+			v.requireReconciliationSetup(err)
 			reads := v.its.issueCalls
 			v.setIssueErr(&itsaplan.HTTPError{Status: status, Body: "unavailable"})
 			v.clk.Advance(v.cfg.DispatchWindow)
@@ -956,6 +1026,7 @@ func TestDispatchIsIdempotentOnRecordedAttempt(t *testing.T) {
 		RunID: 1, RunAttempt: 1, WorkItemEpoch: 1,
 		DecisionID: "initial", Kind: "initial", MessageID: "itsaplan-run/1/initial",
 		KagentNamespace: "factory-homelab", KagentAgent: "coder", WriterEpoch: v.e.Epoch(),
+		Context: "## Issue\n\n### Issue HL-1: Issue 101 title\n\nIssue 101 description.\n",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1887,6 +1958,7 @@ func TestInitialIssueDescriptionClipping(t *testing.T) {
 		name, description, quoted string
 	}{
 		{"short", "Short description.", "Short description."},
+		{"quoted placeholder", "Handle (unavailable: upstream failed).", "Handle (unavailable: upstream failed)."},
 		{"limit", strings.Repeat("x", 8000), strings.Repeat("x", 8000)},
 		{"over limit", strings.Repeat("x", 8001), strings.Repeat("x", 8000) + "\n\n(description clipped at 8000 of 8001 bytes)"},
 		{"multibyte", strings.Repeat("界", 2667), strings.Repeat("界", 2666) + "\n\n(description clipped at 7998 of 8001 bytes)"},
