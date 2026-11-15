@@ -717,6 +717,12 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   and for the DM's members and voices. Failed reads offer a retry before
   incomplete data can open editable controls. Refresh failures keep loaded
   data and unsent drafts visible.
+- **Session sections.** Story, Notes, Inventory and Journal use Astryx tabs
+  linked to labelled panels. Arrow keys, Home and End move between tabs;
+  Enter selects one, and Tab moves into its panel. Inactive panels are hidden.
+  Story and Notes stay mounted so switching sections preserves unsaved work.
+  Each nested notes audience tab likewise controls its own labelled panel
+  and supports the same keyboard access.
 - **Sign-in expiry.** `src/app/signIn.ts` and `src/lib/session-expiry.js`
   handle a lapsed sign-in. See
   [Deployment and verification](#deployment-and-verification).

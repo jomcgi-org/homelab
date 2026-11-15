@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Button } from "@astryxdesign/core/Button";
@@ -111,6 +111,7 @@ function TableView({ table }: { table: Table }) {
   const dm = viewer.dm;
   const playing = session !== null && session.status !== "ended";
   const [tab, setTab] = useState<TabName>("story");
+  const sectionId = useId();
   const [entity, setEntity] = useState<string | null>(null);
   const [journalView, setJournalView] = useState<JournalView>("mine");
   const [prefill, setPrefill] = useState<InventoryPrefill | null>(null);
@@ -200,23 +201,57 @@ function TableView({ table }: { table: Table }) {
         value={tab}
         onChange={(value) => setTab(value as TabName)}
       >
-        <Tab value="story" label="Story" />
-        <Tab value="notes" label="Notes" />
-        <Tab value="inventory" label="Inventory" />
-        <Tab value="journal" label="Journal" />
+        <Tab
+          id={`${sectionId}-story-tab`}
+          value="story"
+          label="Story"
+          panelId={`${sectionId}-story-panel`}
+        />
+        <Tab
+          id={`${sectionId}-notes-tab`}
+          value="notes"
+          label="Notes"
+          panelId={`${sectionId}-notes-panel`}
+        />
+        <Tab
+          id={`${sectionId}-inventory-tab`}
+          value="inventory"
+          label="Inventory"
+          panelId={`${sectionId}-inventory-panel`}
+        />
+        <Tab
+          id={`${sectionId}-journal-tab`}
+          value="journal"
+          label="Journal"
+          panelId={`${sectionId}-journal-panel`}
+        />
       </TabList>
 
-      {tab === "inventory" && (
-        <InventoryPanel
-          campaignId={campaignId}
-          dm={dm}
-          characters={characters}
-          prefill={prefill}
-          onOpenKnowledge={setEntity}
-        />
-      )}
+      <div
+        id={`${sectionId}-inventory-panel`}
+        role="tabpanel"
+        aria-labelledby={`${sectionId}-inventory-tab`}
+        tabIndex={tab === "inventory" ? 0 : -1}
+        hidden={tab !== "inventory"}
+      >
+        {tab === "inventory" && (
+          <InventoryPanel
+            campaignId={campaignId}
+            dm={dm}
+            characters={characters}
+            prefill={prefill}
+            onOpenKnowledge={setEntity}
+          />
+        )}
+      </div>
       {/* Notes stay mounted so an unsaved note survives a tab switch. */}
-      <div hidden={tab !== "notes"}>
+      <div
+        id={`${sectionId}-notes-panel`}
+        role="tabpanel"
+        aria-labelledby={`${sectionId}-notes-tab`}
+        tabIndex={tab === "notes" ? 0 : -1}
+        hidden={tab !== "notes"}
+      >
         <SessionNotesPanel
           campaignId={campaignId}
           dm={dm}
@@ -224,42 +259,56 @@ function TableView({ table }: { table: Table }) {
           onOpenKnowledge={setEntity}
         />
       </div>
-      {tab === "journal" &&
-        (session ? (
-          <VStack gap={5} as="section" aria-label="Session journal">
-            <HStack>
-              <SegmentedControl
-                label="Journal audience"
-                value={journalView}
-                onChange={(value) => setJournalView(value as JournalView)}
-              >
-                <SegmentedControlItem value="mine" label="Mine" />
-                <SegmentedControlItem value="party" label="Party" />
-              </SegmentedControl>
-            </HStack>
-            <Loaded query={journal} what="the journal">
-              {(data) => (
-                <JournalPanel
-                  journal={data}
-                  view={journalView}
-                  showViewToggle={false}
-                  regionLabel={null}
-                  onShowEvent={showEvent}
-                  onOpenKnowledge={setEntity}
-                  characterNames={Object.fromEntries(
-                    characters.map((row) => [row.id, row.character_name]),
-                  )}
-                />
-              )}
-            </Loaded>
-          </VStack>
-        ) : (
-          <Text type="body" color="secondary">
-            Your journal starts when the session does.
-          </Text>
-        ))}
-
-      <div className="table-layout" hidden={tab !== "story"}>
+      <div
+        id={`${sectionId}-journal-panel`}
+        role="tabpanel"
+        aria-labelledby={`${sectionId}-journal-tab`}
+        tabIndex={tab === "journal" ? 0 : -1}
+        hidden={tab !== "journal"}
+      >
+        {tab === "journal" &&
+          (session ? (
+            <VStack gap={5} as="section" aria-label="Session journal">
+              <HStack>
+                <SegmentedControl
+                  label="Journal audience"
+                  value={journalView}
+                  onChange={(value) => setJournalView(value as JournalView)}
+                >
+                  <SegmentedControlItem value="mine" label="Mine" />
+                  <SegmentedControlItem value="party" label="Party" />
+                </SegmentedControl>
+              </HStack>
+              <Loaded query={journal} what="the journal">
+                {(data) => (
+                  <JournalPanel
+                    journal={data}
+                    view={journalView}
+                    showViewToggle={false}
+                    regionLabel={null}
+                    onShowEvent={showEvent}
+                    onOpenKnowledge={setEntity}
+                    characterNames={Object.fromEntries(
+                      characters.map((row) => [row.id, row.character_name]),
+                    )}
+                  />
+                )}
+              </Loaded>
+            </VStack>
+          ) : (
+            <Text type="body" color="secondary">
+              Your journal starts when the session does.
+            </Text>
+          ))}
+      </div>
+      <div
+        id={`${sectionId}-story-panel`}
+        role="tabpanel"
+        aria-labelledby={`${sectionId}-story-tab`}
+        tabIndex={tab === "story" ? 0 : -1}
+        className="table-layout"
+        hidden={tab !== "story"}
+      >
         <VStack gap={4}>
           {!dm && (
             <YourTurnBanner order={order} characterIds={ownCharacterIds} />
