@@ -115,8 +115,10 @@ func TestPositiveOriginalMatchSurvivesUnrelatedIncompleteHistory(t *testing.T) {
 }
 
 func TestMissingOpeningInputNeverProvesAbsenceInAnyState(t *testing.T) {
-	for _, state := range []string{kagent.StateSubmitted, kagent.StateWorking, kagent.StateCompleted,
-		kagent.StateFailed, kagent.StateCanceled, kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired} {
+	for _, state := range []string{
+		kagent.StateSubmitted, kagent.StateWorking, kagent.StateCompleted,
+		kagent.StateFailed, kagent.StateCanceled, kagent.StateRejected, kagent.StateInputRequired, kagent.StateAuthRequired,
+	} {
 		t.Run(state, func(t *testing.T) {
 			v := newEnv(t)
 			v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
