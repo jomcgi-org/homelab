@@ -1,5 +1,11 @@
 load("//bazel/helm:defs.bzl", "helm_admissibility_render")
 
+filegroup(
+    name = "repo_docs",
+    srcs = ["notify.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 exports_files(
     ["application.yaml"],
     visibility = ["//projects/factory/chart:__pkg__"],
