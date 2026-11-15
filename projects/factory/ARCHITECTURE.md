@@ -910,10 +910,12 @@ and retries once, so a brief overlap during a rollout is safe.
   comment from a token with `issues: write` alone (HTTP 403, 2026-11-15).
   `pull_requests: write` could approve, so that token never leaves the
   broker. `/github/reviewer-comments` (`github.CommentProxy`), for the same
-  subjects only, does three things with it: lists a PR's conversation
-  comments a page at a time, creates a comment on a pull request (an issue
-  number is refused), and edits a comment on a pull request that
-  `githubReview.commentAuthor`, the reviewer's bot login, wrote. It serves
+  subjects only, does three things with it: finds the oldest comment
+  `githubReview.commentAuthor`, the reviewer's bot login, wrote on a PR
+  (reading up to 1,000 comments a page at a time and stopping at the first
+  match, so the reviewer makes one request), creates a comment on a pull
+  request (an issue number is refused), and edits a comment on a pull
+  request that the bot login wrote. It serves
   nothing else, and runs only when that login is set. An App without those
   permissions fails only the comment, and the check token never gains
   them. `merge_queues: write` alone does not let this token

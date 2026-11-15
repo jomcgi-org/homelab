@@ -18,33 +18,34 @@ import (
 // GitHub takes 65536 characters.
 const MaxCommentBody = 65536
 
-// JSON escaping turns one byte into at most six (\u0026), so a request or a
-// page is bounded by its decoded size times jsonExpansion.
+// JSON escaping turns one byte into at most six (\u0026).
 const jsonExpansion = 6
 
-// maxCommentRequest bounds a create or update request: the largest body,
+// maxCommentRequest bounds a create or edit request: the largest body,
 // escaped, plus the other fields.
 const maxCommentRequest = jsonExpansion*MaxCommentBody + 4096
 
-// CommentPageSize is how many comments one listing page carries. At 20,
-// the largest page fits MaxCommentPageBytes however GitHub or the proxy
-// escapes it: 20 bodies of 65536 characters at 6 bytes each is 7.5 MiB,
-// plus GitHub's per-comment fields.
-const CommentPageSize = 20
+// maxCommentAnswer bounds an answer the proxy reads whole from GitHub: one
+// comment or one pull request.
+const maxCommentAnswer = 4 << 20
 
-// MaxCommentPageBytes bounds one listing page read from GitHub, and the
-// page the proxy returns.
-const MaxCommentPageBytes = 8 << 20
+// FindPages bounds the search for the reviewer's comment: pages of 100,
+// oldest first, so 1,000 comments.
+const FindPages = 10
 
-// maxCommentPage bounds the page a listing may ask for: 10,000 comments.
-const maxCommentPage = 10000 / CommentPageSize
+// maxFindPage bounds one listing page GitHub sends while the proxy searches
+// it. The page is decoded one comment at a time and only the match is kept,
+// so this bounds the read, not memory: 100 bodies of 65536 characters at
+// six bytes each, plus GitHub's other fields.
+const maxFindPage = 48 << 20
 
 // CommentProxy writes the reviewer's PR conversation comments with the
 // reviewer App's comment token, which GitHub requires to hold
 // pull_requests write and which could therefore approve a PR. The token
-// never leaves the broker. The proxy does three things with it: list a PR's
-// conversation comments, create one on a pull request, and edit one that
-// Author wrote. Callers wrap it with TokenReview authorization.
+// never leaves the broker. The proxy does three things with it: find the
+// oldest comment Author wrote on a PR, create one on a pull request, and
+// edit one that Author wrote. Callers wrap it with TokenReview
+// authorization.
 type CommentProxy struct {
 	// Minter mints the comment token for a bound repository.
 	Minter *Minter
@@ -83,7 +84,7 @@ func (p *CommentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	switch r.Method {
 	case http.MethodGet:
-		p.list(w, r)
+		p.find(w, r)
 	case http.MethodPost:
 		p.create(w, r)
 	case http.MethodPatch:
@@ -93,29 +94,62 @@ func (p *CommentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// list serves GET ?repository=owner/name&number=N&page=P: one page of up to
-// CommentPageSize comments, oldest first, and whether another page follows.
-func (p *CommentProxy) list(w http.ResponseWriter, r *http.Request) {
+// find serves GET ?repository=owner/name&number=N: the oldest comment
+// Author wrote on the PR, or null, searching at most FindPages pages and
+// stopping at the first match. complete is false when it stopped at the
+// bound with more comments left, so a missing comment is not proven absent.
+func (p *CommentProxy) find(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	repo := q.Get("repository")
-	number, err1 := strconv.Atoi(q.Get("number"))
-	page, err2 := strconv.Atoi(q.Get("page"))
-	if err1 != nil || err2 != nil || number <= 0 || page <= 0 || page > maxCommentPage {
-		p.fail(w, "list", repo, http.StatusBadRequest, "bad_request", nil)
+	number, err := strconv.Atoi(q.Get("number"))
+	if err != nil || number <= 0 {
+		p.fail(w, "find", repo, http.StatusBadRequest, "bad_request", nil)
 		return
 	}
-	var out []ghComment
-	v := url.Values{"per_page": {strconv.Itoa(CommentPageSize)}, "page": {strconv.Itoa(page)}}
-	next, err := p.call(r.Context(), repo, http.MethodGet, "/issues/"+strconv.Itoa(number)+"/comments?"+v.Encode(), nil, &out)
+	for page := 1; page <= FindPages; page++ {
+		v := url.Values{"per_page": {"100"}, "page": {strconv.Itoa(page)}}
+		found, next, err := p.findOnPage(r.Context(), repo, "/issues/"+strconv.Itoa(number)+"/comments?"+v.Encode())
+		if err != nil {
+			p.failCall(w, "find", repo, err)
+			return
+		}
+		if found != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"comment": found.proxied(), "complete": true})
+			return
+		}
+		if !next {
+			writeJSON(w, http.StatusOK, map[string]any{"comment": nil, "complete": true})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comment": nil, "complete": false})
+}
+
+// findOnPage reads one listing page a comment at a time and keeps only the
+// first Author wrote.
+func (p *CommentProxy) findOnPage(ctx context.Context, repo, path string) (found *ghComment, next bool, err error) {
+	resp, err := p.send(ctx, repo, http.MethodGet, path, nil)
 	if err != nil {
-		p.failCall(w, "list", repo, err)
-		return
+		return nil, false, err
 	}
-	comments := make([]ProxiedComment, 0, len(out))
-	for _, c := range out {
-		comments = append(comments, c.proxied())
+	defer resp.Body.Close()
+	if err := answerError(resp, http.MethodGet, path); err != nil {
+		return nil, false, err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"comments": comments, "next": next})
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxFindPage))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return nil, false, fmt.Errorf("GitHub comment page is not a list: %v", err)
+	}
+	for dec.More() {
+		var c ghComment
+		if err := dec.Decode(&c); err != nil {
+			return nil, false, fmt.Errorf("decode GitHub comment page: %w", err)
+		}
+		if found == nil && strings.EqualFold(c.User.Login, p.Author) {
+			found = &c
+		}
+	}
+	return found, strings.Contains(resp.Header.Get("Link"), `rel="next"`), nil
 }
 
 // create serves POST {repository, number, body}: a comment on a pull
@@ -137,7 +171,7 @@ func (p *CommentProxy) create(w http.ResponseWriter, r *http.Request) {
 	var pr struct {
 		Number int `json:"number"`
 	}
-	if _, err := p.call(ctx, in.Repository, http.MethodGet, "/pulls/"+strconv.Itoa(in.Number), nil, &pr); err != nil {
+	if err := p.call(ctx, in.Repository, http.MethodGet, "/pulls/"+strconv.Itoa(in.Number), nil, &pr); err != nil {
 		if errors.Is(err, errGitHubNotFound) {
 			err = errNotAPR
 		}
@@ -145,7 +179,7 @@ func (p *CommentProxy) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out ghComment
-	if _, err := p.call(ctx, in.Repository, http.MethodPost, "/issues/"+strconv.Itoa(in.Number)+"/comments",
+	if err := p.call(ctx, in.Repository, http.MethodPost, "/issues/"+strconv.Itoa(in.Number)+"/comments",
 		map[string]string{"body": in.Body}, &out); err != nil {
 		p.failCall(w, "create", in.Repository, err)
 		return
@@ -172,7 +206,7 @@ func (p *CommentProxy) update(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	path := "/issues/comments/" + strconv.FormatInt(in.ID, 10)
 	var cur ghComment
-	if _, err := p.call(ctx, in.Repository, http.MethodGet, path, nil, &cur); err != nil {
+	if err := p.call(ctx, in.Repository, http.MethodGet, path, nil, &cur); err != nil {
 		p.failCall(w, "update", in.Repository, err)
 		return
 	}
@@ -181,7 +215,7 @@ func (p *CommentProxy) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var out ghComment
-	if _, err := p.call(ctx, in.Repository, http.MethodPatch, path, map[string]string{"body": in.Body}, &out); err != nil {
+	if err := p.call(ctx, in.Repository, http.MethodPatch, path, map[string]string{"body": in.Body}, &out); err != nil {
 		p.failCall(w, "update", in.Repository, err)
 		return
 	}
@@ -202,26 +236,25 @@ func (p *CommentProxy) decode(w http.ResponseWriter, r *http.Request, op string,
 	return true
 }
 
-// call sends one REST request for a bound repository with the comment
-// token. next reports a Link rel="next" on the answer.
-func (p *CommentProxy) call(ctx context.Context, repo, method, path string, body, out any) (next bool, err error) {
+// send starts one REST request for a bound repository with the comment
+// token.
+func (p *CommentProxy) send(ctx context.Context, repo, method, path string, body any) (*http.Response, error) {
 	tok, err := p.Minter.ConnectorToken(ctx, repo)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	var rd io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		rd = bytes.NewReader(data)
 	}
 	a := p.Minter.App
-	u := strings.TrimRight(a.APIURL, "/") + "/repos/" + repo + path
-	req, err := http.NewRequestWithContext(ctx, method, u, rd)
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(a.APIURL, "/")+"/repos/"+repo+path, rd)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -229,34 +262,45 @@ func (p *CommentProxy) call(ctx context.Context, repo, method, path string, body
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := a.client().Do(req)
+	return a.client().Do(req)
+}
+
+// call sends one REST request and decodes its answer whole.
+func (p *CommentProxy) call(ctx context.Context, repo, method, path string, body, out any) error {
+	resp, err := p.send(ctx, repo, method, path, body)
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxCommentPageBytes+1))
+	if err := answerError(resp, method, path); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCommentAnswer+1))
 	if err != nil {
-		return false, err
+		return err
 	}
-	if len(data) > MaxCommentPageBytes {
-		return false, fmt.Errorf("GitHub %s %s: answer over %d bytes", method, strings.SplitN(path, "?", 2)[0], MaxCommentPageBytes)
+	if len(data) > maxCommentAnswer {
+		return fmt.Errorf("GitHub %s %s: answer over %d bytes", method, path, maxCommentAnswer)
 	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("decode GitHub answer: %w", err)
+	}
+	return nil
+}
+
+// answerError is nil for a 2xx answer.
+func answerError(resp *http.Response, method, path string) error {
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return false, errGitHubNotFound
+		return errGitHubNotFound
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		var msg struct {
 			Message string `json:"message"`
 		}
-		_ = json.Unmarshal(data, &msg)
-		return false, fmt.Errorf("GitHub %s %s: HTTP %d: %s", method, strings.SplitN(path, "?", 2)[0], resp.StatusCode, msg.Message)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&msg)
+		return fmt.Errorf("GitHub %s %s: HTTP %d: %s", method, strings.SplitN(path, "?", 2)[0], resp.StatusCode, msg.Message)
 	}
-	if out != nil {
-		if err := json.Unmarshal(data, out); err != nil {
-			return false, fmt.Errorf("decode GitHub answer: %w", err)
-		}
-	}
-	return strings.Contains(resp.Header.Get("Link"), `rel="next"`), nil
+	return nil
 }
 
 func (p *CommentProxy) failCall(w http.ResponseWriter, op, repo string, err error) {
