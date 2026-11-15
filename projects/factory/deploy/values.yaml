@@ -163,6 +163,9 @@ reviewer:
   enabled: true
   # Reviews at once; agents.reviewer.concurrency gives each a worker.
   concurrency: 3
+  # The reviewer keeps one comment on each PR it reviews (verdict and
+  # findings), written with the broker's Issues-write comment token.
+  commentAuthor: jomcgi-factory-review[bot]
   bindings:
     homelab:
       enqueueAuthors: []
