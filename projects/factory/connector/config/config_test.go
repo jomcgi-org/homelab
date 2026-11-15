@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ links:
 		t.Fatal(err)
 	}
 	b := f.Bindings[0]
-	if *b.MaxReviewRounds != 3 || len(b.RequiredChecks) != 2 || b.ReviewerCheck.AppID != 4242 || b.TrustedReviewers[0] != "reviewer" {
+	if *b.MaxReviewRounds != 3 || *b.MaxRebaseRounds != 3 || len(b.RequiredChecks) != 2 || b.ReviewerCheck.AppID != 4242 || b.TrustedReviewers[0] != "reviewer" {
 		t.Fatalf("binding = %+v", b)
 	}
 	if time.Duration(f.Intervals.ReviewPoll) != time.Minute || f.Links.Issue == "" {
@@ -108,6 +109,16 @@ links:
 	}
 	if _, err := Parse([]byte(strings.Replace(review, "        statusCreator: lint-bot\n", "", 1))); err == nil {
 		t.Fatal("check without appId or statusCreator accepted")
+	}
+	for _, bound := range []int{0, 5, -1} {
+		f, err := Parse([]byte(sample + fmt.Sprintf("    maxRebaseRounds: %d\n", bound)))
+		if bound < 0 {
+			if err == nil {
+				t.Fatal("negative rebase bound accepted")
+			}
+		} else if err != nil || *f.Bindings[0].MaxRebaseRounds != bound {
+			t.Fatalf("maxRebaseRounds %d: config = %+v, error = %v", bound, f, err)
+		}
 	}
 }
 

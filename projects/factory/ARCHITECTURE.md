@@ -569,6 +569,32 @@ work item (`maxReviewRounds`, default 3); past the bound events are
 `round_limit` and the PR waits for a person. Events are read only while
 the work item is in review, not while a turn runs.
 
+An open PR outside the merge queue whose mergeability is `CONFLICTING`
+starts a rebase round on the next review poll, before the enqueue gate and
+without waiting for checks to finish. `UNKNOWN` waits for the next poll.
+The prompt asks the agent to rebase on the binding's `origin/<base>`, resolve
+the conflicts, rerun affected tests and push. If checks or reviews also ask
+for changes on that poll, their feedback goes into that same round. A
+synthetic conflict event records the head once, atomically with the round
+and its issue announcement; repeated polls and connector restarts cannot
+start another rebase on that head. Holds and stopped work items block it
+like any other revision trigger.
+
+Rebase rounds use a separate per-binding `maxRebaseRounds` bound (default 3,
+0 disables them), persisted as `work_item.rebase_rounds`. They do not spend
+`maxReviewRounds`, including when the prompt also carries review feedback.
+Past the bound, one issue comment says the PR conflicts and waits for a
+person. `factory_connector_rebase_rounds_total{outcome}` counts starts,
+idle rounds and work items reaching the bound (`started`, `idle`, `limited`).
+No conflicting head is enqueued. A rebased head needs fresh CI and independent
+review before it may enter the queue.
+
+**Why.** Main moving is not a review failure. Before
+[HOME-71](https://factory-plan.jomcgi.dev/factory/issue/HOME-71), only queue
+ejections carried conflicts back to the agent: PR #8058 repeatedly failed
+enqueue with a conflict while its issue stayed silent. Detecting conflicts
+during review repairs that case within a separate bound.
+
 A review round is a connector-initiated continuation, not an itsaplan
 mention-run: itsaplan v1.10.0 starts no run for an agent's comment
 (finding 13). The round is a connector run (negative id, message IDs
@@ -582,8 +608,9 @@ A round records the head it was asked to change. If it closes with the PR
 still at that head, the agent pushed nothing, and every event on that head
 has already acted, so no new round can start. Once every required check and
 the reviewer check has finished on that head and the gate is still closed,
-the connector says so on the issue once per round. The PR waits for a
-person; a new commit restarts CI and review, and the comment says how many
+the connector says so on the issue once per round. A still-conflicting head
+gets this idle-round comment without waiting for checks to finish. The PR
+waits for a person; a new commit restarts CI and review, and the comment says how many
 rounds remain. itsaplan comments carry no idempotency key, so this one is
 sent at most once: `outbox.send_started_at` is set before the send, a send
 whose outcome is unknown is abandoned rather than repeated, and only a send
@@ -684,9 +711,11 @@ checks page. CI-provided URLs, summaries and descriptions are omitted. If the
 queue entry disappeared before its commit was observed, the prompt says the
 evidence is unavailable.
 GitHub's `CONFLICTING` mergeability asks the agent to rebase on the bound
-`origin/<base>` and resolve. A CI infrastructure flake may be repaired by
-rebasing and re-pushing the same change; the new head needs the usual checks
-and independent review.
+`origin/<base>` and resolve. This stays one ejection round against the review
+bound and consumes the head's conflict event, so an unchanged head cannot
+start another rebase round on a later review poll. A CI infrastructure flake
+may be repaired by rebasing and re-pushing the same change; the new head needs
+the usual checks and independent review.
 
 The ejection and round start commit together and are announced on the issue.
 An ejected head is never re-enqueued. A new head

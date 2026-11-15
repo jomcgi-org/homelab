@@ -442,7 +442,8 @@ connector:
   # Per repository binding, by its `repositories` name; every binding needs
   # one. Owner, repository, base branch and the kagent Agent come from the
   # binding. Keys: itsaplanProject and agents (required); branchPrefix
-  # (factory/), maxEngineeringRetries (2), maxReviewRounds (3), doneColumn;
+  # (factory/), maxEngineeringRetries (2), maxReviewRounds (3),
+  # maxRebaseRounds (3, separate from review rounds), doneColumn;
   # the review policy trustedReviewers (GitHub logins), requiredChecks and
   # reviewerCheck (each {name, appId} or {name, statusCreator}). Without a
   # reviewer check or trusted reviewers no PR is ever enqueued.

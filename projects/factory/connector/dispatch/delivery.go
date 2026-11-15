@@ -51,6 +51,8 @@ type ReviewPolicy struct {
 	HoldLabels []string
 	// MaxReviewRounds bounds the connector's review rounds per work item.
 	MaxReviewRounds int
+	// MaxRebaseRounds separately bounds conflicts caused by the base moving.
+	MaxRebaseRounds int
 	// DoneColumn names the itsaplan column a merged issue moves to; empty
 	// picks the project's first completed column.
 	DoneColumn string
@@ -510,7 +512,11 @@ func (e *Engine) prBody(ctx context.Context, wi *store.WorkItem, a *store.Attemp
 	fmt.Fprintf(&s, "Factory delivery for %s.\n\n", wi.IssueKey)
 	fmt.Fprintf(&s, "- Issue: %s\n", mdLink(wi.IssueKey, e.expand(e.cfg.Links.Issue, wi, 0, "")))
 	if r.Connector() {
-		fmt.Fprintf(&s, "- Run: review round %d", wi.ReviewRounds)
+		if r.Trigger == "rebase" {
+			fmt.Fprintf(&s, "- Run: rebase round %d", wi.RebaseRounds)
+		} else {
+			fmt.Fprintf(&s, "- Run: review round %d", wi.ReviewRounds)
+		}
 		if id := e.lastItsaplanRun(ctx, wi.ID); id != 0 {
 			fmt.Fprintf(&s, ", after %s", mdLink("itsaplan run "+strconv.FormatInt(id, 10), e.expand(e.cfg.Links.Run, wi, id, "")))
 		}
@@ -613,6 +619,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		// Queued although the enqueue's answer was lost.
 		return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
 	}
+	if d.Mergeable == "UNKNOWN" {
+		return nil // GitHub is still computing mergeability; poll again
+	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
@@ -633,6 +642,11 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	}
 	if err != nil || started {
 		return err
+	}
+	if d.Mergeable == "CONFLICTING" {
+		// A head already sent back never enters the queue, even with green
+		// checks. An idle rebase need not wait for checks that cannot merge.
+		return e.idleRound(ctx, wi, b, pr, d)
 	}
 	if !gateOpen(&b.Review, b.BaseBranch, pr, d, checks, statuses) {
 		if !settled(&b.Review, d.HeadSHA, checks, statuses) {
@@ -694,8 +708,9 @@ type candidate struct {
 // reviewEvents records the PR's events that ask for changes, once each by
 // GitHub node ID. An event acts only when its commit is the current head and
 // its author is trusted, and once per head, kind and source; acting events
-// start one review round in the work item's session, within the binding's
-// bound. started reports a new round.
+// start one round in the work item's session, within the binding's bound.
+// Conflicts join that feedback and use the separate rebase bound, once per
+// head. started reports a new round.
 func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest,
 	d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status,
 ) (started bool, err error) {
@@ -707,6 +722,15 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		return false, nil
 	}
 	var cands []candidate
+	rebase := d.Mergeable == "CONFLICTING"
+	if rebase {
+		ev := conflictEvent(pr, d)
+		seen, err := e.st.SeenEvents(ctx, []string{ev.NodeID})
+		if err != nil || seen[ev.NodeID] {
+			return false, err // at most one round on this conflicting head
+		}
+		cands = append(cands, candidate{ev: ev, trusted: true, text: conflictFeedback(b.BaseBranch)})
+	}
 	for _, rv := range d.Reviews {
 		if rv.State != "CHANGES_REQUESTED" {
 			continue
@@ -805,6 +829,9 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		return false, nil
 	}
 	limited := len(acting) > 0 && wi.ReviewRounds >= p.MaxReviewRounds
+	if rebase {
+		limited = wi.RebaseRounds >= p.MaxRebaseRounds
+	}
 	if limited {
 		for _, c := range acting {
 			c.ev.Disposition = store.EventRoundLimit
@@ -820,13 +847,23 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		if reason != "" {
 			return false, e.stopWork(ctx, wi, reason)
 		}
-		prompt = roundPrompt(p, wi, pr, d, acting)
+		kind, number := "Review", wi.ReviewRounds+1
+		if rebase {
+			kind, number = "Rebase", wi.RebaseRounds+1
+		}
+		prompt = roundPrompt(p, wi, pr, d, acting, kind, number)
 	}
 	var round *store.Run
+	var rebaseLimited bool
 	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
 		if prompt != "" {
 			var err error
-			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt); err != nil {
+			if rebase {
+				round, err = e.startRebaseRound(ctx, tx, wi, b, pr, d, prompt)
+			} else {
+				round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt)
+			}
+			if err != nil {
 				return err
 			}
 			for _, c := range acting {
@@ -834,7 +871,16 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			}
 		}
 		if limited {
-			if err := e.reviewRoundLimit(ctx, tx, wi, b, pr); err != nil {
+			if rebase {
+				var err error
+				rebaseLimited, err = e.st.EnqueueOnce(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/rebase-limit/%d", wi.ID), 0, "",
+					commentPayload{IssueID: wi.IssueID, Once: true, Body: fmt.Sprintf(
+						"%s reached its bound of %d rebase rounds; PR #%d (%s) conflicts with %s and waits for a person.",
+						wi.IssueKey, p.MaxRebaseRounds, pr.Number, pr.URL, b.BaseBranch)})
+				if err != nil {
+					return err
+				}
+			} else if err := e.reviewRoundLimit(ctx, tx, wi, b, pr); err != nil {
 				return err
 			}
 		}
@@ -851,10 +897,40 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	for _, c := range record {
 		e.m.ReviewEvents.WithLabelValues(c.ev.Kind, c.ev.Disposition).Inc()
 	}
+	if rebaseLimited {
+		e.m.RebaseRounds.WithLabelValues("limited").Inc()
+	}
 	if round == nil {
 		return false, nil
 	}
 	return true, e.dispatchReviewRound(ctx, wi, round)
+}
+
+// conflictEvent gives mergeability a durable identity per PR head. An ejection
+// that includes the conflict consumes the same event without a second round.
+func conflictEvent(pr *store.PullRequest, d *github.PullRequestDetail) store.ReviewEvent {
+	return store.ReviewEvent{
+		PullRequestID: pr.ID, NodeID: fmt.Sprintf("factory-rebase/%d/%s", pr.ID, d.HeadSHA),
+		CommitSHA: d.HeadSHA, Author: "connector", Kind: store.EventConflicting, Source: "mergeability",
+	}
+}
+
+func conflictFeedback(base string) string {
+	return fmt.Sprintf("The PR conflicts with %s: rebase on origin/%s and resolve the conflicts, rerun the affected tests and push to the work branch.", base, base)
+}
+
+func (e *Engine) startRebaseRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
+	pr *store.PullRequest, d *github.PullRequestDetail, prompt string,
+) (*store.Run, error) {
+	round, err := e.st.StartRebaseRound(ctx, tx, wi, prompt, d.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
+	err = e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/rebase/%d/%d", wi.ID, wi.RebaseRounds+1), round.ID, "",
+		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+			"The factory started rebase round %d of %d for %s on PR #%d (%s) at %s, which conflicts with %s, in kagent session %s.",
+			wi.RebaseRounds+1, b.Review.MaxRebaseRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), b.BaseBranch, wi.SessionID)})
+	return round, err
 }
 
 // startReviewRound records the run and its announcement together with the
@@ -875,8 +951,9 @@ func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.Wor
 
 // idleRound reports, once per round, a review round that closed with the PR
 // still at the head it was asked to change, once every check on that head has
-// finished and the gate is still closed. The agent pushed nothing, and every
-// event on the head has acted, so nothing on that head starts another round:
+// finished and the gate is still closed, or the head still conflicts. The
+// agent pushed nothing, and every event on the head has acted, so nothing on
+// that head starts another round:
 // without this the PR waits silently (HOME-15 and HOME-18 on 2026-11-14). A
 // new commit restarts CI and review. The comment posts at most once.
 func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
@@ -887,22 +964,36 @@ func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, b *Binding, 
 	if err != nil || last == nil || last.State != store.RunClosed || last.HeadSHA == "" || last.HeadSHA != d.HeadSHA {
 		return err
 	}
-	next := "no review rounds remain, so a person decides what follows."
-	if left := b.Review.MaxReviewRounds - wi.ReviewRounds; left > 0 {
-		next = fmt.Sprintf("if that head fails, round %d of %d starts.", wi.ReviewRounds+1, b.Review.MaxReviewRounds)
+	kind, count, bound := "Review", wi.ReviewRounds, b.Review.MaxReviewRounds
+	if last.Trigger == "rebase" {
+		kind, count, bound = "Rebase", wi.RebaseRounds, b.Review.MaxRebaseRounds
+	}
+	next := fmt.Sprintf("no %s rounds remain, so a person decides what follows.", strings.ToLower(kind))
+	if count < bound {
+		next = fmt.Sprintf("if that head fails, round %d of %d starts.", count+1, bound)
+		if last.Trigger == "rebase" {
+			next = fmt.Sprintf("if that head conflicts, rebase round %d of %d starts.", count+1, bound)
+		}
+	}
+	blocked := "its checks have finished and it cannot merge"
+	if d.Mergeable == "CONFLICTING" {
+		blocked = "it still conflicts with " + b.BaseBranch
 	}
 	posted, err := e.st.EnqueueOnce(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/round-idle/%d", last.RunID), 0, "",
 		commentPayload{IssueID: wi.IssueID, Once: true, Body: fmt.Sprintf(
-			"Review round %d of %d for %s ended without a new commit. PR #%d (%s) is still at %s, its checks have "+
-				"finished and it cannot merge, so the factory cannot continue on its own. It waits for a person: "+
+			"%s round %d of %d for %s ended without a new commit. PR #%d (%s) is still at %s, %s, "+
+				"so the factory cannot continue on its own. It waits for a person: "+
 				"a new commit on %s restarts CI and review, and %s",
-			wi.ReviewRounds, b.Review.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.Branch, next)})
+			kind, count, bound, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), blocked, wi.Branch, next)})
 	if err != nil || !posted {
 		return err
 	}
 	e.m.IdleRounds.Inc()
-	e.log.WarnContext(ctx, "review round ended without a new commit", "work_item", wi.ID, "run", last.RunID,
-		"pr", pr.Number, "head", d.HeadSHA)
+	if last.Trigger == "rebase" {
+		e.m.RebaseRounds.WithLabelValues("idle").Inc()
+	}
+	e.log.WarnContext(ctx, "revision round ended without a new commit", "work_item", wi.ID, "run", last.RunID,
+		"kind", last.Trigger, "pr", pr.Number, "head", d.HeadSHA)
 	return nil
 }
 
@@ -952,6 +1043,11 @@ func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.Wor
 }
 
 func (e *Engine) dispatchReviewRound(ctx context.Context, wi *store.WorkItem, round *store.Run) error {
+	if round.Trigger == "rebase" {
+		e.m.RebaseRounds.WithLabelValues("started").Inc()
+		e.log.InfoContext(ctx, "rebase round started", "work_item", wi.ID, "run", round.ID, "round", wi.RebaseRounds+1)
+		return e.stepLocked(ctx, round.ID)
+	}
 	e.m.ReviewRounds.Inc()
 	e.log.InfoContext(ctx, "review round started", "work_item", wi.ID, "run", round.ID, "round", wi.ReviewRounds+1)
 	return e.stepLocked(ctx, round.ID)
@@ -959,11 +1055,11 @@ func (e *Engine) dispatchReviewRound(ctx context.Context, wi *store.WorkItem, ro
 
 // roundPrompt asks for a revision: what requested changes, and the PR's
 // unresolved review threads from trusted authors.
-func roundPrompt(p *ReviewPolicy, wi *store.WorkItem, pr *store.PullRequest, d *github.PullRequestDetail, acting []*candidate) string {
+func roundPrompt(p *ReviewPolicy, wi *store.WorkItem, pr *store.PullRequest, d *github.PullRequestDetail, acting []*candidate, kind string, number int) string {
 	var s strings.Builder
-	fmt.Fprintf(&s, "Review round %d for %s. Pull request #%d (%s) at %s on %s needs changes. "+
+	fmt.Fprintf(&s, "%s round %d for %s. Pull request #%d (%s) at %s on %s needs changes. "+
 		"Address the feedback below, push the fixes to %s, and say what you changed or why you did not.\n",
-		wi.ReviewRounds+1, wi.IssueKey, pr.Number, pr.URL, d.HeadSHA, wi.Branch, wi.Branch)
+		kind, number, wi.IssueKey, pr.Number, pr.URL, d.HeadSHA, wi.Branch, wi.Branch)
 	s.WriteString("\n### Feedback\n")
 	for _, c := range acting {
 		fmt.Fprintf(&s, "\n%s\n", c.text)
@@ -1017,6 +1113,9 @@ func writeThreads(s *strings.Builder, threads []github.ReviewThread, p *ReviewPo
 // trusted sources, no trusted reviewer's latest decision requests changes,
 // and the queue has not already sent this head back.
 func gateOpen(p *ReviewPolicy, base string, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status) bool {
+	if d.Mergeable == "CONFLICTING" || d.Mergeable == "UNKNOWN" {
+		return false
+	}
 	if d.Draft || d.HeadSHA == "" || d.HeadSHA == pr.EjectedHeadSHA || d.BaseRef != base || p.held(d.Labels) != "" {
 		return false
 	}
@@ -1144,9 +1243,9 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 	var prompt string
 	if !limited && !held {
 		if latest.Mergeable == "CONFLICTING" {
-			feedback += fmt.Sprintf("\nconflicts with %s: rebase on origin/%s and resolve.\n", b.BaseBranch, b.BaseBranch)
+			feedback += "\n" + conflictFeedback(b.BaseBranch) + "\n"
 		}
-		prompt = roundPrompt(&b.Review, wi, pr, latest, []*candidate{{text: feedback}})
+		prompt = roundPrompt(&b.Review, wi, pr, latest, []*candidate{{text: feedback}}, "Review", wi.ReviewRounds+1)
 	}
 	head := pr.EnqueuedHeadSHA
 	var round *store.Run
@@ -1166,6 +1265,13 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 		case prompt != "":
 			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt); err != nil {
 				return err
+			}
+			if latest.Mergeable == "CONFLICTING" {
+				ev := conflictEvent(pr, latest)
+				ev.Disposition, ev.RoundRunID = store.EventActed, round.ID
+				if _, err := e.st.RecordEvent(ctx, tx, ev); err != nil {
+					return err
+				}
 			}
 			outcome = fmt.Sprintf("Review round %d of %d will address the ejection in the mapped session.",
 				wi.ReviewRounds+1, b.Review.MaxReviewRounds)

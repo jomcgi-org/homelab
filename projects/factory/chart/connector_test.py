@@ -321,6 +321,7 @@ def test_bindings_derive_from_repositories() -> None:
             "connector.bindings.homelab.trustedReviewers={reviewer-bot}",
             "connector.bindings.homelab.reviewerCheck.name=semgrep",
             "connector.bindings.homelab.reviewerCheck.appId=12345",
+            "connector.bindings.homelab.maxRebaseRounds=5",
             "connector.intervals.poll=10s",
         ]
     )
@@ -340,6 +341,7 @@ def test_bindings_derive_from_repositories() -> None:
                 {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
             ],
             "reviewerCheck": {"name": "semgrep", "appId": 12345},
+            "maxRebaseRounds": 5,
         }
     ]
     # The binding's kagent Agent is the one the chart renders.
@@ -451,6 +453,7 @@ def test_peers_admit_the_connector_pod() -> None:
             "stranger is not in itsaplan.bootstrap.agents",
         ),
         ("connector.bindings.homelab.owner=x", "owner"),
+        ("connector.bindings.homelab.maxRebaseRounds=-1", "maxRebaseRounds"),
         (
             # The deploy values name an App; also naming a creator fails.
             "connector.bindings.homelab.reviewerCheck.statusCreator=someone",

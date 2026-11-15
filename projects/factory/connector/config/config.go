@@ -94,6 +94,7 @@ type Binding struct {
 	RequiredChecks   []Check  `yaml:"requiredChecks"`
 	ReviewerCheck    *Check   `yaml:"reviewerCheck"`
 	MaxReviewRounds  *int     `yaml:"maxReviewRounds"`
+	MaxRebaseRounds  *int     `yaml:"maxRebaseRounds"`
 	DoneColumn       string   `yaml:"doneColumn"`
 }
 
@@ -249,6 +250,13 @@ func Parse(b []byte) (*File, error) {
 		if b.MaxReviewRounds == nil {
 			three := 3
 			b.MaxReviewRounds = &three
+		}
+		if b.MaxRebaseRounds == nil {
+			three := 3
+			b.MaxRebaseRounds = &three
+		}
+		if *b.MaxRebaseRounds < 0 {
+			return nil, fmt.Errorf("config: binding %s: maxRebaseRounds must be non-negative", b.Name)
 		}
 		checks := append([]Check(nil), b.RequiredChecks...)
 		if b.ReviewerCheck != nil {
