@@ -400,21 +400,17 @@ snapshot has more text. A missing artifact or a changed or shortened prefix
 fails the poll without advancing the transcript or reporting completion
 (#8017).
 
-**Rollback transition (#8017).** This is a compatibility release. Production
-keeps `dispatch.Config.ArtifactTranscripts` false in `cmd/connector/main.go`;
-new journals contain history events only, preserving the previous binary's
-offset interpretation. An existing artifact journal records its admission
-and always resumes, including pending events whose acknowledgement was lost.
-Turning admission off does not change an active journal's event format.
+**Rollback transition (#8017).** Chart 0.27.11 shipped the journal with
+`dispatch.Config.ArtifactTranscripts` false: new journals held history events
+only, and an existing artifact journal recorded its admission and always
+resumed, including pending events whose acknowledgement was lost. Chart
+0.29.10 ran that way in production, and HOME-102 sets it true in
+`cmd/connector/main.go`.
 
-After CI publishes this release, pin it and verify the connector rollout.
-Only then may a follow-up set `ArtifactTranscripts` true in the command.
-That activation must name this journal-aware pin as its rollback target;
-lowering back to it resumes active artifact journals while keeping new ones
-history-only. A direct rollback from the activating release to a pre-journal
-binary is unsupported. The first release can still roll back to the previous
-history-only binary because it never admits artifact offsets. HOME-36's
-production activation remains outstanding until that follow-up.
+To roll back, lower the deploy pin to 0.29.10 or any journal-aware release
+with admission off. It resumes active artifact journals and keeps new ones
+history-only. A direct rollback to a release before 0.27.11 is unsupported:
+it would misread the artifact offsets already acknowledged.
 
 **Dispatch.** Runs come from itsaplan assignment, mentions and delegation;
 none of these is a Pro feature (status-triggered schedules are Pro and are

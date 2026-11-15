@@ -68,9 +68,8 @@ type Binding struct {
 
 // Config holds dispatch settings.
 type Config struct {
-	// ArtifactTranscripts admits artifact text into journals. This release
-	// leaves it off until a journal-aware binary is the pinned rollback target.
-	// Existing artifact journals always resume, even when admission is off.
+	// ArtifactTranscripts admits artifact text into journals. Existing
+	// artifact journals always resume, even when admission is off.
 	ArtifactTranscripts bool
 
 	Caller    Caller

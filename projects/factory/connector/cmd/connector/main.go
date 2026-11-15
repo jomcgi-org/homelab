@@ -208,10 +208,10 @@ func run(log *slog.Logger) error {
 	}
 
 	eng := dispatch.New(dispatch.Config{
-		// Compatibility release: keep artifact admission off until this binary
-		// is the deployed rollback target. It can already resume artifact journals
-		// written by a later release that enables admission (HOME-36 / #8017).
-		ArtifactTranscripts: false,
+		// Native Codex artifact text reaches itsaplan run events (#8017). The
+		// rollback target is chart 0.29.10, which resumes admitted journals
+		// but admits no new ones (ARCHITECTURE.md "Rollback transition").
+		ArtifactTranscripts: true,
 
 		Caller: &kagent.InvocationCredentials{
 			Tokens: tokens, Authority: cfg.KagentAuthority,

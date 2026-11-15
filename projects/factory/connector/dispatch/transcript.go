@@ -183,9 +183,10 @@ func (e *Engine) prepareEvents(ctx context.Context, r *store.Run, t *kagent.Task
 			return fmt.Errorf("decode transcript: %w", err)
 		}
 		base = journal.Base
-		// Admission is sticky per task. A rollback to this compatibility release
-		// must reconcile existing artifact journals, including unacknowledged
-		// events, even though it does not admit artifact text on other tasks.
+		// Admission is sticky per task. A rollback to a release with admission
+		// off must reconcile existing artifact journals, including
+		// unacknowledged events, even though it admits no artifact text on
+		// other tasks.
 		admitted := state.ArtifactText
 		state.ArtifactText = admitted || e.cfg.ArtifactTranscripts || len(state.Artifacts) > 0
 		previous := len(state.Events)
