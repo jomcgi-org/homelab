@@ -53,6 +53,9 @@ type ReviewPolicy struct {
 	MaxReviewRounds int
 	// MaxRebaseRounds separately bounds conflicts caused by the base moving.
 	MaxRebaseRounds int
+	// MaxSplitRounds separately bounds rounds whose only cause is the
+	// reviewer's request to split a PR over its size budget.
+	MaxSplitRounds int
 	// DoneColumn names the itsaplan column a merged issue moves to; empty
 	// picks the project's first completed column.
 	DoneColumn string
@@ -512,9 +515,12 @@ func (e *Engine) prBody(ctx context.Context, wi *store.WorkItem, a *store.Attemp
 	fmt.Fprintf(&s, "Factory delivery for %s.\n\n", wi.IssueKey)
 	fmt.Fprintf(&s, "- Issue: %s\n", mdLink(wi.IssueKey, e.expand(e.cfg.Links.Issue, wi, 0, "")))
 	if r.Connector() {
-		if r.Trigger == "rebase" {
+		switch r.Trigger {
+		case "rebase":
 			fmt.Fprintf(&s, "- Run: rebase round %d", wi.RebaseRounds)
-		} else {
+		case "split":
+			fmt.Fprintf(&s, "- Run: split round %d", wi.SplitRounds)
+		default:
 			fmt.Fprintf(&s, "- Run: review round %d", wi.ReviewRounds)
 		}
 		if id := e.lastItsaplanRun(ctx, wi.ID); id != 0 {
@@ -685,6 +691,13 @@ func (e *Engine) enqueued(ctx context.Context, wi *store.WorkItem, b *Binding, p
 // set it. No revision round clears that hold; the PR waits for a person.
 const humanHoldMarker = "<!-- factory-review:human-gate-only -->"
 
+// splitOnlyMarker is how the factory-reviewer marks a failed check whose only
+// cause is a diff over its size budget; it sent no review task. The reviewer
+// strips the marker's prefix from anything the PR or its agent wrote, so only
+// the reviewer service can set it. When it is the only acting event, the
+// round counts against MaxSplitRounds instead of MaxReviewRounds.
+const splitOnlyMarker = "<!-- factory-review:split-only -->"
+
 // maxCheckFeedback bounds a failed check's summary in a revision prompt. The
 // reviewer's summary is at most 60,000 characters and lists its blocking
 // findings after its overview, so a tighter clip could drop them.
@@ -703,6 +716,8 @@ type candidate struct {
 	ev      store.ReviewEvent
 	trusted bool
 	text    string
+	// split marks the reviewer's own request to split an oversized PR.
+	split bool
 }
 
 // reviewEvents records the PR's events that ask for changes, once each by
@@ -711,7 +726,8 @@ type candidate struct {
 // start one round in the work item's session, within the binding's bound.
 // A new conflict joins that feedback and uses the separate rebase bound, once
 // per head. Later independent events can still spend review rounds on that
-// head. started reports a new round.
+// head. A reviewer split request acting alone uses the split bound. started
+// reports a new round.
 func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest,
 	d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status,
 ) (started bool, err error) {
@@ -762,6 +778,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			trusted: trusted,
 			text: fmt.Sprintf("Check %q concluded %s (%s): %s\n\n%s", c.Name, c.Conclusion, c.URL, c.Title,
 				clip(c.Summary, maxCheckFeedback)),
+			split: reviewerSplit(p, c),
 		})
 	}
 	for _, st := range statuses {
@@ -826,9 +843,13 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	if len(record) == 0 {
 		return false, nil
 	}
+	split := !rebase && len(acting) == 1 && acting[0].split
 	limited := len(acting) > 0 && wi.ReviewRounds >= p.MaxReviewRounds
-	if rebase {
+	switch {
+	case rebase:
 		limited = wi.RebaseRounds >= p.MaxRebaseRounds
+	case split:
+		limited = wi.SplitRounds >= p.MaxSplitRounds
 	}
 	if limited {
 		for _, c := range acting {
@@ -846,8 +867,11 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			return false, e.stopWork(ctx, wi, reason)
 		}
 		kind, number := "Review", wi.ReviewRounds+1
-		if rebase {
+		switch {
+		case rebase:
 			kind, number = "Rebase", wi.RebaseRounds+1
+		case split:
+			kind, number = "Split", wi.SplitRounds+1
 		}
 		prompt = roundPrompt(p, wi, pr, d, acting, kind, number)
 		if conflicting && !rebase {
@@ -858,13 +882,16 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		}
 	}
 	var round *store.Run
-	var rebaseLimited bool
+	var rebaseLimited, splitLimited bool
 	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
 		if prompt != "" {
 			var err error
-			if rebase {
+			switch {
+			case rebase:
 				round, err = e.startRebaseRound(ctx, tx, wi, b, pr, d, prompt)
-			} else {
+			case split:
+				round, err = e.startSplitRound(ctx, tx, wi, b, pr, d, prompt)
+			default:
 				round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt)
 			}
 			if err != nil {
@@ -875,16 +902,22 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			}
 		}
 		if limited {
-			if rebase {
-				var err error
+			var err error
+			switch {
+			case rebase:
 				rebaseLimited, err = e.st.EnqueueOnce(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/rebase-limit/%d", wi.ID), 0, "",
 					commentPayload{IssueID: wi.IssueID, Once: true, Body: fmt.Sprintf(
 						"%s reached its bound of %d rebase rounds; PR #%d (%s) conflicts with %s and waits for a person.",
 						wi.IssueKey, p.MaxRebaseRounds, pr.Number, pr.URL, b.BaseBranch)})
-				if err != nil {
-					return err
-				}
-			} else if err := e.reviewRoundLimit(ctx, tx, wi, b, pr); err != nil {
+			case split:
+				splitLimited, err = e.st.EnqueueOnce(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/split-limit/%d", wi.ID), 0, "",
+					commentPayload{IssueID: wi.IssueID, Once: true, Body: fmt.Sprintf(
+						"%s reached its bound of %d split rounds; PR #%d (%s) is over the reviewer's size budget and waits for a person.",
+						wi.IssueKey, p.MaxSplitRounds, pr.Number, pr.URL)})
+			default:
+				err = e.reviewRoundLimit(ctx, tx, wi, b, pr)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -903,6 +936,9 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	}
 	if rebaseLimited {
 		e.m.RebaseRounds.WithLabelValues("limited").Inc()
+	}
+	if splitLimited {
+		e.m.SplitRounds.WithLabelValues("limited").Inc()
 	}
 	if round == nil {
 		return false, nil
@@ -938,6 +974,20 @@ func (e *Engine) startRebaseRound(ctx context.Context, tx *sql.Tx, wi *store.Wor
 	return round, err
 }
 
+func (e *Engine) startSplitRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
+	pr *store.PullRequest, d *github.PullRequestDetail, prompt string,
+) (*store.Run, error) {
+	round, err := e.st.StartSplitRound(ctx, tx, wi, prompt, d.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
+	err = e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/split/%d/%d", wi.ID, wi.SplitRounds+1), round.ID, "",
+		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+			"The factory started split round %d of %d for %s on PR #%d (%s) at %s, which is over the reviewer's size budget, in kagent session %s.",
+			wi.SplitRounds+1, b.Review.MaxSplitRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.SessionID)})
+	return round, err
+}
+
 // startReviewRound records the run and its announcement together with the
 // event that prompted it. Callers check the issue and round bound first.
 func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
@@ -970,14 +1020,21 @@ func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, b *Binding, 
 		return err
 	}
 	kind, count, bound := "Review", wi.ReviewRounds, b.Review.MaxReviewRounds
-	if last.Trigger == "rebase" {
+	switch last.Trigger {
+	case "rebase":
 		kind, count, bound = "Rebase", wi.RebaseRounds, b.Review.MaxRebaseRounds
+	case "split":
+		kind, count, bound = "Split", wi.SplitRounds, b.Review.MaxSplitRounds
 	}
 	next := fmt.Sprintf("no %s rounds remain, so a person decides what follows.", strings.ToLower(kind))
 	if count < bound {
-		next = fmt.Sprintf("if that head fails, round %d of %d starts.", count+1, bound)
-		if last.Trigger == "rebase" {
+		switch last.Trigger {
+		case "rebase":
 			next = fmt.Sprintf("if that head conflicts, rebase round %d of %d starts.", count+1, bound)
+		case "split":
+			next = fmt.Sprintf("if that head is still over the size budget, split round %d of %d starts.", count+1, bound)
+		default:
+			next = fmt.Sprintf("if that head fails, round %d of %d starts.", count+1, bound)
 		}
 	}
 	blocked := "its checks have finished and it cannot merge"
@@ -998,8 +1055,11 @@ func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, b *Binding, 
 		return err
 	}
 	e.m.IdleRounds.Inc()
-	if last.Trigger == "rebase" {
+	switch last.Trigger {
+	case "rebase":
 		e.m.RebaseRounds.WithLabelValues("idle").Inc()
+	case "split":
+		e.m.SplitRounds.WithLabelValues("idle").Inc()
 	}
 	e.log.WarnContext(ctx, "revision round ended without a new commit", "work_item", wi.ID, "run", last.RunID,
 		"kind", last.Trigger, "pr", pr.Number, "head", d.HeadSHA)
@@ -1052,15 +1112,29 @@ func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.Wor
 }
 
 func (e *Engine) dispatchReviewRound(ctx context.Context, wi *store.WorkItem, round *store.Run) error {
-	if round.Trigger == "rebase" {
+	switch round.Trigger {
+	case "rebase":
 		e.m.RebaseRounds.WithLabelValues("started").Inc()
 		e.log.InfoContext(ctx, "rebase round started", "work_item", wi.ID, "run", round.ID, "round", wi.RebaseRounds+1)
+		return e.stepLocked(ctx, round.ID)
+	case "split":
+		e.m.SplitRounds.WithLabelValues("started").Inc()
+		e.log.InfoContext(ctx, "split round started", "work_item", wi.ID, "run", round.ID, "round", wi.SplitRounds+1)
 		return e.stepLocked(ctx, round.ID)
 	}
 	e.m.ReviewRounds.Inc()
 	e.log.InfoContext(ctx, "review round started", "work_item", wi.ID, "run", round.ID, "round", wi.ReviewRounds+1)
 	return e.stepLocked(ctx, round.ID)
 }
+
+// reviewResponse tells the agent how to answer a finding it does not fix.
+// The reviewer reads the PR's commit messages since its last review; the
+// agent's reply to a round never reaches it.
+const reviewResponse = "The reviewer reads the PR's commit messages, not your reply. For each finding you do not fix, " +
+	"add a \"Review response\" to the commit message of the commit you push: the finding's ID, why, and evidence " +
+	"the reviewer can check (file:line, a test, a CI run or an issue). The reviewer rejects a response with no evidence. " +
+	"If you change no code, record the responses in an empty commit (`git commit --allow-empty`) and push it, " +
+	"so the reviewer reviews a new head.\n"
 
 // roundPrompt asks for a revision: what requested changes, and the PR's
 // unresolved review threads from trusted authors.
@@ -1069,6 +1143,11 @@ func roundPrompt(p *ReviewPolicy, wi *store.WorkItem, pr *store.PullRequest, d *
 	fmt.Fprintf(&s, "%s round %d for %s. Pull request #%d (%s) at %s on %s needs changes. "+
 		"Address the feedback below, push the fixes to %s, and say what you changed or why you did not.\n",
 		kind, number, wi.IssueKey, pr.Number, pr.URL, d.HeadSHA, wi.Branch, wi.Branch)
+	if kind == "Split" {
+		s.WriteString("\nThe PR is over the reviewer's size budget, so the reviewer read none of it. Reduce it to one " +
+			"coherent part of the change within the budget, and name the parts you removed in the commit message.\n")
+	}
+	s.WriteString("\n" + reviewResponse)
 	s.WriteString("\n### Feedback\n")
 	for _, c := range acting {
 		fmt.Fprintf(&s, "\n%s\n", c.text)
@@ -1328,6 +1407,13 @@ func hasHumanLabel(labels []string) bool {
 		}
 	}
 	return false
+}
+
+// reviewerSplit reports the reviewer check's own request to split a PR over
+// its size budget, by the check's name and App ID and the service's marker.
+func reviewerSplit(p *ReviewPolicy, c github.CheckRun) bool {
+	r := p.ReviewerCheck
+	return r != nil && r.AppID != 0 && c.Name == r.Name && c.AppID == r.AppID && strings.Contains(c.Summary, splitOnlyMarker)
 }
 
 func reviewerHumanHold(p *ReviewPolicy, head string, checks []github.CheckRun) bool {

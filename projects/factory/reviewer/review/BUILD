@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "cited.go",
         "comment.go",
+        "commits.go",
         "engine.go",
         "gate.go",
         "prompt.go",
@@ -25,6 +26,7 @@ go_test(
     srcs = [
         "cited_test.go",
         "comment_test.go",
+        "commits_test.go",
         "engine_test.go",
         "fakes_test.go",
         "report_test.go",

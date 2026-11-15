@@ -22,6 +22,7 @@ type Metrics struct {
 	ReviewEvents      *prometheus.CounterVec // kind, disposition
 	ReviewRounds      prometheus.Counter
 	RebaseRounds      *prometheus.CounterVec // outcome
+	SplitRounds       *prometheus.CounterVec // outcome
 	IdleRounds        prometheus.Counter
 	MergeQueue        *prometheus.CounterVec // outcome
 	SessionRecoveries *prometheus.CounterVec // kind
@@ -92,6 +93,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_rebase_rounds_total",
 			Help: "Rebase round outcomes (started, idle, limited). Limited counts once per work item.",
 		}, []string{"outcome"}),
+		SplitRounds: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_split_rounds_total",
+			Help: "Split round outcomes (started, idle, limited) for PRs over the reviewer's size budget. Limited counts once per work item.",
+		}, []string{"outcome"}),
 		IdleRounds: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "factory_connector_idle_review_rounds_total",
 			Help: "Review rounds that closed with the PR still at the head they were asked to change.",
@@ -114,7 +119,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.CredentialRefusals)
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.CredentialRefusals)
 	}
 	return m
 }

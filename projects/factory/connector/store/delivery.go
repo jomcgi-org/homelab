@@ -330,10 +330,16 @@ func (s *Store) StartRebaseRound(ctx context.Context, q Querier, w *WorkItem, pr
 	return s.startRound(ctx, q, w, prompt, head, "rebase")
 }
 
+// StartSplitRound uses the separate split budget, preserving review rounds.
+func (s *Store) StartSplitRound(ctx context.Context, q Querier, w *WorkItem, prompt, head string) (*Run, error) {
+	return s.startRound(ctx, q, w, prompt, head, "split")
+}
+
 func (s *Store) startRound(ctx context.Context, q Querier, w *WorkItem, prompt, head, trigger string) (*Run, error) {
 	res, err := q.ExecContext(ctx, `
 		UPDATE work_item SET review_rounds = review_rounds + CASE WHEN $2 = 'review' THEN 1 ELSE 0 END,
 			rebase_rounds = rebase_rounds + CASE WHEN $2 = 'rebase' THEN 1 ELSE 0 END,
+			split_rounds = split_rounds + CASE WHEN $2 = 'split' THEN 1 ELSE 0 END,
 			state = 'active', updated_at = now()
 		WHERE id = $1 AND state = 'review'`, w.ID, trigger)
 	if err != nil {
@@ -367,7 +373,7 @@ func (s *Store) LastRound(ctx context.Context, workID int64) (*Round, error) {
 	r := &Round{}
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT id, state, coalesce(round_head_sha, ''), trigger FROM run
-		WHERE work_item_id = $1 AND origin = 'connector' AND trigger IN ('review', 'rebase')
+		WHERE work_item_id = $1 AND origin = 'connector' AND trigger IN ('review', 'rebase', 'split')
 		ORDER BY created_at DESC, id ASC LIMIT 1`, workID).Scan(&r.RunID, &r.State, &r.HeadSHA, &r.Trigger)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

@@ -669,6 +669,7 @@
               "maxEngineeringRetries": { "type": "integer", "minimum": 0 },
               "maxReviewRounds": { "type": "integer", "minimum": 0 },
               "maxRebaseRounds": { "type": "integer", "minimum": 0 },
+              "maxSplitRounds": { "type": "integer", "minimum": 0 },
               "doneColumn": { "type": "string", "minLength": 1 },
               "trustedReviewers": {
                 "type": "array",
