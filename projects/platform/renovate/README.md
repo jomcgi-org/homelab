@@ -70,11 +70,20 @@ compiled Python locks. Native uv artifact commands receive `UV_NO_BUILD=true`;
 the compiler also refuses source builds. The existing `bazelModDeps`
 exception is retained for Bazel lock maintenance.
 
-Ordinary PR creation remains before 06:00 Monday in America/Vancouver, with
-five concurrent PRs, two per hour and a three-day release age. A daily scan
-does not expand that PR creation window. Security alerts retain their
-immediate exception. Dependabot security updates remain enabled.
+Ordinary PR creation defaults to before 06:00 Monday in America/Vancouver,
+with five concurrent PRs, two per hour and a three-day release age. Security
+alerts retain their immediate exception. Dependabot security updates remain
+enabled.
 See [coverage and holds](COVERAGE.md) for exclusions and generated files.
+
+OpenTelemetry and Pydantic/core family PRs can be created on any scan,
+including ordinary updates. Renovate 44.14.10 takes a grouped branch's
+schedule from its first dependency, so an unaffected peer must also be
+eligible outside Monday. Ordinary family updates use the normal creation
+limits and release-age status checks. Security alert members contribute
+explicit unlimited PR, branch and hourly commit limits; Renovate's grouped
+limit calculation honors an unlimited member even when it sorts after an
+unaffected dependency.
 
 ## Review and auto-merge
 

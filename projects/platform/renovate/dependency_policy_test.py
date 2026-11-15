@@ -186,6 +186,9 @@ def _python_update_config(config, name, *, security=False):
     effective = {
         "ignoreUnstable": True,
         "vulnerabilityFixStrategy": "lowest",
+        "isVulnerabilityAlert": False,
+        "branchConcurrentLimit": None,
+        "commitHourlyLimit": 0,
         **config,
     }
     for rule in config["packageRules"]:
@@ -202,7 +205,7 @@ def _python_update_config(config, name, *, security=False):
     if security:
         # init/vulnerability.ts appends a rule whose force object overrides
         # package rules. A package-scoped strategy would be overwritten here.
-        effective.update(config["vulnerabilityAlerts"])
+        effective.update({"isVulnerabilityAlert": True, **config["vulnerabilityAlerts"]})
     return effective
 
 
@@ -323,8 +326,83 @@ def test_security_updates_select_a_matched_family_including_pending_peers(
             )
 
 
+def _group_limit(upgrades, name):
+    # Renovate 44.14.10 workers/global/limits.ts calcLimit: inspect every
+    # upgrade, inherit the PR limit for branches, and let any zero win.
+    limits = []
+    for upgrade in upgrades:
+        limit = upgrade[name]
+        if name == "branchConcurrentLimit" and limit is None:
+            limit = upgrade["prConcurrentLimit"]
+        if limit is None or limit == 0:
+            return 0
+        limits.append(limit)
+    return min(limits)
+
+
+@pytest.mark.parametrize(
+    ("members", "vulnerable"),
+    [
+        (("pydantic", "pydantic_core"), "pydantic_core"),
+        (("pydantic", "pydantic-core"), "pydantic-core"),
+        (
+            (
+                "opentelemetry-api",
+                "opentelemetry-sdk",
+                "opentelemetry-semantic-conventions",
+            ),
+            "opentelemetry-sdk",
+        ),
+    ],
+)
+@pytest.mark.parametrize("security", [False, True])
+def test_lockstep_branch_schedule_and_limits_with_unaffected_first_member(
+    members, vulnerable, security
+):
+    config = json.loads((ROOT / "renovate.json").read_text())
+    # Exercise hourly commit limits too, even though production defaults to 0.
+    config["commitHourlyLimit"] = 1
+    upgrades = [
+        {
+            **_python_update_config(
+                config, name, security=security and name == vulnerable
+            ),
+            "depName": name,
+        }
+        for name in members
+    ]
+    # updates/generate.ts sorts by raw depName and copies the first upgrade's
+    # config to the branch. A security flag on a later member is not propagated.
+    upgrades.sort(key=lambda upgrade: upgrade["depName"])
+    branch = upgrades[0]
+    assert branch["depName"] != vulnerable
+    assert branch["isVulnerabilityAlert"] is False
+    # This schedule also admits a Tuesday scan; an ordinary first member must
+    # not put the group's security fix back behind Monday or pending checks.
+    assert branch["schedule"] == ["at any time"]
+    assert branch["prCreation"] == "immediate"
+    assert branch["internalChecksFilter"] == "none"
+    assert branch["minimumReleaseAge"] == "3 days"
+
+    saturated_counts = {
+        "prConcurrentLimit": config["prConcurrentLimit"],
+        "prHourlyLimit": config["prHourlyLimit"],
+        "branchConcurrentLimit": config["prConcurrentLimit"],
+        "commitHourlyLimit": config["commitHourlyLimit"],
+    }
+    for name, count in saturated_counts.items():
+        limit = _group_limit(upgrades, name)
+        assert limit == (0 if security else count)
+        # A grouped alert must remain eligible when ordinary quotas are full.
+        assert bool(limit and count >= limit) is (not security)
+
+
 def test_unrelated_updates_keep_strict_age_and_stability_filtering():
     config = json.loads((ROOT / "renovate.json").read_text())
+    effective = _python_update_config(config, "fastapi")
+    assert effective["schedule"] == ["before 6am on monday"]
+    assert effective["prConcurrentLimit"] == 5
+    assert effective["prHourlyLimit"] == 2
     assert (
         _selected_python_release(
             config,
