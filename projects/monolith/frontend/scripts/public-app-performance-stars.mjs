@@ -3,10 +3,17 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import {
+  pageCohort,
+  pageRequest,
+  pageDestination,
+  sameDocumentUrl,
+} from "../src/lib/public/performance/page-cohort.js";
 
 const { values } = parseArgs({
   options: {
     "playwright-module": { type: "string" },
+    "page-cache-key": { type: "string" },
     output: {
       type: "string",
       default: "public-app-performance/stars-diagnostic",
@@ -17,6 +24,7 @@ const { values } = parseArgs({
 if (values.help) {
   console.log(`Usage: node scripts/public-app-performance-stars.mjs [options]
   --playwright-module /absolute/path/to/playwright/index.mjs
+  --page-cache-key TOKEN         Opt into a stable keyed page cohort (default: canonical)
   --output public-app-performance/stars-diagnostic
 
 Profiles three warm Historical clicks on https://jomcgi.dev/app/stars.
@@ -29,6 +37,11 @@ Profiler overhead makes these diagnostic timings separate from benchmark medians
 }
 
 const PAGE_URL = "https://jomcgi.dev/app/stars";
+const pageVisit = pageRequest(
+  "https://jomcgi.dev",
+  "/app/stars",
+  pageCohort(values["page-cache-key"]),
+);
 const HISTORY_URL = "https://jomcgi.dev/app/stars/history-map";
 const SELECTOR = '[aria-label="Map mode"] button:has-text("Historical")';
 const profile = {
@@ -45,6 +58,7 @@ const report = {
   schemaVersion: 1,
   purpose: "Stars warm Historical click, page-main-thread CPU diagnosis",
   url: PAGE_URL,
+  ...pageVisit,
   historyUrl: HISTORY_URL,
   startedAt: new Date().toISOString(),
   harnessSha: process.env.HARNESS_SHA ?? null,
@@ -61,6 +75,7 @@ const report = {
     "These diagnostic samples include profiler overhead and never replace normal benchmark medians or field INP. Event Timing duration is browser-rounded, with a 16ms observation threshold; missing entries remain unavailable.",
     "Page CDP network and CPU throttling match the benchmark. Workers are observed but neither CPU-profiled nor certified under this throttle; Chromium 151 rejects worker CPU throttling with AssertPage.",
     "The harness revision identifies the diagnostic script, not the deployed application. Public script URLs identify the observed assets; rollout verification is separate.",
+    "The optional page key repeats across all three diagnostic runs and may match a prior benchmark cohort. Actual edge states are recorded; no CDN purge or guaranteed cache miss/generation is implied. Canonical and keyed samples remain separate cohorts, not an isolated causal comparison.",
   ],
   runs: [],
 };
@@ -180,11 +195,13 @@ function installClickObservers() {
 
 async function measure(run) {
   const result = {
+    ...pageVisit,
     run,
     startedAt: new Date().toISOString(),
     phase: "navigation",
     workers: [],
     documentRequests: 0,
+    documentUrls: [],
     publicCodeUrls: [],
     errors: [],
   };
@@ -206,8 +223,10 @@ async function measure(run) {
   page.on("worker", (worker) => result.workers.push(worker.url()));
   page.on("pageerror", (error) => result.errors.push(error.message));
   page.on("request", (request) => {
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
       result.documentRequests++;
+      result.documentUrls.push(request.url());
+    }
   });
   context.on("requestfinished", async (request) => {
     const url = request.url();
@@ -237,13 +256,23 @@ async function measure(run) {
     await cdp.send("Emulation.setCPUThrottlingRate", {
       rate: profile.cpuSlowdown,
     });
-    const response = await page.goto(PAGE_URL, {
+    const response = await page.goto(pageVisit.requestedUrl, {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
     result.status = response?.status() ?? null;
-    const loaded = new URL(page.url());
-    if (!response?.ok() || loaded.origin + loaded.pathname !== PAGE_URL)
+    Object.assign(result, pageDestination(page.url(), pageVisit.pageCache));
+    const headers = response ? await response.allHeaders() : {};
+    result.headers = Object.fromEntries(
+      ["cache-control", "cf-cache-status", "age", "vary"]
+        .filter((name) => headers[name] !== undefined)
+        .map((name) => [name, headers[name]]),
+    );
+    if (
+      !response?.ok() ||
+      !sameDocumentUrl(result.finalUrl, pageVisit.requestedUrl) ||
+      !sameDocumentUrl(result.documentUrls[0], pageVisit.requestedUrl)
+    )
       throw new Error("The fixed public Stars page did not load successfully");
     await page.waitForTimeout(15_000);
     result.phase = "history-readiness";
@@ -328,6 +357,7 @@ async function measure(run) {
       }
     }
   } finally {
+    Object.assign(result, pageDestination(page.url(), pageVisit.pageCache));
     result.publicCodeUrls = [...codeUrls].sort();
     result.finishedAt = new Date().toISOString();
     await save();

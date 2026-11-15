@@ -7,6 +7,11 @@ import {
 } from "../src/lib/public/performance/request-inventory.js";
 import { createNavigationTracker } from "../src/lib/public/performance/navigation.js";
 import {
+  pageCohort,
+  pageRequest,
+  pageDestination,
+} from "../src/lib/public/performance/page-cohort.js";
+import {
   validateProbeEndpoints,
   probeUrl,
   endpointCacheGroups,
@@ -30,6 +35,7 @@ const { values } = parseArgs({
   options: {
     origin: { type: "string", default: "https://jomcgi.dev" },
     route: { type: "string", multiple: true },
+    "page-cache-key": { type: "string" },
     endpoint: { type: "string", multiple: true },
     "cache-miss-probes": { type: "boolean", default: false },
     runs: { type: "string", default: "3" },
@@ -48,6 +54,7 @@ const { values } = parseArgs({
 if (values.help) {
   console.log(`Usage: node scripts/public-app-performance.mjs [options]
   --route /app/hikes             Repeat for any public page (default: seven main apps)
+  --page-cache-key TOKEN         Opt into one keyed page cohort, repeated across all runs (default: canonical)
   --endpoint /app/stars/map      Repeat for read-only public data endpoints
   --content-selector '/app/hikes::.map-snapshot .snapshot-row'
                                  Record an explicitly selected visible content milestone
@@ -80,6 +87,7 @@ const settleMs = number("settle-ms", 0);
 if (values["cache-miss-probes"])
   validateProbeEndpoints(values.endpoint ?? [], samples);
 const origin = new URL(values.origin);
+const pageCache = pageCohort(values["page-cache-key"]);
 const routes = values.route ?? [
   "/app/hikes",
   "/app/ships",
@@ -89,6 +97,9 @@ const routes = values.route ?? [
   "/app/llm-leaderboard",
   "/app/notes",
 ];
+const pageRequests = new Map(
+  routes.map((route) => [route, pageRequest(origin, route, pageCache)]),
+);
 function selectors(option) {
   const entries = new Map(
     (values[option] ?? []).map((entry) => {
@@ -160,10 +171,12 @@ const report = {
   schemaVersion: 3,
   startedAt: new Date().toISOString(),
   origin: origin.origin,
+  pageCache,
   profile,
   settleMs,
   notes: [
     "Cold browser context; observed edge state, no CDN purge.",
+    "Page cohorts are canonical by default. An explicit page cache key repeats across runs and changes only the requested page URL. Actual edge states and redirect destinations remain observed; a key guarantees neither MISS nor the deployed generation. Never pool canonical and keyed cohorts or attribute timing differences solely to code.",
     "TTFB is the final main-document CDP responseReceived timestamp relative to its first requestWillBeSent, including redirect time. Raw NavigationTiming and complete navigation timing are saved separately; Chromium 151 NavigationTiming omits emulated latency. Calibration is required before claiming a mobile TTFB pass.",
     "An optional visibleContentMs records the first observed visible selector match with positive clipped intersection. Visibility is checked on intersection changes and at a nominal 100 ms interval until the cutoff; it is a DOM milestone, not a paint or map-readiness guarantee.",
     "Context-wide request events cover page, worker and child-frame requests. Request.sizes() supplies encoded body plus response-header sizes. Full transfer totals are unavailable when any request remains unfinished, failed or unsized at the observation cutoff; completed-response lower bounds remain in JSON.",
@@ -191,6 +204,7 @@ async function save() {
 }
 
 async function measure(route, run) {
+  const pageVisit = pageRequests.get(route);
   const startedAt = new Date().toISOString();
   const context = await browser.newContext({
     viewport: profile.viewport,
@@ -228,7 +242,10 @@ async function measure(route, run) {
     rate: profile.cpuSlowdown,
   });
   const { frameTree } = await cdp.send("Page.getFrameTree");
-  const navigationTracker = createNavigationTracker(frameTree.frame.id);
+  const navigationTracker = createNavigationTracker(
+    frameTree.frame.id,
+    pageVisit.requestedUrl,
+  );
   cdp.on("Network.requestWillBeSent", (event) => {
     if (event.redirectResponse && active.has(event.requestId)) {
       const previous = active.get(event.requestId);
@@ -304,9 +321,9 @@ async function measure(route, run) {
     contentSelector: contentSelectors.get(route) ?? null,
     contentTimeoutMs: 60_000 + settleMs,
   });
-  const result = { route, run, startedAt, inpMs: null };
+  const result = { ...pageVisit, run, startedAt, inpMs: null };
   try {
-    const response = await page.goto(urlFor(route), {
+    const response = await page.goto(pageVisit.requestedUrl, {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
@@ -451,6 +468,7 @@ async function measure(route, run) {
   } catch (error) {
     result.error = error.message;
   } finally {
+    Object.assign(result, pageDestination(page.url(), pageCache));
     await ensureRequestInventory(
       result,
       contextRequests.values(),
@@ -536,7 +554,7 @@ async function measureEndpoint(endpoint, uniqueQuery) {
 
 try {
   for (const route of routes) {
-    const entry = { route, runs: [] };
+    const entry = { ...pageRequests.get(route), runs: [] };
     report.pages.push(entry);
     for (let run = 1; run <= runs; run++) {
       entry.runs.push(await measure(route, run));
@@ -566,6 +584,10 @@ try {
 const cell = (value, digits = 0) =>
   Number.isFinite(value) ? value.toFixed(digits) : "unavailable";
 const table = [
+  pageCache.mode === "keyed"
+    ? `Page cohort: keyed (${pageCache.parameter}=${pageCache.key}), reused across runs; actual edge states below. Do not combine with canonical cohorts. Redirect destinations that drop the key are marked key-not-retained in JSON and are not a fresh-key destination observation.`
+    : "Page cohort: canonical URLs; actual edge states below.",
+  "",
   "| Route | Runs | Complete profile | Header arrival ms | Raw nav TTFB ms | Visible content ms | LCP ms | CLS | Lab interaction ms | Lab samples | INP | Transfer KiB | JS KiB | Requests | Edge |",
   "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
 ];

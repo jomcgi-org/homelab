@@ -50,6 +50,27 @@ The workflow observes actual edge state rather than guaranteeing a cold CDN.
 Worker pages cannot certify the full throttled profile, and synthetic loading
 does not establish field INP. These limitations remain explicit in the report.
 
+Pull-request runs explicitly select a keyed page cohort to avoid waiting for
+an earlier release's canonical HTML cache lifetime. The workflow generates
+`run-<run-id>-attempt-<attempt>` once, passes it as `--page-cache-key` to the
+benchmark and Stars diagnostic, and repeats it across all page runs. Manual
+runs remain canonical unless `fresh_page_cache=true` is explicitly selected:
+
+```sh
+gh workflow run public-app-performance.yml --ref main -f fresh_page_cache=true
+```
+
+Provenance records `pageCache` (mode, parameter and key); page and diagnostic
+JSON retain each exact requested URL, logical route and actual edge headers.
+This does not change any endpoint series or make every request a MISS. A
+redirect that drops the key is marked `key-not-retained`, not a fresh-key
+destination. Inspect first-run and worst-run values as well as medians, and
+verify served assets after rollout. Canonical and keyed cohorts must stay
+separate; a cross-cohort difference is not an isolated code effect. The local
+hosted `page-cohort-fixture.json` checks three identical keyed page requests,
+unchanged natural data URLs, ordinary redirects and excluded recovery reloads.
+It makes no assertion about production cache behavior.
+
 This is a measurement job, not a latency threshold gate. Public response
 correctness, cache isolation and route bundle budgets remain separate CI
 checks. A successful observation run means its requested samples completed;
@@ -57,8 +78,8 @@ it does not mean production met the performance targets.
 
 The hosted command now selects visible data rows for Hikes, Ships and Stars,
 Notes overview rows, the trip summary's data-derived date range (`.dateline`),
-and the day's photo element (`.photo img`). The trip selectors exist before
-the route-preview change and do not depend on that pending deployment. Photo
+and the day's photo element (`.photo img`). The trip selectors do not depend
+on the route preview. Photo
 element visibility does not prove image decoding or map readiness. A selector absent from the deployed release remains
 unavailable; it does not become a successful first-paint result. These are
 DOM milestones, not proof of painted or interactive maps. The same observer
