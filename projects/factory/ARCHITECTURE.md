@@ -521,16 +521,44 @@ So a person cancels a round by moving the issue to a canceled column (or
 another project), by closing the PR, or with `connector cancel`; it
 reaches kagent within a heartbeat interval.
 
-A session whose runtime crashed is reverted with kagent `RevertSession`.
-Before a continuation the connector checks the session; while a turn runs
-it checks every heartbeat interval, since a crashed runtime does not finish
-its task. A revert fails the interrupted turn, so its input is sent again
-in the same session (`resend-<seq>`, at most twice per run) without using
-the engineering-retry budget. A session kagent no longer has (`NOT_FOUND`)
-or tells the client to replace (`FAILED_PRECONDITION`) is replaced: the new
-session's first message carries context built from the issue, the PR, the
-branch head and the unresolved review threads, recorded with the attempt so
-every resend is identical, and the replacement is announced.
+A missing accepted task or a session observed crashed, deleting, deleted,
+missing, or unrecoverable enters an explicit fencing hold. The connector does
+not revert or replace it automatically: controller absence and READY after a
+revert do not prove the old physical writer stopped. A positive original task
+clears a missing-task hold; a lifecycle hold remains sticky until attested,
+even if the task returns or the session later reports READY. The attempt and
+concurrency slot remain occupied, including an unsent continuation whose
+previous session is uncertain.
+
+An operator with the connector's database access can inspect and recover it:
+
+```sh
+connector recovery inspect HL-123
+connector recovery confirm-fenced HOLD_ID --fingerprint HASH --action retry \
+  --by OPERATOR --evidence 'fencing evidence or incident reference' \
+  --confirm-all-copies-fenced
+```
+
+Inspection includes the immutable caller witness, target, every uncertain
+historical attempt, and the earliest confirmation time. Fence every possible
+execution copy, including copies under historical principals that are no
+longer visible, and quiesce retired or in-flight dispatchers. Keep them fenced;
+recovery never authorizes their restart. Wait for the dispatch window before
+confirming. This command records an operator attestation, not a code-verified
+kill. Use `--action cancel` to stop the current target without replacing it.
+
+The connector revalidates the complete fingerprint and current writer epoch
+before consuming that decision in one transaction. Changed authority, a new
+predecessor, positive reconciliation or stronger lifecycle evidence invalidates
+obsolete approval. Historical attempts are evidence only, never restarted.
+A bound caller cannot be changed by confirmation. Legacy unbound work can
+adopt the current caller only after attestation covers every possible prior
+copy. Retry spends the existing bounded engineering budget and records one
+fresh-session attempt with issue, PR, branch and trusted-thread context.
+Pending cancellation or a stopped work item takes precedence over retry,
+without requiring replacement-context reads. Send admission separately checks
+current stop, cancellation, run attempt and work epoch under the writer fence.
+Attestations and their consumed/invalidated states remain in the audit trail.
 
 **Merge.** When the required checks and the trusted reviewer succeed on the
 current head, enqueue with GraphQL `enqueuePullRequest` and
@@ -588,8 +616,9 @@ attempt's message ID, looking in the attempt's session or, for a first
 send, across all of the original caller's sessions. A terminal task confirms
 cancellation; a running or waiting task is cancelled. A complete scan with
 no match keeps cancellation pending and records the recovery hold described
-above. Only a never-sent or definitively unaccepted attempt can confirm
-cancellation without a task. A run that itsaplan ended closes once its
+above. A never-sent or definitively unaccepted attempt with no prior-session
+uncertainty can confirm cancellation without a task. Otherwise the explicit
+operator fencing attestation above is required. A run that itsaplan ended closes once its
 cancellation is confirmed, whatever started that cancellation.
 
 **Deployment.** `templates/connector*.yaml` render with `connector.enabled`,

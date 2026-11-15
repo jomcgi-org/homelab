@@ -717,7 +717,18 @@ func TestAgentReassignmentKeepsSessionAfterConfirmedCancel(t *testing.T) {
 	}
 }
 
-func TestCrashedSessionIsRevertedBeforeContinuation(t *testing.T) {
+// attestLifecycleRecovery keeps the no-side-effect assertion shared by the
+// existing lifecycle/context tests, before the operator authorizes recovery.
+func (v *env) attestLifecycleRecovery(sends int) {
+	v.t.Helper()
+	if len(v.kg.Sends()) != sends || v.kg.reverts != 0 || v.work(101).EngineeringRetries != 0 {
+		v.t.Fatal("uncertain lifecycle recovered before operator fencing")
+	}
+	v.attestRecovery("retry")
+	v.tick(v.e)
+}
+
+func TestCrashedSessionRequiresFencingBeforeContinuation(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
@@ -732,12 +743,10 @@ func TestCrashedSessionIsRevertedBeforeContinuation(t *testing.T) {
 	v.its.add(2, "coder", 101, "HL-1", "Address review.")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
-	if v.kg.reverts != 1 {
-		t.Fatalf("reverts = %d", v.kg.reverts)
-	}
+	v.attestLifecycleRecovery(1)
 	sends := v.kg.Sends()
-	if len(sends) != 2 || sends[1].msg.ContextID != session {
-		t.Fatalf("sends = %+v", sends)
+	if v.kg.reverts != 0 || len(sends) != 2 || sends[1].msg.ContextID != "" || v.work(101).SessionID == session || v.work(101).EngineeringRetries != 1 {
+		t.Fatalf("fenced recovery did not use one bounded new-session retry: sends=%+v work=%+v", sends, v.work(101))
 	}
 }
 
@@ -1671,6 +1680,7 @@ func TestRefusedReplacementIssueStartsWithoutItAfterBound(t *testing.T) {
 	v.its.add(2, "coder", 101, "HL-1", "Address review.")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+	v.attestLifecycleRecovery(1)
 	if sends := v.kg.Sends(); len(sends) != 1 {
 		t.Fatalf("sends = %d, want the replacement to wait", len(sends))
 	}

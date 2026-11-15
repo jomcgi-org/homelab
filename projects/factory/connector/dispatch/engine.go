@@ -89,11 +89,8 @@ type Config struct {
 	ReviewPoll time.Duration
 	// SessionCheck spaces checks of a running turn's session for a crash.
 	SessionCheck time.Duration
-	// MaxCrashResends bounds the resends of one run's input after its
-	// session crashed and was reverted.
-	MaxCrashResends int
-	Links           Links
-	Now             func() time.Time
+	Links        Links
+	Now          func() time.Time
 }
 
 // MinDispatchWindow is the smallest uncertainty window that covers a send's
@@ -147,9 +144,6 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.SessionCheck == 0 {
 		cfg.SessionCheck = cfg.Heartbeat
-	}
-	if cfg.MaxCrashResends == 0 {
-		cfg.MaxCrashResends = 2
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -473,7 +467,7 @@ func (e *Engine) startCancel(ctx context.Context, r *store.Run, reason, why stri
 		return err
 	}
 	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if a == nil || !a.Open() || a.State == store.AttemptSending {
+		if a == nil || !a.Open() || (a.State == store.AttemptSending && a.Error == "") {
 			if a != nil && a.State == store.AttemptSending {
 				if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, why); err != nil {
 					return err
@@ -571,7 +565,7 @@ func (e *Engine) stopRun(ctx context.Context, r *store.Run, wi *store.WorkItem) 
 	if err != nil {
 		return err
 	}
-	if a != nil && a.Open() && a.State != store.AttemptSending {
+	if a != nil && a.Open() && (a.State != store.AttemptSending || a.Error != "") {
 		return e.st.RequestCancellation(ctx, e.st.DB, a.ID, r.ID, store.CancelRoundStopped)
 	}
 	return e.st.Tx(ctx, func(tx *sql.Tx) error {
@@ -717,6 +711,9 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	if !ready {
+		if r.State == store.RunDispatched {
+			return nil // an explicit recovery hold keeps its concurrency slot
+		}
 		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, "")
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
@@ -745,21 +742,21 @@ func (e *Engine) ready(ctx context.Context, r *store.Run, wi *store.WorkItem) (b
 	if prev != nil && prev.RunID != r.ID {
 		return false, nil
 	}
-	busy, err := e.sessionBusy(ctx, wi)
+	busy, err := e.sessionBusy(ctx, r, wi)
 	return !busy, err
 }
 
 // sessionBusy confirms with kagent that the work item's session has no
 // running task, asking kagent to cancel any it finds. kagent admits one
 // non-quiescent task per session.
-func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, error) {
+func (e *Engine) sessionBusy(ctx context.Context, r *store.Run, wi *store.WorkItem) (bool, error) {
 	if wi.SessionID == "" {
 		return false, nil
 	}
 	var err error
 	ctx, err = e.guardCaller(ctx, wi, nil)
 	if err != nil {
-		return false, err
+		return true, e.holdIdleSession(ctx, r, wi, "caller ownership unproven")
 	}
 	ref := agentRef(wi)
 	busy := false
@@ -774,16 +771,8 @@ func (e *Engine) sessionBusy(ctx context.Context, wi *store.WorkItem) (bool, err
 				return false, err
 			}
 			page, err := e.tasks.ListTasks(ctx, ref, wi.SessionID, state, token)
-			if errors.Is(err, kagent.ErrTaskNotFound) && e.sessions != nil {
-				// An Agent can disappear while its actor still runs. Only
-				// the same caller's session absence can clear this barrier.
-				if guardErr := e.guard(ctx); guardErr != nil {
-					return false, guardErr
-				}
-				s, sessionErr := e.sessions.GetSession(ctx, wi.SessionID)
-				if errors.Is(sessionErr, kagent.ErrSessionNotFound) || (sessionErr == nil && s != nil && s.State == kagent.RuntimeDeleted) {
-					return false, nil
-				}
+			if errors.Is(err, kagent.ErrTaskNotFound) {
+				return true, e.holdIdleSession(ctx, r, wi, recoveryLifecycle)
 			}
 			if err != nil {
 				return false, err
@@ -1012,7 +1001,12 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	var err error
 	ctx, err = e.guardCaller(ctx, wi, a)
 	if err != nil {
+		return e.recoverHeld(ctx, r, wi, a, "caller ownership unproven")
+	}
+	if reason, err := e.recoveryReason(ctx, a); err != nil {
 		return err
+	} else if reason == recoveryLifecycle {
+		return e.recoverHeld(ctx, r, wi, a, reason)
 	}
 	now := e.cfg.Now()
 	if a.State == store.AttemptAmbiguous {
@@ -1045,7 +1039,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err
 	}
-	if err := e.st.MarkIssued(ctx, a, now); err != nil {
+	if issued, err := e.st.MarkIssued(ctx, e.w, a, now); err != nil || !issued {
 		return err
 	}
 	task, err := e.tasks.Send(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, kagent.Message{
@@ -1117,23 +1111,15 @@ func (e *Engine) unresolved(ctx context.Context, r *store.Run, wi *store.WorkIte
 // Grant blocks are inappropriate here: they free waiting-run slots and permit
 // a fresh retry when cleared, without proving the old writer stopped.
 func (e *Engine) holdUncertain(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
-	const reason = "execution outcome unknown; original runtime must be fenced before retry or cancellation confirmation"
-	if err := e.guard(ctx); err != nil {
-		return err
-	}
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.HoldAttempt(ctx, tx, a.ID, reason); err != nil {
-			return err
-		}
-		return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/recovery-held/%d", a.ID), r.ID, "",
-			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-				"The factory is holding %s because the outcome of run %d attempt %d is unknown. It will only reconcile the original message; no automatic resend, replacement, or cancellation confirmation follows from a missing task. Recovery requires operator verification that the original runtime is fenced.", wi.IssueKey, r.ID, a.Seq)})
-	})
+	return e.recoverHeld(ctx, r, wi, a, "send outcome unknown")
 }
 
 // attach records the task holding an attempt's message.
 func (e *Engine) attach(ctx context.Context, a *store.Attempt, wi *store.WorkItem, t *kagent.Task) error {
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		if err := e.st.InvalidateRecovery(ctx, tx, a.ID); err != nil {
+			return err
+		}
 		if err := e.st.MarkAccepted(ctx, tx, a.ID, t.ContextID, t.ID); err != nil {
 			return err
 		}
@@ -1154,9 +1140,8 @@ func (e *Engine) attach(ctx context.Context, a *store.Attempt, wi *store.WorkIte
 	return nil
 }
 
-// prepareSession checks a work item's session before a continuation. A
-// crashed runtime is reverted; a deleted or expired session is replaced.
-// ok is false when the send must wait or was replaced.
+// prepareSession holds an unsent continuation when the old runtime's
+// lifecycle is uncertain. READY later cannot clear that sticky hold.
 func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) (bool, error) {
 	if e.sessions == nil || a.ContextID == "" {
 		return true, nil
@@ -1164,37 +1149,11 @@ func (e *Engine) prepareSession(ctx context.Context, r *store.Run, wi *store.Wor
 	if err := e.guard(ctx); err != nil {
 		return false, err
 	}
-	s, err := e.sessions.GetSession(ctx, a.ContextID)
-	switch {
-	case sessionLost(err):
-		return false, e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "expired or deleted")
-	case err != nil:
-		return false, err
+	session, err := e.sessions.GetSession(ctx, a.ContextID)
+	if sessionLost(err) || (err == nil && session != nil && (session.Gone() || session.Crashed())) {
+		return false, e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	}
-	switch {
-	case s.State == kagent.RuntimeDeleting:
-		return false, nil // actor deletion has not yet proved execution stopped
-	case s.Gone():
-		return false, e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "deleted")
-	case s.Crashed():
-		if err := e.guard(ctx); err != nil {
-			return false, err
-		}
-		s, err = e.sessions.RevertSession(ctx, a.ContextID)
-		if sessionLost(err) {
-			return false, e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "unrecoverable after a crash")
-		}
-		if err != nil {
-			// The attempt stays recorded; the revert is retried next pass, and
-			// nothing retries it in the background.
-			return false, fmt.Errorf("revert session: %w", err)
-		}
-		if s.Crashed() {
-			return false, nil
-		}
-		e.m.SessionRecoveries.WithLabelValues("revert").Inc()
-	}
-	return true, nil
+	return err == nil, err
 }
 
 type sessionCheck struct {
@@ -1208,10 +1167,8 @@ func sessionLost(err error) bool {
 	return errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable)
 }
 
-// watchSession checks a running turn's session every SessionCheck. A crashed
-// runtime does not finish its task, so the connector looks: a crashed
-// session is reverted and the turn's input sent again, and a lost one is
-// replaced.
+// watchSession checks a running turn's session every SessionCheck. Lifecycle
+// loss requires explicit fencing; controller state cannot prove actor cessation.
 func (e *Engine) watchSession(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
 	if e.sessions == nil || a.ContextID == "" {
 		return nil
@@ -1228,103 +1185,17 @@ func (e *Engine) watchSession(ctx context.Context, r *store.Run, wi *store.WorkI
 	s, err := e.sessions.GetSession(ctx, a.ContextID)
 	switch {
 	case sessionLost(err):
-		return e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "expired or deleted")
+		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	case err != nil:
 		return err
 	case s.State == kagent.RuntimeDeleting:
-		return nil
+		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	case s.Gone():
-		return e.replaceSession(ctx, r, wi, e.binding(wi.BindingName), a, "deleted")
+		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	case s.Crashed():
-		return e.recoverCrash(ctx, r, wi, a)
+		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	}
 	return nil
-}
-
-// recoverCrash reverts a session whose runtime crashed during a turn. The
-// revert restores the last checkpoint and fails the interrupted turn, so the
-// turn's input is sent again in the same session, a bounded number of times.
-// The resend and the end of the interrupted attempt commit together.
-func (e *Engine) recoverCrash(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
-	b := e.binding(wi.BindingName)
-	if err := e.guard(ctx); err != nil {
-		return err
-	}
-	s, err := e.sessions.RevertSession(ctx, a.ContextID)
-	switch {
-	case sessionLost(err):
-		return e.replaceSession(ctx, r, wi, b, a, "unrecoverable after a crash")
-	case err != nil:
-		return fmt.Errorf("revert session: %w", err)
-	case s.Crashed():
-		return nil // the revert has not finished; look again next check
-	}
-	e.m.SessionRecoveries.WithLabelValues("revert").Inc()
-	if b == nil {
-		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
-	}
-	n, err := e.st.CountResends(ctx, r.ID)
-	if err != nil {
-		return err
-	}
-	if n >= e.cfg.MaxCrashResends {
-		return e.engineeringFailure(ctx, r, wi, a, fmt.Sprintf("session crashed again after %d resends", n))
-	}
-	var next *store.Attempt
-	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "session crashed; reverted to its last checkpoint"); err != nil {
-			return err
-		}
-		var err error
-		next, err = e.record(ctx, tx, r, wi, "continuation", "resend-"+strconv.Itoa(a.Seq), a.Context)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	e.checked.Delete(a.ID)
-	return e.issue(ctx, r, wi, b, next)
-}
-
-// replaceSession ends an attempt whose session kagent no longer has and, in
-// the same transaction, records the replacement attempt and its
-// announcement; then it sends the replacement.
-func (e *Engine) replaceSession(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt, why string) error {
-	if b == nil {
-		return e.failRun(ctx, e.st.DB, r, "repository binding "+wi.BindingName+" is no longer configured")
-	}
-	old := a.ContextID
-	background, err := e.replacementContext(ctx, wi, b, a, old, why)
-	if err != nil {
-		return err
-	}
-	e.m.SessionRecoveries.WithLabelValues("replace").Inc()
-	var next *store.Attempt
-	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "session "+why); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE work_item SET session_id = NULL, updated_at = now() WHERE id = $1`, wi.ID); err != nil {
-			return err
-		}
-		if err := e.st.Enqueue(ctx, tx, store.OutboxComment,
-			fmt.Sprintf("comment/session-replaced/%d/%d", wi.ID, wi.SessionGeneration), r.ID, "",
-			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-				"The factory replaced kagent session %s (%s) for %s. The new session starts from the issue, "+
-					"its pull request, the branch head and the open review threads.",
-				old, why, wi.IssueKey)}); err != nil {
-			return err
-		}
-		wi.SessionID = ""
-		kind, decision := nextDecision(wi, 0)
-		var err error
-		next, err = e.record(ctx, tx, r, wi, kind, decision, background)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	return e.issue(ctx, r, wi, b, next)
 }
 
 type commentPayload struct {
@@ -1349,7 +1220,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	}
 	ctx, err = e.guardCaller(ctx, wi, a)
 	if err != nil {
-		return err
+		return e.recoverHeld(ctx, r, wi, a, "caller ownership unproven")
 	}
 	// A stale waiting run resumes as dispatched on transport redelivery.
 	// Its finished grant failure still requires waiting admission, including
@@ -1381,8 +1252,16 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	t, err := e.tasks.GetTask(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
+	if errors.Is(err, kagent.ErrTaskNotFound) {
+		return e.missingTask(ctx, r, wi, a)
+	}
 	if err != nil {
 		return err
+	}
+	if sticky, err := e.originalVisible(ctx, a); err != nil {
+		return err
+	} else if sticky {
+		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	}
 	if gone, err := e.postEvents(ctx, r, t); err != nil || gone {
 		return err
@@ -1591,10 +1470,7 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if err != nil {
 		return err
 	}
-	if a.State == store.AttemptSending {
-		// Every prior call was definitively unaccepted (or never made).
-		return e.confirmCancel(ctx, c, a, "not_accepted")
-	}
+
 	if !a.Open() {
 		return e.confirmCancel(ctx, c, a, a.State)
 	}
@@ -1608,7 +1484,15 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	}
 	ctx, err = e.guardCaller(ctx, wi, a)
 	if err != nil {
+		return e.recoverHeld(ctx, r, wi, a, "caller ownership unproven")
+	}
+	if reason, err := e.recoveryReason(ctx, a); err != nil {
 		return err
+	} else if reason == recoveryLifecycle {
+		return e.recoverHeld(ctx, r, wi, a, reason)
+	}
+	if a.State == store.AttemptSending {
+		return e.confirmCancel(ctx, c, a, "not_accepted")
 	}
 	ref := kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}
 	if a.TaskID == "" {
@@ -1628,7 +1512,7 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 			}
 			return err
 		}
-		if err := e.st.MarkAccepted(ctx, e.st.DB, a.ID, t.ContextID, t.ID); err != nil {
+		if err := e.attach(ctx, a, wi, t); err != nil {
 			return err
 		}
 		a.TaskID, a.ContextID = t.ID, t.ContextID
@@ -1637,7 +1521,13 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		return err
 	}
 	t, err := e.tasks.GetTask(ctx, ref, a.TaskID)
+	if errors.Is(err, kagent.ErrTaskNotFound) {
+		return e.missingTask(ctx, r, wi, a)
+	}
 	if err != nil {
+		return err
+	}
+	if _, err := e.originalVisible(ctx, a); err != nil {
 		return err
 	}
 	if kagent.Terminal(t.Status.State) {
@@ -1663,40 +1553,45 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 // cancellation belonged to.
 func (e *Engine) confirmCancel(ctx context.Context, c *store.Cancellation, a *store.Attempt, outcome string) error {
 	e.m.Cancellations.WithLabelValues(c.Reason, "confirmed").Inc()
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
-		if err := e.st.ConfirmCancellation(ctx, tx, c.ID, outcome); err != nil {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error { return e.confirmCancelTx(ctx, tx, c, a, outcome) })
+}
+
+func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cancellation, a *store.Attempt, outcome string) error {
+	if err := e.st.InvalidateRecovery(ctx, tx, a.ID); err != nil {
+		return err
+	}
+	if err := e.st.ConfirmCancellation(ctx, tx, c.ID, outcome); err != nil {
+		return err
+	}
+	if a.Open() {
+		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, c.Reason+": "+outcome); err != nil {
 			return err
 		}
-		if a.Open() {
-			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, c.Reason+": "+outcome); err != nil {
-				return err
-			}
-		}
-		r := &store.Run{ID: c.RunID}
-		var stopped string
-		if err := tx.QueryRowContext(ctx, `
+	}
+	r := &store.Run{ID: c.RunID}
+	var stopped string
+	if err := tx.QueryRowContext(ctx, `
 			SELECT r.agent_key, r.state, r.origin, coalesce(r.work_item_id, 0), coalesce(w.stopped_reason, '')
 			FROM run r LEFT JOIN work_item w ON w.id = r.work_item_id WHERE r.id = $1`,
-			c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID, &stopped); err != nil {
+		c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID, &stopped); err != nil {
+		return err
+	}
+	if r.State == store.RunClosed {
+		return nil
+	}
+	// A run itsaplan ended closes whatever reason the cancellation had:
+	// it may have started as a reassignment and then gone canceling.
+	if (c.Reason != store.CancelReassignment && c.Reason != store.CancelRoundStopped) || r.State == store.RunCanceling {
+		if err := abandonResult(ctx, tx, c.RunID); err != nil {
 			return err
 		}
-		if r.State == store.RunClosed {
-			return nil
-		}
-		// A run itsaplan ended closes whatever reason the cancellation had:
-		// it may have started as a reassignment and then gone canceling.
-		if (c.Reason != store.CancelReassignment && c.Reason != store.CancelRoundStopped) || r.State == store.RunCanceling {
-			if err := abandonResult(ctx, tx, c.RunID); err != nil {
-				return err
-			}
-			return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "canceled ("+c.Reason+"); kagent task "+outcome)
-		}
-		if c.Reason == store.CancelRoundStopped {
-			return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip("delivery stopped: "+stopped, maxErrorText)})
-		}
-		// Reassignment: the superseded run reports that another agent took over.
-		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"})
-	})
+		return e.st.SetRunState(ctx, tx, c.RunID, store.RunClosed, "canceled ("+c.Reason+"); kagent task "+outcome)
+	}
+	if c.Reason == store.CancelRoundStopped {
+		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: clip("delivery stopped: "+stopped, maxErrorText)})
+	}
+	// Reassignment: the superseded run reports that another agent took over.
+	return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"})
 }
 
 // claim takes new runs for each agent key up to its concurrency.

@@ -1,8 +1,11 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "connector_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "main.go",
+        "recovery.go",
+    ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/cmd/connector",
     visibility = ["//visibility:private"],
     deps = [
@@ -24,4 +27,11 @@ go_binary(
     name = "connector",
     embed = [":connector_lib"],
     visibility = ["//projects/factory/connector:__subpackages__"],
+)
+
+go_test(
+    name = "connector_test",
+    srcs = ["recovery_test.go"],
+    embed = [":connector_lib"],
+    deps = ["//projects/factory/connector/store"],
 )

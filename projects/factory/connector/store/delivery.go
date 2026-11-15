@@ -355,11 +355,3 @@ func (s *Store) LatestTurn(ctx context.Context, workID int64) (*Attempt, *Run, e
 	r, err := s.GetRun(ctx, a.RunID)
 	return a, r, err
 }
-
-// CountResends counts a run's resends after a crashed session was reverted.
-func (s *Store) CountResends(ctx context.Context, runID int64) (int, error) {
-	var n int
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT count(*) FROM delivery_attempt WHERE run_id = $1 AND decision_id LIKE 'resend-%'`, runID).Scan(&n)
-	return n, err
-}

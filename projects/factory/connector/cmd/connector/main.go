@@ -8,6 +8,7 @@
 //	                           stop delivery for an issue, for example HL-7: the
 //	                           running connector cancels its running turn and
 //	                           dequeues its PR; --by defaults to $USER
+//	connector recovery ...    inspect holds or attest operator fencing
 package main
 
 import (
@@ -40,14 +41,18 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	var err error
 	switch {
+	case len(os.Args) > 1 && os.Args[1] == "recovery":
+		err = recoveryCLI(os.Args[2:])
 	case len(os.Args) == 3 && os.Args[1] == "unblock":
 		err = unblock(os.Args[2])
 	case len(os.Args) == 3 && os.Args[1] == "cancel":
 		err = cancelIssue(os.Args[2], os.Getenv("USER"))
 	case len(os.Args) == 5 && os.Args[1] == "cancel" && os.Args[3] == "--by":
 		err = cancelIssue(os.Args[2], os.Args[4])
-	default:
+	case len(os.Args) == 1:
 		err = run(log)
+	default:
+		err = errors.New("usage: connector [unblock SCOPE | cancel ISSUE [--by NAME] | recovery ...]")
 	}
 	// A SIGTERM ends the loop with context.Canceled: a clean exit.
 	if err != nil && !errors.Is(err, context.Canceled) {
