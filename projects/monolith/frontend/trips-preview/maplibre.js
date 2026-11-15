@@ -2,7 +2,14 @@
 // The constructor, rendering, camera, sources and controls stay unchanged.
 import * as maplibre from "maplibre-gl/dist/maplibre-gl.mjs";
 // The real components configure their bundled worker before constructing Map.
-export const { Marker, NavigationControl, setWorkerUrl } = maplibre;
+export const {
+  Marker,
+  NavigationControl,
+  setWorkerUrl,
+  addProtocol,
+  removeProtocol,
+  AJAXError,
+} = maplibre;
 export class Map extends maplibre.Map {
   constructor(options) {
     super(options);

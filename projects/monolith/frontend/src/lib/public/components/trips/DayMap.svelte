@@ -1,5 +1,7 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import RoutePreview from "./RoutePreview.svelte";
+  import { observeMapRequests } from "$lib/trips/map-requests.js";
   import { dayColor as routeColor } from "$lib/trips/trip.js";
   import {
     mapPalette,
@@ -36,16 +38,52 @@
 
   const BASEMAP_STYLE =
     "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+  const TERRAIN_PREFIX =
+    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/";
 
   let mapContainer;
-  let map = null;
+  let map = $state.raw(null);
   let maplibre = null;
   let photoMarker = null;
   let startMarker = null;
   let endMarker = null;
   let mapReady = $state(false);
-  let painted = false;
+  let painted = $state(false);
+  let failed = $state(false);
+  let contextLost = $state(false);
+  let retryRequested = false;
+  let blocked = false;
+  let requestObserver;
   let routeInitialized = false;
+  let retryCamera;
+
+  function retryMap() {
+    // setStyle during context loss would be overwritten by MapLibre's saved
+    // style on restoration. Keep Retry visible and defer the requested reload.
+    if (contextLost) {
+      retryRequested = true;
+      return;
+    }
+    retryRequested = false;
+    requestObserver?.reset();
+    blocked = false;
+    retryCamera = {
+      center: map.getCenter(),
+      zoom: map.getZoom(),
+      bearing: map.getBearing(),
+      pitch: map.getPitch(),
+    };
+    painted = false;
+    failed = true;
+    mapReady = false;
+    routeInitialized = false;
+    onReady(false);
+    try {
+      map.setStyle(BASEMAP_STYLE, { diff: false });
+    } catch {
+      blocked = true;
+    }
+  }
 
   function applyScheme() {
     if (!map || !mapReady) return;
@@ -279,10 +317,23 @@
       // The package-relative default is absent from Vite's emitted chunks.
       maplibre.setWorkerUrl(workerUrl);
 
+      const markFailed = (event) => {
+        // Hillshade is optional; its failure does not hide a working basemap.
+        if (event?.sourceId === "terrain-dem") return;
+        blocked = true;
+        failed = true;
+        painted = false;
+        onReady(false);
+      };
+      requestObserver = observeMapRequests(maplibre, {
+        onFailure: markFailed,
+        optionalTilePrefix: TERRAIN_PREFIX,
+      });
       const b = bounds();
       map = new maplibre.Map({
         container: mapContainer,
         style: BASEMAP_STYLE,
+        transformRequest: requestObserver.transformRequest,
         ...(b
           ? { bounds: b, fitBoundsOptions: { padding: 50 } }
           : { center: [0, 30], zoom: 1.4 }),
@@ -294,26 +345,68 @@
         "top-right",
       );
 
+      let basemapSourceIds = [];
+      map.on("error", markFailed);
+      map.on("webglcontextlost", () => {
+        contextLost = true;
+        failed = true;
+        painted = false;
+        mapReady = false;
+        requestObserver.reset();
+        retryCamera = {
+          center: map.getCenter(),
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch(),
+        };
+        routeInitialized = false;
+        onReady(false);
+      });
+      map.on("webglcontextrestored", () => {
+        contextLost = false;
+        if (retryRequested) retryMap();
+      });
       map.on("render", () => {
         if (
-          painted ||
+          contextLost ||
+          blocked ||
           !mapReady ||
           !routeInitialized ||
           !map.getSource("route") ||
-          !map.isSourceLoaded("route")
+          !map.isSourceLoaded("route") ||
+          !basemapSourceIds.every(
+            (id) => map.getSource(id) && map.isSourceLoaded(id),
+          )
         )
           return;
+        if (painted) return;
+        failed = false;
         painted = true;
         onReady(true);
       });
 
-      map.on("load", () => {
+      map.on("style.load", () => {
+        if (contextLost) return;
+        // Context restoration replays a serialized style with our sources and
+        // layers already present. Reuse them instead of adding duplicate IDs.
+        const addSource = (id, source) => {
+          if (!map.getSource(id)) map.addSource(id, source);
+        };
+        const addLayer = (layer, before) => {
+          if (!map.getLayer(layer.id)) map.addLayer(layer, before);
+        };
+        painted = false;
+        mapReady = false;
+        routeInitialized = false;
+        onReady(false);
+        const sources = map.getStyle().sources;
+        basemapSourceIds = Object.keys(sources).filter(
+          (id) => id !== "route" && id !== "terrain-dem",
+        );
         // Terrain hillshade, lit from the photo-time sun, under the basemap.
-        map.addSource("terrain-dem", {
+        addSource("terrain-dem", {
           type: "raster-dem",
-          tiles: [
-            "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
-          ],
+          tiles: [`${TERRAIN_PREFIX}{z}/{x}/{y}.png`],
           encoding: "terrarium",
           tileSize: 256,
           maxzoom: 15,
@@ -322,7 +415,7 @@
           .getStyle()
           .layers.find((l) => l.type === "symbol");
         const intensity = sunIntensity(sunPosition);
-        map.addLayer(
+        addLayer(
           {
             id: "hillshade",
             type: "hillshade",
@@ -341,12 +434,12 @@
           firstSymbol?.id,
         );
 
-        map.addSource("route", {
+        addSource("route", {
           type: "geojson",
           data: { type: "FeatureCollection", features: [] },
         });
         // Ink casing separates the route from the basemap in either scheme.
-        map.addLayer({
+        addLayer({
           id: "route-line",
           type: "line",
           source: "route",
@@ -358,7 +451,7 @@
           },
         });
         // Thin real-day-colour core down the centre of the ink casing.
-        map.addLayer({
+        addLayer({
           id: "route-color-accent",
           type: "line",
           source: "route",
@@ -370,7 +463,7 @@
           },
         });
         // Wide transparent hit area for easier clicking.
-        map.addLayer({
+        addLayer({
           id: "route-hit-area",
           type: "line",
           source: "route",
@@ -382,34 +475,48 @@
           },
         });
 
-        if (onLocationClick) {
-          map.on("mouseenter", "route-hit-area", () => {
-            map.getCanvas().style.cursor = "pointer";
-          });
-          map.on("mouseleave", "route-hit-area", () => {
-            map.getCanvas().style.cursor = "";
-          });
-          map.on("click", "route-hit-area", (e) => {
-            const { lng: clickLng, lat: clickLat } = e.lngLat;
-            let minDist = Infinity;
-            let closest = null;
-            for (const p of points) {
-              if (p.lat == null || p.lng == null || !p.taken_at) continue;
-              const dist =
-                Math.pow(p.lng - clickLng, 2) + Math.pow(p.lat - clickLat, 2);
-              if (dist < minDist) {
-                minDist = dist;
-                closest = p;
-              }
-            }
-            if (closest?.taken_at) onLocationClick(closest.taken_at);
-          });
-        }
         mapReady = true;
         applyScheme();
+        // The route/photo effects run again after style replacement. Restore
+        // the visitor's camera afterward, before the next render can hand off.
+        if (retryCamera) {
+          const camera = retryCamera;
+          retryCamera = null;
+          tick().then(() => {
+            if (!destroyed) map?.jumpTo(camera);
+          });
+        }
       });
 
+      if (onLocationClick) {
+        map.on("mouseenter", "route-hit-area", () => {
+          if (!painted) return;
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", "route-hit-area", () => {
+          if (!painted) return;
+          map.getCanvas().style.cursor = "";
+        });
+        map.on("click", "route-hit-area", (e) => {
+          if (!painted) return;
+          const { lng: clickLng, lat: clickLat } = e.lngLat;
+          let minDist = Infinity;
+          let closest = null;
+          for (const p of points) {
+            if (p.lat == null || p.lng == null || !p.taken_at) continue;
+            const dist =
+              Math.pow(p.lng - clickLng, 2) + Math.pow(p.lat - clickLat, 2);
+            if (dist < minDist) {
+              minDist = dist;
+              closest = p;
+            }
+          }
+          if (closest?.taken_at) onLocationClick(closest.taken_at);
+        });
+      }
+
       cleanup = () => {
+        requestObserver?.dispose();
         photoMarker?.remove();
         startMarker?.remove();
         endMarker?.remove();
@@ -422,7 +529,14 @@
         painted = false;
         routeInitialized = false;
       };
-    })();
+    })().catch(() => {
+      requestObserver?.dispose();
+      if (!destroyed) {
+        failed = true;
+        painted = false;
+        onReady(false);
+      }
+    });
 
     return () => {
       destroyed = true;
@@ -433,12 +547,42 @@
   });
 </script>
 
-<div class="map" style={`height:${height}`} bind:this={mapContainer}></div>
+<div class="map-wrap" style={`height:${height}`}>
+  {#if !painted}
+    <RoutePreview
+      days={[{ points }]}
+      color={dayColor}
+      label="Day route"
+      {failed}
+      waitingForContext={contextLost}
+      onRetry={map ? retryMap : undefined}
+    />
+  {:else if !geoPoints().length}<p class="map-summary">
+      No GPS points for this route.
+    </p>{/if}
+  <div class="map" bind:this={mapContainer}></div>
+</div>
 
 <style>
+  .map-wrap {
+    position: relative;
+    width: 100%;
+  }
+  .map-summary {
+    position: absolute;
+    left: 0.75rem;
+    bottom: 0.5rem;
+    z-index: 1;
+    margin: 0;
+    background: var(--sheet);
+    color: var(--ink);
+    font: 0.7rem/1.5 var(--font-code);
+    pointer-events: none;
+  }
   /* The map viewport shares the sheet's one-pixel panel outline. */
   .map {
     width: 100%;
+    height: 100%;
     box-sizing: border-box;
     overflow: hidden;
     border: 1px solid var(--ink);
