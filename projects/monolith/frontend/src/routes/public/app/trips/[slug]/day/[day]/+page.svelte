@@ -285,6 +285,7 @@
               <img
                 src={displayedSrc}
                 alt={`Photo ${current + 1} of ${photos.length}`}
+                fetchpriority="high"
                 decoding="async"
               />
             </button>

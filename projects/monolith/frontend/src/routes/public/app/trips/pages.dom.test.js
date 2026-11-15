@@ -829,6 +829,10 @@ describe("trip image loading", () => {
       expect(requested.map((image) => image.src)).toEqual([
         "/fixture-display-0.jpg",
       ]);
+      const visible = document.querySelector(".photo img");
+      expect(visible.getAttribute("src")).toBe("/fixture-display-0.jpg");
+      expect(visible.getAttribute("fetchpriority")).toBe("high");
+      expect(visible.getAttribute("decoding")).toBe("async");
       loadMap(map);
       await settle();
       map.isSourceLoaded = vi.fn(() => false);
@@ -885,8 +889,15 @@ describe("trip image loading", () => {
     expect(document.querySelector(".photo img").getAttribute("src")).toBe(
       "/fixture-display-1.jpg",
     );
+    expect(
+      document.querySelector(".photo img").getAttribute("fetchpriority"),
+    ).toBe("high");
+    expect(document.querySelector(".photo img").getAttribute("decoding")).toBe(
+      "async",
+    );
     const pending = requested.at(-1);
     expect(pending.src).toBe("/fixture-display-2.jpg");
+    expect(pending.fetchPriority).toBe("low");
     await unmount(instance);
     instance = null;
     expect(pending.cancelled).toBe(true);
