@@ -182,6 +182,13 @@ type Engine struct {
 	heads     map[prKey]string
 	commentMu sync.Mutex
 	comments  map[prKey]*commentState
+	// commentLimits is under mu. Optional comment I/O has its own worker;
+	// neither the poller nor review workers wait on commentMu or that worker.
+	commentLimits  map[prKey]bool
+	commentQueueMu sync.Mutex
+	commentQueue   []func()
+	commentWorker  bool
+	commentWG      sync.WaitGroup
 
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
@@ -321,7 +328,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
-		heads: map[prKey]string{}, comments: map[prKey]*commentState{},
+		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
 }
@@ -343,8 +350,11 @@ func (e *Engine) Run(ctx context.Context, poll time.Duration) error {
 	}
 }
 
-// Wait returns once every running review has returned.
-func (e *Engine) Wait() { e.wg.Wait() }
+// Wait drains reviews and their optional comment writes after polling stops.
+func (e *Engine) Wait() {
+	e.wg.Wait()
+	e.commentWG.Wait()
+}
 
 // Tick polls every binding once. Reviews it starts run in the background
 // under ctx.
@@ -355,6 +365,9 @@ func (e *Engine) Tick(ctx context.Context) {
 		}
 		e.tickBinding(ctx, &e.cfg.Bindings[i])
 	}
+	// The worker may discover a comment limit after a check was completed.
+	// Refresh its notice only after every binding's merge groups reconcile.
+	e.noteCommentLimits(ctx)
 }
 
 type candidate struct {
@@ -559,7 +572,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	e.mu.Lock()
 	delete(e.pendingHolds, key)
 	e.mu.Unlock()
-	e.mirror(ctx, b, pr, run, o.Comment)
+	e.queueMirror(ctx, b, pr, run, o.Comment)
 	return run
 }
 
@@ -968,7 +981,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		defer e.done(key)
 		defer cancel(nil)
 		if kind == "new" {
-			e.mirror(rctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
+			e.queueMirror(rctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
 		}
 		e.review(rctx, b, pr, run, l.With("check_run", run.ID))
 	}()
@@ -1936,7 +1949,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 		approver = st.Gate.Approver
 	}
 	l.InfoContext(ctx, "human gate check posted", "conclusion", conclusion, "approver", approver)
-	e.mirror(ctx, b, pr, run, u)
+	e.queueMirror(ctx, b, pr, run, u)
 	return run
 }
 
@@ -1966,9 +1979,6 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		}
 		return false
 	}
-	// Optional comment feedback uses the output actually written, including
-	// cancellation state and any annotation fallback, after the gate stands.
-	run.Title, run.Summary, run.Text = o.Output.Title, o.Output.Summary, o.Output.Text
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
 	l.InfoContext(ctx, "review check completed", "conclusion", o.Conclusion, "title", o.Output.Title)
 	return true
@@ -1979,7 +1989,7 @@ func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
-	e.mirror(ctx, b, pr, run, o.Comment)
+	e.queueMirror(ctx, b, pr, run, o.Comment)
 	return true
 }
 

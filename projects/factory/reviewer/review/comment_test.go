@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -102,6 +103,7 @@ func TestCommentLimitKeepsFindingsInTheCheck(t *testing.T) {
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "completed check with the comment limit note", func() bool {
+		e.Tick(ctx)
 		c := h.gh.check(shaA)
 		return c.Conclusion == ConclusionSuccess && strings.Contains(c.Summary, commentLimitNote)
 	})
@@ -127,6 +129,8 @@ func TestCommentLimitKeepsFindingsInTheCheck(t *testing.T) {
 	}
 	e.mirror(ctx, &e.cfg.Bindings[0], pr, later, &CommentUpdate{Verdict: VerdictChanges})
 	e.mirror(ctx, &e.cfg.Bindings[0], pr, later, &CommentUpdate{Verdict: VerdictChanges})
+	e.noteCommentLimits(ctx)
+	e.noteCommentLimits(ctx)
 	if got := h.gh.check(pr.HeadSHA); got.Summary != "Later findings\n\n"+commentLimitNote || got.Conclusion != ConclusionFailure || got.Text != c.Text {
 		t.Fatalf("later head lost findings, its verdict or the note: %+v", got)
 	}
@@ -226,7 +230,7 @@ func (c *blockedCommentLookup) IssueCommentsWithLimit(ctx context.Context, repo 
 	}
 }
 
-func TestGateRevocationPrecedesCommentWork(t *testing.T) {
+func TestGateRevocationDoesNotWaitForCommentWork(t *testing.T) {
 	for _, cause := range []string{"human hold", "unreadable history", "shared head", "shared head fallback", "review completion"} {
 		for _, blocked := range []string{"lookup", "mutex"} {
 			t.Run(cause+"/"+blocked, func(t *testing.T) {
@@ -277,6 +281,7 @@ func TestGateRevocationPrecedesCommentWork(t *testing.T) {
 							return false
 						}
 					})
+					e.Wait()
 					if h.gh.check(shaA).Conclusion != ConclusionFailure {
 						t.Error("optional comment work changed the failing conclusion")
 					}
@@ -309,13 +314,237 @@ func TestGateRevocationPrecedesCommentWork(t *testing.T) {
 						}
 					})
 				}
-				select {
-				case <-done:
-					t.Fatal("comment work was not blocked")
-				default:
+				eventually(t, "gate work to return while comments are blocked", func() bool {
+					select {
+					case <-done:
+						return true
+					default:
+						return false
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestQueuedGroupRevocationDoesNotWaitForCommentWork(t *testing.T) {
+	for _, cause := range []string{"human hold", "unreadable history", "shared head", "shared head fallback"} {
+		for _, blocked := range []string{"lookup", "mutex"} {
+			t.Run(cause+"/"+blocked, func(t *testing.T) {
+				h := newHarness(t)
+				withComments(h)
+				addPR7(h)
+				comments := &blockedCommentLookup{
+					Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+					started:  make(chan struct{}), release: make(chan struct{}),
+				}
+				h.cfg.Comments = comments
+				e, ctx := h.engine(), context.Background()
+				// GitHub retains a passing review and queued group across a
+				// restart; the new process has never looked up its comment.
+				_, err := e.gh.CreateCheckRun(ctx, testRepo, github.CheckRunWrite{
+					Name: e.cfg.CheckName, HeadSHA: shaA, ExternalID: MessageID(testRepo, 7, shaA),
+					Status: "completed", Conclusion: ConclusionSuccess,
+					Output: &github.CheckRunOutput{Title: "Approved", Summary: "Earlier findings", Text: encodeState(State{})},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.gh.withLock(func() {
+					h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+				})
+				e.Tick(ctx)
+				if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionSuccess {
+					t.Fatalf("initial merge group = %+v", c)
+				}
+				var unblock func()
+				if blocked == "mutex" {
+					close(comments.release)
+					e.commentMu.Lock()
+					unblock = e.commentMu.Unlock
+				} else {
+					unblock = func() { close(comments.release) }
+				}
+				done := make(chan struct{})
+				defer func() {
+					unblock()
+					<-done
+					e.Wait()
+				}()
+				switch cause {
+				case "human hold":
+					h.gh.label(7, "human")
+				case "unreadable history":
+					h.gh.failWith("GET /repos/"+testRepo+"/issues/7/events", 500)
+				case "shared head", "shared head fallback":
+					h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+					if cause == "shared head fallback" {
+						h.gh.withLock(func() { h.gh.failCheckSHA = shaA })
+					}
+				}
+				go func() {
+					e.Tick(ctx)
+					close(done)
+				}()
+				eventually(t, "both passes to be revoked with comments blocked", func() bool {
+					return h.gh.check(shaA).Conclusion == ConclusionFailure && h.gh.check("mg-7").Conclusion == ConclusionFailure
+				})
+				eventually(t, "polling to return with comments blocked", func() bool {
+					select {
+					case <-done:
+						return true
+					default:
+						return false
+					}
+				})
+				if blocked == "lookup" {
+					eventually(t, "the independent comment lookup to start", func() bool {
+						select {
+						case <-comments.started:
+							return true
+						default:
+							return false
+						}
+					})
 				}
 			})
 		}
+	}
+}
+
+func TestCommentLimitNoticeUsesTheCurrentCheckOutput(t *testing.T) {
+	h := newHarness(t)
+	withComments(h)
+	addPR7(h)
+	h.gh.prs[7].Comments = conversationComments(10001)
+	comments := &blockedCommentLookup{
+		Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+		started:  make(chan struct{}), release: make(chan struct{}),
+	}
+	h.cfg.Comments = comments
+	e, ctx := h.engine(), context.Background()
+	b := &e.cfg.Bindings[0]
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA, BaseRef: "main"}
+	e.noteHeads(b, []github.PullRequest{pr}, true)
+	run, err := e.gh.CreateCheckRun(ctx, testRepo, github.CheckRunWrite{
+		Name: e.cfg.CheckName, HeadSHA: shaA, Status: "in_progress",
+		Output: &github.CheckRunOutput{Title: "Reviewing", Summary: "Old progress"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.queueMirror(ctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
+	unblock := sync.OnceFunc(func() { close(comments.release) })
+	defer e.Wait()
+	defer unblock()
+	<-comments.started
+	if !e.finish(ctx, b, pr, run, Outcome{
+		Conclusion: ConclusionSuccess,
+		Output: github.CheckRunOutput{
+			Title: "Approved", Summary: "Completed findings", Text: encodeState(State{}),
+			Annotations: []github.Annotation{{Path: "x.go", StartLine: 3, EndLine: 3, Level: "notice", Message: "Rename x"}},
+		},
+		Comment: &CommentUpdate{Verdict: VerdictApproved},
+	}, e.prLog(b, pr)) {
+		t.Fatal("completing the review failed")
+	}
+	current, err := e.reviewCheck(ctx, b, shaA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A shared-head fallback replaces the same check's output while the
+	// optional lookup is still reading an earlier reviewing job.
+	h.gh.withLock(func() { h.gh.failCheckSHA = shaA })
+	held := e.holdSharedHead(ctx, b, pr, current, nil)
+	if held == nil || held.ID != run.ID || held.Conclusion != ConclusionFailure {
+		t.Fatalf("hold = %+v", held)
+	}
+	unblock()
+	e.Wait()
+	e.noteCommentLimits(ctx)
+	e.noteCommentLimits(ctx)
+	got := h.gh.check(shaA)
+	if got.Conclusion != ConclusionFailure || got.Title != held.Title || got.Text != held.Text ||
+		got.Summary != held.Summary+"\n\n"+commentLimitNote || len(got.Annotations) != 1 {
+		t.Fatalf("late lookup replaced current output: %+v", got)
+	}
+	if n := len(h.gh.ownComments(7)); n != 0 {
+		t.Fatalf("created %d comments past the bound", n)
+	}
+}
+
+func TestReviewAndQueuedHoldProceedDuringCommentLookup(t *testing.T) {
+	h := newHarness(t)
+	withComments(h)
+	addPR7(h)
+	comments := &blockedCommentLookup{
+		Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+		started:  make(chan struct{}), release: make(chan struct{}),
+	}
+	h.cfg.Comments = comments
+	e, ctx, _ := h.start()
+	unblock := sync.OnceFunc(func() { close(comments.release) })
+	defer unblock()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	<-comments.started
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "review completion while comment lookup is blocked", func() bool {
+		return h.gh.check(shaA).Conclusion == ConclusionSuccess && testutil.ToFloat64(h.m.InFlight) == 0
+	})
+	h.gh.withLock(func() {
+		h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+	})
+	e.Tick(ctx)
+	if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionSuccess {
+		t.Fatalf("initial merge group = %+v", c)
+	}
+	h.gh.label(7, "human")
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure || h.gh.check("mg-7").Conclusion != ConclusionFailure {
+		t.Fatal("comment lookup delayed the head or queued group hold")
+	}
+	unblock()
+	e.Wait()
+	if !commentHas(h, 7, "Waiting for a human approval", "Rename x") {
+		t.Fatalf("queued verdicts lost the hold or earlier findings: %s", onlyComment(t, h, 7).Body)
+	}
+}
+
+func TestQueuedCommentSkipsAHeadSupersededDuringLookup(t *testing.T) {
+	h := newHarness(t)
+	withComments(h)
+	addPR7(h)
+	comments := &blockedCommentLookup{
+		Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+		started:  make(chan struct{}), release: make(chan struct{}),
+	}
+	h.cfg.Comments = comments
+	e, ctx := h.engine(), context.Background()
+	b := &e.cfg.Bindings[0]
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA, BaseRef: "main"}
+	e.noteHeads(b, []github.PullRequest{pr}, true)
+	e.queueMirror(ctx, b, pr, nil, &CommentUpdate{Verdict: VerdictApproved})
+	unblock := sync.OnceFunc(func() { close(comments.release) })
+	defer e.Wait()
+	defer unblock()
+	<-comments.started
+	pr.HeadSHA = strings.Repeat("b", 40)
+	e.noteHeads(b, []github.PullRequest{pr}, true)
+	findings := "New findings"
+	update := &CommentUpdate{Verdict: VerdictChanges, Findings: &findings, Gate: &Gate{Labels: []string{"human"}}}
+	e.queueMirror(ctx, b, pr, nil, update)
+	// Queued display data must not alias its producer's mutable fields.
+	findings, update.Gate.Labels[0] = "Overwritten findings", "overwritten label"
+	unblock()
+	e.Wait()
+	if !commentHas(h, 7, "Changes requested", "New findings", "labelled `human`", short(pr.HeadSHA)) {
+		t.Fatalf("queued verdict = %s", onlyComment(t, h, 7).Body)
+	}
+	if n := h.gh.countCalls("PATCH /repos/" + testRepo + "/issues/comments/"); n != 0 {
+		t.Fatalf("updated a comment created for the superseded head: %d patches", n)
+	}
+	if n := h.gh.countCalls("GET /repos/" + testRepo + "/issues/7/comments"); n != 1 {
+		t.Fatalf("looked up the comment %d times", n)
 	}
 }
 
@@ -442,6 +671,7 @@ func TestCommentWaitsForTheHumanGateThenApproves(t *testing.T) {
 
 	h.gh.review(7, "jomcgi", "APPROVED", shaA, "Reviewed the reviewer change.")
 	e.Tick(ctx)
+	eventually(t, "the human approval in the comment", func() bool { return commentHas(h, 7, "### ✅ Approved") })
 	c := onlyComment(t, h, 7)
 	for _, want := range []string{
 		"### ✅ Approved", "**Human gate cleared by jomcgi**", "| ⚪ Low | Rename y |",
