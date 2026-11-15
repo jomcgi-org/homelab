@@ -187,14 +187,12 @@ it("catches a real raster expiry404 without a loading event or another frame", a
 it("passes empty raster responses to the real image path without an error", async () => {
   vi.stubGlobal(
     "fetch",
-    vi
-      .fn()
-      .mockResolvedValue(
-        new Response(null, {
-          status: 204,
-          headers: { "Cache-Control": "max-age=60" },
-        }),
-      ),
+    vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 204,
+        headers: { "Cache-Control": "max-age=60" },
+      }),
+    ),
   );
   const requests = observer();
   const response = await ImageRequest.getImage(
