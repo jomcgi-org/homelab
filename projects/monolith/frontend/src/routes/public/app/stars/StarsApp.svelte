@@ -133,7 +133,10 @@
   // picker then filters this in memory (see mapSites below), so switching months
   // is instant and never hits the network. One payload, one cache entry, instead
   // of a per-month request that re-queried (and OOM-killed) the backend each time.
-  let historyAllSites = $state(null); // [{id,name,lat,lon,clear:[12],dark:[12]}]
+  // The fetched snapshot is replaced as a whole and never mutated. Keep its
+  // thousands of rows and month arrays plain: deep reactive proxies would be
+  // created on the first mode switch as historyView reads every monthly value.
+  let historyAllSites = $state.raw(null); // [{id,name,lat,lon,clear:[12],dark:[12]}]
   let historyLoading = $state(false); // template-facing only
   let historyError = $state(false);
   // Plain (non-reactive) guards. Keeping them out of $state means the loadHistory

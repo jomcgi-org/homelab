@@ -84,6 +84,9 @@
   // Keep prepared GeoJSON by input array and visual state. Mode switches should
   // swap already-built features, not synchronously walk every site again.
   const visualCache = new WeakMap();
+  // Several effects can observe one mode/month change. Each source needs the
+  // prepared collection once; resubmitting it repeats MapLibre worker work.
+  const publishedSources = new WeakMap();
 
   // The relative-normalization ceiling for the current feature set, restamped on
   // every plottable(). Drives the historical 0..100 percentile that both the
@@ -396,8 +399,16 @@
     const hourKey = Math.floor(nowMs / 3_600_000);
     const cacheKey = `${mode}|${darknessMode}|${hourKey}|${nightKeyValue}`;
     const prepared = visualData(cacheKey);
-    map.getSource(SOURCE_ID)?.setData(prepared.points);
-    map.getSource(CELL_SOURCE)?.setData(prepared.cells);
+    for (const [id, data] of [
+      [SOURCE_ID, prepared.points],
+      [CELL_SOURCE, prepared.cells],
+    ]) {
+      const source = map.getSource(id);
+      if (source && publishedSources.get(source) !== data) {
+        source.setData(data);
+        publishedSources.set(source, data);
+      }
+    }
   }
 
   // The box heatmap and the point markers are mutually exclusive: when heat is
