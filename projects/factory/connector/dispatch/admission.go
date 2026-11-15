@@ -186,7 +186,7 @@ func (e *Engine) admissionFailure(ctx context.Context, r *store.Run, reason stri
 }
 
 type admissionJournal struct {
-	Reason string `json:"reason"`
+	Reason string           `json:"reason"`
 	Events []itsaplan.Event `json:"events"`
 }
 
