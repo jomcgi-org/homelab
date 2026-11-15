@@ -1,8 +1,8 @@
 # Public immutable asset archive
 
 Cached HTML and open tabs can refer to an older frontend after a deployment.
-Currently, `/_app/immutable/` reaches only the current pod's files. A missing
-chunk can produce a 404 and sometimes a second document navigation through the
+Previously, `/_app/immutable/` reached only the current pod's files. A missing
+chunk produced a 404 and sometimes a second document navigation through the
 `_fresh` recovery handler. [#7998](https://github.com/jomcgi-org/homelab/issues/7998)
 records the production failures.
 
@@ -35,16 +35,28 @@ when a concurrent publisher wins the conditional manifest creation. Failure stop
 and prevents the new HTML Deployment from starting. A retry is idempotent;
 failed Jobs remain available for diagnosis until the next sync replaces them.
 
-The backend exposes a bounded internal reader using its existing read-only R2
-identity. No object-store credential enters the frontend or browser, and no
+The backend Deployment has sync wave 0; the frontend has wave 1. Argo CD waits
+for the backend rollout to be healthy before starting the frontend rollout.
+The backend exposes only a bounded internal reader and retains its existing
+read-only R2 identity. The frontend uses its existing `API_BASE` transport and
+verifies a current entry asset through that reader before listening, proving
+read access to the configured archive prefix rather than trusting the writer's
+readback alone. This is not an audit of account-wide permissions.
+
+Current local files retain the adapter's fast path. Missing immutable files
+fall back through the packaged Node middleware to the internal reader. This
+cannot be implemented only as a SvelteKit route: Kit rejects its reserved
+`/_app` prefix before normal route matching. The fallback preserves the stored
+representations and immutable cache semantics. The final HTTP cache guard
+still makes cookie-bearing, authenticated, private/friends and error responses
+`no-store`. No object-store credential enters the frontend or browser, and no
 new public `/api` route is added.
 
-This archive-only release keeps frontend serving, configuration and Deployment
-ordering unchanged. It records this release’s public frontend image
-before a later release enables archived-asset fallback. That activation must
-install middleware before Kit's reserved `/_app` rejection and verify the
-current entry asset through the configured read-only backend before listening.
-It must also preserve the final cookie/auth/private-response cache guard.
+Fallback work is bounded to four active requests, 128 queued requests and a
+five-second queue/reader deadline. Each verified representation is at most
+16 MiB. A separate 120-second downstream flush limit closes stalled clients
+and releases their buffers. These limits bound simultaneous reads and
+concatenation; overflow and reader timeout remain non-cacheable failures.
 
 ## Retention and bootstrap
 
@@ -99,9 +111,8 @@ charts and checks publication/Deployment ordering, exact image reuse, writer
 namespace, token/RBAC absence, read-only public runtime identities and bounded
 volumes. It executes the rendered Node copy against exact-byte, compressed,
 worker, sibling-server, symlink, empty, conflicting and oversized fixtures.
-Publisher/reader tests cover storage failures, equivalent recompression,
-concurrent publication and path/content boundaries. The chart test also checks
-that frontend fallback remains disabled in this archive-only release.
+Publisher/reader tests cover storage failures and path/content boundaries;
+packaged frontend tests cover startup verification and the final HTTP guard.
 
 `//projects/monolith/public_assets_image:publisher_image_smoke_test` loads the exact built public
 backend OCI image and verifies its config digest against the local engine. It
@@ -113,8 +124,7 @@ UID 65532. This required local CI test starts a bounded private Docker engine
 when the runner has none; unavailable execution capability fails the test.
 It never substitutes the test runner's Python or skips image execution.
 
-After frontend fallback is enabled, live acceptance requires a healthy verified
-rollout, a subsequent release with
+Live acceptance requires a healthy verified rollout, a subsequent release with
 alternating old/new pods, and requests for every retained initial/deferred
 asset, including workers, with browser/CDN misses. Record exact bytes, MIME and
 encoding, zero missing chunks and no `_fresh` navigation. Before/after mobile
