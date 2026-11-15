@@ -158,7 +158,8 @@ is Joe's: no run starts on it, and the "Needs Joe" view
 
 To take delegated work from the factory, stop it with
 `connector cancel <ISSUE> --by joe`, or move the issue to Canceled and leave
-it there. Changing the assignee or removing the delegate stops nothing. Wait
+it there, and close its PR: a closed PR cannot merge, and reopening it is the
+new owner's choice. Changing the assignee or removing the delegate stops nothing. Wait
 for the stop to settle before anyone else touches the work. The connector's
 database covers itsaplan runs and its own review rounds, which itsaplan has no
 record of:
@@ -171,15 +172,17 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 \
        AND r.state <> 'closed') AS open_runs,
     (SELECT count(*) FROM cancellation c JOIN run r ON r.id = c.run_id
        WHERE r.work_item_id = w.id AND c.state = 'pending') AS pending,
-    (SELECT p.state || '/' || coalesce(p.merge_queue_state, '-')
-       FROM pull_request p WHERE p.work_item_id = w.id) AS pr
+    (SELECT p.number FROM pull_request p WHERE p.work_item_id = w.id) AS pr
   FROM work_item w WHERE w.issue_key = 'HOME-N'"
 ```
 
 The stop has settled when the state is `stopped`, `open_runs` and `pending`
 are 0 (a cancellation is confirmed only after kagent confirms the task
-stopped), and the PR is closed, merged, or open and out of the merge queue.
-Use the primary's name from `kubectl -n factory-db get cluster factory-db`.
+stopped), and GitHub shows the PR closed or merged
+(`gh pr view <pr> --json state`). The connector's own PR fields are its last
+poll and can be stale. If `factory-db-1` is not the primary, take the name
+from `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get cluster
+factory-db`.
 
 Then file a new HOME issue, assigned to Joe with no delegate, that links the
 canceled one and names what remains. To hand the work back, delegate that
