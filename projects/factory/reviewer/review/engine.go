@@ -1212,6 +1212,13 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			in.gate.observeLabelEvents(b, events)
 			in.gate, _ = e.retainGate(b, pr, in.gate, before != in.gate.ApprovalNonce)
+			if _, err := e.interdiff(ctx, b, currentPR, in, l); err != nil {
+				// The prompt already lowered late findings, so a review
+				// assessed without the interdiff could pass on less than
+				// a full review: wait for it instead.
+				e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for the changes since the previous review.", l)
+				return // Reattach the completed task once the interdiff is readable.
+			}
 			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if res.reason != "" {
 				if next(res.reason) {
@@ -1477,7 +1484,8 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		prior := in.prior.Previous()
 		since, err := e.interdiff(ctx, b, pr, in, l)
 		if err != nil {
-			l.WarnContext(ctx, "could not read the interdiff; new findings keep their severities", "error", err)
+			// review reads the interdiff before outcome; never assess without it.
+			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
 		}
 		r = LaterScope(in.priorHead, since).Lower(r, prior)
 		a := Assess(r, prior)

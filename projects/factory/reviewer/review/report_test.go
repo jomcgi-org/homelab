@@ -604,10 +604,11 @@ func TestAssessKeepsPreviousGateFindings(t *testing.T) {
 }
 
 // TestLaterScopeLowersNewFindingsOutsideTheInterdiff lowers a new high or
-// medium finding to a deferred low one unless its path or cause is a file
-// changed since the previous head. Critical, human-gate and previous
-// findings keep their severity, and nothing is lowered without an interdiff
-// the service can trust.
+// medium finding placed outside the files changed since the previous head
+// to a deferred low one unless its cause is a changed file. Critical,
+// human-gate, previous, pathless and review-process findings keep their
+// severity, and nothing is lowered without an interdiff the service can
+// trust.
 func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	files := []github.PullRequestFile{{Path: "changed.go"}, {Path: "new/name.go", PreviousPath: "old/name.go"}}
 	d := &github.CommitComparison{Status: "ahead", Files: files}
@@ -628,6 +629,9 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 		at("u.go:correctness", SeverityHigh, "u.go", ""),
 		at("u.go:validation", SeverityMedium, "u.go", "elsewhere.go"),
 		at(":unverified", SeverityMedium, "", ""),
+		at(":correctness", SeverityHigh, "", ""),
+		at("u.go:unreviewed", SeverityHigh, "u.go", ""),
+		at("u.go:review-injection:prompt", SeverityMedium, "u.go", ""),
 		at("u.go:boundary", SeverityHigh, "u.go", "changed.go"),
 		at("changed.go:correctness", SeverityMedium, "./changed.go", ""),
 		at("old/name.go:goal", SeverityMedium, "old/name.go", ""),
@@ -650,7 +654,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 			lowered = append(lowered, f.ID+"="+f.Lowered)
 		}
 	}
-	if want := "u.go:correctness=high,u.go:validation=medium,:unverified=medium"; strings.Join(lowered, ",") != want {
+	if want := "u.go:correctness=high,u.go:validation=medium"; strings.Join(lowered, ",") != want {
 		t.Fatalf("lowered = %v, want %s", lowered, want)
 	}
 	if r.Findings[0].Severity != SeverityHigh || r.Findings[0].Lowered != "" {
@@ -661,10 +665,10 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	for _, b := range a.Blocking {
 		blocking = append(blocking, b.ID)
 	}
-	if want := "u.go:security,u.go:boundary,u.go:prior,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
+	if want := "u.go:security,:correctness,u.go:unreviewed,u.go:boundary,u.go:prior,:unverified,u.go:review-injection:prompt,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
 		t.Fatalf("blocking = %v, want %s", blocking, want)
 	}
-	if len(a.Gated) != 1 || len(a.Deferred) != 3 || len(a.Optional) != 1 {
+	if len(a.Gated) != 1 || len(a.Deferred) != 2 || len(a.Optional) != 1 {
 		t.Fatalf("assessment = %+v", a)
 	}
 
@@ -718,14 +722,23 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	if !ok || !reflect.DeepEqual(st.Cleared, want) {
 		t.Fatalf("cleared = %+v, want %+v", st.Cleared, want)
 	}
-	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared})
+	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
+	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead})
 	for _, line := range []string{
-		"Reviews of earlier heads cleared these findings. Do not raise one again unless this head changes that code:",
+		"Reviews of earlier heads cleared these findings. Raise one again only when a change since prev, in any file, affects it:",
 		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
 		"- `old.go:correctness` fixed: Old. Note: Earlier fix.\n",
 	} {
 		if !strings.Contains(text, line) {
 			t.Errorf("prompt lacks %q", line)
+		}
+	}
+
+	// Without an interdiff the service trusts, nothing shows they stay cleared.
+	for _, d := range []*github.CommitComparison{nil, {Status: "diverged"}, {Status: "ahead", Truncated: true}} {
+		text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: d})
+		if !strings.Contains(text, "cannot show that they stay cleared, so check each again") || strings.Contains(text, "Raise one again only") {
+			t.Errorf("interdiff %+v: prompt does not ask to recheck cleared findings", d)
 		}
 	}
 

@@ -417,9 +417,12 @@ func (s *Scope) changed(p string) bool {
 }
 
 // Lower returns r with each new high or medium finding lowered to a
-// deferred low one when neither its path nor its cause is a file changed
-// since the previous head. Critical findings, human-gate findings and the
-// previous round's IDs keep their severity. A nil Scope lowers nothing.
+// deferred low one when it names a file outside the files changed since the
+// previous head and no changed file as its cause. Critical findings,
+// human-gate findings, the previous round's IDs, findings with no path and
+// findings about the review itself (processRules) keep their severity: the
+// service lowers only what it can place on previously reviewed code. A nil
+// Scope lowers nothing.
 func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	if s == nil {
 		return r
@@ -433,12 +436,26 @@ func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	for i := range out.Findings {
 		f := &out.Findings[i]
 		if (f.Severity != SeverityHigh && f.Severity != SeverityMedium) || isGate(*f) || known[f.ID] ||
-			s.changed(f.Path) || s.changed(f.Cause) {
+			strings.TrimSpace(f.Path) == "" || isProcess(*f) || s.changed(f.Path) || s.changed(f.Cause) {
 			continue
 		}
 		f.Lowered, f.Severity, f.Defer = f.Severity, SeverityLow, true
 	}
 	return &out
+}
+
+// processRules name findings about the review itself, not about a place in
+// previously reviewed code: an unread or unverifiable change, injected
+// instructions, or a weakened gate. Lower never lowers them.
+var processRules = []string{"unreviewed", "unverified", "review-injection", "gate"}
+
+func isProcess(f Finding) bool {
+	for _, s := range ruleSegments(f.ID) {
+		if slices.Contains(processRules, ruleName(s)) {
+			return true
+		}
+	}
+	return false
 }
 
 func sortBlocked(bs []Blocked) {
