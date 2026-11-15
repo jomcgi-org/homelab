@@ -60,7 +60,10 @@ invalid inputs. It runs independently of the later web package:
 python3 -m pytest projects/factory-storyboard/schema_test.py
 ```
 
-The Bazel target is `//projects/factory-storyboard:schema_test`. Run `ci lint`,
+The Bazel targets are `//projects/factory-storyboard:schema_test` and
+`//projects/factory-storyboard:rehash_test`. The rehash regression tests also
+run with `node --test projects/factory-storyboard/fixtures/rehash.test.mjs`
+from the repository root. Run `ci lint`,
 `ci regen` and `ci ratchet` before pushing. BUILD generation and remote tests
 run in PR CI for factory source guests.
 
@@ -70,7 +73,11 @@ After editing fixture objects, run this from the package root:
 node fixtures/rehash.mjs
 ```
 
-It renames objects to match their bytes and updates the manifest paths.
+It reads all objects before changing files, rejects occupied or duplicate
+destinations, then creates the new objects and updates the manifest paths
+before removing the old files. A conflict found before writing leaves every
+file unchanged; resolve it before rerunning. New objects use exclusive creation
+so existing files cannot be overwritten.
 The repository formatter excludes immutable fixture objects to preserve
 their addresses.
 
