@@ -635,7 +635,10 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return err
 	}
 	if !gateOpen(&b.Review, b.BaseBranch, pr, d, checks, statuses) {
-		return e.idleRound(ctx, wi, pr, d)
+		if !settled(&b.Review, d.HeadSHA, checks, statuses) {
+			return nil // CI or review is still running on this head
+		}
+		return e.idleRound(ctx, wi, b, pr, d)
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
@@ -871,11 +874,12 @@ func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.Wor
 }
 
 // idleRound reports, once per round, a review round that closed with the PR
-// still at the head it was asked to change. The agent pushed nothing, so no
-// new check or review on that head can start another round: without this the
-// PR waits silently (HOME-15 and HOME-18 on 2026-11-14). A person's push or a
-// trusted reviewer's request for changes still starts the next round.
-func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, pr *store.PullRequest, d *github.PullRequestDetail) error {
+// still at the head it was asked to change, once every check on that head has
+// finished and the gate is still closed. The agent pushed nothing, and every
+// event on the head has acted, so nothing on that head starts another round:
+// without this the PR waits silently (HOME-15 and HOME-18 on 2026-11-14). A
+// new commit restarts CI and review. The comment posts at most once.
+func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
 	if wi.State != store.WorkReview {
 		return nil
 	}
@@ -883,11 +887,16 @@ func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, pr *store.Pu
 	if err != nil || last == nil || last.State != store.RunClosed || last.HeadSHA == "" || last.HeadSHA != d.HeadSHA {
 		return err
 	}
+	next := "no review rounds remain, so a person decides what follows."
+	if left := b.Review.MaxReviewRounds - wi.ReviewRounds; left > 0 {
+		next = fmt.Sprintf("if that head fails, round %d of %d starts.", wi.ReviewRounds+1, b.Review.MaxReviewRounds)
+	}
 	posted, err := e.st.EnqueueOnce(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/round-idle/%d", last.RunID), 0, "",
-		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-			"Review round %d for %s ended without a new commit: PR #%d (%s) is still at %s, so nothing on that head "+
-				"can start another round. It waits for a person to push a fix or request changes.",
-			wi.ReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA))})
+		commentPayload{IssueID: wi.IssueID, Once: true, Body: fmt.Sprintf(
+			"Review round %d of %d for %s ended without a new commit. PR #%d (%s) is still at %s, its checks have "+
+				"finished and it cannot merge, so the factory cannot continue on its own. It waits for a person: "+
+				"a new commit on %s restarts CI and review, and %s",
+			wi.ReviewRounds, b.Review.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.Branch, next)})
 	if err != nil || !posted {
 		return err
 	}
@@ -895,6 +904,44 @@ func (e *Engine) idleRound(ctx context.Context, wi *store.WorkItem, pr *store.Pu
 	e.log.WarnContext(ctx, "review round ended without a new commit", "work_item", wi.ID, "run", last.RunID,
 		"pr", pr.Number, "head", d.HeadSHA)
 	return nil
+}
+
+// settled reports that every required check and the reviewer check has a
+// finished result on head from its trusted source: a closed gate is then not
+// waiting on CI or a review that is still running or not yet posted.
+func settled(p *ReviewPolicy, head string, checks []github.CheckRun, statuses []github.Status) bool {
+	want := append([]Check(nil), p.RequiredChecks...)
+	if p.ReviewerCheck != nil {
+		want = append(want, *p.ReviewerCheck)
+	}
+	for _, c := range want {
+		if !finished(c, head, checks, statuses) {
+			return false
+		}
+	}
+	return true
+}
+
+func finished(c Check, head string, checks []github.CheckRun, statuses []github.Status) bool {
+	if c.AppID != 0 {
+		found := false
+		for _, r := range checks {
+			if r.Name != c.Name || r.AppID != c.AppID || r.HeadSHA != head {
+				continue
+			}
+			if r.Status != "completed" {
+				return false // a run or re-run is still going
+			}
+			found = true
+		}
+		return found
+	}
+	for _, s := range statuses { // newest first
+		if s.Context == c.Name && strings.EqualFold(s.Creator, c.StatusCreator) && s.SHA == head {
+			return s.State != "pending"
+		}
+	}
+	return false
 }
 
 func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {

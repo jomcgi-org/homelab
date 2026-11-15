@@ -525,9 +525,14 @@ failed round returns the work item to review.
 
 A round records the head it was asked to change. If it closes with the PR
 still at that head, the agent pushed nothing, and every event on that head
-has already acted, so no new round can start. The connector then says so on
-the issue once per round: the PR waits for a person to push a fix or
-request changes, either of which starts the next round within the bound.
+has already acted, so no new round can start. Once every required check and
+the reviewer check has finished on that head and the gate is still closed,
+the connector says so on the issue once per round. The PR waits for a
+person; a new commit restarts CI and review, and the comment says how many
+rounds remain. itsaplan comments carry no idempotency key, so this one is
+sent at most once: `outbox.send_started_at` is set before the send, a send
+whose outcome is unknown is abandoned rather than repeated, and only a
+connection that was never made is retried.
 `factory_connector_idle_review_rounds_total` counts these. Before this,
 HOME-15 and HOME-18 waited silently for eight hours after rounds whose
 agent could not read the CI failure.

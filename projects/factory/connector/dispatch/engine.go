@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -1201,6 +1202,20 @@ func (e *Engine) watchSession(ctx context.Context, r *store.Run, wi *store.WorkI
 type commentPayload struct {
 	IssueID int64  `json:"issueId"`
 	Body    string `json:"body"`
+	// Once posts the comment at most once: itsaplan comments have no
+	// idempotency key, so a send whose outcome is unknown is not repeated.
+	Once bool `json:"once,omitempty"`
+}
+
+// unsent reports an error that proves the request never reached itsaplan:
+// the connection was never made.
+func unsent(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	var dns *net.DNSError
+	return errors.As(err, &dns)
 }
 
 // progress follows a dispatched run's latest attempt: send or reconcile it,
@@ -1853,12 +1868,31 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		if err := e.guard(ctx); err != nil {
 			return err
 		}
+		if p.Once {
+			if it.SendStarted {
+				return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
+					"an earlier send's outcome is unknown; not resent, so the comment posts at most once")
+			}
+			if err := e.st.OutboxSendStarted(ctx, it.ID); err != nil {
+				return err
+			}
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+		}
 		err := e.its.Comment(ctx, p.IssueID, p.Body)
 		switch {
 		case err == nil:
 			return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 		case e.refused(ctx, it, err):
 			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+		case p.Once && unsent(err):
+			if cerr := e.st.OutboxSendCleared(ctx, it.ID); cerr != nil {
+				return cerr
+			}
+		case p.Once:
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
+				clip("send outcome unknown; not resent: "+err.Error(), maxErrorText))
 		}
 		return err
 	case store.OutboxResult:

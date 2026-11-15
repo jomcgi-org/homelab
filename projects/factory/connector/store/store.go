@@ -921,6 +921,8 @@ type OutboxItem struct {
 	AgentKey  string
 	Payload   json.RawMessage
 	Tries     int
+	// SendStarted is set once an at-most-once item's send began.
+	SendStarted bool
 }
 
 // Enqueue records a side effect; a duplicate dedupe key is ignored.
@@ -951,7 +953,8 @@ func (s *Store) EnqueueOnce(ctx context.Context, q Querier, kind, dedupe string,
 // failing item backs off, so it does not hold newer ones back.
 func (s *Store) PendingOutbox(ctx context.Context, now time.Time, limit int) ([]*OutboxItem, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, kind, dedupe_key, coalesce(run_id, 0), coalesce(agent_key, ''), payload, tries
+		SELECT id, kind, dedupe_key, coalesce(run_id, 0), coalesce(agent_key, ''), payload, tries,
+			send_started_at IS NOT NULL
 		FROM outbox WHERE delivered_at IS NULL AND abandoned_at IS NULL AND next_attempt_at <= $1
 		ORDER BY id LIMIT $2`, now, limit)
 	if err != nil {
@@ -961,7 +964,7 @@ func (s *Store) PendingOutbox(ctx context.Context, now time.Time, limit int) ([]
 	var out []*OutboxItem
 	for rows.Next() {
 		o := &OutboxItem{}
-		if err := rows.Scan(&o.ID, &o.Kind, &o.DedupeKey, &o.RunID, &o.AgentKey, &o.Payload, &o.Tries); err != nil {
+		if err := rows.Scan(&o.ID, &o.Kind, &o.DedupeKey, &o.RunID, &o.AgentKey, &o.Payload, &o.Tries, &o.SendStarted); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -972,6 +975,19 @@ func (s *Store) PendingOutbox(ctx context.Context, now time.Time, limit int) ([]
 // OutboxDelivered marks an item delivered.
 func (s *Store) OutboxDelivered(ctx context.Context, q Querier, id int64) error {
 	_, err := q.ExecContext(ctx, `UPDATE outbox SET delivered_at = now(), tries = tries + 1 WHERE id = $1`, id)
+	return err
+}
+
+// OutboxSendStarted records, before an at-most-once item is sent, that its
+// send began; OutboxSendCleared undoes it once the request provably never
+// left.
+func (s *Store) OutboxSendStarted(ctx context.Context, id int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET send_started_at = now() WHERE id = $1`, id)
+	return err
+}
+
+func (s *Store) OutboxSendCleared(ctx context.Context, id int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET send_started_at = NULL WHERE id = $1`, id)
 	return err
 }
 
