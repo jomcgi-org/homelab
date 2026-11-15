@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
@@ -333,15 +334,31 @@ func writeFileList(b *strings.Builder, files []github.PullRequestFile) {
 	}
 }
 
-// lineBreaks maps every character a reader may take as a line break to
-// "\n", so quote prefixes every line a reader sees.
-var lineBreaks = strings.NewReplacer(
-	"\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n",
-	"\u0085", "\n", "\u2028", "\n", "\u2029", "\n",
-)
+// breaksLine reports a character some reader takes as a line break: LF,
+// CR, VT, FF, the file, group and record separators (as Python's
+// splitlines does), NEL, and the Unicode line and paragraph separators.
+func breaksLine(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\x1c', '\x1d', '\x1e', '\u0085':
+		return true
+	}
+	return unicode.In(r, unicode.Zl, unicode.Zp)
+}
 
 // quote prefixes each line of s with "> ", so no line of it starts a line
-// of the prompt.
+// of the prompt. Every line break becomes "\n" first, and any other control
+// character but tab becomes U+FFFD, so no reader sees a line quote missed.
 func quote(s string) string {
-	return "> " + strings.ReplaceAll(lineBreaks.Replace(s), "\n", "\n> ")
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return r
+		case breaksLine(r):
+			return '\n'
+		case unicode.IsControl(r):
+			return '\uFFFD'
+		}
+		return r
+	}, strings.ReplaceAll(s, "\r\n", "\n"))
+	return "> " + strings.ReplaceAll(s, "\n", "\n> ")
 }
