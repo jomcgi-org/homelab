@@ -714,10 +714,13 @@ def test_coding_binding_gets_no_github_api_egress() -> None:
         ["agents.codex.egress={github-git,github-api}"],
         # github-api reuses github-git's Secret.
         ["agents.reviewer.egress={github-api}"],
+        # A coding binding on the reviewer agent would pair the API with the
+        # author App's contents:write token.
+        ["repositories[0].agent=reviewer"],
     ],
 )
 def test_github_api_egress_fails_closed(overrides) -> None:
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="github-api"):
         _render(overrides)
 
 

@@ -33,6 +33,9 @@ instead of silently rendering nothing.
 {{- if not $a }}
 {{- fail (printf "repositories %s: agent %q is not in agents" $r.name $r.agent) }}
 {{- end }}
+{{- if has "github-api" ($a.egress | default list) }}
+{{- fail (printf "repositories %s: coding bindings hold a write token; agent %q must not list github-api" $r.name $r.agent) }}
+{{- end }}
 {{- if and (eq ($r.toolchain | default "") "homelab") (not (has "github-git" $a.egress)) }}
 {{- fail (printf "repositories %s: homelab toolchain needs agents.%s.egress github-git for release downloads" $r.name $r.agent) }}
 {{- end }}

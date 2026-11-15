@@ -8,6 +8,8 @@
 {{- $agent := include "factory.bindingAgentName" $r }}
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
+{{- /* Only review bindings get API egress: coding bindings hold a write token. */}}
+{{- $api := and (.review | default false) (has "github-api" ($a.egress | default list)) }}
 ---
 # Kept: deleting it would take the Agent's WorkerPool and the git token with
 # it; removing a binding is a deliberate cleanup.
@@ -163,11 +165,13 @@ spec:
           name: github-git
           key: basic
 {{- end }}
-{{- if has "github-api" $a.egress }}
+{{- if $api }}
 ---
-# GitHub's REST API with the same broker-minted token. Only the reviewer may
-# list this (validate.yaml): its token is contents:read, so the API serves it
-# reads of PR, check-run and merge-queue evidence and refuses every write.
+# GitHub's REST API with the same broker-minted token, for review bindings
+# only (reviewer-repositories.yaml; validate.yaml refuses it elsewhere). The
+# review token is contents:read, so the API serves reads of PR, check-run and
+# merge-queue evidence and refuses every write. Like git, the client sends a
+# placeholder Authorization that the gateway replaces; it never adds one.
 apiVersion: api.kagent.dev/v1alpha3
 kind: EgressPolicy
 metadata:
@@ -236,7 +240,9 @@ spec:
   {{- if or $a.egress $toolchain }}
   egressPolicyRefs:
     {{- range $a.egress }}
+    {{- if or (ne . "github-api") $api }}
     - name: {{ . }}
+    {{- end }}
     {{- end }}
     {{- if $toolchain }}
     - name: homelab-tools
