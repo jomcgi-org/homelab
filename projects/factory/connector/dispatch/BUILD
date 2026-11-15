@@ -29,6 +29,7 @@ go_test(
         "delivery_test.go",
         "engine_test.go",
         "fakes_test.go",
+        "human_gate_commit_test.go",
         "human_gate_test.go",
         "reconciliation_test.go",
         "reconciliation_wire_test.go",
