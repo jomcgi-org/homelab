@@ -232,7 +232,9 @@ def test_hub_has_no_token_broker_or_embervm_after_its_removal() -> None:
         assert not any(name.startswith("EMBER_TOKENBROKER_") for name in names)
         assert not any(name.startswith("EMBER_DEV_TOKENBROKER_") for name in names)
         assert "EMBERVM_URL" not in names
-    assert not [c for c in pod["containers"] if c["name"] == "tokenbroker-spiffe-helper"]
+    assert not [
+        c for c in pod["containers"] if c["name"] == "tokenbroker-spiffe-helper"
+    ]
 
 
 def test_dev_login_render_requires_existing_spiffe_helper_and_fixed_target() -> None:
