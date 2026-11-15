@@ -61,7 +61,7 @@ def test_application_keeps_git_values_until_a_compatible_release_exists() -> Non
 def _render(chart: Path, values: Path, *overrides: str) -> str:
     app = yaml.safe_load(_APPLICATION.read_text())
     helm = app["spec"]["sources"][0]["helm"]
-    return subprocess.run(
+    result = subprocess.run(
         [
             os.environ.get("HELM_BIN", "helm"),
             "template",
@@ -75,8 +75,11 @@ def _render(chart: Path, values: Path, *overrides: str) -> str:
         ],
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr)
+    return result.stdout
 
 
 def test_homelab_values_are_packaged_without_becoming_defaults(
@@ -109,14 +112,19 @@ def test_packaged_render_matches_the_lock_with_published_images(
 
     published = yaml.safe_load((values / "values.yaml").read_text())
     overrides = []
+    pinned = []
     for service in _IMAGES:
-        overrides += [
-            "--set-json",
-            f"{service}.image={json.dumps(published[service]['image'])}",
-        ]
+        image = dict(published[service]["image"])
+        # An unstamped PR build leaves the tag as the "{STABLE_IMAGE_TAG}"
+        # placeholder, which YAML reads as a mapping and the schema rejects.
+        # Stamped release builds have a string tag, so they need no pin.
+        if not isinstance(image["tag"], str):
+            image["tag"] = "unstamped"
+            pinned += ["--set-json", f"{service}.image={json.dumps(image)}"]
+        overrides += ["--set-json", f"{service}.image={json.dumps(image)}"]
     # Compare all rendered bytes, including ConfigMaps and hooks. Only CI's
     # generated image values may differ from the source render under the lock.
-    rendered = _render(archive, values / "values-homelab.yaml")
+    rendered = _render(archive, values / "values-homelab.yaml", *pinned)
     assert rendered == _render(_CHART, _DEPLOY, *overrides)
     docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
     for service in _IMAGES:
