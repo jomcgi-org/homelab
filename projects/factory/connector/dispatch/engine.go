@@ -1039,7 +1039,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err
 	}
-	if issued, err := e.st.MarkIssued(ctx, e.w, a, now); err != nil || !issued {
+	if issued, err := e.st.MarkIssued(ctx, e.w, a, r.Attempt, now); err != nil || !issued {
 		return err
 	}
 	task, err := e.tasks.Send(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, kagent.Message{
@@ -1762,8 +1762,9 @@ func (e *Engine) countRefusal(role, kind string, err error) bool {
 // authRefusalLimit bounds how long a coordinator lookup that holds a run's
 // slot retries an itsaplan 401 or 403. Like outboxAuthMaxTries, it outlasts
 // a key rotation and the kubelet's refresh of the projected file. Past it
-// the lookup gives up: a new or replacement session starts without the issue, and
+// the lookup gives up: the initial-session path proceeds without issue text, and
 // a dispatched run whose attempt itsaplan stopped accepting is closed.
+// Fenced recovery requires its issue text regardless of this bound.
 // Lookups that hold no slot (the issue check, a stale run) retry without a
 // bound. The clock lives in memory, as the session check's does; a restart
 // starts it again.
@@ -1771,7 +1772,7 @@ const authRefusalLimit = 30 * time.Minute
 
 // Coordinator lookups, each a metric kind.
 const (
-	lookupReplacement = "replacement" // a replacement session's issue, bounded per replaced attempt
+	lookupReplacement = "replacement" // recovery input is required; retry until available
 	lookupBrief       = "brief"       // a new session's issue, bounded per run attempt
 	lookupIssue       = "issue_check" // whether the issue still wants delivery; unbounded
 	lookupRun         = "run_check"   // a run's state; bounded per run attempt in runGone

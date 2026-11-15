@@ -1403,7 +1403,7 @@ func (e *Engine) doneRefused(ctx context.Context, p issueDonePayload, column, wh
 
 // replacementContext is what a replacement session starts from: the issue,
 // the PR, the branch head and the open review threads.
-func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, old, why string) (string, error) {
+func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *Binding, old, why string) (string, error) {
 	var s strings.Builder
 	fmt.Fprintf(&s, "## Replacement session\nThe factory replaced kagent session %s (%s). Nothing from it carries over: "+
 		"continue the work from this context and the repository.\n", old, why)
@@ -1411,19 +1411,16 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 		return "", err
 	}
 	issue, err := e.its.GetIssue(ctx, wi.IssueID)
-	gaveUp := e.lookupRefused(ctx, refusalKey{lookupReplacement, a.ID, 0}, err)
-	switch {
-	case err == nil:
-		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
-	case terminalHTTP(err):
-		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %v)\n", wi.IssueKey, err)
-	case gaveUp != "":
-		// Past the bound the session starts without the issue rather than
-		// hold the run's slot until the key works.
-		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %s)\n", wi.IssueKey, gaveUp)
-	default:
+	e.countRefusal(roleCoordinator, lookupReplacement, err)
+	if err != nil {
 		return "", err
 	}
+	// A fresh session has no itsaplan tools. Fencing permits a replacement,
+	// but cannot substitute for authoritative input, even after auth backoff.
+	if issue == nil || issue.ID != wi.IssueID || strings.TrimSpace(issue.Title+issue.Description) == "" {
+		return "", errors.New("recovery requires authoritative issue text")
+	}
+	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
 	if e.gh == nil {
 		return s.String(), nil
 	}
@@ -1454,8 +1451,8 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&s, "\n### Pull request\n\n#%d %s (%s, %s). Branch %s is at %s.\n",
-		d.Number, d.URL, d.Title, d.State, wi.Branch, d.HeadSHA)
+	fmt.Fprintf(&s, "\n### Pull request\n\n#%d %s (%s). Branch %s is at %s.\n",
+		d.Number, d.URL, d.State, wi.Branch, d.HeadSHA)
 	writeThreads(&s, d.Threads, &b.Review)
 	return s.String(), nil
 }

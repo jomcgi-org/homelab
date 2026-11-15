@@ -554,7 +554,10 @@ obsolete approval. Historical attempts are evidence only, never restarted.
 A bound caller cannot be changed by confirmation. Legacy unbound work can
 adopt the current caller only after attestation covers every possible prior
 copy. Retry spends the existing bounded engineering budget and records one
-fresh-session attempt with issue, PR, branch and trusted-thread context.
+fresh-session attempt with issue, structural PR and branch data, and trusted
+thread context; an untrusted PR title is omitted. Fresh authoritative issue text is
+required before consuming retry attestation, even after a terminal lookup error
+or prolonged 401/403. Failed reads retain the attempt, slot and attestation.
 Pending cancellation or a stopped work item takes precedence over retry,
 without requiring replacement-context reads. Send admission separately checks
 current stop, cancellation, run attempt and work epoch under the writer fence.
@@ -650,10 +653,12 @@ The chart passes this same authority to the connector in
   connector abandons the item as it would a refused one and logs that
   itsaplan keeps refusing its key. The Done move reads the issue first and
   waits while it cannot. Coordinator lookups that hold a run's slot have a
-  30-minute bound, kept in memory per attempt: a new or replacement session
-  then starts without its issue, and a dispatched run whose attempt itsaplan
-  no longer accepts closes. Lookups that hold no slot, the issue check before
-  PR updates, rounds and the merge queue and a stale run's lookup, retry
+  30-minute bound, kept in memory per attempt: the initial-session path then
+  proceeds without issue text, and a dispatched run whose attempt itsaplan
+  no longer accepts closes. Fenced recovery requires authoritative issue text
+  before creating a replacement and waits beyond this bound. Lookups that hold
+  no slot, the issue check before PR updates, rounds and the merge queue and
+  a stale run's lookup, retry
   until the key works. `factory_connector_credential_refusals_total` counts
   itsaplan 401 and 403 answers by key role and kind. A startup probe allows
   five minutes before liveness counts. The database URL

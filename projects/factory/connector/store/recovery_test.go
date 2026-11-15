@@ -334,6 +334,81 @@ func TestWriterTransactionCannotCommitAfterConnectionTakeover(t *testing.T) {
 	}
 }
 
+func TestSendAdmissionAfterTransportRedelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name, gate string
+		admit      bool
+	}{
+		{name: "unsent", admit: true},
+		{name: "definitively refused", admit: true},
+		{name: "ambiguous"},
+		{name: "stale executing run"},
+		{name: "stopped", gate: `UPDATE work_item SET state='stopped'`},
+		{name: "blocked", gate: `UPDATE work_item SET state='blocked'`},
+		{name: "canceling", gate: `UPDATE run SET state='canceling'`},
+		{name: "work epoch changed", gate: `UPDATE work_item SET epoch=epoch+1`},
+		{name: "cancellation"},
+		{name: "superseded"},
+		{name: "writer lost"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRecoveryFixture(t)
+			f.must(f.st.SetRunState(f.ctx, f.st.DB, 1, store.RunDispatched, ""))
+			if tc.name == "definitively refused" {
+				f.must(f.st.MarkNotAccepted(f.ctx, f.target))
+			} else if tc.name != "ambiguous" {
+				_, err := f.st.DB.Exec(`UPDATE delivery_attempt SET state='sending', issues=0, first_sent_at=NULL, sent_at=NULL`)
+				f.must(err)
+			}
+			a, err := f.st.GetAttempt(f.ctx, f.target.ID)
+			f.must(err)
+			_, outcome, err := f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: 1, AgentKey: "coder", Attempt: 2})
+			f.must(err)
+			if outcome != store.ClaimRedelivery {
+				t.Fatal("fixture did not redeliver the run")
+			}
+			if tc.gate != "" {
+				_, err := f.st.DB.Exec(tc.gate)
+				f.must(err)
+			}
+			switch tc.name {
+			case "cancellation":
+				f.must(f.st.RequestCancellation(f.ctx, f.st.DB, a.ID, a.RunID, store.CancelReassignment))
+			case "superseded":
+				f.add(store.AttemptSending, "", false)
+			case "writer lost":
+				f.w.Release()
+			}
+			expectedRunAttempt := 2
+			if tc.name == "stale executing run" {
+				expectedRunAttempt = 1
+			}
+			issued, err := f.st.MarkIssued(f.ctx, f.w, a, expectedRunAttempt, f.now)
+			if tc.name == "writer lost" {
+				if !errors.Is(err, store.ErrNotWriter) {
+					t.Fatalf("lost writer admitted work: %t %v", issued, err)
+				}
+				err = nil
+			}
+			if err != nil || issued != tc.admit {
+				t.Fatalf("redelivery admission=%t, err=%v; want %t", issued, err, tc.admit)
+			}
+			stored, err := f.st.GetAttempt(f.ctx, a.ID)
+			f.must(err)
+			if tc.admit {
+				if a.RunAttempt != 1 || stored.RunAttempt != 1 || stored.State != store.AttemptAmbiguous || stored.MessageID != f.target.MessageID {
+					t.Fatalf("redelivery lost original message or authority: %+v", stored)
+				}
+				if issued, err := f.st.MarkIssued(f.ctx, f.w, a, expectedRunAttempt, f.now); err != nil || issued {
+					t.Fatalf("ambiguous send admitted twice: %t %v", issued, err)
+				}
+			} else if stored.RunAttempt != 1 || stored.Issues != a.Issues {
+				t.Fatal("ineligible attempt's authority changed")
+			}
+		})
+	}
+}
+
 func TestWriterSerializesTransactionsChecksAndRelease(t *testing.T) {
 	for _, operation := range []string{"commit", "check", "release"} {
 		t.Run(operation, func(t *testing.T) {

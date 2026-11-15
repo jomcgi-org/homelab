@@ -738,7 +738,9 @@ func (s *Store) RecordAttempt(ctx context.Context, q Querier, a Attempt) (*Attem
 // MarkIssued linearizes send admission with stop/cancel and writer takeover.
 // A stop committed before admission suppresses the call; a later stop cancels
 // this now-ambiguous send. An unknown outcome never becomes sendable again.
-func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, at time.Time) (bool, error) {
+// expectedRunAttempt fences a stale dispatcher after transport redelivery;
+// a.RunAttempt retains the original delivery's authority for recovery evidence.
+func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, expectedRunAttempt int, at time.Time) (bool, error) {
 	issued := false
 	err := w.Tx(ctx, func(tx *sql.Tx) error {
 		var workID int64
@@ -760,11 +762,11 @@ func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, at time.T
 				first_sent_at = coalesce(first_sent_at, $2), issues = issues + 1
 			FROM run r JOIN work_item w ON w.id = r.work_item_id
 			WHERE a.id = $1 AND a.state = 'sending' AND r.id = a.run_id
-				AND r.state = 'dispatched' AND a.work_item_epoch = w.epoch AND a.run_attempt = r.attempt
+				AND r.state = 'dispatched' AND a.work_item_epoch = w.epoch AND r.attempt = $3
 				AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = r.id)
 				AND w.state NOT IN ('stopped', 'blocked')
 				AND NOT EXISTS (SELECT 1 FROM cancellation c JOIN run cr ON cr.id = c.run_id
-					WHERE cr.work_item_id = w.id AND c.state = 'pending')`, a.ID, at)
+					WHERE cr.work_item_id = w.id AND c.state = 'pending')`, a.ID, at, expectedRunAttempt)
 		if err != nil {
 			return err
 		}
