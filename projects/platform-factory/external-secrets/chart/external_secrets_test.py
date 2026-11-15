@@ -79,33 +79,41 @@ def test_admission_policies_fail_closed_and_are_kept(docs):
         } == resources
         for rule in rules:
             assert set(rule["operations"]) == {"CREATE", "UPDATE"}
-            versions = (
-                ["v1"] if name.endswith(("no-pods", "secret-readers")) else ["*"]
-            )
+            versions = ["v1"] if name.endswith(("no-pods", "secret-readers")) else ["*"]
             assert rule["apiVersions"] == versions
         assert binding["spec"] == {"policyName": name, "validationActions": ["Deny"]}
 
 
 def test_namespace_has_no_workloads_or_minting(docs):
     namespace = docs["Namespace", "factory-credentials"]
-    assert "Prune=false" in namespace["metadata"]["annotations"][
-        "argocd.argoproj.io/sync-options"
-    ]
+    assert (
+        "Prune=false"
+        in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+    )
     assert {kind for kind, _ in docs} == {
         "Namespace",
         "CiliumNetworkPolicy",
         "ValidatingAdmissionPolicy",
         "ValidatingAdmissionPolicyBinding",
     }
-    assert docs["ValidatingAdmissionPolicy", "factory-credentials-no-pods"]["spec"][
-        "validations"
-    ][0]["expression"] == "request.namespace != 'factory-credentials'"
-    assert docs["ValidatingAdmissionPolicy", "factory-credentials-generators"]["spec"][
-        "validations"
-    ][0]["expression"] == "request.namespace == 'factory-credentials'"
-    assert docs["ValidatingAdmissionPolicy", "factory-credentials-no-cluster-or-push"][
-        "spec"
-    ]["validations"][0]["expression"] == "false"
+    assert (
+        docs["ValidatingAdmissionPolicy", "factory-credentials-no-pods"]["spec"][
+            "validations"
+        ][0]["expression"]
+        == "request.namespace != 'factory-credentials'"
+    )
+    assert (
+        docs["ValidatingAdmissionPolicy", "factory-credentials-generators"]["spec"][
+            "validations"
+        ][0]["expression"]
+        == "request.namespace == 'factory-credentials'"
+    )
+    assert (
+        docs["ValidatingAdmissionPolicy", "factory-credentials-no-cluster-or-push"][
+            "spec"
+        ]["validations"][0]["expression"]
+        == "false"
+    )
 
 
 def test_tokens_require_explicit_scope_and_roles_only_named_get(docs):
