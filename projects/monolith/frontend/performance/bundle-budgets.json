@@ -46,7 +46,7 @@
       "workerGzip": 170000
     },
     "/public/app/notes": {
-      "initialGzip": 105000,
+      "initialGzip": 75000,
       "deferredGzip": 50000,
       "workerGzip": 0
     },
