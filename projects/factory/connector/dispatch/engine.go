@@ -531,10 +531,10 @@ func (e *Engine) stepLocked(ctx context.Context, id int64) error {
 
 // step advances one open run. The caller holds the run's lock.
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
-	// A claimed itsaplan run is new work on the issue: dispatch resumes a
-	// stopped work item for it. Every other open run of a stopped work item
-	// is stopped.
-	live := r.State == store.RunWaiting || r.State == store.RunDispatched || (r.Connector() && r.State == store.RunClaimed)
+	// Only an unlinked itsaplan run is new work that may resume delivery.
+	// A claimed run waiting for its brief has already been admitted and must
+	// honor any later stop, just like a waiting or dispatched run.
+	live := r.State == store.RunWaiting || r.State == store.RunDispatched || r.State == store.RunClaimed
 	if live && r.WorkItemID != 0 {
 		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 		if err != nil {
@@ -685,9 +685,9 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	}
 	var wi *store.WorkItem
 	var reassigned bool
-	if r.Connector() {
-		// A round never resumes a stopped work item: only a new itsaplan
-		// run, a person's decision, does.
+	if r.Connector() || r.WorkItemID != 0 {
+		// Resolve only during first admission. Repeating it for a linked run
+		// could reactivate a work item stopped while its brief was unavailable.
 		wi, err = e.st.GetWorkItem(ctx, r.WorkItemID)
 	} else {
 		wi, reassigned, err = e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
@@ -698,6 +698,9 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	r.WorkItemID = wi.ID
+	if wi.State == store.WorkStopped {
+		return e.stopRun(ctx, r, wi)
+	}
 	if a, err := e.st.LatestAttempt(ctx, r.ID); err != nil {
 		return err
 	} else if a != nil && a.Open() {

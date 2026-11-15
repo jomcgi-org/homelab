@@ -1953,6 +1953,53 @@ func TestInitialSessionCanBeCanceledWhileBriefUnavailable(t *testing.T) {
 	}
 }
 
+func TestInitialBriefHoldHonorsWorkItemStop(t *testing.T) {
+	for _, mode := range []string{"next tick", "restart", "redelivery"} {
+		t.Run(mode, func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.setIssueErr(itsaplan.ErrNotFound)
+			v.tick(v.e)
+			if r := v.run(1); r.State != store.RunClaimed || r.WorkItemID == 0 {
+				t.Fatalf("run = %+v, want an admitted run waiting for its brief", r)
+			}
+			stopped, err := v.st.StopIssue(v.ctx, "HL-1", "operator stopped the held run", "operator:test")
+			v.requireReconciliationSetup(err)
+			if !stopped {
+				t.Fatal("held work item was not stopped")
+			}
+			reads := v.its.issueCalls
+			switch mode {
+			case "restart":
+				v.e.Release()
+				v.e = v.engine("connector-restarted")
+			case "redelivery":
+				v.its.reclaimElsewhere(1)
+				fr := v.its.Run(1)
+				claim := fr.run
+				claim.Attempts = fr.attempts
+				v.requireReconciliationSetup(v.e.HandleClaim(v.ctx, "coder", &claim))
+			}
+			v.tick(v.e)
+			v.setIssueErr(nil)
+			v.tick(v.e)
+			if v.run(1).State != store.RunClosed || v.work(101).State != store.WorkStopped || len(v.kg.Sends()) != 0 || v.its.issueCalls != reads {
+				t.Fatal("held run reopened a stopped work item or waited for another issue lookup")
+			}
+			results := v.its.Run(1).results
+			if len(results) != 1 || results[0].Status != "failed" || !strings.Contains(results[0].Error, "operator stopped the held run") {
+				t.Fatalf("results = %+v, want the operator's stop reported", results)
+			}
+			// A new itsaplan run still represents a new admission decision.
+			v.its.add(2, "coder", 101, "HL-1", "Resume the work.")
+			v.tick(v.e)
+			if len(v.kg.Sends()) != 1 || v.work(101).State != store.WorkActive || v.run(1).State != store.RunClosed {
+				t.Fatal("new admission failed to resume the work independently of the stopped run")
+			}
+		})
+	}
+}
+
 func TestInitialIssueDescriptionClipping(t *testing.T) {
 	for _, tc := range []struct {
 		name, description, quoted string
