@@ -4,8 +4,10 @@
 and historical layers have separate same-origin endpoints.
 
 The landed [server-rendered snapshot change](https://github.com/jomcgi-org/homelab/pull/7972)
-shows real data rows while the interactive map loads. Its rollout and mobile
-first-view results must be checked separately from the cache and bundle limits.
+shows real data rows while the interactive map loads. Production observations
+and served-generation limits are recorded in the
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md).
+Cache and bundle limits alone do not establish mobile performance.
 
 ## Forecast payload
 
@@ -61,8 +63,13 @@ the difference after forced garbage collection before and after evaluation.
 Peak RSS includes the entire benchmark, both serializers, equality checks,
 compression and evaluation; it is not a production pod memory measurement.
 
-The backend read and initial JSON parse remain unchanged. A verified rollout
-and fresh mobile measurements are required to establish a page speedup.
+The backend read and initial JSON parse remain unchanged. Release `0.792.43`
+was verified healthy, and fresh production HTML retained all 103,525 captured
+hour slots while reducing decoded HTML from 9,894,254 to 3,126,694 bytes with
+identical normalized snapshot values. This separate capture has a different
+forecast corpus from the local benchmark above. The
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md)
+separates that deployed payload check from browser timings and stale edge copies.
 
 ### Regression coverage
 
@@ -105,11 +112,22 @@ conditional requests in each process returned empty 304 responses with the
 same ETag and cache headers.
 
 The fixture reconstructs 14,234 sites and all 170,808 monthly rows from the
-captured public history response, including zero months. Actual PostgreSQL
-occupancy, query plans, the SvelteKit proxy and production network are not
-measured. The change requires a verified rollout and production remeasurement
-before any live speedup claim. These HTTP timings do not measure the Historical
-button interaction.
+captured public history response, including zero months. Subsequent local
+PostgreSQL 16.14 plans used the migrated schema and reconstructed fixture:
+three read-only runs gave median sequential-scan execution of 1.596 ms for
+14,234 site metadata rows and 19.699 ms for 170,808 monthly rows. Zero-month
+rows are synthetic. These [saved plans](../../../../../docs/public-app-performance-2026-11-15.md#evidence-archive)
+do not measure production statistics, concurrency, Python assembly or transport,
+and do not justify an index.
+
+After release `0.792.55` was verified healthy, 20 public MISS requests measured
+p50/p95 of 1,327.0/1,633.8 ms, compared with 2,077.1/4,231.8 ms in the preceding
+hosted series. Both returned 2,513,273 decoded bytes. The runner and network
+differed; the lower observed times do not isolate the code change and remain
+above the 300 ms target. All 20 normal-key requests were HITs, with p95 42.0 ms.
+The [measurement report](../../../../../docs/public-app-performance-2026-11-15.md)
+retains the deployment and measurement context. These HTTP timings do not
+measure the Historical button interaction.
 
 The registered `//projects/monolith:stars_router_test` covers UTF-8 and escaped
 HTTP bytes, content length, cache and ETag headers, empty 304 responses,

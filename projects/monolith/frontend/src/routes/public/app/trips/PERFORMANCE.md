@@ -5,10 +5,18 @@ metadata and its full ordered point list for summary, timeline and day pages.
 Optional photo warming in the day viewer waits for the visible photo and
 map readiness; see
 [the landed photo work](../../../../../PHOTO-PERFORMANCE.md).
-The pending [worker fix](https://github.com/jomcgi-org/homelab/pull/7987)
+The merged [worker fix](https://github.com/jomcgi-org/homelab/pull/7987)
 uses the emitted MapLibre worker instead of a missing relative module URL.
-The pending [route-preview change](https://github.com/jomcgi-org/homelab/pull/7989)
+The merged [route-preview change](https://github.com/jomcgi-org/homelab/pull/7989)
 renders a bounded SVG route before the interactive map is ready.
+
+Production checks after healthy release `0.792.47` verified the summary's
+nine daily route lines and the day page's route in initial HTML, each sampled
+to at most 128 points. A desktop browser without WebGL retained those previews,
+the displayed day photo and working photo/day navigation. This verifies the
+fallback, not interactive map paint or mobile performance. The
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md)
+records the later browser samples and remaining LCP gaps.
 
 ## Cache windows
 
@@ -35,14 +43,14 @@ Gzip bytes, summed per emitted JavaScript file:
 | Route | Initial | Deferred | External worker |
 | --- | ---: | ---: | ---: |
 | `/app/trips` | 75,000 | 0 | 0 |
-| `/app/trips/[slug]` | 85,000 | 330,000 | 0 |
-| `/app/trips/[slug]/timeline` | 85,000 | 330,000 | 0 |
-| `/app/trips/[slug]/day/[day]` | 85,000 | 330,000 | 0 |
+| `/app/trips/[slug]` | 85,000 | 330,000 | 170,000 |
+| `/app/trips/[slug]/timeline` | 85,000 | 330,000 | 170,000 |
+| `/app/trips/[slug]/day/[day]` | 85,000 | 330,000 | 170,000 |
 
 The worker fix in [#7987](https://github.com/jomcgi-org/homelab/pull/7987)
 sets the external-worker limit to **170,000 gzip bytes** for the summary,
-timeline and day routes. The current table above records the pre-fix limits;
-initial and deferred budgets stay unchanged. The trip index remains at zero.
+timeline and day routes, as recorded above. Initial and deferred budgets stay
+unchanged. The trip index remains at zero.
 A zero pre-fix limit did not validate the missing worker URL.
 
 Budget categories and measurement targets are in [the shared contract](../../../../../docs/public-app-cache-windows.md).

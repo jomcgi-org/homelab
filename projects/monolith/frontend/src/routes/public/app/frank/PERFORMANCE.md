@@ -3,6 +3,12 @@
 `/app/frank` serves the committed `frank.html` document verbatim, including
 its inline CSS and JavaScript. It has no Svelte page bundle or data endpoint.
 
+Hosted browser samples still report DNS failures for all four original images
+at `cdn.jomcgi.dev`. The text LCP does not establish a complete first view.
+Restoring the intended host or approved original assets remains in
+[#7988](https://github.com/jomcgi-org/homelab/issues/7988); no replacement images
+or guessed hostname have been introduced.
+
 ## Cache windows
 
 The [endpoint](+server.js) sends

@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "status": "final",
+  "archiveFilename": "public-app-performance-evidence.zip",
+  "archiveDelivery": "The complete archive and its SHA-256 accompany delivery. No private account URL is embedded in this public repository.",
+  "archiveIndex": "index.json contains the complete member list, source sizes and SHA-256 hashes.",
+  "hashScope": "Hashes below identify source member bytes only. No archive or human-report hash is embedded here, avoiding circular archive/report references.",
+  "measurementScope": "17 anonymous browser journeys; 13 normal-key and 13 unique-query endpoint series; separate CPU diagnostics. Field INP and incomplete worker measurements remain unavailable.",
+  "members": [
+    {
+      "path": "report/public-app-performance-2026-11-15.json",
+      "description": "Full structured report with explicit nulls, all stages, exact PR heads and asset cohorts.",
+      "bytes": 1664677,
+      "sha256": "387ba5a3600d3886a3d0e2d6d325b53db950804540b9d3f6a3d00152b490ea04"
+    },
+    {
+      "path": "evidence/public-app-postgres-explain.json",
+      "description": "PostgreSQL 16.14 fixture SQL, plans, buffers and all 33 read-only samples; no corpus rows.",
+      "bytes": 80530,
+      "sha256": "7f23210b44de58393c635147e6c8261bcbd85ddd4c879ff855a7b59b885e8854"
+    },
+    {
+      "path": "evidence/rollout-0.792.59.json",
+      "description": "Read-only stage 1 rollout verification, exact frontend/backend images and promotion time.",
+      "bytes": 1878,
+      "sha256": "875918d45b726ba2adb4e646d58f3918681250131bcab2703be8b076e8bd87bf"
+    },
+    {
+      "path": "evidence/rollout-0.792.62.json",
+      "description": "Read-only fallback and Stars transport rollout verification; final speed measurements remain separate.",
+      "bytes": 2760,
+      "sha256": "fcc72c12bbf62b87005d62c1308d0ee6082f844a948fcfd9f1df7d40696336ae"
+    },
+    {
+      "path": "evidence/rollout-0.792.63.json",
+      "description": "Read-only final runtime release verification before final benchmark.",
+      "bytes": 2141,
+      "sha256": "3aa2380751aa204f61408f051d7f43d0437d5b971b8a0603b6f958c8bdec4701"
+    },
+    {
+      "path": "evidence/retention-stage1-argo-hook.json",
+      "description": "PreSync Job Succeeded evidence; exact completion log not captured.",
+      "bytes": 862,
+      "sha256": "99a0ee2a1a77b0639feb4bc3a3ca5692e6ca821f314077cb7eaea1d5aa1b78f9"
+    },
+    {
+      "path": "evidence/assets-A-stage1-retry1/capture.json",
+      "description": "Complete release-A asset representation capture; all HIT, not fallback proof.",
+      "bytes": 1120098,
+      "sha256": "7b5146993e900eb66c5d742099d235df18b19ebdee3938cb4ab12f5fd3681640"
+    },
+    {
+      "path": "evidence/assets-A-stage1/capture.json",
+      "description": "Preserved incomplete first capture with Hikes proxy tunnel timeout.",
+      "bytes": 1119587,
+      "sha256": "940cd9ad133c4bcf279a4af3c7bc15dc59bbcfe9d1e4011a5fe43e2509c2a7ab"
+    },
+    {
+      "path": "evidence/asset-retention-final-summary.json",
+      "description": "Composite retention evidence preserving original503 and separate later confirmation; not one clean pass.",
+      "bytes": 5809,
+      "sha256": "53926db197a4a08260bcb4ea9ad4d42c1e2ff54f8565660ea0ced68284bf8f7b"
+    },
+    {
+      "path": "evidence/asset-retention-final-union-initial.json",
+      "description": "Original strict union,252/253paths complete; original failed response retained.",
+      "bytes": 117433,
+      "sha256": "7d667e53302aea2bf568bb2afdea1bc27654bf76b9c59dd50d9f1ace9741c557"
+    },
+    {
+      "path": "evidence/asset-retention-final-later-availability.json",
+      "description": "Later composite availability,253/253paths across observations.",
+      "bytes": 3309,
+      "sha256": "01e76f072ab7732dade975d2eac7d6d14e78e0e7621bfa29397afe9b5ec48f38"
+    },
+    {
+      "path": "evidence/asset-retention-final-confirmation.json",
+      "description": "Separate exact200/MISSidentity confirmation; bounded pre-response proxy retry preserved separately.",
+      "bytes": 3433,
+      "sha256": "8fab585ab9c31aa2ea5c81ca9cd5d67cd1353e4a85a8c199856177e3b8e9fb0c"
+    }
+  ],
+  "publicWorkflowArtifacts": [
+    {
+      "stage": "hostedBaseline",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43652846917",
+      "attempt": "1",
+      "artifactUrl": null,
+      "harnessSha": "a2242f86147d3d22cf691a5136ce297bc3048967"
+    },
+    {
+      "stage": "intermediate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43656057036",
+      "attempt": "1",
+      "artifactUrl": null,
+      "harnessSha": "a243047f4b1e070a9d5e796309b1b38f34773691"
+    },
+    {
+      "stage": "calibratedCandidate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43657734828",
+      "attempt": "1",
+      "artifactUrl": null,
+      "harnessSha": "13413879ca3b51bf11b72234513d71ddee0462e3"
+    },
+    {
+      "stage": "sizedCandidate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43657997410",
+      "attempt": "1",
+      "artifactUrl": null,
+      "harnessSha": "7cfbb0dc7ddb42ad88d17f9a22780a10c19d799c"
+    },
+    {
+      "stage": "probeCandidate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43661689657",
+      "attempt": "1",
+      "artifactUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43661689657/artifacts/14140888653",
+      "harnessSha": "d4365356d45e9ed8a87dfb9f012825b556796137"
+    },
+    {
+      "stage": "midCandidate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43662807790",
+      "attempt": "1",
+      "artifactUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43662807790/artifacts/14141372281",
+      "harnessSha": "cc871b91d4d9a2a046ba861337b37a671e303c21"
+    },
+    {
+      "stage": "diagnosticCandidate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43665083851",
+      "attempt": "1",
+      "artifactUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43665083851/artifacts/14142555995",
+      "harnessSha": "9c5b8475e2cb75b9482656bc85c9e9f9f0400098"
+    },
+    {
+      "stage": "backendCandidate",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43665083851/attempts/2",
+      "attempt": "2",
+      "artifactUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43665083851/artifacts/14143920199",
+      "harnessSha": "9c5b8475e2cb75b9482656bc85c9e9f9f0400098"
+    },
+    {
+      "stage": "keyedBefore",
+      "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43671642559",
+      "attempt": "1",
+      "artifactUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43671642559/artifacts/14145167706",
+      "harnessSha": "6bd5b82c79761e829a0b599c11d68324a800028b"
+    }
+  ],
+  "workflowRetentionDays": 90,
+  "finalRun": {
+    "run": "43671642559",
+    "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43671642559",
+    "runAttempt": "2",
+    "jobId": "132706666367",
+    "artifactUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43671642559/artifacts/14147409580",
+    "downloadedArtifactSha256": "6de73ca644662bae510064e43e900ac75cab1512ed9069d0f7efa4f63a2cc6fb",
+    "artifactAvailable": true,
+    "deployedSha": "1effbee3f4c47d33618ec00f96991e4e88f0df5b",
+    "harnessSha": "6bd5b82c79761e829a0b599c11d68324a800028b",
+    "startedAt": "2026-11-15T05:05:05.329Z",
+    "finishedAt": "2026-11-15T05:22:50.037Z",
+    "runner": {
+      "os": "Linux",
+      "arch": "X64",
+      "image": "ubuntu24",
+      "imageVersion": "20261111.127.1",
+      "cpu": "Intel(R) Xeon(R) 6975P-C",
+      "logicalCpus": 4
+    },
+    "pageCache": {
+      "mode": "keyed",
+      "parameter": "__public_perf_page",
+      "key": "run-43671642559-attempt-2"
+    },
+    "calibration": {
+      "browser": "151.0.7922.34",
+      "method": "Three fresh-context pairs against one local HTTP document, first 0 ms then 150 ms latency. No redirect. Page-target calibration only; worker throttling remains unverified.",
+      "profile": {
+        "downloadThroughput": 200000,
+        "uploadThroughput": 93750,
+        "cpuSlowdown": 4
+      },
+      "passed": true,
+      "criteria": {
+        "pairs": 3,
+        "minimumThrottledHeaderMs": 140,
+        "minimumAddedLatencyMs": 100,
+        "maximumAddedLatencyMs": 400
+      },
+      "minimumThrottledHeaderMs": 156.80000000000405,
+      "medianControlHeaderMs": 6.771999999998002,
+      "medianThrottledHeaderMs": 156.90800000000138,
+      "medianAddedLatencyMs": 150.13600000000338
+    },
+    "status": "Final observed artifact; remaining target failures and unavailable metrics are explicit, not a complete performance pass.",
+    "rolloutEvidence": "rollout-0.792.63.json",
+    "servedAssetGeneration": "app.w7YGTDvJ.js",
+    "comparisonLimit": "Same harness/settings and stable-key modes; different physical runner CPU from keyed-before and original canonical baseline. Descriptive timing comparison, not isolated causal attribution."
+  }
+}

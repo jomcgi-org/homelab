@@ -1,9 +1,10 @@
 # Public app cache windows
 
 The app-specific `PERFORMANCE.md` files record configured response-cache
-allowances and build budgets on main at `afc613a` (15 November 2026).
-They do not change those policies. Pending implementation changes are named
-explicitly in the app docs; merge status is not deployment verification.
+allowances and build budgets as of 15 November 2026, including the merged
+worker and response-boundary fixes. These documentation updates do not change
+those policies. The [measurement report](public-app-performance-2026-11-15.md)
+records rollout evidence separately; merge status is not deployment verification.
 Source-data age is separate:
 serving or revalidating an old database row or materialized object can start a
 new response lifetime without refreshing its contents.
@@ -21,7 +22,7 @@ caches and `max-age` in `Cloudflare-CDN-Cache-Control`. It preserves each stale
 directive. Frank has its own `max-age`-only policy. Cookie-bearing,
 authenticated, personalized, private and friends responses must remain
 `no-store`; see the [public cache contract](../../../../docs/runbooks/public-tier-checklist.md#public-response-cache-contract)
-and the pending [response-boundary work](https://github.com/jomcgi-org/homelab/pull/7967).
+and the merged [response-boundary work](https://github.com/jomcgi-org/homelab/pull/7967).
 That change enforces the boundary at the final HTTP response, including early
 redirects and errors. It also marks app pages without an explicit cache policy `no-store`.
 A prior edge entry cannot be corrected by an origin header until the edge
