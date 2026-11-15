@@ -159,11 +159,27 @@ is Joe's: no run starts on it, and the "Needs Joe" view
 To take delegated work from the factory, stop it with
 `connector cancel <ISSUE> --by joe`, or move the issue to Canceled and leave
 it there. Changing the assignee or removing the delegate stops nothing. Wait
-for the stop to settle before anyone else touches the work:
+for the stop to settle before anyone else touches the work. The connector's
+database covers itsaplan runs and its own review rounds, which itsaplan has no
+record of:
 
-- the issue's run shows `failed` in `GET /agent-runs/queue`, which the
-  connector reports only after kagent confirms the task stopped;
-- its PR is closed, merged, or open and out of the merge queue.
+```sh
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 \
+  -c postgres -- psql -At -d factory_connector -c "
+  SELECT w.state,
+    (SELECT count(*) FROM run r WHERE r.work_item_id = w.id
+       AND r.state <> 'closed') AS open_runs,
+    (SELECT count(*) FROM cancellation c JOIN run r ON r.id = c.run_id
+       WHERE r.work_item_id = w.id AND c.state = 'pending') AS pending,
+    (SELECT p.state || '/' || coalesce(p.merge_queue_state, '-')
+       FROM pull_request p WHERE p.work_item_id = w.id) AS pr
+  FROM work_item w WHERE w.issue_key = 'HOME-N'"
+```
+
+The stop has settled when the state is `stopped`, `open_runs` and `pending`
+are 0 (a cancellation is confirmed only after kagent confirms the task
+stopped), and the PR is closed, merged, or open and out of the merge queue.
+Use the primary's name from `kubectl -n factory-db get cluster factory-db`.
 
 Then file a new HOME issue, assigned to Joe with no delegate, that links the
 canceled one and names what remains. To hand the work back, delegate that
