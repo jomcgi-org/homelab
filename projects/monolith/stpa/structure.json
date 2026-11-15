@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "cbe0525ff",
+  "commit": "65df40be0",
   "nodes": [
     {
       "key": "console-caller",
@@ -71,7 +71,8 @@
       "label": "Scheduler read/trigger API",
       "view": "logical",
       "layer": "control_plane",
-      "maturity": "built"
+      "maturity": "built",
+      "evidence": "projects/monolith/scheduler/service.py:52"
     },
     {
       "key": "acl",
@@ -386,6 +387,30 @@
       "layer": "control_plane",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/factory_funding.py:2036"
+    },
+    {
+      "key": "argo-workflows",
+      "label": "Argo execution of suspended or scheduled job templates",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built",
+      "evidence": "projects/monolith/chart/templates/cronworkflows.yaml:35; projects/monolith/scheduler/service.py:120"
+    },
+    {
+      "key": "grimoire-verifier",
+      "label": "Grimoire entity verifier and transactional writer",
+      "view": "logical",
+      "layer": "enforcement",
+      "maturity": "built",
+      "evidence": "projects/monolith/app/jobs_main.py:982; projects/monolith/grimoire/verifier.py:502"
+    },
+    {
+      "key": "grimoire-verifier-model",
+      "label": "Configured extraction provider used for verification",
+      "view": "logical",
+      "layer": "feedback_source",
+      "maturity": "built",
+      "evidence": "projects/monolith/grimoire/verifier.py:148; projects/monolith/chart/templates/cronworkflows.yaml:302"
     }
   ],
   "control_actions": [
@@ -535,12 +560,12 @@
     },
     {
       "key": "scheduler.trigger",
-      "label": "Mark a job for immediate run",
+      "label": "Submit a one-off Workflow from the CronWorkflow replacing the accepted job name",
       "view": "logical",
       "from": "scheduler-api",
-      "to": "postgres",
+      "to": "argo-workflows",
       "maturity": "built",
-      "evidence": "projects/monolith/scheduler/service.py:35"
+      "evidence": "projects/monolith/scheduler/service.py:52; projects/monolith/scheduler/service.py:120"
     },
     {
       "key": "secret.deliver-public",
@@ -883,6 +908,33 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/factory/orchestration/operator_landing_authorization.py:560"
+    },
+    {
+      "key": "argo-workflows.verify-grimoire",
+      "label": "Invoke the bounded manual entity verifier with a workflow mutex",
+      "view": "logical",
+      "from": "argo-workflows",
+      "to": "grimoire-verifier",
+      "maturity": "built",
+      "evidence": "projects/monolith/chart/values.yaml:1153; projects/monolith/chart/templates/cronworkflows.yaml:69"
+    },
+    {
+      "key": "grimoire-verifier.request",
+      "label": "Request field verdicts from stored details and bounded mention-chunk evidence",
+      "view": "logical",
+      "from": "grimoire-verifier",
+      "to": "grimoire-verifier-model",
+      "maturity": "built",
+      "evidence": "projects/monolith/grimoire/verifier.py:197; projects/monolith/grimoire/verifier.py:532"
+    },
+    {
+      "key": "grimoire-verifier.commit",
+      "label": "Commit accepted corrections or field nulls with the entity/version marker",
+      "view": "logical",
+      "from": "grimoire-verifier",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/grimoire/verifier.py:407; projects/monolith/grimoire/verifier.py:455"
     }
   ],
   "feedback": [
@@ -1128,6 +1180,20 @@
       "to": "permit-supervisor",
       "signal": "Fresh exact terminal guest identity, generation and invocation timestamps",
       "evidence": "projects/monolith/factory/execution/permit_supervision.py:781"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "grimoire-verifier",
+      "signal": "Stored fields, mention-linked evidence chunks and prior entity/version markers",
+      "evidence": "projects/monolith/grimoire/verifier.py:217; projects/monolith/grimoire/verifier.py:264; projects/monolith/grimoire/verifier.py:467"
+    },
+    {
+      "view": "logical",
+      "from": "grimoire-verifier-model",
+      "to": "grimoire-verifier",
+      "signal": "Per-field verified, corrected or unverifiable verdicts with supplied chunk citations",
+      "evidence": "projects/monolith/grimoire/verifier.py:101; projects/monolith/grimoire/verifier.py:336"
     }
   ]
 }
