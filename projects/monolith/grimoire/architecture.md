@@ -401,8 +401,10 @@ DM entries include `player_character_id`; player entries never carry other PC
 or member attribution IDs. Non-silent revocation keeps an identity-only entry
 marked `retracted`. Silent revocation drops entries whose current
 `KnowledgeGrant` pair no longer exists. A later re-grant restores the entry.
-Downgrades emit no event: Learned records what the player saw, including a
-historical snapshot that can be broader than today's grant.
+Changing a grant's scope or its partial details retracts the earlier reveal
+snapshots. During an active or paused session the update appends a replacement
+with the new projection. Learned therefore loses the earlier details and uses
+that replacement; without a current session no replacement is appended.
 
 **Why.** Silent revocation events deliberately contain no entity identity.
 Current grant pairs remove the earlier live snapshot without adding identity
@@ -452,9 +454,11 @@ has an active or paused session. Creation defaults an omitted
 `granted_in_session` to that session; an explicit session is preserved, while
 the event always targets the current session. Grant and event share one
 transaction. The event's author is the DM member and its audience is the
-grantee PC. Scope upgrades emit only for a strict increase in
-`name_only < partial < full`, after applying `revealed_details`. Downgrades,
-same-scope edits and details-only edits emit nothing.
+grantee PC. An update that changes scope in either direction, or changes the
+details of a partial grant, retracts the matching historical reveals and
+appends the new grantee projection when a current session exists. An unchanged
+scope and unchanged partial details append nothing. Retraction also updates
+dependent embeddings and facts in the same transaction.
 
 Each reveal body has exactly `entity_id`, `name`, `entity_type`, and
 `grant_scope`. Full and partial bodies also have `entity`, computed through
