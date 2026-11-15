@@ -98,7 +98,9 @@ The runner records per-sample UTC timestamps and browser time origins.
 Multiple top-level document requests, including automatic chunk-recovery
 reloads, exclude that sample from medians and fail the requested run count.
 The local fixture verifies redirect versus reload tracking before production
-reads and saves `navigation-fixture.json`.
+reads and saves `navigation-fixture.json`. It also interrupts an in-progress
+observation with a document replacement after a module 404, checking that
+collected request statuses survive the error path.
 
 For Stars, the workflow waits up to 20 seconds after freezing load metrics
 for the naturally requested history-map response to finish, followed by two
