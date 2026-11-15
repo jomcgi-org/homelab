@@ -32,6 +32,18 @@ type: kubernetes.io/basic-auth
 stringData:
   username: factory_connector
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-reviewer-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_reviewer
+---
 # factory-db's Garage key, filled by garage-init
 # (projects/platform-factory/garage). factory-db-init holds the Cluster back
 # until it is filled: an instance that starts without it never picks it up,
@@ -93,7 +105,10 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [factory-db-itsaplan-login, factory-db-connector-login]
+    resourceNames:
+      - factory-db-itsaplan-login
+      - factory-db-connector-login
+      - factory-db-reviewer-login
     verbs: [get, update]
   - apiGroups: [""]
     resources: [secrets]

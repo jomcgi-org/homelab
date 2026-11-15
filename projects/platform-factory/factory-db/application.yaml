@@ -1,5 +1,5 @@
 # The factory's PostgreSQL in its own namespace, outside the factory chart:
-# itsaplan's database now, the connector's later. Its setup Job fills the
+# databases for itsaplan, the connector and the reviewer. Its setup Job fills the
 # connection-string Secrets in factory (placeholders from factory-db-secrets,
 # application-factory.yaml; projects/factory-cluster/README.md, "Postgres").
 apiVersion: argoproj.io/v1alpha1

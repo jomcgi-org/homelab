@@ -770,19 +770,20 @@ These come from the #7817 step 1 checklist:
 ### factory-db
 
 `factory-db` (`projects/platform-factory/factory-db/`, namespace
-`factory-db`) holds itsaplan's database and the connector's
-(`factory_connector`, which the connector migrates at startup). It mirrors `kagent-pg`: three
-instances, the same sizing, WAL and daily base backups (02:45 UTC, 14 days)
+`factory-db`) holds itsaplan's database, the connector's (`factory_connector`,
+which the connector migrates at startup) and the reviewer's (`factory_reviewer`).
+The reviewer does not read its connection Secret yet. `factory-db` mirrors `kagent-pg`:
+three instances, the same sizing, WAL and daily base backups (02:45 UTC, 14 days)
 to `factory-db-backups`, and `factory-db-init` (wave -1) holding the Cluster
 back until garage-init fills its key. Unlike `kagent-pg` it has no superuser
 login and no setup script: its roles are managed roles whose passwords come
-from `factory-db-itsaplan-login` and `factory-db-connector-login`, generated
-once by `factory-db-init`, and the connector's database is a `Database`
-object with reclaim policy `retain`. The PostSync `factory-db-setup` Job
-writes each database's `DATABASE_URL` into `factory`
-(`factory-itsaplan-db`, `factory-connector-db`); those Secrets and its Role
-come from the `factory-db-secrets` Application (`factory/`), as for
-`kagent-postgres-secrets`. `smartShutdownTimeout` is 15 s, so a deleted
+from `factory-db-itsaplan-login`, `factory-db-connector-login` and
+`factory-db-reviewer-login`, generated once by `factory-db-init`. The connector
+and reviewer databases are `Database` objects with reclaim policy `retain`.
+The PostSync `factory-db-setup` Job writes each database's `DATABASE_URL` into
+`factory` (`factory-itsaplan-db`, `factory-connector-db`, `factory-reviewer-db`);
+those Secrets and its Role come from the `factory-db-secrets` Application
+(`factory/`), as for `kagent-postgres-secrets`. `smartShutdownTimeout` is 15 s, so a deleted
 primary fails over in about 20 s although itsaplan holds its connections
 open.
 

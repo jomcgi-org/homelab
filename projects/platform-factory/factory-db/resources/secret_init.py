@@ -40,6 +40,7 @@ HOST = "factory-db-rw.factory-db.svc"
 LOGINS = [
     ("factory-db-itsaplan-login", "itsaplan", "factory-itsaplan-db"),
     ("factory-db-connector-login", "factory_connector", "factory-connector-db"),
+    ("factory-db-reviewer-login", "factory_reviewer", "factory-reviewer-db"),
 ]
 
 
