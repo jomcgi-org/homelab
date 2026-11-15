@@ -97,6 +97,8 @@ func reviewComment(a Assessment, r *Report, b *Binding, gate *Gate) *CommentUpda
 	u := &CommentUpdate{Verdict: VerdictApproved, Gate: gate}
 	gated := slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return isGate(b.Finding) })
 	switch {
+	case len(a.Blocking) == 0 && gate != nil && gate.Authorship != "":
+		u.Headline = "Human gate cleared by authorship"
 	case len(a.Blocking) == 0 && a.Approver != "":
 		u.Headline = "Human gate cleared by " + a.Approver
 	case len(a.Blocking) == 0 && len(a.Optional)+len(a.Deferred)+a.DroppedLow+len(a.Accepted) == 0:
@@ -116,6 +118,9 @@ func reviewComment(a Assessment, r *Report, b *Binding, gate *Gate) *CommentUpda
 	}
 	if gated && gate != nil && gate.ApprovalNonce != "" {
 		u.Note = acknowledgeNote(gate)
+	}
+	if gate != nil && gate.Authorship != "" {
+		u.Note = gate.Authorship
 	}
 	body := findingsSection(a, r)
 	u.Findings = &body
