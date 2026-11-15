@@ -1026,8 +1026,11 @@ previews).
   The reviewer's agent also gets EgressPolicy `github-api`: REST reads at
   `https://api.github.com` with the same `contents: read` token, so it can
   inspect PR, check-run and merge-queue evidence a PR cites. The API refuses
-  that token every write. Chart validation allows `github-api` only for
-  `agents.reviewer`, because the coder's token can write. Substrate's egress
+  that token every write. Only review bindings render it, and chart
+  validation refuses `github-api` on any agent but `agents.reviewer` and on
+  any coding binding's agent, because the coder's token can write. The
+  harness image has BusyBox wget (no curl), and the prompt has it send the
+  placeholder Authorization that the gateway replaces. Substrate's egress
   gateway policy allows `api.github.com` alongside `github.com`.
   The namespace cannot overlap any coding or review binding: both Apps
   write `github-git`. The broker admits the review atespaces to its relay,
