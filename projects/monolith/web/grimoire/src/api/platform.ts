@@ -134,16 +134,22 @@ async function directory(
   }
 }
 
-export const useDirectory = (selectedInvitation: string | null) =>
+export const useDirectory = (
+  selectedInvitation: string | null,
+  enabled = true,
+) =>
   useQuery({
     queryKey: platformKeys.directory(selectedInvitation),
     queryFn: ({ signal }) => directory(selectedInvitation, signal),
+    enabled,
   });
 
-export const useOwnAccount = () =>
+export const useOwnAccount = (enabled = true) =>
   useQuery({
     queryKey: platformKeys.self,
     queryFn: ({ signal }) => read<PlatformUser>("/self", signal),
+    refetchInterval: 15_000,
+    enabled,
   });
 
 function deliver(

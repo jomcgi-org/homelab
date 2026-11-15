@@ -27,6 +27,8 @@ interface PageProps {
   actions?: ReactNode;
   /** Content width in pixels. Reading pages are narrow; the table is wide. */
   width?: number;
+  /** Identity bootstrap has no established author for a feedback draft yet. */
+  showFeedback?: boolean;
   children: ReactNode;
 }
 
@@ -41,6 +43,7 @@ export function Page({
   back,
   actions,
   width = 860,
+  showFeedback = true,
   children,
 }: PageProps) {
   useEffect(() => {
@@ -70,7 +73,7 @@ export function Page({
             </StackItem>
             <HStack gap={2} wrap="wrap" hAlign="end">
               {actions}
-              <SendFeedback />
+              {showFeedback && <SendFeedback />}
             </HStack>
           </HStack>
         </LayoutHeader>

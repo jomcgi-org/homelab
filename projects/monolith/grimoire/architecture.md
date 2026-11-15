@@ -1084,6 +1084,18 @@ within that minute it shows a signed-out notice. Other screens show the
 signed-out notice and leave the reload to the player. A restored draft never
 widens its audience, and a draft kept for another viewer is dropped.
 
+Grimoire routes wait for the first successful lobby identity before mounting
+screens or starting their private reads. A failed first identity read offers a
+retry without retaining independently fetched private content. Platform pages
+remain available without Grimoire access: their baseline is the existing
+`/api/auth/platform/self` response. Account management waits for that baseline
+before reading its directory; an initial 403 still offers explicit operator
+bootstrap. Once a platform identity is known, it refreshes every fifteen
+seconds, including after navigating away. A changed platform account or a
+subsequent self-read denial (403 or 404) uses the same cache fence. Temporary
+failures preserve an already established view. These checks do not change API
+permissions or compare platform and Grimoire account IDs.
+
 Every screen shares the lobby identity check through `ViewerBoundary`. A
 confirmed account change, removal of an existing campaign membership, change
 to its role, character or ownership, loss of account administration, or a
