@@ -69,8 +69,16 @@ def _ours(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _one(docs: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
-    found = [d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name]
+def _one(
+    docs: list[dict[str, Any]], kind: str, name: str, namespace: str | None = None
+) -> dict[str, Any]:
+    found = [
+        d
+        for d in docs
+        if d["kind"] == kind
+        and d["metadata"]["name"] == name
+        and (namespace is None or d["metadata"].get("namespace") == namespace)
+    ]
     assert len(found) == 1, f"expected one {kind}/{name}, found {len(found)}"
     return found[0]
 
@@ -241,7 +249,14 @@ def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
         if kind == "RoleBinding" and binding["metadata"].get("namespace") != _NS:
             continue
         ref = binding["roleRef"]
-        role = _one(docs, ref["kind"], ref["name"])
+        # Role names repeat across binding namespaces (factory-broker has
+        # three). A RoleBinding resolves a Role only in its own namespace.
+        role = _one(
+            docs,
+            ref["kind"],
+            ref["name"],
+            binding["metadata"]["namespace"] if ref["kind"] == "Role" else None,
+        )
         for rule in role.get("rules", []):
             if (
                 set(rule.get("apiGroups", [])) & {"", "*"}
