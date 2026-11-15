@@ -200,11 +200,12 @@ def test_enabled_render_rejects_non_tls_url_and_missing_server_identity() -> Non
             raise AssertionError(f"accepted invalid SPIFFE settings: {settings}")
 
 
-def test_checked_in_overlays_keep_spiffe_off_except_the_hub() -> None:
+def test_checked_in_overlays_keep_spiffe_off() -> None:
     projects = _chart_dir().parents[1]
     paths = [
         _chart_dir() / "values.yaml",
         projects / "monolith/deploy/values.yaml",
+        projects / "monolith/deploy/values-gke.yaml",
         projects / "monolith/dev/deploy/values.yaml",
         projects / "monolith/dev/deploy/values-recovery-gke.yaml",
     ]
@@ -212,12 +213,10 @@ def test_checked_in_overlays_keep_spiffe_off_except_the_hub() -> None:
         values = yaml.safe_load(path.read_text())
         assert values["tokenBroker"]["spiffe"]["enabled"] is False, path
 
-    # #5791 stage 1: only the hub overlay turns the mTLS client on.
-    hub = yaml.safe_load((projects / "monolith/deploy/values-gke.yaml").read_text())
-    assert hub["tokenBroker"]["spiffe"]["enabled"] is True
 
-
-def test_hub_dev_login_reuses_private_identity_and_keeps_production_target() -> None:
+def test_hub_has_no_token_broker_or_embervm_after_its_removal() -> None:
+    """EmberVM, and both token brokers in its namespaces, left the hub on
+    2026-11-15. The hub render must not point at either."""
     projects = _chart_dir().parents[1]
     objects = _render(
         "monolith",
@@ -228,38 +227,12 @@ def test_hub_dev_login_reuses_private_identity_and_keeps_production_target() -> 
     )
     deployment = _object(objects, "Deployment", "monolith")
     pod = deployment["spec"]["template"]["spec"]
-    env = _env(_container(deployment, "backend"))
-
-    assert pod["serviceAccountName"] == "monolith"
-    assert env["EMBER_DEV_TOKENBROKER_LOGIN_URL"] == (
-        "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
-    )
-    assert env["EMBER_DEV_TOKENBROKER_LOGIN_SPIFFE_ID"] == (
-        "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
-    )
-    assert env["EMBER_TOKENBROKER_URL"] == (
-        "https://embervm-embervm-tokenbroker.embervm.svc:8443"
-    )
-    assert env["EMBER_TOKENBROKER_SPIFFE_ID"] == (
-        "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-tokenbroker"
-    )
-    assert env["EMBER_TOKENBROKER_SVID_CERT"] == "/run/tokenbroker-svid/svid.pem"
-    assert env["EMBER_TOKENBROKER_SVID_KEY"] == "/run/tokenbroker-svid/svid_key.pem"
-    assert (
-        len([c for c in pod["containers"] if c["name"] == "tokenbroker-spiffe-helper"])
-        == 1
-    )
     for container in pod["containers"]:
-        if container["name"] != "backend":
-            assert not any(
-                name.startswith("EMBER_DEV_TOKENBROKER_") for name in _env(container)
-            )
-    for workflow in objects:
-        if workflow.get("kind") == "CronWorkflow":
-            assert not any(
-                name.startswith("EMBER_DEV_TOKENBROKER_")
-                for name in _env(_job_container(workflow))
-            )
+        names = _env(container)
+        assert not any(name.startswith("EMBER_TOKENBROKER_") for name in names)
+        assert not any(name.startswith("EMBER_DEV_TOKENBROKER_") for name in names)
+        assert "EMBERVM_URL" not in names
+    assert not [c for c in pod["containers"] if c["name"] == "tokenbroker-spiffe-helper"]
 
 
 def test_dev_login_render_requires_existing_spiffe_helper_and_fixed_target() -> None:

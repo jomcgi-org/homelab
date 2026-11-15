@@ -254,8 +254,10 @@ faas:
   s3Bucket: "faas"
 
 semgrep:
-  # EmberVM serves the code sandbox workloads (key name is historical).
-  embervmUrl: "http://embervm-embervm.embervm.svc.cluster.local:8080"
+  # EmberVM served the code sandbox workloads (key name is historical). It left
+  # the hub on 2026-11-15, so run_code, the screenshot tool, FaaS invocation and
+  # agent sessions report "not configured" instead of calling it.
+  embervmUrl: ""
 
 # Shared LLM provider keys, in the OnePasswordItem-backed `goosecracker` Secret.
 # The NAME is historical: this Secret long outlived the retired goosecracker
@@ -412,10 +414,6 @@ cdHealth:
       kargo_namespace: kargo-monolith
       chart_repo_suffix: /charts/monolith
       chart_path: projects/monolith/chart
-    - app: embervm
-      kargo_namespace: kargo-embervm
-      chart_repo_suffix: /charts/embervm
-      chart_path: projects/embervm/chart
     - app: monolith-public
       kargo_namespace: kargo-monolith-public
       chart_repo_suffix: /charts/monolith-public

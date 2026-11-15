@@ -15,16 +15,27 @@ agentSessions:
 frontend:
   qwenApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
 
+rbac:
+  # EmberVM leaves the hub (Joe, 2026-11-15): no FaaS Role in the embervm
+  # namespace and no promote Role in kargo-embervm. Both namespaces go with it,
+  # and a Role rendered into a missing namespace fails the whole monolith sync.
+  faas:
+    enabled: false
+  kargoPromote:
+    namespaces:
+      - kargo-monolith
+      - kargo-monolith-agents
+      - kargo-monolith-public
+      - kargo-scotland-connector
+
 tokenBroker:
-  # Reuse this private tier's rotating SVID for dev device login only.
-  devLoginUrl: "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
-  devLoginServerId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
+  # Off: both token brokers ran in EmberVM's namespaces, which leave the hub
+  # with EmberVM (Joe, 2026-11-15). Their only readers were the hub factory and
+  # agent sessions. Rollback is restoring url, devLoginUrl, devLoginServerId
+  # and spiffe.enabled: true from git history.
+  url: ""
   spiffe:
-    # Stage 1 of #5791: login/start, login/status, refresh and quota go to the
-    # broker's SPIFFE mTLS port (8443) through the spiffe-helper sidecar. The
-    # broker listener went live first (embervm values-gke.yaml). Port 8080 is
-    # still served, so rollback is setting this back to false.
-    enabled: true
+    enabled: false
 
 swarm:
   # Stage 2 of #7449: refuse planner-origin, all-false-effect leave_unmerged
@@ -174,5 +185,8 @@ deploymentObservations:
 # Read the shared hub backup observations and notify on stale base backups
 # through private advisory health (#7002). Unknown observations never recover.
 healthAlerts:
+  # No EmberVM bricks to count once EmberVM leaves the hub; empty skips the
+  # zero-bricks half of embervm_capacity.
+  brickNamespace: ""
   cnpgBackups:
     enabled: true
