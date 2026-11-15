@@ -7,6 +7,7 @@ import {
   twilightOnlySite,
 } from "../../../../../test/stars/fixtures.js";
 import { ssr } from "./+page.js";
+import { shareForecastHours } from "../../../../lib/server/stars-payload.js";
 
 describe("/app/stars SSR", () => {
   it("opts into server rendering", () => {
@@ -38,6 +39,17 @@ describe("/app/stars SSR", () => {
     } finally {
       fetch.mockRestore();
     }
+  });
+
+  it("renders identical first-view HTML with shared forecast records", async () => {
+    const original = { ...data, renderedAt: Date.parse(now) };
+    const shared = {
+      ...original,
+      snapshot: shareForecastHours(structuredClone(data.snapshot)),
+    };
+    const before = await render(Page, { props: { data: original } });
+    const after = await render(Page, { props: { data: shared } });
+    expect(after.html).toBe(before.html);
   });
 
   it("uses the serialized clock even when a cached response is rendered later", async () => {

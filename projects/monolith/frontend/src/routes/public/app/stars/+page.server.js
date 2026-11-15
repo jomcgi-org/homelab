@@ -7,6 +7,7 @@ import {
   cloudflareCacheHeaders,
   STARS_SITES_CACHE_CONTROL,
 } from "../../../../lib/cache-headers.js";
+import { shareForecastHours } from "../../../../lib/server/stars-payload.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 const RETRY_DELAYS_MS = [100, 300];
@@ -51,5 +52,8 @@ export async function load({ fetch, setHeaders }) {
   // validate the complete rendered response; the data ETag cannot represent it.
   setHeaders(headers);
 
-  return { snapshot: await res.json(), renderedAt: Date.now() };
+  return {
+    snapshot: shareForecastHours(await res.json()),
+    renderedAt: Date.now(),
+  };
 }
