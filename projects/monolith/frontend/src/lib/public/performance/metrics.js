@@ -62,10 +62,12 @@ export function transferTotals(requests) {
 // Request.sizes() supplies encoded response body plus response-header bytes.
 // A missing final size must never silently contribute zero to a full total.
 export async function responseTransferSize(request) {
+  let status;
   try {
     const response = await request.response();
     if (!response) throw new Error("response unavailable for sizing");
-    if ([301, 302, 303, 307, 308].includes(response.status())) {
+    status = response.status();
+    if ([301, 302, 303, 307, 308].includes(status)) {
       // Chromium does not report redirect body transfer sizes. Playwright uses
       // Content-Length and silently substitutes zero when the header is absent.
       const length = await response.headerValue("content-length");
@@ -84,11 +86,56 @@ export async function responseTransferSize(request) {
       throw new Error("response size unavailable");
     }
     return {
+      status,
+      responseBodySize: sizes.responseBodySize,
+      responseHeadersSize: sizes.responseHeadersSize,
+      contentLength: (await response.headerValue?.("content-length")) ?? null,
       transferBytes: sizes.responseBodySize + sizes.responseHeadersSize,
     };
   } catch (error) {
-    return { transferBytes: null, sizeError: error.message };
+    return {
+      ...(status === undefined ? {} : { status }),
+      transferBytes: null,
+      sizeError: error.message,
+    };
   }
+}
+
+// Chromium worker bootstrap responses can report only header bytes. Do not
+// mistake Playwright's missing-body fallback for a measured empty worker.
+export function workerTransferSize(item, workerUrls) {
+  if (
+    workerUrls.has(item.url) &&
+    item.responseBodySize === 0 &&
+    item.status === 200 &&
+    item.contentLength?.trim() !== "0"
+  ) {
+    return {
+      ...item,
+      reportedTransferBytes: item.transferBytes,
+      knownResponseBytes: item.responseHeadersSize,
+      transferBytes: null,
+      sizeError: "worker body transfer size unavailable",
+    };
+  }
+  return item;
+}
+
+// Pinned Chromium 151 returns unadjusted network timing through NavigationTiming.
+// CDP responseReceived is emitted when headers are available after throttling.
+// Retain both measurements; only the main navigation (including redirects) counts.
+export function navigationHeaderMetrics(requests, navigation) {
+  const main = requests.filter((r) => r.mainNavigation).at(-1);
+  return {
+    ttfbMs: Number.isFinite(main?.responseReceivedMs)
+      ? main.responseReceivedMs
+      : null,
+    rawNavigationTtfbMs:
+      Number.isFinite(navigation?.responseStart) &&
+      Number.isFinite(navigation?.startTime)
+        ? navigation.responseStart - navigation.startTime
+        : null,
+  };
 }
 
 export function responseTransferTotals(requests) {
@@ -98,6 +145,17 @@ export function responseTransferTotals(requests) {
   const scripts = requests.filter((r) => r.type === "Script");
   const scriptMeasured = measured.filter((r) => r.type === "Script");
   const total = measured.reduce((sum, r) => sum + r.transferBytes, 0);
+  const knownPartial = requests.filter(
+    (r) => r.complete && !r.failed && !Number.isFinite(r.transferBytes),
+  );
+  const lowerBound =
+    total +
+    knownPartial.reduce(
+      (sum, r) =>
+        sum +
+        (Number.isFinite(r.knownResponseBytes) ? r.knownResponseBytes : 0),
+      0,
+    );
   return {
     requestCount: requests.length,
     transferBytes: measured.length === requests.length ? total : null,
@@ -105,7 +163,18 @@ export function responseTransferTotals(requests) {
       scriptMeasured.length === scripts.length
         ? scriptMeasured.reduce((sum, r) => sum + r.transferBytes, 0)
         : null,
-    completedResponseBytes: total,
+    httpErrorRequests: requests.filter((r) => r.status >= 400).length,
+    completedResponseBytes: lowerBound,
+    completedJavascriptBytes:
+      scriptMeasured.reduce((sum, r) => sum + r.transferBytes, 0) +
+      knownPartial
+        .filter((r) => r.type === "Script")
+        .reduce(
+          (sum, r) =>
+            sum +
+            (Number.isFinite(r.knownResponseBytes) ? r.knownResponseBytes : 0),
+          0,
+        ),
     incompleteRequests: requests.filter((r) => !r.complete).length,
     failedRequests: requests.filter((r) => r.failed).length,
     unknownSizeRequests: requests.filter(
@@ -120,6 +189,8 @@ export function summarize(runs) {
   );
   const metrics = [
     "ttfbMs",
+    "rawNavigationTtfbMs",
+    "visibleContentMs",
     "lcpMs",
     "cls",
     "interactionLatencyMs",
@@ -136,11 +207,18 @@ export function summarize(runs) {
     failedInteractions: runs.filter((r) => r.interactionError).length,
     completeProfileRuns: successful.filter((r) => r.profileComplete).length,
     unobservedTargetRuns,
+    observedContentRuns: successful.filter((r) =>
+      Number.isFinite(r.visibleContentMs),
+    ).length,
     ...Object.fromEntries(
       metrics.map((key) => [
         key,
-        ["transferBytes", "javascriptBytes", "requestCount"].includes(key) &&
-        successful.some((r) => !Number.isFinite(r[key]))
+        [
+          "transferBytes",
+          "javascriptBytes",
+          "requestCount",
+          "visibleContentMs",
+        ].includes(key) && successful.some((r) => !Number.isFinite(r[key]))
           ? null
           : median(successful.map((r) => r[key])),
       ]),

@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cls,
   median,
+  navigationHeaderMetrics,
+  workerTransferSize,
   recordTransferBytes,
   responseTransferSize,
   responseTransferTotals,
@@ -11,6 +13,95 @@ import {
 } from "./metrics.js";
 
 describe("public app measurement statistics", () => {
+  it("keeps worker bootstrap bodies unknown when only header bytes are reported", () => {
+    const worker = workerTransferSize(
+      {
+        url: "https://example.test/worker.js",
+        type: "Script",
+        complete: true,
+        status: 200,
+        responseBodySize: 0,
+        responseHeadersSize: 588,
+        contentLength: null,
+        transferBytes: 588,
+      },
+      new Set(["https://example.test/worker.js"]),
+    );
+    expect(worker.transferBytes).toBeNull();
+    expect(worker.reportedTransferBytes).toBe(588);
+    const totals = responseTransferTotals([
+      worker,
+      { type: "Document", complete: true, transferBytes: 1000, status: 200 },
+    ]);
+    expect(totals.transferBytes).toBeNull();
+    expect(totals.javascriptBytes).toBeNull();
+    expect(totals.completedResponseBytes).toBe(1588);
+    expect(totals.completedJavascriptBytes).toBe(588);
+    expect(totals.unknownSizeRequests).toBe(1);
+  });
+
+  it("retains a worker's measured body or explicit empty body", () => {
+    const urls = new Set(["worker.js"]);
+    for (const item of [
+      {
+        url: "worker.js",
+        status: 200,
+        responseBodySize: 120000,
+        transferBytes: 120588,
+      },
+      {
+        url: "worker.js",
+        status: 200,
+        responseBodySize: 0,
+        contentLength: "0",
+        transferBytes: 588,
+      },
+      {
+        url: "empty.json",
+        status: 200,
+        responseBodySize: 0,
+        transferBytes: 300,
+      },
+    ])
+      expect(workerTransferSize(item, urls)).toEqual(item);
+  });
+
+  it("uses the final main-document header event after redirects, not frame timing", () => {
+    expect(
+      navigationHeaderMetrics(
+        [
+          { mainNavigation: true, responseReceivedMs: 180 },
+          { mainNavigation: true, responseReceivedMs: 360 },
+          { mainNavigation: false, responseReceivedMs: 900 },
+        ],
+        { startTime: 0, responseStart: 55 },
+      ),
+    ).toEqual({
+      ttfbMs: 360,
+      rawNavigationTtfbMs: 55,
+    });
+    expect(
+      navigationHeaderMetrics([{ mainNavigation: true }], {
+        startTime: 0,
+        responseStart: 55,
+      }),
+    ).toEqual({
+      ttfbMs: null,
+      rawNavigationTtfbMs: 55,
+    });
+  });
+
+  it("does not hide a missing content milestone behind the observed runs", () => {
+    const summary = summarize([
+      { status: 200, visibleContentMs: 750 },
+      { status: 200, visibleContentMs: null },
+      { status: 200, visibleContentMs: 800 },
+    ]);
+    expect(summary.visibleContentMs).toBeNull();
+    expect(summary.observedContentRuns).toBe(2);
+    expect(summary.successfulRuns).toBe(3);
+  });
+
   it.each([301, 302, 303, 307, 308])(
     "keeps a %i redirect without Content-Length and its page total unknown",
     async (status) => {
@@ -67,9 +158,34 @@ describe("public app measurement statistics", () => {
       },
     });
     expect(result).toEqual({
+      status: 200,
       transferBytes: null,
       sizeError: "connection closed",
     });
+  });
+
+  it("retains HTTP errors when response sizes are unavailable", async () => {
+    const failed = await responseTransferSize({
+      response: async () => ({ status: () => 500 }),
+      sizes: async () => {
+        throw new Error("size unavailable");
+      },
+    });
+    expect(failed.status).toBe(500);
+    const totals = responseTransferTotals([
+      { complete: true, type: "Script", ...failed },
+      {
+        complete: true,
+        type: "Image",
+        status: 404,
+        transferBytes: null,
+        sizeError: "request.sizes timed out",
+      },
+      { complete: false, type: "Fetch", status: 502, transferBytes: null },
+    ]);
+    expect(totals.httpErrorRequests).toBe(3);
+    expect(totals.transferBytes).toBeNull();
+    expect(totals.unknownSizeRequests).toBe(3);
   });
 
   it("does not turn unobservable metrics or failed runs into zero", () => {
