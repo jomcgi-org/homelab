@@ -756,10 +756,12 @@ recovers a create whose response was lost, including after a restart.
 Itsaplan 1.10 has no creation idempotency key: an ambiguous POST is never
 repeated, and reconciliation keeps searching, including archived issues.
 A send proven unaccepted can retry with the current payload under the same
-create message ID; accepted or ambiguous payloads remain frozen. A writer
-guard failure before POST clears only that send's marker, even if its context
-was canceled, so a successor can retry safely. An ambiguous create that never
-becomes visible requires operator investigation; it is logged each review poll.
+create message ID; accepted or ambiguous payloads remain frozen. The pre-send
+writer check and send marker commit in one transaction on the advisory-lock
+session, followed immediately by the request. A failed check or aborted
+transaction leaves the attempt unsent even when the database cannot accept a
+cleanup write. An ambiguous create that never becomes visible requires operator
+investigation; it is logged each review poll.
 Absolute state updates retry with the same message ID and payload for
 that revision, and failed terminal moves remain eligible after PR delivery
 ends. The coordinator needs `work_items` create, read and edit. HOME-51's

@@ -200,7 +200,8 @@ func (e *Engine) Release() {
 	e.m.WriterEpoch.Set(0)
 }
 
-// guard checks the writer epoch. Every external side effect calls it first.
+// guard checks the writer epoch before external side effects that do not use
+// a writer transaction to check authority and record the send together.
 func (e *Engine) guard(ctx context.Context) error {
 	return e.w.Check(ctx)
 }

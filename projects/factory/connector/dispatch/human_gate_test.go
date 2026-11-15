@@ -358,17 +358,66 @@ func TestHumanGateReopenedPRKeepsItsIssueAfterRestart(t *testing.T) {
 func TestHumanGateWriterLossBeforeCreateCanRetry(t *testing.T) {
 	v := newHumanGateEnv(t)
 	v.readyGate("sha-1")
-	// Change leadership exactly after marking the send and before its guard.
+	// Lose authority after the last recovery read, before starting the send.
+	v.its.beforeGateRead = func(operation, _ string) {
+		if operation == "search" {
+			if _, err := v.st.DB.Exec(`UPDATE writer SET epoch = epoch + 1`); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.Tick(v.ctx); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("tick = %v, want writer loss", err)
+	}
+	if len(v.its.gateCreates) != 0 {
+		t.Fatal("lost writer reached POST")
+	}
+	var started bool
+	var sends int
+	if err := v.st.DB.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started, &sends); err != nil || started || sends != 0 {
+		t.Fatalf("unsent attempt: started=%t sends=%d err=%v", started, sends, err)
+	}
+	v.its.beforeGateRead = nil
+	v.e.Release()
+	v.e = v.engine("writer-after-gate-loss")
+	v.poll()
+	v.gateIssue(1, "sha-1")
+	if len(v.its.gateCreates) != 1 {
+		t.Fatal("new writer did not send the proven unsent create once")
+	}
+}
+
+func TestHumanGateDatabaseFailureBeforeCreateNeedsNoCleanup(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	// Disconnect the writer exactly when the send is marked, and reject any
+	// compensating cleanup. With separate mark/guard connections, the mark
+	// commits and cleanup fails, stranding the create. On the writer session,
+	// losing the connection rolls the mark back automatically. The sequence
+	// survives rollback so a replacement writer can recover on the next poll.
 	if _, err := v.st.DB.Exec(`
-		CREATE FUNCTION lose_gate_writer() RETURNS trigger LANGUAGE plpgsql AS $$
+		CREATE SEQUENCE gate_disconnects;
+		CREATE FUNCTION disconnect_gate_writer() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN
-			IF NEW.operation = 'create' AND NEW.send_started AND NEW.sends = 1 AND NOT OLD.send_started THEN
-				UPDATE writer SET epoch = epoch + 1;
+			IF NEW.operation = 'create' AND NEW.send_started AND nextval('gate_disconnects') = 1 THEN
+				PERFORM pg_terminate_backend(pid, 5000) FROM pg_locks
+					WHERE locktype = 'advisory' AND granted
+					AND database = (SELECT oid FROM pg_database WHERE datname = current_database());
 			END IF;
 			RETURN NEW;
 		END $$;
-		CREATE TRIGGER lose_gate_writer AFTER UPDATE ON human_gate_attempt
-			FOR EACH ROW EXECUTE FUNCTION lose_gate_writer();`); err != nil {
+		CREATE TRIGGER disconnect_gate_writer AFTER UPDATE OF send_started ON human_gate_attempt
+			FOR EACH ROW EXECUTE FUNCTION disconnect_gate_writer();
+		CREATE FUNCTION refuse_gate_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.operation = 'create' AND NOT NEW.send_started THEN
+				RAISE EXCEPTION 'injected cleanup unavailable' USING ERRCODE = '08006';
+			END IF;
+			RETURN NEW;
+		END $$;
+		CREATE TRIGGER refuse_gate_cleanup BEFORE UPDATE OF send_started ON human_gate_attempt
+			FOR EACH ROW EXECUTE FUNCTION refuse_gate_cleanup();`); err != nil {
 		t.Fatal(err)
 	}
 	v.clk.Advance(61 * time.Second)
@@ -380,15 +429,20 @@ func TestHumanGateWriterLossBeforeCreateCanRetry(t *testing.T) {
 	}
 	var started bool
 	var sends int
-	if err := v.st.DB.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started, &sends); err != nil || started || sends != 1 {
-		t.Fatalf("unsent attempt: started=%t sends=%d err=%v", started, sends, err)
+	if err := v.st.DB.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started, &sends); err != nil || started || sends != 0 {
+		t.Fatalf("failed transaction stranded the create: started=%t sends=%d err=%v", started, sends, err)
+	}
+	const messageID = "factory-human-gate/jomcgi-org/homelab/1/create"
+	if err := v.st.ClearHumanGateSend(v.ctx, messageID, v.e.Epoch(), sends); err == nil || !strings.Contains(err.Error(), "cleanup unavailable") {
+		t.Fatalf("cleanup failure was not injected: %v", err)
 	}
 	v.e.Release()
-	v.e = v.engine("writer-after-gate-loss")
+	v.e = v.engine("writer-after-gate-outage")
 	v.poll()
 	v.gateIssue(1, "sha-1")
+	v.poll()
 	if len(v.its.gateCreates) != 1 {
-		t.Fatal("new writer did not send the proven unsent create once")
+		t.Fatal("new writer did not create exactly one gate issue after the outage")
 	}
 }
 
@@ -399,8 +453,10 @@ func TestHumanGateUnsentCleanupSurvivesCancellationAndIsFenced(t *testing.T) {
 	v.poll()
 	const messageID = "factory-human-gate/jomcgi-org/homelab/1/create"
 	epoch := v.e.Epoch()
-	send, err := v.st.StartHumanGateWrite(v.ctx, messageID, epoch)
-	if err != nil {
+	// Model a later send before a stale cleanup from the first send arrives.
+	var send int
+	if err := v.st.DB.QueryRow(`UPDATE human_gate_attempt SET sends = sends + 1
+		WHERE message_id = $1 RETURNING sends`, messageID).Scan(&send); err != nil {
 		t.Fatal(err)
 	}
 	canceled, cancel := context.WithCancel(v.ctx)

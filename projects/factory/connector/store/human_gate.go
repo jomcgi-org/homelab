@@ -114,17 +114,23 @@ func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int
 	return a, err
 }
 
-func (s *Store) StartHumanGateWrite(ctx context.Context, messageID string, epoch int64) (int, error) {
+// StartHumanGateWrite checks authority and marks the send in one transaction
+// on the advisory-lock session. A failed guard or aborted transaction leaves
+// the attempt unsent without requiring a compensating write. After commit the
+// caller must send immediately, without another database guard in between.
+func (s *Store) StartHumanGateWrite(ctx context.Context, w *Writer, messageID string) (int, error) {
 	var send int
-	err := s.DB.QueryRowContext(ctx, `UPDATE human_gate_attempt SET send_started = true, finished_at = NULL,
-		sends = sends + 1, writer_epoch = $2, attempted_at = now() WHERE message_id = $1
-		RETURNING sends`, messageID, epoch).Scan(&send)
+	err := w.Tx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `UPDATE human_gate_attempt SET send_started = true, finished_at = NULL,
+			sends = sends + 1, writer_epoch = $2, attempted_at = now() WHERE message_id = $1
+			RETURNING sends`, messageID, w.Epoch).Scan(&send)
+	})
 	return send, err
 }
 
 // ClearHumanGateSend records proof that this send did not create an issue,
-// including a canceled writer guard before POST. Cleanup survives cancellation
-// but cannot clear a later writer's send or an acknowledged attempt.
+// such as a definite HTTP refusal. Cleanup survives cancellation but cannot
+// clear a later writer's send or an acknowledged attempt.
 func (s *Store) ClearHumanGateSend(ctx context.Context, messageID string, epoch int64, send int) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()

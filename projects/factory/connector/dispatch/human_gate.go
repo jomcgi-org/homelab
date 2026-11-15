@@ -242,12 +242,9 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 				return err
 			}
 			epoch := e.Epoch()
-			send, err := e.st.StartHumanGateWrite(ctx, messageID, epoch)
+			send, err := e.st.StartHumanGateWrite(ctx, e.w, messageID)
 			if err != nil {
 				return err
-			}
-			if err := e.guard(ctx); err != nil {
-				return errors.Join(err, e.st.ClearHumanGateSend(ctx, messageID, epoch, send))
 			}
 			found, err = e.its.CreateGateIssue(ctx, b.ItsaplanProject, body)
 			if err != nil {
@@ -280,10 +277,7 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 	if err := json.Unmarshal(a.Payload, &body); err != nil {
 		return err
 	}
-	if _, err := e.st.StartHumanGateWrite(ctx, messageID, e.Epoch()); err != nil {
-		return err
-	}
-	if err := e.guard(ctx); err != nil {
+	if _, err := e.st.StartHumanGateWrite(ctx, e.w, messageID); err != nil {
 		return err
 	}
 	if err := e.its.UpdateGateIssue(ctx, h.IssueID, body); err != nil {
