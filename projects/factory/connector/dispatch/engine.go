@@ -921,31 +921,42 @@ func (e *Engine) recordNext(ctx context.Context, q store.Querier, r *store.Run, 
 // existing session gets none: the session already has it. Recorded with
 // the attempt, the brief keeps resends identical.
 func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkItem) (string, error) {
-	if wi.SessionID != "" || wi.IssueID == 0 || r.Connector() {
+	if wi.SessionID != "" || wi.IssueID == 0 {
 		return "", nil
 	}
 	if err := e.guard(ctx); err != nil {
 		return "", err
 	}
 	issue, err := e.its.GetIssue(ctx, wi.IssueID)
-	gaveUp := e.lookupRefused(ctx, refusalKey{lookupBrief, r.ID, r.Attempt}, err)
+	e.countRefusal(roleCoordinator, lookupBrief, err)
+	if err == nil && (issue == nil || issue.ID != wi.IssueID || strings.TrimSpace(issue.Title+issue.Description) == "") {
+		err = errors.New("missing authoritative issue text")
+	}
+	if err != nil {
+		// Required input never expires into permission to start without it.
+		// Announce the hold once per run attempt, without exposing response bodies.
+		noticeErr := e.w.Tx(ctx, func(tx *sql.Tx) error {
+			return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/brief-held/%d/%d", r.ID, r.Attempt), r.ID, "",
+				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+					"The factory is holding %s run %d until its issue title and description can be read. No new agent session will start without the issue text. Check the issue and the coordinator's itsaplan access; the lookup will retry automatically.",
+					wi.IssueKey, r.ID)})
+		})
+		return "", errors.Join(fmt.Errorf("issue brief required before opening a session: %w", err), noticeErr)
+	}
 	var s strings.Builder
 	s.WriteString("## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
 		"reports your final message on the issue and opens the pull request from the work branch once you " +
 		"push commits to it.\n")
-	switch {
-	case err == nil:
-		fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
-	case terminalHTTP(err):
-		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %v)\n", wi.IssueKey, err)
-	case gaveUp != "":
-		// Past the bound the session starts without the issue rather than
-		// hold the run's slot until the key works.
-		fmt.Fprintf(&s, "\n### Issue %s\n\n(unavailable: %s)\n", wi.IssueKey, gaveUp)
-	default:
-		return "", err
-	}
+	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clipDescription(issue.Description))
 	return s.String(), nil
+}
+
+func clipDescription(description string) string {
+	clipped := clip(description, 8000)
+	if len(clipped) == len(description) {
+		return description
+	}
+	return fmt.Sprintf("%s\n\n(description clipped at %d of %d bytes)", clipped, len(clipped), len(description))
 }
 
 func nextDecision(wi *store.WorkItem, retry int) (kind, decision string) {
@@ -1437,13 +1448,21 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 	if b != nil {
 		budget = b.MaxEngineeringRetries
 	}
-	// A retry without a session opens one, which needs the issue.
-	brief, err := e.issueBrief(ctx, r, wi)
-	if err != nil {
-		return err
+	// Exhaustion needs no new input. A fresh-session retry keeps the failed
+	// attempt's context, including any replacement's PR, branch and threads.
+	var brief string
+	if wi.EngineeringRetries < budget && wi.SessionID == "" {
+		brief = a.Context
+		if brief == "" {
+			var err error
+			brief, err = e.issueBrief(ctx, r, wi)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	var next *store.Attempt
-	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
 		// A grant failure was already finished while blocked. Preserve its
 		// class and evidence when taking the deferred retry after unblock.
 		if a.Open() {
@@ -1801,9 +1820,8 @@ func (e *Engine) countRefusal(role, kind string, err error) bool {
 // authRefusalLimit bounds how long a coordinator lookup that holds a run's
 // slot retries an itsaplan 401 or 403. Like outboxAuthMaxTries, it outlasts
 // a key rotation and the kubelet's refresh of the projected file. Past it
-// the lookup gives up: the initial-session path proceeds without issue text, and
 // a dispatched run whose attempt itsaplan stopped accepting is closed.
-// Fenced recovery requires its issue text regardless of this bound.
+// New sessions and fenced recovery require issue text regardless of this bound.
 // Lookups that hold no slot (the issue check, a stale run) retry without a
 // bound. The clock lives in memory, as the session check's does; a restart
 // starts it again.
@@ -1812,7 +1830,7 @@ const authRefusalLimit = 30 * time.Minute
 // Coordinator lookups, each a metric kind.
 const (
 	lookupReplacement = "replacement" // recovery input is required; retry until available
-	lookupBrief       = "brief"       // a new session's issue, bounded per run attempt
+	lookupBrief       = "brief"       // a new session's required issue; retry until available
 	lookupIssue       = "issue_check" // whether the issue still wants delivery; unbounded
 	lookupRun         = "run_check"   // a run's state; bounded per run attempt in runGone
 )

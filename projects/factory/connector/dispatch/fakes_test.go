@@ -60,8 +60,9 @@ type fakeItsaplan struct {
 	// beforeResult runs, with f.mu held, as a Result call arrives.
 	beforeResult func(f *fakeItsaplan)
 	// issueErr and runErr fail every GetIssue and GetRun while set.
-	issueErr error
-	runErr   error
+	issueErr   error
+	issueCalls int
+	runErr     error
 	// columnsErr fails every ProjectColumns while set.
 	columnsErr error
 	// Event failures exercise journal replay before and after server acceptance.
@@ -325,6 +326,7 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.issueCalls++
 	if f.issueErr != nil {
 		return nil, f.issueErr
 	}

@@ -1701,7 +1701,7 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 	if issue == nil || issue.ID != wi.IssueID || strings.TrimSpace(issue.Title+issue.Description) == "" {
 		return "", errors.New("recovery requires authoritative issue text")
 	}
-	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clip(issue.Description, 8000))
+	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clipDescription(issue.Description))
 	if e.gh == nil {
 		return s.String(), nil
 	}

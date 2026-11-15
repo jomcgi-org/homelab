@@ -779,6 +779,7 @@ func TestStaleHeadAndUntrustedEventsAreIgnored(t *testing.T) {
 func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	v := newDeliveryEnv(t)
 	old := v.delivered()
+	v.its.issues[101].Description = "Issue 101 description.\n" + strings.Repeat("x", 8000)
 	v.kg.expire(old)
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Handle the timeout.")
 	v.gh.thread(1, "wait.go", 40, "reviewer", "Timeout is ignored here.")
@@ -793,6 +794,7 @@ func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	text := last.msg.Parts[0].Text
 	for _, want := range []string{
 		"Handle the timeout.", "## Replacement session", old, "Issue 101 title", "Issue 101 description.",
+		"(description clipped at 8000 of 8022 bytes)",
 		"#1 https://github.com/example-org/homelab/pull/1", "is at sha-1", "Review thread (file path omitted)", "Timeout is ignored here.",
 	} {
 		if !strings.Contains(text, want) {
@@ -813,6 +815,71 @@ func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	}
 	if !announced {
 		t.Fatalf("comments = %+v, want the operator hold announced", v.its.Comments())
+	}
+}
+
+func TestRefusedReplacementRetryKeepsContext(t *testing.T) {
+	v := newDeliveryEnv(t)
+	old := v.delivered()
+	v.cfg.MaxIssues, v.cfg.FinalLookups = 1, 1
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	v.kg.expire(old)
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Handle the timeout.")
+	v.gh.thread(1, "wait.go", 40, "reviewer", "Timeout is ignored here.")
+	v.poll()
+	v.kg.notAccepted = 2
+	v.attestLifecycleRecovery(1)
+	round := v.rounds()[0]
+	original := v.latest(round.ID)
+	if original.Context == "" || v.work(101).SessionID != "" {
+		t.Fatal("replacement did not record context before its refused send")
+	}
+	v.its.issues[101].Description = "Edited instructions."
+	v.tickReconciliation(2, v.cfg.DispatchWindow)
+	next := v.latest(round.ID)
+	sends := v.kg.Sends()
+	if next.ID == original.ID || next.Context != original.Context || len(sends) != 4 || v.work(101).EngineeringRetries != 2 {
+		t.Fatalf("replacement retry lost its context: original=%+v next=%+v sends=%d", original, next, len(sends))
+	}
+	text := sends[3].msg.Parts[0].Text
+	for _, want := range []string{"Issue 101 description.", "## Replacement session", "#1 https://github.com/example-org/homelab/pull/1", "is at sha-1", "Timeout is ignored here."} {
+		if !strings.Contains(text, want) {
+			t.Errorf("replacement retry lacks %q", want)
+		}
+	}
+	if sends[3].msg.ContextID != "" || strings.Contains(text, "Edited instructions.") {
+		t.Fatal("retry did not open a session with the recorded brief")
+	}
+}
+
+func TestReviewRoundOpeningSessionIncludesIssue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	old := v.delivered()
+	v.cfg.Bindings[0].MaxEngineeringRetries = 1
+	v.cfg.MaxIssues, v.cfg.FinalLookups = 1, 1
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	v.kg.expire(old)
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "First round.")
+	v.poll()
+	v.kg.notAccepted = 2
+	v.attestLifecycleRecovery(1)
+	v.tickReconciliation(2, v.cfg.DispatchWindow)
+	if v.work(101).SessionID != "" || v.run(v.rounds()[0].ID).State != store.RunClosed {
+		t.Fatal("replacement did not exhaust its retries without a session")
+	}
+	v.gh.push("factory/HL-7", "sha-2", "fix: another change")
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-2", "Second round.")
+	v.poll()
+	sends := v.kg.Sends()
+	if len(v.rounds()) != 2 || len(sends) != 4 || sends[3].msg.ContextID != "" {
+		t.Fatalf("round did not open a session: rounds=%+v sends=%+v", v.rounds(), sends)
+	}
+	for _, want := range []string{"Second round.", "### Issue HL-7: Issue 101 title", "Issue 101 description."} {
+		if !strings.Contains(sends[3].msg.Parts[0].Text, want) {
+			t.Errorf("new-session review round lacks %q", want)
+		}
 	}
 }
 

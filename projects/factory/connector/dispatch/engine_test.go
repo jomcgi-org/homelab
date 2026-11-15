@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
@@ -364,6 +365,10 @@ func TestNotAcceptedSendIsRetriedWithSameMessage(t *testing.T) {
 			if original.State != store.AttemptSending || original.Issues != 1 {
 				t.Fatalf("definitive refusal was not persisted as safe to retry: %+v", original)
 			}
+			v.its.mu.Lock()
+			v.its.issues[101].Title = "Edited title"
+			v.its.issues[101].Description = "Edited instructions."
+			v.its.mu.Unlock()
 			if restart {
 				v.e.Release()
 				v.e = v.engine("connector-b")
@@ -378,6 +383,9 @@ func TestNotAcceptedSendIsRetriedWithSameMessage(t *testing.T) {
 			sends := v.kg.Sends()
 			if len(sends) != 2 || sends[0].msg.MessageID != sends[1].msg.MessageID {
 				t.Fatalf("sends = %+v", sends)
+			}
+			if sends[0].msg.Parts[0].Text != sends[1].msg.Parts[0].Text {
+				t.Fatal("resend changed the recorded text after the issue was edited")
 			}
 			if a := v.latest(1); a.ID != original.ID || a.State != store.AttemptAccepted || a.Issues != 2 {
 				t.Fatalf("refused original was not retried: %+v", a)
@@ -804,6 +812,85 @@ func TestRetryDecisionSurvivesSessionErrorBeforeSend(t *testing.T) {
 	}
 	if w := v.work(101); w.EngineeringRetries != 1 {
 		t.Fatalf("retries = %d, want 1", w.EngineeringRetries)
+	}
+}
+
+func TestEngineeringRetryOpensSessionWithBrief(t *testing.T) {
+	for _, recorded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recorded=%t", recorded), func(t *testing.T) {
+			v := newEnv(t)
+			v.cfg.MaxIssues, v.cfg.FinalLookups = 1, 1
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.kg.notAccepted = 2
+			v.tick(v.e)
+			if !recorded {
+				// An attempt recorded before briefs were required must fetch one.
+				_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = NULL WHERE id = $1`, v.latest(1).ID)
+				v.requireReconciliationSetup(err)
+			}
+			v.clk.Advance(v.cfg.DispatchWindow)
+			v.tick(v.e)
+			reads := v.its.issueCalls
+			v.setIssueErr(&itsaplan.HTTPError{Status: 503, Body: "unavailable"})
+			v.clk.Advance(v.cfg.DispatchWindow)
+			v.tick(v.e)
+			if recorded {
+				if v.its.issueCalls != reads {
+					t.Fatal("retry fetched an issue already recorded in its context")
+				}
+			} else {
+				if len(v.kg.Sends()) != 2 || v.work(101).EngineeringRetries != 0 {
+					t.Fatal("retry without a brief sent or spent the budget")
+				}
+				v.setIssueErr(nil)
+				v.tick(v.e)
+			}
+			sends := v.kg.Sends()
+			if len(sends) != 3 || sends[2].msg.ContextID != "" || v.work(101).EngineeringRetries != 1 {
+				t.Fatalf("fresh-session retry: sends=%+v work=%+v", sends, v.work(101))
+			}
+			for _, want := range []string{"### Issue HL-1: Issue 101 title", "Issue 101 description."} {
+				if !strings.Contains(sends[2].msg.Parts[0].Text, want) {
+					t.Errorf("engineering retry lacks %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestEngineeringExhaustionDoesNotReadIssue(t *testing.T) {
+	for _, status := range []int{401, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := newEnv(t)
+			v.cfg.Bindings[0].MaxEngineeringRetries = 0
+			v.cfg.MaxIssues, v.cfg.FinalLookups = 1, 1
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.kg.notAccepted = 2
+			v.tick(v.e)
+			_, err := v.st.DB.Exec(`UPDATE delivery_attempt SET context = NULL WHERE id = $1`, v.latest(1).ID)
+			v.requireReconciliationSetup(err)
+			v.clk.Advance(v.cfg.DispatchWindow)
+			v.tick(v.e)
+			reads := v.its.issueCalls
+			v.setIssueErr(&itsaplan.HTTPError{Status: status, Body: "unavailable"})
+			v.clk.Advance(v.cfg.DispatchWindow)
+			v.tick(v.e)
+			v.tick(v.e)
+			results := v.its.Run(1).results
+			if len(results) != 1 || results[0].Status != "failed" || !strings.Contains(results[0].Error, "engineering retries exhausted (0)") {
+				t.Fatalf("results = %+v, want immediate exhaustion", results)
+			}
+			if v.its.issueCalls != reads || len(v.kg.Sends()) != 2 || v.run(1).State != store.RunClosed {
+				t.Fatal("exhausted run read the issue, sent again or stayed open")
+			}
+			if got := testutil.ToFloat64(v.m.Retries.WithLabelValues("exhausted")); got != 1 {
+				t.Fatalf("exhaustions = %v, want one", got)
+			}
+		})
 	}
 }
 
@@ -1720,31 +1807,103 @@ func TestIssueIsQuotedOnlyWhenASessionOpens(t *testing.T) {
 	}
 }
 
-// TestRefusedBriefStartsWithoutTheIssueAfterBound: the first send reads its
-// issue with the coordinator key. While the key is refused it waits; past
-// the bound the session starts without the issue.
-func TestRefusedBriefStartsWithoutTheIssueAfterBound(t *testing.T) {
+func TestInitialSessionWaitsForRequiredBrief(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 422, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.setIssueErr(&itsaplan.HTTPError{Status: status, Body: "untrusted response body"})
+			v.tick(v.e)
+			v.tickReconciliation(40, time.Minute)
+			if len(v.kg.Sends()) != 0 || v.work(101).EngineeringRetries != 0 {
+				t.Fatal("unavailable issue text started an agent or spent a retry")
+			}
+			if n, err := v.st.CountSends(v.ctx, 1); err != nil || n != 0 {
+				t.Fatalf("attempts = %d, %v; want none without a brief", n, err)
+			}
+			if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
+				t.Fatalf("active slots = %d, %v; want the run held", n, err)
+			}
+			if (status == 401 || status == 403) && v.refusals("coordinator", "brief") == 0 {
+				t.Fatal("the refused brief lookup was not counted")
+			}
+			comments := v.its.Comments()
+			if len(comments) != 1 || !strings.Contains(comments[0].body, "holding HL-1 run 1") || strings.Contains(comments[0].body, "untrusted response body") {
+				t.Fatalf("hold comments = %+v, want one sanitized notice", comments)
+			}
+			v.e.Release()
+			v.e = v.engine("connector-restarted")
+			v.tick(v.e)
+			if len(v.kg.Sends()) != 0 || len(v.its.Comments()) != 1 {
+				t.Fatal("restart bypassed the brief hold or duplicated its notice")
+			}
+			v.setIssueErr(nil)
+			v.tick(v.e)
+			sends := v.kg.Sends()
+			if len(sends) != 1 {
+				t.Fatalf("sends = %d, want one after the issue is available", len(sends))
+			}
+			for _, want := range []string{"### Issue HL-1: Issue 101 title", "Issue 101 description."} {
+				if !strings.Contains(sends[0].msg.Parts[0].Text, want) {
+					t.Errorf("first send lacks %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestInitialSessionRejectsInvalidBrief(t *testing.T) {
+	for _, issue := range []itsaplan.Issue{
+		{ID: 999, Title: "Another issue", Description: "Wrong instructions."},
+		{ID: 101, Title: " \n", Description: "\t"},
+	} {
+		t.Run(fmt.Sprint(issue.ID), func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.its.issues[101] = &issue
+			v.tick(v.e)
+			if len(v.kg.Sends()) != 0 {
+				t.Fatal("invalid issue text opened a session")
+			}
+		})
+	}
+}
+
+func TestInitialSessionCanBeCanceledWhileBriefUnavailable(t *testing.T) {
 	v := newEnv(t)
-	v.its.mu.Lock()
-	v.its.issueErr = &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}
-	v.its.mu.Unlock()
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.setIssueErr(itsaplan.ErrNotFound)
 	v.tick(v.e)
-	if sends := v.kg.Sends(); len(sends) != 0 {
-		t.Fatalf("sends = %d, want the first send to wait", len(sends))
+	v.its.cancel(1, true)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if v.run(1).State != store.RunClosed || len(v.kg.Sends()) != 0 {
+		t.Fatal("missing brief prevented cancellation or started an agent")
 	}
-	if n := v.refusals("coordinator", "brief"); n == 0 {
-		t.Fatal("the refused brief lookup was not counted")
-	}
-	v.tickUntil(time.Minute, 40, func() bool { return len(v.kg.Sends()) == 1 })
-	text := v.kg.Sends()[0].msg.Parts[0].Text
-	for _, want := range []string{"## Issue", "### Issue HL-1", "unavailable", "refused the coordinator key"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("first send lacks %q:\n%s", want, text)
-		}
-	}
-	if strings.Contains(text, "Issue 101 description.") {
-		t.Errorf("first send has the issue it could not read:\n%s", text)
+}
+
+func TestInitialIssueDescriptionClipping(t *testing.T) {
+	for _, tc := range []struct {
+		name, description, quoted string
+	}{
+		{"short", "Short description.", "Short description."},
+		{"limit", strings.Repeat("x", 8000), strings.Repeat("x", 8000)},
+		{"over limit", strings.Repeat("x", 8001), strings.Repeat("x", 8000) + "\n\n(description clipped at 8000 of 8001 bytes)"},
+		{"multibyte", strings.Repeat("界", 2667), strings.Repeat("界", 2666) + "\n\n(description clipped at 7998 of 8001 bytes)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.its.issues[101].Description = tc.description
+			v.tick(v.e)
+			text := v.kg.Sends()[0].msg.Parts[0].Text
+			if !utf8.ValidString(text) || !strings.Contains(text, "### Issue HL-1: Issue 101 title\n\n"+tc.quoted+"\n") {
+				t.Fatal("description or its byte-count marker was not quoted correctly")
+			}
+			if len(tc.description) <= 8000 && strings.Contains(text, "description clipped") {
+				t.Fatal("unclipped description was marked as clipped")
+			}
+		})
 	}
 }
 
