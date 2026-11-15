@@ -266,6 +266,7 @@ export function Feed({
                       size="sm"
                       onClick={() =>
                         onReply({
+                          sessionId: event.session_id,
                           id: event.id,
                           name: author.character_name,
                           characterId: author.id,

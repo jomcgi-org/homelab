@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState, type RefObject } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Button } from "@astryxdesign/core/Button";
@@ -51,7 +51,7 @@ import { TurnStrip } from "../../turns/TurnStrip";
 import { YourTurnBanner } from "../../turns/YourTurnBanner";
 import { ReadAloud } from "../../voices/ReadAloud";
 import { VoicePresets } from "../../voices/VoicePresets";
-import { Composer, type ReplyTarget } from "./Composer";
+import { Composer, type ComposerMemory, type ReplyTarget } from "./Composer";
 import { DiceTray } from "./DiceTray";
 import { Feed } from "./Feed";
 import "./session.css";
@@ -64,10 +64,12 @@ type TabName = "story" | "notes" | "inventory" | "journal";
 export function Session() {
   const { campaignId = "" } = useParams();
   const [search] = useSearchParams();
+  const composerMemory = useRef<ComposerMemory | null>(null);
   const state = useTable(campaignId, search.get("session"));
   const back = { href: paths.lobby, label: "Your campaigns" };
 
-  if (state.status === "ready") return <TableView table={state.table} />;
+  if (state.status === "ready")
+    return <TableView table={state.table} composerMemory={composerMemory} />;
   return (
     <Page title="Session" back={back} width={1100}>
       {state.status === "loading" ? (
@@ -105,7 +107,13 @@ function turnOrder(table: Table): TurnOrder {
   return (last?.body as TurnOrder | undefined) ?? null;
 }
 
-function TableView({ table }: { table: Table }) {
+function TableView({
+  table,
+  composerMemory,
+}: {
+  table: Table;
+  composerMemory: RefObject<ComposerMemory | null>;
+}) {
   const { viewer, session, characters } = table;
   const campaignId = viewer.campaign.id;
   const dm = viewer.dm;
@@ -358,6 +366,7 @@ function TableView({ table }: { table: Table }) {
                 />
               )}
               <Composer
+                memory={composerMemory}
                 table={table}
                 sessionId={session.id}
                 reply={reply}

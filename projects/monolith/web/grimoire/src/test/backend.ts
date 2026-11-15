@@ -17,7 +17,12 @@ export interface Call {
 type Reply<K extends Operation> =
   | ApiResponse<K>
   | { status: number; detail?: string }
-  | ((call: Call) => ApiResponse<K> | { status: number; detail?: string });
+  | ((
+      call: Call,
+    ) =>
+      | ApiResponse<K>
+      | { status: number; detail?: string }
+      | Promise<ApiResponse<K> | { status: number; detail?: string }>);
 
 export type Routes = { [K in Operation]?: Reply<K> };
 
@@ -88,10 +93,9 @@ export function installBackend(
           typeof init?.body === "string" ? JSON.parse(init.body) : init?.body,
       };
       calls.push(call);
-      const result =
-        typeof reply === "function"
-          ? (reply as (call: Call) => unknown)(call)
-          : reply;
+      const result = await (typeof reply === "function"
+        ? (reply as (call: Call) => unknown)(call)
+        : reply);
       if (isStatus(result)) {
         return new Response(
           result.status === 204
