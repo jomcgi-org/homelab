@@ -707,7 +707,9 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
 - **Pending writes.** Each `useAction` instance accepts one write at a time,
   including repeated Enter presses before the pending state renders. It
   accepts another action after the response and refreshes finish, including
-  after a refusal. This guard does not retry an uncertain write.
+  after a refusal. Every feed pin control, including handouts, is disabled
+  while its shared pin action is pending. This guard does not retry an
+  uncertain write.
 - **Polling.** There is no aggregate state endpoint. The session screen
   assembles independent reads (`src/screens/session/useTable.ts`,
   `src/api/session.ts`). While the tab is visible and the session has not
