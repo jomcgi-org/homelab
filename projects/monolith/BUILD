@@ -246,6 +246,7 @@ filegroup(
         "//projects/monolith/frontend:repo_docs",
         "//projects/monolith/web/grimoire:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
+        "//projects/platform-factory/external-secrets:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
         "//projects/platform/cert-manager:repo_docs",
