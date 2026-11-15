@@ -47,7 +47,7 @@ that production became faster.
 
 ## What the numbers mean
 
-The profile is a 360 by 800 mobile viewport at device scale 2, 150 ms added
+The profile is a 360 by 800 mobile viewport at device scale 2, 150 ms minimum
 network latency, 1.6 Mbps download, 750 Kbps upload and fourfold CPU slowdown.
 This is a reproducible lab approximation, not a calibrated physical Moto G.
 Each run uses a new browser context with no cookies, browser cache or service
@@ -56,11 +56,26 @@ or adds cache-busting query parameters. A browser-cold run can be an edge HIT.
 Record misses separately when they occur naturally. A forced origin-cold test
 needs a controlled dev environment.
 
-TTFB is navigation `responseStart - startTime`, including connection setup.
+Schema version 2 reports header arrival as `ttfbMs`: the final main-document
+CDP `responseReceived` event timestamp minus the initial document
+`requestWillBeSent`, including redirects. It retains the former
+`responseStart - startTime` as `rawNavigationTtfbMs`, plus the full navigation
+and CDP response timing. These definitions are not interchangeable. In the
+first hosted run, Chromium 151.0.7922.34 reported navigation TTFB below 150 ms
+because its [throttling transaction](https://chromium.googlesource.com/chromium/src/+/refs/tags/151.0.7922.34/services/network/throttling/throttling_network_transaction.cc)
+returns the underlying unadjusted load timing. The
+[CDP response event](https://chromium.googlesource.com/chromium/src/+/refs/tags/151.0.7922.34/content/browser/devtools/protocol/network_handler.cc)
+uses the event's monotonic clock instead. The new header-arrival metric needs
+a hosted calibration before it can establish the mobile TTFB target. Never
+add 150 ms to the old value or compare it directly with the new value.
+
 The default observation ends 15 seconds after DOMContentLoaded. Increase
 `--settle-ms` when the app still loads at that point. LCP is the last observed
-candidate; CLS uses the largest session window and excludes shifts after
-recent input. Context-wide request events include redirects, dedicated-worker
+candidate; the JSON now preserves every candidate's timestamp, size, element
+tag, generated CSS selector and image URL. Selectors describe the observed
+DOM and may change between releases. LCP does not measure canvas contents;
+a heading can be the largest candidate while a map is still blank. CLS uses
+the largest session window and excludes shifts after recent input. Context-wide request events include redirects, dedicated-worker
 requests and child-frame requests. `request.sizes()` reports encoded HTTP
 response body and header sizes. Transfer and JavaScript totals sum those
 sizes for requests completed before the cutoff; connection overhead is
@@ -69,6 +84,12 @@ excluded. If a request is unfinished, failed or unsized, the full total stays
 incomplete, failed and unsized requests. Chromium redirect responses without
 `Content-Length` remain unsized: Playwright substitutes a zero body size when
 that header is absent, so the runner cannot treat the result as measured.
+Worker bootstrap requests with a zero reported body and no explicit
+`Content-Length: 0` are also unsized. The hosted run reported only 588 to 590
+bytes for a worker whose later HTTP body exceeded 120 kB. The runner retains
+reported size components and known header bytes as lower bounds; it does not
+substitute the later HTTP result or a build artifact size. JSON records
+`httpErrorRequests` separately from transport failures.
 
 Detailed CDP initiator relationships cover the page target. When workers or
 child frames appear, `initiatorsBeforeLcp` stays `null`; the scoped
@@ -84,6 +105,27 @@ still observed lab values, but cannot certify the requested full mobile
 profile. Inspect the request relationships alongside the page to find its
 critical path. A late request alone does not establish that it blocked paint.
 
+To track useful content separately, repeat `--content-selector` with a route
+and a native CSS selector for real data, for example:
+
+```bash
+--content-selector '/app/hikes::.map-snapshot .snapshot-row'
+--content-selector '/app/ships::.map-snapshot .snapshot-row'
+--content-selector '/app/stars::.map-snapshot .snapshot-row'
+--content-selector '/app/notes::.graph-overview li'
+```
+
+`visibleContentMs` is the first animation frame where a matching element has
+visible layout intersecting the viewport. A mutation observer schedules the
+checks; it stops after a match. This is a DOM milestone, not a painted-pixel
+or interactive-map readiness metric. It does not prove that an image decoded
+or that another element does not cover the match. Selectors must match the
+release being compared; a missing or out-of-viewport match remains `null`,
+and an invalid selector fails the run. The summary reports how many runs
+matched and keeps its median unavailable if any successful run did not match. A content selector for a new SSR
+preview will be absent on an old release. Keep those missing values instead
+of replacing them with LCP. The LCP and CLS collection method is unchanged.
+
 INP requires real interaction observations over a page visit. It stays
 `null` in this synthetic report. To measure a read-only control, add
 `--interaction '/app/hikes::selector'` using its current selector. The runner
@@ -94,6 +136,25 @@ selector that fails to click marks the run failed and makes the command exit
 nonzero. A successful click with no observable Event Timing sample remains a
 successful run with `null` latency. A fast synthetic click does not establish
 field INP below 200 ms.
+
+These read-only examples exercise existing controls after the load cutoff.
+They use Playwright selectors; unlike content selectors, `:has-text()` is
+supported. Choose one control per selected route and keep it fixed before
+and after the change:
+
+| Route | Interaction selector | Action |
+| --- | --- | --- |
+| `/app/hikes` | `button.filter-toggle` | Open the duration and distance filters |
+| `/app/ships` | `[aria-label="Map mode"] button:has-text("Heat")` | Display the public heat grid |
+| `/app/stars` | `[aria-label="Map mode"] button:has-text("Historical")` | Display historical dark-sky data |
+| `/app/trips/2025-liard-hot-springs/day/1` | `button[aria-label="Next photo"]` | Select the next public photo |
+
+For example, pass
+`--interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")'`.
+The sample covers the click's Event Timing duration, not completion of its
+subsequent data fetch or map rendering. A separate functional journey must
+verify the resulting view. Verify that the chosen day still has multiple
+photos before reusing the trip example; a missing control is a failed test.
 
 Endpoint samples are full-response durations through Playwright's request
 client, without mobile throttling. They are separate from navigation TTFB.

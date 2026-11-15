@@ -49,3 +49,16 @@ This is a measurement job, not a latency threshold gate. Public response
 correctness, cache isolation and route bundle budgets remain separate CI
 checks. A successful observation run means its requested samples completed;
 it does not mean production met the performance targets.
+
+The hosted command now selects visible data rows for Hikes, Ships and Stars,
+Notes overview rows, and route-preview captions for the representative trip
+summary and day. A selector absent from the deployed release remains
+unavailable; it does not become a successful first-paint result. These are
+DOM milestones, not proof of painted or interactive maps.
+
+After each load observation is frozen, the workflow clicks the Hikes limits
+control, Ships Heat mode, Stars Historical mode, and the representative day's
+Next photo button. It records synthetic Event Timing separately from INP.
+Other routes currently have no scripted interaction sample. The 26-minute
+command deadline is unchanged; partial observations are still uploaded if a
+requested control fails or the run times out.

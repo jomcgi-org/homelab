@@ -6,6 +6,8 @@ import { parseArgs } from "node:util";
 import {
   cls,
   median,
+  navigationHeaderMetrics,
+  workerTransferSize,
   recordTransferBytes,
   responseTransferSize,
   responseTransferTotals,
@@ -27,6 +29,7 @@ const { values } = parseArgs({
     executable: { type: "string" },
     proxy: { type: "string" },
     interaction: { type: "string", multiple: true },
+    "content-selector": { type: "string", multiple: true },
     help: { type: "boolean", default: false },
   },
 });
@@ -34,6 +37,8 @@ if (values.help) {
   console.log(`Usage: node scripts/public-app-performance.mjs [options]
   --route /app/hikes             Repeat for any public page (default: seven main apps)
   --endpoint /app/stars/map      Repeat for read-only public data endpoints
+  --content-selector '/app/hikes::.map-snapshot .snapshot-row'
+                                 Record an explicitly selected visible content milestone
   --interaction '/app/hikes::button.filter-toggle'
                                  Click an explicit read-only control after the load sample
   --origin https://jomcgi.dev    Origin to measure
@@ -44,7 +49,7 @@ if (values.help) {
   --executable /path/to/chromium --proxy http://proxy:port
 
 Fresh browser context per run; CDN cache is observed, never purged.
-150 ms RTT, 1.6 Mbps down, 750 Kbps up, 4x CPU, 360x800 mobile viewport.
+150 ms minimum network latency, 1.6 Mbps down, 750 Kbps up, 4x CPU, 360x800 mobile viewport.
 INP remains null: optional clicks produce a separate lab Event Timing sample.
 GET endpoints only. Results contain URLs and metrics, never response bodies.`);
   process.exit(0);
@@ -67,18 +72,23 @@ const routes = values.route ?? [
   "/app/llm-leaderboard",
   "/app/notes",
 ];
-const interactions = new Map(
-  (values.interaction ?? []).map((entry) => {
-    const separator = entry.indexOf("::");
-    if (separator < 1)
-      throw new Error("--interaction requires /path::selector");
-    return [entry.slice(0, separator), entry.slice(separator + 2)];
-  }),
-);
-for (const route of interactions.keys()) {
-  if (!routes.includes(route))
-    throw new Error(`Interaction route ${route} is not selected by --route`);
+function selectors(option) {
+  const entries = new Map(
+    (values[option] ?? []).map((entry) => {
+      const separator = entry.indexOf("::");
+      if (separator < 1 || !entry.slice(separator + 2).trim())
+        throw new Error(`--${option} requires /path::selector`);
+      return [entry.slice(0, separator), entry.slice(separator + 2)];
+    }),
+  );
+  for (const route of entries.keys()) {
+    if (!routes.includes(route))
+      throw new Error(`${option} route ${route} is not selected by --route`);
+  }
+  return entries;
 }
+const interactions = selectors("interaction");
+const contentSelectors = selectors("content-selector");
 function urlFor(route) {
   const url = new URL(route, origin);
   if (url.origin !== origin.origin)
@@ -124,14 +134,17 @@ const browser = await chromium.launch({
   ...(proxy ? { proxy } : {}),
 });
 const report = {
+  schemaVersion: 2,
   startedAt: new Date().toISOString(),
   origin: origin.origin,
   profile,
   settleMs,
   notes: [
     "Cold browser context; observed edge state, no CDN purge.",
-    "TTFB is navigation responseStart minus startTime and includes connection setup.",
+    "TTFB is the final main-document CDP responseReceived timestamp relative to its first requestWillBeSent, including redirect time. Raw NavigationTiming and complete navigation timing are saved separately; Chromium 151 NavigationTiming omits emulated latency. Calibration is required before claiming a mobile TTFB pass.",
+    "An optional visibleContentMs records the first visible selector match at an animation frame. It is a DOM milestone, not a paint or map-readiness guarantee.",
     "Context-wide request events cover page, worker and child-frame requests. Request.sizes() supplies encoded body plus response-header sizes. Full transfer totals are unavailable when any request remains unfinished, failed or unsized at the observation cutoff; completed-response lower bounds remain in JSON.",
+    "Worker bootstrap responses with zero reported body size and no explicit Content-Length:0 remain unsized. Header-byte lower bounds and reported size components are retained.",
     "Redirects without Content-Length have unknown body size: Playwright's fallback zero is not a measurement. Such a redirect keeps the whole-page transfer total unavailable.",
     "Detailed CDP initiators cover the page target only. A worker or child frame makes the complete initiator inventory unavailable; page-target partial observations remain in JSON.",
     "The separate page-target CDP byte estimate includes response bytes received plus body chunks. Finished-request totals replace the running estimate; this partial inventory is never used as a whole-page total.",
@@ -167,6 +180,11 @@ async function measure(route, run) {
       complete: false,
       transferBytes: null,
     });
+  });
+  // Status must survive a failed, pending or timed-out body-size observation.
+  context.on("response", (response) => {
+    const item = contextRequests.get(response.request());
+    if (item) item.status = response.status();
   });
   context.on("requestfinished", (request) => {
     const item = contextRequests.get(request);
@@ -208,6 +226,7 @@ async function measure(route, run) {
     rate: profile.cpuSlowdown,
   });
   let navigationStart;
+  let mainNavigationId;
   cdp.on("Network.requestWillBeSent", (event) => {
     if (event.redirectResponse && active.has(event.requestId)) {
       const previous = active.get(event.requestId);
@@ -219,13 +238,17 @@ async function measure(route, run) {
       );
       previous.complete = true;
     }
-    if (navigationStart === undefined && event.type === "Document")
+    if (navigationStart === undefined && event.type === "Document") {
       navigationStart = event.timestamp;
+      mainNavigationId = event.requestId;
+    }
     const stack = event.initiator?.stack?.callFrames ?? [];
     const item = {
       id: `${event.requestId}:${requests.length}`,
       url: event.request.url,
       type: event.type,
+      mainNavigation:
+        event.requestId === mainNavigationId && event.type === "Document",
       startMs: (event.timestamp - (navigationStart ?? event.timestamp)) * 1000,
       initiator: event.initiator?.type,
       initiatorUrl:
@@ -239,6 +262,8 @@ async function measure(route, run) {
   cdp.on("Network.responseReceived", (event) => {
     const item = active.get(event.requestId);
     if (item) {
+      item.responseReceivedMs = (event.timestamp - navigationStart) * 1000;
+      item.responseTiming = event.response.timing ?? null;
       item.status = event.response.status;
       item.mimeType = event.response.mimeType;
       item.fromDiskCache = event.response.fromDiskCache ?? false;
@@ -264,52 +289,131 @@ async function measure(route, run) {
       item.complete = true;
     }
   });
-  await page.addInitScript(() => {
-    window.__publicAppPerf = {
-      lcp: [],
-      shifts: [],
-      events: [],
-      supported: PerformanceObserver.supportedEntryTypes,
-    };
-    const observe = (type, callback, options = {}) => {
-      if (PerformanceObserver.supportedEntryTypes.includes(type))
-        new PerformanceObserver((list) => callback(list.getEntries())).observe({
-          type,
-          buffered: true,
-          ...options,
-        });
-    };
-    observe("largest-contentful-paint", (entries) =>
-      window.__publicAppPerf.lcp.push(
-        ...entries.map((e) => ({
-          startTime: e.startTime,
-          size: e.size,
-          url: e.url,
-          element: e.element?.tagName ?? null,
-        })),
-      ),
-    );
-    observe("layout-shift", (entries) =>
-      window.__publicAppPerf.shifts.push(
-        ...entries.map((e) => ({
-          startTime: e.startTime,
-          value: e.value,
-          hadRecentInput: e.hadRecentInput,
-        })),
-      ),
-    );
-    const record = (entries) =>
-      window.__publicAppPerf.events.push(
-        ...entries.map((e) => ({
-          startTime: e.startTime,
-          duration: e.duration,
-          interactionId: e.interactionId,
-          name: e.name,
-        })),
+  await page.addInitScript(
+    (contentSelector) => {
+      window.__publicAppPerf = {
+        lcp: [],
+        shifts: [],
+        events: [],
+        visibleContentMs: null,
+        contentSelector,
+        contentSelectorError: null,
+        supported: PerformanceObserver.supportedEntryTypes,
+      };
+      const observe = (type, callback, options = {}) => {
+        if (PerformanceObserver.supportedEntryTypes.includes(type))
+          new PerformanceObserver((list) =>
+            callback(list.getEntries()),
+          ).observe({
+            type,
+            buffered: true,
+            ...options,
+          });
+      };
+      function selectorFor(element) {
+        if (!element) return null;
+        const parts = [];
+        for (
+          let node = element;
+          node?.nodeType === 1 && parts.length < 6;
+          node = node.parentElement
+        ) {
+          const tag = node.tagName.toLowerCase();
+          if (node.id) {
+            parts.unshift(`${tag}#${CSS.escape(node.id)}`);
+            break;
+          }
+          const siblings = node.parentElement
+            ? [...node.parentElement.children].filter(
+                (sibling) => sibling.tagName === node.tagName,
+              )
+            : [node];
+          parts.unshift(`${tag}:nth-of-type(${siblings.indexOf(node) + 1})`);
+        }
+        return parts.join(" > ");
+      }
+      if (contentSelector) {
+        try {
+          document.querySelector(contentSelector);
+          let scheduled = false;
+          const observer = new MutationObserver(schedule);
+          function schedule() {
+            if (scheduled || window.__publicAppPerf.visibleContentMs !== null)
+              return;
+            scheduled = true;
+            requestAnimationFrame(check);
+          }
+          function check() {
+            scheduled = false;
+            const found = [...document.querySelectorAll(contentSelector)].some(
+              (element) => {
+                const rect = element.getBoundingClientRect();
+                return (
+                  element.checkVisibility({
+                    checkOpacity: true,
+                    checkVisibilityCSS: true,
+                  }) &&
+                  rect.width > 0 &&
+                  rect.height > 0 &&
+                  rect.bottom > 0 &&
+                  rect.right > 0 &&
+                  rect.top < innerHeight &&
+                  rect.left < innerWidth
+                );
+              },
+            );
+            if (!found) return;
+            window.__publicAppPerf.visibleContentMs = performance.now();
+            observer.disconnect();
+            document.removeEventListener("load", schedule, true);
+            window.removeEventListener("resize", schedule);
+          }
+          observer.observe(document, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+          });
+          document.addEventListener("load", schedule, true);
+          window.addEventListener("resize", schedule);
+          schedule();
+        } catch (error) {
+          window.__publicAppPerf.contentSelectorError = error.message;
+        }
+      }
+      observe("largest-contentful-paint", (entries) =>
+        window.__publicAppPerf.lcp.push(
+          ...entries.map((e) => ({
+            startTime: e.startTime,
+            size: e.size,
+            url: e.url,
+            element: e.element?.tagName ?? null,
+            selector: selectorFor(e.element),
+          })),
+        ),
       );
-    observe("event", record, { durationThreshold: 16 });
-    observe("first-input", record);
-  });
+      observe("layout-shift", (entries) =>
+        window.__publicAppPerf.shifts.push(
+          ...entries.map((e) => ({
+            startTime: e.startTime,
+            value: e.value,
+            hadRecentInput: e.hadRecentInput,
+          })),
+        ),
+      );
+      const record = (entries) =>
+        window.__publicAppPerf.events.push(
+          ...entries.map((e) => ({
+            startTime: e.startTime,
+            duration: e.duration,
+            interactionId: e.interactionId,
+            name: e.name,
+          })),
+        );
+      observe("event", record, { durationThreshold: 16 });
+      observe("first-input", record);
+    },
+    contentSelectors.get(route) ?? null,
+  );
   const result = { route, run, inpMs: null };
   try {
     const response = await page.goto(urlFor(route), {
@@ -326,12 +430,20 @@ async function measure(route, run) {
       observedUntilMs: performance.now(),
     }));
     result.observedUntilMs = observation.observedUntilMs;
-    result.ttfbMs = observation.navigation
-      ? observation.navigation.responseStart - observation.navigation.startTime
-      : null;
+    Object.assign(
+      result,
+      navigationHeaderMetrics(requests, observation.navigation),
+    );
+    result.navigationTiming = observation.navigation ?? null;
+    result.visibleContentMs = observation.visibleContentMs;
+    result.contentSelector = observation.contentSelector;
+    result.contentSelectorError = observation.contentSelectorError;
+    result.lcpCandidates = observation.lcp;
     const lcp = observation.lcp.at(-1);
     result.lcpMs = lcp?.startTime ?? null;
     result.lcpElement = lcp?.element ?? null;
+    result.lcpSelector = lcp?.selector ?? null;
+    result.lcpUrl = lcp?.url ?? null;
     result.cls = observation.supported.includes("layout-shift")
       ? cls(observation.shifts)
       : null;
@@ -345,6 +457,11 @@ async function measure(route, run) {
     }));
     result.pageTargetTotals = transferTotals(requests);
     result.pageTargetRequests = structuredClone(requests);
+    const workerUrls = new Set(
+      otherTargets
+        .filter((target) => target.type === "worker")
+        .map((target) => target.url),
+    );
     result.requests = await Promise.all(
       contextSnapshot.map(async ({ sizing, ...item }) => {
         if (!sizing) return item;
@@ -359,7 +476,7 @@ async function measure(route, run) {
               );
             }),
           ]);
-          return { ...item, ...size };
+          return workerTransferSize({ ...item, ...size }, workerUrls);
         } finally {
           clearTimeout(timer);
         }
@@ -380,6 +497,7 @@ async function measure(route, run) {
       ? null
       : result.pageTargetInitiatorsBeforeLcp;
     result.interactionLatencyMs = null;
+    if (result.contentSelectorError) result.error = result.contentSelectorError;
     if (interactions.has(route)) {
       result.interactionSelector = interactions.get(route);
       const since = await page.evaluate(() => performance.now());
@@ -472,13 +590,13 @@ try {
 const cell = (value, digits = 0) =>
   Number.isFinite(value) ? value.toFixed(digits) : "unavailable";
 const table = [
-  "| Route | Runs | Complete profile | TTFB ms | LCP ms | CLS | Lab interaction ms | INP | Transfer KiB | JS KiB | Requests | Edge |",
-  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
+  "| Route | Runs | Complete profile | Header arrival ms | Raw nav TTFB ms | Visible content ms | LCP ms | CLS | Lab interaction ms | INP | Transfer KiB | JS KiB | Requests | Edge |",
+  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
 ];
 for (const page of report.pages) {
   const m = page.median;
   table.push(
-    `| ${page.route} | ${m.successfulRuns}/${m.runs} | ${m.completeProfileRuns}/${m.runs} | ${cell(m.ttfbMs)} | ${cell(m.lcpMs)} | ${cell(m.cls, 3)} | ${cell(m.interactionLatencyMs)} | unavailable | ${m.transferBytes === null ? "unavailable" : cell(m.transferBytes / 1024, 1)} | ${m.javascriptBytes === null ? "unavailable" : cell(m.javascriptBytes / 1024, 1)} | ${cell(m.requestCount)} | ${m.cacheStatus.join(", ")} |`,
+    `| ${page.route} | ${m.successfulRuns}/${m.runs} | ${m.completeProfileRuns}/${m.runs} | ${cell(m.ttfbMs)} | ${cell(m.rawNavigationTtfbMs)} | ${cell(m.visibleContentMs)} | ${cell(m.lcpMs)} | ${cell(m.cls, 3)} | ${cell(m.interactionLatencyMs)} | unavailable | ${m.transferBytes === null ? "unavailable" : cell(m.transferBytes / 1024, 1)} | ${m.javascriptBytes === null ? "unavailable" : cell(m.javascriptBytes / 1024, 1)} | ${cell(m.requestCount)} | ${m.cacheStatus.join(", ")} |`,
   );
 }
 if (report.endpoints.length) {

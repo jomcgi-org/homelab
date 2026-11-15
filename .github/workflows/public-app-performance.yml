@@ -101,6 +101,16 @@ jobs:
               --route /app/trips/2025-liard-hot-springs \
               --route /app/trips/2025-liard-hot-springs/timeline \
               --route /app/trips/2025-liard-hot-springs/day/1 \
+              --content-selector '/app/hikes::.map-snapshot .snapshot-row' \
+              --content-selector '/app/ships::.map-snapshot .snapshot-row' \
+              --content-selector '/app/stars::.map-snapshot .snapshot-row' \
+              --content-selector '/app/notes::.graph-overview li' \
+              --content-selector '/app/trips/2025-liard-hot-springs::.route-preview .caption' \
+              --content-selector '/app/trips/2025-liard-hot-springs/day/1::.route-preview .caption' \
+              --interaction '/app/hikes::button.filter-toggle' \
+              --interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")' \
+              --interaction '/app/stars::[aria-label="Map mode"] button:has-text("Historical")' \
+              --interaction '/app/trips/2025-liard-hot-springs/day/1::button[aria-label="Next photo"]' \
               --endpoint /app/hikes/__data.json \
               --endpoint /app/ships/__data.json \
               --endpoint /app/stars/__data.json \
@@ -122,7 +132,7 @@ jobs:
             echo
             echo 'Production: https://jomcgi.dev. Harness revision:' "$HARNESS_SHA"'. This is not the deployed revision.'
             echo
-            echo 'Three cold-browser loads per route; observed CDN state, no purge. INP remains unavailable. Worker pages do not certify the full mobile throttling profile.'
+            echo 'Three cold-browser loads per route; observed CDN state, no purge. INP remains unavailable; explicit clicks report lab Event Timing after the load cutoff. Missing content milestones remain unavailable. Worker pages do not certify the full mobile throttling profile.'
             echo
             if [[ -f "$PERFORMANCE_OUTPUT/table.md" ]]; then
               cat "$PERFORMANCE_OUTPUT/table.md"
