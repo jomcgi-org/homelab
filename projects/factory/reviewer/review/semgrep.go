@@ -37,8 +37,9 @@ type SemgrepClient struct {
 	HTTP      *http.Client
 }
 
-// SemgrepFinding is an allowlist of evidence fields. Rule messages are
-// untrusted data; raw responses, code snippets and credentials stay out.
+// SemgrepFinding holds bounded service-side evidence for validation and the
+// restart digest. It must not be marshaled into a prompt: semgrepToolOutput
+// drops provider text and maps the permitted fields to fixed classes.
 type SemgrepFinding struct {
 	ID       int64  `json:"id"`
 	Product  string `json:"product"`

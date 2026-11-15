@@ -741,11 +741,17 @@ previews).
   can mean findings: accept that only with nonempty findings whose
   `lastSeenScan.meta.commit` all match this head. API errors, pending,
   skipped and missing scans stay unverified. Match the check's App, not
-  just its name. The agent sees
-  allowlisted finding fields as JSON in a separate delimited tool-output
-  block. Newlines, controls and HTML are escaped and delimiter names are
-  sanitized. It accounts for each introduced finding as fixed, false positive
-  with evidence, or at its real `REVIEW.md` severity. The service adds
+  just its name. The agent sees numeric finding IDs and locations plus fixed
+  product and severity classes as JSON in a separate delimited tool-output
+  block. Provider messages, rule names, triage text and URLs stay in the
+  service. Provider paths only select numeric references to file names from
+  the PR's GitHub file list (including rename sources); unmatched paths get
+  index 0 and are withheld. This follows `REVIEW.md` "What the agent sees":
+  escaping provider text alone would not satisfy its source restriction.
+  PR file names are JSON-escaped and delimiter names sanitized. The agent
+  accounts for each introduced finding as fixed, false positive with
+  evidence, or at its real `REVIEW.md` severity; insufficient permitted
+  evidence requires an `unverified` finding at medium. The service adds
   `semgrep:unverified` at medium for unavailable evidence after assessing the
   agent's reply, so an agent cannot waive it. The task marker records the
   evidence digest: a resumed task cannot pass with changed evidence it never
