@@ -68,6 +68,23 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestHumanGateAssigneeDefaultsToJoeOnlyForHOME(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{sample, ""},
+		{strings.Replace(sample, "itsaplanProject: HL", "itsaplanProject: HOME", 1), "joe"},
+		{strings.Replace(sample, "itsaplanProject: HL", "itsaplanProject: HOME", 1) + "    humanGateAssignee: ''\n", ""},
+		{sample + "    humanGateAssignee: other\n", "other"},
+	} {
+		f, err := Parse([]byte(tc.input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := *f.Bindings[0].HumanGateAssignee; got != tc.want {
+			t.Fatalf("assignee = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestParseRejectsUnknownAgentAndFields(t *testing.T) {
 	if _, err := Parse([]byte(strings.Replace(sample, "agents: [coder]", "agents: [other]", 1))); err == nil {
 		t.Fatal("unknown agent accepted")

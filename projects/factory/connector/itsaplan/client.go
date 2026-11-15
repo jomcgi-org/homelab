@@ -224,11 +224,13 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
-	ID          int64  `json:"id"`
-	Identifier  string `json:"identifier"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ColumnID    int64  `json:"columnId"`
+	ID             int64   `json:"id"`
+	Identifier     string  `json:"identifier"`
+	Title          string  `json:"title"`
+	Description    string  `json:"description"`
+	ColumnID       int64   `json:"columnId"`
+	AssigneeUserID string  `json:"assigneeUserId"`
+	DelegateUserID *string `json:"delegateUserId"`
 }
 
 // GetIssue reads an issue with the coordinator's key.

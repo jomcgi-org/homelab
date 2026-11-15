@@ -15,6 +15,60 @@ type seen struct {
 	body                     map[string]any
 }
 
+func TestGateIssueWritesUseCoordinatorAndExplicitNullDelegate(t *testing.T) {
+	var got seen
+	c := server(t, 201, `{"id":42,"identifier":"HOME-42"}`, &got)
+	body := GateIssueWrite{Title: "Merge #1 past the human gate", Description: "<!-- message-id: gate/1/create -->", ColumnID: 1, AssigneeUserID: "joe-id"}
+	is, err := c.CreateGateIssue(context.Background(), "HOME", body)
+	if err != nil || is.ID != 42 || got.path != "/projects/HOME/issues" || got.method != "POST" || got.key != "k-coord" {
+		t.Fatalf("create = %+v %v request=%+v", is, err, got)
+	}
+	if delegate, ok := got.body["delegateUserId"]; !ok || delegate != nil || got.body["assigneeUserId"] != "joe-id" {
+		t.Fatalf("assignment = %+v", got.body)
+	}
+	body.ColumnID = 5
+	if err := c.UpdateGateIssue(context.Background(), 42, body); err != nil {
+		t.Fatal(err)
+	}
+	if got.path != "/issues/42" || got.method != "PATCH" || got.key != "k-coord" || got.body["columnId"] != float64(5) {
+		t.Fatalf("update = %+v", got)
+	}
+}
+
+func TestGateIssueSearchIncludesArchivedHits(t *testing.T) {
+	marker := "<!-- factory-human-gate/owner/repo/1 -->"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") != "k-coord" || r.Method != "GET" {
+			t.Errorf("unexpected request method or identity")
+		}
+		switch r.URL.Path {
+		case "/projects/HOME/issues/search":
+			if r.URL.Query().Get("q") != marker || r.URL.Query().Get("limit") != "500" {
+				t.Errorf("search query = %s", r.URL.RawQuery)
+			}
+			_, _ = io.WriteString(w, `[{"id":1},{"id":2,"archived":true}]`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "k-coord"}}
+	hits, err := c.SearchGateIssues(context.Background(), "HOME", marker)
+	if err != nil || len(hits) != 2 || hits[1].ID != 2 {
+		t.Fatalf("search = %+v %v", hits, err)
+	}
+}
+
+func TestGateProjectDecodesHumanAssignees(t *testing.T) {
+	var got seen
+	c := server(t, 200, `{"columns":[{"id":1,"name":"Todo","stateType":"unstarted"}],"assignees":[{"userId":"joe-id","username":"joe","kind":"member"}]}`, &got)
+	p, err := c.GetProject(context.Background(), "HOME")
+	if err != nil || len(p.Assignees) != 1 || p.Assignees[0].UserID != "joe-id" || len(p.Columns) != 1 || got.key != "k-coord" || got.path != "/projects/HOME" {
+		t.Fatalf("project = %+v %v, request=%+v", p, err, got)
+	}
+}
+
 func server(t *testing.T, status int, reply string, got *seen) *Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

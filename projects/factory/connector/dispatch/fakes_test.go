@@ -68,6 +68,14 @@ type fakeItsaplan struct {
 	// Event failures exercise journal replay before and after server acceptance.
 	eventErr     error
 	loseEventAck bool
+
+	gateCreates     []itsaplan.GateIssueWrite
+	gateUpdates     []itsaplan.GateIssueWrite
+	gateCreateErr   error
+	gateUpdateErr   error
+	loseGateCreate  bool
+	beforeGateWrite func()
+	beforeGateRead  func(operation, resource string)
 }
 
 // authorize checks the key the connector would send for agent. The caller
@@ -325,6 +333,9 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.beforeGateRead != nil && issueID >= 200 {
+		f.beforeGateRead("issue", fmt.Sprint(issueID))
+	}
 	f.calls++
 	f.issueCalls++
 	if f.issueErr != nil {

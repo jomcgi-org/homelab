@@ -734,6 +734,30 @@ during a key rotation) is retried under the outbox's usual bounds.
 HOME-15 and HOME-18 waited silently for eight hours after rounds whose
 agent could not read the CI failure.
 
+For the Homelab binding's HOME project ([#7935](https://github.com/jomcgi-org/homelab/issues/7935)), `humanGateAssignee` defaults to
+`joe`; an explicit empty string disables it, and other bindings opt in.
+When the current PR head passes `pr-checks` and the configured reviewer
+App marks its failed review `human-gate-only`, the connector creates one
+issue titled `Merge #<n> past the human gate`. It is assigned to Joe with
+no delegate, in Todo, so it appears in Needs Joe. Its body links the PR,
+names the head and includes the review's gated files and findings. Joe's
+merge supplies approval for a PR authored as `jomcgi`.
+
+The issue follows the PR during coding turns and after delivery stops:
+an unready head moves it to Backlog, a ready head to Todo, a merge to Done,
+and a close to Canceled. `human_gate_issue` has one row per repository and
+PR. Every write first records an immutable `human_gate_attempt` with its
+message ID, payload and writer epoch. The same marker in the description
+recovers a create whose response was lost, including after a restart.
+Itsaplan 1.10 has no creation idempotency key: an ambiguous POST is never
+repeated, and reconciliation keeps searching, including archived issues.
+A send proven unaccepted can retry. An ambiguous create that never becomes
+visible requires operator investigation; it is logged each review poll.
+Absolute state updates retry with the same message ID and payload for
+that revision, and failed terminal moves remain eligible after PR delivery
+ends. The coordinator needs `work_items` create, read and edit. HOME-51's
+notify sink is not wired yet; these issues are the notification for now.
+
 **Stopping delivery.** A round has no itsaplan run to cancel, and its
 kagent session belongs to the connector, so the connector watches for the
 signals a person gives. It reads the issue before a round starts, every
@@ -1074,7 +1098,7 @@ and retries once, so a brief overlap during a rollout is safe.
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
 | Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
-| Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
+| Connector to itsaplan | A coordinator external agent for comments, human-gate issues, run lookups and moving merged issues to Done (`work_items` create, read and edit, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
 | Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards the reviewer App's required `factory review` check ("Merge authority") |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |
