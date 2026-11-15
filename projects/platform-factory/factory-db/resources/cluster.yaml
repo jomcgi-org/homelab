@@ -1,6 +1,6 @@
-# The factory's PostgreSQL: itsaplan's database, and the connector's once it
-# deploys (delivery plan step 9). Three instances, one per node, with WAL
-# archiving and daily base backups to Garage (projects/factory-cluster/
+# The factory's PostgreSQL: databases for itsaplan, the connector and the
+# reviewer. Three instances, one per node, with WAL archiving and daily
+# base backups to Garage (projects/factory-cluster/
 # README.md, "Postgres"). Garage runs on the same three nodes, so this
 # survives losing a node or a volume, not losing the cluster.
 #
@@ -69,6 +69,13 @@ spec:
         connectionLimit: -1
         passwordSecret:
           name: factory-db-connector-login
+      - name: factory_reviewer
+        ensure: present
+        login: true
+        inherit: true
+        connectionLimit: -1
+        passwordSecret:
+          name: factory-db-reviewer-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31
@@ -112,6 +119,23 @@ spec:
   owner: factory_connector
   ensure: present
   # Deleting this object never drops the database.
+  databaseReclaimPolicy: retain
+---
+# The reviewer's durable state; its consumer is deployed separately.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: factory-db-reviewer
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: factory-db
+  name: factory_reviewer
+  owner: factory_reviewer
+  ensure: present
   databaseReclaimPolicy: retain
 ---
 apiVersion: postgresql.cnpg.io/v1

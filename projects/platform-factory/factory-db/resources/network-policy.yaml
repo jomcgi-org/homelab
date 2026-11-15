@@ -33,6 +33,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-connector
+        # The reviewer's durable state.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-reviewer
         # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: factory-db
