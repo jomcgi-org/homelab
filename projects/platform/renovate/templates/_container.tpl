@@ -1,12 +1,34 @@
 {{- define "renovate.container" -}}
+{{- $githubApp := .Values.githubApp | default dict -}}
 image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
 imagePullPolicy: {{ .Values.image.pullPolicy }}
+{{- if $githubApp.enabled }}
+# Preserve the image entrypoint; its command loads the per-run credentials.
+args:
+  - /bin/sh
+  - -c
+  - |
+    set -eu
+    RENOVATE_TOKEN="$(cat /var/run/renovate-token/token)"
+    RENOVATE_GIT_AUTHOR="$(cat /var/run/renovate-token/git-author)"
+    test -n "$RENOVATE_TOKEN"
+    test -n "$RENOVATE_GIT_AUTHOR"
+    export RENOVATE_TOKEN RENOVATE_GIT_AUTHOR
+    exec renovate
+{{- end }}
 env:
+  {{- if $githubApp.enabled }}
+  - name: RENOVATE_USERNAME
+    value: {{ $githubApp.username | quote }}
+  - name: RENOVATE_PLATFORM_COMMIT
+    value: enabled
+  {{- else }}
   - name: RENOVATE_TOKEN
     valueFrom:
       secretKeyRef:
         name: {{ .Values.onepassword.secretName }}
         key: {{ .Values.onepassword.tokenKey }}
+  {{- end }}
   - name: RENOVATE_PLATFORM
     value: github
   - name: RENOVATE_REPOSITORIES
@@ -48,6 +70,11 @@ securityContext:
   readOnlyRootFilesystem: true
   runAsNonRoot: true
 volumeMounts:
+  {{- if $githubApp.enabled }}
+  - name: github-token
+    mountPath: /var/run/renovate-token
+    readOnly: true
+  {{- end }}
   - name: workspace
     mountPath: /tmp
 {{- end }}

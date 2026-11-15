@@ -1,4 +1,8 @@
 {{- if eq .Values.workloadKind "CronJob" }}
+{{- $githubApp := .Values.githubApp | default dict }}
+{{- if and $githubApp.enabled (or (le (int .Values.activeDeadlineSeconds) 0) (ge (int .Values.activeDeadlineSeconds) 3600)) }}
+{{- fail "GitHub App Jobs require activeDeadlineSeconds between 1 and 3599" }}
+{{- end }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -37,10 +41,62 @@ spec:
             fsGroup: 12021
             seccompProfile:
               type: RuntimeDefault
+          {{- if $githubApp.enabled }}
+          initContainers:
+            - name: github-app-token
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["node", "--input-type=module", "--eval"]
+              args:
+                - |
+                  {{- .Files.Get "files/github-app-token.mjs" | nindent 18 }}
+              env:
+                - name: GITHUB_APP_CREDENTIALS_DIR
+                  value: /var/run/renovate-github-app
+                - name: RENOVATE_TOKEN_DIR
+                  value: /var/run/renovate-token
+                - name: RENOVATE_USERNAME
+                  value: {{ $githubApp.username | quote }}
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+              volumeMounts:
+                - name: github-app
+                  mountPath: /var/run/renovate-github-app
+                  readOnly: true
+                - name: github-token
+                  mountPath: /var/run/renovate-token
+          {{- end }}
           containers:
             - name: renovate
               {{- include "renovate.container" . | nindent 14 }}
           volumes:
+            {{- if $githubApp.enabled }}
+            - name: github-app
+              secret:
+                secretName: {{ .Values.onepassword.secretName }}
+                defaultMode: 0440
+                items:
+                  - key: private-key
+                    path: private-key
+                  - key: app-id
+                    path: app-id
+                  - key: installation-id
+                    path: installation-id
+            - name: github-token
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1Mi
+            {{- end }}
             - name: workspace
               emptyDir:
                 sizeLimit: {{ .Values.workspace.sizeLimit }}
