@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -1625,35 +1626,98 @@ func (v *env) idleComments() []string {
 	return out
 }
 
-func TestRoundWithoutANewCommitIsReportedOnce(t *testing.T) {
-	v := newDeliveryEnv(t)
+// idleRound runs a review round on sha-1 that ends without a push, with the
+// head's checks still running.
+func (v *env) idleRound() {
+	v.t.Helper()
 	v.delivered()
+	v.gh.check("sha-1", "test", 100, "")
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix it.")
 	v.poll()
 	if n := len(v.rounds()); n != 1 {
-		t.Fatalf("rounds = %d, want 1", n)
+		v.t.Fatalf("rounds = %d, want 1", n)
 	}
-	// The agent ends the round without pushing: nothing on sha-1 is new, so
-	// no event can start another round.
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No commit pushed: the failure is undiagnosed.", nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+}
+
+func TestRoundWithoutANewCommitIsReportedOnceChecksFinish(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.idleRound()
+	v.poll()
+	if idle := v.idleComments(); len(idle) != 0 {
+		t.Fatalf("idle-round comments = %q while a check still runs on the head", idle)
+	}
+	v.gh.green("sha-1")
 	v.poll()
 	v.poll()
 	idle := v.idleComments()
 	if len(idle) != 1 {
 		t.Fatalf("idle-round comments = %q, want exactly one", idle)
 	}
-	for _, want := range []string{"Review round 1 for HL-7", "PR #1", "still at sha-1", "waits for a person"} {
+	for _, want := range []string{
+		"Review round 1 of 2 for HL-7", "PR #1", "still at sha-1", "its checks have finished",
+		"a new commit on factory/HL-7 restarts CI and review", "round 2 of 2 starts",
+	} {
 		if !strings.Contains(idle[0], want) {
 			t.Errorf("comment lacks %q: %s", want, idle[0])
 		}
+	}
+	if strings.Contains(idle[0], "request changes") {
+		t.Errorf("comment offers a request for changes, which acts once per head: %s", idle[0])
 	}
 	if n := len(v.rounds()); n != 1 {
 		t.Fatalf("rounds = %d, want no new round from the idle head", n)
 	}
 	if w := v.work(101); w.State != store.WorkReview {
 		t.Fatalf("work item = %s, want review", w.State)
+	}
+}
+
+func TestIdleRoundCommentIsNotResentAfterAnUnknownOutcome(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.idleRound()
+	v.gh.green("sha-1")
+	before := len(v.its.Comments())
+	v.its.mu.Lock()
+	v.its.commentErr = errors.New("read tcp: connection reset by peer")
+	v.its.mu.Unlock()
+	v.poll()
+	v.its.mu.Lock()
+	v.its.commentErr = nil
+	v.its.mu.Unlock()
+	v.poll()
+	v.poll()
+	if idle := v.idleComments(); len(idle) != 0 {
+		t.Fatalf("idle-round comments = %q, want none: the first send may have posted it", idle)
+	}
+	var abandoned int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE dedupe_key LIKE 'comment/round-idle/%'
+		AND abandoned_at IS NOT NULL AND delivered_at IS NULL`).Scan(&abandoned); err != nil || abandoned != 1 {
+		t.Fatalf("abandoned idle comments = %d (%v), want 1", abandoned, err)
+	}
+	if len(v.its.Comments()) != before {
+		t.Fatalf("comments = %d, want %d", len(v.its.Comments()), before)
+	}
+}
+
+func TestIdleRoundCommentRetriesARequestThatNeverLeft(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.idleRound()
+	v.gh.green("sha-1")
+	v.its.mu.Lock()
+	v.its.commentErr = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	v.its.mu.Unlock()
+	v.poll()
+	v.its.mu.Lock()
+	v.its.commentErr = nil
+	v.its.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		v.poll()
+	}
+	if idle := v.idleComments(); len(idle) != 1 {
+		t.Fatalf("idle-round comments = %q, want one after the dial failure", idle)
 	}
 }
 
@@ -1666,6 +1730,9 @@ func TestRoundThatPushesIsNotReportedIdle(t *testing.T) {
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed the fix.", nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+	// The gate stays closed on the trusted request for changes, with every
+	// check finished: only the moved head keeps this from being idle.
+	v.gh.green("sha-2")
 	v.poll()
 	v.poll()
 	if idle := v.idleComments(); len(idle) != 0 {
