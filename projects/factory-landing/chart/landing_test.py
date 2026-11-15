@@ -1,10 +1,13 @@
 """Render the private landing route, runtime and network boundary."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
 
 import yaml
+
+DIGEST = "sha256:" + "0" * 64
 
 
 def test_private_static_app():
@@ -18,7 +21,7 @@ def test_private_static_app():
             "--namespace",
             "factory-landing",
             "--set",
-            "image.digest=sha256:test",
+            f"image.digest={DIGEST}",
         ],
         check=True,
         capture_output=True,
@@ -54,7 +57,7 @@ def test_private_static_app():
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["runAsNonRoot"] is True
     container = pod["containers"][0]
-    assert container["image"].endswith("@sha256:test")
+    assert container["image"].endswith(f"@{DIGEST}")
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert "envFrom" not in container
     policy = docs["CiliumNetworkPolicy"]["spec"]
@@ -62,3 +65,21 @@ def test_private_static_app():
     peer = policy["ingress"][0]["fromEndpoints"][0]["matchLabels"]
     assert peer["k8s:io.kubernetes.pod.namespace"] == "edge"
     assert peer["gateway.envoyproxy.io/owning-gateway-name"] == "edge"
+
+    # HOME-69: the pre-library objects at e68a9f09b7da, with a fixed test digest. Only
+    # annotations change; pin selectors, probes, resources, routes and policies
+    # as well as the security assertions above.
+    before = json.loads((chart / "testdata/before.json").read_text())
+
+    def without_annotations(value):
+        if isinstance(value, dict):
+            return {
+                key: without_annotations(item)
+                for key, item in value.items()
+                if key != "annotations"
+            }
+        if isinstance(value, list):
+            return [without_annotations(item) for item in value]
+        return value
+
+    assert without_annotations(docs) == without_annotations(before)

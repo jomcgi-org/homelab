@@ -1,0 +1,5 @@
+apiVersion: v2
+name: factory-library
+description: Secure defaults for workloads on the factory cluster
+type: library
+version: 0.1.0

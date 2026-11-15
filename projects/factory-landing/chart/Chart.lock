@@ -1,0 +1,6 @@
+dependencies:
+- name: factory-library
+  repository: file://../../shared/helm/factory-library/chart
+  version: 0.1.0
+digest: sha256:fe1218866688d2a9b87e897223bb9e1e5e81fa248167d8f0517864b8671125ea
+generated: "2026-11-15T21:45:54Z"

@@ -1,0 +1,368 @@
+[
+  {
+    "set": {
+      "image/digest": ""
+    },
+    "error": "workload app: image.digest is required (tags are not deployable)"
+  },
+  {
+    "set": {
+      "image/digest": "sha256:test"
+    },
+    "error": "workload app: image.digest must be sha256 followed by 64 lowercase hex digits"
+  },
+  {
+    "set": {
+      "image/repository": "ghcr.io/jomcgi/example:latest"
+    },
+    "error": "workload app: image.repository must not contain a tag or digest"
+  },
+  {
+    "set": {
+      "workloads/app/resources/requests": null
+    },
+    "error": "workload app: resources.requests.cpu is required"
+  },
+  {
+    "set": {
+      "workloads/app/resources/requests/cpu": null
+    },
+    "error": "workload app: resources.requests.cpu is required"
+  },
+  {
+    "set": {
+      "workloads/app/resources/requests/memory": null
+    },
+    "error": "workload app: resources.requests.memory is required"
+  },
+  {
+    "set": {
+      "workloads/app/resources/limits": null
+    },
+    "error": "workload app: resources.limits.memory is required"
+  },
+  {
+    "set": {
+      "workloads/app/resources/limits/memory": null
+    },
+    "error": "workload app: resources.limits.memory is required"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "unknown",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "unknown peer unknown"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "world",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "peer world requires exception network.world"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "0.0.0.0/0",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "peer 0.0.0.0/0 requires exception network.0.0.0.0/0"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "::/0",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "peer ::/0 requires exception network.::/0"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "tenants",
+            "fqdn": "*.example.com",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "wildcard FQDN *.example.com requires exception network.fqdn:*.example.com"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "everything",
+            "fqdn": "*",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "wildcard FQDN * requires exception network.fqdn:*"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "fqdn": "api.github.com",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "network peer name is required"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "github",
+            "fqdn": "api.github.com"
+          }
+        ]
+      }
+    },
+    "error": "peer github: an explicit port is required"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "github",
+            "fqdn": "api.github.com",
+            "port": 0
+          }
+        ]
+      }
+    },
+    "error": "peer github: an explicit port is required"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "edge",
+            "port": 65536
+          }
+        ]
+      }
+    },
+    "error": "peer edge: port must be between 1 and 65535"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "edge",
+            "port": 443,
+            "protocol": "ANY"
+          }
+        ]
+      }
+    },
+    "error": "protocol must be TCP, UDP or SCTP"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "edge",
+            "fqdn": "api.github.com",
+            "port": 443
+          }
+        ]
+      }
+    },
+    "error": "an FQDN peer must have its own explicit name"
+  },
+  {
+    "set": {
+      "workloads/app/network": {
+        "egress": [
+          {
+            "peer": "kube-apiserver",
+            "port": 6443
+          }
+        ]
+      }
+    },
+    "error": "kube-apiserver egress requires kubernetesApi: true"
+  },
+  {
+    "set": {
+      "exceptions": [
+        {
+          "workload": "app",
+          "default": "network.world"
+        }
+      ]
+    },
+    "error": "exception.reason is required"
+  },
+  {
+    "set": {
+      "exceptions": [
+        {
+          "workload": "app",
+          "default": "network.world",
+          "reason": "  "
+        }
+      ]
+    },
+    "error": "exception.reason is required"
+  },
+  {
+    "set": {
+      "exceptions": [
+        {
+          "workload": "typo",
+          "default": "network.world",
+          "reason": "Why"
+        }
+      ]
+    },
+    "error": "exception names unknown workload typo"
+  },
+  {
+    "set": {
+      "exceptions": [
+        {
+          "workload": "app",
+          "default": "unrecognized",
+          "reason": "Reviewed"
+        }
+      ]
+    },
+    "error": "unsupported exception default unrecognized"
+  },
+  {
+    "set": {
+      "exceptions": [
+        {
+          "workload": "app",
+          "default": "network.world",
+          "reason": "Reviewed"
+        },
+        {
+          "workload": "app",
+          "default": "network.world",
+          "reason": "Reviewed"
+        }
+      ]
+    },
+    "error": "duplicate exception app/network.world"
+  },
+  {
+    "set": {
+      "exceptions": [
+        {
+          "workload": "app",
+          "default": "runAsUser",
+          "reason": "Reviewed",
+          "value": 0
+        }
+      ]
+    },
+    "error": "exception runAsUser requires a positive numeric value"
+  },
+  {
+    "set": {
+      "workloads/app/securityContext": {
+        "runAsNonRoot": false
+      }
+    },
+    "error": "workload app: unsupported field securityContext"
+  },
+  {
+    "set": {
+      "workloads/app/volumes": [
+        {
+          "hostPath": {
+            "path": "/"
+          }
+        }
+      ]
+    },
+    "error": "workload app: unsupported field volumes"
+  },
+  {
+    "set": {
+      "workloads/app/kubernetesApi": "false"
+    },
+    "error": "kubernetesApi must be a boolean"
+  },
+  {
+    "set": {
+      "secrets": {
+        "raw": {
+          "workload": "app",
+          "data": {
+            "password": "literal"
+          }
+        }
+      }
+    },
+    "error": "secret raw: unsupported field data"
+  },
+  {
+    "set": {
+      "secrets": {
+        "raw": {
+          "workload": "app",
+          "generated": {
+            "keys": {
+              "password": "literal"
+            }
+          }
+        }
+      }
+    },
+    "error": "generated key entropy must be 16 to 128 bytes"
+  },
+  {
+    "set": {
+      "secrets": {
+        "raw": {
+          "workload": "app",
+          "onePassword": {
+            "itemPath": "not-a-vault-path"
+          }
+        }
+      }
+    },
+    "error": "onePassword.itemPath must be vaults/<vault>/items/<item>"
+  }
+]

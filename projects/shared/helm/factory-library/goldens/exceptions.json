@@ -1,0 +1,155 @@
+{
+  "Deployment/app": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "app",
+      "annotations": {
+        "factory.jomcgi.dev/exceptions": "[{\"default\":\"runAsUser\",\"reason\":\"Image UID\",\"value\":1000,\"workload\":\"app\"},{\"default\":\"runAsGroup\",\"reason\":\"Image GID\",\"value\":1000,\"workload\":\"app\"},{\"default\":\"readOnlyRootFilesystem\",\"reason\":\"Legacy writer\",\"workload\":\"app\"},{\"default\":\"network.world\",\"reason\":\"External relay\",\"workload\":\"app\"},{\"default\":\"network.0.0.0.0/0\",\"reason\":\"IPv4 relay\",\"workload\":\"app\"},{\"default\":\"network.::/0\",\"reason\":\"IPv6 relay\",\"workload\":\"app\"},{\"default\":\"network.fqdn:*.example.com\",\"reason\":\"Tenant hosts\",\"workload\":\"app\"}]"
+      }
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "app"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/name": "app"
+          },
+          "annotations": {
+            "factory.jomcgi.dev/exceptions": "[{\"default\":\"runAsUser\",\"reason\":\"Image UID\",\"value\":1000,\"workload\":\"app\"},{\"default\":\"runAsGroup\",\"reason\":\"Image GID\",\"value\":1000,\"workload\":\"app\"},{\"default\":\"readOnlyRootFilesystem\",\"reason\":\"Legacy writer\",\"workload\":\"app\"},{\"default\":\"network.world\",\"reason\":\"External relay\",\"workload\":\"app\"},{\"default\":\"network.0.0.0.0/0\",\"reason\":\"IPv4 relay\",\"workload\":\"app\"},{\"default\":\"network.::/0\",\"reason\":\"IPv6 relay\",\"workload\":\"app\"},{\"default\":\"network.fqdn:*.example.com\",\"reason\":\"Tenant hosts\",\"workload\":\"app\"}]"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "securityContext": {
+            "runAsNonRoot": true,
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          },
+          "containers": [
+            {
+              "name": "app",
+              "image": "ghcr.io/jomcgi/example@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": false,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                }
+              },
+              "resources": {
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "32Mi"
+                },
+                "limits": {
+                  "memory": "128Mi"
+                }
+              }
+            }
+          ],
+          "imagePullSecrets": [
+            {
+              "name": "ghcr-imagepull-secret"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "CiliumNetworkPolicy/app": {
+    "apiVersion": "cilium.io/v2",
+    "kind": "CiliumNetworkPolicy",
+    "metadata": {
+      "name": "app",
+      "annotations": {
+        "factory.jomcgi.dev/exceptions": "[{\"default\":\"runAsUser\",\"reason\":\"Image UID\",\"value\":1000,\"workload\":\"app\"},{\"default\":\"runAsGroup\",\"reason\":\"Image GID\",\"value\":1000,\"workload\":\"app\"},{\"default\":\"readOnlyRootFilesystem\",\"reason\":\"Legacy writer\",\"workload\":\"app\"},{\"default\":\"network.world\",\"reason\":\"External relay\",\"workload\":\"app\"},{\"default\":\"network.0.0.0.0/0\",\"reason\":\"IPv4 relay\",\"workload\":\"app\"},{\"default\":\"network.::/0\",\"reason\":\"IPv6 relay\",\"workload\":\"app\"},{\"default\":\"network.fqdn:*.example.com\",\"reason\":\"Tenant hosts\",\"workload\":\"app\"}]"
+      }
+    },
+    "spec": {
+      "endpointSelector": {
+        "matchLabels": {
+          "app.kubernetes.io/name": "app"
+        }
+      },
+      "enableDefaultDeny": {
+        "ingress": true,
+        "egress": true
+      },
+      "egress": [
+        {
+          "toEntities": [
+            "world"
+          ],
+          "toPorts": [
+            {
+              "ports": [
+                {
+                  "port": "443",
+                  "protocol": "TCP"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "toCIDR": [
+            "0.0.0.0/0"
+          ],
+          "toPorts": [
+            {
+              "ports": [
+                {
+                  "port": "443",
+                  "protocol": "TCP"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "toCIDR": [
+            "::/0"
+          ],
+          "toPorts": [
+            {
+              "ports": [
+                {
+                  "port": "443",
+                  "protocol": "TCP"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "toFQDNs": [
+            {
+              "matchPattern": "*.example.com"
+            }
+          ],
+          "toPorts": [
+            {
+              "ports": [
+                {
+                  "port": "443",
+                  "protocol": "TCP"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
