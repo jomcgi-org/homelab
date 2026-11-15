@@ -58,6 +58,7 @@ func appendContent(out []itsaplan.Event, id, text string) []itsaplan.Event {
 // acknowledgements and restarts. Artifact byte cursors advance in the same
 // transaction as the events they produce, independently of delivery progress.
 type transcriptState struct {
+	ArtifactText  bool             `json:"artifactText"`
 	Events        []itsaplan.Event `json:"events"`
 	HistoryEvents int              `json:"historyEvents"`
 	Artifacts     []artifactCursor `json:"artifacts"`
@@ -86,6 +87,22 @@ func (s *transcriptState) appendTask(t *kagent.Task) error {
 	}
 	s.Events = append(s.Events, history[s.HistoryEvents:]...)
 	s.HistoryEvents = len(history)
+	if !s.ArtifactText {
+		return nil
+	}
+	// GetTask snapshots must retain every artifact whose text we have already
+	// journaled. Missing artifacts are incomplete reads, including at completion.
+	present := make(map[string]bool, len(t.Artifacts))
+	for _, a := range t.Artifacts {
+		if a != nil {
+			present[a.ArtifactID] = true
+		}
+	}
+	for _, cursor := range s.Artifacts {
+		if !present[cursor.ID] {
+			return fmt.Errorf("snapshot omitted persisted artifact %q", cursor.ID)
+		}
+	}
 	for _, a := range t.Artifacts {
 		if a == nil {
 			continue
@@ -166,11 +183,16 @@ func (e *Engine) prepareEvents(ctx context.Context, r *store.Run, t *kagent.Task
 			return fmt.Errorf("decode transcript: %w", err)
 		}
 		base = journal.Base
+		// Admission is sticky per task. A rollback to this compatibility release
+		// must reconcile existing artifact journals, including unacknowledged
+		// events, even though it does not admit artifact text on other tasks.
+		admitted := state.ArtifactText
+		state.ArtifactText = admitted || e.cfg.ArtifactTranscripts || len(state.Artifacts) > 0
 		previous := len(state.Events)
 		if err := state.appendTask(t); err != nil {
 			return err
 		}
-		if !fresh && len(state.Events) == previous {
+		if !fresh && len(state.Events) == previous && admitted == state.ArtifactText {
 			return nil
 		}
 		journal.State, err = json.Marshal(state)
@@ -183,6 +205,13 @@ func (e *Engine) prepareEvents(ctx context.Context, r *store.Run, t *kagent.Task
 }
 
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+// itsaplanText replaces NUL with the Unicode replacement character. itsaplan's
+// trace events and our result outbox use JSONB, which cannot represent U+0000.
+// Apply this at delivery, after chunking, so legacy history offsets stay exact.
+// Replacing one code point with one code point preserves itsaplan's DELTA_LIMIT
+// (UTF-16 units), although the UTF-8 byte count can grow. Journals keep raw text.
+func itsaplanText(text string) string { return strings.ReplaceAll(text, "\x00", "\uFFFD") }
 
 func messageText(m *kagent.Message) string {
 	var b strings.Builder
@@ -203,13 +232,13 @@ func messageText(m *kagent.Message) string {
 func Output(t *kagent.Task) string {
 	if t.Status.Message != nil {
 		if s := messageText(t.Status.Message); s != "" {
-			return clip(s, maxOutput)
+			return clip(itsaplanText(s), maxOutput)
 		}
 	}
 	for i := len(t.History) - 1; i >= 0; i-- {
 		if m := t.History[i]; m != nil && m.Role != "ROLE_USER" {
 			if s := messageText(m); s != "" {
-				return clip(s, maxOutput)
+				return clip(itsaplanText(s), maxOutput)
 			}
 		}
 	}
@@ -222,7 +251,7 @@ func Output(t *kagent.Task) string {
 			b.WriteString(p.Text)
 		}
 	}
-	return clip(b.String(), maxOutput)
+	return clip(itsaplanText(b.String()), maxOutput)
 }
 
 // StatusText is the task's status message text, for error classification.

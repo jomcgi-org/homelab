@@ -1,12 +1,14 @@
 package dispatch_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
@@ -14,6 +16,15 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+func newArtifactEnv(t *testing.T) *env {
+	t.Helper()
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.ArtifactTranscripts = true
+	v.e = v.engine("artifact-writer")
+	return v
+}
 
 func textArtifact(id string, parts ...string) *kagent.Artifact {
 	a := &kagent.Artifact{ArtifactID: id}
@@ -52,7 +63,7 @@ func assertTranscript(t *testing.T, events []itsaplan.Event, wantText []string, 
 			if _, exists := text[ev.MessageID]; !exists || ends[ev.MessageID] {
 				t.Fatalf("CONTENT outside message: %+v", ev)
 			}
-			if ev.Delta == "" || len(ev.Delta) > 12000 || !utf8.ValidString(ev.Delta) {
+			if ev.Delta == "" || len(utf16.Encode([]rune(ev.Delta))) > 12000 || !utf8.ValidString(ev.Delta) {
 				t.Fatalf("invalid delta length/encoding: %d bytes", len(ev.Delta))
 			}
 			text[ev.MessageID] += ev.Delta
@@ -79,7 +90,7 @@ func assertTranscript(t *testing.T, events []itsaplan.Event, wantText []string, 
 }
 
 func TestNativeArtifactTranscriptGrowsAcrossRestart(t *testing.T) {
-	v := newEnv(t)
+	v := newArtifactEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	id := v.kg.lastTask()
@@ -117,7 +128,7 @@ func TestNativeArtifactTranscriptGrowsAcrossRestart(t *testing.T) {
 func TestArtifactTranscriptReplaysDurableEventsAfterLostAcknowledgement(t *testing.T) {
 	for _, accepted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("accepted=%t", accepted), func(t *testing.T) {
-			v := newEnv(t)
+			v := newArtifactEnv(t)
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.tick(v.e)
 			id := v.kg.lastTask()
@@ -156,7 +167,7 @@ func TestArtifactTranscriptReplaysDurableEventsAfterLostAcknowledgement(t *testi
 }
 
 func TestMultipleArtifactCursorsKeepIdentityAndChunkBoundaries(t *testing.T) {
-	v := newEnv(t)
+	v := newArtifactEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	id := v.kg.lastTask()
@@ -187,7 +198,7 @@ func TestMultipleArtifactCursorsKeepIdentityAndChunkBoundaries(t *testing.T) {
 }
 
 func TestArtifactTranscriptAcrossBatches(t *testing.T) {
-	v := newEnv(t)
+	v := newArtifactEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	id := v.kg.lastTask()
@@ -215,7 +226,7 @@ func TestArtifactTranscriptAcrossBatches(t *testing.T) {
 }
 
 func TestArtifactTranscriptResetsOnTransportRedelivery(t *testing.T) {
-	v := newEnv(t)
+	v := newArtifactEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	id := v.kg.lastTask()
@@ -245,7 +256,7 @@ func TestArtifactTranscriptResetsOnTransportRedelivery(t *testing.T) {
 func TestArtifactTranscriptRejectsChangedPrefix(t *testing.T) {
 	for _, replacement := range []string{"par", "replaced text"} {
 		t.Run(replacement, func(t *testing.T) {
-			v := newEnv(t)
+			v := newArtifactEnv(t)
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.tick(v.e)
 			id := v.kg.lastTask()
@@ -268,7 +279,7 @@ func TestArtifactTranscriptRejectsChangedPrefix(t *testing.T) {
 }
 
 func TestArtifactTranscriptAdoptsLegacyHistoryOffset(t *testing.T) {
-	v := newEnv(t)
+	v := newArtifactEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	id := v.kg.lastTask()
@@ -301,7 +312,7 @@ func TestArtifactTranscriptAdoptsLegacyHistoryOffset(t *testing.T) {
 }
 
 func TestArtifactTranscriptRetryKeepsBaseAfterLostFinalAcknowledgement(t *testing.T) {
-	v := newEnv(t)
+	v := newArtifactEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	first := v.kg.lastTask()
@@ -330,5 +341,192 @@ func TestArtifactTranscriptRetryKeepsBaseAfterLostFinalAcknowledgement(t *testin
 	}
 	if len(fr.results) != 1 || fr.results[0].Output != "retry finished" {
 		t.Fatalf("retry completion = %+v", fr.results)
+	}
+}
+
+func TestArtifactTranscriptRejectsOmittedArtifacts(t *testing.T) {
+	for _, state := range []string{kagent.StateWorking, kagent.StateCompleted} {
+		for _, missingAll := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/all=%t", state, missingAll), func(t *testing.T) {
+				v := newArtifactEnv(t)
+				v.its.add(1, "coder", 101, "HL-1", "Do it.")
+				v.tick(v.e)
+				id := v.kg.lastTask()
+				artifactSnapshot(v, id, kagent.StateWorking, textArtifact("a", "first"), textArtifact("b", "second"))
+				v.tick(v.e)
+				before := append([]itsaplan.Event(nil), v.its.Run(1).events[1]...)
+				journal, err := v.st.GetTranscript(v.ctx, v.st.DB, 1, 1, id)
+				if err != nil || journal == nil {
+					t.Fatalf("read journal: %v", err)
+				}
+				artifacts := []*kagent.Artifact{nil}
+				if !missingAll {
+					artifacts = append(artifacts, textArtifact("a", "first grows"))
+				}
+				artifactSnapshot(v, id, state, artifacts...)
+				v.tick(v.e)
+				after, err := v.st.GetTranscript(v.ctx, v.st.DB, 1, 1, id)
+				if err != nil || after == nil || string(after.State) != string(journal.State) {
+					t.Fatalf("incomplete snapshot changed journal: %v", err)
+				}
+				if testutil.ToFloat64(v.m.TickErrors.WithLabelValues("runs")) != 1 ||
+					!reflect.DeepEqual(v.its.Run(1).events[1], before) || len(v.its.Run(1).results) != 0 {
+					t.Fatal("omitted artifact advanced events or completion")
+				}
+				v.e.Release()
+				v.e = v.engine("restarted")
+				artifactSnapshot(v, id, kagent.StateCompleted, textArtifact("a", "first grows"), textArtifact("b", "second restored"))
+				v.tick(v.e)
+				assertTranscript(t, v.its.Run(1).events[1], []string{"first grows", "second restored"}, true)
+			})
+		}
+	}
+}
+
+func TestArtifactTranscriptRetainsNULAndDeliversSupportedText(t *testing.T) {
+	v := newArtifactEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	id := v.kg.lastTask()
+	artifactSnapshot(v, id, kagent.StateWorking, textArtifact("a", "before\x00after"))
+	v.its.loseEventAck = true
+	v.tick(v.e)
+	journal, err := v.st.GetTranscript(v.ctx, v.st.DB, 1, 1, id)
+	if err != nil || journal == nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	var state struct {
+		Events []itsaplan.Event `json:"events"`
+	}
+	if err := json.Unmarshal(journal.State, &state); err != nil {
+		t.Fatal(err)
+	}
+	assertTranscript(t, state.Events, []string{"before\x00after"}, false)
+	v.e.Release()
+	v.e = v.engine("restarted")
+	artifactSnapshot(v, id, kagent.StateCompleted, textArtifact("a", "before\x00after\x00final"))
+	v.tick(v.e)
+	fr := v.its.Run(1)
+	assertTranscript(t, fr.events[1], []string{"before\uFFFDafter\uFFFDfinal"}, true)
+	if len(fr.results) != 1 || fr.results[0].Output != "before\uFFFDafter\uFFFDfinal" {
+		t.Fatalf("NUL text did not complete through the result outbox: %+v", fr.results)
+	}
+}
+
+func TestNULDeliveryPreservesEventBoundaries(t *testing.T) {
+	v := newArtifactEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	id := v.kg.lastTask()
+	artifactSnapshot(v, id, kagent.StateCompleted, textArtifact("a", strings.Repeat("\x00", 12001)))
+	v.tick(v.e)
+	fr := v.its.Run(1)
+	assertTranscript(t, fr.events[1], []string{strings.Repeat("\uFFFD", 12001)}, true)
+	if len(fr.events[1]) != 4 || len([]rune(fr.events[1][1].Delta)) != 12000 {
+		t.Fatal("NUL replacement changed event counts or exceeded the character limit")
+	}
+	if len(fr.results) != 1 || fr.results[0].Output != strings.Repeat("\uFFFD", 3333) {
+		t.Fatal("NUL replacement broke the final output's UTF-8 byte limit")
+	}
+}
+
+// replayLegacyHistory follows the base connector's history-only postEvents
+// algorithm. Its offset arithmetic intentionally knows nothing of journals.
+func replayLegacyHistory(t *testing.T, v *env, task *kagent.Task) {
+	t.Helper()
+	r := v.run(1)
+	events := dispatch.Events(task)
+	offset, base := r.EventOffset, r.EventTaskBase
+	if r.EventAttempt != r.Attempt {
+		offset, base = 0, 0
+	}
+	if r.EventTaskID != task.ID {
+		base = offset
+	}
+	for {
+		start := offset - base
+		if start < 0 || start >= len(events) {
+			break
+		}
+		batch := events[start:min(start+200, len(events))]
+		next, err := v.its.Events(v.ctx, r.AgentKey, r.ID, r.Attempt, offset, batch)
+		if errors.Is(err, itsaplan.ErrConflict) {
+			next, err = v.its.Events(v.ctx, r.AgentKey, r.ID, r.Attempt, offset, batch[:1])
+		}
+		if err != nil || next <= offset {
+			t.Fatalf("legacy events: next=%d offset=%d error=%v", next, offset, err)
+		}
+		offset = next
+		if err := v.st.SetEventOffset(v.ctx, r.ID, r.Attempt, offset, task.ID, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCompatibilityReleaseCanRollBackToHistoryOnlyConnector(t *testing.T) {
+	for _, lostHistoryAck := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lostHistoryAck=%t", lostHistoryAck), func(t *testing.T) {
+			v := newEnv(t) // production defaults leave artifact admission disabled
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			id := v.kg.lastTask()
+			var want []string
+			if lostHistoryAck {
+				v.kg.say(id, "before rollback")
+				want = append(want, "before rollback")
+				v.its.loseEventAck = true
+			}
+			artifactSnapshot(v, id, kagent.StateWorking, textArtifact("a", "native partial"))
+			v.tick(v.e)
+			if v.run(1).EventOffset != 0 {
+				t.Fatal("compatibility release advanced the legacy offset")
+			}
+			v.e.Release()
+			v.kg.say(id, "during rollback")
+			task, err := v.kg.GetTask(v.ctx, kagent.AgentRef{Namespace: "factory-homelab", Name: "coder"}, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replayLegacyHistory(t, v, task)
+			want = append(want, "during rollback")
+			assertTranscript(t, v.its.Run(1).events[1], want, true)
+			v.e = v.engine("reupgraded")
+			v.kg.say(id, "after upgrade")
+			artifactSnapshot(v, id, kagent.StateCompleted, textArtifact("a", "native final"))
+			v.tick(v.e)
+			want = append(want, "after upgrade")
+			assertTranscript(t, v.its.Run(1).events[1], want, true)
+		})
+	}
+}
+
+func TestCompatibilityReleaseResumesAdmittedArtifactsAfterRollback(t *testing.T) {
+	for _, lostAck := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lostAck=%t", lostAck), func(t *testing.T) {
+			v := newArtifactEnv(t) // models the later activating release
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			id := v.kg.lastTask()
+			artifactSnapshot(v, id, kagent.StateWorking, textArtifact("a", "partial"))
+			v.its.loseEventAck = lostAck
+			v.tick(v.e)
+			v.e.Release()
+			v.cfg.ArtifactTranscripts = false // lower the pin to this release
+			v.e = v.engine("rollback")
+			v.kg.say(id, "later history")
+			artifactSnapshot(v, id, kagent.StateCompleted, textArtifact("a", "partial then final"))
+			v.tick(v.e)
+			assertTranscript(t, v.its.Run(1).events[1], []string{"partial then final", "later history"}, true)
+			if len(v.its.Run(1).results) != 1 {
+				t.Fatal("rollback did not complete the admitted task")
+			}
+			v.its.add(2, "coder", 102, "HL-2", "Next task.")
+			v.tick(v.e)
+			artifactSnapshot(v, v.kg.lastTask(), kagent.StateCompleted, textArtifact("a", "new task"))
+			v.tick(v.e)
+			if len(v.its.Run(2).events[1]) != 0 || len(v.its.Run(2).results) != 1 {
+				t.Fatal("rollback admitted a new artifact transcript or lost its result")
+			}
+		})
 	}
 }

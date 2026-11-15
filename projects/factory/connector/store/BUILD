@@ -18,6 +18,7 @@ go_test(
     srcs = [
         "recovery_test.go",
         "store_test.go",
+        "transcript_test.go",
     ],
     data = ["@postgres_test//:postgres"],
     deps = [
