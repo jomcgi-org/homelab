@@ -1124,9 +1124,12 @@ previews).
   (fixed, justified or withdrawn, with notes), and the prompt tells the
   agent not to raise them again unless the head changes that code. When the
   head descends from the previous one and GitHub lists the whole interdiff,
-  the service lowers a new high or medium finding to a deferred low one
-  unless its `path` or `cause` is a changed file
-  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)).
+  the service lowers a new high or medium finding on a file outside the
+  interdiff to a deferred low one unless its `cause` names a changed file
+  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)). A
+  finding with no path, or with the rule `unreviewed`, `unverified`,
+  `review-injection` or `gate`, keeps its severity. A reattached review
+  waits until it can read the interdiff.
   **Why.** Each head gets a fresh kagent session that read the whole diff
   again and found new problems in code the earlier review had covered; 18
   PRs used all three review rounds with blocking findings left.

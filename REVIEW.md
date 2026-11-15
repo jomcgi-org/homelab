@@ -145,8 +145,8 @@ PR:
 - A new finding on code the earlier review covered and the new head left
   alone is low with `defer`, unless its harm survives a revert: a committed
   secret, data already lost or exposed. The reviewer service lowers a new
-  high or medium finding outside the changed files that names no changed
-  file as its cause.
+  high or medium finding on a file outside the changed files when it names
+  no changed file as its cause.
 
 ## Joe decides
 
