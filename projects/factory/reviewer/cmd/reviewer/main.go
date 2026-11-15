@@ -102,7 +102,7 @@ func run(log *slog.Logger) error {
 	}
 	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: &kagent.TokenSource{Path: cfg.KagentTokenFile}}
 	// The comment client has its own token, so the check client never holds
-	// issues write.
+	// issues or pull requests write.
 	var comments review.Comments
 	if cfg.CommentAuthor != "" {
 		comments = &github.Client{

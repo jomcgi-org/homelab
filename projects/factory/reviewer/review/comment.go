@@ -20,8 +20,10 @@ import (
 )
 
 // Comments writes the reviewer's PR comment. It holds the reviewer App's
-// comment token (issues write), apart from the check token, so an App
-// without that permission loses only the comment.
+// comment token (issues and pull requests write), apart from the check
+// token, so an App without those permissions loses only the comment. The
+// token could approve a PR; this interface lists, creates and edits
+// conversation comments and nothing else.
 type Comments interface {
 	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
 	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
