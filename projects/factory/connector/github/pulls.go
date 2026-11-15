@@ -739,10 +739,15 @@ type CitedPullRequest struct {
 	HeadSHA        string
 	Author         string
 	MergedBy       string
-	// Queued says the PR's timeline has an AddedToMergeQueueEvent.
-	Queued bool
-	// AutoMergeBy is who requested auto-merge, while the request is pending.
-	AutoMergeBy string
+	// Queued says the PR's timeline has an AddedToMergeQueueEvent; QueuedBy
+	// is the actor of the latest one.
+	Queued   bool
+	QueuedBy string
+	// AutoMergeEnabledBy is the actor of the latest AutoMergeEnabledEvent,
+	// kept after the PR merges; AutoMergeBy is who holds the request while
+	// it is still pending.
+	AutoMergeEnabledBy string
+	AutoMergeBy        string
 	// HeadCommitAuthor is the GitHub account behind the head commit's
 	// author, and HeadSignature its signature state (VALID, ...), empty
 	// when the head commit is unsigned or not the PR's last commit.
@@ -759,7 +764,12 @@ const citedPullRequestQuery = `query($owner: String!, $name: String!, $number: I
       author { login }
       mergedBy { login }
       autoMergeRequest { enabledBy { login } }
-      timelineItems(itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT], first: 1) { filteredCount }
+      queued: timelineItems(itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT], last: 1) {
+        filteredCount nodes { ... on AddedToMergeQueueEvent { actor { login } } }
+      }
+      autoMerge: timelineItems(itemTypes: [AUTO_MERGE_ENABLED_EVENT], last: 1) {
+        filteredCount nodes { ... on AutoMergeEnabledEvent { actor { login } } }
+      }
       commits(last: 1) {
         nodes { commit { oid author { user { login } } signature { state wasSignedByGitHub } } }
       }
@@ -787,10 +797,9 @@ func (c *Client) CitedPullRequest(ctx context.Context, repo string, number int) 
 				AutoMergeRequest *struct {
 					EnabledBy *login `json:"enabledBy"`
 				} `json:"autoMergeRequest"`
-				TimelineItems struct {
-					FilteredCount int `json:"filteredCount"`
-				} `json:"timelineItems"`
-				Commits struct {
+				Queued    timelineActor `json:"queued"`
+				AutoMerge timelineActor `json:"autoMerge"`
+				Commits   struct {
 					Nodes []struct {
 						Commit struct {
 							OID    string `json:"oid"`
@@ -816,7 +825,7 @@ func (c *Client) CitedPullRequest(ctx context.Context, repo string, number int) 
 	}
 	cp := &CitedPullRequest{
 		Number: p.Number, State: p.State, Merged: p.Merged, BaseRef: p.BaseRefName, HeadSHA: p.HeadRefOid,
-		Queued: p.TimelineItems.FilteredCount > 0,
+		Queued: p.Queued.FilteredCount > 0, QueuedBy: p.Queued.last(), AutoMergeEnabledBy: p.AutoMerge.last(),
 	}
 	if p.MergedAt != nil {
 		cp.MergedAt = *p.MergedAt
@@ -843,4 +852,20 @@ func (c *Client) CitedPullRequest(ctx context.Context, repo string, number int) 
 		}
 	}
 	return cp, nil
+}
+
+// timelineActor is a timeline connection filtered to one event type.
+type timelineActor struct {
+	FilteredCount int `json:"filteredCount"`
+	Nodes         []struct {
+		Actor *login `json:"actor"`
+	} `json:"nodes"`
+}
+
+// last is the latest event's actor, or "" when there is none.
+func (t timelineActor) last() string {
+	if n := len(t.Nodes); n > 0 && t.Nodes[n-1].Actor != nil {
+		return t.Nodes[n-1].Actor.Login
+	}
+	return ""
 }

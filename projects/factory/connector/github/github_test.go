@@ -1030,7 +1030,8 @@ func TestCitedPullRequest(t *testing.T) {
 	merged := `{"data":{"repository":{"pullRequest":{"number":75,"state":"MERGED",
 		"merged":true,"mergedAt":"2026-11-15T15:35:36Z","baseRefName":"main","headRefOid":"sha-head",
 		"mergeCommit":{"oid":"sha-merge"},"author":{"login":"renovate-app"},"mergedBy":{"login":"renovate-app"},
-		"autoMergeRequest":null,"timelineItems":{"filteredCount":1},
+		"autoMergeRequest":null,"queued":{"filteredCount":1,"nodes":[{"actor":{"login":"renovate-app"}}]},
+		"autoMerge":{"filteredCount":1,"nodes":[{"actor":{"login":"renovate-app"}}]},
 		"commits":{"nodes":[{"commit":{"oid":"sha-head","author":{"user":{"login":"renovate-app[bot]"}},
 		"signature":{"state":"VALID","wasSignedByGitHub":true}}}]}}}}}`
 	for _, tc := range []struct {
@@ -1041,14 +1042,15 @@ func TestCitedPullRequest(t *testing.T) {
 		{"merged", merged, &CitedPullRequest{
 			Number: 75, State: "MERGED", Merged: true, MergedAt: time.Date(2026, 11, 15, 15, 35, 36, 0, time.UTC),
 			MergeCommitSHA: "sha-merge", BaseRef: "main", HeadSHA: "sha-head", Author: "renovate-app", MergedBy: "renovate-app",
-			Queued: true, HeadCommitAuthor: "renovate-app[bot]", HeadSignature: "VALID", HeadSignedByGitHub: true,
+			Queued: true, QueuedBy: "renovate-app", AutoMergeEnabledBy: "renovate-app",
+			HeadCommitAuthor: "renovate-app[bot]", HeadSignature: "VALID", HeadSignedByGitHub: true,
 		}, nil},
 		{"missing", `{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","message":"no"}]}`, nil, ErrNotFound},
 		// A last commit other than the head reports no signature.
 		{"stale-commit", strings.Replace(merged, `"commit":{"oid":"sha-head"`, `"commit":{"oid":"sha-other"`, 1), &CitedPullRequest{
 			Number: 75, State: "MERGED", Merged: true, MergedAt: time.Date(2026, 11, 15, 15, 35, 36, 0, time.UTC),
 			MergeCommitSHA: "sha-merge", BaseRef: "main", HeadSHA: "sha-head", Author: "renovate-app", MergedBy: "renovate-app",
-			Queued: true,
+			Queued: true, QueuedBy: "renovate-app", AutoMergeEnabledBy: "renovate-app",
 		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
