@@ -114,9 +114,10 @@ def test_backup_key_is_scoped_and_preserved():
     assert binding["subjects"] == [
         {"kind": "ServiceAccount", "name": "garage-init", "namespace": "garage"}
     ]
-    assert "authentik.yaml" in read("factory-buckets/resources/kustomization.yaml")[0][
-        "resources"
-    ]
+    assert (
+        "authentik.yaml"
+        in read("factory-buckets/resources/kustomization.yaml")[0]["resources"]
+    )
 
 
 def test_cluster_waits_for_all_backup_credentials():
@@ -133,6 +134,7 @@ def test_cluster_waits_for_all_backup_credentials():
         key: {"name": "authentik-pg-s3", "key": key}
         for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION")
     }
-    assert "backup-key-wait.yaml" in read("authentik/resources/kustomization.yaml")[0][
-        "resources"
-    ]
+    assert (
+        "backup-key-wait.yaml"
+        in read("authentik/resources/kustomization.yaml")[0]["resources"]
+    )
