@@ -2,7 +2,9 @@
 // A second request can reset browser performance.timeOrigin while the CDP and
 // context inventories still contain the first page. Keep it, but never combine
 // those clocks into a comparable load sample.
-export function createNavigationTracker(mainFrameId) {
+import { sameDocumentUrl } from "./page-cohort.js";
+
+export function createNavigationTracker(mainFrameId, requestedUrl) {
   const navigations = [];
   let start;
   return {
@@ -41,17 +43,25 @@ export function createNavigationTracker(mainFrameId) {
       );
     },
     snapshot() {
+      const requestedUrlMatched =
+        requestedUrl === undefined
+          ? null
+          : sameDocumentUrl(navigations[0]?.urls[0], requestedUrl);
       return {
         navigations: structuredClone(navigations),
         navigationCount: navigations.length,
         additionalDocumentNavigation: navigations.length > 1,
-        comparisonEligible: navigations.length === 1,
+        requestedUrlMatched,
+        comparisonEligible:
+          navigations.length === 1 && requestedUrlMatched !== false,
         comparisonExclusion:
-          navigations.length === 1
-            ? null
-            : navigations.length > 1
-              ? "multiple top-level document requests reset the observation clock"
-              : "no top-level document request observed",
+          requestedUrlMatched === false && navigations.length
+            ? "initial document URL differs from the requested page cohort"
+            : navigations.length === 1
+              ? null
+              : navigations.length > 1
+                ? "multiple top-level document requests reset the observation clock"
+                : "no top-level document request observed",
       };
     },
   };

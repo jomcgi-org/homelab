@@ -45,14 +45,38 @@ after a change. After merge, verify the `monolith-public` rollout, then run
 against `https://jomcgi.dev` again. A local build measurement is not evidence
 that production became faster.
 
+Canonical page URLs remain the CLI default. To observe a newly deployed
+generation without waiting for old cached HTML to expire, explicitly add
+`--page-cache-key release-B-20261115`. The token accepts 1–96 ASCII letters,
+digits, `_` or `-`. It adds `__public_perf_page` to page navigations while
+preserving existing query state, logical route selectors and natural data
+request URLs. The same token repeats across every run; use a new token for a
+new cohort, not each sample. The Stars diagnostic accepts the same option.
+
+`pageCache` records the mode, parameter and key in JSON. Every page entry and
+run records its logical `route`, `canonicalUrl` and exact `requestedUrl`.
+Runs retain `finalUrl` and `finalPageCacheKeyRetained`; a redirect that drops the
+key has `finalPageCacheMode: "key-not-retained"` and does not prove a fresh-key
+destination. Ordinary redirects remain one navigation. Initial request identity
+includes the requested query; `_fresh` recovery reloads still invalidate the
+sample even if they preserve the cohort key.
+
+A new key does not guarantee MISS, a particular backend cache state or the
+intended release. Record the first response, every actual edge state, the
+slowest sample and served asset URLs after a verified rollout. Repeats may HIT,
+revalidate or BYPASS. Tables label the cohort. Never pool keyed and canonical
+samples; comparisons between them are descriptive, not an isolated causal
+speedup. The key does not purge or alter an existing cached URL. Endpoint
+normal-key and unique-query probe series are unchanged.
+
 ## What the numbers mean
 
 The profile is a 360 by 800 mobile viewport at device scale 2, 150 ms minimum
 network latency, 1.6 Mbps download, 750 Kbps upload and fourfold CPU slowdown.
 This is a reproducible lab approximation, not a calibrated physical Moto G.
 Each run uses a new browser context with no cookies, browser cache or service
-worker. The runner observes Cloudflare's actual cache state; it never purges
-or alters page URLs. A browser-cold run can be an edge HIT. Optional endpoint
+worker. The runner observes Cloudflare's actual cache state and never purges.
+Page URLs change only with the explicit page-key option above. A browser-cold run can be an edge HIT. Optional endpoint
 probes use unique query keys as described below, separate from normal-key reads.
 Record misses separately when they occur naturally. A forced origin-cold test
 needs a controlled dev environment.

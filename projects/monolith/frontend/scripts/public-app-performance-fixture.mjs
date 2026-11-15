@@ -5,6 +5,11 @@ import {
   withinDeadline,
 } from "../src/lib/public/performance/request-inventory.js";
 import { createNavigationTracker } from "../src/lib/public/performance/navigation.js";
+import {
+  pageCohort,
+  pageRequest,
+  pageDestination,
+} from "../src/lib/public/performance/page-cohort.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
@@ -31,6 +36,7 @@ const { chromium } = await import(
 const browser = await chromium.launch({ headless: true });
 const results = [];
 const navigationResults = [];
+const pageCohortResults = [];
 const calibration = {
   browser: browser.version(),
   method:
@@ -270,6 +276,97 @@ async function navigationFixture() {
   }
 }
 
+// Real HTTP navigations prove query identity and repeated request URLs without
+// asserting anything about Cloudflare. The local server never contacts an app.
+async function pageCohortFixture() {
+  const received = [];
+  const server = createServer((request, response) => {
+    received.push(request.url);
+    const url = new URL(request.url, "http://fixture.test");
+    if (url.pathname === "/redirect") {
+      response.writeHead(302, { location: "/settled", "content-length": 0 });
+      response.end();
+      return;
+    }
+    const body =
+      url.pathname === "/recover" && !url.searchParams.has("_fresh")
+        ? '<!doctype html><script>setTimeout(() => { const u = new URL(location.href); u.searchParams.set("_fresh", "recovery"); location.replace(u); }, 50)</script>'
+        : '<!doctype html><p class="data">Real fixture content</p><script>window.dataReady = fetch("/natural-data").then(response => response.text())</script>';
+    response.writeHead(200, {
+      "content-type": "text/html",
+      "cache-control": "no-store",
+    });
+    response.end(url.pathname === "/natural-data" ? "ready" : body);
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const cohort = pageCohort("hosted-fixture");
+    for (const route of ["/page", "/page", "/page", "/redirect", "/recover"]) {
+      const visit = pageRequest(origin, route, cohort);
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Network.enable");
+        const { frameTree } = await cdp.send("Page.getFrameTree");
+        const tracker = createNavigationTracker(
+          frameTree.frame.id,
+          visit.requestedUrl,
+        );
+        cdp.on("Network.requestWillBeSent", (event) => tracker.request(event));
+        cdp.on("Network.responseReceived", (event) => tracker.response(event));
+        await page.goto(visit.requestedUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 10000,
+        });
+        if (route === "/recover")
+          await page.waitForURL((url) => url.searchParams.has("_fresh"), {
+            waitUntil: "domcontentloaded",
+            timeout: 10000,
+          });
+        assert.equal(await page.evaluate(() => window.dataReady), "ready");
+        assert.equal(
+          await page.locator(".data").textContent(),
+          "Real fixture content",
+        );
+        const state = tracker.snapshot();
+        const destination = pageDestination(page.url(), cohort);
+        assert.equal(state.requestedUrlMatched, true);
+        assert.equal(state.comparisonEligible, route !== "/recover");
+        assert.equal(state.navigationCount, route === "/recover" ? 2 : 1);
+        assert.equal(
+          destination.finalPageCacheKeyRetained,
+          route !== "/redirect",
+        );
+        pageCohortResults.push({
+          ...visit,
+          ...destination,
+          ...state,
+          passed: true,
+        });
+      } finally {
+        await withinDeadline(
+          context.close(),
+          5000,
+          "cohort fixture context cleanup timed out",
+        );
+      }
+    }
+    assert.deepEqual(
+      received.filter((url) => url.startsWith("/page?")),
+      Array(3).fill("/page?__public_perf_page=hosted-fixture"),
+    );
+    assert.equal(received.filter((url) => url === "/natural-data").length, 5);
+    assert.ok(!received.some((url) => url.startsWith("/natural-data?")));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 async function fixture(name, css, expected) {
   const context = await browser.newContext({
     viewport: { width: 360, height: 800 },
@@ -377,6 +474,7 @@ try {
   );
   await calibrateTiming();
   await navigationFixture();
+  await pageCohortFixture();
   console.log("Content observer and local timing Chromium fixtures passed");
 } catch (error) {
   results.push({ passed: false, error: error.message });
@@ -384,6 +482,10 @@ try {
 } finally {
   await browser.close();
   await mkdir(path.resolve(values.output), { recursive: true });
+  await writeFile(
+    path.join(values.output, "page-cohort-fixture.json"),
+    JSON.stringify({ results: pageCohortResults }, null, 2) + "\n",
+  );
   await writeFile(
     path.join(values.output, "navigation-fixture.json"),
     JSON.stringify({ results: navigationResults }, null, 2) + "\n",
