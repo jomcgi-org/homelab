@@ -1,6 +1,12 @@
 import { error } from "@sveltejs/kit";
 
-const STATES = new Set(["none", "pending", "granted", "failed"]);
+const STATES = new Set([
+  "none",
+  "pending",
+  "persistence_pending",
+  "granted",
+  "failed",
+]);
 
 export async function load({ url, fetch, setHeaders }) {
   const selections = url.searchParams.getAll("environment");

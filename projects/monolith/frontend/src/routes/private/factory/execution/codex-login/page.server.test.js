@@ -12,6 +12,15 @@ function request(search = "", body = { state: "none" }) {
 }
 
 describe("Codex login page load", () => {
+  test.each(["prod", "dev"])("preserves persistence recovery for %s", async (environment) => {
+    const event = request(`?environment=${environment}`, {
+      state: "persistence_pending",
+      environment,
+      grant: "codex-cluster",
+    });
+    expect(await load(event)).toEqual({ environment, state: "persistence_pending" });
+  });
+
   test("defaults to a production status read without starting login", async () => {
     const event = request();
 

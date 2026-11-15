@@ -53,7 +53,7 @@ func (s *fakeStore) SaveGrantIfNewer(grant store.Grant) error {
 		s.saveFailures--
 		return errors.New("write failed containing " + grant.TokenBundle.RefreshToken)
 	}
-	if previous := s.grants[grant.Name]; !previous.LastRefresh.IsZero() && !grant.LastRefresh.After(previous.LastRefresh) {
+	if previous := s.grants[grant.Name]; !previous.LastRefresh.IsZero() && store.CompareGrantVersion(grant, previous) <= 0 {
 		return store.ErrGrantNotNewer
 	}
 	s.grants[grant.Name] = grant
@@ -806,6 +806,10 @@ func TestLoginPersistenceRecoveryDoesNotExchangeAgain(t *testing.T) {
 		response = requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
 		if response.Code != http.StatusAccepted {
 			t.Fatal("login start did not accept a persistence retry")
+		}
+		body = decodeBody(t, response)
+		if body["state"] != "pending" || body["persistence_retry"] != true {
+			t.Fatal("persistence retry response cannot be recognized by login clients")
 		}
 		synctest.Wait()
 		g, _ := st.LoadGrant("codex-cluster")

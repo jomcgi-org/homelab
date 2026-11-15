@@ -666,10 +666,15 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 		state.state, state.detail = "pending", "saving exchanged credentials"
 		state.mu.Unlock()
 		go func() { s.finishLogin(name, s.broker.RetryPendingGrant(name)) }()
-		writeJSON(w, http.StatusAccepted, map[string]string{"state": "pending", "detail": "retrying credential persistence"})
+		writeJSON(w, http.StatusAccepted, map[string]any{"state": "pending", "persistence_retry": true})
 		return
 	}
 	if state.state == "pending" {
+		if state.detail == "saving exchanged credentials" {
+			state.mu.Unlock()
+			writeJSON(w, http.StatusAccepted, map[string]any{"state": "pending", "persistence_retry": true})
+			return
+		}
 		if state.code != nil {
 			response := map[string]any{
 				"reason":           "login_pending",
@@ -748,6 +753,7 @@ func (s *server) pollLogin(name string, adapter provider.Adapter, code provider.
 			err = ex
 		} else {
 			now := time.Now().UTC()
+			s.setLogin(name, "pending", "saving exchanged credentials")
 			err = s.broker.SaveGrant(store.Grant{Name: name, ProviderName: s.configs[name].ProviderName, LastRefresh: now, TokenBundle: store.TokenBundle{IDToken: tok.IDToken, AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, LastRefresh: now, ExpiresAt: tok.ExpiresAt}})
 		}
 	}

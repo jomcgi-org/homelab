@@ -47,6 +47,20 @@ afterEach(async () => {
 });
 
 describe("Codex authorization", () => {
+  test("a persistence retry clears the previous device code and never opens approval", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ state: "pending", persistence_retry: true })));
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { target, onNotice, onError } = await render(vi.fn(), {
+      initialUserCode: "PREVIOUS-CODE",
+      initialVerificationUrl: "https://example.test/device",
+    });
+    target.querySelector("button").click();
+    await vi.waitFor(() => expect(onNotice).toHaveBeenLastCalledWith("Saving the approved login. Check the connection shortly."));
+    expect(target.querySelector("code")).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenLastCalledWith(null);
+  });
+
   test("starts dev login only after a click and keeps its environment explicit", async () => {
     vi.stubGlobal("navigator", {});
     globalThis.fetch = vi.fn(async () =>

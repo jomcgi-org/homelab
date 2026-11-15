@@ -12,6 +12,7 @@
     {
       none: "Device login required",
       pending: "Device approval pending",
+      persistence_pending: "Login approved; saving needs a retry",
       granted: "Login saved",
       failed: "Device login failed",
       unavailable: "Connection status unavailable",
@@ -22,6 +23,7 @@
 
   $effect(() => {
     void environment;
+    void data.state;
     errorMessage = null;
     noticeMessage = null;
   });
@@ -55,14 +57,22 @@
     {:else if data.state === "unavailable"}
       <p>Check the connection again to read the login status.</p>
     {:else}
-      <p>
-        Start device login and approve it on the OpenAI page. Return here to
-        check the connection after approval.
-      </p>
+      {#if data.state === "persistence_pending"}
+        <p>
+          Approval is complete. Retry saving the login, then check the connection.
+        </p>
+      {:else}
+        <p>
+          Start device login and approve it on the OpenAI page. Return here to
+          check the connection after approval.
+        </p>
+      {/if}
       {#key environment}
         <CodexLogin
           {environment}
-          authorizeLabel={`Authorize Codex for ${environmentLabel.toLowerCase()}`}
+          authorizeLabel={data.state === "persistence_pending"
+            ? "Retry saving login"
+            : `Authorize Codex for ${environmentLabel.toLowerCase()}`}
           authorizingLabel={P.labels.authorizingCodex}
           copiedLabel={P.labels.copied}
           unavailableLabel={P.labels.codexLoginUnavailable}

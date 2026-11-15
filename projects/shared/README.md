@@ -24,6 +24,14 @@ second consumer sets `store.SecretStore.NamePrefix`, `metrics.NewWithPrefix`
 and `NewQuotaCollectorWithPrefix`, and `Broker.SetRefreshPolicy`; the factory
 broker (`projects/factory/broker`) does.
 
+Device logins carry a `login_id` and `login_at` in their grant Secret. Refresh
+preserves that identity. Writes compare login order before rotation time, so a
+late refresh from an older login cannot replace the new authorization. A retry
+adopts a newer durable login or a rotation of the retained login instead of
+replaying its consumed credentials. Secrets without login metadata remain
+readable and receive an identity on the next device login. Grant storage
+requests have a 10-second deadline, including refresh and background retries.
+
 ## homelab-library
 
 `helm/homelab-library/chart` is a [Helm library chart](https://helm.sh/docs/topics/library_charts/)

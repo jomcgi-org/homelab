@@ -17,6 +17,8 @@ retry saving the retained credentials without repeating the exchange. The
 pending bundle stays in memory until saved; restarting the broker loses it.
 Refresh waits for installation and cannot rotate the older grant while
 persistence remains pending.
+The Codex login console offers **Retry saving login** for this state. Use
+**Check connection** after recovery; no new device code is required.
 
 ## Quota observation durability
 

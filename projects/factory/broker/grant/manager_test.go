@@ -497,6 +497,10 @@ func TestDeviceLoginPersistenceRetryAfterCancellation(t *testing.T) {
 		if response.Code != http.StatusAccepted {
 			t.Fatal("login POST did not accept a persistence retry")
 		}
+		body = nil
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body["state"] != "pending" || body["persistence_retry"] != true {
+			t.Fatal("persistence retry response cannot be recognized by login clients")
+		}
 		synctest.Wait()
 		if a.starts != 1 || a.exchanges != 1 || writes != 6 || h.mgr.login.state != "granted" {
 			t.Fatal("persistence recovery repeated the device flow or failed to complete")

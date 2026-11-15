@@ -21,7 +21,10 @@
   let copied = $state(false);
   let requestedUserCode = $state(null);
   let requestedVerificationUrl = $state(null);
-  const userCode = $derived(requestedUserCode ?? initialUserCode);
+  let savingLogin = $state(false);
+  const userCode = $derived(
+    savingLogin ? null : requestedUserCode ?? initialUserCode,
+  );
   const verificationUrl = $derived(
     requestedVerificationUrl ?? initialVerificationUrl,
   );
@@ -30,6 +33,7 @@
 
   $effect(() => {
     if (!initialUserCode) return;
+    savingLogin = false;
     requestedUserCode = null;
     requestedVerificationUrl = null;
   });
@@ -77,6 +81,13 @@
         onNotice(startingLabel);
         return;
       }
+      if (body.state === "pending" && body.persistence_retry === true) {
+        savingLogin = true;
+        requestedUserCode = null;
+        requestedVerificationUrl = null;
+        onNotice("Saving the approved login. Check the connection shortly.");
+        return;
+      }
       if (
         typeof body.user_code !== "string" ||
         typeof body.verification_url !== "string"
@@ -85,6 +96,7 @@
       }
 
       const previousUserCode = userCode;
+      savingLogin = false;
       requestedUserCode = body.user_code;
       requestedVerificationUrl = body.verification_url;
       if (navigator.clipboard?.writeText) {
@@ -136,10 +148,10 @@
   <button
     class="primary-action"
     type="button"
-    disabled={authorizing}
+    disabled={authorizing || savingLogin}
     onclick={authorize}
   >
-    {authorizing ? authorizingLabel : authorizeLabel}
+    {savingLogin ? "Saving login" : authorizing ? authorizingLabel : authorizeLabel}
   </button>
 {/if}
 
