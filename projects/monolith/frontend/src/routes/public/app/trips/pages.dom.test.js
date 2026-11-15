@@ -8,6 +8,8 @@ import {
   maps,
   markers,
   setWorkerUrl,
+  addProtocol,
+  removeProtocol,
 } from "../../../../../test/trips-map-stub.js";
 import { setPage } from "../../../../../test/profile-page.svelte.js";
 vi.mock(
@@ -35,6 +37,8 @@ beforeEach(() => {
   maps.length = 0;
   markers.length = 0;
   setWorkerUrl.mockClear();
+  addProtocol.mockClear();
+  removeProtocol.mockClear();
   window.happyDOM.settings.disableCSSFileLoading = true;
   window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true;
 });
@@ -49,7 +53,17 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
-async function render(surface, data = tripsData(), query = "") {
+function loadMap(map) {
+  map.fire("style.load");
+  map.fire("load");
+}
+
+async function render(
+  surface,
+  data = tripsData(),
+  query = "",
+  paintMap = true,
+) {
   const path = {
     index: "",
     trip: "/fixture-walk",
@@ -73,9 +87,9 @@ async function render(surface, data = tripsData(), query = "") {
     if (surface === "trip" || surface === "day" || query.includes("view=map"))
       expect(maps).toHaveLength(1);
   });
-  maps.forEach((map) => map.fire("load"));
+  maps.forEach(loadMap);
   await settle();
-  maps.forEach((map) => map.fire("render"));
+  if (paintMap) maps.forEach((map) => map.fire("render"));
   await settle();
 }
 
@@ -238,6 +252,8 @@ describe("trips composed sheets", () => {
     expect(photoMarker.getElement().style.background).toBe(
       expectedColor.style.background,
     );
+    map.fire("render");
+    await settle();
     const routeUpdates = source.setData.mock.calls.length;
     map.fire("click", "route-hit-area", {
       lngLat: { lng: data.points[5].lng, lat: data.points[5].lat },
@@ -278,6 +294,381 @@ describe("trips composed sheets", () => {
       features: [],
     });
     expect(maps).toHaveLength(1);
+  });
+
+  it.each(["trip", "day"])(
+    "keeps the %s route preview until populated map sources render",
+    async (surface) => {
+      await render(surface, tripsData(), "", false);
+      const map = maps[0];
+      const preview = () => document.querySelector(".route-preview");
+      expect(preview()).not.toBeNull();
+      expect(preview().querySelector("polyline")).not.toBeNull();
+      expect(preview().textContent).toContain(
+        surface === "trip" ? "6 GPS points" : "3 GPS points",
+      );
+      map.isSourceLoaded = vi.fn(() => false);
+      map.fire("render");
+      await settle();
+      expect(preview()).not.toBeNull();
+      map.isSourceLoaded.mockReturnValue(true);
+      map.fire("render");
+      await settle();
+      expect(preview()).toBeNull();
+      expect(maps).toHaveLength(1);
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "shows a compact no-GPS summary above the ready %s map",
+    async (surface) => {
+      const data = tripsData();
+      data.points = data.points.map((point) => ({
+        ...point,
+        lat: null,
+        lng: null,
+      }));
+      await render(surface, data);
+      expect(document.querySelector(".route-preview")).toBeNull();
+      expect(document.querySelector(".map-summary").textContent).toContain(
+        "No GPS points",
+      );
+      expect(maps).toHaveLength(1);
+      expect(maps[0].remove).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "blocks hidden %s geometry until its preview is removed",
+    async (surface) => {
+      await render(surface, tripsData(), "", false);
+      const map = maps[0];
+      const navigation = vi
+        .spyOn(window.location, "href", "set")
+        .mockImplementation(() => {});
+      const clickRoute = () =>
+        surface === "trip"
+          ? map.fire("click", "route-hit-1")
+          : map.fire("click", "route-hit-area", {
+              lngLat: { lng: -122.9, lat: 49.08 },
+            });
+      clickRoute();
+      await settle();
+      if (surface === "trip") expect(navigation).not.toHaveBeenCalled();
+      else expect(button("Previous photo").disabled).toBe(true);
+      map.fire("render");
+      await settle();
+      clickRoute();
+      await settle();
+      if (surface === "trip") expect(navigation).toHaveBeenCalledOnce();
+      else expect(button("Next photo").disabled).toBe(true);
+    },
+  );
+
+  it.each([
+    ["trip", false],
+    ["day", false],
+    ["trip", true],
+    ["day", true],
+  ])(
+    "keeps the %s preview after a basemap failure (painted=%s) until retry succeeds",
+    async (surface, painted) => {
+      await render(surface, tripsData(), "", painted);
+      const map = maps[0];
+      const routeId = surface === "trip" ? "route-src-0" : "route";
+      const route = structuredClone(map.sources[routeId].data);
+      if (surface === "day" && painted) {
+        button("Next photo").click();
+        await settle();
+      }
+      map.fire("error", undefined, {
+        sourceId: "basemap",
+        error: new Error("tiles unavailable"),
+      });
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      textButton("Retry map").click();
+      expect(map.setStyle).toHaveBeenCalledWith(map.options.style, {
+        diff: false,
+      });
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      loadMap(map);
+      await settle();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+      expect(map.sources[routeId].data).toEqual(route);
+      expect(maps).toHaveLength(1);
+      expect(
+        map.handlers.filter(
+          ([event, layer]) =>
+            event === "click" &&
+            layer === (surface === "trip" ? "route-hit-0" : "route-hit-area"),
+        ),
+      ).toHaveLength(1);
+      if (surface === "day") {
+        expect(map.jumpTo).toHaveBeenCalledWith({
+          center: { lng: -123, lat: 49 },
+          zoom: 8,
+          bearing: 10,
+          pitch: 20,
+        });
+        if (painted) expect(button("View photo 2 fullscreen")).not.toBeNull();
+      }
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "does not erase a failed %s retry when its style later loads",
+    async (surface) => {
+      await render(surface);
+      const map = maps[0];
+      map.fire("error", undefined, { error: new Error("tiles unavailable") });
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      textButton("Retry map").click();
+      map.fire("error", undefined, { error: new Error("style unavailable") });
+      loadMap(map);
+      await settle();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      textButton("Retry map").click();
+      loadMap(map);
+      await settle();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+      expect(maps).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["trip", false],
+    ["day", false],
+    ["trip", true],
+    ["day", true],
+  ])(
+    "detects a %s tile404 without loading or render events (painted=%s)",
+    async (surface, painted) => {
+      await render(surface, tripsData(), "", painted);
+      const map = maps[0];
+      const fetch = vi
+        .fn()
+        .mockResolvedValue(new Response("missing", { status: 404 }));
+      vi.stubGlobal("fetch", fetch);
+      await expect(
+        map.fetchTile("https://tiles.example/0/0/0.pbf"),
+      ).rejects.toMatchObject({ status: 404 });
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      expect(textButton("Retry map")).not.toBeUndefined();
+      expect(fetch).toHaveBeenCalledOnce();
+      // No injected source event or render follows the HTTP failure.
+      textButton("Retry map").click();
+      fetch.mockResolvedValue(new Response(new Uint8Array()));
+      await map.fetchTile("https://tiles.example/0/0/0.pbf");
+      loadMap(map);
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "ignores an old %s request after Retry has painted a new style",
+    async (surface) => {
+      await render(surface);
+      const map = maps[0];
+      let resolve;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise((done) => {
+              resolve = done;
+            }),
+        ),
+      );
+      const pending = map.fetchTile("https://tiles.example/old.pbf");
+      map.fire("error", undefined, { error: new Error("basemap unavailable") });
+      await settle();
+      textButton("Retry map").click();
+      loadMap(map);
+      await settle();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+      resolve(new Response("old error", { status: 500 }));
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "removes its %s protocol and cancels requests on unmount",
+    async (surface) => {
+      await render(surface);
+      const map = maps[0];
+      const protocol = addProtocol.mock.calls[0][0];
+      let resolve;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Promise((done) => {
+              resolve = done;
+            }),
+        ),
+      );
+      const controller = new AbortController();
+      const pending = map.fetchTile(
+        "https://tiles.example/pending.pbf",
+        {},
+        controller,
+      );
+      await unmount(instance);
+      instance = null;
+      expect(controller.signal.aborted).toBe(true);
+      expect(removeProtocol).toHaveBeenCalledWith(protocol);
+      resolve(new Response("late error", { status: 500 }));
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(map.remove).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["trip", false],
+    ["day", false],
+    ["trip", true],
+    ["day", true],
+  ])(
+    "restores the %s serialized route safely after context loss (retry=%s)",
+    async (surface, retry) => {
+      await render(surface);
+      const map = maps[0];
+      const routeId = surface === "trip" ? "route-src-0" : "route";
+      const route = structuredClone(map.sources[routeId].data);
+      if (surface === "day") {
+        button("Next photo").click();
+        await settle();
+      }
+      map.loseContext();
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      if (retry) textButton("Retry map").click();
+      await settle();
+      expect(map.setStyle).not.toHaveBeenCalled();
+      expect(textButton("Retry map")).not.toBeUndefined();
+      map.restoreContext();
+      expect(map.setStyle).toHaveBeenCalledTimes(retry ? 2 : 1);
+      expect(map.setStyle.mock.calls[0][0].sources[routeId].data).toEqual(
+        route,
+      );
+      if (retry) expect(map.setStyle.mock.calls[1][0]).toBe(map.options.style);
+      expect(() => loadMap(map)).not.toThrow();
+      await settle();
+      expect(textButton("Retry map")).not.toBeUndefined();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+      expect(map.sources[routeId].data).toEqual(route);
+      expect(maps).toHaveLength(1);
+      if (surface === "day") {
+        expect(button("View photo 2 fullscreen")).not.toBeNull();
+        expect(map.jumpTo).toHaveBeenCalledWith({
+          center: { lng: -123, lat: 49 },
+          zoom: 8,
+          bearing: 10,
+          pitch: 20,
+        });
+      }
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "keeps Retry available when the restored %s style fails before loading",
+    async (surface) => {
+      await render(surface);
+      const map = maps[0];
+      map.loseContext();
+      map.restoreContext();
+      map.fire("error", undefined, {
+        error: new Error("restored style unavailable"),
+      });
+      loadMap(map);
+      await settle();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      textButton("Retry map").click();
+      loadMap(map);
+      await settle();
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+    },
+  );
+
+  it.each(["trip", "day"])(
+    "waits for the %s basemap while route data is ready",
+    async (surface) => {
+      await render(surface, tripsData(), "", false);
+      const map = maps[0];
+      map.isSourceLoaded = vi.fn((id) => id !== "basemap");
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).not.toBeNull();
+      map.isSourceLoaded.mockReturnValue(true);
+      map.fire("render");
+      await settle();
+      expect(document.querySelector(".route-preview")).toBeNull();
+    },
+  );
+
+  it("keeps a working day map visible when optional terrain fails", async () => {
+    await render("day");
+    maps[0].fire("error", undefined, {
+      sourceId: "terrain-dem",
+      error: new Error("DEM unavailable"),
+    });
+    await settle();
+    expect(document.querySelector(".route-preview")).toBeNull();
+  });
+
+  it("restores the new day preview until its route paints on the reused map", async () => {
+    const data = tripsData();
+    await render("day", data);
+    const map = maps[0];
+    const preview = () => document.querySelector(".route-preview");
+    expect(preview()).toBeNull();
+    map.isSourceLoaded = vi.fn(() => false);
+    dataStore.set({ ...data, dayNumber: 2 });
+    await settle();
+    expect(preview().querySelector("polyline").getAttribute("stroke")).toBe(
+      "#059669",
+    );
+    expect(preview().textContent).toContain("3 GPS points");
+    map.fire("render");
+    await settle();
+    expect(preview()).not.toBeNull();
+    map.isSourceLoaded.mockReturnValue(true);
+    map.fire("render");
+    await settle();
+    expect(preview()).toBeNull();
+    expect(maps).toHaveLength(1);
+    expect(map.remove).not.toHaveBeenCalled();
+    button("Next photo").click();
+    await settle();
+    expect(preview()).toBeNull();
   });
 
   it("keeps timeline URL parameters, filtering and the real view control", async () => {
@@ -438,7 +829,7 @@ describe("trip image loading", () => {
       expect(requested.map((image) => image.src)).toEqual([
         "/fixture-display-0.jpg",
       ]);
-      map.fire("load");
+      loadMap(map);
       await settle();
       map.isSourceLoaded = vi.fn(() => false);
       map.fire("render");
@@ -475,7 +866,7 @@ describe("trip image loading", () => {
   it("cancels an old neighbour on navigation and stops on unmount", async () => {
     const requested = photoRequests();
     const map = await mountDay(galleryData());
-    map.fire("load");
+    loadMap(map);
     await settle();
     map.fire("render");
     requested[0].decoded();
@@ -584,6 +975,34 @@ describe("trip image loading", () => {
     expect(maps).toHaveLength(1);
   });
 
+  it("keeps the no-GPS summary without blocking nearby photos", async () => {
+    const requested = photoRequests();
+    const data = tripsData();
+    data.points = data.points.map((point) => ({
+      ...point,
+      lat: null,
+      lng: null,
+    }));
+    await render("day", data);
+    expect(maps[0].sources.route.data).toEqual({
+      type: "FeatureCollection",
+      features: [],
+    });
+    expect(document.querySelector(".route-preview")).toBeNull();
+    expect(document.querySelector(".map-summary").textContent).toContain(
+      "No GPS points",
+    );
+    requested[0].decoded();
+    await settle();
+    expect(requested).toHaveLength(2);
+    expect(requested[1].src).toBe(data.points[1].imgDisplay);
+    expect(requested[1].fetchPriority).toBe("low");
+    expect(document.querySelector(".route-preview")).toBeNull();
+    expect(document.querySelector(".map-summary").textContent).toContain(
+      "No GPS points",
+    );
+  });
+
   it("waits for a new map after visiting a missing day", async () => {
     const requested = photoRequests();
     const data = tripsData();
@@ -605,7 +1024,7 @@ describe("trip image loading", () => {
     expect(
       requested.filter((image) => image.fetchPriority === "low"),
     ).toHaveLength(1);
-    maps[1].fire("load");
+    loadMap(maps[1]);
     await settle();
     expect(requested).toHaveLength(beforeMap);
     maps[1].fire("render");
@@ -625,7 +1044,7 @@ describe("trip image loading", () => {
         });
       try {
         const map = await mountDay(galleryData());
-        map.fire("load");
+        loadMap(map);
         await settle();
         map.fire("render");
         if (condition === "save-data") requested[0].decoded();
