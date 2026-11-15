@@ -62,7 +62,7 @@ def publisher(documents):
     return named(documents, "Job", "monolith-public-publish-assets")
 
 
-def test_publication_uses_release_images_before_deployment(rendered):
+def test_publication_precedes_backend_then_frontend(rendered):
     job = publisher(rendered)
     assert job["metadata"]["namespace"] == "monolith-workflows"
     assert job["metadata"]["annotations"] == {
@@ -73,11 +73,8 @@ def test_publication_uses_release_images_before_deployment(rendered):
     assert job["spec"]["backoffLimit"] == 1
     web = named(rendered, "Deployment", "monolith-public-web")
     frontend = named(rendered, "Deployment", "monolith-public-frontend")
-    # The first release archives bytes while frontend serving stays unchanged.
-    assert "argocd.argoproj.io/sync-wave" not in web["metadata"].get("annotations", {})
-    assert "argocd.argoproj.io/sync-wave" not in frontend["metadata"].get(
-        "annotations", {}
-    )
+    assert web["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "0"
+    assert frontend["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "1"
     pod = job["spec"]["template"]["spec"]
     assert (
         pod["initContainers"][0]["image"]
@@ -139,7 +136,7 @@ def test_writer_stays_in_existing_job_namespace_without_api_authority(rendered):
         assert container["resources"]["limits"]["memory"]
 
 
-def test_public_runtime_keeps_reader_and_frontend_fallback_disabled(rendered):
+def test_public_runtime_keeps_only_reader_and_frontend_transport(rendered):
     frontend = named(rendered, "Deployment", "monolith-public-frontend")
     web = named(rendered, "Deployment", "monolith-public-web")
     front_env = {
@@ -150,7 +147,7 @@ def test_public_runtime_keeps_reader_and_frontend_fallback_disabled(rendered):
         item["name"]: item
         for item in web["spec"]["template"]["spec"]["containers"][0]["env"]
     }
-    assert "PUBLIC_ASSET_ARCHIVE" not in front_env
+    assert front_env["PUBLIC_ASSET_ARCHIVE"]["value"] == "true"
     assert not {"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"} & front_env.keys()
     for name in ("S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"):
         assert (

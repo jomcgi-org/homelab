@@ -403,6 +403,10 @@ frontend:
       value: "20"
     - name: API_BASE
       value: "http://monolith-public-web:8000"
+    # Public-only immutable archive fallback. The private/full frontend image
+    # never receives this setting or an object-store writer identity.
+    - name: PUBLIC_ASSET_ARCHIVE
+      value: "true"
     # CHAT_API_BASE is the same backend Service; the Grimoire chat SSR proxies
     # (/app/grimoire/chat/session + /message + /share + /fork) call the internal
     # chat API at this address over in-cluster mTLS (ADR 005, Phase 1).
