@@ -127,3 +127,43 @@ describe("local public previews", () => {
     );
   });
 });
+
+describe("public screenshot Service origin", () => {
+  const host =
+    "monolith-public-frontend.monolith-public.svc.cluster.local:3000";
+
+  it.each([
+    "/app/hikes",
+    "/app/ships",
+    "/app/stars",
+    "/app/trips",
+    "/app/notes",
+  ])("maps %s to the public tree over the screenshot hop", (path) => {
+    const target = new URL(`http://${host}${path}?view=shared`);
+    expect(reroute({ url: target })).toBe(`/public${path}`);
+    expect(target.search).toBe("?view=shared");
+    expect(
+      reroute({ url: new URL(`http://${host}/public${path}`) }),
+    ).toBeUndefined();
+  });
+
+  it.each(["/private/factory", "/friends/moving"])(
+    "keeps %s outside the private and friends trees",
+    (path) => {
+      expect(reroute({ url: new URL(`http://${host}${path}`) })).toBe(
+        `/public${path}`,
+      );
+    },
+  );
+
+  it.each([
+    "monolith.monolith.svc.cluster.local:3000",
+    "monolith-friends-frontend.monolith-friends.svc.cluster.local:3000",
+    "unrelated.svc.cluster.local:3000",
+    "monolith-public-frontend.monolith-public.svc.cluster.local.evil.test:3000",
+  ])("does not treat %s as a public alias", (other) => {
+    expect(
+      reroute({ url: new URL(`http://${other}/app/hikes`) }),
+    ).toBeUndefined();
+  });
+});

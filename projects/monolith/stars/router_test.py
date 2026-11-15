@@ -1,9 +1,7 @@
 """Unit tests for stars/router.py: /api/stars/sites.
 
-Uses an in-memory SQLite DB seeded with stars.sites rows + site_hours and a
-minimal FastAPI app that mounts only the stars router, mirroring the
-schema-stripping + ``app.dependency_overrides[get_session]`` pattern in
-``ships/router_test.py`` and ``hikes/router_test.py``.
+Uses a file-backed SQLite DB seeded with stars.sites rows + site_hours and a
+minimal FastAPI app that mounts only the stars router.
 
 Timestamps are computed relative to ``top_of_hour(datetime.now(timezone.utc))``
 so the read-time ``hour_time >= cutoff`` filter behaves the same regardless of
@@ -17,10 +15,10 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+import fastapi.routing
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
+from sqlmodel import SQLModel, Session, create_engine
 
 from core.db import get_session
 from shared.forecast_freshness import top_of_hour
@@ -283,7 +281,9 @@ def test_uncapped_real_database_load_has_same_metadata_and_query_count(
         assert materialize._materialize_sync() == baseline_len
     finally:
         event.remove(session.get_bind(), "before_cursor_execute", record)
-    assert sum("FROM site_hours" in query for query in queries) == 1
+    assert (
+        sum("FROM site_hours" in query.replace("main.", "") for query in queries) == 1
+    )
     for key, value in public.items():
         assert writes[key] == value
     assert (
@@ -340,27 +340,18 @@ def test_serialized_sites_keep_empty_success_and_legacy_visibility(client, sessi
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'stars.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+    ).execution_options(schema_translate_map={"stars": None})
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[model.__table__ for model in (Site, SiteHour, SiteMonthClimatology)],
     )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
 
 
 @pytest.fixture(name="client")
@@ -664,6 +655,83 @@ class TestHistory:
                 clear_dark_hours=clear_dark_hours,
             )
         )
+
+    def test_exact_http_json_and_conditional_headers(self, client, session):
+        session.add(Site(id="island", name='Àird "Mòr"', lat=57.5, lon=-6.25))
+        self._seed_climo(session, "island", 1, 3, 2)
+        self._seed_climo(session, "island", 12, 12, 11)
+        session.commit()
+
+        response = client.get("/api/stars/history")
+        expected = (
+            '{"sites":[{"id":"island","name":"Àird \\"Mòr\\"",'
+            '"lat":57.5,"lon":-6.25,"clear":[2,0,0,0,0,0,0,0,0,0,0,11],'
+            '"dark":[3,0,0,0,0,0,0,0,0,0,0,12]}],"count":1}'
+        ).encode()
+        assert response.status_code == 200
+        assert response.content == expected
+        assert response.headers["content-type"] == "application/json"
+        assert response.headers["content-length"] == str(len(expected))
+        assert response.headers["cache-control"] == _HISTORY_CACHE_CONTROL
+        assert response.headers["etag"] == '"v3-1-13-15"'
+
+        cached = client.get(
+            "/api/stars/history", headers={"If-None-Match": response.headers["etag"]}
+        )
+        assert cached.status_code == 304
+        assert cached.content == b""
+        assert cached.headers["etag"] == response.headers["etag"]
+        assert cached.headers["cache-control"] == response.headers["cache-control"]
+        assert "content-type" not in cached.headers
+        assert "content-length" not in cached.headers
+
+    def test_http_skips_recursive_copy(self, client, session, monkeypatch):
+        _seed_site(session, "galloway-forest")
+        self._seed_climo(session, "galloway-forest", 12, 10, 5)
+        session.commit()
+
+        def unexpected_copy(*args, **kwargs):
+            raise AssertionError(
+                "history JSON primitives must not be recursively copied"
+            )
+
+        monkeypatch.setattr(fastapi.routing, "jsonable_encoder", unexpected_copy)
+        assert client.get("/api/stars/history").json()["count"] == 1
+
+    def test_materializer_keeps_dictionary_builder(self, session):
+        from stars import materialize
+
+        _seed_site(session, "galloway-forest")
+        self._seed_climo(session, "galloway-forest", 12, 10, 5)
+        session.commit()
+        headers = Response()
+        assert materialize.get_history is stars_router.get_history
+        payload = materialize.get_history(SimpleNamespace(headers={}), headers, session)
+        assert isinstance(payload, dict)
+        assert payload["count"] == 1
+        assert payload["sites"][0]["clear"] == [0] * 11 + [5]
+        assert payload["sites"][0]["dark"] == [0] * 11 + [10]
+        assert json.loads(json.dumps(payload)) == payload
+        assert headers.headers["etag"] == '"v3-1-5-10"'
+        assert headers.headers["cache-control"] == _HISTORY_CACHE_CONTROL
+
+    def test_changed_climatology_replaces_conditional_response(self, client, session):
+        _seed_site(session, "galloway-forest")
+        cell = SiteMonthClimatology(
+            site_id="galloway-forest", month=12, dark_hours=10, clear_dark_hours=5
+        )
+        session.add(cell)
+        session.commit()
+        previous = client.get("/api/stars/history")
+        cell.clear_dark_hours = 6
+        session.commit()
+        current = client.get(
+            "/api/stars/history", headers={"If-None-Match": previous.headers["etag"]}
+        )
+        assert current.status_code == 200
+        assert current.json()["sites"][0]["clear"][11] == 6
+        assert current.headers["etag"] == '"v3-1-6-10"'
+        assert current.headers["cache-control"] == previous.headers["cache-control"]
 
     def test_all_months_per_site_arrays_sorted(self, client, session):
         # The bulk payload now carries every site's full 12-month breakdown as a

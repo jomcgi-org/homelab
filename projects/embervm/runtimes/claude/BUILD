@@ -2,6 +2,7 @@
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("//bazel/tools/image:multitool_tar.bzl", "multitool_tar")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
@@ -177,6 +178,14 @@ tar(
     visibility = ["//projects/embervm/runtimes/pi:__pkg__"],
 )
 
+# Keep the upstream package layout, bytes and executable modes together.
+# Codex discovers its sibling hosts, manifest and resources from this tree.
+pkg_tar(
+    name = "codex_cli_tar",
+    package_dir = "/usr/local",
+    deps = ["@codex_cli//file"],
+)
+
 apko_image(
     name = "image",
     # amd64-only: the Claude Code CLI is a single 262 MB arch-specific ELF and
@@ -201,11 +210,9 @@ apko_image(
         # registry tarball (see claude_code_cli in MODULE.bazel). amd64 only, so
         # this is the concrete per-arch tar rather than a multiarch_tars entry.
         "@claude_code_cli//:tar_amd64",
-        # The Codex CLI, a statically linked musl binary from the GitHub release
-        # (see codex_cli in MODULE.bazel). It drives the Luna/Terra/Sol models
-        # through the same shim, spawn-per-turn with `exec resume` rather than
-        # the claude CLI's long-lived stream-json REPL (#4234).
-        "@codex_cli//:tar_amd64",
+        # The full Codex package drives Luna/Terra/Sol/Astra through the shim's
+        # long-lived app-server and persisted thread/resume protocol.
+        ":codex_cli_tar",
         # Meta's Muse Code CLI, a statically linked ELF from the Meta release
         # channel, the native harness for the Spark family, driving the spark
         # model that pi previously served.
@@ -235,6 +242,28 @@ py_test(
         "muse_usage_two_turns.json",
     ],
     imports = ["."],
+    deps = [
+        ":shim_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "codex_compat_test",
+    srcs = ["codex_compat_test.py"],
+    data = [
+        ":codex_cli_tar",
+        "@codex_cli//file",
+    ],
+    env = {
+        "CODEX_PACKAGE_ARCHIVE": "$(rootpath @codex_cli//file)",
+        "CODEX_RUNTIME_LAYER": "$(rootpath :codex_cli_tar)",
+    },
+    imports = ["."],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
     deps = [
         ":shim_lib",
         "@pip//pytest",

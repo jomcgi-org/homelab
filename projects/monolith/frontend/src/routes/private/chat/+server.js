@@ -1,29 +1,9 @@
+import { relaySse } from "$lib/server/sse-relay.js";
+
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
 export async function POST({ request }) {
-  const body = await request.json();
-
-  const upstream = await fetch(`${API_BASE}/api/chat/explore`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120000),
-  });
-
-  if (!upstream.ok) {
-    return new Response(JSON.stringify({ error: "upstream failed" }), {
-      status: upstream.status,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  return new Response(upstream.body, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+  return relaySse("/api/chat/explore", request);
 }
 
 export async function GET({ url }) {

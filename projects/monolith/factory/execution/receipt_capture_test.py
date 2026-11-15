@@ -1,4 +1,4 @@
-"""Capture-only contracts through the real claimed-message executor and writer."""
+"""Receipt capture contracts through the real claimed-message executor and writer."""
 
 import asyncio
 import base64
@@ -49,19 +49,13 @@ def database(tmp_path, monkeypatch):
     )
     for module in (admission, mcp, result_receipts, store, core_db):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     mcp._negative_oracle_verdicts.clear()
 
     async def notify(*_args, **_kwargs):
         return None
 
-    async def unexpected_adoption(*_args, **_kwargs):
-        pytest.fail("capture-only delivery cannot start a receipt observer")
-
     monkeypatch.setattr(mcp, "_notify_terminal", notify)
-    monkeypatch.setattr(transport, "_observe_native_result", unexpected_adoption)
     try:
         yield engine
     finally:
@@ -366,83 +360,3 @@ def test_owner_stolen_at_mint_denies_post_without_overwriting_new_owner(
     assert expected["receipts"] == expected["turns"] == []
     assert expected["pending"][0]["claimed_by_replica"] == "new-executor"
     assert expected["permits"][0]["state"] == "running"
-
-
-def test_capture_only_waits_for_native_response_and_preserves_compact_receipt(
-    database, monkeypatch
-):
-    sid = queue(database)
-    record = native_record()
-    captured = {}
-    callback_committed = asyncio.Event()
-    response_ready = asyncio.Event()
-
-    async def handler(request):
-        assert request.url.path.endswith("/invoke")
-        assert request.headers["X-Ember-Guest-Path"] == "/shim/turn"
-        assert not captured, "the native invocation must remain unique"
-        receipt, body = await publish(request, record)
-        captured.update(receipt=receipt, body=body, request=request)
-        callback_committed.set()
-        await response_ready.wait()
-        return httpx.Response(
-            200,
-            content=json.dumps(record).encode(),
-            headers={"Content-Type": "application/json"},
-            request=request,
-        )
-
-    requests = fake_http(monkeypatch, handler)
-
-    async def run():
-        executor = asyncio.create_task(mcp._execute_pending_message(sid))
-        try:
-            await callback_committed.wait()
-            before_response = snapshot(database, sid)
-            assert not executor.done()
-            assert before_response["turns"] == []
-            assert len(before_response["pending"]) == 1
-            assert before_response["permits"][0]["state"] == "running"
-            assert before_response["session"]["result_receipt_fence_id"] is None
-            response_ready.set()
-            await executor
-        finally:
-            response_ready.set()
-            executor.cancel()
-            await asyncio.gather(executor, return_exceptions=True)
-
-    asyncio.run(asyncio.wait_for(run(), 5))
-    after = snapshot(database, sid)
-    assert len(requests) == 1
-    assert after["pending"] == []
-    assert len(after["turns"]) == len(after["receipts"]) == len(after["permits"]) == 1
-    turn = after["turns"][0]
-    assert turn["result_text"] == record["result"]
-    assert turn["terminal_reason"] == "end_turn"
-    assert turn["cost_usd"] == record["total_cost_usd"]
-    assert zlib.decompress(turn["diff_blob"]) == b"native diff bytes"
-    assert turn["diff_base_sha"] == "a" * 40
-    assert "native_result_receipt" not in json.loads(turn["usage_json"])
-    assert after["permits"][0]["state"] == "settled"
-    assert after["permits"][0]["outcome"] == "end_turn"
-    assert after["session"]["result_receipt_fence_id"] is None
-    assert after["session"]["ember_session_id"] == f"guest-{sid}"
-    assert after["session"]["cli_session_id"] == "native-cli"
-    receipt = after["receipts"][0]
-    assert receipt["id"] == captured["receipt"]["id"]
-    assert receipt["result_body"] == captured["body"]
-    assert receipt["result_sha256"] == hashlib.sha256(captured["body"]).hexdigest()
-    assert receipt["received_at"] is not None
-    assert receipt["response_observed_at"] is None
-    assert captured["body"] != json.dumps(record).encode()
-    assert json.loads(captured["body"]) == record
-    unsigned_request = json.loads(captured["request"].content)
-    unsigned_request.pop("result_receipt")
-    assert (
-        receipt["request_sha256"]
-        == hashlib.sha256(json.dumps(unsigned_request).encode()).hexdigest()
-    )
-    assert receipt["claim_owner"] == after["permits"][0]["owner"]
-    assert receipt["guest_id"] == f"guest-{sid}"
-    assert receipt["session_id"] == sid
-    assert receipt["seq"] == receipt["dispatch_count"] == 1

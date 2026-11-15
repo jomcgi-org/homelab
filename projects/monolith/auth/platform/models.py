@@ -1,18 +1,15 @@
 """Private platform account storage, independent of application membership."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import uuid4
 
+from core.clock import utc_now as now
 from sqlalchemy import Column, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlmodel import Field, SQLModel
 
 SCHEMA = "platform_auth"
 UUID_TYPE = UUID(as_uuid=False).with_variant(String(36), "sqlite")
-
-
-def now():
-    return datetime.now(timezone.utc)
 
 
 def primary_key():

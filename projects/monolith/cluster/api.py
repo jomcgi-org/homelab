@@ -11,7 +11,6 @@ rather than the reverse.
 from __future__ import annotations
 
 from cluster.kubernetes import (  # re-exported
-    RESOURCE_KINDS,
     KubernetesClient,
     UnknownKindError,
 )
@@ -25,7 +24,6 @@ from cluster.summarize import (  # re-exported
 
 __all__ = [
     "KubernetesClient",
-    "RESOURCE_KINDS",
     "UnknownKindError",
     "build_health",
     "dedupe_events",

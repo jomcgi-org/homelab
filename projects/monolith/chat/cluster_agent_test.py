@@ -12,6 +12,7 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
+from chat import cluster_agent
 from chat.cluster_agent import ClusterDeps, create_cluster_agent
 from chat.sse import SSEEmitter
 
@@ -44,6 +45,70 @@ def _one_tool_call_model(tool_name: str, args: dict) -> FunctionModel:
     return FunctionModel(_model)
 
 
+class _RecordingClient:
+    """Reject and record unknown access even when a handler swallows errors."""
+
+    __slots__ = ("calls", "unexpected")
+
+    def __init__(self):
+        self.calls = []
+        self.unexpected = []
+
+    def __getattr__(self, name):
+        self.unexpected.append(name)
+        raise AssertionError(f"unexpected Kubernetes access: {name}")
+
+    async def list_resources(self, kind, namespace=None, label_selector=None):
+        self.calls.append(("list_resources", kind, namespace, label_selector))
+        return [_POD] if kind == "pods" else []
+
+    async def get_resource(self, kind, name, namespace=None):
+        self.calls.append(("get_resource", kind, name, namespace))
+        return _POD
+
+    async def get_pod_logs(self, namespace, pod, container=None, tail_lines=200):
+        self.calls.append(("get_pod_logs", namespace, pod, container, tail_lines))
+        return "INFO starting\nERROR old\nINFO ready\nERROR retry\nERROR timeout"
+
+    async def list_events(self, namespace=None, involved_object=None):
+        self.calls.append(("list_events", namespace, involved_object))
+        return [_EVENT, _EVENT]
+
+    async def close(self):
+        self.calls.append(("close",))
+
+
+_POD = {
+    "metadata": {"name": "worker-7", "namespace": "dispatch-test"},
+    "spec": {"restartPolicy": "Always"},
+    "status": {
+        "phase": "Running",
+        "containerStatuses": [{"ready": False, "restartCount": 3}],
+    },
+}
+_POD_ROW = {
+    "name": "worker-7",
+    "namespace": "dispatch-test",
+    "phase": "Running",
+    "ready": "0/1",
+    "restarts": 3,
+    "restart_policy": "Always",
+}
+_EVENT = {
+    "involvedObject": {
+        "kind": "Pod",
+        "name": "worker-7",
+        "namespace": "dispatch-test",
+    },
+    "type": "Warning",
+    "reason": "BackOff",
+    "message": "retry worker",
+    "count": 2,
+    "firstTimestamp": "2026-11-01T01:00:00Z",
+    "lastTimestamp": "2026-11-01T01:02:00Z",
+}
+
+
 class TestToolRegistration:
     def test_agent_registers_five_read_only_tools(self):
         agent = create_cluster_agent()
@@ -56,18 +121,134 @@ class TestToolRegistration:
             "get_events",
         }
 
-    def test_no_argocd_sync_tool_registered(self):
-        # Read-only guarantee: the sync tool must never be wired into the
-        # chat agent, only into the (separate) MCP surface.
-        import inspect
 
-        from chat import cluster_agent
+class TestReadOnlyDispatch:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("tool_name", "args", "expected_calls", "expected_payload"),
+        [
+            (
+                "health_summary",
+                {},
+                [
+                    ("list_resources", kind, None, None)
+                    for kind in cluster_agent._HEALTH_KINDS
+                ],
+                {
+                    "healthy": False,
+                    "scanned": 1,
+                    "unhealthy": {"pods": [_POD_ROW]},
+                },
+            ),
+            (
+                "list_resources",
+                {
+                    "kind": "pods",
+                    "namespace": "dispatch-test",
+                    "label_selector": "app=worker,tier=batch",
+                },
+                [
+                    (
+                        "list_resources",
+                        "pods",
+                        "dispatch-test",
+                        "app=worker,tier=batch",
+                    )
+                ],
+                {"kind": "pods", "count": 1, "items": [_POD_ROW]},
+            ),
+            (
+                "get_resource",
+                {"kind": "pods", "name": "worker-7", "namespace": "dispatch-test"},
+                [("get_resource", "pods", "worker-7", "dispatch-test")],
+                {
+                    "kind": "pods",
+                    "name": "worker-7",
+                    "namespace": "dispatch-test",
+                    "status": {
+                        key: value
+                        for key, value in _POD_ROW.items()
+                        if key not in ("name", "namespace")
+                    },
+                },
+            ),
+            (
+                "pod_logs",
+                {
+                    "namespace": "dispatch-test",
+                    "pod": "worker-7",
+                    "container": "sidecar",
+                    "tail_lines": 2,
+                    "grep": "^ERROR",
+                },
+                [("get_pod_logs", "dispatch-test", "worker-7", "sidecar", 2)],
+                {
+                    "logs": "ERROR retry\nERROR timeout",
+                    "lines": 2,
+                    "filtered": True,
+                    "truncated": True,
+                },
+            ),
+            (
+                "get_events",
+                {"namespace": "dispatch-test", "involved_object": "worker-7"},
+                [("list_events", "dispatch-test", "worker-7")],
+                {
+                    "count": 1,
+                    "events": [
+                        {
+                            "object": "Pod/worker-7",
+                            "namespace": "dispatch-test",
+                            "type": "Warning",
+                            "reason": "BackOff",
+                            "message": "retry worker",
+                            "count": 4,
+                            "first_seen": "2026-11-01T01:00:00Z",
+                            "last_seen": "2026-11-01T01:02:00Z",
+                        }
+                    ],
+                },
+            ),
+        ],
+        ids=[
+            "health_summary",
+            "list_resources",
+            "get_resource",
+            "pod_logs",
+            "get_events",
+        ],
+    )
+    async def test_registered_handler_reads_only(
+        self, tool_name, args, expected_calls, expected_payload
+    ):
+        client = _RecordingClient()
+        agent = create_cluster_agent()
+        deps = ClusterDeps(emitter=SSEEmitter())
+        with (
+            patch.object(
+                cluster_agent, "KubernetesClient", return_value=client
+            ) as factory,
+            agent.override(model=_one_tool_call_model(tool_name, args)),
+        ):
+            result = await agent.run("inspect the fixture", deps=deps)
 
-        src = inspect.getsource(cluster_agent)
-        assert "sync_argocd_app" not in src
-        assert "k8s_sync_argocd_app" not in src
-        assert "kargo_promote" not in src
-        assert "create_kargo_promotion" not in src
+        # Keep this assertion outside every production exception scope. In
+        # particular, health_summary catches a forbidden access per kind.
+        assert client.unexpected == [], (
+            f"unexpected Kubernetes attempts: {client.unexpected}"
+        )
+        factory.assert_called_once_with()
+        assert client.calls == [*expected_calls, ("close",)]
+        returns = [
+            part
+            for message in result.all_messages()
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        assert len(returns) == 1
+        assert returns[0].tool_name == tool_name
+        assert returns[0].tool_call_id == "c1"
+        assert json.loads(returns[0].content) == expected_payload
 
 
 class TestErrorWrapping:

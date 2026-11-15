@@ -34,7 +34,7 @@ entry point relative to the extracted image root.
 No `gazelle`. The multitool lockfile's gazelle is
 [aspect-gazelle](https://github.com/aspect-build/aspect-gazelle), a different
 program from this repo's `//:gazelle_binary` (bazel-gazelle plus the helm,
-semgrep, bzl, go, proto and python extensions). Put it on `$PATH` and anything
+bzl, go, proto and python extensions). Put it on `$PATH` and anything
 calling bare `gazelle` regenerates BUILD files by aspect-gazelle's defaults,
 which rewrites external Go deps to `:go_default_library` targets that do not
 exist and fails analysis. The former PATH tool bundle already excluded it for

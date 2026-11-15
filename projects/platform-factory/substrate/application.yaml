@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: substrate
+  namespace: argocd
+  annotations:
+    # Removing or renaming this Application must not cascade into Substrate's
+    # CRDs, namespaces, keys and volumes (resources/kustomization.yaml marks
+    # those Delete=false too).
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    # ArgoCD v3.3's built-in schema predates the Kubernetes 1.37
+    # podCertificate projected volume Substrate's pods use, so the client-side
+    # structured diff fails; the apiserver computes the diff instead.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/substrate/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ate-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      # The SandboxConfig is applied with the CRD that defines it.
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

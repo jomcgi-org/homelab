@@ -137,20 +137,16 @@ func newWorkloadRegistry(cachePath string) *workloadRegistry {
 	}
 }
 
-// sync converges the table to EXACTLY the pushed set: entries absent from the
-// push are dropped, entries present are added-or-updated. It marks the registry
-// synced and clears any stale mark (a live sync is the authority a stale cache
-// was standing in for), then persists the new table. Idempotent under replay:
-// applying the same set twice yields the same table and the same on-disk cache.
-// Returns the resulting entry count.
-func (r *workloadRegistry) sync(entries []workloadEntry) int {
-	return r.syncEntries(entries, "", false)
-}
-
 func (r *workloadRegistry) syncFromControlPlane(entries []workloadEntry, controlPlaneActivatorIP string) int {
 	return r.syncEntries(entries, controlPlaneActivatorIP, true)
 }
 
+// syncEntries converges the table to EXACTLY the pushed set: entries absent from
+// the push are dropped, entries present are added-or-updated. It marks the
+// registry synced and clears any stale mark (a live sync is the authority a stale
+// cache was standing in for), then persists the new table. Idempotent under
+// replay: applying the same set twice yields the same table and the same on-disk
+// cache. Returns the resulting entry count.
 func (r *workloadRegistry) syncEntries(entries []workloadEntry, controlPlaneActivatorIP string, updateControlPlaneActivator bool) int {
 	r.mu.Lock()
 	next := make(map[string]workloadEntry, len(entries))
@@ -225,12 +221,6 @@ func (r *workloadRegistry) groupByListenPort(port uint32) (workloadEntry, bool) 
 		}
 	}
 	return workloadEntry{}, false
-}
-
-func (r *workloadRegistry) setControlPlaneActivator(ip string) {
-	r.mu.Lock()
-	r.controlPlaneActivatorIP = ip
-	r.mu.Unlock()
 }
 
 func (r *workloadRegistry) controlPlaneActivator() string {

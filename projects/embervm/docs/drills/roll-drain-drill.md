@@ -43,7 +43,7 @@ Record: the drain span, the op-log excerpt, and the psql output.
 ## Gate 3: full-node drain wall time under 120s
 
 1. Have every live class live at once (stateful + session + serving).
-2. Roll noded and measure the `ember.node_drain` span duration (SigNoz), or the wall
+2. Roll noded and measure the `ember.node_drain` span duration in Honeycomb, or the wall
    time between `node_drain_started` and the last per-class bank op.
 3. Confirm it is under the 110s deadline with margin.
 

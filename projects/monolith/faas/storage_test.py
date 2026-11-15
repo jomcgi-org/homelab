@@ -76,3 +76,30 @@ def test_code_uri_raises_when_read_base_unset(monkeypatch):
 
     with pytest.raises(RuntimeError):
         storage.code_uri("echo-fn", "a" * 64)
+
+
+def test_put_archive_uses_shared_upload(monkeypatch):
+    from unittest.mock import patch
+    from core.s3_upload import put_object
+
+    assert storage.put_object is put_object
+    client = _patch_client(monkeypatch, MagicMock())
+    with patch.object(storage, "put_object") as upload:
+        assert storage.put_archive("fn", "hash", b"zip") is None
+    upload.assert_called_once_with(
+        client,
+        bucket="faas",
+        key="fn/hash.zip",
+        body=b"zip",
+        content_type="application/zip",
+    )
+
+
+def test_put_archive_unset_endpoint_never_constructs_client(monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.delenv("SEAWEEDFS_S3_ENDPOINT", raising=False)
+    with patch.object(storage, "path_style_client") as client:
+        with pytest.raises(RuntimeError, match="SEAWEEDFS_S3_ENDPOINT unset"):
+            storage.put_archive("fn", "hash", b"zip")
+    client.assert_not_called()

@@ -1,0 +1,13 @@
+-- Runs kagent's role and schema setup (setup.sql, copied unchanged from
+-- kagent v1.0.1 go/core/pkg/postgressetup/setup.sql) with the names the
+-- factory chart expects. The passwords come from the environment, so they
+-- never appear in the command line. kagent-pg-setup runs this file with
+-- --single-transaction, as setup.sql requires.
+\set kagent_schema kagent
+\set kagent_owner_role kagent_owner
+\set kagent_owner_user kagent_owner_user
+\set kagent_readwrite_role kagent_readwrite
+\set kagent_readwrite_user kagent_readwrite_user
+\getenv kagent_owner_password KAGENT_OWNER_PASSWORD
+\getenv kagent_readwrite_password KAGENT_READWRITE_PASSWORD
+\ir setup.sql

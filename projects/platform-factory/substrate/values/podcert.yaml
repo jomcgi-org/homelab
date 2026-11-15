@@ -1,0 +1,3 @@
+# The substrate-podcert chart: the podcertificate controller and its
+# namespace. Its three CA pools come from bootstrap-substrate.sh.
+createNamespace: true

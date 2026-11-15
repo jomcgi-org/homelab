@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -168,16 +169,16 @@ func s6TraceRecordConstant(record traceRecord) string {
 // The invariant aliases keep their bare names so a TLC rejection still reads
 // "Invariant <Name> is violated" for the fail verdict.
 func writeS6TraceModule(records []traceRecord, minEvents int, module, cfg *strings.Builder) {
-	module.WriteString("---- MODULE window ----\nEXTENDS Naturals, Sequences, FiniteSets\nVARIABLES cursor\nW ==\n    <<")
+	module.WriteString("---- MODULE window ----\nEXTENDS Naturals, Sequences, FiniteSets\nVARIABLES cursor, pending, completed, transitionsValid\nW ==\n    <<")
 	for i, record := range records {
 		if i > 0 {
 			module.WriteString(",")
 		}
 		module.WriteString("\n      " + s6TraceRecordConstant(record))
 	}
-	module.WriteString(">>\nAT == INSTANCE adoption_trace WITH Fixture <- \"live\", LiveTrace <- W, MinTraceEvents <- " + strconv.Itoa(minEvents) + ", cursor <- cursor\n")
-	module.WriteString("Spec == AT!Spec\nTraceWellFormed == AT!TraceWellFormed\nNoDestroyBeforeConfirm == AT!NoDestroyBeforeConfirm\nNoDoubleAssign == AT!NoDoubleAssign\n================================================================================\n")
-	cfg.WriteString("SPECIFICATION Spec\n\nCHECK_DEADLOCK FALSE\n\nINVARIANT TraceWellFormed\nINVARIANT NoDestroyBeforeConfirm\nINVARIANT NoDoubleAssign\n")
+	module.WriteString(">>\nAT == INSTANCE adoption_trace WITH Fixture <- \"live\", LiveTrace <- W, MinTraceEvents <- " + strconv.Itoa(minEvents) + ", cursor <- cursor, pending <- pending, completed <- completed, transitionsValid <- transitionsValid\n")
+	module.WriteString("Spec == AT!Spec\nTraceWellFormed == AT!TraceWellFormed\nNoDestroyBeforeConfirm == AT!NoDestroyBeforeConfirm\nNoDoubleAssign == AT!NoDoubleAssign\nDestroyTransitionsConform == AT!DestroyTransitionsConform\n================================================================================\n")
+	cfg.WriteString("SPECIFICATION Spec\n\nCHECK_DEADLOCK FALSE\n\nINVARIANT TraceWellFormed\nINVARIANT NoDestroyBeforeConfirm\nINVARIANT NoDoubleAssign\nINVARIANT DestroyTransitionsConform\n")
 }
 
 // s6TLCConfigured reports whether the TLC leg can run here. The toolchain
@@ -211,12 +212,14 @@ func runS6TLCWithOutput(ctx context.Context, cfg config, records []traceRecord) 
 	}
 	defer os.RemoveAll(work)
 
-	spec, err := os.ReadFile(filepath.Join(cfg.tlcSpecDir, "adoption_trace.tla"))
-	if err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc spec unreadable: %v (coverage=%d)", err, coverage), ""
-	}
-	if err := os.WriteFile(filepath.Join(work, "adoption_trace.tla"), spec, 0o600); err != nil {
-		return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage), ""
+	for _, name := range []string{"adoption_trace.tla", "destroy_contract.tla"} {
+		spec, err := os.ReadFile(filepath.Join(cfg.tlcSpecDir, name))
+		if err != nil {
+			return verdictIncomplete, fmt.Sprintf("tlc spec unreadable: %v (coverage=%d)", err, coverage), ""
+		}
+		if err := os.WriteFile(filepath.Join(work, name), spec, 0o600); err != nil {
+			return verdictIncomplete, fmt.Sprintf("tlc staging failed: %v (coverage=%d)", err, coverage), ""
+		}
 	}
 	var moduleText, cfgText strings.Builder
 	writeS6TraceModule(records, cfg.minTraceEvents, &moduleText, &cfgText)
@@ -241,15 +244,17 @@ func runS6TLCWithOutput(ctx context.Context, cfg config, records []traceRecord) 
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	_ = cmd.Run()
+	runErr := cmd.Run()
 	verdict, detail = classifyS6TLCOutput(output.String(), coverage)
+	if verdict == verdictPass && runErr != nil {
+		return verdictIncomplete, fmt.Sprintf("tlc did not finish successfully: %v", runErr), output.String()
+	}
 	return verdict, detail, output.String()
 }
 
 func runS6(ctx context.Context, cfg config, client *controlPlaneClient, suiteStarted time.Time) scenarioVerdict {
 	query := url.Values{
 		"since_ts_ms": []string{fmt.Sprintf("%d", suiteStarted.UnixMilli())},
-		"spec":        []string{"adoption"},
 	}
 	path := s6TraceWindowPath + "?" + query.Encode()
 	response, err := client.request(ctx, http.MethodGet, path, nil, "", nil)
@@ -274,12 +279,116 @@ func runS6(ctx context.Context, cfg config, client *controlPlaneClient, suiteSta
 			Detail:  fmt.Sprintf("thin window: %d records below threshold %d, never pass", len(view.Records), cfg.minTraceEvents),
 		}
 	}
+	records, reason := s6ObservedWindow(view)
+	if reason != "" {
+		return scenarioVerdict{Verdict: verdictIncomplete, Detail: reason}
+	}
+	if len(records) < cfg.minTraceEvents {
+		return scenarioVerdict{Verdict: verdictVacuous, Detail: "thin adoption window after filtering other specs"}
+	}
 	if !s6TLCConfigured(cfg) {
 		return scenarioVerdict{
 			Verdict: verdictIncomplete,
 			Detail:  fmt.Sprintf("tlc toolchain not configured; window of %d records staged for offline check, verdict withheld", len(view.Records)),
 		}
 	}
-	verdict, detail := runS6TLC(ctx, cfg, view.Records)
+	verdict, detail := runS6TLC(ctx, cfg, records)
+	if verdict == verdictPass {
+		completion, reason := s6DestroyCoverage(records)
+		if reason != "" {
+			return scenarioVerdict{Verdict: verdictIncomplete, Detail: reason}
+		}
+		if completion == 0 {
+			return scenarioVerdict{Verdict: verdictVacuous, Detail: "no completed eligible session destruction"}
+		}
+		detail += fmt.Sprintf("; destroy_contract/v1 observed completions=%d", completion)
+	}
 	return scenarioVerdict{Verdict: verdict, Detail: detail}
+}
+
+// Read every spec so drop markers and sequence gaps cannot hide behind the
+// adoption filter. Sequence order is only meaningful within one CP incarnation.
+// This checks the returned window; the debug writer cannot certify absence of
+// unreported loss before/after it. PASS is scoped to observed complete segments.
+func s6ObservedWindow(view traceWindowView) ([]traceRecord, string) {
+	if view.RecordCount != len(view.Records) {
+		return nil, "trace count mismatch"
+	}
+	if len(view.RunIDs) != 1 || view.RunIDs[0] == "" {
+		return nil, "cross-run or missing trace identity; replay incomplete"
+	}
+	records := append([]traceRecord(nil), view.Records...)
+	sort.Slice(records, func(i, j int) bool { return records[i].Seq < records[j].Seq })
+	var adoption []traceRecord
+	for i, record := range records {
+		if record.RunID != view.RunIDs[0] || record.Seq <= 0 || (i > 0 && record.Seq != records[i-1].Seq+1) {
+			return nil, "trace sequence gap or inconsistent incarnation"
+		}
+		if dropped, ok := record.Vars["spec_trace_dropped_before"]; ok && fmt.Sprint(dropped) != "0" {
+			return nil, "trace reports dropped events"
+		}
+		if record.Spec != "adoption" {
+			continue
+		}
+		if record.Action == "begin_destroy" || record.Action == "confirm_destroy" {
+			gate, ok := record.Vars["gate"].(bool)
+			if !ok || !gate {
+				return nil, "unsupported destroy gate; replay incomplete"
+			}
+			if s6String(record.Vars, "session_id") == "" || s6String(record.Vars, "vm_id") == "" {
+				return nil, "missing destroy identity; replay incomplete"
+			}
+			if record.Action == "confirm_destroy" {
+				hadVM, ok := record.Vars["had_vm"].(bool)
+				if !ok || !hadVM {
+					return nil, "nonresident destroy is outside the observed contract"
+				}
+				if _, ok := record.Vars["node_confirmed"].(bool); !ok {
+					return nil, "missing typed confirmation evidence"
+				}
+				if reason := s6String(record.Vars, "confirmed_by"); reason != "teardown" && reason != "absence" && reason != "" {
+					return nil, "unsupported destruction evidence: " + reason
+				}
+			}
+		}
+		adoption = append(adoption, record)
+	}
+	// A confirmation with no observed intent may start before the window or
+	// follow a residency rebind. Neither establishes a production violation.
+	begun := map[[2]string]bool{}
+	for _, record := range adoption {
+		if record.Action == "begin_destroy" {
+			begun[s6DestroyKey(record)] = true
+		}
+	}
+	for _, record := range adoption {
+		if record.Action == "confirm_destroy" && s6Bool(record.Vars, "node_confirmed") && !begun[s6DestroyKey(record)] {
+			return nil, "confirmation lacks an observed matching intent; partial window or residency rebind"
+		}
+	}
+	return adoption, ""
+}
+
+func s6DestroyKey(record traceRecord) [2]string {
+	return [2]string{s6String(record.Vars, "session_id"), s6String(record.Vars, "vm_id")}
+}
+
+// Called only after TLC accepts every transition. Counting is coverage, not a
+// second implementation of the transition checker.
+func s6DestroyCoverage(records []traceRecord) (int, string) {
+	pending := map[[2]string]bool{}
+	completed := 0
+	for _, record := range records {
+		switch record.Action {
+		case "begin_destroy":
+			pending[s6DestroyKey(record)] = true
+		case "confirm_destroy":
+			delete(pending, s6DestroyKey(record))
+			completed++
+		}
+	}
+	if len(pending) > 0 {
+		return completed, "open destruction intent; window incomplete"
+	}
+	return completed, ""
 }

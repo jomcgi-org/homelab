@@ -9,8 +9,11 @@ admin UI, and it survives a database rebuild the way clicked config does not.
 
 Blueprint entries match on `identifiers`, so re-application is idempotent and a
 re-applied entry updates in place rather than creating duplicates.
+
+blueprintsDirectory picks the set: the hub's blueprints/, or the factory
+cluster's factory-blueprints/ (values-factory.yaml).
 */}}
-{{- $files := .Files.Glob "blueprints/*.yaml" }}
+{{- $files := .Files.Glob (printf "%s/*.yaml" .Values.blueprintsDirectory) }}
 {{- if $files }}
 apiVersion: v1
 kind: ConfigMap
@@ -26,6 +29,10 @@ data:
 {{- if and $.Values.platformManagement.enabled (eq $path "blueprints/grimoire-auth.yaml") }}
 {{- $content = replace "        # PLATFORM_PROFILE_MAPPING" "        - !KeyOf platform-profile" $content }}
 {{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/grimoire-management-profile.yaml")) $content }}
+{{- end }}
+{{- if and $.Values.grimoireDiscordSource.enabled (eq $path "blueprints/grimoire-auth.yaml") }}
+{{- $content = replace "      # DISCORD_AUTHENTICATION_FLOW" "      authentication_flow: !KeyOf discord-authentication" $content }}
+{{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/grimoire-discord-source.yaml")) $content }}
 {{- end }}
 {{- if and $.Values.platformManagement.enabled (eq $path "blueprints/mcp-auth.yaml") }}
 {{- $content = replace "        # PLATFORM_MANAGEMENT_PROFILE" "        - !KeyOf platform-management-profile" $content }}

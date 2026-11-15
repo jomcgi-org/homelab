@@ -1,6 +1,6 @@
 import pytest  # noqa: F401
 
-from bench.cache import cell_key, cell_path, is_cached, HARNESS_VERSION
+from bench.cache import cell_key, cell_path, is_cached
 
 
 def test_cell_key_is_stable_and_order_independent(tmp_path):

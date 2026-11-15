@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Provision the Ubuntu BuildBuddy runner, then run the verified wrapper.
+# Node and pnpm build the React bundle; nothing serves it but the Python app.
 set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"

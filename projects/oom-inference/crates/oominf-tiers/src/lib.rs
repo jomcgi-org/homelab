@@ -22,8 +22,8 @@ pub use grouped::{
     GroupedExperts, Layout, PolicyPair, TierBudget, layouts, split, tiered_for_model,
 };
 pub use tiered::{
-    CHUNK_SLOTS, TierSizes, TieredExperts, free_vram_gib, min_host_slots, min_vram_slots,
-    slots_for, stream_threshold,
+    CHUNK_SLOTS, TierSizes, TieredExperts, min_host_slots, min_vram_slots, slots_for,
+    stream_threshold,
 };
 
 /// A recorded decode routing trace: raw little-endian `u16` `[steps, layers, top_k]`.

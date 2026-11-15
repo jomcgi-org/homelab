@@ -82,6 +82,7 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -91,6 +92,7 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
     },
     deps = [
         "@pip//pytest",
@@ -384,6 +386,8 @@ py_test(
         "//projects/monolith:module_configs",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:recovery_gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -482,6 +486,30 @@ py_test(
 py_test(
     name = "grimoire_session_auth_test",
     srcs = ["grimoire_session_auth_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "grimoire_browser_lane_test",
+    srcs = ["grimoire_browser_lane_test.py"],
     data = [
         "Chart.lock",
         "Chart.yaml",

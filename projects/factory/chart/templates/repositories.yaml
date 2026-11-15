@@ -1,0 +1,11 @@
+{{- /*
+Repository bindings (ARCHITECTURE.md, "Configuration"): one namespace per
+repository, which is also its Substrate atespace, holding one kagent Agent with
+its ModelConfig, Harness, EgressPolicies and WorkerPool. Credentials never
+enter the workspace: the model relay authenticates with an actor JWT the
+egress gateway injects, and git sends a placeholder Authorization header the
+gateway replaces from the broker-minted Secret github-git.
+*/}}
+{{- range $r := .Values.repositories }}
+{{- include "factory.bindingResources" (dict "root" $ "binding" $r "description" "Delivers changes to") }}
+{{- end }}

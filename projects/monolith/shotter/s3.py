@@ -3,9 +3,8 @@
 A sibling of artifact/s3.py, not a reuse: artifact hardcodes an
 ``index.html`` object suffix and ``text/html`` content type for a
 self-contained HTML page, this domain stores a PNG under a content-addressed
-key instead. The client construction mirrors artifact/s3.py and
-faas/storage.py (chart credentials, path-style addressing, endpoint scheme
-guard). Legacy/test credential defaults remain. boto3 is imported lazily so this
+key instead. The client comes from core.s3 (chart credentials, path-style
+addressing, endpoint scheme guard). boto3 is imported lazily so this
 module never pulls boto3 into the public app's import closure (this domain
 is excluded from the public binary entirely, but the convention is kept for
 consistency with the domains that are).
@@ -23,6 +22,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+
+from core.s3 import path_style_client
+from core.s3_upload import put_object
 
 logger = logging.getLogger("monolith.shotter.s3")
 
@@ -45,25 +47,11 @@ def _normalized_endpoint() -> str:
 
 
 def _client():
-    """Build an R2 S3 client (mirrors artifact/s3.py / faas/storage.py)."""
-    import boto3
-    from botocore.config import Config
-
+    """Build an R2 S3 client via core.s3."""
     endpoint = _normalized_endpoint()
     if not endpoint:
         raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store screenshot")
-    # Scheme guaranteed by _normalized_endpoint; the inline nosemgrep clears
-    # the pre-commit boto3-endpoint-url-missing-scheme hook (the Bazel
-    # semgrep test, which ignores nosemgrep, is covered by exclude_rules in
-    # projects/monolith/BUILD).
-    return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
-        config=Config(s3={"addressing_style": "path"}),
-    )
+    return path_style_client(endpoint)
 
 
 def _object_url(bucket: str, key: str) -> str:
@@ -94,8 +82,6 @@ def put_screenshot(png_bytes: bytes) -> tuple[str, bool]:
     unchanged render dedupes for free. Creates the bucket once and retries on
     a missing bucket (mirrors artifact.s3.put_artifact / chat.store).
     """
-    from botocore.exceptions import ClientError
-
     sha256 = hashlib.sha256(png_bytes).hexdigest()
     bucket = _bucket()
     key = _object_key(sha256)
@@ -104,23 +90,9 @@ def put_screenshot(png_bytes: bytes) -> tuple[str, bool]:
     try:
         client = _client()
 
-        def _put():
-            return client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=png_bytes,
-                ContentType="image/png",
-            )
-
-        try:
-            _put()
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("NoSuchBucket", "404"):
-                client.create_bucket(Bucket=bucket)
-                _put()
-            else:
-                raise
+        put_object(
+            client, bucket=bucket, key=key, body=png_bytes, content_type="image/png"
+        )
     except Exception:  # noqa: BLE001 - upload is best-effort, see module docstring
         logger.exception("shotter screenshot S3 upload failed for %s", key)
         # Best-effort, but never silent. The URL is derived from the content

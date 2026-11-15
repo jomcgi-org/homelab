@@ -177,18 +177,16 @@ func run(logger *slog.Logger) error {
 	storeOpts := []store.Option{
 		store.WithCredentials(cfg.StoreAccessKeyID, cfg.StoreSecretAccessKey),
 	}
-	// Install the provider whenever the control plane is reachable. The writer
-	// gate remains in server.exportWithKeys, while lazy envelope rewrap must stay
-	// available during an inert or rolled-back writer phase.
+	// Principal exports are always encrypted with control-plane data keys.
+	// config.Load refuses a configured store without a control-plane URL.
 	if cfg.ControlPlaneURL != "" {
 		storeOpts = append(storeOpts, store.WithDataKeys(server.NewCPDataKeyProvider(cfg.ControlPlaneURL, cfg.ControlPlaneTokenPath)))
-	} else if cfg.StoreEncrypt {
-		logger.Warn("object store encryption armed without a control-plane URL; exports remain unencrypted because no data-key provider is configured")
 	}
+	// Newly exported objects are always zstd-compressed.
 	artStore := store.New(
 		cfg.StoreEndpoint,
 		cfg.StoreBucket,
-		cfg.StoreCompress,
+		true,
 		storeOpts...,
 	)
 	if cfg.StoreEndpoint == "" {
@@ -317,10 +315,10 @@ func run(logger *slog.Logger) error {
 	// no-op when the store is disabled. They run for the daemon's lifetime; ctx
 	// cancels them on shutdown, and the export queue is fire-and-forget so it never
 	// holds the drain deadline.
-	// With DrainExportsOutliveSignal the export and restore workers keep running
-	// after SIGTERM so WaitForManagedDrain can actually move parked workspaces and
-	// banked sessions off node; they stop when run returns.
-	exportCtx, cancelExports := server.DrainExportContext(ctx, cfg.DrainExportsOutliveSignal)
+	// The export and restore workers keep running after SIGTERM so
+	// WaitForManagedDrain can actually move parked workspaces and banked sessions
+	// off node; they stop when run returns.
+	exportCtx, cancelExports := server.DrainExportContext(ctx)
 	defer cancelExports()
 	srv.StartStoreLoopsWithExportContext(ctx, exportCtx)
 	// Sample the cgroup CPU usage rate on the liveness cadence so
@@ -535,7 +533,6 @@ func newDriver(cfg config.Config, logger *slog.Logger, x driverExtras) *driver.D
 		Vendor:                      cfg.CpuVendor,
 		Template:                    cfg.CpuTemplate,
 		WarmRestoreWithVolume:       cfg.WarmRestoreWithVolume,
-		DiffBanking:                 cfg.DiffBanking,
 		EnforceBundleRootfsIdentity: cfg.EnforceBundleRootfsIdentity,
 	}, newExecLauncher(cfg, logger), nil)
 }

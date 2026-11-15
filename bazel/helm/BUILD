@@ -81,13 +81,17 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/factory-landing/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/factory-landing/deploy:template_test and //projects/factory-landing/chart:landing_test.",
     "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
     "projects/embervm/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
     "projects/monolith/dev/deploy/values-recovery-gke.yaml": "Recovery overlay, not rendered by CI.",
+    "projects/factory": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by :template_test and :chart_test and trialled on the factory cluster.",
+    "projects/factory/deploy/values.yaml": "The factory chart's values; see projects/factory.",
     "projects/platform/atlas-operator/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
     "projects/platform/authentik": "Hub-only chart; rendered with its hub overlay by :manifests_gke.",
     "projects/platform/cf-ingress-library": "Library chart, which renders nothing.",
     "projects/platform/cloudnative-pg/deploy/values.yaml": "Remote chart with no local Chart.yaml or render target.",
+    "projects/platform-factory/edge/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by its own :template_test and trialled on the factory cluster.",
     "projects/shared/helm/homelab-library": "Library chart, which renders nothing.",
 }
 
@@ -178,7 +182,10 @@ sh_test(
 sh_test(
     name = "chart_admissibility_completeness_regression_test",
     srcs = ["chart-admissibility-completeness_test.sh"],
-    data = [":chart-admissibility-completeness-test.sh"],
+    data = [
+        ":chart-admissibility-completeness-test.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -190,7 +197,10 @@ sh_test(
 sh_test(
     name = "standalone_lint_test",
     srcs = ["lint_test.sh"],
-    data = [":lint.sh"],
+    data = [
+        ":lint.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(
@@ -199,6 +209,7 @@ sh_test(
     args = ["$(rootpath @multitool//tools/helm)"],
     data = [
         ":test.bzl",
+        ":testlib.sh",
         "//projects/platform/cf-ingress-library:chart",
         "//projects/shared/helm/homelab-library/chart",
         "@multitool//tools/helm",
@@ -208,7 +219,10 @@ sh_test(
 sh_test(
     name = "standalone_render_test",
     srcs = ["render_test.sh"],
-    data = [":render.sh"],
+    data = [
+        ":render.sh",
+        ":testlib.sh",
+    ],
 )
 
 sh_test(

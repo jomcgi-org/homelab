@@ -1,0 +1,44 @@
+# Node and cluster telemetry to Honeycomb, from the hub's collector chart with
+# the factory overlay (values-factory.yaml), plus this namespace's network
+# policy.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-collector
+  namespace: argocd
+  annotations:
+    # After network-policy and onepassword (wave 0): the ingest key comes
+    # through the 1Password operator.
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform/otel-collector
+      helm:
+        releaseName: otel-collector
+        valueFiles:
+          - values.yaml
+          - values-factory.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/otel-collector/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: otel-collector
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

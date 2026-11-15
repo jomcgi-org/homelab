@@ -1,6 +1,9 @@
 <script>
   import { onMount } from "svelte";
+  import RoutePreview from "./RoutePreview.svelte";
+  import { observeMapRequests } from "$lib/trips/map-requests.js";
   import "maplibre-gl/dist/maplibre-gl.css";
+  import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import { dayColor } from "$lib/trips/trip.js";
   import {
     mapPalette,
@@ -24,8 +27,34 @@
   const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
   let mapContainer;
-  let map = null;
+  let map = $state.raw(null);
   let ready = false;
+  let painted = $state(false);
+  let failed = $state(false);
+  let contextLost = $state(false);
+  let retryRequested = false;
+  let blocked = false;
+  let requestObserver;
+
+  function retryMap() {
+    // setStyle during context loss would be overwritten by MapLibre's saved
+    // style on restoration. Keep Retry visible and defer the requested reload.
+    if (contextLost) {
+      retryRequested = true;
+      return;
+    }
+    retryRequested = false;
+    requestObserver?.reset();
+    blocked = false;
+    painted = false;
+    failed = true;
+    ready = false;
+    try {
+      map.setStyle(BASEMAP_STYLE, { diff: false });
+    } catch {
+      blocked = true;
+    }
+  }
 
   function applyScheme() {
     if (!map || !ready) return;
@@ -78,11 +107,22 @@
     (async () => {
       const maplibregl = await import("maplibre-gl");
       if (destroyed) return;
+      // The package-relative default is absent from Vite's emitted chunks.
+      maplibregl.setWorkerUrl(workerUrl);
 
+      const markFailed = () => {
+        blocked = true;
+        failed = true;
+        painted = false;
+      };
+      requestObserver = observeMapRequests(maplibregl, {
+        onFailure: markFailed,
+      });
       const b = bounds();
       map = new maplibregl.Map({
         container: mapContainer,
         style: BASEMAP_STYLE,
+        transformRequest: requestObserver.transformRequest,
         ...(b
           ? { bounds: b, fitBoundsOptions: { padding: 40 } }
           : { center: [0, 30], zoom: 1.4 }),
@@ -95,7 +135,45 @@
         keyboard: false,
       });
 
-      map.on("load", () => {
+      let sourceIds = [];
+      map.on("error", markFailed);
+      map.on("webglcontextlost", () => {
+        contextLost = true;
+        failed = true;
+        painted = false;
+        ready = false;
+        requestObserver.reset();
+      });
+      map.on("webglcontextrestored", () => {
+        contextLost = false;
+        if (retryRequested) retryMap();
+      });
+      map.on("render", () => {
+        if (
+          contextLost ||
+          blocked ||
+          !ready ||
+          !sourceIds.every((id) => map.getSource(id) && map.isSourceLoaded(id))
+        )
+          return;
+        if (painted) return;
+        failed = false;
+        painted = true;
+      });
+
+      map.on("style.load", () => {
+        if (contextLost) return;
+        // Context restoration replays a serialized style with our sources and
+        // layers already present. Reuse them instead of adding duplicate IDs.
+        const addSource = (id, source) => {
+          if (!map.getSource(id)) map.addSource(id, source);
+        };
+        const addLayer = (layer, before) => {
+          if (!map.getLayer(layer.id)) map.addLayer(layer, before);
+        };
+        painted = false;
+        ready = false;
+        sourceIds = Object.keys(map.getStyle().sources);
         days.forEach((day, i) => {
           const coords = day.points
             .filter((p) => p.lat != null && p.lng != null)
@@ -103,7 +181,7 @@
           if (coords.length < 2) return;
           const color = dayColor(i);
           const sourceId = `route-src-${i}`;
-          map.addSource(sourceId, {
+          addSource(sourceId, {
             type: "geojson",
             data: {
               type: "Feature",
@@ -111,15 +189,16 @@
               geometry: { type: "LineString", coordinates: coords },
             },
           });
+          sourceIds.push(sourceId);
           // Wide transparent hit layer first (easier click/hover target).
-          map.addLayer({
+          addLayer({
             id: `route-hit-${i}`,
             type: "line",
             source: sourceId,
             layout: { "line-join": "round", "line-cap": "round" },
             paint: { "line-color": color, "line-opacity": 0, "line-width": 18 },
           });
-          map.addLayer({
+          addLayer({
             id: `route-${i}`,
             type: "line",
             source: sourceId,
@@ -130,22 +209,12 @@
               "line-opacity": 1,
             },
           });
-
-          map.on("mouseenter", `route-hit-${i}`, () => {
-            map.getCanvas().style.cursor = "pointer";
-            onHover(i);
-          });
-          map.on("mouseleave", `route-hit-${i}`, () => {
-            map.getCanvas().style.cursor = "";
-            onHover(null);
-          });
-          map.on("click", `route-hit-${i}`, () => onDayClick(day.dayNumber));
         });
 
         // Start marker as a small circle layer (GeoJSON, not a DOM marker).
         const first = allPoints()[0];
         if (first) {
-          map.addSource("trip-start", {
+          addSource("trip-start", {
             type: "geojson",
             data: {
               type: "Feature",
@@ -153,7 +222,8 @@
               geometry: { type: "Point", coordinates: [first.lng, first.lat] },
             },
           });
-          map.addLayer({
+          sourceIds.push("trip-start");
+          addLayer({
             id: "trip-start",
             type: "circle",
             source: "trip-start",
@@ -171,12 +241,36 @@
         applyHover();
       });
 
+      // Bind once: a retry replaces the style and sources on the same map.
+      days.forEach((day, i) => {
+        map.on("mouseenter", `route-hit-${i}`, () => {
+          if (!painted) return;
+          map.getCanvas().style.cursor = "pointer";
+          onHover(i);
+        });
+        map.on("mouseleave", `route-hit-${i}`, () => {
+          if (!painted) return;
+          map.getCanvas().style.cursor = "";
+          onHover(null);
+        });
+        map.on("click", `route-hit-${i}`, () => {
+          if (painted) onDayClick(day.dayNumber);
+        });
+      });
+
       cleanup = () => {
+        requestObserver?.dispose();
         map?.remove();
         map = null;
         ready = false;
       };
-    })();
+    })().catch(() => {
+      requestObserver?.dispose();
+      if (!destroyed) {
+        failed = true;
+        painted = false;
+      }
+    });
 
     return () => {
       destroyed = true;
@@ -186,13 +280,41 @@
   });
 </script>
 
-<div class="map" bind:this={mapContainer}></div>
+<div class="map-wrap">
+  {#if !painted}<RoutePreview
+      {days}
+      {failed}
+      waitingForContext={contextLost}
+      onRetry={map ? retryMap : undefined}
+    />
+  {:else if !allPoints().length}<p class="map-summary">
+      No GPS points for this route.
+    </p>{/if}
+  <div class="map" bind:this={mapContainer}></div>
+</div>
 
 <style>
+  .map-wrap {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 240px;
+  }
   .map {
     width: 100%;
     height: 100%;
     min-height: 240px;
+  }
+  .map-summary {
+    position: absolute;
+    left: 0.75rem;
+    bottom: 0.5rem;
+    z-index: 1;
+    margin: 0;
+    background: var(--sheet);
+    color: var(--ink);
+    font: 0.7rem/1.5 var(--font-code);
+    pointer-events: none;
   }
   .map :global(.maplibregl-ctrl-attrib-inner) {
     font-family: var(--font-code);

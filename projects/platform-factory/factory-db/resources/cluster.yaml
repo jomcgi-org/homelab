@@ -1,0 +1,132 @@
+# The factory's PostgreSQL: itsaplan's database, and the connector's once it
+# deploys (delivery plan step 9). Three instances, one per node, with WAL
+# archiving and daily base backups to Garage (projects/factory-cluster/
+# README.md, "Postgres"). Garage runs on the same three nodes, so this
+# survives losing a node or a volume, not losing the cluster.
+#
+# It runs in its own namespace, factory-db, so the backup key stays out of
+# the factory namespace; only the connection strings are written there. The
+# roles and databases are declared here (managed roles, Database objects), so
+# there is no superuser login and no setup script.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: factory-db
+  namespace: factory-db
+  annotations:
+    # After factory-db-init (wave -1, setup.yaml).
+    argocd.argoproj.io/sync-wave: "0"
+    # Neither a prune nor deleting the Application removes the database; the
+    # operator deletes its PVCs with the Cluster.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+  primaryUpdateStrategy: unsupervised
+  # A deleted primary waits this long for clients to disconnect before a
+  # fast shutdown. itsaplan's api holds its connections open, so the default
+  # 180 s delayed the trial failover by three minutes.
+  smartShutdownTimeout: 15
+  enableSuperuserAccess: false
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  storage:
+    size: 5Gi
+    storageClass: local-path
+  # The nodes have 16 GiB; three of these sit beside kagent-pg's three.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  bootstrap:
+    initdb:
+      database: itsaplan
+      owner: itsaplan
+      # The password factory-db-init generated, so the operator never makes
+      # one of its own.
+      secret:
+        name: factory-db-itsaplan-login
+  managed:
+    # Each login's password is its Secret's, reconciled by the operator.
+    # connectionLimit and inherit are the operator's defaults, stated so a
+    # list item matches the defaulted live one in ArgoCD's diff.
+    roles:
+      - name: itsaplan
+        ensure: present
+        login: true
+        inherit: true
+        connectionLimit: -1
+        passwordSecret:
+          name: factory-db-itsaplan-login
+      - name: factory_connector
+        ensure: present
+        login: true
+        inherit: true
+        connectionLimit: -1
+        passwordSecret:
+          name: factory-db-connector-login
+  backup:
+    retentionPolicy: "14d"
+    # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31
+    # removes it, so the operator upgrade moves both to the plugin first.
+    barmanObjectStore:
+      destinationPath: s3://factory-db-backups/
+      # One prefix per incarnation. A Cluster created fresh refuses to
+      # archive into a non-empty prefix, so recreating it (rather than
+      # recovering from these backups) takes the next name.
+      serverName: factory-db-v1
+      endpointURL: http://garage.garage.svc:3900
+      s3Credentials:
+        accessKeyId:
+          name: factory-db-s3
+          key: AWS_ACCESS_KEY_ID
+        secretAccessKey:
+          name: factory-db-s3
+          key: AWS_SECRET_ACCESS_KEY
+        region:
+          name: factory-db-s3
+          key: AWS_REGION
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+---
+# The connector's database, created empty now so its Secret and grants exist
+# before it deploys.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: factory-db-connector
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: factory-db
+  name: factory_connector
+  owner: factory_connector
+  ensure: present
+  # Deleting this object never drops the database.
+  databaseReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: factory-db-daily
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # A quarter of an hour after kagent-pg's.
+  schedule: "0 45 2 * * *"
+  # One base backup as soon as this is created, then daily.
+  immediate: true
+  backupOwnerReference: self
+  method: barmanObjectStore
+  cluster:
+    name: factory-db

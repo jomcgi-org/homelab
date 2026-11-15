@@ -2,8 +2,6 @@
 
 import logging
 
-import pytest
-
 from chat.agent import _coerce_username
 
 
@@ -52,6 +50,24 @@ class TestCoerceUsernameDictWithUsername:
         """'name' key takes priority over 'display_name' when username is absent."""
         result = _coerce_username({"name": "second", "display_name": "third"})
         assert result == "second"
+
+    def test_username_key_takes_priority_over_name_and_display_name(self):
+        """'username' wins when all three keys are present."""
+        result = _coerce_username(
+            {"username": "first", "name": "second", "display_name": "third"}
+        )
+        assert result == "first"
+
+    def test_non_string_username_value_skipped_falls_through_to_name(self):
+        """A non-string 'username' is skipped in favor of a string 'name'."""
+        assert _coerce_username({"username": 99, "name": "fallback"}) == "fallback"
+
+    def test_all_known_keys_with_non_string_values_returns_none(self, caplog):
+        """Non-string values for all known keys return None with a warning."""
+        with caplog.at_level(logging.WARNING, logger="chat.agent"):
+            result = _coerce_username({"username": 1, "name": 2, "display_name": 3})
+        assert result is None
+        assert any("Could not extract username" in r.message for r in caplog.records)
 
     def test_dict_value_must_be_str(self):
         """Dict key with a non-string value is skipped; falls through to None with warning."""

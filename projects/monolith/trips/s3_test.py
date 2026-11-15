@@ -27,6 +27,42 @@ from botocore.exceptions import ClientError
 from trips.s3 import put_image
 
 
+def test_notfound_head_propagates_without_upload(monkeypatch):
+    from trips import s3
+
+    monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://storage.example")
+    client = MagicMock()
+    error = ClientError({"Error": {"Code": "NotFound"}}, "HeadObject")
+    client.head_object.side_effect = error
+    monkeypatch.setattr(s3, "path_style_client", lambda endpoint: client)
+    with patch.object(s3, "put_object") as upload:
+        with pytest.raises(ClientError) as raised:
+            put_image("key", b"data", "image/jpeg")
+    assert raised.value is error
+    upload.assert_not_called()
+    client.create_bucket.assert_not_called()
+
+
+def test_head_miss_uses_shared_upload(monkeypatch):
+    from core.s3_upload import put_object
+    from trips import s3
+
+    assert s3.put_object is put_object
+    monkeypatch.setenv("SEAWEEDFS_S3_ENDPOINT", "https://storage.example")
+    monkeypatch.setenv("TRIPS_S3_BUCKET", "photos")
+    client = MagicMock()
+    client.head_object.side_effect = ClientError(
+        {"Error": {"Code": "404"}}, "HeadObject"
+    )
+    monkeypatch.setattr(s3, "path_style_client", lambda endpoint: client)
+    body = b"photo"
+    with patch.object(s3, "put_object") as upload:
+        assert put_image("key", body, "image/jpeg") is None
+    upload.assert_called_once_with(
+        client, bucket="photos", key="key", body=body, content_type="image/jpeg"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

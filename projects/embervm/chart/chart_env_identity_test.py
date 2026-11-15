@@ -371,6 +371,113 @@ def test_store_credentials_are_default_off_and_share_one_secret() -> None:
     assert 'itemPath: "vaults/x/items/y"' in signed
 
 
+def test_chart_defaults_disable_the_store_and_use_hub_sqlite_storage() -> None:
+    """Overlays must not mask retired infrastructure in the chart defaults."""
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert defaults["opLog"]["storageClass"] == "standard-rwo"
+    assert defaults["noded"]["store"]["endpoint"] == ""
+    assert defaults["noded"]["store"]["credentials"]["enabled"] is False
+
+    rendered = _render("neutral", [])
+    documents = [d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)]
+    (pvc,) = [d for d in documents if d["kind"] == "PersistentVolumeClaim"]
+    assert pvc["spec"]["storageClassName"] == "standard-rwo"
+    endpoints = []
+    for document in documents:
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            for prefix in ("EMBERVM_STORE_", "EMBERVM_NODED_STORE_"):
+                if prefix + "ENDPOINT" in env:
+                    endpoints.append(env[prefix + "ENDPOINT"]["value"])
+                assert prefix + "ACCESS_KEY_ID" not in env
+                assert prefix + "SECRET_ACCESS_KEY" not in env
+    assert len(endpoints) >= 2, "must check the control plane and noded"
+    assert set(endpoints) == {""}
+    assert all(
+        not any(e["name"].startswith("EMBERVM_NODED_STORE_") for e in c.get("env", []))
+        for c in _rootfs_builder_init_containers(rendered)
+    )
+
+
+def test_production_application_selects_gcs_and_hub_safe_sqlite_fallback() -> None:
+    application = yaml.safe_load(Path(os.environ["GKE_APPLICATION"]).read_text())
+    helm = application["spec"]["sources"][0]["helm"]
+    assert helm["valueFiles"] == [
+        "$values/projects/embervm/deploy/values.yaml",
+        "$values/projects/embervm/deploy/values-gke.yaml",
+    ]
+    assert (
+        helm["releaseName"]
+        == application["spec"]["destination"]["namespace"]
+        == "embervm"
+    )
+    values = [Path(os.environ["PROD_VALUES"]), Path(os.environ["GKE_VALUES"])]
+    documents = [
+        d for d in yaml.safe_load_all(_render("embervm", values)) if isinstance(d, dict)
+    ]
+    assert not [d for d in documents if d["kind"] == "PersistentVolumeClaim"]
+    consumers = set()
+    for document in documents:
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            for prefix in ("EMBERVM_STORE_", "EMBERVM_NODED_STORE_"):
+                if prefix + "ENDPOINT" not in env:
+                    continue
+                consumers.add(container["name"])
+                assert (
+                    env[prefix + "ENDPOINT"]["value"]
+                    == "https://storage.googleapis.com"
+                )
+                assert env[prefix + "BUCKET"]["value"] == "h0melab-ember-bases"
+                for suffix in ("ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
+                    assert (
+                        env[prefix + suffix]["valueFrom"]["secretKeyRef"]["name"]
+                        == "embervm-embervm-store"
+                    )
+    assert {"control-plane", "noded"} <= consumers
+    assert any(
+        name.startswith("build-") or name == "rootfs-baker" for name in consumers
+    )
+
+    # The shared deploy layer must not reintroduce Longhorn if SQLite is selected.
+    fallback = _render("embervm", values, ["opLog.postgres.enabled=false"])
+    (pvc,) = [
+        d
+        for d in yaml.safe_load_all(fallback)
+        if isinstance(d, dict) and d["kind"] == "PersistentVolumeClaim"
+    ]
+    assert pvc["spec"]["storageClassName"] == "standard-rwo"
+
+
+@pytest.mark.parametrize(
+    "values_names",
+    [
+        ("DEV_VALUES", "DEV_GKE_VALUES"),
+        ("RECOVERY_VALUES",),
+    ],
+    ids=["normal-hub-dev", "inactive-recovery"],
+)
+def test_local_only_dev_profiles_have_no_store_identity(values_names) -> None:
+    rendered = _render("embervm-dev", [Path(os.environ[n]) for n in values_names])
+    endpoints = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            for prefix in ("EMBERVM_STORE_", "EMBERVM_NODED_STORE_"):
+                if prefix + "ENDPOINT" in env:
+                    endpoints.append(env[prefix + "ENDPOINT"]["value"])
+                    assert env[prefix + "BUCKET"]["value"] == ""
+                assert prefix + "ACCESS_KEY_ID" not in env
+                assert prefix + "SECRET_ACCESS_KEY" not in env
+    assert len(endpoints) >= 2
+    assert set(endpoints) == {""}
+
+
 def test_rootfs_builders_receive_store_env_only_when_store_enabled() -> None:
     enabled = _render_with_set(
         "rootfs-store",
@@ -915,6 +1022,7 @@ def test_control_plane_runtime_envs_render(renders):
     assert dev_env.get("EMBERVM_BRICK_CEILING_IDLE_MS") == "3600000"
     assert "EMBERVM_WARMTH_S3_GC_EXPECTED_NODES" not in dev_env
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
+    assert gke_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "1"
     assert dev_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS") == "100"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_CONCURRENCY") == "8"
@@ -1484,7 +1592,6 @@ def test_dev_does_not_render_production_only_workloads(renders):
     def find_workload_names(rendered: str) -> set[str]:
         return {name for kind, name, _ in _docs(rendered) if kind == "Workload"}
 
-    prod_workloads = find_workload_names(renders["prod"])
     dev_workloads = find_workload_names(renders["dev"])
 
     # These should be in production but NOT in dev. Listed in
@@ -1681,7 +1788,7 @@ def test_bundle_rootfs_identity_enforcement_can_be_staged_on():
 
 
 def test_brick_renders_inert_artifact_encryption_envs():
-    """Envelope writing and restore enforcement default off on every brick."""
+    """Bricks always encrypt and enforce; no rollout gate env is rendered."""
     chart = _chart_dir()
     rendered = _render("envelope", [chart / "values.yaml"], ["bricks.enabled=true"])
     brick_deployments = [
@@ -1693,19 +1800,13 @@ def test_brick_renders_inert_artifact_encryption_envs():
         "default render produced no brick Deployment; this test is inert"
     )
 
-    expected = {
-        "EMBERVM_NODED_STORE_ENCRYPT": "false",
-        "EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY": "false",
-    }
     for deployment in brick_deployments:
-        for name, value in expected.items():
-            rendered_env = re.search(
-                rf"name:\s*{name}\s+value:\s*\"([^\"]+)\"", deployment
-            )
-            assert rendered_env, f"brick Deployment is missing {name}"
-            assert rendered_env.group(1) == value, (
-                f"brick Deployment renders {name}={rendered_env.group(1)!r}, "
-                f"want {value!r}"
+        for name in (
+            "EMBERVM_NODED_STORE_ENCRYPT",
+            "EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY",
+        ):
+            assert f"name: {name}" not in deployment, (
+                f"brick Deployment still renders retired gate {name}"
             )
 
     control_plane = next(
@@ -2624,7 +2725,6 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
             "EMBERVM_BASE_REMOTE_RETENTION_SWEEP",
             "EMBERVM_WARMTH_RETENTION_SWEEP",
             "EMBERVM_WARMTH_S3_GC",
-            "EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED",
         }
         & control_env.keys()
     )
@@ -2635,7 +2735,6 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
         assert env["EMBERVM_NODED_MAX_LIVE_VMS"]["value"] == "1"
         assert env["EMBERVM_NODED_STORE_ENDPOINT"]["value"] == ""
         assert env["EMBERVM_NODED_STORE_BUCKET"]["value"] == ""
-        assert env["EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY"]["value"] == "true"
         if name.endswith("-8gi"):
             assert env["EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME"]["value"] == "true"
         else:
@@ -2704,9 +2803,6 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["warmthRetention"]["sweepEnabled"] == ""
     assert values["warmthS3Gc"]["enabled"] == ""
     assert values["rootfsReclaim"]["enabled"] == ""
-    assert values["statefulSweeper"]["pressureBanking"]["enabled"] is False
-    assert values["noded"]["store"]["encrypt"] is True
-    assert values["noded"]["requireRestoreCapability"] is True
     assert values["artifactEncryption"]["enabled"] is False
     assert values["kekRoot"]["enabled"] is False
     assert values["noded"]["store"]["credentials"]["enabled"] is False
@@ -2921,7 +3017,7 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     which exist on the hub. Each one renders cleanly and then fails at runtime:
     a node floor that never schedules, a PVC that never binds, a store that
     never answers, a CRD ArgoCD cannot apply. The overlay must remove all four,
-    keep one bootstrap brick with one demand-opened canary, and keep the
+    keep the two conformance bricks with one demand-opened canary, and keep the
     conformance runner the Kargo dev gate polls.
     """
     application = yaml.safe_load(Path(os.environ["DEV_GKE_APPLICATION"]).read_text())
@@ -2934,6 +3030,15 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     release = helm["releaseName"]
     assert release == application["metadata"]["name"] == "embervm-dev"
     assert application["spec"]["destination"]["namespace"] == "embervm-dev"
+    assert (
+        "RespectIgnoreDifferences=true"
+        in application["spec"]["syncPolicy"]["syncOptions"]
+    )
+    assert {
+        "kind": "ConfigMap",
+        "name": "embervm-dev-embervm-tokenbroker-quota",
+        "jsonPointers": ["/data"],
+    } in application["spec"]["ignoreDifferences"]
     assert (
         application["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"]
         == "kargo-embervm:dev"
@@ -2967,7 +3072,8 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
         if d["kind"] == "Deployment" and "-noded-brick-" in d["metadata"]["name"]
     }
     assert {name: n for name, n in bricks.items() if n} == {
-        "embervm-dev-embervm-noded-brick-2gi": 1
+        "embervm-dev-embervm-noded-brick-2gi": 1,
+        "embervm-dev-embervm-noded-brick-8gi": 1,
     }
 
     # What the BrickController will actually run: its static target per class
@@ -2985,15 +3091,16 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     ]
     classes = json.loads(classes_env)
     targets = {c["name"]: max(c["desired"], c["min"]) for c in classes}
-    assert {name: n for name, n in targets.items() if n} == {"2gi": 1}
+    assert {name: n for name, n in targets.items() if n} == {"2gi": 1, "8gi": 1}
     assert all(c["max"] <= 1 for c in classes)
     assert {
         c["name"]: c["ceiling_bound"] for c in classes if c["ceiling_bound"] > 0
     } == {"4gi": 1}
     by_name = {c["name"]: c for c in classes}
     assert by_name["2gi"]["min"] == by_name["2gi"]["max"] == 1
+    assert by_name["8gi"]["min"] == by_name["8gi"]["max"] == 1
     assert by_name["4gi"]["max"] == 0
-    assert all(by_name[name]["max"] == 0 for name in ("1gi", "8gi", "16gi"))
+    assert all(by_name[name]["max"] == 0 for name in ("1gi", "16gi"))
     env = {entry["name"]: entry.get("value") for entry in control["env"]}
     assert env["EMBERVM_BRICK_AUTOSCALE_MODE"] == "full"
     assert env["EMBERVM_BRICK_CEILING_IDLE_MS"] == "3600000"
@@ -3023,8 +3130,13 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     assert cluster_resources == {"nodes", "tokenreviews"}
 
     workloads = sorted(d["metadata"]["name"] for d in docs if d["kind"] == "Workload")
-    # The conformance suite's three workloads: S1, S2/S3 and S5.
-    assert workloads == ["pi-runtime", "sandbox-elixir", "sandbox-python"]
+    # The conformance suite's workloads: S1, S2/S3, S5 and S9.
+    assert workloads == [
+        "claude-runtime",
+        "pi-runtime",
+        "sandbox-elixir",
+        "sandbox-python",
+    ]
 
     runner = [
         d

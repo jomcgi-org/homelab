@@ -1240,12 +1240,7 @@
   }
 
   async function stopActiveTurn(identity) {
-    if (
-      !data.sessionStopControlEnabled ||
-      !selectedId ||
-      !identity ||
-      stopInFlight(stopPresentation)
-    ) {
+    if (!selectedId || !identity || stopInFlight(stopPresentation)) {
       return;
     }
     const sessionId = selectedId;
@@ -1875,7 +1870,8 @@
 
 {#snippet trail()}
   <Trail
-    crumbs={[{ label: "Factory", href: "/factory" }, { label: "Execution" }]}
+    root={{ label: "dashboard", href: "/" }}
+    crumbs={[{ label: "factory", href: "/factory" }, { label: "execution" }]}
   />
 {/snippet}
 
@@ -2405,9 +2401,6 @@
             {/if}
 
             <StopControl
-              enabled={Boolean(
-                data.sessionStopControlEnabled && detail?.stop_control?.enabled,
-              )}
               identity={detail?.stop_control?.active ?? null}
               status={stopPresentation}
               onStop={stopActiveTurn}
@@ -3907,7 +3900,8 @@
       min-height: 44px;
       height: 44px;
       padding: 10px 12px;
-      font-size: 15px;
+      /* 16px: iOS Safari zooms the console for anything smaller. */
+      font-size: 16px;
     }
     .bar {
       display: contents;
@@ -3919,8 +3913,11 @@
       justify-self: start;
       margin-left: 4px;
     }
-    .model-picker.composer-model select {
+    .model-picker.composer-model select,
+    .new-panel textarea,
+    .new-panel select {
       min-height: 44px;
+      font-size: 16px;
     }
     .composer-hint {
       /* A phone has no ⌘↵. */

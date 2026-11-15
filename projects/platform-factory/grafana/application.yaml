@@ -1,0 +1,42 @@
+# The operators' metrics view at factory-grafana.jomcgi.dev
+# (projects/factory-cluster/README.md, "Metrics view"): Grafana with
+# Authentik sign-in, the Prometheus datasource and dashboards from Git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+  annotations:
+    # With authentik, whose secret Job fills grafana-oidc (it waits for it).
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/grafana/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: grafana
+  # authentik-secret-init writes the OIDC client secret.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: grafana-oidc
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

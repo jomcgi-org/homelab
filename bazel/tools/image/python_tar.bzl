@@ -17,7 +17,7 @@ Produces for each platform:
 
 load("@aspect_rules_py//py:defs.bzl", "py_image_layer")
 
-# Map from our platform keys to //tools/platforms targets.
+# Map from our platform keys to //bazel/tools/platforms targets.
 _PLATFORMS = {
     "linux_amd64": "//bazel/tools/platforms:linux_x86_64",
     "linux_arm64": "//bazel/tools/platforms:linux_aarch64",

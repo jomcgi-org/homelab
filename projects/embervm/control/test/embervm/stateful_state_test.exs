@@ -144,12 +144,6 @@ defmodule Embervm.StatefulStateTest do
     for state <- [:evicted, :destroyed, :failed], do: refute(StatefulState.live?(state))
   end
 
-  test "terminal_op_kind maps each terminal state to its op kind" do
-    assert StatefulState.terminal_op_kind(:evicted) == :stateful_evicted
-    assert StatefulState.terminal_op_kind(:destroyed) == :stateful_destroyed
-    assert StatefulState.terminal_op_kind(:failed) == :stateful_failed
-  end
-
   test "no terminal state has any outgoing edge (a stateful instance dies terminally)" do
     for state <- StatefulState.terminal_states(), event <- StatefulState.events() do
       assert StatefulState.transition(state, event) == {:error, {:illegal_transition, state, event}}

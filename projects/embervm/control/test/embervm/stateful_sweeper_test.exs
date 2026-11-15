@@ -32,8 +32,6 @@ defmodule Embervm.StatefulSweeperTest do
     WorkloadCatalog
   }
 
-  alias Embervm.Application, as: App
-
   alias Embervm.OpLog.SQLite
 
   alias Embervm.Node.V1.{
@@ -282,7 +280,6 @@ defmodule Embervm.StatefulSweeperTest do
         lifetime_drain_max_ms: Keyword.get(opts, :lifetime_drain_max_ms, 3_600_000),
         bank_backoff_base_ms: Keyword.get(opts, :bank_backoff_base_ms, 1_000),
         bank_backoff_cap_ms: Keyword.get(opts, :bank_backoff_cap_ms, 30_000),
-        pressure_banking_enabled: Keyword.get(opts, :pressure_banking_enabled, true),
         high_water_fraction: Keyword.get(opts, :high_water_fraction, 0.85),
         low_water_fraction: Keyword.get(opts, :low_water_fraction, 0.70),
         pressure_idle_floor_ms: Keyword.get(opts, :pressure_idle_floor_ms, 5_000),
@@ -290,13 +287,6 @@ defmodule Embervm.StatefulSweeperTest do
           Keyword.get(opts, :session_pressure_idle_floor_ms, 60_000),
         sweep_interval_ms: 0
       ]
-
-    sweeper_opts =
-      if Keyword.get(opts, :omit_pressure_banking_enabled, false) do
-        Keyword.delete(sweeper_opts, :pressure_banking_enabled)
-      else
-        sweeper_opts
-      end
 
     # The status.stateful writer seam (Task 10): records every {namespace, name,
     # status_map} the sweep patches, so a test asserts the debounce (one write
@@ -1753,42 +1743,6 @@ defmodule Embervm.StatefulSweeperTest do
   end
 
   describe "brick memory-pressure banking" do
-    test "the sweeper's own default leaves pressure banking disabled" do
-      previous_application_env = Application.fetch_env(:embervm, :stateful_pressure_banking_enabled)
-
-      on_exit(fn ->
-        restore_application_env(:stateful_pressure_banking_enabled, previous_application_env)
-      end)
-
-      Application.delete_env(:embervm, :stateful_pressure_banking_enabled)
-
-      ctx = start_stack(omit_pressure_banking_enabled: true)
-      assert :sys.get_state(ctx.sweeper).pressure_banking_enabled == false
-    end
-
-    # A sentinel, not a boolean: asserting the default comes back would pass just
-    # as happily if boolean_env parsed "" as false instead of falling through,
-    # and the fall-through is the property that decides what an empty env value
-    # arms. Both call sites pass false today, so this is what keeps an empty
-    # EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED from meaning something else.
-    test "an unset or empty env value falls through to the caller's default" do
-      previous_system_env = System.get_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
-
-      on_exit(fn ->
-        restore_system_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", previous_system_env)
-      end)
-
-      System.delete_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
-
-      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", :fell_through) ==
-               :fell_through
-
-      System.put_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", "")
-
-      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", :fell_through) ==
-               :fell_through
-    end
-
     test "invalid_low_ge_high_logs_and_disables" do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
@@ -2432,22 +2386,6 @@ defmodule Embervm.StatefulSweeperTest do
       stop_registered_sessions(registered)
     end
 
-    test "the emergency flag disables pressure banking and keeps state ok" do
-      ctx = start_stack(pressure_banking_enabled: false)
-      stateful_workload(ctx, "wl-a", 5400, %{mem_mib: 300})
-      serving_instance(ctx, "sf-a", "wl-a", "vm-a", "10.98.0.5")
-      advance(ctx.clock_agent, 10_000)
-      brick_id = pressure_brick(ctx, 900, [live_stateful_vm("vm-a", "wl-a")])
-      set_scrape(ctx, reading("state-5400", 0, 1))
-
-      assert :sys.get_state(ctx.sweeper).pressure_banking_enabled == false
-      assert StatefulSweeper.pressure_state(ctx.sweeper, brick_id) == :ok
-
-      StatefulSweeper.sweep(ctx.sweeper)
-
-      assert StatefulSweeper.pressure_state(ctx.sweeper, brick_id) == :ok
-      assert stop_calls(ctx) == []
-    end
   end
 
   # -- helpers --------------------------------------------------------------
@@ -2792,10 +2730,4 @@ defmodule Embervm.StatefulSweeperTest do
       assert StatefulSweeper.drain_instance(ctx.sweeper, "node-4", "") == 2
     end
   end
-
-  defp restore_system_env(key, nil), do: System.delete_env(key)
-  defp restore_system_env(key, value), do: System.put_env(key, value)
-
-  defp restore_application_env(key, :error), do: Application.delete_env(:embervm, key)
-  defp restore_application_env(key, {:ok, value}), do: Application.put_env(:embervm, key, value)
 end

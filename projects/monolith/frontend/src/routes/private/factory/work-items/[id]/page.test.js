@@ -83,6 +83,111 @@ afterEach(() => {
 });
 
 describe("work item page", () => {
+  test("removal confirmation stays in its row, takes focus and returns it on cancel", async () => {
+    const fetchMock = successfulFetch(fixture());
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ itemId: "100001", document: fixture() });
+    for (const control of target.querySelectorAll(".remove-btn")) {
+      control.focus();
+      control.click();
+      await tick();
+      const group = control
+        .closest(".edge-line")
+        .querySelector('[role="group"]');
+      expect(group).not.toBeNull();
+      expect(document.activeElement).toBe(group);
+      expect(group.querySelector("p").id).toBe(
+        group.getAttribute("aria-describedby"),
+      );
+      expect(group.querySelector("p").textContent).toBe(
+        `${control.getAttribute("aria-label")}?`,
+      );
+      group.querySelector("button:last-child").click();
+      await tick();
+      expect(document.activeElement).toBe(control);
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      control.click();
+      await tick();
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await tick();
+      expect(document.activeElement).toBe(control);
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("reports a vanished armed relationship without sending a deletion", async () => {
+    const doc = fixture();
+    let currentEdges = doc.edges_in;
+    // Let the click-time identity check see a newer snapshot than the UI.
+    Object.defineProperty(doc, "edges_in", { get: () => currentEdges });
+    const fetchMock = successfulFetch(doc);
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ itemId: "100001", document: doc });
+    target.querySelector(".remove-btn").click();
+    await tick();
+    currentEdges = currentEdges.slice(1);
+    target
+      .querySelector('[aria-label="Confirm relationship removal"] button')
+      .click();
+    await tick();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(target.querySelector('[role="status"]').textContent).toContain(
+      "relationship is no longer available",
+    );
+  });
+
+  test("names every relationship and cancels exact removal on refresh or navigation", async () => {
+    vi.useFakeTimers();
+    try {
+      const doc = fixture();
+      const fetchMock = successfulFetch(doc);
+      vi.stubGlobal("fetch", fetchMock);
+      const target = renderPage({ itemId: "100001", document: doc });
+      await tick();
+      const controls = [...target.querySelectorAll(".remove-btn")];
+      expect(
+        new Set(controls.map((button) => button.getAttribute("aria-label")))
+          .size,
+      ).toBe(6);
+      controls[0].click();
+      await tick();
+      expect(fetchMock).not.toHaveBeenCalled();
+      target
+        .querySelector(
+          '[aria-label="Confirm relationship removal"] button:last-child',
+        )
+        .click();
+      await tick();
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      controls[0].click();
+      await tick();
+      doc.edges_in.reverse();
+      await vi.advanceTimersByTimeAsync(20000);
+      await tick();
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      target.querySelector(".remove-btn").click();
+      await tick();
+      window.dispatchEvent(new Event("hashchange"));
+      await tick();
+      expect(
+        target.querySelector('[aria-label="Confirm relationship removal"]'),
+      ).toBeNull();
+      expect(
+        fetchMock.mock.calls.every(([, init]) => init?.method !== "DELETE"),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   test("polling marks stale data unavailable and clears the warning on recovery", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -160,6 +265,11 @@ describe("work item page", () => {
     const target = renderPage({ itemId: "100001", document });
 
     target.querySelector(".remove-btn").click();
+    await tick();
+    expect(fetchMock).not.toHaveBeenCalled();
+    target
+      .querySelector('[aria-label="Confirm relationship removal"] button')
+      .click();
     await settle();
 
     expect(fetchMock.mock.calls[0][0]).toBe(

@@ -325,13 +325,6 @@ async def run_synthetic_session(
             ):
                 raise EmberVMTransportError("Shared execution admission is fenced")
 
-        from factory.execution import result_receipts
-
-        receipt_kwargs = (
-            {"receipt_claim_owner": claim_owner}
-            if result_receipts.required(row.local_session_id, row.model)
-            else {}
-        )
         deliver_started = time.monotonic()
         turn, _returned_ember = await transport.deliver(
             None,
@@ -343,7 +336,7 @@ async def run_synthetic_session(
             admission_check=shared_admission_check,
             agent_session_id=row.id,
             dispatch_count=dispatch_count,
-            **receipt_kwargs,
+            receipt_claim_owner=claim_owner,
             **(
                 {"invocation_record": invocation_record}
                 if session_key is not None
@@ -608,11 +601,6 @@ def send_to_swarm_session(session_id: int, message: str) -> int:
 def _sessions_for_workflow(workflow_id: str):
     with Session(get_engine()) as db_session:
         return store.sessions_for_workflow(db_session, workflow_id)
-
-
-def _session_cleanup_hold(session_id: int, guest_id: str) -> str | None:
-    with Session(get_engine()) as db_session:
-        return store.guest_cleanup_hold(db_session, session_id, guest_id)
 
 
 def _begin_guest_cleanup(session_id: int, guest_id: str, workflow_id: str) -> dict:

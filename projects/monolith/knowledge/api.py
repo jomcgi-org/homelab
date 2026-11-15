@@ -57,9 +57,6 @@ __all__ = [
     "build_extraction_prompt",
     "build_fact_review_prompt",
     "build_repo_diff_prompt",
-    "count_gaps_review_queue",
-    "count_notes_review_queue",
-    "current_predicate",
     "defer_audit_if_over_budget",
     "defer_recall",
     "enqueue_extraction",
@@ -71,8 +68,6 @@ __all__ = [
     "ingest_raw",
     "ingest_raw_with_status",
     "kg_health",
-    "list_tasks_daily",
-    "list_tasks_weekly",
     "matches_message_recall",
     "prepare_recall",
     "raw_extras_by_id",
@@ -466,38 +461,6 @@ def get_embedding_client():
     from shared.embedding import EmbeddingClient
 
     return EmbeddingClient()
-
-
-def count_notes_review_queue(session: Session, *, limit: int = 200) -> int:
-    """Count notes pending review (mode='pending'), capped at ``limit`` rows.
-
-    Reuses the exact query behind ``GET /notes/review-queue``, so the count
-    matches what a caller would see on that page (up to ``limit``).
-    """
-    from knowledge.notes import list_notes_for_review
-
-    return len(list_notes_for_review(session, mode="pending", limit=limit))
-
-
-def count_gaps_review_queue(session: Session, *, limit: int = 200) -> int:
-    """Count gaps pending review (mode='pending'), capped at ``limit`` rows.
-
-    Reuses the exact query behind ``GET /gaps/review-queue``, so the count
-    matches what a caller would see on that page (up to ``limit``).
-    """
-    from knowledge.gaps import list_gaps_for_review
-
-    return len(list_gaps_for_review(session, mode="pending", limit=limit))
-
-
-def list_tasks_daily(session: Session) -> list[dict]:
-    """Tasks due today or overdue (delegates to KnowledgeStore.list_tasks_daily)."""
-    return KnowledgeStore(session).list_tasks_daily()
-
-
-def list_tasks_weekly(session: Session) -> list[dict]:
-    """Tasks due this week (delegates to KnowledgeStore.list_tasks_weekly)."""
-    return KnowledgeStore(session).list_tasks_weekly()
 
 
 # Narrow contracts used by the factory drainer. Resolve lazily to avoid

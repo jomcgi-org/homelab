@@ -137,14 +137,12 @@ defmodule Embervm.SessionState do
     {:running, :inventory_vanished} => :evicted,
     {:banking, :inventory_vanished} => :evicted,
     {:relighting, :inventory_vanished} => :evicted,
-    # Destroy (DELETE). Two shapes, selected by the EMBERVM_NODE_CONFIRMED_DESTROY
-    # gate in the manager:
-    #   * gate off (today's behaviour): the direct `:destroy` edge records
-    #     destroyed first, then tears down asynchronously.
-    #   * gate on (ADR embervm/014 decision 5): `:begin_destroy` first records the
-    #     durable `destroying` intent, the node-confirmed teardown RPC runs, and
-    #     only a confirmed teardown takes the `:destroying -> :destroy -> destroyed`
-    #     edge. A crash mid-destroy rebuilds as `destroying` and re-drives it.
+    # Destroy (DELETE). A live session takes the node-confirmed shape (ADR
+    # embervm/014 decision 5): `:begin_destroy` first records the durable
+    # `destroying` intent, the node-confirmed teardown RPC runs, and only a
+    # confirmed teardown takes the `:destroying -> :destroy -> destroyed` edge. A
+    # crash mid-destroy rebuilds as `destroying` and re-drives it. The direct
+    # `:destroy` edges serve rows that hold no VM (banked, parked).
     {:creating, :destroy} => :destroyed,
     {:running, :destroy} => :destroyed,
     {:banking, :destroy} => :destroyed,
@@ -229,15 +227,4 @@ defmodule Embervm.SessionState do
         raise IllegalTransition, state: state, event: event
     end
   end
-
-  @doc """
-  The op kind that records a given terminal state, for the write-through append.
-  A total map over the four terminal states; a non-terminal state raises (callers
-  only ask for terminal kinds).
-  """
-  @spec terminal_op_kind(state()) :: atom()
-  def terminal_op_kind(:expired), do: :session_expired
-  def terminal_op_kind(:evicted), do: :session_evicted
-  def terminal_op_kind(:destroyed), do: :session_destroyed
-  def terminal_op_kind(:failed), do: :session_failed
 end

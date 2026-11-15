@@ -4,7 +4,7 @@ AI-powered Discord bot with embeddings, vision, web search, and channel summaris
 
 ## Overview
 
-Responds to messages using configured external LLM provider APIs, with context from the knowledge graph. Supports channel summarisation, multimodal inputs (images via vision), and owner-gated artifact generation via the `/artifact <prompt>` command (goose-backed sessions).
+Responds to messages using configured external LLM provider APIs, with context from the knowledge graph. Supports channel summarisation, multimodal inputs (images via vision), and an owner-gated `/agent <prompt> [repo] [model]` command that runs a coding-agent session (leave `repo` empty to build an artifact).
 
 | Module           | Description                                                                      |
 | ---------------- | -------------------------------------------------------------------------------- |
@@ -15,6 +15,5 @@ Responds to messages using configured external LLM provider APIs, with context f
 | **vision**       | Image analysis via multimodal LLM                                                |
 | **web_search**   | Web search tool integration via SearXNG                                          |
 | **changelog**    | Changelog fetching and presentation                                              |
-| **goosecracker** | Owner-gated `/artifact` command: stateful artifact generation via goose sessions |
 | **outbox**       | Leader-safe Discord outbox so any replica or job can post messages               |
 | **store**        | Message persistence with embedding storage                                       |

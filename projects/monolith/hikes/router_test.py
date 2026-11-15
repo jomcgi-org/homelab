@@ -17,13 +17,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine, delete, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, delete, select
 
 from core.db import get_session
 from hikes.models import Walk, WalkHour
 from hikes.router import _doable_days, _longest_good_run, router
 from shared.forecast_freshness import top_of_hour
+from shared.testing.sqlite import sqlite_session
 
 CUTOFF = top_of_hour(datetime.now(timezone.utc))
 H1 = CUTOFF + timedelta(hours=1)
@@ -46,26 +46,8 @@ def _hours_at(base: datetime, *offsets: int) -> list[datetime]:
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 @pytest.fixture(name="client")
@@ -360,6 +342,27 @@ class TestDoableDays:
 class TestStoredBadHours:
     """The job stores every daylight hour; the planner counts the viable ones."""
 
+    @pytest.mark.parametrize(
+        "precip_mm,wind_kmh,viable",
+        [(2.0, 80.0, True), (2.1, 80.0, False), (2.0, 80.01, False)],
+    )
+    def test_stored_viability_boundaries(
+        self, client, session, precip_mm, wind_kmh, viable
+    ):
+        _seed_walks(session)
+        hour_time = H1 + timedelta(hours=20)
+        session.add(_hour(BEN, hour_time, precip_mm=precip_mm, wind_kmh=wind_kmh))
+        session.commit()
+        response = client.get(f"/api/hikes/walks/{BEN}")
+        assert response.status_code == 200
+        windows = response.json()["windows"]
+        matching = [row for row in windows if row[0] == int(hour_time.timestamp())]
+        assert bool(matching) is viable
+        assert all(len(row) == 5 for row in windows)
+        if viable:
+            assert matching[0][2:4] == [2.0, 80]
+            assert isinstance(matching[0][3], int)
+
     def test_non_viable_hours_are_not_windows(self, client, session):
         _seed_walks(session)
         session.add_all(
@@ -412,7 +415,7 @@ class TestStoredBadHours:
 
 @pytest.mark.parametrize("duration,doable", [(4, True), (5, True), (5.5, False)])
 def test_doable_day_excludes_partial_sunset_hour(duration, doable):
-    from hikes.forecast import compute_windows
+    from hikes.forecast import compute_hours
 
     now = datetime(2026, 10, 22, tzinfo=timezone.utc)
     hourly = [
@@ -425,7 +428,7 @@ def test_doable_day_excludes_partial_sunset_hour(duration, doable):
         }
         for hour in range(13, 18)
     ]
-    windows = compute_windows(hourly, now, 56.82, -5.1)
-    hours = [datetime.fromtimestamp(row[0], timezone.utc) for row in windows]
-    assert len(hours) == 4
+    rows = compute_hours(hourly, now, 56.82, -5.1)
+    hours = [datetime.fromtimestamp(row[0], timezone.utc) for row in rows]
+    assert [hour.hour for hour in hours] == [13, 14, 15, 16]
     assert _doable_days(hours, duration) == (["2026-10-22"] if doable else [])

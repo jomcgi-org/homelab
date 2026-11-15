@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import MapSnapshot from "$lib/public/components/MapSnapshot.svelte";
   import { Button } from "@homelab/design-system/components";
   import {
     readPalette,
@@ -40,8 +41,12 @@
   let pal = null; // resolved on the map surface at load and on scheme changes
   let rafId = null;
   let lastDrMs = 0;
+  let lastDataMs = -Infinity;
+  let latestMovingFixMs = -Infinity;
   let didFit = false;
   let layerReady = false;
+  let mapPainted = $state(false);
+  let mapError = $state(false);
   let disposed = false;
   let heatRequest = null;
   let trackRequest = null;
@@ -104,8 +109,8 @@
   // View state (type filter, mode, selection) is initialized from the URL on
   // load (so a shared link restores it) and mirrored back as it changes (see the
   // $effect below). This is a lib component, but $app/stores + $app/navigation
-  // work in any client component. ShipsMap only mounts inside the route's
-  // browser guard, so reading $page here is always client-side.
+  // work during SSR and in the browser. The initial controls use the request's
+  // URL before MapLibre mounts.
   const initialView = readShipsParams($page.url.searchParams, LEGEND_KEYS);
 
   let active = $state(initialView.active); // enabled vessel types (all on by default)
@@ -244,10 +249,25 @@
   }
 
   function setMode(next) {
-    if (next === mode || !map || !layerReady) return;
+    if (next === mode || (next === "heat" && (mapError || !map || !layerReady)))
+      return;
+    // A shared Heat view must still return to vessel snapshot filters if
+    // WebGL initialization failed. applyModeLayers tolerates an absent map.
     mode = next;
     applyModeLayers(next);
   }
+
+  let previewFleet = $derived(
+    vessels.filter((vessel) =>
+      active.has(iconFor(vessel.ship_type).replace("ship-", "")),
+    ),
+  );
+  let previewRows = $derived(
+    previewFleet.slice(0, 6).map((vessel) => ({
+      name: vessel.ship_name || vessel.name || `MMSI ${vessel.mmsi}`,
+      detail: `${shipTypeLabel(vessel.ship_type)} · ${fmtSpeed(vessel.speed)}${vessel.destination ? ` · ${vessel.destination}` : ""}`,
+    })),
+  );
 
   function emptyFC() {
     return { type: "FeatureCollection", features: [] };
@@ -340,8 +360,7 @@
   // Build the FeatureCollection from current fleet state, dead-reckoning each
   // vessel forward from its last fix. selection/hover ride along as feature
   // properties (not feature-state, which setData would clear).
-  function buildFeatures() {
-    const now = Date.now();
+  function buildFeatures(now) {
     const features = [];
     for (const [id, e] of fleet) {
       const elapsed = Math.min((now - e.fixTimeMs) / 1000, MAX_DR_SECONDS);
@@ -365,9 +384,49 @@
     return { type: "FeatureCollection", features };
   }
 
-  function pushData() {
+  function buildMotionDiff(now) {
+    const update = [];
+    for (const [id, e] of fleet) {
+      if (!e.speed || e.speed <= 0) continue;
+      const elapsed = Math.min((now - e.fixTimeMs) / 1000, MAX_DR_SECONDS);
+      const previous = Math.min(
+        (lastDataMs - e.fixTimeMs) / 1000,
+        MAX_DR_SECONDS,
+      );
+      if (elapsed === previous) continue;
+      const pos = deadReckon(
+        { lat: e.fixLat, lon: e.fixLon, speed: e.speed, course: e.course },
+        elapsed,
+      );
+      update.push({
+        id,
+        newGeometry: { type: "Point", coordinates: [pos.lon, pos.lat] },
+      });
+    }
+    return { update };
+  }
+
+  function pushData(onlyIfMoving = false) {
     const src = map?.getSource(SOURCE_ID);
-    if (src) src.setData(buildFeatures());
+    if (!src) return;
+    const now = Date.now();
+    const motionEndsAt = latestMovingFixMs + MAX_DR_SECONDS * 1000;
+    // Once every moving fix has reached the cap, time no longer changes any
+    // position. Keep snapshot, selection and hover writes unconditional.
+    if (
+      onlyIfMoving &&
+      Math.min(now, motionEndsAt) === Math.min(lastDataMs, motionEndsAt)
+    )
+      return;
+    if (onlyIfMoving) {
+      // Fleet keys are unique MMSI feature IDs. Geometry-only diffs preserve
+      // all vessel properties and leave stationary/capped features in place.
+      const diff = buildMotionDiff(now);
+      if (diff.update.length) src.updateData(diff);
+    } else {
+      src.setData(buildFeatures(now));
+    }
+    lastDataMs = now;
   }
 
   // AIS sentinels: lat 91 / lon 181 mean "position not available"; (0, 0) is
@@ -426,11 +485,12 @@
     if (!map || !layerReady) return;
 
     const seen = new Set();
+    latestMovingFixMs = -Infinity;
     for (const v of vessels) {
       if (!validLatLon(v.lat, v.lon)) continue;
       const id = String(v.mmsi);
       seen.add(id);
-      fleet.set(id, {
+      const entry = {
         row: v,
         fixLat: v.lat,
         fixLon: v.lon,
@@ -439,7 +499,10 @@
         course: v.course,
         rotation: rotationOf(v),
         icon: iconFor(v.ship_type),
-      });
+      };
+      fleet.set(id, entry);
+      if (entry.speed > 0)
+        latestMovingFixMs = Math.max(latestMovingFixMs, entry.fixTimeMs);
     }
     for (const id of fleet.keys()) {
       if (!seen.has(id)) fleet.delete(id);
@@ -469,7 +532,7 @@
     }
   }
 
-  // Throttled dead-reckoning: rebuild the source ~4x/sec. During pan/zoom the
+  // Throttled dead-reckoning: update moving fixes ~4x/sec. During pan/zoom the
   // points already track the basemap on the GPU, so this only animates the
   // slow drift between snapshots.
   function startLoop() {
@@ -477,7 +540,7 @@
       const now = Date.now();
       if (now - lastDrMs >= DR_INTERVAL_MS) {
         lastDrMs = now;
-        pushData();
+        pushData(true);
       }
       rafId = requestAnimationFrame(step);
     };
@@ -605,6 +668,30 @@
       // The viewport is already framed on the fleet, so suppress the one-time
       // fit in syncVessels (it would otherwise snap to the same bounds again).
       if (seedBounds) didFit = true;
+      // Keep the HTML snapshot until a frame includes the populated source.
+      // The style's load event alone can precede the GeoJSON worker response.
+      map.on("render", () => {
+        const source = mode === "heat" ? HEAT_SOURCE : SOURCE_ID;
+        if (
+          !destroyed &&
+          !mapPainted &&
+          layerReady &&
+          (mode !== "heat" || heatLoaded) &&
+          map.isSourceLoaded(source)
+        ) {
+          mapPainted = true;
+          // Warm the heat grid in the background so the first Heat toggle is
+          // instant. Still lazy (kept out of the initial payload), just fetched
+          // on idle after first paint instead of waiting for the toggle.
+          // loadHeat() is a no-op once cached, so the toggle handler stays correct.
+          if (typeof requestIdleCallback === "function") {
+            idleWarmup = true;
+            warmup = requestIdleCallback(() => loadHeat(), { timeout: 3000 });
+          } else {
+            warmup = setTimeout(() => loadHeat(), 1500);
+          }
+        }
+      });
       map.addControl(
         new maplibregl.NavigationControl({ showCompass: false }),
         "bottom-right",
@@ -734,17 +821,6 @@
 
         syncVessels();
         startLoop();
-
-        // Warm the heat grid in the background so the first Heat toggle is
-        // instant. Still lazy (kept out of the initial payload), just fetched
-        // on idle after first paint instead of waiting for the toggle.
-        // loadHeat() is a no-op once cached, so the toggle handler stays correct.
-        if (typeof requestIdleCallback === "function") {
-          idleWarmup = true;
-          warmup = requestIdleCallback(() => loadHeat(), { timeout: 3000 });
-        } else {
-          warmup = setTimeout(() => loadHeat(), 1500);
-        }
       });
 
       const scheme = new MutationObserver(refreshPalette);
@@ -769,12 +845,18 @@
         map = null;
         layerReady = false;
       };
-    })();
+    })().catch((error) => {
+      if (destroyed) return;
+      console.error("ships map failed to initialise", error);
+      mapError = true;
+    });
 
     return () => {
       destroyed = true;
       disposed = true;
       cleanup();
+      map?.remove();
+      map = null;
     };
   });
 </script>
@@ -785,6 +867,16 @@
   class:panel-open={selected}
 >
   <div class="map" bind:this={mapContainer}></div>
+
+  {#if !mapPainted}
+    <MapSnapshot
+      title="Vessel snapshot"
+      summary={`${previewFleet.length} vessels match the selected types. Showing the first ${previewRows.length}.`}
+      rows={previewRows}
+      empty="No vessels match the selected types."
+      failed={mapError}
+    />
+  {/if}
 
   <div class="mode-toggle" role="group" aria-label="Map mode">
     <Button
@@ -797,6 +889,11 @@
     <Button
       variant="secondary"
       aria-pressed={mode === "heat"}
+      disabled={mapError}
+      aria-label={mapError ? "Heat (interactive map unavailable)" : undefined}
+      title={mapError
+        ? "Heat requires the interactive map, which is unavailable."
+        : undefined}
       onclick={() => setMode("heat")}
     >
       Heat
@@ -885,6 +982,8 @@
 
 <style>
   .map-wrap {
+    --snapshot-top: 4.5rem;
+    --snapshot-bottom: 7rem;
     position: absolute;
     inset: 0;
     overflow: hidden;
@@ -972,6 +1071,13 @@
     outline-offset: -3px;
   }
 
+  /* Keep recovery and filtering usable while the first-view snapshot remains
+     above the map, including a shared heat view whose grid request failed. */
+  .mode-toggle,
+  .legend,
+  .panel {
+    z-index: 2;
+  }
   .mode-toggle {
     position: absolute;
     top: 12px;

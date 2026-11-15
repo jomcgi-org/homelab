@@ -1,0 +1,158 @@
+{
+  "routes": {
+    "/public/app/firecracker": {
+      "initialGzip": 65000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/ember/firecracker": {
+      "initialGzip": 85000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/hikes": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/ships": {
+      "initialGzip": 80000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/stars": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/trips": {
+      "initialGzip": 75000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/trips/[slug]": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/trips/[slug]/day/[day]": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/trips/[slug]/timeline": {
+      "initialGzip": 85000,
+      "deferredGzip": 330000,
+      "workerGzip": 170000
+    },
+    "/public/app/notes": {
+      "initialGzip": 75000,
+      "deferredGzip": 50000,
+      "workerGzip": 0
+    },
+    "/public/app/llm-leaderboard": {
+      "initialGzip": 85000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland/privacy": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland/support": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/scotland/terms": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire": {
+      "initialGzip": 105000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/adventure/[id]": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/book/[book]": {
+      "initialGzip": 95000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/book/[book]/c/[chunk]": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/chat": {
+      "initialGzip": 100000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/chat/s/[id]": {
+      "initialGzip": 80000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/entities": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/entity/[id]": {
+      "initialGzip": 95000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/explore": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/library": {
+      "initialGzip": 90000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    },
+    "/public/app/grimoire/world": {
+      "initialGzip": 105000,
+      "deferredGzip": 0,
+      "workerGzip": 0
+    }
+  },
+  "apiEndpoints": [
+    "/public/app/grimoire/api/[...path]",
+    "/public/app/grimoire/book/[book]/read",
+    "/public/app/grimoire/chat/fork",
+    "/public/app/grimoire/chat/message",
+    "/public/app/grimoire/chat/session",
+    "/public/app/grimoire/chat/share",
+    "/public/app/hikes/walk/[uuid]",
+    "/public/app/notes/body/[id]",
+    "/public/app/notes/graph",
+    "/public/app/notes/stats",
+    "/public/app/ships/heat",
+    "/public/app/ships/track/[mmsi]",
+    "/public/app/stars/history",
+    "/public/app/stars/history-map",
+    "/public/app/stars/map",
+    "/public/scotland/marketplace.json"
+  ],
+  "documents": {
+    "/public/app/frank": {
+      "file": "src/routes/public/app/frank/frank.html",
+      "gzip": 12000
+    }
+  }
+}

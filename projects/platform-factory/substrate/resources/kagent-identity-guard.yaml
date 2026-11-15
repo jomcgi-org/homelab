@@ -1,0 +1,131 @@
+# Substrate trusts the identity kagent/kagent-controller as a global owner and
+# a router ingress client (../values/substrate.yaml), and the pod certificate
+# that proves it is issued to any pod running as that ServiceAccount. Until
+# kagent is installed, anyone who can create a namespace named kagent could
+# claim it. Only ArgoCD may create or change that ServiceAccount or run a
+# workload as it. The controller-manager identities act for ArgoCD's
+# Deployment: deployment-controller and replicaset-controller create its
+# ReplicaSets and Pods, and generic-garbage-collector updates their finalizers
+# and ownerReferences when ArgoCD deletes it in the foreground. k3s runs
+# kube-controller-manager with --use-service-account-credentials, so those are
+# per-controller ServiceAccounts.
+#
+# One policy per object shape, so each expression type-checks against its kind.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kagent-controller-serviceaccount
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kagent
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [serviceaccounts]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:deployment-controller',
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
+        ])
+  validations:
+    - expression: >-
+        object.metadata.name != 'kagent-controller'
+      message: >-
+        Only ArgoCD may create the kagent-controller ServiceAccount or run a
+        workload as it; Substrate trusts that identity as a global owner.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kagent-controller-serviceaccount
+spec:
+  policyName: kagent-controller-serviceaccount
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kagent-controller-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kagent
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:deployment-controller',
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
+        ])
+  validations:
+    - expression: >-
+        object.spec.?serviceAccountName.orValue('') != 'kagent-controller' &&
+        object.spec.?serviceAccount.orValue('') != 'kagent-controller'
+      message: >-
+        Only ArgoCD may create the kagent-controller ServiceAccount or run a
+        workload as it; Substrate trusts that identity as a global owner.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kagent-controller-pods
+spec:
+  policyName: kagent-controller-pods
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kagent-controller-workloads
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kagent
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, replicasets]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:deployment-controller',
+          'system:serviceaccount:kube-system:replicaset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
+        ])
+  validations:
+    - expression: >-
+        object.spec.template.spec.?serviceAccountName.orValue('') != 'kagent-controller' &&
+        object.spec.template.spec.?serviceAccount.orValue('') != 'kagent-controller'
+      message: >-
+        Only ArgoCD may create the kagent-controller ServiceAccount or run a
+        workload as it; Substrate trusts that identity as a global owner.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kagent-controller-workloads
+spec:
+  policyName: kagent-controller-workloads
+  validationActions: [Deny]

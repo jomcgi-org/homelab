@@ -85,6 +85,5 @@ pnpm workspace (pnpm-lock.yaml)
 Each frontend lives in its own pnpm workspace package (a `package.json` at
 `projects/<svc>/frontend/` or similar). The `@npm//projects/<svc>/...` load
 paths are workspace-scoped, so binary targets from different frontends never
-collide. The built `dist/` is consumed either by the service's container image
-(via `exec_filegroup` + `py3_image`) or deployed directly to Cloudflare Pages
-(via `//bazel/wrangler:defs.bzl`).
+collide. The built `dist/` is consumed by the service's container image
+(via `exec_filegroup` + `py3_image`).

@@ -56,9 +56,16 @@ argo-cd:
   configs:
     # Chart 9 removes prior defaults. Preserve hub behavior explicitly.
     cm:
+      # The MCP server's API account (hub only; the factory cluster has none).
+      accounts.mcp-agent: apiKey
       server.rbac.log.enforce.enable: "false"
       timeout.reconciliation: "180s"
       timeout.reconciliation.jitter: "0s"
+    rbac:
+      policy.csv: |
+        p, mcp-agent, applications, *, */*, allow
+        p, mcp-agent, projects, get, *, allow
+        p, mcp-agent, clusters, get, *, allow
     params:
       application.namespaces: ""
       applicationsetcontroller.enable.progressive.syncs: "false"

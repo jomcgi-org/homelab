@@ -1,0 +1,80 @@
+# Cilium on the factory home cluster: the CNI, kube-proxy replacement and the
+# enforcement point for the cluster-wide default-deny policy
+# (projects/platform-factory/network-policy).
+#
+# bootstrap-gitops.sh installs this chart and these values before anything
+# else, because no pod can start without a CNI; the cilium Application then
+# adopts the release. Both render the same upstream chart version with this
+# file, so they converge.
+
+# Restart the agents when their configuration changes, so a values change
+# takes effect on sync rather than at the next node restart.
+rollOutCiliumPods: true
+
+kubeProxyReplacement: true
+# On a k3s server 127.0.0.1:6444 is the apiserver's own port, so the agent can
+# reach it before any Service routing exists.
+k8sServiceHost: "127.0.0.1"
+k8sServicePort: 6444
+# Only the wired NICs (enp1s0 on node-1, enp2s0 on node-2/3). Auto-detection
+# also picked tailscale0 on node-1 and took its 1280 MTU for every pod there,
+# which dropped full-size QUIC replies from the Cloudflare edge, and exposed
+# KPR services on the tailnet.
+devices: "enp+"
+
+# With flannel disabled, k3s 1.37 leaves containerd on the standard CNI
+# directories (/etc/cni/net.d, /opt/cni/bin), which are Cilium's defaults.
+
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList: ["10.42.0.0/16"]
+
+# Pod-to-pod traffic between nodes is encrypted with WireGuard.
+encryption:
+  enabled: true
+  type: wireguard
+
+# Endpoints are unrestricted until a policy selects them. The cluster-wide
+# baseline in network-policy selects every pod, so in practice every pod is
+# default-deny; "default" mode keeps Cilium's own host-network agents and the
+# host itself out of scope, which "always" would not.
+policyEnforcementMode: default
+
+operator:
+  replicas: 2
+
+# Agent metrics on :9962 (host network), scraped node-locally by the
+# otel-collector log agent (projects/platform/otel-collector/values-factory.yaml).
+# The operator serves :9963 by default. Like Hubble's :9965, the listener
+# binds every host interface, tailscale0 included.
+prometheus:
+  enabled: true
+
+# Restart one agent at a time. The chart's default of two takes the DNS proxy,
+# and with it every toFQDNs egress, down on two of three nodes at once.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+hubble:
+  enabled: true
+  # The default 4095-flow ring fills within seconds on a busy node, so flow
+  # lookups (and the connectivity test's flow checks) miss events.
+  eventBufferCapacity: "32767"
+  relay:
+    enabled: true
+  tls:
+    auto:
+      enabled: true
+      # Certificates are issued in-cluster by a CronJob. The default ("helm")
+      # generates them at render time, which ArgoCD would see as drift on
+      # every refresh.
+      method: cronJob
+  metrics:
+    enabled:
+      - dns
+      - "drop:labelsContext=source_namespace,destination_namespace,destination_workload,traffic_direction"
+      - tcp
+      - flow

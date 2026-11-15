@@ -39,7 +39,6 @@ from factory.orchestration.factory_controls import (
     _now,
     latest_verdict,
     quota_guard_policy,
-    review_routing_view,
     window_high,
 )
 from factory.orchestration.factory_models import FactoryAudit
@@ -300,8 +299,3 @@ def reviewer_for(
         window_high=window_high(session=session),
         judgment=task_class in JUDGMENT_CLASSES,
     )
-
-
-# Re-exported so a caller that already has this module does not need to know
-# the ledger read lives beside the policy it is read against.
-routing_view = review_routing_view

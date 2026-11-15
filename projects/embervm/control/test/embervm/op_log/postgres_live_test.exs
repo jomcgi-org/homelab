@@ -201,6 +201,40 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     assert {:ok, nil} = Postgres.load_result(server, "task-1")
   end
 
+  test "payload storage is raw BYTEA across journal reads and reopen", %{server: server, adapter_opts: opts} do
+    body = <<137, 0, 255, "codec">>
+    headers = %{"content-type" => "application/octet-stream", "x-codec" => "yes"}
+    request = %{method: "POST", body: body, headers: headers, absent: nil}
+    submitted = %{request: request, extra: [nil, :ready, true, false, %{drop: nil, keep: 7}]}
+    succeeded = %{status_code: 200, body: body, size_bytes: byte_size(body), headers: headers}
+
+    for {kind, payload, ts} <- [{:submitted, submitted, 100}, {:succeeded, succeeded, 101}] do
+      assert {:ok, _} = append(server, kind, ts, tenant: "t1", principal: "p1",
+        workload: "codec", task_id: "task-codec", payload: payload)
+    end
+
+    {:ok, conn} = Postgrex.start_link(opts)
+    assert {:ok, %{rows: [["bytea", stored_submitted], ["bytea", stored_succeeded]]}} =
+      Postgrex.query(conn, "SELECT pg_typeof(payload_blob)::text, payload_blob FROM ops ORDER BY seq", [])
+    assert stored_submitted == :erlang.term_to_binary(submitted)
+    assert stored_succeeded == :erlang.term_to_binary(succeeded)
+    GenServer.stop(conn)
+
+    expected_request = %{"method" => "POST", "body" => body, "headers" => headers}
+    assert {:ok, ^expected_request} = Postgres.load_request(server, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = Postgres.load_result(server, "task-codec")
+    assert {:ok, [first, last] = journal} = Postgres.read_from(server, 0)
+    assert first.payload == %{"request" => expected_request, "extra" => ["nil", "ready", true, false, %{"keep" => 7}]}
+    assert last.payload == %{"status_code" => 200, "body" => body, "size_bytes" => byte_size(body), "headers" => headers}
+    GenServer.stop(server)
+
+    {:ok, reopened} = Postgres.start_link(name: nil, dsn: opts)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(reopened) end)
+    assert {:ok, ^journal} = Postgres.read_from(reopened, 0)
+    assert {:ok, ^expected_request} = Postgres.load_request(reopened, "task-codec")
+    assert {:ok, %{body: ^body, headers: ^headers}} = Postgres.load_result(reopened, "task-codec")
+  end
+
   test "load_request returns the submitted request and nil for an unknown task", %{server: server} do
     request = %{method: "POST", path: "/invoke", body: <<0, 255>>, headers: %{"x-test" => "yes"}}
     append(server, :submitted, 200, tenant: "t1", principal: "p1", workload: "wl-request",
@@ -211,6 +245,7 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     assert loaded["method"] == "POST"
     assert loaded["path"] == "/invoke"
     assert loaded["body"] == <<0, 255>>
+    assert loaded["headers"] == %{"x-test" => "yes"}
     assert {:ok, nil} = Postgres.load_request(server, "missing")
   end
 

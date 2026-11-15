@@ -1,7 +1,5 @@
 """Tests for tool registration in the PydanticAI chat agent."""
 
-import pytest
-
 from chat.agent import create_agent
 
 

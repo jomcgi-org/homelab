@@ -61,15 +61,19 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
 ├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
-├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
+├── firecracker/      #   Guest images and shared guest utilities used by EmberVM
 ├── gke-apps/         #   Active GKE Applications for app workloads
 ├── gke-cluster/      #   Hand-maintained ArgoCD root and parent Application for the GKE hub
-└── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
+├── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
+├── factory/          #   Reusable software factory: umbrella chart, connector and credential broker (#7817)
+├── factory-cluster/  #   Factory home cluster: k3s node bootstrap, GitOps handoff and ArgoCD root (#7817)
+├── factory-landing/  #   The factory's private landing page at factory.jomcgi.dev
+└── platform-factory/ #   Factory home cluster infrastructure Applications (ArgoCD, 1Password, Cloudflare)
 bazel/                # Build infrastructure (rules, tools, images)
 docs/                 # Cross-domain documentation and runbooks
 ```
 
-See [AGENTS.md](AGENTS.md) for the rules every change follows and the map of where to look next. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
+See [AGENTS.md](AGENTS.md) for the rules every change follows and the [agent reference](docs/agents/reference.md) for commands and the map of where to look next. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
 
 ## What's next
 

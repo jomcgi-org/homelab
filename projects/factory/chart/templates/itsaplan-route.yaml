@@ -1,0 +1,102 @@
+{{- if and .Values.itsaplan.enabled .Values.itsaplan.route.enabled }}
+{{- /*
+itsaplan on the authenticated edge: every request has signed in through the
+gateway-wide OIDC policy first. The api lives under apiPath on the web's host
+(upstream's path mode): this route removes the prefix, so the api sees /,
+/api/auth/... and /agent-runs/... as on a host of its own. The edge Gateway
+admits routes only from its routeNamespaces, which must list this namespace.
+
+The agent-facing api answers 404 here: the runner feeds (claim, heartbeat,
+events, result for runs and chats) and MCP. Agents and the connector reach
+the api inside the cluster, so an agent key leaked to a browser user cannot
+drain or report runs through the public origin. God mode stays: the web app
+calls it for the instance admin.
+*/}}
+{{- $i := .Values.itsaplan }}
+{{- $name := include "factory.itsaplanName" . }}
+{{- $api := $i.apiPath }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: {{ $name }}-not-public
+  namespace: {{ $i.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  directResponse:
+    statusCode: 404
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: "Not found\n"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  namespace: {{ $i.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ $i.route.gateway.name }}
+      namespace: {{ $i.route.gateway.namespace }}
+  hostnames:
+    - {{ $i.host }}
+  # kind, group and weight are the schema defaults, stated so ArgoCD's diff
+  # owns them.
+  rules:
+    # Envoy Gateway orders regular expressions before prefixes and longer
+    # prefixes first, so these win over the api's prefix below.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ $api }}/mcp
+        - path:
+            type: PathPrefix
+            value: {{ $api }}/agent-runs/claim
+        - path:
+            type: PathPrefix
+            value: {{ $api }}/agent-chats/claim
+        - path:
+            type: RegularExpression
+            value: {{ printf "^%s/agent-(runs|chats)/[^/]+/(heartbeat|events|result)/?$" $api | quote }}
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ $name }}-not-public
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ $api }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ $name }}-api
+          port: 3000
+          weight: 1
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ $name }}-web
+          port: 3001
+          weight: 1
+{{- end }}

@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import MapSnapshot from "$lib/public/components/MapSnapshot.svelte";
   import "maplibre-gl/dist/maplibre-gl.css";
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import Button from "@homelab/design-system/components/Button.svelte";
@@ -77,6 +78,7 @@
   let mapContainer; // bound <div>
   let map = null;
   let layerReady = false;
+  let mapPainted = $state(false);
   // Signature of the coordinate set we last framed. The filtered `walks` prop
   // changes as the user adjusts filters, so we re-fit whenever the set of
   // plotted coordinates actually changes, but skip unrelated re-renders that
@@ -122,6 +124,14 @@
       if (token === detailToken) detailLoading = false;
     }
   }
+
+  let previewRows = $derived(
+    walks.slice(0, 6).map((walk) => ({
+      name: walk.name,
+      href: walk.url,
+      detail: `${walk.distance_km} km · ${walk.ascent_m} m ascent · ${fmtDuration(walk.duration_h)}`,
+    })),
+  );
 
   function emptyFC() {
     return { type: "FeatureCollection", features: [] };
@@ -275,6 +285,13 @@
         center: [-4.2, 57.0],
         zoom: 5.5,
         attributionControl: { compact: true },
+      });
+      // Keep the HTML snapshot until a frame includes the populated source.
+      // The style's load event alone can precede the GeoJSON worker response.
+      map.on("render", () => {
+        if (!destroyed && layerReady && map.isSourceLoaded(SOURCE_ID)) {
+          mapPainted = true;
+        }
       });
       map.addControl(
         new maplibregl.NavigationControl({ showCompass: false }),
@@ -437,11 +454,14 @@
 <div class="map-wrap" class:panel-open={selected}>
   <div class="map" bind:this={mapContainer}></div>
 
-  {#if mapError}
-    <p class="map-error edition" role="status">
-      The map could not be loaded. It needs WebGL, which some browsers restrict.
-      Try reloading, or open this page in another browser.
-    </p>
+  {#if !mapPainted}
+    <MapSnapshot
+      title="Walks with a weather window"
+      summary={`${walks.length} walks match these filters. Showing the first ${previewRows.length}.`}
+      rows={previewRows}
+      empty="No walks match these filters. Adjust the day or limits to see more."
+      failed={mapError}
+    />
   {/if}
 
   {#if selected}
@@ -631,23 +651,6 @@
 
   .map :global(.maplibregl-canvas:focus-visible) {
     outline-offset: -3px;
-  }
-
-  /* Map-failed notice: centred in the dead map area, drawn like any panel so
-     it reads as part of the page, not a crash. */
-  .map-error {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    z-index: 3;
-    max-width: min(20rem, calc(100% - 2rem));
-    margin: 0;
-    padding: 0.8rem 1rem;
-    background: var(--sheet);
-    font: 0.75rem/1.6 var(--font-code);
-    color: var(--ink-2);
-    text-align: center;
-    transform: translate(-50%, -50%);
   }
 
   /* Walk card: one panel over the map, top right, clear of the controls. */

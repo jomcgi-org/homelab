@@ -20,11 +20,9 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_KG_MAX_JOBS_PER_DAY",
         "DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY",
         "DRAINER_DOCFIX_AUTO_MERGE",
-        "KG_DOCFIX_REVIEW_ENABLED",
         "DRAINER_REPO",
         "DRAINER_BRANCH",
         "DRAINER_REASONING",
-        "DRAINER_NOTIFY_FAILURES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -39,14 +37,12 @@ def test_drainer_defaults(monkeypatch):
     assert settings.kg_max_jobs_per_day == 40
     assert settings.grimoire_kg_max_jobs_per_day == 0
     assert settings.docfix_auto_merge is False
-    assert settings.docfix_review_enabled is False
     assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
     assert settings.branch == "main"
     # Luna drain jobs are usually multi-step repo audits, so high reasoning is
     # the lane default while payloads can still opt out.
     assert settings.reasoning is True
-    assert settings.notify_failures is False
 
 
 def test_drainer_environment_overrides(monkeypatch):
@@ -59,11 +55,9 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_KG_MAX_JOBS_PER_DAY", "12")
     monkeypatch.setenv("DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY", "10")
     monkeypatch.setenv("DRAINER_DOCFIX_AUTO_MERGE", "true")
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
     monkeypatch.setenv("DRAINER_BRANCH", "work")
     monkeypatch.setenv("DRAINER_REASONING", "false")
-    monkeypatch.setenv("DRAINER_NOTIFY_FAILURES", "true")
 
     settings = load_drainer_settings()
 
@@ -78,10 +72,8 @@ def test_drainer_environment_overrides(monkeypatch):
     assert settings.grimoire_kg_max_jobs_per_day == 10
     assert settings.kg_max_jobs_per_day == 12
     assert settings.docfix_auto_merge is True
-    assert settings.docfix_review_enabled is True
     assert settings.repo == "weave-hand/loom"
     assert settings.branch == "work"
-    assert settings.notify_failures is True
 
 
 def test_agent_sessions_channel_notify_defaults_to_needs_input(monkeypatch):
@@ -102,20 +94,6 @@ def test_agent_sessions_channel_notify_rejects_invalid_value(monkeypatch):
 
     with pytest.raises(ValueError, match="must be one of"):
         agent_sessions_channel_notify()
-
-
-def test_drainer_notify_failures_rejects_invalid_boolean(monkeypatch):
-    monkeypatch.setenv("DRAINER_NOTIFY_FAILURES", "sometimes")
-
-    with pytest.raises(ValueError, match="must be true or false"):
-        load_drainer_settings()
-
-
-@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
-def test_drainer_notify_failures_parses_boolean(monkeypatch, value, expected):
-    monkeypatch.setenv("DRAINER_NOTIFY_FAILURES", value)
-
-    assert load_drainer_settings().notify_failures is expected
 
 
 @pytest.mark.parametrize(

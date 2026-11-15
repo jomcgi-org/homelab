@@ -15,6 +15,11 @@ from auth.api import (
     platform_enforcement_enabled,
     require_application_permission,
 )
+from auth.browser_cookie import (  # noqa: F401 - names kept for callers and tests
+    BROWSER_COOKIE,
+    browser_origin,
+)
+from auth.browser_cookie import browser_token as _browser_token
 from auth.dependencies import resolve_authorization
 from auth.errors import AuthError, AuthErrorReason
 from core.db import get_session
@@ -45,7 +50,9 @@ async def get_authenticated_identity(
 ) -> Principal:
     """Return a verified human identity whose proxy projection is consistent.
 
-    The friend BFF carries a dedicated signed ID token in X-Grimoire-Token.
+    Tests and the local rehearsal carry a dedicated signed ID token in
+    X-Grimoire-Token; no deployed component sends that header any more.
+    The friends lane's browser UI carries the same token in its session cookie.
     Private gateway requests carry a signed Cloudflare Access assertion and an
     ``X-Auth-Email`` projection. Direct callers carry a standing bearer token.
     The shared principal resolver verifies either credential. A projection is
@@ -55,6 +62,9 @@ async def get_authenticated_identity(
     if token:
         if len(request.headers.getlist("x-grimoire-token")) != 1:
             raise AuthError(AuthErrorReason.MALFORMED)
+    else:
+        token = _browser_token(request)
+    if token:
         principal = await grimoire_verifier().verify(token)
         if principal is None:
             raise HTTPException(403, "Grimoire identity required")
@@ -124,6 +134,37 @@ def get_game_creator_email(
     email: Annotated[str, Depends(get_authenticated_email)],
     session: Annotated[Session, Depends(get_session)],
 ) -> str:
+    require_game_creator(session, principal)
+    return email
+
+
+def require_game_creator(session: Session, principal: Principal) -> None:
+    """Apply the same creation policy to the mutation and lobby capability."""
     if platform_enforcement_enabled():
         require_application_permission(session, principal, "grimoire.create_game")
-    return email
+        return
+    if os.getenv("GRIMOIRE_CREATION_RESTRICTION_ENABLED", "") != "true":
+        return
+
+    # Match the mailbox proof accepted for legacy account linking. Cloudflare
+    # Access verifies its mailbox itself and does not carry email_verified.
+    verified_email = principal.email_verified or (
+        bool(principal.issuer)
+        and principal.issuer == os.getenv("AUTH_CLOUDFLARE_ACCESS_ISSUER")
+    )
+    email = (principal.email or "").strip().lower()
+    allowed = {
+        entry.strip().lower()
+        for entry in os.getenv("GRIMOIRE_CREATOR_EMAILS", "").split(",")
+        if entry.strip()
+    }
+    if not verified_email or not email or email not in allowed:
+        raise HTTPException(403, "campaign creation not permitted")
+
+
+def can_create_game(session: Session, principal: Principal) -> bool:
+    try:
+        require_game_creator(session, principal)
+    except HTTPException:
+        return False
+    return True

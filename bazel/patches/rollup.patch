@@ -1,15 +1,15 @@
 diff --git a/dist/native.js b/dist/native.js
-index 962a10163ad9a8289ef4661070b526f886293dff..64cb68462f24e7dc81e52aaa4a69a3681df0a2b1 100644
+index 3e24ab2..5f46cf2 100644
 --- a/dist/native.js
 +++ b/dist/native.js
-@@ -121,9 +121,20 @@ const requireWithFriendlyError = id => {
+@@ -132,9 +132,20 @@ const requireWithFriendlyError = id => {
  	}
  };
  
--const { parse, parseAsync, xxhashBase64Url, xxhashBase36, xxhashBase16 } = requireWithFriendlyError(
+-const nativeModule = requireWithFriendlyError(
 -	existsSync(path.join(__dirname, localName)) ? localName : `@rollup/rollup-${packageBase}`
 -);
-+const { parse, parseAsync, xxhashBase64Url, xxhashBase36, xxhashBase16 } = (() => {
++const nativeModule = (() => {
 +	const localPath = path.join(__dirname, localName);
 +	if (existsSync(localPath)) return require(localPath);
 +	try {
@@ -24,5 +24,5 @@ index 962a10163ad9a8289ef4661070b526f886293dff..64cb68462f24e7dc81e52aaa4a69a368
 +	}
 +})();
  
- function getPackageBase() {
- 	const imported = bindingsByPlatformAndArch[platform]?.[arch];
+ const { parse, parseAsync, xxhashBase64Url, xxhashBase36, xxhashBase16 } = nativeModule;
+ 

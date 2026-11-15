@@ -26,25 +26,12 @@ def enabled_recall(monkeypatch, tmp_path):
             )
         )
         session.commit()
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
     # core.db is imported lazily inside _search_with_session, so patch it at
     # the source module rather than on knowledge.recall.
     import core.db as app_db
 
     monkeypatch.setattr(app_db, "get_engine", lambda: engine)
     return engine
-
-
-def test_recall_enabled_values(monkeypatch):
-    monkeypatch.delenv("KNOWLEDGE_RECALL_ENABLED", raising=False)
-    assert recall.recall_enabled() is False
-
-    for value in ("true", "1", "YES"):
-        monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", value)
-        assert recall.recall_enabled() is True
-
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "0")
-    assert recall.recall_enabled() is False
 
 
 def test_recall_limit_defaults_and_clamps(monkeypatch):
@@ -98,16 +85,12 @@ def test_render_related_notes_formats_and_fences_each_item(monkeypatch):
         assert match is not None
 
 
-def test_recall_block_skips_disabled_and_short_prompts(monkeypatch):
-    monkeypatch.delenv("KNOWLEDGE_RECALL_ENABLED", raising=False)
+def test_recall_block_skips_short_prompts(monkeypatch):
     monkeypatch.setattr(
         recall,
         "_search_with_session",
-        lambda *_args: pytest.fail("disabled recall must not search"),
+        lambda *_args: pytest.fail("short prompts must not search"),
     )
-    assert recall.recall_block("a sufficiently long task prompt") is None
-
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
     assert recall.recall_block("0123456789") is None
 
 
@@ -249,7 +232,6 @@ def test_campaign_extraction_skips_all_recall_entry_points(monkeypatch):
     from factory.execution.constants import GRIMOIRE_KG_NODE_KEY
 
     assert recall.GRIMOIRE_KG_NODE_KEY == GRIMOIRE_KG_NODE_KEY
-    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
     monkeypatch.setattr(
         recall,
         "recall_block",

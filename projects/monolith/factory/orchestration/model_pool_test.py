@@ -957,7 +957,6 @@ def test_grant_observation_state_shares_one_freshness_reading():
 def test_refreshed_exhausted_account_does_not_veto_usable_codex(
     monkeypatch, used, rejected
 ):
-    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     grants = {
         "codex-b": _codex_grant("codex-b", age=0.0, used=used),
         "codex-cluster": _codex_grant("codex-cluster", age=10.0),
@@ -971,7 +970,6 @@ def test_refreshed_exhausted_account_does_not_veto_usable_codex(
 
 
 def test_fresh_windowless_rejection_does_not_veto_usable_codex(monkeypatch):
-    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     grants = {
         "codex-b": {
             **_codex_grant("codex-b", age=0.0),
@@ -991,7 +989,6 @@ def test_fresh_windowless_rejection_does_not_veto_usable_codex(monkeypatch):
 def test_gate_does_not_skip_accounts_which_sidecar_can_still_select(
     monkeypatch, configured
 ):
-    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     if configured == "threshold":
         monkeypatch.setenv("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", "90")
     else:
@@ -1005,7 +1002,6 @@ def test_gate_does_not_skip_accounts_which_sidecar_can_still_select(
 
 
 def test_exhaustion_does_not_hide_malformed_telemetry(monkeypatch):
-    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     grants = {
         "codex-b": {
             **_codex_grant("codex-b", age=10.0),
@@ -1021,25 +1017,10 @@ def test_exhaustion_does_not_hide_malformed_telemetry(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("setting", [None, "false", "typo"])
-def test_exhausted_grant_exclusion_waits_for_sidecar_activation(monkeypatch, setting):
-    if setting is None:
-        monkeypatch.delenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", raising=False)
-    else:
-        monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", setting)
-    grants = {
-        "codex-b": _codex_grant("codex-b", age=0.0, used=100.0),
-        "codex-cluster": _codex_grant("codex-cluster", age=10.0),
-    }
-    rolled = model_pool.rollup_grants({}, grants, grants_complete=True)
-    assert model_pool.confirmed_availability("luna", rolled)[0] is False
-
-
 @pytest.mark.parametrize(
     "state", ["stale", "reset", "expired", "reset_unknown", "missing"]
 )
 def test_preferred_account_unknown_capacity_defers_before_egress(monkeypatch, state):
-    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     monkeypatch.setenv("SWARM_CODEX_PREFERRED_GRANT", "codex-b")
     now = datetime(2026, 10, 19, 9, 13, tzinfo=timezone.utc)
     grants = {
@@ -1064,7 +1045,6 @@ def test_preferred_account_unknown_capacity_defers_before_egress(monkeypatch, st
 
 
 def test_preferred_account_reset_recovery_admits_again(monkeypatch):
-    monkeypatch.setenv("SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION", "true")
     monkeypatch.setenv("SWARM_CODEX_PREFERRED_GRANT", "codex-b")
     now = datetime(2026, 10, 19, 9, 13, tzinfo=timezone.utc)
     grants = {

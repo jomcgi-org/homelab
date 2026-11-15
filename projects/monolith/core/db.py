@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, create_engine
 
@@ -34,3 +35,7 @@ def row_value(row: object, name: str) -> object:
 def retryable_conflict(exc: DBAPIError) -> bool:
     code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
     return code in {"40001", "40P01"}
+
+
+def query_rows(db, sql: str, params: dict) -> list[dict]:
+    return [dict(row) for row in db.execute(text(sql), params).mappings()]

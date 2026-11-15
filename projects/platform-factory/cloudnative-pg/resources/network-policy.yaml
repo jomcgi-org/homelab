@@ -1,0 +1,32 @@
+# The CloudNativePG operator's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). Each database namespace allows
+# the operator in on the instance manager's port 8000 in its own policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: operator
+  namespace: cnpg-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudnative-pg
+  ingress:
+    # The mutating and validating webhooks (failurePolicy Fail).
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+    # Instances in any namespace.
+    - toEndpoints:
+        - matchExpressions:
+            - key: k8s:io.kubernetes.pod.namespace
+              operator: Exists
+            - key: cnpg.io/cluster
+              operator: Exists
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP

@@ -1,0 +1,116 @@
+{{- /* The existing trusted writer stays in the jobs namespace. This Job must
+finish before Argo CD changes either public Deployment. Both images are the
+same digest-pinned images registered in this chart's BUILD image map. */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-publish-assets
+  namespace: monolith-workflows
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+  labels:
+    {{- include "monolith-public.labels" . | nindent 4 }}
+    app.kubernetes.io/component: public-assets-publisher
+spec:
+  activeDeadlineSeconds: 600
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: public-assets-publisher
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: copy-public-immutable
+          image: {{ include "homelab.imageRef" .Values.frontend.image | quote }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          command: ["node", "--input-type=module", "-e"]
+          args:
+            - |
+{{ .Files.Get "files/copy-public-assets.mjs" | indent 14 }}
+            - /app/build/client/_app/immutable
+            - /work/immutable
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 128Mi
+            limits:
+              cpu: "1"
+              memory: 128Mi
+              ephemeral-storage: 128Mi
+          volumeMounts:
+            - name: assets
+              mountPath: /work
+      containers:
+        - name: publish-public-immutable
+          image: {{ include "homelab.imageRef" .Values.web.image | quote }}
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          command:
+            - /projects/monolith/main_public.runfiles/_main/projects/monolith/.main_public/bin/python3
+            - -m
+            - artifact.publish_public_assets
+            - /work/immutable
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+              ephemeral-storage: 16Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+              ephemeral-storage: 32Mi
+          env:
+            - name: SEAWEEDFS_S3_ENDPOINT
+              value: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+            - name: AWS_REGION
+              value: auto
+            - name: ARTIFACTS_S3_BUCKET
+              value: artifacts
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: monolith-r2-s3
+                  key: access-key-id
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: monolith-r2-s3
+                  key: secret-access-key
+          volumeMounts:
+            - name: assets
+              mountPath: /work
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: assets
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

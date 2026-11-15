@@ -219,6 +219,67 @@ URL before a successful deployment. A manual cleanup dispatch does not import
 previously skipped builds. Use a fresh successful build after the publisher
 update lands.
 
+## Staged repair for Pages refusals
+
+[#7905](https://github.com/jomcgi-org/homelab/issues/7905) tracks the 2026-11-14
+403s. Aggregate still has `pages: read`. The investigation in
+[#7917](https://github.com/jomcgi-org/homelab/pull/7917) found that loading
+1,691 state files consumed 1,694 REST reads per reconciliation. Intermittent
+successes and blob refusals preceding Pages refusals suggest rate limiting.
+The historical logs cannot distinguish a primary from a secondary limit or
+rule out a settings change.
+
+`FIXTURE_PREVIEW_REPAIR_ENABLED` defaults off in Python and is absent from
+`.github/workflows/fixture-preview-publish.yml`. The authorized activation
+owner can add the following workflow-level environment setting through
+reviewed delivery, covering aggregate, deploy and comment:
+
+```yaml
+env:
+  FIXTURE_PREVIEW_REPAIR_ENABLED: "true"
+```
+
+That workflow edit requires the owner's existing workflow-write authority.
+No repository variable or Pages setting needs changing. Unset or other values
+retain the legacy blob loader and do not retry requests.
+
+When enabled, the repair downloads one public state archive at the validated
+commit after reading the ref, commit and tree. Every file must match the
+tree's path, size and Git blob hash before reconciliation. The download is
+bounded, sends no credential and follows no redirects. Archive failures stop
+publication without falling back to thousands of blob requests.
+
+403/429 diagnostics include only bounded decimal remaining/reset/retry-after
+values. With the repair enabled, a GET can retry twice within 120 seconds of
+total waiting when the response is 429 or a 403 with an explicit quota signal.
+Longer server delays and ordinary permission refusals still fail. Writes are
+never retried. Pages origin, publishing source and custom-domain checks still
+run before reconciliation and deployment.
+
+The enabled repair copies the validated aggregate state to public `state.json`.
+The state branch layout remains compatible with the legacy loader. To roll
+back, the activation owner can remove the setting or set it to `"false"` through
+reviewed delivery; the next successful publication omits public `state.json`.
+Existing preview bytes and state ownership checks remain in force.
+
+Run `ci` and the focused offline suite before delivery:
+
+```sh
+python3 -m unittest discover -s bazel/tools/previews -p '*_test.py'
+```
+
+Keep #7905 open after repository delivery. Within 72 hours after authorized
+landing, the validation owner must read a naturally triggered
+`pull_request_target` closed-event run and verify that its recorded trusted
+source revision contains this repair with activation enabled. Record the run
+URL, revision and closed PR number. Confirm `aggregate`, its `Validate
+provenance and reconcile all previews` step, and `deploy` all succeeded.
+Then read the [public state](https://jomcgi-org.github.io/homelab/state.json),
+validate its schema, repository, Pages URL and preview entries with
+`publish.validate_state`, and confirm the closed PR number is absent from
+`previews`. Record that evidence on #7905. A branch test, skipped deploy or
+successful aggregate alone does not satisfy operational acceptance.
+
 ## Publication boundary
 
 The build runs PR code with read-only repository access on a fresh hosted

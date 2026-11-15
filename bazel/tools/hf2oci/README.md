@@ -39,7 +39,7 @@ flowchart TD
     Cache -- "yes" --> Hit["Return cached digest"]
     Cache -- "no" --> Config["5. Download config files (in memory)"]
     Config --> Stream["6. Stream weight layers (zero disk I/O)"]
-    Stream --> Build["7. Build multi-platform index"]
+    Stream --> Build["7. Build image index"]
     Build --> Push["8. Push to registry"]
     Push --> Reg["OCI Registry"]
 ```
@@ -52,16 +52,16 @@ registry upload with zero disk I/O.
 
 ```mermaid
 block-beta
-  columns 3
+  columns 1
 
-  block:index:3
-    columns 3
-    idx["OCI Image Index"]:3
-    ann1["org.huggingface.repo = NousResearch/..."]:3
-    ann2["org.huggingface.revision = abc123..."]:3
+  block:index
+    columns 1
+    idx["OCI Image Index"]
+    ann1["org.huggingface.repo = NousResearch/..."]
+    ann2["org.huggingface.revision = abc123..."]
   end
 
-  block:amd64:2
+  block:amd64
     columns 1
     amd["linux/amd64 manifest"]
     l0a["Layer 0: config.json, tokenizer.json, ..."]
@@ -69,20 +69,16 @@ block-beta
     l2a["Layer 2: model-00002.safetensors"]
     lna["..."]
   end
-
-  block:arm64:1
-    columns 1
-    arm["linux/arm64 manifest"]
-    l0b["Layer 0: config.json, tokenizer.json, ..."]
-    l1b["Layer 1: model-00001.safetensors"]
-    l2b["Layer 2: model-00002.safetensors"]
-    lnb["..."]
-  end
 ```
 
-All files are placed at `/models/{repo-name}/` inside each layer. Both platforms
-share identical layers since model weights are architecture-independent — `docker
-pull` works on amd64 and arm64 without the caller needing to know.
+The index holds a single `linux/amd64` manifest: weights are
+architecture-independent data, and one child avoids re-consuming streamed
+layers during push. Files are placed at `/` inside each layer unless
+`--model-dir` sets another path.
+
+`copy` also accepts `--file` (GGUF filename prefix selector),
+`--include-mmproj`, `--max-shard-size` (default `500M`; `0` disables
+splitting) and `--max-parallel`.
 
 ## Supported formats
 
@@ -138,11 +134,12 @@ default keychain.
 ## Package structure
 
 ```
-tools/hf2oci/
+bazel/tools/hf2oci/
 ├── cmd/hf2oci/          CLI entrypoint
 │   └── cmd/             Cobra commands (copy, resolve, output formatting)
 └── pkg/
     ├── copy/            Orchestration: list → classify → build → push
+    ├── gguf/            GGUF parsing and shard splitting
     ├── hf/              HuggingFace API client (Tree, Download, ModelInfo)
     ├── oci/             OCI image building and registry push
     └── ociref/          Shared OCI ref naming (DeriveTag, ResolveRef)

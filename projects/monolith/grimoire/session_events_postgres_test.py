@@ -614,7 +614,6 @@ def test_journal_routes_apply_postgres_audience_predicate(lane, monkeypatch):
     from grimoire.access import get_authenticated_email, get_game_creator_email
     from grimoire.router import router
 
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     player_email = f"journal-{uuid4()}@example.test"
     with Session(lane.engine) as session:
         user = AppUser(email=player_email)

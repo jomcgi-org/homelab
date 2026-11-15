@@ -14,9 +14,9 @@ defmodule Embervm.SessionTrace do
   each downstream worker so every phase span nests under the one session-invoke root.
 
   This is intentionally the same shape as `Embervm.Dispatcher.restore_trace_ctx/2`
-  and `parse_traceparent/1` (which stay private to the dispatcher's async op-log
-  path); the session path is synchronous and carries the parent inline, so the
-  helper is shared here rather than duplicated.
+  (which stays private to the dispatcher's async op-log path and parses with
+  `parse_traceparent/1` from here); the session path is synchronous and carries
+  the parent inline.
   """
 
   @traceparent_key "traceparent"
@@ -118,8 +118,7 @@ defmodule Embervm.SessionTrace do
   def key, do: @traceparent_key
 
   # Parse a W3C `traceparent` (`<ver>-<32hex trace>-<16hex span>-<2hex flags>`)
-  # into integer ids, or :error for anything malformed/absent. Same parser shape
-  # as the dispatcher's private one.
+  # into integer ids, or :error for anything malformed/absent.
   @spec parse_traceparent(String.t() | nil) ::
           {non_neg_integer(), non_neg_integer(), non_neg_integer()} | :error
   def parse_traceparent(tp) when is_binary(tp) do

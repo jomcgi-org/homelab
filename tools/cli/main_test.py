@@ -1,8 +1,8 @@
 """Smoke tests for tools/cli/main.py."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
+import pytest  # noqa: F401
 from typer.testing import CliRunner
 
 from tools.cli.main import app, main

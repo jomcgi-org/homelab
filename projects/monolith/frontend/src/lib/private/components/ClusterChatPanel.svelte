@@ -4,8 +4,15 @@
   // component state, capped to the last 12 turns when sent upstream.
   const HISTORY_CAP = 12;
 
+  // `seed` ({ text, at }) fills the box with a question to send, e.g. from a
+  // Needs-you row; each new `at` fills it again. Sending stays one tap.
+  let { seed = null } = $props();
+
   let messages = $state([]);
   let input = $state("");
+  $effect(() => {
+    if (seed?.text) input = seed.text;
+  });
   let streaming = $state(false);
   let logEl = $state(null);
 
@@ -134,13 +141,17 @@
     {/each}
   </div>
   <div class="input-bar">
+    <!-- Not disabled while streaming: a disabled field drops focus and the
+         phone keyboard with it. send() already ignores a second send. -->
     <input
       type="text"
       bind:value={input}
       onkeydown={onKeydown}
       placeholder={streaming ? "thinking..." : "ask the cluster..."}
-      disabled={streaming}
       aria-label="Ask the cluster"
+      aria-busy={streaming}
+      enterkeyhint="send"
+      autocomplete="off"
     />
     <button
       aria-label="Send message"
@@ -238,10 +249,12 @@
     border-top: 1px solid var(--stroke);
   }
 
+  /* 16px: anything smaller makes iOS Safari zoom the page on focus. */
   .input-bar input {
     flex: 1;
+    min-height: 44px;
     font-family: var(--font-ui);
-    font-size: 13px;
+    font-size: 1rem;
     color: var(--ink);
     background: transparent;
     border: none;
@@ -258,6 +271,8 @@
   }
 
   .input-bar button {
+    min-width: 44px;
+    min-height: 44px;
     font-family: var(--font-ui);
     font-size: 14px;
     font-weight: 700;

@@ -6,7 +6,7 @@ phases faked, so no network or real engine is touched.
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine

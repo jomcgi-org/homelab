@@ -7,6 +7,7 @@ exports_files(
         "verifier_test.py",
         "plumbing_test.py",
         "platform/service_test.py",
+        "platform/browser_identity_test.py",
         "platform/grimoire_test.py",
         "platform/postgres_test.py",
     ],

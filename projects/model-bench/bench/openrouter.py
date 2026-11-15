@@ -71,7 +71,6 @@ class OpenRouterClient:
         timeout: float = 120.0,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
-        self._base_url = base_url
         # extra_headers is merged AFTER Authorization so a caller can override it,
         # and exists because reaching a base_url through Cloudflare Access needs
         # CF-Access-Client-Id / CF-Access-Client-Secret. Access authenticates on

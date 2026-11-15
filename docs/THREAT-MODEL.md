@@ -29,7 +29,7 @@ graph LR
     GH["GitHub<br/>PRs, dependencies"] --> CI["CI<br/>BuildBuddy runners,<br/>merge queue"]
     CFE --> CFD
     CI -- "publishes charts and images;<br/>ArgoCD pulls" --> K8S
-    subgraph K8S ["Cluster (Cilium, Kyverno, ArgoCD)"]
+    subgraph K8S ["Cluster (GKE Dataplane V2, Kyverno, ArgoCD)"]
         CFD["cloudflared"] --> GW["Envoy Gateway"]
         GW --> PUB["Public tier<br/>jomcgi.dev, monolith-public"]
         GW --> PRIV["Private tier<br/>private.jomcgi.dev<br/>Cloudflare Access + authentik"]

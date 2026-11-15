@@ -1,8 +1,11 @@
 // Invented data only. No IDs, notes or decisions are loaded from production.
+import { summarizeBoard } from "../src/lib/private/factory-summary.js";
+
 export const itemId = "100001";
 export const taskId =
   "t-synthetic-78381e85-5d08-4751-a77a-long-operator-investigation";
 export const routes = {
+  legacy: "/ordinary",
   dashboard: "/",
   updates: "/updates",
   qwen: "/qwen",
@@ -294,10 +297,48 @@ export function dashboardData(scenario = "populated") {
   };
   if (scenario === "unavailable")
     return { dashboard: null, tasksDaily: null, tasksWeekly: null };
+  // What a phone saw live on 3 November: a red workload, a red PR, many
+  // open PRs, and the board still on its way after a deploy.
+  if (scenario === "attention") {
+    const prs = Array.from({ length: 30 }, (_, i) => ({
+      number: 90100 + i,
+      title: `Synthetic open change ${i + 1}`,
+      url: `https://example.test/pull/${90100 + i}`,
+      ci: "passing",
+      draft: false,
+    }));
+    prs[0] = {
+      number: 90071,
+      title:
+        "Synthetic failing change: tidy the private theme chrome and verify basemap pixels",
+      url: "https://example.test/pull/90071",
+      ci: "failing",
+      draft: false,
+    };
+    return {
+      tasksDaily: [daily],
+      tasksWeekly: [daily],
+      dashboard: {
+        factory: null,
+        factory_pending: true,
+        today: { events: [] },
+        health: {
+          healthy: false,
+          scanned: 42,
+          unhealthy: {
+            applications: [{ namespace: "argocd", name: "synthetic-hub" }],
+          },
+        },
+        github: { open_prs: prs, recent_merges: [] },
+      },
+    };
+  }
   return {
     tasksDaily: scenario === "empty" ? [] : [daily],
     tasksWeekly: scenario === "empty" ? [] : [daily, weekly],
     dashboard: {
+      // Match the dashboard shape from /api/agents/factory/summary with fixtures.
+      factory: summarizeBoard(board(scenario === "empty")),
       today: {
         events:
           scenario === "empty"
@@ -329,7 +370,7 @@ export function dashboardData(scenario = "populated") {
                     "Synthetic dashboard investigation " +
                     "long-reference".repeat(10),
                   url: "https://example.test/pull/90001",
-                  ci: "success",
+                  ci: "passing",
                   draft: true,
                 },
               ],

@@ -5,6 +5,8 @@
 // ../../../sessions/+server.js and ../../../runs/+server.js forward it, and
 // nothing else is added: a request that arrives with no verified identity is
 // one the backend must refuse, not one this proxy should paper over.
+import { invalidateBoard } from "$lib/private/backend-cache.js";
+
 const API_BASE = process.env.API_BASE;
 
 export async function POST({ params, request }) {
@@ -22,6 +24,9 @@ export async function POST({ params, request }) {
         signal: AbortSignal.timeout(30000),
       },
     );
+    // The dashboard's cached board still lists this decision as open: read
+    // it again on the next dashboard request.
+    if (res.ok) invalidateBoard();
     return new Response(await res.text(), {
       status: res.status,
       headers: { "Content-Type": "application/json" },

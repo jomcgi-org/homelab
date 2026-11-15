@@ -1,0 +1,357 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/lib/pq"
+)
+
+// FinishTurn records a completed turn: the work item goes to review, unless
+// its merge was already observed, and its PR must reflect the attempt.
+func (s *Store) FinishTurn(ctx context.Context, q Querier, workID, attemptID int64) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE work_item SET turn_attempt_id = $2,
+			state = CASE WHEN state IN ('done', 'stopped') THEN state ELSE 'review' END, updated_at = now()
+		WHERE id = $1`, workID, attemptID)
+	return err
+}
+
+// MarkSynced records that the work item's PR reflects the attempt's turn.
+func (s *Store) MarkSynced(ctx context.Context, q Querier, workID, attemptID int64) error {
+	_, err := q.ExecContext(ctx, `UPDATE work_item SET synced_attempt_id = $2, updated_at = now() WHERE id = $1`,
+		workID, attemptID)
+	return err
+}
+
+// DeliveryWork lists work items whose PR the connector follows: in review or
+// in the merge queue, merged ones with a turn it has not looked at, and
+// stopped ones whose PR is open, to dequeue it and observe a merge.
+func (s *Store) DeliveryWork(ctx context.Context) ([]*WorkItem, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+workCols+` FROM work_item w
+		WHERE state IN ('review', 'merging')
+			OR (state = 'done' AND turn_attempt_id IS DISTINCT FROM synced_attempt_id)
+			OR (state = 'stopped' AND EXISTS (
+				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id AND p.state = 'open'))
+		ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*WorkItem
+	for rows.Next() {
+		w, err := scanWork(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// PullRequest is the one PR of a work item.
+type PullRequest struct {
+	ID              int64
+	WorkItemID      int64
+	Number          int
+	NodeID          string
+	URL             string
+	HeadSHA         string
+	State           string // open | closed | merged
+	MergeQueueState string
+	PolledAt        time.Time
+	EnqueuedHeadSHA string
+	EjectedHeadSHA  string
+	MergeCommitSHA  string
+	MergeGroupSHA   string
+}
+
+const prCols = `id, work_item_id, number, node_id, url, head_sha, state, coalesce(merge_queue_state, ''),
+	coalesce(polled_at, 'epoch'::timestamptz), coalesce(enqueued_head_sha, ''), coalesce(ejected_head_sha, ''),
+	coalesce(merge_commit_sha, ''), coalesce(merge_group_sha, '')`
+
+func scanPR(row interface{ Scan(...any) error }) (*PullRequest, error) {
+	p := &PullRequest{}
+	err := row.Scan(&p.ID, &p.WorkItemID, &p.Number, &p.NodeID, &p.URL, &p.HeadSHA, &p.State, &p.MergeQueueState,
+		&p.PolledAt, &p.EnqueuedHeadSHA, &p.EjectedHeadSHA, &p.MergeCommitSHA, &p.MergeGroupSHA)
+	return p, err
+}
+
+// PullRequestFor returns the work item's PR, or nil.
+func (s *Store) PullRequestFor(ctx context.Context, workID int64) (*PullRequest, error) {
+	p, err := scanPR(s.DB.QueryRowContext(ctx, `SELECT `+prCols+` FROM pull_request WHERE work_item_id = $1`, workID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
+}
+
+// RecordDeliveryRead records an attempt before reading external evidence.
+// Repeating the same idempotent read keeps its message ID and counts the
+// attempt, including retries after a writer takeover.
+func (s *Store) RecordDeliveryRead(ctx context.Context, prID, epoch int64, messageID, operation, resource string) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO delivery_read (message_id, pull_request_id, operation, resource, writer_epoch)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (message_id) DO UPDATE SET attempts = delivery_read.attempts + 1,
+			writer_epoch = EXCLUDED.writer_epoch, attempted_at = now()`, messageID, prID, operation, resource, epoch)
+	return err
+}
+
+// RecordPullRequest records the work item's PR as GitHub reports it. A work
+// item has one PR; recording another replaces it.
+func (s *Store) RecordPullRequest(ctx context.Context, q Querier, p PullRequest) (*PullRequest, error) {
+	return scanPR(q.QueryRowContext(ctx, `
+		INSERT INTO pull_request (work_item_id, number, node_id, url, head_sha, state)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (work_item_id) DO UPDATE SET number = $2, node_id = $3, url = $4, head_sha = $5,
+			state = $6, updated_at = now()
+		RETURNING `+prCols, p.WorkItemID, p.Number, p.NodeID, p.URL, p.HeadSHA, p.State))
+}
+
+// SetPolled records a poll of the PR and what it showed. Keep the latest
+// synthetic commit when the queue entry disappears so its checks remain
+// available after an ejection or a connector restart.
+func (s *Store) SetPolled(ctx context.Context, id int64, headSHA, state, queueState, mergeGroupSHA string, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE pull_request SET head_sha = $2, state = $3, merge_queue_state = nullif($4, ''), polled_at = $5,
+			merge_group_sha = coalesce(nullif($6, ''), merge_group_sha),
+			updated_at = now()
+		WHERE id = $1`, id, headSHA, state, queueState, at, mergeGroupSHA)
+	return err
+}
+
+// moveLive moves a work item to state unless delivery was stopped, which
+// only a new itsaplan run undoes. moved reports whether the row changed.
+func (s *Store) moveLive(ctx context.Context, q Querier, workID int64, state string) (moved bool, err error) {
+	res, err := q.ExecContext(ctx, `UPDATE work_item SET state = $2, updated_at = now() WHERE id = $1 AND state <> 'stopped'`,
+		workID, state)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// MarkEnqueued records that the PR entered the merge queue at headSHA. The
+// PR's queue entry is recorded either way, since GitHub holds it; moved is
+// false when delivery stopped meanwhile and the entry must be dequeued.
+// Each enqueue replaces the previous entry's synthetic commit, even when
+// GitHub has not built the new one yet.
+func (s *Store) MarkEnqueued(ctx context.Context, q Querier, p *PullRequest, headSHA, queueState, mergeGroupSHA string) (moved bool, err error) {
+	if _, err := q.ExecContext(ctx, `
+		UPDATE pull_request SET enqueued_head_sha = $2, merge_queue_state = nullif($3, ''),
+			merge_group_sha = nullif($4, ''), updated_at = now()
+		WHERE id = $1`, p.ID, headSHA, queueState, mergeGroupSHA); err != nil {
+		return false, err
+	}
+	return s.moveLive(ctx, q, p.WorkItemID, WorkMerging)
+}
+
+// MarkDequeued records that the connector took the PR out of the queue.
+func (s *Store) MarkDequeued(ctx context.Context, p *PullRequest) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE pull_request SET enqueued_head_sha = NULL, merge_queue_state = 'dequeued', updated_at = now()
+		WHERE id = $1`, p.ID)
+	return err
+}
+
+// MarkEjected returns a work item whose PR left the merge queue unmerged to
+// review. Its head is not enqueued again. Only an item still merging moves,
+// so replaying an ejection cannot interrupt a revision or undo a stop.
+func (s *Store) MarkEjected(ctx context.Context, q Querier, p *PullRequest) (moved bool, err error) {
+	res, err := q.ExecContext(ctx, `UPDATE work_item SET state = 'review', updated_at = now()
+		WHERE id = $1 AND state = 'merging'`, p.WorkItemID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return false, err
+	}
+	_, err = q.ExecContext(ctx, `
+		UPDATE pull_request SET ejected_head_sha = enqueued_head_sha, enqueued_head_sha = NULL,
+			merge_queue_state = 'ejected', updated_at = now()
+		WHERE id = $1`, p.ID)
+	return true, err
+}
+
+// MarkMerged records the observed merge. done is false for a stopped work
+// item, which keeps its state: its issue is not moved to Done.
+func (s *Store) MarkMerged(ctx context.Context, q Querier, p *PullRequest, mergeSHA string, at time.Time) (done bool, err error) {
+	if _, err := q.ExecContext(ctx, `
+		UPDATE pull_request SET state = 'merged', merge_commit_sha = nullif($2, ''), merged_at = $3,
+			merge_queue_state = 'merged', updated_at = now()
+		WHERE id = $1`, p.ID, mergeSHA, at); err != nil {
+		return false, err
+	}
+	return s.moveLive(ctx, q, p.WorkItemID, WorkDone)
+}
+
+// Review event dispositions.
+const (
+	EventActed      = "acted"
+	EventStaleHead  = "stale_head"
+	EventUntrusted  = "untrusted"
+	EventDuplicate  = "duplicate"
+	EventRoundLimit = "round_limit"
+)
+
+// Review event kinds.
+const (
+	EventChangesRequested = "changes_requested"
+	EventCheckFailed      = "check_failed"
+	EventStatusFailed     = "status_failed"
+)
+
+// ReviewEvent is one GitHub event on an owned PR that could request changes.
+type ReviewEvent struct {
+	PullRequestID int64
+	NodeID        string
+	CommitSHA     string
+	Author        string
+	Kind          string
+	// Source is the reviewer login or the check or status name.
+	Source      string
+	Disposition string
+	RoundRunID  int64
+}
+
+// SeenEvents returns which of the node IDs are already recorded.
+func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	if len(nodeIDs) == 0 {
+		return seen, nil
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event WHERE github_node_id = ANY($1)`,
+		pq.Array(nodeIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		seen[id] = true
+	}
+	return seen, rows.Err()
+}
+
+// ActedOn reports whether a round already acted on an event of this kind and
+// source at the commit.
+func (s *Store) ActedOn(ctx context.Context, prID int64, commit, kind, source string) (bool, error) {
+	var ok bool
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM review_event WHERE pull_request_id = $1 AND commit_sha = $2
+			AND kind = $3 AND source = $4 AND disposition = 'acted')`, prID, commit, kind, source).Scan(&ok)
+	return ok, err
+}
+
+// RecordEvent records an event once, by its GitHub node ID. inserted is false
+// for a node already recorded.
+func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (inserted bool, err error) {
+	res, err := q.ExecContext(ctx, `
+		INSERT INTO review_event (pull_request_id, github_node_id, commit_sha, author, kind, source, disposition, round_run_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, 0))
+		ON CONFLICT (github_node_id) DO NOTHING`,
+		ev.PullRequestID, ev.NodeID, ev.CommitSHA, ev.Author, ev.Kind, ev.Source, ev.Disposition, ev.RoundRunID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// ErrNotReview means the work item left review, for example because
+// delivery was stopped, before a round could start.
+var ErrNotReview = errors.New("store: work item is no longer in review")
+
+// StopWork stops delivery for a work item and queues the announcement, in
+// one transaction. Dispatch then cancels its review rounds. stopped is false
+// when it was already stopped or is done.
+func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (stopped bool, err error) {
+	err = s.Tx(ctx, func(tx *sql.Tx) error {
+		var issueID int64
+		var key string
+		var n int
+		err := tx.QueryRowContext(ctx, `
+			UPDATE work_item SET state = 'stopped', stopped_reason = $2, stopped_by = $3, stops = stops + 1,
+				updated_at = now()
+			WHERE id = $1 AND state NOT IN ('stopped', 'done')
+			RETURNING issue_id, issue_key, stops`, workID, reason, by).Scan(&issueID, &key, &n)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		stopped = true
+		// Poll the PR at once, so a queued PR is dequeued without waiting.
+		if _, err := tx.ExecContext(ctx, `UPDATE pull_request SET polled_at = NULL WHERE work_item_id = $1`, workID); err != nil {
+			return err
+		}
+		return s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
+			map[string]any{"issueId": issueID, "body": fmt.Sprintf(
+				"The factory stopped delivering %s: %s. Its running turn is canceled, its PR leaves the merge "+
+					"queue, and no PR updates follow. A new run on the issue resumes delivery.", key, reason)})
+	})
+	return stopped, err
+}
+
+// StopIssue is the operator's `connector cancel <issue>`: it stops the
+// work item of the issue key.
+func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (bool, error) {
+	var id int64
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM work_item WHERE issue_key = $1`, issueKey).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("no work item for %s", issueKey)
+	}
+	if err != nil {
+		return false, err
+	}
+	return s.StopWork(ctx, id, reason, by)
+}
+
+// StartRound records a review round: a connector run in the work item's
+// session, counted against its bound. The run waits until the work item and
+// its agent key's concurrency let dispatch send it.
+func (s *Store) StartRound(ctx context.Context, q Querier, w *WorkItem, prompt string) (*Run, error) {
+	res, err := q.ExecContext(ctx, `
+		UPDATE work_item SET review_rounds = review_rounds + 1, state = 'active', updated_at = now()
+		WHERE id = $1 AND state = 'review'`, w.ID)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err == nil {
+			err = ErrNotReview
+		}
+		return nil, err
+	}
+	return scanRun(q.QueryRowContext(ctx, `
+		INSERT INTO run (id, origin, agent_key, work_item_id, issue_id, issue_key, trigger, prompt, system_prompt,
+			attempt, state, seen_visible)
+		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'review', $5, '', 1, 'waiting', true)
+		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt))
+}
+
+// LatestTurn returns the work item's latest completed attempt and its run,
+// or nils.
+func (s *Store) LatestTurn(ctx context.Context, workID int64) (*Attempt, *Run, error) {
+	a, err := scanAttempt(s.DB.QueryRowContext(ctx, `
+		SELECT `+attemptCols+` FROM delivery_attempt
+		WHERE id = (SELECT turn_attempt_id FROM work_item WHERE id = $1)`, workID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	r, err := s.GetRun(ctx, a.RunID)
+	return a, r, err
+}

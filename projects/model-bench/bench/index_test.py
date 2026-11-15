@@ -141,8 +141,7 @@ def test_repo_index_yaml_loads():
     from pathlib import Path
 
     path = Path(__file__).resolve().parent.parent / "index.yaml"
-    if not path.exists():
-        pytest.skip("index.yaml is not a runfile under Bazel")
+    assert path.exists(), path
     cfg = load_config(path)
     assert set(cfg.roles) == {"planner", "implementer", "reviewer"}
 

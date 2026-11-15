@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/guestvsock"
 	"golang.org/x/sys/unix"
 )
 
@@ -88,38 +89,13 @@ func startVsockServer(ctx context.Context, logger *slog.Logger, ready func() boo
 	return serveErr
 }
 
+var listenGuestVsock = guestvsock.Listen
+
 func listenVsock(port uint32) (net.Listener, error) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
-	if err != nil {
-		return nil, fmt.Errorf("ember-shotter-init: vsock socket: %w", err)
-	}
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("ember-shotter-init: vsock bind port=%d: %w", port, err)
-	}
-	if err := unix.Listen(fd, 16); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("ember-shotter-init: vsock listen port=%d: %w", port, err)
-	}
-	return &vsockListener{fd: fd, port: port}, nil
+	return listenGuestVsock(port, guestvsock.Options{
+		ErrorPrefix: "ember-shotter-init: vsock ", FilePrefix: "vsock-http", WrapAcceptError: true,
+	})
 }
-
-type vsockListener struct {
-	fd   int
-	port uint32
-}
-
-func (l *vsockListener) Accept() (net.Conn, error) {
-	nfd, _, err := unix.Accept(l.fd)
-	if err != nil {
-		return nil, fmt.Errorf("ember-shotter-init: vsock accept: %w", err)
-	}
-	file := os.NewFile(uintptr(nfd), fmt.Sprintf("vsock-http:%d", l.port))
-	return &vsockConn{File: file}, nil
-}
-
-func (l *vsockListener) Close() error   { return unix.Close(l.fd) } // nosemgrep: no-bare-error-return
-func (l *vsockListener) Addr() net.Addr { return vsockAddr{port: l.port} }
 
 type vsockConn struct {
 	*os.File

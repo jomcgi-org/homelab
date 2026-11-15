@@ -1,4 +1,4 @@
-{{- if or .Values.cfIngress.friends.enabled .Values.cfIngress.grimoire.enabled }}
+{{- if .Values.cfIngress.friends.enabled }}
 # SvelteKit emits shared /_app URLs. Dispatch them to the requesting app's
 # existing OIDC lane: Envoy must decrypt that lane's session cookies before
 # JWT verification. A JWT-only route cannot read the encrypted browser cookie.
@@ -20,7 +20,8 @@ spec:
       namespace: {{ .Values.cfIngress.friends.gateway.namespace }}
   hostnames: [{{ .Values.cfIngress.friends.hostname | quote }}]
   rules:
-    {{- range $app, $enabled := dict "moving" .Values.cfIngress.friends.enabled "grimoire" .Values.cfIngress.grimoire.enabled }}
+    {{- /* Grimoire is no longer a SvelteKit app: its assets live under /grimoire/assets on its own route. */}}
+    {{- range $app, $enabled := dict "moving" .Values.cfIngress.friends.enabled }}
     {{- if $enabled }}
     - matches:
         - path:

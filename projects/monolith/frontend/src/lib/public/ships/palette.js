@@ -1,4 +1,4 @@
-export const VESSEL_KEYS = [
+const VESSEL_KEYS = [
   "passenger",
   "cargo",
   "tanker",

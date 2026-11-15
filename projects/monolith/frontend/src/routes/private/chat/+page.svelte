@@ -1,7 +1,8 @@
 <script>
   import rough from "roughjs";
-  import { marked } from "marked";
+  import Markdown from "$lib/public/factory/Markdown.svelte";
   import { createGraphState } from "./graph-layout.js";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
 
   /** Strip YAML frontmatter and the auto-generated LINKS section from note markdown. */
   function cleanNoteContent(md) {
@@ -27,19 +28,19 @@
   let svgEl = $state(null);
 
   const TYPE_COLORS = {
-    note: { border: "#ffd54f" },
-    atom: { border: "#64a0ff" },
-    fact: { border: "#00c853" },
-    paper: { border: "#2979ff" },
-    article: { border: "#ff6d00" },
-    recipe: { border: "#d500f9" },
+    note: { border: "var(--warn)" },
+    atom: { border: "var(--tone-cache)" },
+    fact: { border: "var(--tone-ram)" },
+    paper: { border: "var(--tone-gpu)" },
+    article: { border: "var(--tone-disk)" },
+    recipe: { border: "var(--tone-hot)" },
   };
 
   const EDGE_COLORS = {
-    link: "#bbb",
-    related: "#ffd54f",
-    derives_from: "#1a1a1a",
-    edge: "#bbb",
+    link: "var(--stroke)",
+    related: "var(--warn)",
+    derives_from: "var(--ink)",
+    edge: "var(--stroke)",
   };
 
   /** Remove all child nodes from an element. */
@@ -360,7 +361,7 @@
   function fillEdgeGroup(rc, g, x1, y1, x2, y2, color, edgeSeed, isPending) {
     // Pencil: light gray sketch
     const pencil = rc.line(x1, y1, x2, y2, {
-      stroke: "#c0b8a8",
+      stroke: "var(--stroke)",
       roughness: 1,
       strokeWidth: 1,
       seed: edgeSeed,
@@ -446,7 +447,7 @@
     // Solid fill — starts transparent for pending, visible for pre-existing
     const fillEl = rc.rectangle(-w / 2, -h / 2, w, h, {
       stroke: "none",
-      fill: node.discarded ? "#eee" : "#fff",
+      fill: node.discarded ? "var(--band)" : "var(--sheet)",
       fillStyle: "solid",
       roughness: 1.2,
       seed: seed(node.id + "fill"),
@@ -477,7 +478,7 @@
         side.to[0],
         side.to[1],
         {
-          stroke: "#c0b8a8",
+          stroke: "var(--stroke)",
           roughness: 1.2,
           strokeWidth: 1,
           seed: sideSeed,
@@ -489,7 +490,7 @@
 
       // Ink: colored border retrace
       const ink = rc.line(side.from[0], side.from[1], side.to[0], side.to[1], {
-        stroke: node.discarded ? "#999" : colors.border,
+        stroke: node.discarded ? "var(--ink-2)" : colors.border,
         roughness: 1.2,
         strokeWidth: 1.8,
         seed: sideSeed + 7,
@@ -674,14 +675,14 @@
       const y2 = node.y + h / 2 - 3;
       discardG.appendChild(
         rc.line(x1, y1, x2, y2, {
-          stroke: "#ff3d00",
+          stroke: "var(--tone-disk)",
           strokeWidth: 2,
           roughness: 1.5,
         }),
       );
       discardG.appendChild(
         rc.line(x2, y1, x1, y2, {
-          stroke: "#ff3d00",
+          stroke: "var(--tone-disk)",
           strokeWidth: 2,
           roughness: 1.5,
         }),
@@ -717,11 +718,13 @@
   <title>Knowledge Explorer</title>
 </svelte:head>
 
-<div class="td explorer">
+<div class="td sheet explorer">
   <div class="explorer-body">
     <aside class="chat-panel">
       <header class="explorer-header">
+        <a class="header-home" href="/">&larr; dashboard</a>
         <span class="header-title">KNOWLEDGE</span>
+        <SchemeToggle />
       </header>
       <div class="chat-log" bind:this={chatLog}>
         {#each messages as msg, i}
@@ -730,7 +733,7 @@
               >{msg.role === "user" ? "you" : "spark"}</span
             >
             {#if msg.role === "assistant"}
-              <span class="chat-text">{@html marked(msg.content)}</span>
+              <div class="chat-text"><Markdown text={msg.content} /></div>
             {:else}
               <span class="chat-text">{msg.content}</span>
             {/if}
@@ -754,6 +757,7 @@
           disabled={isStreaming}
         />
         <button
+          aria-label="Send message"
           onclick={sendMessage}
           disabled={isStreaming || !inputText.trim()}
         >
@@ -791,6 +795,12 @@
                   onmouseleave={() => (hoveredNode = null)}
                   onclick={() =>
                     (selectedNode = selectedNode === node.id ? null : node.id)}
+                  onkeydown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectedNode = selectedNode === node.id ? null : node.id;
+                    }
+                  }}
                 />
               {/if}
             {/each}
@@ -802,7 +812,11 @@
 
   {#if selectedNode}
     <div class="note-drawer" role="complementary" aria-label="Note details">
-      <button class="drawer-close" onclick={() => (selectedNode = null)}>
+      <button
+        class="drawer-close"
+        aria-label="Close note"
+        onclick={() => (selectedNode = null)}
+      >
         &times;
       </button>
       {#if drawerLoading}
@@ -820,7 +834,7 @@
           {/each}
         </div>
         <div class="drawer-content">
-          {@html marked(cleanNoteContent(drawerNote.content))}
+          <Markdown text={cleanNoteContent(drawerNote.content)} />
         </div>
         {#if drawerNote.edges?.length > 0}
           <div class="drawer-edges">
@@ -852,7 +866,8 @@
   /* The explorer is a sheet split in two: the chat column and the drawn
      graph. Chrome reads from the sheet tokens so it follows the scheme. */
   .explorer {
-    height: 100vh;
+    height: 100dvh;
+    padding: 0;
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
@@ -862,6 +877,7 @@
     height: 100%;
   }
   .chat-panel {
+    box-sizing: border-box;
     width: 35%;
     min-width: 380px;
     max-width: 600px;
@@ -884,9 +900,25 @@
     border-bottom: 1px solid var(--stroke);
   }
   .header-title {
+    flex: 1;
     font-weight: 700;
     font-size: 12px;
     letter-spacing: 0.15em;
+  }
+  /* The one way home from a page that draws its own bar: a 44px target. */
+  .header-home {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    margin-right: 14px;
+    padding-right: 12px;
+    border-right: 1px solid var(--stroke);
+    color: var(--ink-2);
+    font-size: 12px;
+    text-decoration: none;
+  }
+  .header-home:hover {
+    color: var(--accent-ink);
   }
   .chat-log {
     flex: 1 1 0;
@@ -921,9 +953,7 @@
   .chat-msg--user .chat-text {
     white-space: pre-wrap;
   }
-  .chat-text :global(h1),
-  .chat-text :global(h2),
-  .chat-text :global(h3) {
+  .chat-text :global(.md-h) {
     font-size: 13px;
     font-weight: 700;
     margin: 6px 0 3px 0;
@@ -938,6 +968,15 @@
   }
   .chat-text :global(li) {
     margin: 2px 0;
+  }
+  .chat-text :global(ul),
+  .drawer-content :global(ul) {
+    list-style-type: disc;
+  }
+  .chat-text :global(a),
+  .drawer-content :global(a) {
+    color: var(--accent-ink);
+    text-decoration: underline;
   }
   .chat-text :global(code) {
     background: var(--band);
@@ -970,7 +1009,7 @@
   }
   .chat-empty {
     text-align: center;
-    opacity: 0.4;
+    color: var(--ink-2);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-size: 12px;
@@ -982,6 +1021,7 @@
   }
   .chat-input-bar input {
     flex: 1;
+    min-width: 0;
     padding: 12px;
     font-family: var(--font-code);
     font-size: 13px;
@@ -1026,13 +1066,13 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .node-label {
+  .graph-svg :global(.node-label) {
     font-family: var(--font-code);
     font-weight: 700;
     fill: var(--ink);
     pointer-events: none;
   }
-  .node-label--discarded {
+  .graph-svg :global(.node-label--discarded) {
     text-decoration: line-through;
     opacity: 0.4;
   }
@@ -1064,6 +1104,7 @@
     }
   }
   .note-drawer {
+    box-sizing: border-box;
     position: fixed;
     right: 0;
     top: 0;
@@ -1075,7 +1116,12 @@
     padding: 1.5rem;
     font-family: var(--font-code);
     z-index: 100;
-    animation: slideIn 200ms ease-out;
+    overflow-wrap: anywhere;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .note-drawer {
+      animation: slideIn 200ms ease-out;
+    }
   }
   @keyframes slideIn {
     from {
@@ -1124,15 +1170,15 @@
     font-size: 0.75rem;
   }
   .drawer-content {
+    overflow-wrap: anywhere;
     font-size: 0.85rem;
     line-height: 1.6;
     border-top: 1px solid var(--line);
     padding-top: 1rem;
   }
-  .drawer-content :global(h1),
-  .drawer-content :global(h2),
-  .drawer-content :global(h3) {
+  .drawer-content :global(.md-h) {
     font-size: 0.95rem;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.03em;
     margin: 1rem 0 0.5rem 0;
@@ -1218,5 +1264,49 @@
     padding: 2rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+  .chat-text {
+    overflow-wrap: anywhere;
+  }
+  .chat-input-bar input {
+    min-width: 0;
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .chat-input-bar button,
+  .drawer-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  @media (max-width: 760px) {
+    .explorer {
+      height: auto;
+      min-height: 100dvh;
+    }
+    .explorer-body {
+      flex-direction: column;
+    }
+    .chat-panel {
+      width: 100%;
+      min-width: 0;
+      max-width: none;
+      min-height: 55dvh;
+      border-right: 0;
+    }
+    .chat-log {
+      flex-basis: auto;
+      max-height: 55dvh;
+    }
+    .graph-area {
+      min-height: 40dvh;
+      border-top: 1px solid var(--stroke);
+    }
+    .graph-svg {
+      min-height: 40dvh;
+    }
+    .note-drawer {
+      width: 100%;
+      padding: 1rem;
+    }
   }
 </style>

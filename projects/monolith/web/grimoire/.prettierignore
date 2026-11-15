@@ -1,0 +1,7 @@
+# Generated files. The repository root .prettierignore lists them too; this
+# copy makes `prettier` safe to run from this directory, where the root file
+# is not read.
+src/api/schema.ts
+src/theme/sheet.*
+dist
+dist-preview

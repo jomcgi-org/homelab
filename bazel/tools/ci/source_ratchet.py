@@ -281,6 +281,61 @@ def command_writes(command: str) -> list[str]:
     return [w for seg in _segments(command) if (w := cluster_write(seg))]
 
 
+# The factory home cluster (#7817) is bootstrapped by hand before ArgoCD owns
+# it, so the Claude hook lets writes through when the command names it
+# explicitly. The hub stays read-only, and the CI ratchet is unchanged.
+_FACTORY_KUBECONFIGS = {"~/.kube/factory.yaml", "$HOME/.kube/factory.yaml"}
+# Any of these anywhere in the command could point it at another cluster, even
+# as the value of an unrelated flag, so they forfeit the exemption.
+_TARGET_FLAGS = (
+    "--context", "--kube-context", "--kubeconfig", "-s", "--server",
+    "--cluster", "--user", "--token", "--kube-apiserver", "--kube-token",
+    "--as", "--as-group",
+)  # fmt: skip
+
+
+def targets_factory(segment: list[str]) -> bool:
+    """True when this simple command can only reach the factory cluster.
+
+    The one accepted form is an env prefix `KUBECONFIG=~/.kube/factory.yaml`
+    (or `$HOME/...`) with no flag or env var that could redirect it.
+    """
+    kubeconfig = None
+    i = 0
+    while i < len(segment) and (
+        ("=" in segment[i] and segment[i].split("=", 1)[0].isidentifier())
+        or segment[i] in {"sudo", "env", "command", "exec", "time"}
+    ):
+        name, _, value = segment[i].partition("=")
+        if name == "sudo":  # sudo drops KUBECONFIG and uses root's.
+            return False
+        if name == "KUBECONFIG":
+            kubeconfig = value
+        elif name.startswith("HELM_KUBE"):
+            return False
+        i += 1
+    if kubeconfig not in _FACTORY_KUBECONFIGS:
+        return False
+    return not any(
+        arg == flag
+        or arg.startswith(flag + "=")
+        # -s takes its value attached: -shttps://host.
+        or (flag == "-s" and arg.startswith("-s") and not arg.startswith("--"))
+        for arg in segment[i:]
+        for flag in _TARGET_FLAGS
+    )
+
+
+def hook_writes(command: str) -> list[str]:
+    # HELM_KUBE* exported anywhere in the command can redirect helm.
+    exempt = "HELM_KUBE" not in command
+    return [
+        w
+        for seg in _segments(command)
+        if (w := cluster_write(seg)) and not (exempt and targets_factory(seg))
+    ]
+
+
 def kubectl_mutate(path: str, text: str) -> Iterator[Finding]:
     if not path.endswith((".sh", ".bash")) or _is_test_path(path):
         return
@@ -498,14 +553,16 @@ def _changes(base: str, head: str) -> list[tuple[str | None, str | None]]:
 def _hook() -> int:
     payload = json.load(sys.stdin)
     command = payload.get("tool_input", {}).get("command", "")
-    writes = command_writes(command)
+    writes = hook_writes(command)
     if not writes:
         return 0
     print(
         f"BLOCKED: {', '.join(sorted(set(writes)))}. kubectl and helm are read-only "
         "here: the cluster is GitOps.\n\nTo change something, edit "
         "projects/<service>/deploy/values.yaml (or the chart), commit, push, and "
-        "let ArgoCD sync it. Read-only verbs and --dry-run are fine.",
+        "let ArgoCD sync it. Read-only verbs and --dry-run are fine. Writes to the "
+        "factory home cluster pass with a KUBECONFIG=~/.kube/factory.yaml "
+        "prefix and no context, kubeconfig or server flag.",
         file=sys.stderr,
     )
     return 2

@@ -10,35 +10,17 @@ Uses the SQLite ``create_all`` fixture (no migrations), mirroring ingest_test.
 from __future__ import annotations
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, select
 
 from grimoire import jobs
 from grimoire.models import KnowledgeChunk
+from shared.testing.sqlite import sqlite_session
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    # The models declare a Postgres schema; strip it so SQLite create_all works,
-    # then restore (mirrors grimoire/ingest_test.py).
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def _seed(session: Session, rows: list[dict]) -> None:

@@ -30,8 +30,11 @@ author's knowledge, with DM access requiring `dm_readable`.
   profiles.
 - Private routes live under `/api/grimoire` in `router.py`.
 - Read-only public routes use the same prefix through `router_public.py`.
-- The Svelte frontend lives in `projects/monolith/frontend/src/lib/grimoire`
-  and `projects/monolith/frontend/src/routes/public/app/grimoire`.
+- The public pages are Svelte: `projects/monolith/frontend/src/lib/public/grimoire`
+  and `projects/monolith/frontend/src/routes/public/app/grimoire`. The private
+  operator sheets page is `projects/monolith/frontend/src/routes/private/grimoire`.
+- The friends web app lives in `projects/monolith/web/grimoire`. See
+  [Friends web app](#friends-web-app).
 - Persistent state lives in the Monolith Postgres cluster. There is no separate
   Grimoire deployment or datastore.
 
@@ -73,6 +76,21 @@ disabled before prompt assembly, retries or any Ember extraction session.
 instruction or empty checkout cannot keep campaign text out of generic knowledge
 tools. The tool-free transport choice and live acceptance remain in #6991.
 Repository delivery on PR #6958 is staged and default-off; #6627 stays open.
+
+### Character sheets
+
+Players edit a draft, submit it, then the DM approves or returns that version.
+Submitted content and decided versions are immutable. Every edit, submission
+and decision locks and refreshes the version before checking its status. A
+request overtaken by another tab returns 409 with the existing transition
+message. An edit that holds the lock completes before a waiting submission;
+the DM then reviews those saved contents. The PostgreSQL transition trigger
+also rejects invalid direct writes.
+
+**Why.** Reading status before an unlocked write let concurrent requests reach
+the database trigger and return 500. Row locking keeps the route's conflict
+response consistent with the stored state. PostgreSQL tests inspect waiting
+transactions and verify stale ORM rows cannot overwrite a decision (#7965).
 
 ### Shared corpus and play state
 
@@ -152,8 +170,8 @@ snippets.
 
 ## Transcripts
 
-The transcript routes require both `GRIMOIRE_PLAY_ENABLED` and
-`GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly `true`, read on every request.
+The transcript routes require `GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly
+`true`, read on every request.
 `grimoire.transcript.enabled` defaults to false until the capture surface is
 ready. No deploy override enables it.
 
@@ -192,7 +210,7 @@ utterance text. Ingest forbids unknown fields, including raw audio.
 Every campaign member can read retention settings. The DM sets
 `transcript_retention_days` from 1 to 365 days, with a default of 30. The daily
 `grimoire-redact-transcripts` CronWorkflow in `monolith-workflows` runs at 03:32
-UTC regardless of the play and transcript flags. It redacts utterances older than the campaign window by
+UTC regardless of the transcript flag. It redacts utterances older than the campaign window by
 server `created_at`, preserving a stub with `redacted: true`, timing, source
 and speaker label when present. The speaker remains in `author_member_id`.
 Event ids, sequence numbers and check-in state stay unchanged. Stubs retain
@@ -237,6 +255,22 @@ in `visibility.py`.
 
 ## Session event log
 
+Starting a session locks its campaign through the active-session check and
+commit. Concurrent starts produce one session and a 409 for the other caller.
+Other campaigns start independently. The campaign lock permits foreign-key
+references while excluding another start.
+
+Pause, resume and end lock and refresh the session row used by event writers.
+Ended sessions cannot return to active or paused, including from an old tab
+after a new session starts. Repeating End preserves the end time and the
+original fact-extraction queue; later seating changes do not add extraction
+jobs to an already ended session. These controls remain DM-only.
+
+**Why.** The database's unique active-session index remains the final guard.
+Serializing the absence check returns a useful conflict response before an
+insert can violate it. Refreshing the locked session prevents a waiting
+request with cached state from reopening a session after End commits.
+
 `grimoire.session_event` stores each session's ordered events: campaign and
 session ids, a positive `seq`, kind, author member, audience columns, JSON body,
 creation time, and optional retraction time. The unique `(session_id, seq)`
@@ -252,18 +286,14 @@ refreshes the game-session row, refuses ended sessions, validates the audience
 against that campaign, and allocates `max(seq) + 1` inside the caller's
 transaction. The helper flushes; the caller commits or rolls back. Grant
 updates and deletes lock matching reveal rows and retract the affected reveal
-history when play is enabled. Rows and sequence numbers are retained.
+history. Rows and sequence numbers are retained.
 
 **Why.** A Postgres sequence consumes numbers on rollback and would leave gaps.
 Locking the existing session row serializes writers within one session while
 other sessions can append independently. Allocation and insertion roll back
 together. The unique index also rejects a writer that bypasses serialization.
 
-The play HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
-string `true`, read on each request before identity and membership checks.
-`grimoire.play.enabled` defaults to false in the chart; deployment values stay
-off. Existing session creation and status updates are unaffected. Campaign
-members may list sessions and poll events. DMs may append every kind except
+The play HTTP routes are always on. Campaign members may list sessions and poll events. DMs may append every kind except
 `utterance` and `roll`; players may append only `action` with `dm` or `table`
 audience. HTTP utterances are refused for every caller because #6618 owns
 ingest. Generic event writes refuse `roll` for every caller with 403 because
@@ -301,9 +331,7 @@ results or seeds. A dependency override lets tests use a seeded RNG and assert
 the exact stored body without changing production randomness. Characterless
 players' table-only rule keeps every accepted roll visible to its roller.
 
-Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
-and live audience checks after the #6612 play surface is ready. Deployment
-values remain off. No operational flag flip belongs to this change.
+Part of #6610, which owns live audience checks.
 
 ### Handouts
 
@@ -331,15 +359,21 @@ withdraws handouts already posted. The upload key is matched in full against
 this campaign's prefix and a uuid4 name, which rules out traversal and other
 campaigns' objects without trusting the client's filename or declared type.
 
-The frontend reaches all of this through the SvelteKit BFF: the session state
-endpoint's `handout` operation (limits mirrored from `handouts.py`), a multipart
-upload proxy that forwards only the file, and an image proxy that takes the
-campaign, session and event ids as single encoded segments and answers
-`Cache-Control: private, no-store`. Pages only ever hold the proxy URL, never the
-key. The DM composer offers uploaded images only; chunk images are accepted by
-the API but have no picker yet. The frontend container sets `BODY_SIZE_LIMIT`
-to 6M because adapter-node's 512K default would refuse the upload before the
-proxy ran.
+The React app calls these routes directly (`web/grimoire/src/api/handouts.ts`).
+The composer posts the `handout` event to the events route, with limits mirrored
+from `handouts.py` in `src/lib/handout.js`. `uploadHandoutImage` posts the file
+to the upload route as multipart under the fixed name `handout`, so the DM's
+filename stays on their machine. `handoutImageUrl` builds the event image
+route's URL from the campaign, session and event ids, each encoded as one
+segment, and the page loads the image from the API. The gateway sets
+`Cache-Control: private, no-store` on every routed API response. The upload
+response gives the DM's page the storage key, which it sends back in the
+handout event. For every other viewer `project_handout_body` in `handouts.py`
+reduces the image reference to its `source`, so a recipient's page holds only
+the image URL. The DM composer offers uploaded images only; chunk images are
+accepted by the API but have no picker yet. The frontend container still sets
+`BODY_SIZE_LIMIT` to 6M for the deleted upload proxy; no Grimoire upload passes
+through it.
 
 ## Journal
 
@@ -395,17 +429,21 @@ under the feed's DM-or-self rules.
 Reply ordering uses the session sequence, so an earlier reference cannot close
 a later action. Live enablement and audience checks remain owned by #6610.
 
-The UI ships a props-driven `JournalPanel`, used by the standalone campaign
-journal page and by the session screen's Journal tab. The tab reads the
-canonical session journal (mine and party) that the BFF state endpoint already
-returns on every feed poll, so it refreshes with the feed and needs no loop of
-its own. The page holds the Mine/Party choice, so a poll replaces the data
-without resetting it. `showEvent` and `openKnowledge` are optional panel props;
-the standalone page omits them and renders no navigation buttons.
+The UI ships a props-driven `JournalPanel`
+(`web/grimoire/src/journal/JournalPanel.tsx`), used by the campaign journal
+screen and by the session screen's Journal tab. While the tab is open it reads
+the session journal route for the chosen view (`useJournal` in
+`src/api/session.ts`) every thirty seconds and again when a new event arrives.
+The session screen holds the Mine/Party choice, so a refresh replaces the data
+without resetting it. A failed first read offers Try again, with Mine/Party
+still available. A failed refresh keeps the loaded journal visible.
+`onShowEvent` and `onOpenKnowledge` are optional panel props; the campaign
+journal screen passes only `onOpenKnowledge`, so its entries open knowledge
+and have no link to a story feed.
 
 **Why.** One renderer keeps retraction, name-only and partial-journal handling in
-a single place, and the BFF passes the audience-filtered API shape through
-instead of re-aliasing it per surface.
+a single place. `journalSections` in `src/api/journal.ts` passes the
+audience-filtered API shape through and only fills in missing lists.
 
 ## Grant changes
 
@@ -439,10 +477,8 @@ Failures roll back both grants and events.
 On the entity list, DM-only `not_granted_to` means "hide entities that PC
 already knows": exclude global entities and any grant scope using a
 correlated grant alias in the shared visibility query. Knowledge search does
-not accept this filter. Authorization checks membership, play flag, DM role,
-then PC campaign membership, in that order. With the flag off, the new filters and
-bulk route return 404 and existing grant and read behavior is unchanged.
-Live enablement and live audience checks remain in #6610.
+not accept this filter. Authorization checks membership, DM role, then PC
+campaign membership, in that order. Live audience checks remain in #6610.
 
 **Why.** The grantee projection bounds the stored feed snapshot. One
 transaction keeps knowledge and feed changes together; an identity-free
@@ -485,10 +521,13 @@ the party pool and their own items, with quantity edits and partial moves.
 Hidden owned items retain a text badge and quantity edits; the backend refuses
 player moves of hidden items. The DM sees sections named for every campaign PC
 and can give, edit, move or delete items. Each item has an on-demand audit
-history disclosure. The session BFF keeps its play gate and private, no-store
-reads: `inventory=items` and `inventory=changes&item=<id>` proxy the inventory
-list and audit routes. `giveItem`, `updateItem`, `moveItem` and `deleteItem`
-proxy mutations; patches forward only supplied fields.
+history disclosure. The tab calls the inventory routes directly
+(`web/grimoire/src/api/inventory.ts`). The item list refreshes every four
+seconds and an item's changes load when its history opens. Give, edit, move
+and delete call `POST /inventory`, `PATCH /inventory/{item_id}`,
+`POST /inventory/{item_id}/move` and `DELETE /inventory/{item_id}` under the
+campaign. A player's patch carries only quantity and reason; the DM's adds
+name, notes and the hidden flag.
 
 DM-only Give item buttons on visible, non-retracted reveal entries and handouts
 open the tab with the name and source event prefilled. Reveals also carry their
@@ -509,8 +548,7 @@ unknown kinds and deleted rows are invisible to everyone, including the DM.
 Every query also filters the campaign. Seeded SQLite and PostgreSQL agreement
 matrices pin the SQL and Python policies against an independent oracle.
 
-The notes API works independently of `GRIMOIRE_PLAY_ENABLED`. Membership and
-the current character determine the viewer. Players with a character may create
+Membership and the current character determine the viewer. Players with a character may create
 either kind; DMs may create party notes only. Character notes may be edited or
 deleted only by their author; party notes by their author or the DM. Only a
 character note's author may change its DM sharing flag. The stored campaign
@@ -527,15 +565,14 @@ to the author and DM; the sharing flag goes only to the author. A viewer-compute
 `can_edit` flag exposes edit capability without adding author identity to another
 player's projection. There is no `public_reader` grant on notes.
 
-The friends campaign notes route loads and writes through the server's dedicated
-Grimoire token, validates campaign and form UUIDs, and disables caching. Failed
-reads reject the load rather than returning an empty list. `NotesPanel` takes
-notes, viewer capabilities, filters and form actions as props, with no client
-API calls. Mine and Party tabs forward `kind` and `q`. Quick-add offers Campaign
-default (omits `dm_readable`), Private and Share with DM. DMs see Shared with you
-and can only add party notes. Markdown uses the existing text-node renderer;
-entity chips come only from resolved viewer-visible objects. Feed pinning and
-session-screen mounting remain in #6689, blocked by #6610 and #6612.
+The campaign notes screen (`/grimoire/campaigns/{campaign_id}/notes`) and the
+session screen's Notes tab call the notes routes directly
+(`web/grimoire/src/api/notes.ts`). A failed read shows the failure rather than
+an empty list. Mine and Party tabs send `kind` and `q`. Quick-add offers
+Campaign default (omits `dm_readable`), Private and Share with DM. DMs see
+Shared with you and can only add party notes. Note text renders as plain text
+(`src/notes/NoteText.tsx`); entity chips come only from resolved viewer-visible
+objects. The feed's pin action posts `from_event_id` to the notes route.
 
 **Why.** Notes are player-owned records. DM access to generic play rows does not
 authorize access to a private character note. Read-time chip resolution retains
@@ -603,18 +640,240 @@ runtime, and no current code should imply otherwise.
 ## Deliberately absent
 
 The retired prototype's Cloud Run services, Firestore, Redis fan-out,
-standalone authentication, Gemini Live voice pipeline, and separate React UI
-are not supported architecture. New Grimoire work belongs in the Monolith
-domain, its Svelte frontend, or its batch jobs.
+standalone authentication, Gemini Live voice pipeline, and standalone React
+frontend are not supported architecture. New Grimoire work belongs in the
+Monolith domain, its web UIs, or its batch jobs.
+
+## Friends web app
+
+The friends UI at `https://friends.jomcgi.dev/grimoire` is a client-only React
+app on the [Astryx](https://github.com/facebook/astryx) component library
+(`projects/monolith/web/grimoire`, #7698). The SvelteKit friends pages and
+their server helpers, which relayed the ID token to the API, are deleted.
+Public Grimoire pages and the private operator sheets page stay in Svelte.
+
+- **Static files.** `grimoire/web.py` serves the built bundle from the API
+  port at `/grimoire`. Any path under the base that is not a built asset
+  answers with `index.html`; a missing asset is a 404, never the shell. The
+  base path is read from the bundle, so server and bundle cannot disagree.
+  There is no server rendering, no React Server Components and no server
+  actions.
+- **Direct API calls.** The browser calls the API itself. The `-grimoire`
+  HTTPRoute (`chart/templates/httproute-grimoire.yaml`) forwards each prefix
+  in `cfIngress.grimoire.apiPrefixes` to the API port. The list is
+  `BROWSER_API_PREFIXES` in `grimoire/browser_lane.py`: the four Grimoire
+  prefixes defined there and the four account-API prefixes in
+  `auth/browser_cookie.py`. `/api/grimoire` and `/api/auth/platform` are never
+  routed whole. `/api/grimoire/books` and `/api/grimoire/chunks/*/image` have
+  no identity check of their own, because the private lane's Cloudflare Access
+  session is their gate. The account API's enrollment routes are capability
+  callbacks with no identity dependency.
+- **Credential.** Envoy's OIDC filter decrypts the session cookie before
+  forwarding, so the API port receives the signed ID token in the
+  `grimoire-id-token` cookie. `browser_token` in `auth/browser_cookie.py`
+  reads it for both APIs. `grimoire/access.py` verifies it against the
+  Grimoire issuer, audience, signature and expiry;
+  `auth/platform/identity.py` passes it to its login verifier. The cookie is a
+  credential only when `GRIMOIRE_BROWSER_ORIGIN` is set, which the chart does
+  only when the route is enabled.
+- **Cross-site requests.** A cookie rides along on requests another site
+  makes. A write carrying the cookie must send exactly one `Origin` header
+  equal to `GRIMOIRE_BROWSER_ORIGIN`, and `Sec-Fetch-Site`, when present,
+  must be `same-origin`. Reads are not restricted: they change nothing and a
+  cross-origin page cannot read the answer.
+- **Invitation links.** `grimoire/join_landing.py` serves the anonymous
+  landing at `/grimoire/join` and the signed-in endpoints
+  `POST /grimoire/join/accept/confirm` and `GET /grimoire/join/accept/state`. The
+  landing embeds `web/grimoire/src/lib/join-landing.js` as its script. The
+  signed-in accept page is the React screen at `/grimoire/join/accept`. See
+  [Single-use campaign links](#single-use-campaign-links).
+- **Account pages.** The React screens at `/grimoire/platform` and
+  `/grimoire/platform/profile` call the account API under
+  `/api/auth/platform` (`src/api/platform.ts`).
+- **Caching.** Hashed assets are `private, max-age=31536000, immutable`.
+  `index.html` is `private, no-cache`, so a deploy takes effect on the next
+  reload. API responses are `private, no-store`. Everything carries
+  `Cloudflare-CDN-Cache-Control: no-store`: the route's SecurityPolicy gates
+  every byte, so a shared cache must never hold a copy.
+- **Content-Security-Policy.** The shell allows scripts and styles from its
+  own origin only, with one exception: the component library injects a single
+  fixed stylesheet for overlay positioning, allowed by its SHA-256 hash. The
+  bundle ships the hash in `style-hashes.json` and `src/csp.test.tsx` fails
+  when an upgrade changes it.
+- **Contract.** `grimoire/browser_api_schema.py` generates
+  `web/grimoire/src/api/schema.ts` from the Grimoire response models. A test
+  compares the committed file with the generator's output, and the app's
+  typecheck compiles against it.
+- **Pending writes.** Each `useAction` instance accepts one write at a time,
+  including repeated Enter presses before the pending state renders. It
+  accepts another action after the response and refreshes finish, including
+  after a refusal. Every feed pin control, including handouts, is disabled
+  while its shared pin action is pending. This guard does not retry an
+  uncertain write.
+- **Polling.** There is no aggregate state endpoint. The session screen
+  assembles independent reads (`src/screens/session/useTable.ts`,
+  `src/api/session.ts`). While the tab is visible and the session has not
+  ended, it fetches events after the last sequence number it holds every two
+  seconds and re-reads the whole feed every fifteen, because a retraction
+  edits an old event in place. The lobby, the session list, the voice map and
+  the turn order refresh every fifteen seconds; approved sheets every sixty.
+  A new event refreshes the journal, and a `turn` event refreshes the turn
+  order. Inventory, notes, voices, initiative, grants and reveals call their
+  own API routes. The table waits for its first feed and turn order reads,
+  and for the DM's members and voices. Failed reads offer a retry before
+  incomplete data can open editable controls. Refresh failures keep loaded
+  data and unsent drafts visible.
+- **Session sections.** Story, Notes, Inventory and Journal use Astryx tabs
+  linked to labelled panels. Arrow keys, Home and End move between tabs;
+  Enter selects one, and Tab moves into its panel. Inactive panels are hidden.
+  Story and Notes stay mounted so switching sections preserves unsaved work.
+  Each nested notes audience tab likewise controls its own labelled panel
+  and supports the same keyboard access.
+- **Sign-in expiry.** `src/app/signIn.ts` and `src/lib/session-expiry.js`
+  handle a lapsed sign-in. See
+  [Deployment and verification](#deployment-and-verification).
+
+**Why.** Agents write most of this UI. A component library with tested
+overlays, comboboxes, focus handling and announcements removes the parts they
+most often get subtly wrong, and one typed contract makes a backend change
+that breaks the UI fail in CI. Static files with direct API calls remove a
+Node process and a hand-maintained relay layer from the path between a player
+and the table.
+
+**Tested.** `grimoire/browser_lane_test.py` covers the cookie credential, the
+cross-site rules and an audit that every routed path depends on the Grimoire
+identity check while every route without one stays unrouted.
+`auth/platform/browser_identity_test.py` covers the same cookie rules for the
+account API and audits that only the capability enrollment routes skip the
+identity dependency. `chart/grimoire_browser_lane_test.py` pins the rendered
+route to the prefix list, to the one SecurityPolicy and to the exact anonymous
+landing path. `grimoire/web_test.py` covers the shell, the asset fallback and
+the response headers. `grimoire/join_landing_test.py` and
+`web/grimoire/src/lib/join-landing.test.js` cover the invitation landing.
+
+**Outstanding.** The `X-Grimoire-Token` and `x-platform-token` header paths
+remain in `grimoire/access.py` and `auth/platform/identity.py`. Tests and
+`dev/grimoire/rehearse_join_links.py` send them. No production component
+originates either header; the private sheets loader
+(`frontend/src/routes/private/grimoire/+page.server.js`) copies
+`x-grimoire-token` only when an incoming request carries it. Live verification
+of the invitation flow and the account pages against the production gateway is
+outstanding (#7698). The browser rehearsal harness in
+`projects/monolith/dev/grimoire` drives the React app.
+
+### Feedback
+
+Every page header has a Feedback action. `POST /api/grimoire/feedback` stores
+the text (up to 2,000 characters), the in-app path, the campaign when the path
+has one, and the sender's verified email in `grimoire.feedback`. A campaign
+the sender does not belong to is dropped from the row. Each sender may
+store ten rows in any 24 hours; the next request answers 429. An advisory
+transaction lock per sender serializes the count and the insert through commit.
+The count takes a fresh READ COMMITTED snapshot after lock acquisition. A
+pathname cannot carry a host, query, fragment, backslash or control character.
+
+Only operators read the full rows, at `/grimoire/feedback`. The routes apply
+the lobby's `can_administer_accounts` rule (`operators` group) on every request.
+The lobby carries `new_feedback_count` for operators and zero for everyone
+else.
+
+An operator dismisses an item, with an optional one-line reason of up to 200
+characters, or files it. Filing creates one issue in
+`GITHUB_REPO` through `core.github.create_issue`, holding only the title and
+body the operator typed, the footer `Filed from Grimoire feedback.` and the
+labels `grimoire` and `feedback`. The issue carries no readiness label, so the
+factory's refine step picks it up. A GitHub failure answers 502 and leaves the
+row `new`; a row that is already filed or dismissed answers 409. The row keeps
+the operator's title and starts with `issue_state = 'open'`.
+
+#### Roadmap
+
+Every signed-in user reads `GET /api/grimoire/feedback/roadmap` at
+`/grimoire/roadmap`: the 200 newest visible items, each in one of four states.
+
+| State       | Meaning                                                      |
+| ----------- | ------------------------------------------------------------ |
+| `new`       | Sent, not yet triaged.                                       |
+| `accepted`  | Filed, and its issue is open.                                |
+| `completed` | Its issue was closed as completed.                           |
+| `rejected`  | Dismissed, or its issue was closed as not planned or duplicate. |
+
+A note sent after `20261113090000_grimoire_feedback_roadmap.sql` is `shared`:
+everyone sees its text. A filed item shows the operator's title instead. Each
+item carries its vote count, whether the caller voted, whether the caller wrote
+it, its issue link once filed, and the dismiss reason once rejected.
+
+These stay private: the author, the page and the campaign of every note, and
+the text of notes sent before the migration (`shared = false`). An unshared
+note appears on its author's roadmap only. Once filed it appears for everyone
+under the operator's title, or as "Suggestion" when it was filed before titles
+were stored. The query applies this rule; the browser receives no hidden rows.
+
+GitHub is the source of truth after filing. A roadmap read refreshes
+`issue_state` when any filed row has an `issue_checked_at` that is null or
+older than ten minutes. `core.github.list_issue_states` makes one request for
+the 100 most recently updated issues labelled `grimoire` and `feedback`, with
+the eight-second deadline and one-megabyte cap of `create_issue`. A request
+takes `pg_try_advisory_xact_lock` first; a request that does not get the lock
+serves the stored states. A failed read is logged by exception type, stamped
+like a successful one, and the stored states are served. An issue missing from
+the answer keeps its stored state.
+
+`PUT` and `DELETE /api/grimoire/feedback/{id}/vote` record or withdraw one
+"Me too" per user in `grimoire.feedback_vote`. Both are idempotent and answer
+with the new count. Votes are open while an item is `new` or `accepted`; a
+resolved item or the caller's own answers 409, and an item the caller cannot
+see answers 404. The operator inbox shows the count.
+
+**Why.** Friends kept sending suggestions someone else had already sent, and
+nobody heard what became of theirs. The roadmap shows both, so a friend checks
+it before writing and adds a vote to an existing item. Notes sent before the
+roadmap were written to be read by an operator only, so they are never shown to
+anyone else. The author's name is left off every item so a suggestion is judged
+on what it says. Authors cannot vote for their own item, so a count means other
+people want it too. Reading issue states on the roadmap request needs no
+scheduled job; the ten-minute throttle and the try-lock keep it to one bounded
+GitHub call per interval however many people are reading.
+
+`jomcgi-org/homelab` is public. A friend's raw words can name people
+or a campaign, and the factory reads the issue, so nothing from the row is
+published: the dialog shows the private text separately for reference with an
+initially empty, required public body. This staged repository delivery explicitly
+rescopes the original prefilled-body detail to preserve the privacy boundary.
+Operational acceptance remains outstanding. The server sends only what the
+operator typed. The GitHub call runs before the row is marked, under a row lock,
+so two operators cannot file one item twice. It is a single attempt with no
+retry, because retrying a write whose answer was lost would file a duplicate.
+A lost response or a database failure after publication returns a 502 warning
+to reconcile GitHub before filing again. The GitHub request has an eight-second
+overall deadline, including streamed response reads, inside the browser's
+15-second budget. If the browser times out, loses the connection or receives
+an unreadable gateway response, filing shows the same reconciliation warning.
+Neither path retries automatically.
+
+**Tested.** `grimoire/feedback_test.py` asserts on the captured GitHub payload
+and covers the rate limit, the operator rule and the failure paths. It also
+covers the roadmap's visibility rule and exact field set, votes, dismiss
+reasons, the state mapping, the refresh throttle and a GitHub outage.
+`core/github_test.py` covers `create_issue` and `list_issue_states`.
+`grimoire/feedback_postgres_test.py` uses the ephemeral PostgreSQL migration
+harness and separate connections to cover simultaneous quota requests, the
+rolling boundary, sender isolation, concurrent resolution and public-reader
+privileges. The concurrency tests pause after count or row locking and inspect
+PostgreSQL's waiters before releasing the first transaction. It also holds one
+roadmap request inside its GitHub read while a second serves stored states
+without calling GitHub, and checks the new column constraints and the vote
+cascade.
 
 ## Friend onboarding and campaign ownership
 
 The friend UI lives at `https://friends.jomcgi.dev/grimoire`. Its dedicated
 Authentik provider and OIDC cookies are separate from the operator and moving
-applications. Only the Svelte BFF is exposed on this path. It forwards the
-signed Grimoire ID token, which the backend independently checks against the
-Grimoire issuer, audience, signature and expiry. This provider is not added to
-the shared operator/MCP token resolver.
+applications. The React app presents the signed Grimoire ID token in its
+session cookie, which the backend independently checks against the Grimoire
+issuer, audience, signature and expiry. The browser reaches only the API
+prefixes listed under [Friends web app](#friends-web-app). This provider is not added to the shared
+operator/MCP token resolver.
 
 Account signup remains administrator-controlled. The lobby does not send email
 or send campaign owners into Authentik's global invitation administration.
@@ -631,7 +890,8 @@ Cloudflare identity. An email collision between established identities fails
 closed and requires explicit operator reconciliation; signing in through a
 new provider never silently takes over another identity's memberships.
 
-Every registered user can create a campaign and becomes its owner and initial
+With platform enforcement off, registered users can create campaigns unless the
+staged local creation restriction is enabled. Creators become owner and initial
 DM. Owners invite registered players by exact email, without a user directory.
 Recipients must accept in their lobby before any campaign data becomes
 available. Decline, cancellation and membership revocation are durable;
@@ -639,6 +899,40 @@ re-inviting creates a fresh invitation ID so an old acceptance cannot be
 replayed. Ownership controls invitations and membership removal; the existing
 DM role continues to control gameplay. Membership admission uses accepted
 invitations or campaign join links; the direct provisioning endpoint is removed.
+
+### Staged campaign creation policy
+
+`grimoire.campaignCreation.restrictionEnabled` defaults to false in the chart;
+no deployment overlay enables it. It supplies
+`GRIMOIRE_CREATION_RESTRICTION_ENABLED`. When true and platform enforcement is
+off, `grimoire.campaignCreation.allowedEmails` (default `[]`, supplied as the
+comma-separated `GRIMOIRE_CREATOR_EMAILS`) restricts creation to verified
+mailboxes. Both configuration entries and signed emails are stripped and
+lowercased. An empty allowlist denies every creator. No live identity is seeded.
+Mailbox proof is `email_verified` or the configured trusted Cloudflare Access
+issuer, as for legacy account linking. Request fields, proxy email projections,
+campaign ownership, membership and roles cannot grant creation rights.
+
+The mutation dependency and lobby `can_create_game` use one policy. The existing
+frontend capability handling hides creation when denied. With global platform
+enforcement on, `grimoire.create_game` remains required regardless of the local
+switch or allowlist; the local list never substitutes for a platform grant.
+SQL visibility and audience predicates, admin invitations and registered-player
+single-recipient links are unchanged. A recipient must still sign in before the
+DM can link them.
+
+**Why.** A local allowlist bounds creation without enabling platform enrollment
+or duplicating the SQL visibility rules. The active platform permission check
+stays authoritative when global enforcement is on.
+
+This is repository-only staging for #7461. Activation and creator selection need
+a fresh decision from Joe. Authentik, credentials, Discord registration,
+1Password provisioning, source enablement and disposable-account tests remain
+human-owned. Operational acceptance remains on #7461. Within 72 hours after
+separately authorized landing, the delivery owner must record the CI-published
+monolith chart version containing this change and a `verify_deployment` result
+of `verified`, including its live revision and checks. That rollout check does
+not satisfy the human-owned activation checklist.
 
 The campaign DM assigns characters with
 `PUT /campaigns/{campaign_id}/members/{member_id}/character`: supply either
@@ -663,10 +957,9 @@ unassigned.
 moving knowledge between accounts. Campaign-scoped roles let a DM seat their
 own table without operator access.
 
-### Optional single-use campaign links (disabled)
+### Single-use campaign links
 
-`grimoire.invitationLinks.enabled` defaults to false. When enabled, campaign
-owners create a seven-day, single-recipient link for a registered player and
+Campaign owners create a seven-day, single-recipient link for a registered player and
 copy it themselves. The raw capability is shown once, carried in a URL
 fragment, then exchanged for a Secure, HttpOnly, SameSite=Lax resume cookie.
 The database stores only its SHA-256 digest. Opening the link does not grant
@@ -681,11 +974,15 @@ There is only one unexpired pending link for a campaign and email. Duplicate
 Create requests return an instruction to revoke the old link before replacing
 it; they never recover a stored raw token. Links that expire or are revoked
 cannot be redeemed. The exact anonymous `/grimoire/join` route serves a
-self-contained, no-store landing page with no telemetry or authenticated assets.
-The authenticated `/grimoire/join/accept` route and every other Grimoire route
-keep their existing OIDC policy. No private API is exposed on the friends host.
+self-contained, no-store landing page with no telemetry or authenticated assets
+(`grimoire/join_landing.py`, with its script in
+`web/grimoire/src/lib/join-landing.js`). The React accept screen at
+`/grimoire/join/accept`, its endpoints `POST /grimoire/join/accept/confirm` and
+`GET /grimoire/join/accept/state`, and every other Grimoire route keep the OIDC
+policy. The friends host routes only the API prefixes listed under
+[Friends web app](#friends-web-app).
 
-New-account enrollment has a second default-off flag,
+New-account enrollment has a default-off flag,
 `grimoire.invitationLinks.enrollmentEnabled`. Issuance requires both campaign
 ownership and the existing `operators` account-administration entitlement.
 Ordinary campaign owners cannot create account-enrollment invitations. The
@@ -737,17 +1034,34 @@ boundaries. Keeping a single-use app capability until the final Join provides
 atomic membership, safe retries and revocation without treating Authentik's
 partially completed enrollment as campaign acceptance.
 
-### Optional-link enablement checks
+### Discord sign-in
+
+The Authentik chart's `grimoireDiscordSource.enabled` flag, on in the hub
+overlay since 2026-11-12, adds
+a Discord OAuth source and a Grimoire-only sign-in flow so a friend can enrol
+by signing in with Discord instead of receiving an administrator-made
+invitation. The source matches by Discord account id, never by email. The
+enrollment gate requires a Discord-verified email that no existing Authentik
+account uses, and creates an external user under the `grimoire` path with no
+group. First login then creates the Grimoire account as today. Campaign
+admission stays with invitations and campaign links. Campaign creation is not
+gated while platform enforcement is off, so any enrolled Discord account can
+create campaigns; Joe accepted that when enabling. The credentials come from
+the shared Bosun Discord application. Follow-up lives in
+[#7461](https://github.com/jomcgi-org/homelab/issues/7461).
+
+### Link enrollment enablement checks
 
 Human-owned access review and activation are tracked in [#6858](https://github.com/jomcgi-org/homelab/issues/6858).
-Keep both flags off until reviewed provisioning and normal CI have passed.
+Keep enrollment off until reviewed provisioning and normal CI have passed.
 Before enabling, test the exact pinned Authentik version and Envoy routing with
 disposable accounts: fresh signup, existing-account sign-in, interrupted signup,
 Back/Close/reopen, wrong-account rejection, duplicate submission, expiry,
 concurrent redemption, revoke during signup, provider outage and cleanup retry.
 Verify the adapter cannot read/delete unrelated invitations, and explicitly
 review the remaining model-wide create privilege. Check that the anonymous
-route is exact-only and does not expose `/join/accept`, assets or private APIs.
+route is exact-only and does not expose `/grimoire/join/accept`,
+`/grimoire/join/accept/state`, `/grimoire/assets` or any API prefix.
 Verify no operator/family group assignment and no Moving-policy changes.
 
 ### Deployment and verification
@@ -772,9 +1086,15 @@ After the normal Linux CI and deployment gates, verify with two fresh accounts:
    has no email-delivery option or global account-admin redirect. Optional
    enrollment controls require the existing account-administrator entitlement.
 6. The moving app and preview lane retain their original access policies.
-   Shared `/_app/` assets accept either app's signed cookie, while page and API
-   permissions remain separate. Requests to `/api/grimoire` on the friends
-   hostname have no backend route.
+   Shared `/_app/` requests redirect only to the moving lane
+   (`chart/templates/httproute-friends-assets.yaml`); Grimoire assets load from
+   `/grimoire/assets` on the Grimoire route. Page and API permissions remain
+   separate. Under `/api/grimoire` and `/api/auth/platform` on the friends
+   hostname, only the prefixes in `cfIngress.grimoire.apiPrefixes` have a
+   backend route: `/api/grimoire/books` and any other unlisted path answer 404.
+7. A single-use link opens the anonymous landing at `/grimoire/join`, and the
+   signed-in recipient joins from `/grimoire/join/accept`. `/grimoire/platform`
+   and `/grimoire/platform/profile` load for a signed-in account.
 
 Sign-in renews in place. The gateway requests `offline_access`, which the
 provider maps, so Authentik issues a refresh token and Envoy renews the
@@ -785,15 +1105,78 @@ editing the application's policies no longer signs them out of Grimoire; to
 cut someone off, deactivate their Authentik account, which deletes their
 refresh tokens, or remove them from the campaign. When renewal fails, a fetch
 (`Sec-Fetch-Mode: cors`) gets a 401 and a navigation still redirects to the
-login. The BFF state endpoint also answers 401 for a missing or rejected token.
-A single 401 or login redirect can be transient, so the session page shows
-Reconnecting and treats it as expiry only when another one arrives two to
-thirty seconds later with no other answer between them. Then, once no send is
-in flight, it keeps the composer, its audience, any interrupted send's request
-id and the viewer's user id and role in the tab's `sessionStorage` and reloads
-at most once a minute; within that minute it shows a signed-out notice. A
-restored draft never widens its audience, and a draft kept for another viewer
-is dropped. A poll that answers for a different account or role reloads the
-page, because panels such as knowledge search keep their own state. The live
-check remains: hold a real login past the access-token lifetime and confirm
-the session stays Live without a reload.
+login. `web/grimoire/src/api/client.ts` sends every request with
+`redirect: "manual"` and reports a 401 or a login redirect to
+`src/app/signIn.ts`. A single one can be transient, so the session screen
+shows Reconnecting and `src/lib/session-expiry.js` treats it as expiry only
+when another arrives two to thirty seconds later with no other answer between
+them. Then, once no send is in flight, the session composer keeps its text,
+its audience, any interrupted send's request id and the viewer's user id and
+role in the tab's `sessionStorage`, and the tab reloads at most once a minute;
+within that minute it shows a signed-out notice. Other screens show the
+signed-out notice and leave the reload to the player. A restored draft never
+widens its audience, and a draft kept for another viewer is dropped.
+
+Grimoire routes wait for the first successful lobby identity before mounting
+screens or starting their private reads. A failed first identity read offers
+retry and sign-out actions without retaining independently fetched private
+content. Platform pages remain available without Grimoire access: their
+baseline is the existing `/api/auth/platform/self` response. Account management
+waits for that baseline before reading its directory; an initial 403 still
+offers explicit operator bootstrap. Once a platform identity is known, it refreshes every fifteen
+seconds, including after navigating away. A changed platform account or a
+subsequent self-read denial (403 or 404) uses the same cache fence. Temporary
+failures preserve an already established view. These checks do not change API
+permissions or compare platform and Grimoire account IDs.
+
+A successful directory read also establishes operator access. The existing
+management permissions endpoint rechecks it every fifteen seconds, including
+after leaving the directory. A subsequent 403 or 404 from that check or a
+directory read triggers the same whole-view cache fence, removing directory
+rows, open dialogs, private signup links and toasts before reloading. An initial
+directory refusal still offers bootstrap; temporary failures retain the view.
+Refusals already cached when operator access is established do not revoke that
+new access. Only a new refusal after that baseline triggers the fence, including
+a retried, reset or recreated directory query.
+
+Every screen shares the lobby identity check through `ViewerBoundary`. A
+confirmed account change, removal of an existing campaign membership, change
+to its role, character or ownership, loss of account administration, or a
+lobby response denying access with 403 hides the previous view immediately.
+The boundary cancels queries, clears the query cache and saved message drafts,
+then reloads once.
+It also unmounts queued speech and toasts. Ordinary lobby refreshes, renamed
+campaigns, new memberships and temporary lobby failures preserve unsaved
+work. The live check remains: hold a real login past the access-token lifetime
+and confirm the session stays Live without a reload.
+
+A kept draft records its session ID. A restored private reply keeps its target
+action and resolution choice only in that same session with the same available
+recipient. The original, unretracted private action must still be present and
+its `author_member_id` must still hold the saved character. Character existence
+alone is insufficient: reassignment, membership removal or a missing action
+restricts the unsent text to the DM. The same check runs when the open reply's
+feed or roster refreshes. This does not change who can read historical events.
+Retrying an unchanged draft reuses its request ID, including when a lost
+acknowledgement left its action already resolved. Cancelling or explicitly
+selecting a reply clears the pending request identity, even if the DM later
+chooses the same action and text again.
+
+If the session changed, the saved draft has no session ID, or its recipient is
+no longer available, the text is kept for the DM with a visible and announced
+explanation. Its reply target, resolution choice and request ID are cleared.
+The same reset applies when an already mounted composer moves to another
+session. Reply targets carry their session ID across composer remounts, and
+a completed send from an unmounted composer cannot clear a newer reply. A
+successful send clears the draft only if its request ID and complete message
+context still match, including its reply target. The author chooses a recipient
+again before widening the audience.
+
+Temporary table loading keeps the composer snapshot in memory above the table
+loading boundary, scoped to its campaign, account, role and character. Restoring
+it uses the same session and recipient checks as sign-in recovery. The viewer
+privacy boundary removes that memory with the session screen; unmount cleanup
+never writes a draft back to storage after the boundary has cleared it.
+
+**Why.** Journal replies refer to actions within one session. Carrying an old
+reply into a new session would leave the original action waiting for the DM.

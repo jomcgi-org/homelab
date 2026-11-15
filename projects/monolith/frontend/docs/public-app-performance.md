@@ -1,0 +1,346 @@
+# Measure public apps
+
+The runner records three cold-browser page loads under a mobile profile and
+prints their medians. It saves every run, response cache headers and request
+initiators in `results.json`, plus a Markdown table. Optional public data
+endpoints get 20 unthrottled GETs with p50 and p95 full-response durations.
+
+## Run a comparison
+
+Use Node 22 or newer and Playwright 1.62.1 with its Chromium build. Installing
+the measurement tool in a temporary directory keeps it out of the frontend's
+runtime dependencies:
+
+```bash
+npm install --prefix /tmp/homelab-perf --no-save --ignore-scripts playwright@1.62.1
+/tmp/homelab-perf/node_modules/.bin/playwright install chromium
+cd projects/monolith/frontend
+node scripts/public-app-performance.mjs \
+  --playwright-module /tmp/homelab-perf/node_modules/playwright/index.mjs \
+  --output /tmp/public-apps-before
+```
+
+A locally installed `playwright` package is used when `--playwright-module` is
+omitted. `--executable /path/to/chromium` selects an existing browser. When a
+managed environment requires an HTTP proxy, pass its configured URL through
+`--proxy "$HTTPS_PROXY"`. Preserve TLS verification and the environment's
+network policy. The runner does not change browser permissions or request
+sandbox escalation.
+
+The default pages are hikes, ships, stars, trips, Scotland, the leaderboard and
+notes. Repeat `--route` for another journey. Dynamic trip routes need a slug
+from the public trip index:
+
+```bash
+node scripts/public-app-performance.mjs \
+  --playwright-module /tmp/homelab-perf/node_modules/playwright/index.mjs \
+  --route /app/stars \
+  --endpoint /app/stars/map \
+  --endpoint /app/stars/history-map \
+  --output /tmp/stars-before
+```
+
+Use the same browser, location, profile and observation window before and
+after a change. After merge, verify the `monolith-public` rollout, then run
+against `https://jomcgi.dev` again. A local build measurement is not evidence
+that production became faster.
+
+Canonical page URLs remain the CLI default. To observe a newly deployed
+generation without waiting for old cached HTML to expire, explicitly add
+`--page-cache-key release-B-20261115`. The token accepts 1–96 ASCII letters,
+digits, `_` or `-`. It adds `__public_perf_page` to page navigations while
+preserving existing query state, logical route selectors and natural data
+request URLs. The same token repeats across every run; use a new token for a
+new cohort, not each sample. The Stars diagnostic accepts the same option.
+
+`pageCache` records the mode, parameter and key in JSON. Every page entry and
+run records its logical `route`, `canonicalUrl` and exact `requestedUrl`.
+Runs retain `finalUrl` and `finalPageCacheKeyRetained`; a redirect that drops the
+key has `finalPageCacheMode: "key-not-retained"` and does not prove a fresh-key
+destination. Ordinary redirects remain one navigation. Initial request identity
+includes the requested query; `_fresh` recovery reloads still invalidate the
+sample even if they preserve the cohort key.
+
+A new key does not guarantee MISS, a particular backend cache state or the
+intended release. Record the first response, every actual edge state, the
+slowest sample and served asset URLs after a verified rollout. Repeats may HIT,
+revalidate or BYPASS. Tables label the cohort. Never pool keyed and canonical
+samples; comparisons between them are descriptive, not an isolated causal
+speedup. The key does not purge or alter an existing cached URL. Endpoint
+normal-key and unique-query probe series are unchanged.
+
+## What the numbers mean
+
+The profile is a 360 by 800 mobile viewport at device scale 2, 150 ms minimum
+network latency, 1.6 Mbps download, 750 Kbps upload and fourfold CPU slowdown.
+This is a reproducible lab approximation, not a calibrated physical Moto G.
+Each run uses a new browser context with no cookies, browser cache or service
+worker. The runner observes Cloudflare's actual cache state and never purges.
+Page URLs change only with the explicit page-key option above. A browser-cold run can be an edge HIT. Optional endpoint
+probes use unique query keys as described below, separate from normal-key reads.
+Record misses separately when they occur naturally. A forced origin-cold test
+needs a controlled dev environment.
+
+Schema version 3 retains the version 2 definition and reports header arrival as `ttfbMs`: the final main-document
+CDP `responseReceived` event timestamp minus the initial document
+`requestWillBeSent`, including redirects. It retains the former
+`responseStart - startTime` as `rawNavigationTtfbMs`, plus the full navigation
+and CDP response timing. These definitions are not interchangeable. In the
+first hosted run, Chromium 151.0.7922.34 reported navigation TTFB below 150 ms
+because its [throttling transaction](https://chromium.googlesource.com/chromium/src/+/refs/tags/151.0.7922.34/services/network/throttling/throttling_network_transaction.cc)
+returns the underlying unadjusted load timing. The
+[CDP response event](https://chromium.googlesource.com/chromium/src/+/refs/tags/151.0.7922.34/content/browser/devtools/protocol/network_handler.cc)
+uses the event's monotonic clock instead. The new header-arrival metric needs
+a hosted calibration before it can establish the mobile TTFB target. The
+workflow now runs three fresh-context pairs against a small local HTTP page,
+using 0 ms and 150 ms latency with the same bandwidth and CPU settings. It
+saves raw navigation and CDP timing in `calibration.json`. Every throttled
+header sample must reach 140 ms, and the median paired added delay must be
+between 100 and 400 ms. A failed or absent calibration cannot certify page
+timing; passing validates only the page target, not workers or frames. Never
+add 150 ms to the old value or compare it directly with the new value.
+
+Each page records UTC start, observation and finish timestamps, the browser's
+`performance.timeOrigin`, and top-level document request IDs with their URL
+chains and response headers. Redirects sharing a request ID count as one
+navigation; child frames do not. More than one top-level document request
+sets `comparisonEligible: false` and excludes the entire sample from medians,
+while retaining raw data and `comparisonExclusion`. This makes the requested
+run count incomplete and the command exits nonzero. A chunk-404 recovery can
+reload the page: its second document resets NavigationTiming and LCP clocks,
+while context requests still include the first document. Combining those
+clocks would produce an invalid comparison. The hosted local fixture verifies
+both a redirect and a script-triggered reload with a child frame, recording
+`navigation-fixture.json`. Navigation changes during an interaction also
+invalidate the run. These request-level exclusions are conservative; a
+second navigation request that later fails is excluded too.
+
+A navigation or observer failure still retains the context-wide and page-target
+request inventories collected before the error, including received HTTP 404
+statuses. `inventoryPhase` distinguishes a normal load cutoff from an error
+snapshot. Unfinished requests remain unfinished; the runner waits at most
+five seconds for already-finished response sizing, then separately bounds
+context cleanup to five seconds. The hosted navigation fixture also forces a
+missing-module 404 and destroys an in-progress observation by replacing the
+document, asserting that both request inventories retain the error evidence.
+
+The default observation ends 15 seconds after DOMContentLoaded. Increase
+`--settle-ms` when the app still loads at that point. LCP is the last observed
+candidate; the JSON now preserves every candidate's timestamp, size, element
+tag, generated CSS selector and image URL. Selectors describe the observed
+DOM and may change between releases. LCP does not measure canvas contents;
+a heading can be the largest candidate while a map is still blank. CLS uses
+the largest session window and excludes shifts after recent input. Context-wide request events include redirects, dedicated-worker
+requests and child-frame requests. `request.sizes()` reports encoded HTTP
+response body and header sizes. Transfer and JavaScript totals sum those
+sizes for requests completed before the cutoff; connection overhead is
+excluded. If a request is unfinished, failed or unsized, the full total stays
+`null`. The JSON retains completed-response lower bounds and counts of the
+incomplete, failed and unsized requests. Chromium redirect responses without
+`Content-Length` remain unsized: Playwright substitutes a zero body size when
+that header is absent, so the runner cannot treat the result as measured.
+Worker bootstrap requests with a zero reported body and no explicit
+`Content-Length: 0`, or a reported body size inconsistent with that header,
+are also unsized. An intermediate run classified 580 to 593 bytes as body
+with zero header bytes despite `Content-Length: 120658`; that also fails the
+size check. The hosted run reported only 588 to 590
+bytes for a worker whose later HTTP body exceeded 120 kB. The runner retains
+reported size components and known header bytes as lower bounds; it does not
+substitute the later HTTP result or a build artifact size. JSON records
+`httpErrorRequests` separately from transport failures.
+
+Detailed CDP initiator relationships cover the page target. When workers or
+child frames appear, `initiatorsBeforeLcp` stays `null`; the scoped
+`pageTargetInitiatorsBeforeLcp` and `pageTargetRequests` remain available for
+inspection. The page-target CDP transfer estimate includes headers received
+and body chunks, with the finished event replacing the estimate. It is not
+used as a whole-page transfer total.
+
+CPU and network throttling are applied to the page target. Worker and child
+frame throttling is unverified, so those runs show `profileComplete: false`
+and the table counts complete-profile runs separately. Their LCP and CLS are
+still observed lab values, but cannot certify the requested full mobile
+profile. Inspect the request relationships alongside the page to find its
+critical path. A late request alone does not establish that it blocked paint.
+
+To track useful content separately, repeat `--content-selector` with a route
+and a native CSS selector for real data, for example:
+
+```bash
+--content-selector '/app/hikes::.map-snapshot .snapshot-row'
+--content-selector '/app/ships::.map-snapshot .snapshot-row'
+--content-selector '/app/stars::.map-snapshot .snapshot-row'
+--content-selector '/app/notes::.graph-overview li'
+```
+
+`visibleContentMs` is the first observed match with nonzero intersection
+reported by `IntersectionObserver`, including clipping by ancestor overflow.
+A mutation observer tracks matching elements. Checks of intersecting elements
+run on intersection changes and at a nominal 100 ms interval, so CSS-only
+opacity transitions are observed too. Busy frames can delay the sample;
+this is not the exact instant visibility changed. Observation ends on a
+match, the load cutoff, or the navigation-timeout-plus-settle deadline. This is a DOM milestone, not a painted-pixel
+or interactive-map readiness metric. It does not prove that an image decoded
+or that another element does not cover the match. The hosted browser fixture
+checks fully clipped content and CSS-only opacity and position animations
+before production measurements run. Selectors must match the
+release being compared; a missing or out-of-viewport match remains `null`,
+and an invalid selector fails the run. The summary reports how many runs
+matched and keeps its median unavailable if any successful run did not match. A content selector for a new SSR
+preview will be absent on an old release. Keep those missing values instead
+of replacing them with LCP. The LCP and CLS collection method is unchanged.
+
+INP requires real interaction observations over a page visit. It stays
+`null` in this synthetic report. To measure a read-only control, add
+`--interaction '/app/hikes::selector'` using its current selector. The runner
+clicks it after recording the load sample and reports Event Timing as
+`interactionLatencyMs`. It never picks an arbitrary button. Missing or
+unobservable samples remain `null`; they do not become zero. A requested
+selector that fails to click marks the run failed and makes the command exit
+nonzero. A successful click with no observable Event Timing sample remains a
+successful run with `null` latency. A fast synthetic click does not establish
+field INP below 200 ms.
+
+These read-only examples exercise existing controls after the load cutoff.
+They use Playwright selectors; unlike content selectors, `:has-text()` is
+supported. Choose one control per selected route and keep it fixed before
+and after the change:
+
+| Route | Interaction selector | Action |
+| --- | --- | --- |
+| `/app/hikes` | `button.filter-toggle` | Open the duration and distance filters |
+| `/app/ships` | `[aria-label="Map mode"] button:has-text("Heat")` | Display the public heat grid |
+| `/app/stars` | `[aria-label="Map mode"] button:has-text("Historical")` | Display historical dark-sky data |
+| `/app/trips/2025-liard-hot-springs/day/1` | `button[aria-label="Next photo"]` | Select the next public photo |
+
+For example, pass
+`--interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")'`.
+The sample covers the click's Event Timing duration, not completion of its
+subsequent data fetch or map rendering. A separate functional journey must
+verify the resulting view. Verify that the chosen day still has multiple
+photos before reusing the trip example; a missing control is a failed test.
+
+For a control that depends on a naturally loaded resource, add
+`--interaction-ready-url '/app/stars::/app/stars/history-map'`. After freezing
+the load observations, the runner waits up to 20 seconds for a successful
+response's `requestfinished` event, then allows two animation frames. It never
+fetches that resource itself. `interactionReadiness` records the wait, whether
+completion preceded the load cutoff, and whether the response finished.
+This is response-completion evidence, not a guarantee of parsing or map paint.
+A click made before completion retains its raw Event Timing but has
+`interactionComparable: false` and does not contribute to interaction medians.
+The summary counts these unready samples. The Stars workflow uses this guard
+because a click that merely opens a loading state does different work from
+one that renders already-loaded history. Compare equal readiness conditions;
+post-click data or map completion still needs a separate functional measure.
+
+Endpoint samples are full-response durations through Playwright's request
+client, without mobile throttling. They are separate from navigation TTFB.
+Use the same-origin public proxies or SvelteKit `__data.json` routes. The
+public origin intentionally does not expose backend `/api/*`. A navigation
+response includes SvelteKit processing and is not a direct backend query
+measurement. Inspect backend SQL with `EXPLAIN ANALYZE` only on a local or dev
+database. Do not write to production to construct a baseline.
+
+To add a separate bounded unique-query series, pass `--cache-miss-probes`
+alongside selected `--endpoint` paths. It accepts only the thirteen fixed hosted
+endpoints and at most 20 samples per endpoint; duplicate paths are rejected.
+Each GET appends a fresh `__public_perf_probe` value. The normal-key series
+remains in `endpoints`; probes appear in `cacheMissProbes`, with individual
+headers and p50/p95 grouped by the actual `cf-cache-status`. A probe can still
+be a HIT or BYPASS if edge configuration ignores the key. It neither purges
+the CDN nor proves that a backend cache is cold. Even a MISS measures the
+public frontend and backend together, not a database query in isolation.
+No response body is saved. Probe mode is off by default in the CLI and manual
+workflow dispatch; the hosted PR validation job explicitly enables the bounded
+series and records that choice in provenance.
+
+The allowlist follows handlers that ignore query parameters: the Hikes,
+Ships, Stars and Trips index `+page.server.js` loaders request fixed backend
+URLs; Stars `map`, `history` and `history-map`, Ships `heat`, and Notes `stats` proxies
+also request fixed URLs. The fixed Hikes walk and Ships vessel detail proxies
+use only the path parameter, never the query. Notes `graph` reads the fixed public graph snapshot;
+Scotland `marketplace.json` serializes committed data. None reads or forwards
+the probe key. Before adding a path, inspect its loader, layout and proxy;
+do not use this option for filters, signed image URLs, private APIs or
+personalized routes.
+
+The runner uses GET for endpoint samples and stores no response bodies.
+Explicit interaction selectors must describe read-only controls. Public
+Grimoire corpus routes require Turnstile admission and are excluded from the
+default run. Their current admission boundary must remain intact.
+
+## Targets and baseline
+
+The goal is repeat-view edge HIT and TTFB below 200 ms, LCP below 1.5 seconds,
+CLS below 0.05 and field INP below 200 ms. Cached public APIs target p95 below
+100 ms; uncached origin APIs target 300 ms. These targets do not replace the
+per-route freshness policy or the public cache isolation tests.
+
+The [14 November baseline](performance/2026-11-14-baseline.md) records three
+HTTP runs per page and 20 per public data endpoint. The
+[JSON](performance/2026-11-14-baseline.json) records every requested metric,
+with `null` for browser metrics that could not be measured. Headless Chromium
+could not create its process socket in that environment, and automatic
+approval policy rejected the escalated launch. The available interactive
+browser had no throttling or performance interface. No LCP, CLS, INP or
+browser transfer result is inferred from HTTP.
+
+The baseline also records emitted JavaScript gzip sizes from a local
+public-only production build of the inspected source revision. Its method
+and source commit are recorded separately from the HTTP measurements. These
+artifact sizes do not replace the unavailable browser transfer metrics.
+
+Page curl requests opened fresh TLS connections through the managed proxy.
+That added roughly 3 to 5.6 seconds before the response, including on edge
+HITs. Those page timings cannot establish direct visitor TTFB. API requests
+reused a connection, so their distributions are reported separately. The
+initial API sample is retained in the nearest-rank p95 calculation.
+
+Measured work, in order:
+
+1. Stars sends 9.28 MB of decoded HTML while its visible app is browser-gated.
+   Hikes sends 466 kB and ships 2.69 MB with the same first-paint problem.
+   Render actual snapshot content before hydration and keep heavy map work
+   progressive.
+2. A representative trip summary sends 2.28 MB of decoded HTML, its timeline
+   3.52 MB, and one day 2.27 MB. Inspect shared full-trip data and eager photo
+   loading before changing the payload contract.
+3. Scotland and notes HTML return BYPASS in all three runs. Add explicit
+   anonymous route policies only after checking their freshness and cookie
+   dependencies. Notes also waits for its graph fetch after hydration.
+4. Large data endpoints have observed TTFB p95 around 107 to 142 ms; small
+   endpoints range from 17 to 56 ms. The baseline table also records full
+   response duration and the cache-HIT subset. These public proxy measurements do not
+   identify backend query time. Origin profiling remains unverified.
+
+The leaderboard and trip index already contain visible data in HTML. Frank
+is static HTML. `/app/firecracker` redirects to `/ember/firecracker`.
+Scotland's policy pages are static. Retired campsites and dr-jobs URLs remain
+404s. These distinctions matter when interpreting the first-paint target.
+
+## First-view dependencies
+
+These chains come from the baseline source and HTML. Browser initiator timing
+was unavailable, so their durations remain unmeasured.
+
+| App | First-view dependency chain | Later data |
+| --- | --- | --- |
+| Hikes | HTML with snapshot, hydration, HikesApp, lazy MapLibre and worker, map style and tiles | Selected walk detail |
+| Ships | HTML with snapshot, hydration, ShipsApp, lazy MapLibre and worker, map style and tiles | Heat grid after idle warmup; selected vessel track |
+| Stars | HTML with full sites/windows, hydration and night aggregation, StarsApp, lazy MapLibre and worker, map style and tiles | History and history map after mode change |
+| Trip index | HTML with trip cards and signed cover image | Navigation to a trip |
+| Trip summary/day | HTML with whole-trip points, hydration, lazy MapLibre, map style and tiles | Photo preloads and viewer images |
+| Notes | HTML shell, hydration, GraphView, graph JSON, client graph layout | Selected note body |
+| Scotland, leaderboard, Frank | Visible HTML; CSS and fonts affect presentation | Read-only local controls |
+
+The primary map apps already inline their initial data; they do not need a
+first-view client API fetch. Their browser-gated visible content still waits
+for hydration. Notes has a separate graph request before its data appears.
+
+The fixed detail probes retain the original HTTP-baseline identifiers:
+walk `7fc20756-89c2-5280-9be9-3ddb3db01e44` and vessel `369514002`.
+The vessel baseline returned an empty 41-byte track response, so its timing
+is not representative of a populated or worst-case track. Preserve decoded
+response sizes and this limitation when comparing it later. These probes do
+not benchmark note bodies or protected Grimoire corpus content.

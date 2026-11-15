@@ -50,11 +50,6 @@ def _events(db, task_id, action):
     ).all()
 
 
-def held(task_id, *, session=None):
-    """A sticky delivery fence, deliberately with no release operation."""
-    return controls.review_recovery_held(task_id, session=session)
-
-
 @dataclass(frozen=True)
 class Reviewer:
     alias: str

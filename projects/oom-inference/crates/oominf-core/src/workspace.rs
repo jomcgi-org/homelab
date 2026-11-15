@@ -9,7 +9,7 @@ use crate::backend::{DeviceBuffer, Memory};
 ///
 /// Components `take` a buffer of an exact length and `give` it back when done. A
 /// buffer of a different length is reallocated; one that is not given back is
-/// reallocated next time. Contents are unspecified unless taken with `take_zeroed`.
+/// reallocated next time. Contents are unspecified.
 pub struct Workspace<B: Memory> {
     f32s: HashMap<&'static str, B::F32>,
     bf16s: HashMap<&'static str, B::Bf16>,
@@ -54,12 +54,6 @@ impl<B: Memory> Workspace<B> {
             Some(buf) if buf.len() >= n.max(1) => Ok(buf),
             _ => b.uninit(n),
         }
-    }
-
-    pub fn take_zeroed(&mut self, b: &B, name: &'static str, n: usize) -> Result<B::F32> {
-        let mut buf = self.take(b, name, n)?;
-        b.fill_zero(&mut buf)?;
-        Ok(buf)
     }
 
     pub fn give(&mut self, name: &'static str, buf: B::F32) {

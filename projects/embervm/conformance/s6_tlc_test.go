@@ -144,3 +144,48 @@ func TestS6TLCThinWindowNeverReachesTLC(t *testing.T) {
 		}
 	}
 }
+
+// These cases run the generated window through real TLC, including mutations
+// that satisfy the legacy ordering invariants but violate the shared contract.
+func TestS6DestroyContract(t *testing.T) {
+	cfg := mustS6TLCTestConfig(t)
+	tests := []struct {
+		name    string
+		mutate  func([]traceRecord) []traceRecord
+		verdict string
+		detail  string
+	}{
+		{"duplicate completion", func(r []traceRecord) []traceRecord { return append(r, r[8]) }, verdictFail, "DestroyTransitionsConform"},
+		{"begin after completion", func(r []traceRecord) []traceRecord { return append(r, r[7]) }, verdictFail, "DestroyTransitionsConform"},
+		{"redrive intent", func(r []traceRecord) []traceRecord { return append(append(r[:8:8], r[7]), r[8:]...) }, verdictPass, "observed completions=1"},
+		{"wrong vm", func(r []traceRecord) []traceRecord { r[8].Vars["vm_id"] = "v2"; return r }, verdictIncomplete, "matching intent"},
+		{"wrong session", func(r []traceRecord) []traceRecord { r[8].Vars["session_id"] = "s2"; return r }, verdictIncomplete, "matching intent"},
+		{"missing intent", func(r []traceRecord) []traceRecord { return append(r[:7:7], r[8:]...) }, verdictIncomplete, "matching intent"},
+		{"missing completion", func(r []traceRecord) []traceRecord { return append(r[:8:8], r[9:]...) }, verdictIncomplete, "open destruction"},
+		{"unconfirmed", func(r []traceRecord) []traceRecord { r[8].Vars["node_confirmed"] = false; return r }, verdictFail, "NoDestroyBeforeConfirm"},
+		{"unsupported node gone", func(r []traceRecord) []traceRecord { r[8].Vars["confirmed_by"] = "node_gone"; return r }, verdictIncomplete, "unsupported destruction evidence"},
+		{"missing typed evidence", func(r []traceRecord) []traceRecord { delete(r[8].Vars, "node_confirmed"); return r }, verdictIncomplete, "typed confirmation"},
+		{"missing identity", func(r []traceRecord) []traceRecord { delete(r[7].Vars, "session_id"); return r }, verdictIncomplete, "missing destroy identity"},
+		{"cross-run", func(r []traceRecord) []traceRecord { r[8].RunID = "run-2"; return r }, verdictIncomplete, "incarnation"},
+		{"drop on another spec", func(r []traceRecord) []traceRecord {
+			r[5].Spec = "other"
+			r[5].Vars["spec_trace_dropped_before"] = 1
+			return r
+		}, verdictIncomplete, "dropped events"},
+		{"no destruction", func(r []traceRecord) []traceRecord { return r[:6] }, verdictVacuous, "no completed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			records := test.mutate(s6TLCPassWindow())
+			for i := range records {
+				records[i].Seq = int64(i + 1)
+			}
+			client, close := s6TLCClient(t, s6TLCWindowBody(t, records))
+			defer close()
+			result := runS6(context.Background(), cfg, client, time.Now())
+			if result.Verdict != test.verdict || !strings.Contains(result.Detail, test.detail) {
+				t.Fatalf("got %s: %s; want %s containing %q", result.Verdict, result.Detail, test.verdict, test.detail)
+			}
+		})
+	}
+}

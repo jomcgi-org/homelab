@@ -49,7 +49,7 @@ MAX_PAGES = 10
 TERMINAL = ("reverted", "revert_window_closed")
 
 _REVERTS_SHA = re.compile(r"This reverts commit ([0-9a-f]{7,40})")
-_REVERTS_PR = re.compile(r"Reverts [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#([0-9]+)")
+_REVERTS_PR = re.compile(r"Reverts (?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)")
 _PR_REF = re.compile(r"#([0-9]+)")
 
 _last_sweep: float | None = None
@@ -92,9 +92,19 @@ def revert_evidence(message: str) -> tuple[set[str], set[int]]:
     shas = set(_REVERTS_SHA.findall(message))
     prs = {int(n) for n in _REVERTS_PR.findall(message)}
     subject = message.split("\n", 1)[0]
-    if subject.startswith("Revert"):
+    if subject.startswith(("Revert", "revert(")):
         prs.update(int(n) for n in _PR_REF.findall(subject))
     return shas, prs
+
+
+def is_revert_source(source: dict) -> bool:
+    """Recognize generated and human reverts before checking factory ownership."""
+    title = str(source.get("title") or "")
+    message = "\n".join(
+        str(source.get(field) or "") for field in ("title", "body", "commit_message")
+    )
+    shas, prs = revert_evidence(message)
+    return title.startswith(("revert(", 'Revert "')) or bool(shas or prs)
 
 
 def _matches(candidate: dict, shas: set[str], prs: set[int]) -> bool:

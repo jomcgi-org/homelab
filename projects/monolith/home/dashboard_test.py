@@ -34,7 +34,7 @@ async def test_build_dashboard_isolates_a_failing_section():
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
-        result = await dashboard.build_dashboard(session=MagicMock())
+        result = await dashboard.build_dashboard()
 
     assert result["health"] == {"error": "k8s down"}
     assert result["github"] == {"open_prs": [], "recent_merges": []}
@@ -57,7 +57,7 @@ async def test_build_dashboard_all_sections_healthy():
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
-        result = await dashboard.build_dashboard(session=MagicMock())
+        result = await dashboard.build_dashboard()
 
     for section in ("health", "github", "today"):
         assert "error" not in result[section]
@@ -80,7 +80,7 @@ async def test_build_dashboard_multiple_sections_fail_independently():
             dashboard, "_collect_today", AsyncMock(return_value={"events": []})
         ),
     ):
-        result = await dashboard.build_dashboard(session=MagicMock())
+        result = await dashboard.build_dashboard()
 
     assert "error" in result["health"]
     assert "error" in result["github"]
@@ -239,3 +239,57 @@ def test_dashboard_router_not_registered_on_public_app():
 
     paths = set(_iter_route_paths(public_app.routes))
     assert "/api/home/dashboard" not in paths
+
+
+# ---------------------------------------------------------------------------
+# Database reads run off the event loop, each in its own session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_reads_run_off_the_event_loop_in_their_own_sessions():
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen = []
+
+    def record(name, value):
+        def read(session):
+            seen.append((name, threading.get_ident(), session))
+            return value
+
+        return read
+
+    opened = []
+
+    class FakeSession:
+        def __init__(self, engine):
+            opened.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    snap = {"health": {"healthy": True}, "snapshot_at": "2026-11-02T00:00:00+00:00"}
+    with (
+        patch.object(
+            dashboard.cluster_snapshot,
+            "read_cluster_snapshot",
+            record("health", snap),
+        ),
+        patch.object(dashboard.schedule, "get_today_events", record("today", [])),
+        patch.object(dashboard, "_collect_github", AsyncMock(return_value={})),
+        patch("core.db.get_engine", lambda: object()),
+        patch("sqlmodel.Session", FakeSession),
+    ):
+        result = await dashboard.build_dashboard()
+
+    assert result["health"]["healthy"] is True
+    assert result["today"] == {"events": []}
+    assert {name for name, _, _ in seen} == {"health", "today"}
+    assert all(thread != loop_thread for _, thread, _ in seen)
+    # One session per read: a Session is not shared across threads.
+    assert len({id(session) for _, _, session in seen}) == 2
+    assert len(opened) == 2

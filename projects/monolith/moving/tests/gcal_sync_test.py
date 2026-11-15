@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import patch
 
 import httpx
 import pytest

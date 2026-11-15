@@ -7,6 +7,8 @@ verbatim (content=, not json=). A transport error maps to EmberVMTransportError.
 
 from __future__ import annotations
 
+import runpy
+
 import httpx
 import pytest
 
@@ -34,6 +36,13 @@ async def test_submit_sets_guest_path_and_forwards_body_verbatim(monkeypatch):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.extensions["timeout"] == {
+            "connect": 5.0,
+            "read": 17.0,
+            "write": 17.0,
+            "pool": 17.0,
+        }
+        assert "Idempotency-Key" not in request.headers
         captured["url"] = str(request.url)
         captured["path_header"] = request.headers.get("X-Ember-Guest-Path")
         captured["ct_header"] = request.headers.get("X-Ember-Guest-Content-Type")
@@ -47,7 +56,7 @@ async def test_submit_sets_guest_path_and_forwards_body_verbatim(monkeypatch):
         body=b'{"a":1}',
         guest_path="/invoke",
         extra_guest_headers={"Content-Type": "application/json"},
-        read_timeout=5.0,
+        read_timeout=17.0,
     )
 
     assert resp.status_code == 200
@@ -151,3 +160,32 @@ async def test_submit_unconfigured_url_raises(monkeypatch):
             extra_guest_headers=None,
             read_timeout=5.0,
         )
+
+
+@pytest.mark.asyncio
+async def test_url_is_captured_at_import_and_auth_is_fresh(monkeypatch, tmp_path):
+    token = tmp_path / "token"
+    monkeypatch.setenv("K8S_AUTH_TOKEN_FILE", str(token))
+    monkeypatch.setenv("EMBERVM_URL", "http://import-time")
+    module = runpy.run_module("faas.embervm_client")
+    monkeypatch.setenv("EMBERVM_URL", "http://later")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    _mock_client(monkeypatch, handler)
+    for value in ("first", "rotated", None):
+        if value is None:
+            token.unlink()
+        else:
+            token.write_text(value)
+        await module["submit"]("fn", body=b"", guest_path="/invoke", read_timeout=9)
+    assert [request.url.host for request in requests] == ["import-time"] * 3
+    assert [request.headers.get("Authorization") for request in requests] == [
+        "Bearer first",
+        "Bearer rotated",
+        None,
+    ]
+    assert all("Idempotency-Key" not in request.headers for request in requests)

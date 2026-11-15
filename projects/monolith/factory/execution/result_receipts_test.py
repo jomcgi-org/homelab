@@ -1,7 +1,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 import hashlib
 import json
 from threading import Event
@@ -108,23 +108,122 @@ def prepare(**changes):
     return receipts.prepare_receipt(**(args | changes))
 
 
-def test_factory_meter_requires_receipts_without_enrolling_interactive_sessions(
-    monkeypatch,
-):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
+def attempt(receipt, **changes):
+    args = {
+        "receipt_id": receipt["id"],
+        "session_id": 1,
+        "claim_owner": "executor-one",
+        "dispatch_count": 1,
+        "guest_id": "guest-one",
+        "request_body": b'{"message":"implement task"}',
+        "on_attempt": lambda: None,
+    }
+    return receipts.attempt_prepared_receipt(**(args | changes))
+
+
+def test_prepared_receipt_is_inert_for_callbacks_readers_and_lease(database):
+    old = prepare()
+    staged = prepare(staged=True)
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, old["id"]).superseded_at is None
+        row = db.get(AgentResultReceipt, staged["id"])
+        assert row.attempt_phase == "prepared" and row.superseded_at == row.created_at
+        # This predicate is shared by the pre-migration lease/reader protocol.
+        active = db.exec(
+            select(AgentResultReceipt.id).where(
+                AgentResultReceipt.superseded_at.is_(None)
+            )
+        ).all()
+        assert active == [old["id"]]
+    with pytest.raises(receipts.ReceiptRejected, match="receipt_not_attempted"):
+        capture(staged)
+    with Session(database) as db:
+        pending = store.get_pending_message(db, 1, 1)
+        pending.claimed_at = datetime.now(UTC) - timedelta(seconds=31)
+        db.commit()
+    assert store.reclaim_stale_claims_sync() == 0
+    hold = store.read_response_lost_hold_sync(1)
+    assert hold["receipt_id"] == old["id"]
+    before = execution_state(database)
+    with pytest.raises(receipts.ReceiptRejected):
+        attempt(staged)
+    assert execution_state(database) == before
+
+
+def test_attempt_promotes_only_new_prepared_row_and_never_replays(database):
+    old = prepare()
+    staged = prepare(staged=True)
+    observed = []
+    assert attempt(staged, on_attempt=lambda: observed.append("attempt")) == {}
+    assert observed == ["attempt"]
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, old["id"]).superseded_at is not None
+        row = db.get(AgentResultReceipt, staged["id"])
+        assert row.attempt_phase == "attempted" and row.superseded_at is None
+    capture(staged)
+    for candidate in (old, staged):
+        with pytest.raises(receipts.ReceiptRejected, match="receipt_not_prepared"):
+            attempt(candidate, on_attempt=lambda: observed.append("duplicate"))
+    assert observed == ["attempt"]
+
+
+@pytest.mark.parametrize(
+    "changed", ["owner", "dispatch", "guest", "permit", "hold", "captured", "newer"]
+)
+def test_staged_attempt_rechecks_identity_and_never_changes_history(database, changed):
+    old = prepare()
+    staged = prepare(staged=True)
+    if changed == "hold":
+        assert store.mark_turn_response_lost_sync(
+            1,
+            1,
+            "executor-one",
+            1,
+            receipt_id=old["id"],
+            guest_id="guest-one",
+            reason="replica_shutdown",
+            hold_seconds=3600,
+        )
+    elif changed == "newer":
+        prepare()  # An old writer uses the unchanged legacy protocol.
+    else:
+        with Session(database) as db:
+            pending = store.get_pending_message(db, 1, 1)
+            if changed == "owner":
+                pending.claimed_by_replica = "other-owner"
+            elif changed == "dispatch":
+                pending.dispatch_count = 2
+            elif changed == "guest":
+                db.get(AgentSession, 1).ember_session_id = "different-guest"
+            elif changed == "permit":
+                db.exec(select(AgentCapacityReservation)).one().state = "uncertain"
+            elif changed == "captured":
+                # An older callback receiver can persist bytes, but its readers
+                # still exclude the staged row; new code never promotes it.
+                db.get(AgentResultReceipt, staged["id"]).result_body = b"{}"
+            db.commit()
+    before = execution_state(database)
+    with pytest.raises(receipts.ReceiptRejected):
+        attempt(staged, on_attempt=lambda: pytest.fail("refused attempt published"))
+    assert execution_state(database) == before
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, staged["id"]).attempt_phase == "prepared"
+
+
+def test_factory_meter_enrolls_only_named_astra_tasks(monkeypatch):
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
-    assert receipts.required("factory:task:node:1", "astra")
-    assert not receipts.required("interactive:one", "astra")
-    assert not receipts.required("factory:another:node:1", "astra")
+    assert receipts.meter_enrolled("factory:task:node:1", "astra")
+    assert not receipts.meter_enrolled("interactive:one", "astra")
+    assert not receipts.meter_enrolled("factory:another:node:1", "astra")
     for model in ("opus", "sol", "luna", "spark", ""):
-        assert not receipts.required("factory:task:node:1", model)
+        assert not receipts.meter_enrolled("factory:task:node:1", model)
     for scope in ("", "*", "task:node", "task,invalid*"):
         monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", scope)
-        assert not receipts.required("factory:task:node:1", "astra")
+        assert not receipts.meter_enrolled("factory:task:node:1", "astra")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "false")
-    assert not receipts.required("factory:task:node:1", "astra")
+    assert not receipts.meter_enrolled("factory:task:node:1", "astra")
 
 
 def capture(receipt, body=b'{"result":"native","terminal_reason":"end_turn"}'):
@@ -666,13 +765,6 @@ def test_storage_failure_has_no_ack_or_payload_log(database, monkeypatch, caplog
     assert "RuntimeError" in caplog.text
     with Session(database) as db:
         assert db.get(AgentResultReceipt, receipt["id"]).result_body is None
-
-
-def test_receipt_capture_is_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("AGENT_RESULT_RECEIPTS_ENABLED", raising=False)
-    assert not receipts.enabled()
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
-    assert receipts.enabled()
 
 
 def test_receiver_authenticates_before_reading_body(database):

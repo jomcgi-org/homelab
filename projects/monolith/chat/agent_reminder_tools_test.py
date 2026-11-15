@@ -2,11 +2,11 @@
 cancel_reminder) via FunctionModel, mirroring agent_channel_digest_tool_test.py.
 
 Unlike the digest tools (which fake out build_llm_caller), these exercise the
-real chat.reminders CRUD end to end against an in-memory SQLite engine patched
+real chat.scheduled_tasks CRUD end to end against an in-memory SQLite engine patched
 onto core.db.get_engine -- the interesting behaviour here is the tool's own
 ISO-8601 parsing, id coercion, and error-string plumbing around a real
 create/list/cancel round trip, not the CRUD logic itself (already covered by
-chat/reminders_test.py).
+chat/scheduled_tasks_test.py).
 """
 
 from datetime import datetime, timedelta, timezone

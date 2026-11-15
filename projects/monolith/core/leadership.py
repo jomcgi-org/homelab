@@ -83,11 +83,10 @@ def _release(key: str = LEASE_KEY) -> None:
 class LeaderElector:
     """Drives leadership transitions, invoking callbacks on acquire/resign.
 
-    ``lease_key`` scopes the election: differently-composed applications (the
-    confined monolith vs a domain-profile composition) must not contend for the
-    same lease, or whichever process wins silently benches the other's
-    singletons. The confined monolith keeps the historical "singletons" key;
-    domain profiles get a per-domain key (see framework.domain_profile).
+    ``lease_key`` scopes the election: differently-composed applications must
+    not contend for the same lease, or whichever process wins silently benches
+    the other's singletons. The confined monolith keeps the historical
+    "singletons" key; other compositions set ``Profile.leader_lease_key``.
     """
 
     def __init__(self, lease_key: str = LEASE_KEY) -> None:

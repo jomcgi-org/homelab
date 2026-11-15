@@ -265,8 +265,6 @@ class TestExploreHistoryScopeLock:
     @pytest.mark.asyncio
     async def test_explore_history_has_no_channel_id_parameter(self):
         """Assert directly against the tool's registered parameter schema."""
-        embed_client = AsyncMock()
-        store = MagicMock()
         agent = create_agent(base_url="http://fake:8080")
 
         tool = agent._function_toolset.tools.get("explore_history")

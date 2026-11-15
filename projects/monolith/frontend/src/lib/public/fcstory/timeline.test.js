@@ -1,68 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-  PHASES,
-  clamp,
-  lerp,
-  sub,
-  easeInOut,
-  easeOut,
   coldSegments,
   restoreBarFraction,
-  captionOpacity,
   MIN_SEGMENT_FRACTION,
 } from "./timeline.js";
 import { cold, restores } from "./data/trace.js";
-
-describe("fcstory timeline phase windows", () => {
-  const order = ["heroOut", "build", "freeze", "restore", "repeat", "out"];
-
-  it("are ordered and non-overlapping, within [0,1]", () => {
-    // The mockup's windows have deliberate gaps between beats (e.g. heroOut
-    // ends at 0.07, build starts at 0.08), so this asserts monotonic
-    // non-overlap rather than strict contiguity.
-    let prevEnd = -Infinity;
-    for (const name of order) {
-      const [a, b] = PHASES[name];
-      expect(a).toBeGreaterThanOrEqual(0);
-      expect(b).toBeLessThanOrEqual(1);
-      expect(b).toBeGreaterThan(a);
-      expect(a).toBeGreaterThanOrEqual(prevEnd);
-      prevEnd = b;
-    }
-  });
-
-  it("spans from 0 to 1 overall", () => {
-    expect(PHASES.heroOut[0]).toBe(0);
-    expect(PHASES.out[1]).toBe(1);
-  });
-});
-
-describe("fcstory timeline easing", () => {
-  it("easeInOut and easeOut map the boundaries 0->0 and 1->1", () => {
-    expect(easeInOut(0)).toBeCloseTo(0, 10);
-    expect(easeInOut(1)).toBeCloseTo(1, 10);
-    expect(easeOut(0)).toBeCloseTo(0, 10);
-    expect(easeOut(1)).toBeCloseTo(1, 10);
-  });
-
-  it("easeInOut is symmetric around its midpoint", () => {
-    expect(easeInOut(0.5)).toBeCloseTo(0.5, 10);
-  });
-
-  it("lerp and sub behave at their endpoints", () => {
-    expect(lerp(10, 20, 0)).toBe(10);
-    expect(lerp(10, 20, 1)).toBe(20);
-    expect(sub(0.2, 0.2, 0.4)).toBe(0);
-    expect(sub(0.4, 0.2, 0.4)).toBe(1);
-    expect(sub(0.3, 0.2, 0.4)).toBeCloseTo(0.5);
-  });
-
-  it("clamp bounds its input", () => {
-    expect(clamp(-1, 0, 1)).toBe(0);
-    expect(clamp(2, 0, 1)).toBe(1);
-    expect(clamp(0.5, 0, 1)).toBe(0.5);
-  });
-});
 
 describe("baked trace data sanity", () => {
   it("has a cold run with at least 3 phases", () => {
@@ -133,19 +75,5 @@ describe("restoreBarFraction", () => {
         expect(fraction).toBeCloseTo(raw, 10);
       }
     }
-  });
-});
-
-describe("captionOpacity", () => {
-  it("is 0 before the window opens and after it closes", () => {
-    const { opacity: before } = captionOpacity(0.0, 0.3, 0.5);
-    const { opacity: after } = captionOpacity(1.0, 0.3, 0.5);
-    expect(before).toBeLessThanOrEqual(0);
-    expect(after).toBeLessThanOrEqual(0);
-  });
-
-  it("is fully visible in the middle of the window", () => {
-    const { opacity } = captionOpacity(0.4, 0.3, 0.5);
-    expect(opacity).toBeCloseTo(1, 5);
   });
 });

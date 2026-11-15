@@ -8,12 +8,73 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 
+import httpx
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from knowledge import docfix
 import factory.orchestration.drainer as drainer
+
+
+@pytest.mark.parametrize("status", [200, 301, 503])
+def test_github_get_adapter(monkeypatch, status):
+    requests = []
+    real_client = httpx.Client
+    url = "https://api.github.com/repos/old-owner/repo"
+
+    def handler(request):
+        requests.append(request)
+        if status == 301 and str(request.url) == url:
+            return httpx.Response(301, headers={"Location": "/repositories/12345"})
+        return httpx.Response(503 if status == 503 else 200, json={})
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-docfix")
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if status == 503:
+        with pytest.raises(httpx.HTTPStatusError):
+            docfix._github_get(url)
+    else:
+        assert docfix._github_get(url).status_code == 200
+    assert [str(request.url) for request in requests] == (
+        [url, "https://api.github.com/repositories/12345"] if status == 301 else [url]
+    )
+    for request in requests:
+        assert request.method == "GET"
+        assert request.extensions["timeout"] == dict.fromkeys(
+            ("connect", "read", "write", "pool"), 15.0
+        )
+        assert request.headers["User-Agent"] == "monolith-docfix"
+        assert request.headers["Authorization"] == "Bearer fake-docfix"
+        assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+@pytest.mark.parametrize("failure", ["no-token", "status", "transport", "invalid-json"])
+def test_unavailable_docfix_sweep_returns_empty(monkeypatch, failure):
+    requests = []
+    real_client = httpx.Client
+
+    def handler(request):
+        requests.append(request)
+        if failure == "transport":
+            raise httpx.ConnectError("offline")
+        return httpx.Response(503 if failure == "status" else 200, text="invalid")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if failure == "no-token":
+        monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_API_TOKEN", "fake-docfix")
+    assert docfix.find_reviewable_docfix_prs(None) == []
+    assert len(requests) == (0 if failure == "no-token" else 1)
 
 
 @pytest.fixture(name="session")
@@ -81,7 +142,6 @@ def test_review_template_renders_merge_switch():
 
 
 def test_schedule_registers_one_shot_and_debounces(session, monkeypatch):
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
     monkeypatch.setenv("DRAINER_DOCFIX_AUTO_MERGE", "false")
 
     assert docfix.schedule_docfix_review(session, [31, 32], 600) is True
@@ -100,8 +160,7 @@ def test_schedule_registers_one_shot_and_debounces(session, monkeypatch):
     assert docfix.schedule_docfix_review(session, [33], 0) is False
 
 
-def test_schedule_debounces_recent_completion(session, monkeypatch):
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
+def test_schedule_debounces_recent_completion(session):
     session.execute(
         text(
             """
@@ -118,8 +177,7 @@ def test_schedule_debounces_recent_completion(session, monkeypatch):
     assert docfix.schedule_docfix_review(session, [34], 0) is False
 
 
-def test_schedule_allows_review_after_completed_debounce(session, monkeypatch):
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
+def test_schedule_allows_review_after_completed_debounce(session):
     session.execute(
         text(
             """
@@ -159,13 +217,6 @@ def test_prune_completed_reviews_only_removes_expired_rows(session):
     assert names == ["docfix-review:recent"]
 
 
-def test_schedule_is_noop_when_master_switch_is_off(session, monkeypatch):
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "false")
-
-    assert docfix.schedule_docfix_review(session, [35], 0) is False
-    assert session.execute(text("SELECT * FROM routine_jobs")).all() == []
-
-
 class _Response:
     def __init__(self, payload):
         self._payload = payload
@@ -175,7 +226,6 @@ class _Response:
 
 
 def test_find_reviewable_docfix_prs_filters_labels_and_titles(session, monkeypatch):
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
     monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
     monkeypatch.setattr(
         docfix,
@@ -334,7 +384,6 @@ def test_completion_trigger_extracts_pr_and_uses_ten_minute_delay(session, monke
 
 def test_sweep_schedules_reviewable_prs(session, monkeypatch):
     scheduled = []
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
     monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
     monkeypatch.setattr("core.db.get_engine", lambda: session.get_bind())
     monkeypatch.setattr("knowledge.api.sweep_unqueued_raws", lambda *_args: 4)
@@ -407,20 +456,14 @@ def test_helm_deploy_values_keep_docfix_auto_merge_off():
     )
 
     # Auto-merge is the gate that matters: a docfix PR must land only after a
-    # human has read it. Review itself is on (#5616), so it comments on PRs
+    # human has read it. Review is always on (#5616), so it comments on PRs
     # rather than merging them.
     assert (
         'name: DRAINER_DOCFIX_AUTO_MERGE\n              value: "false"' in result.stdout
     )
-    assert (
-        'name: KG_DOCFIX_REVIEW_ENABLED\n              value: "true"' in result.stdout
-    )
 
 
-def test_unknown_review_hold_survives_pruning_and_blocks_replacement(
-    session, monkeypatch
-):
-    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
+def test_unknown_review_hold_survives_pruning_and_blocks_replacement(session):
     session.execute(
         text("""
         INSERT INTO routine_jobs (name, routine_kind, last_run_at, last_status, payload)

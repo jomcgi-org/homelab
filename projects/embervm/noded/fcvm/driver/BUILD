@@ -23,8 +23,6 @@ go_library(
         "process_linux.go",
         "process_other.go",
         "provisioner.go",
-        "reflink_linux.go",
-        "reflink_other.go",
         "serial.go",
         "uidlease_linux.go",
         "uidlease_other.go",
@@ -38,6 +36,7 @@ go_library(
         "//projects/embervm/noded/substrate",
         "//projects/embervm/noded/unixsock",
         "//projects/embervm/noded/vsockproto",
+        "//projects/firecracker/substrate/bootenv",
         "@io_opentelemetry_go_otel//:otel",
     ] + select({
         "@rules_go//go/platform:android": [
@@ -71,7 +70,6 @@ go_test(
         "logtag_test.go",
         "preflight_test.go",
         "provisioner_test.go",
-        "reflink_linux_test.go",
         "serial_test.go",
         "uidlease_linux_test.go",
     ],

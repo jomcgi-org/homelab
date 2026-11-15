@@ -3,11 +3,11 @@
 package main
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/guestvolume"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,57 +34,24 @@ func mountProc(logger *slog.Logger) {
 	logger.Info("mounted proc on /proc")
 }
 
-// mountStatefulVolume formats dev with ext4 if it has no existing filesystem
-// signature (a freshly created sparse volume on first boot), creates mountPath,
-// and mounts it. This is the one place in the whole system that formats-if-blank
-// and mounts the stateful volume (the host never mounts it, decision 9). A
-// mkfs/mount failure is FATAL: a Postgres guest that cannot reach its volume
-// must fail the boot loudly rather than run against a missing data directory.
-// Mirrors the python runtime guest-init's mountVolumeDevice.
+// mountStatefulVolume formats an explicitly selected blank device and mounts it.
+// A failure is fatal: Postgres must not run against a missing data directory.
 func mountStatefulVolume(logger *slog.Logger, dev, mountPath string) error {
-	blank, err := deviceIsBlank(dev)
-	if err != nil {
-		return fmt.Errorf("probe volume device %s: %w", dev, err)
-	}
-	if blank {
-		logger.Info("stateful volume: no filesystem signature, formatting ext4", "device", dev)
-		if out, err := exec.Command("mkfs.ext4", "-q", dev).CombinedOutput(); err != nil {
-			return fmt.Errorf("mkfs.ext4 %s: %w: %s", dev, err, string(out))
-		}
-	}
-	if err := os.MkdirAll(mountPath, 0o755); err != nil {
-		return fmt.Errorf("mkdir volume mount path %s: %w", mountPath, err)
-	}
-	if err := unix.Mount(dev, mountPath, "ext4", 0, ""); err != nil {
-		return fmt.Errorf("mount %s at %s: %w", dev, mountPath, err)
-	}
-	logger.Info("stateful volume: mounted", "device", dev, "mount", mountPath)
-	return nil
+	return mountVolumeWithOps(logger, dev, mountPath, guestvolume.Operations{
+		CombinedOutput: func(name string, args ...string) ([]byte, error) {
+			return exec.Command(name, args...).CombinedOutput()
+		},
+		MkdirAll: os.MkdirAll, Mount: unix.Mount,
+	})
 }
 
-// deviceIsBlank reports whether dev has NO existing filesystem signature (blkid
-// finds nothing), meaning this is a freshly created sparse volume that needs
-// formatting on first boot. blkid exits 2 with empty output for an unrecognised
-// signature (the blank case); any OTHER error is propagated so a real problem is
-// not misread as "blank, go ahead and mkfs" (which would destroy data blkid
-// merely failed to identify). Mirrors the python runtime guest-init.
-func deviceIsBlank(dev string) (bool, error) {
-	out, err := exec.Command("blkid", "-o", "value", "-s", "TYPE", dev).CombinedOutput()
-	if err == nil {
-		return len(trimTrailingNewline(out)) == 0, nil
-	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if exitErr.ExitCode() == 2 {
-			return true, nil
-		}
-	}
-	return false, fmt.Errorf("blkid %s: %w: %s", dev, err, string(out))
-}
-
-// trimTrailingNewline strips a single trailing newline blkid's output carries.
-func trimTrailingNewline(b []byte) []byte {
-	if n := len(b); n > 0 && b[n-1] == '\n' {
-		return b[:n-1]
-	}
-	return b
+func mountVolumeWithOps(logger *slog.Logger, dev, mountPath string, ops guestvolume.Operations) error {
+	return guestvolume.Mount(dev, mountPath, []string{"-q", dev}, ops, guestvolume.Hooks{
+		BeforeFormat: func() {
+			logger.Info("stateful volume: no filesystem signature, formatting ext4", "device", dev)
+		},
+		Mounted: func() {
+			logger.Info("stateful volume: mounted", "device", dev, "mount", mountPath)
+		},
+	})
 }

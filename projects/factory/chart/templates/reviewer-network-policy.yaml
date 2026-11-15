@@ -1,0 +1,40 @@
+{{- if and .Values.reviewer.enabled .Values.networkPolicy.cilium }}
+# No inbound connections yet: metrics use a port-forward, and kubelet health
+# probes are host traffic. DNS is allowed by the cluster's default policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "factory.reviewerName" . }}
+  namespace: {{ .Values.broker.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.reviewerSelector" . | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.brokerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.broker.adminPort | quote }}
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ include "factory.kagentNamespace" . }}
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.kagent.controller.service.ports.targetPort | default 8083 | quote }}
+              protocol: TCP
+    - toFQDNs:
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}

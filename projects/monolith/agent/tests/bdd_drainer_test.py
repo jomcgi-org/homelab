@@ -421,7 +421,6 @@ def test_errored_one_shot_finishes_once_and_stays_not_due(
     monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(drainer, "start_agent_session", start)
     monkeypatch.setattr(drainer, "_await_turn", fail_turn)
-    monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
     monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
 
     assert drainer.drain_cycle.__wrapped__() == {

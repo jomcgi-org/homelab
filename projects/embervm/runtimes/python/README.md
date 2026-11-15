@@ -170,8 +170,8 @@ per registration.
 
 ## Non-root
 
-Runs as uid/gid 65532 (`runtime` account), `runAsNonRoot` convention. Dual-arch
-(x86_64 + aarch64) via the standard apko pipeline.
+Runs as uid/gid 65532 (`runtime` account), `runAsNonRoot` convention. amd64 only
+(`arm64 = False` in `BUILD`).
 
 ## Boot integration (Task 7, DONE)
 
@@ -181,7 +181,7 @@ A raw Firecracker boot ignores OCI image config entirely and boots
 image therefore ships a real PID 1: `ember-runtime-guest-init`
 (`guest-init/cmd/`, a small Go binary mirroring
 `projects/firecracker/sandbox/guest-init/`), layered at
-`/usr/local/bin/ember-runtime-guest-init` by `../BUILD`.
+`/usr/local/bin/ember-runtime-guest-init` by `BUILD` in this directory.
 
 On boot it:
 

@@ -45,7 +45,6 @@ def session_fixture(tmp_path):
 
 @pytest.fixture(name="client")
 def client_fixture(session, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
@@ -276,6 +275,37 @@ class TestGrants:
 
 
 class TestSessions:
+    @pytest.mark.parametrize("status", ["active", "paused"])
+    @pytest.mark.parametrize("new_session", [False, True])
+    def test_ended_session_is_terminal(self, client, status, new_session):
+        campaign = _create_campaign(client)
+        base = f"/api/grimoire/campaigns/{campaign['id']}/sessions"
+        created = client.post(base).json()
+        path = f"{base}/{created['id']}"
+        ended = client.patch(path, json={"status": "ended"})
+        assert ended.status_code == 200
+        if new_session:
+            assert client.post(base).status_code == 200
+
+        response = client.patch(path, json={"status": status})
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "ended sessions cannot be reopened"
+        stored = next(
+            row for row in client.get(base).json() if row["id"] == created["id"]
+        )
+        assert stored == ended.json()
+
+    def test_repeated_end_preserves_end_time(self, client):
+        campaign = _create_campaign(client)
+        base = f"/api/grimoire/campaigns/{campaign['id']}/sessions"
+        created = client.post(base).json()
+        path = f"{base}/{created['id']}"
+        first = client.patch(path, json={"status": "ended"})
+        repeated = client.patch(path, json={"status": "ended"})
+        assert first.status_code == repeated.status_code == 200
+        assert first.json() == repeated.json()
+
     def test_create_second_active_conflicts_then_succeeds_after_end(self, client):
         campaign = _create_campaign(client)
 

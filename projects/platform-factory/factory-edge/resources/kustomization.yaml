@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The factory cluster's only path from the internet: one Cloudflare Tunnel, a
+# Gateway that accepts routes only from the `edge` namespace, and DNS only for
+# routes annotated factory.jomcgi.dev/publish=true. The edge Application
+# (../edge/) publishes its hostnames through the authenticated Envoy Gateway;
+# any other hostname answers 404.
+resources:
+  - tunnel.yaml
+  - gateway.yaml
+  - dns.yaml

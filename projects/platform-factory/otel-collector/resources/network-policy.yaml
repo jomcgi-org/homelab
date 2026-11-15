@@ -1,0 +1,64 @@
+# otel-collector on the factory cluster: two agents that only send. Neither
+# accepts connections (kubelet probes from the local host are not subject to
+# policy), and Honeycomb is the only destination outside the cluster.
+#
+# Node agent (DaemonSet): its own node's kubelet and Cilium endpoints, the API
+# server for pod metadata, and Honeycomb.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: node-agent
+  namespace: otel-collector
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: otel-collector
+      app.kubernetes.io/component: logs
+  egress:
+    - toEntities: [kube-apiserver]
+    # Every target is addressed by this node's IP (status.hostIP), so the
+    # host entity is enough: kubelet stats, Cilium agent metrics and Hubble
+    # metrics.
+    - toEntities: [host]
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP
+            - port: "9962"
+              protocol: TCP
+            - port: "9965"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: api.honeycomb.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# Cluster agent (single Deployment): the API server for the Event watch,
+# service discovery and each server's metrics, the Cilium operators wherever
+# they run, and Honeycomb.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cluster-agent
+  namespace: otel-collector
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: otel-collector
+      app.kubernetes.io/component: cluster
+  egress:
+    - toEntities: [kube-apiserver]
+    # The operator runs on the host network of any node.
+    - toEntities: [host, remote-node]
+      toPorts:
+        - ports:
+            - port: "9963"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: api.honeycomb.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

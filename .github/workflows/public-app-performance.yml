@@ -1,0 +1,209 @@
+name: Public app performance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - projects/monolith/frontend/scripts/public-app-performance*.mjs
+      - projects/monolith/frontend/src/lib/public/performance/**
+      - .github/workflows/public-app-performance.yml
+  workflow_dispatch:
+    inputs:
+      fresh_page_cache:
+        description: "Use one new page-cache key for this run and repeat it across page/diagnostic samples"
+        type: boolean
+        default: false
+      cache_miss_probes:
+        description: "Add 20 unique-query GET probes for each of the thirteen fixed public endpoints"
+        type: boolean
+        default: false
+
+# Production observations use an anonymous browser on a fresh hosted runner.
+# PR code receives no secrets, deployment credentials or repository write token.
+permissions:
+  contents: read
+
+# Avoid overlapping measurement traffic, including manually dispatched runs.
+concurrency:
+  group: public-app-performance
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      HARNESS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CACHE_MISS_PROBES: ${{ github.event_name == 'pull_request' || inputs.cache_miss_probes || false }}
+      FRESH_PAGE_CACHE: ${{ github.event_name == 'pull_request' || inputs.fresh_page_cache || false }}
+    steps:
+      - name: Set measurement directories on the assigned runner
+        run: |
+          echo "PERFORMANCE_OUTPUT=$RUNNER_TEMP/public-app-performance" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_PREFIX=$RUNNER_TEMP/public-app-browser" >> "$GITHUB_ENV"
+          if [[ "$FRESH_PAGE_CACHE" == "true" ]]; then
+            echo "PAGE_CACHE_KEY=run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.HARNESS_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Install the pinned browser without workspace build scripts
+        timeout-minutes: 10
+        run: |
+          npm install --prefix "$PLAYWRIGHT_PREFIX" --no-save --ignore-scripts playwright@1.62.1
+          "$PLAYWRIGHT_PREFIX/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Record runner and measurement provenance
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import os from 'node:os';
+          import path from 'node:path';
+          import { pageCohort } from './projects/monolith/frontend/src/lib/public/performance/page-cohort.js';
+          const output = process.env.PERFORMANCE_OUTPUT;
+          const prefix = process.env.PLAYWRIGHT_PREFIX;
+          const pkg = JSON.parse(await readFile(path.join(prefix, 'node_modules/playwright/package.json'), 'utf8'));
+          const browsers = JSON.parse(await readFile(path.join(prefix, 'node_modules/playwright-core/browsers.json'), 'utf8'));
+          await mkdir(output, { recursive: true });
+          await writeFile(path.join(output, 'provenance.json'), JSON.stringify({
+            measuredOrigin: 'https://jomcgi.dev',
+            harnessSha: process.env.HARNESS_SHA,
+            deployedSha: null,
+            cacheMissProbesEnabled: process.env.CACHE_MISS_PROBES === 'true',
+            pageCache: pageCohort(process.env.PAGE_CACHE_KEY || undefined),
+            probeEndpointCount: 13,
+            probeSamplesPerEndpoint: 20,
+            representativeTripSlug: '2025-liard-hot-springs',
+            admissionOnlyRoutes: ['/app/grimoire'],
+            baselineNote: 'Grimoire admission is a new observation without an earlier browser baseline; no protected corpus or admission interaction is measured.',
+            runUrl: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            startedAt: new Date().toISOString(),
+            nodeVersion: process.version,
+            playwrightVersion: pkg.version,
+            chromium: browsers.browsers.find(browser => browser.name === 'chromium'),
+            runner: {
+              os: process.env.RUNNER_OS,
+              arch: process.env.RUNNER_ARCH,
+              image: process.env.ImageOS,
+              imageVersion: process.env.ImageVersion,
+              cpu: os.cpus()[0]?.model,
+              logicalCpus: os.cpus().length,
+            },
+            note: 'The checkout identifies the measurement tool, not the deployed application. Verify rollout separately before comparing results.',
+          }, null, 2) + '\n');
+          NODE
+      - name: Check browser visibility and calibrate network timing
+        id: browser-fixtures
+        timeout-minutes: 2
+        run: |
+          node projects/monolith/frontend/scripts/public-app-performance-fixture.mjs \
+            --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
+            --output "$PERFORMANCE_OUTPUT"
+      - name: Measure the deployed public apps and core data endpoints
+        timeout-minutes: 28
+        run: |
+          probe_flags=()
+          if [[ "$CACHE_MISS_PROBES" == "true" ]]; then
+            probe_flags+=(--cache-miss-probes)
+          fi
+          page_flags=()
+          if [[ "$FRESH_PAGE_CACHE" == "true" ]]; then
+            page_flags+=(--page-cache-key "$PAGE_CACHE_KEY")
+          fi
+          timeout --signal=TERM --kill-after=30s 26m \
+            node projects/monolith/frontend/scripts/public-app-performance.mjs \
+              --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
+              --origin https://jomcgi.dev "${probe_flags[@]}" "${page_flags[@]}" \
+              --route /app/hikes \
+              --route /app/ships \
+              --route /app/stars \
+              --route /app/trips \
+              --route /scotland \
+              --route /app/llm-leaderboard \
+              --route /app/notes \
+              --route /app/grimoire \
+              --route /app/frank \
+              --route /app/firecracker \
+              --route /ember/firecracker \
+              --route /scotland/privacy \
+              --route /scotland/terms \
+              --route /scotland/support \
+              --route /app/trips/2025-liard-hot-springs \
+              --route /app/trips/2025-liard-hot-springs/timeline \
+              --route /app/trips/2025-liard-hot-springs/day/1 \
+              --content-selector '/app/hikes::.map-snapshot .snapshot-row' \
+              --content-selector '/app/ships::.map-snapshot .snapshot-row' \
+              --content-selector '/app/stars::.map-snapshot .snapshot-row' \
+              --content-selector '/app/notes::.graph-overview li' \
+              --content-selector '/app/trips/2025-liard-hot-springs::.dateline' \
+              --content-selector '/app/trips/2025-liard-hot-springs/day/1::.photo img' \
+              --interaction '/app/hikes::button.filter-toggle' \
+              --interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")' \
+              --interaction '/app/stars::[aria-label="Map mode"] button:has-text("Historical")' \
+              --interaction-ready-url '/app/stars::/app/stars/history-map' \
+              --interaction '/app/trips/2025-liard-hot-springs/day/1::button[aria-label="Next photo"]' \
+              --endpoint /app/hikes/__data.json \
+              --endpoint /app/hikes/walk/7fc20756-89c2-5280-9be9-3ddb3db01e44 \
+              --endpoint /app/ships/__data.json \
+              --endpoint /app/ships/track/369514002 \
+              --endpoint /app/stars/__data.json \
+              --endpoint /app/trips/__data.json \
+              --endpoint /app/stars/map \
+              --endpoint /app/stars/history-map \
+              --endpoint /app/stars/history \
+              --endpoint /app/ships/heat \
+              --endpoint /app/notes/graph \
+              --endpoint /app/notes/stats \
+              --endpoint /scotland/marketplace.json \
+              --runs 3 --samples 20 --settle-ms 15000 \
+              --output "$PERFORMANCE_OUTPUT" \
+            | tee "$PERFORMANCE_OUTPUT/measurement.log"
+      - name: Diagnose the ready Stars Historical interaction separately
+        if: ${{ always() && steps.browser-fixtures.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          page_flags=()
+          if [[ "$FRESH_PAGE_CACHE" == "true" ]]; then
+            page_flags+=(--page-cache-key "$PAGE_CACHE_KEY")
+          fi
+          timeout --signal=TERM --kill-after=15s 270s \
+            node projects/monolith/frontend/scripts/public-app-performance-stars.mjs \
+              "${page_flags[@]}" \
+              --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
+              --output "$PERFORMANCE_OUTPUT/stars-diagnostic"
+      - name: Summarize completed observations
+        if: always()
+        run: |
+          {
+            echo '## Deployed public app observations'
+            echo
+            echo 'Production: https://jomcgi.dev. Harness revision:' "$HARNESS_SHA"'. This is not the deployed revision.'
+            echo
+            echo 'Three cold-browser loads per route; observed CDN state, no purge. INP remains unavailable; explicit clicks report lab Event Timing after the load cutoff. Missing content milestones remain unavailable. Worker pages do not certify the full mobile throttling profile.'
+            if [[ "$FRESH_PAGE_CACHE" == "true" ]]; then
+              echo 'Page cohort: stable key' "$PAGE_CACHE_KEY"'. Repeated across runs and Stars diagnosis; actual edge states and served assets must be checked. Do not pool with canonical observations or infer an isolated causal speedup.'
+            else
+              echo 'Page cohort: canonical URLs.'
+            fi
+            echo
+            if [[ -f "$PERFORMANCE_OUTPUT/table.md" ]]; then
+              cat "$PERFORMANCE_OUTPUT/table.md"
+            else
+              echo 'The run did not finish a summary table. Inspect the step failure and any partial JSON artifact; missing observations are not passes.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload observations, including partial failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-app-performance-${{ env.HARNESS_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PERFORMANCE_OUTPUT }}/
+          if-no-files-found: warn
+          retention-days: 90

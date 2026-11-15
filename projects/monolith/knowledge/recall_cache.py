@@ -88,10 +88,10 @@ def _backfill(text: str) -> None:
 
 def prepare_recall(session: Session, text: str | None) -> None:
     """Schedule bounded, single-flight backfill, never wait for an embedding."""
-    from knowledge.recall import RECALL_MIN_PROMPT_CHARS, recall_enabled
+    from knowledge.recall import RECALL_MIN_PROMPT_CHARS
 
     text = query_text(text)
-    if not recall_enabled() or len(text) < RECALL_MIN_PROMPT_CHARS:
+    if len(text) < RECALL_MIN_PROMPT_CHARS:
         return
     # Follow the KG jobs' dialect check without creating a global engine.
     if session.get_bind().dialect.name != "postgresql":

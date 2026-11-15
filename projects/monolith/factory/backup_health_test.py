@@ -237,11 +237,7 @@ def test_actual_reader_is_gated_cached_and_reads_only_the_named_configmap(monkey
     )
     monkeypatch.setattr(ops_health, "_now", lambda: NOW)
     ops_health.reset_caches()
-    monkeypatch.delenv("CNPG_BACKUP_HEALTH_ENABLED", raising=False)
-    assert asyncio.run(ops_health._cnpg_backups())["status"] == "unknown"
-    assert calls == []
     for key, value in {
-        "CNPG_BACKUP_HEALTH_ENABLED": "true",
         "CNPG_BACKUP_STATUS_NAMESPACE": "otel-collector",
         "CNPG_BACKUP_STATUS_CONFIGMAP": "cnpg-backup-status",
         "CNPG_BACKUP_TARGETS": json.dumps(TARGETS),

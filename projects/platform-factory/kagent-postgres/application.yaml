@@ -1,0 +1,53 @@
+# kagent's PostgreSQL in its own namespace, outside the factory chart: the
+# chart runs with postgres.mode existing and reads the two connection-string
+# Secrets this fills in kagent (placeholders from kagent-postgres-secrets,
+# application-kagent.yaml; projects/factory-cluster/README.md, "Postgres").
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent-postgres
+  namespace: argocd
+  annotations:
+    # After cloudnative-pg (wave 2, the Cluster CRD). Nothing here is in
+    # another namespace, so it never waits on one existing.
+    argocd.argoproj.io/sync-wave: "3"
+    # The root Application prunes; removing this file must not cascade into
+    # the database.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/kagent-postgres/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent-pg
+  # kagent-pg-setup and garage-init write these.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      namespace: kagent-pg
+      name: kagent-pg-logins
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: kagent-pg
+      name: kagent-pg-s3
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

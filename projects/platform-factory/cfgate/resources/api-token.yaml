@@ -1,0 +1,11 @@
+# Cloudflare API token cfgate acts with. The 1Password item carries a field
+# CLOUDFLARE_API_TOKEN for a token scoped to: Account: Cloudflare Tunnel:Edit;
+# Zone jomcgi.dev: DNS:Edit and Zone:Read. It is IP-restricted to the home
+# connection's public address.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: cloudflare-api-credentials
+  namespace: cfgate-system
+spec:
+  itemPath: "vaults/k8s-homelab/items/factory-cloudflare-api-token"

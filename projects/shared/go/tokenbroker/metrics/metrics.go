@@ -1,0 +1,141 @@
+package metrics
+
+import (
+	"time"
+
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+type Metrics struct {
+	Refreshes       prometheus.Counter
+	RefreshFailures prometheus.Counter
+	ReusedRetries   prometheus.Counter
+	CodexUsage      *prometheus.CounterVec
+}
+
+// DefaultPrefix is EmberVM's metric name prefix.
+const DefaultPrefix = "tokenbroker"
+
+// New returns the metrics under DefaultPrefix.
+func New() *Metrics { return NewWithPrefix(DefaultPrefix) }
+
+// NewWithPrefix names every metric prefix+"_"+suffix, so a second broker in
+// the same Prometheus keeps its own families.
+func NewWithPrefix(prefix string) *Metrics {
+	return &Metrics{
+		Refreshes:       prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "_refresh_total", Help: "Token refresh attempts."}),
+		RefreshFailures: prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "_refresh_failures_total", Help: "Failed token refreshes."}),
+		ReusedRetries:   prometheus.NewCounter(prometheus.CounterOpts{Name: prefix + "_refresh_token_reused_total", Help: "Refresh token reuse retries."}),
+		CodexUsage: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: prefix + "_codex_usage_total", Help: "Codex usage refresh outcomes.",
+		}, []string{"grant", "outcome"}),
+	}
+}
+
+func (m *Metrics) Register(r prometheus.Registerer) {
+	r.MustRegister(m.Refreshes, m.RefreshFailures, m.ReusedRetries, m.CodexUsage)
+}
+
+type quotaCollector struct {
+	store     *quota.Store
+	providers []string
+	used      *prometheus.Desc
+	resetsAt  *prometheus.Desc
+	exhausted *prometheus.Desc
+	observed  *prometheus.Desc
+	// Per-grant families are separate from the per-provider ones above so
+	// the provider label sets stay exactly as dashboards and tests expect.
+	grantUsed      *prometheus.Desc
+	grantExhausted *prometheus.Desc
+}
+
+// NewQuotaCollector exports quota observations under DefaultPrefix.
+func NewQuotaCollector(store *quota.Store, providers []string) prometheus.Collector {
+	return NewQuotaCollectorWithPrefix(DefaultPrefix, store, providers)
+}
+
+// NewQuotaCollectorWithPrefix exports quota observations as prefix+"_"+suffix.
+func NewQuotaCollectorWithPrefix(prefix string, store *quota.Store, providers []string) prometheus.Collector {
+	return &quotaCollector{
+		store:     store,
+		providers: append([]string(nil), providers...),
+		used: prometheus.NewDesc(
+			prefix+"_quota_used_percent",
+			"Latest observed quota utilization percentage.",
+			[]string{"provider", "window"}, nil,
+		),
+		resetsAt: prometheus.NewDesc(
+			prefix+"_quota_resets_at_seconds",
+			"Latest observed quota reset time as Unix seconds.",
+			[]string{"provider", "window"}, nil,
+		),
+		exhausted: prometheus.NewDesc(
+			prefix+"_quota_exhausted",
+			"Whether the latest provider quota observation is exhausted.",
+			[]string{"provider"}, nil,
+		),
+		observed: prometheus.NewDesc(
+			prefix+"_quota_observed_at_seconds",
+			"Latest quota observation time as Unix seconds.",
+			[]string{"provider"}, nil,
+		),
+		grantUsed: prometheus.NewDesc(
+			prefix+"_grant_quota_used_percent",
+			"Latest observed quota utilization percentage for one grant.",
+			[]string{"grant", "provider", "window"}, nil,
+		),
+		grantExhausted: prometheus.NewDesc(
+			prefix+"_grant_quota_exhausted",
+			"Whether the latest quota observation for one grant is exhausted.",
+			[]string{"grant", "provider"}, nil,
+		),
+	}
+}
+
+func (c *quotaCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.used
+	ch <- c.resetsAt
+	ch <- c.exhausted
+	ch <- c.observed
+	ch <- c.grantUsed
+	ch <- c.grantExhausted
+}
+
+func (c *quotaCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, provider := range c.providers {
+		view := c.store.Get(provider)
+		if !view.Observed {
+			continue
+		}
+		exhausted := 0.0
+		if view.Exhausted {
+			exhausted = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.exhausted, prometheus.GaugeValue, exhausted, provider)
+		if observedAt, err := time.Parse(time.RFC3339, view.ObservedAt); err == nil {
+			ch <- prometheus.MustNewConstMetric(c.observed, prometheus.GaugeValue, float64(observedAt.Unix()), provider)
+		}
+		for _, window := range view.Windows {
+			ch <- prometheus.MustNewConstMetric(c.used, prometheus.GaugeValue, window.UsedPercent, provider, window.Name)
+			if window.ResetsAt == "" {
+				continue
+			}
+			reset, err := time.Parse(time.RFC3339, window.ResetsAt)
+			if err != nil {
+				continue
+			}
+			ch <- prometheus.MustNewConstMetric(c.resetsAt, prometheus.GaugeValue, float64(reset.Unix()), provider, window.Name)
+		}
+	}
+	for grant, view := range c.store.Grants() {
+		exhausted := 0.0
+		if view.Exhausted {
+			exhausted = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.grantExhausted, prometheus.GaugeValue, exhausted, grant, view.Provider)
+		for _, window := range view.Windows {
+			ch <- prometheus.MustNewConstMetric(c.grantUsed, prometheus.GaugeValue, window.UsedPercent, grant, view.Provider, window.Name)
+		}
+	}
+}

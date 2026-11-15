@@ -49,9 +49,6 @@ const NODE_WORD = {
   retired: "retired",
 };
 
-/** Execution is distinct from occupied capacity. */
-export const LIVE_STATES = new Set(["executing"]);
-
 export function commitUrl(sha) {
   return sha ? `${REPO}/commit/${sha}` : null;
 }
@@ -77,7 +74,7 @@ export function plural(count, word, suffix = "s") {
  * lane's deadlines, the policy windows and the issue timestamps are all UTC,
  * and a record that silently shifts is worse than one that names its zone.
  */
-export function isoDay(iso) {
+function isoDay(iso) {
   return iso ? new Date(iso).toISOString().slice(0, 10) : "";
 }
 
@@ -157,7 +154,7 @@ export function stepsOf(task) {
  * list price; `recent` is capped at a dozen tasks, so it is only the fallback
  * for a snapshot written before totals_7d existed.
  */
-export function executionSnapshotStale(snapshottedAt, now) {
+function executionSnapshotStale(snapshottedAt, now) {
   const age = new Date(now).getTime() - new Date(snapshottedAt ?? "").getTime();
   return (
     !Number.isFinite(age) || age < 0 || age > EXECUTION_SNAPSHOT_MAX_AGE_MS

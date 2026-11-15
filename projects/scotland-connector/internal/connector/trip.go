@@ -87,7 +87,8 @@ type WalkOption struct {
 	Verdict     verdict.Verdict `json:"verdict"`
 	Why         string          `json:"why"`
 	// StartFrom and StartBy bound the start time that keeps the walk inside
-	// the slot; null unless it fits.
+	// the slot; null unless it fits. A walk longer than its slot gets one
+	// start, before the slot or at sunrise (see walks.Assessment).
 	StartFrom *string  `json:"start_from"`
 	StartBy   *string  `json:"start_by"`
 	Slot      *SlotOut `json:"slot"`

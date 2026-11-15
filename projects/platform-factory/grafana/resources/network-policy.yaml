@@ -1,0 +1,43 @@
+# The grafana namespace's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). People reach Grafana only
+# through the edge proxy; it calls Prometheus and Authentik's token and
+# userinfo endpoints, nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: grafana
+  namespace: grafana
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    # The OIDC token and userinfo endpoints, by their public name. It
+    # resolves to Cloudflare's anycast addresses, so this admits any site
+    # Cloudflare serves there.
+    - toFQDNs:
+        - matchName: factory-auth.jomcgi.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

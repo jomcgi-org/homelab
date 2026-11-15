@@ -27,7 +27,6 @@ def test_concurrent_enabled_feed_passes_persist_one_floor(pg, monkeypatch, caplo
             insert_barrier.wait(timeout=10)
 
     event.listen(engine, "before_cursor_execute", synchronize_first_insert)
-    monkeypatch.setenv("KG_FEED_ENABLED", "true")
     monkeypatch.delenv("KG_FEED_SINCE", raising=False)
     monkeypatch.setattr(kg_feed, "get_engine", lambda: engine)
 

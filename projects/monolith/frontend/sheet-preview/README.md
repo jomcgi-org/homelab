@@ -37,6 +37,12 @@ zero bottom margin. Both prefixed artifact paths run the same overflow checks
 with and without the banner. The browser also checks sandbox isolation, page
 titles, canonical metadata, accessible controls, focus outlines, keyboard
 interaction, scheme persistence, selection, sorting and shallow query updates.
+Initial and reloaded leaderboard captures await fonts and two animation
+frames before measuring. The browser-only mount can otherwise briefly use
+the shared root font size while the sheet's `:has(.td)` rule settles. The
+reload check records root font size and requires it to match the size before
+the scheme change. Horizontal overflow is still asserted directly, with no
+retry based on geometry.
 The artifact owns its own document scheme; the wrapper does not inject styles
 or a theme control into untrusted HTML. DOM tests additionally use fake timers
 for version failures, cache busting, route changes and teardown.

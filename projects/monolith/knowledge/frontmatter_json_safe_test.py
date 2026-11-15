@@ -12,8 +12,6 @@ from __future__ import annotations
 import datetime
 import json
 
-import pytest
-
 from knowledge.frontmatter import _json_safe, parse
 
 

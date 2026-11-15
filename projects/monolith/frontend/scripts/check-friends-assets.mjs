@@ -63,14 +63,6 @@ const server = createServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify(value));
   };
-  if (path === "/api/grimoire/lobby")
-    return json({
-      user: { display_name: "Local fixture", email: "fixture@example.invalid" },
-      campaigns: [],
-      invitations: [],
-      can_administer_accounts: false,
-    });
-  if (path === "/api/grimoire/campaigns") return json([]);
   if (path === "/api/moving/state")
     return json({
       viewer: "fixture@example.invalid",
@@ -138,7 +130,8 @@ const server = createServer(async (req, res) => {
     res.statusCode = 302;
     return res.end();
   }
-  const app = path.match(/^\/(moving|grimoire)(?:\/|$)/)?.[1];
+  // Grimoire is a static app on its own route and never uses /_app.
+  const app = path.match(/^\/(moving)(?:\/|$)/)?.[1];
   if (!app) {
     res.statusCode = 404;
     return res.end();
@@ -203,7 +196,7 @@ const output = path.resolve(
 await mkdir(output, { recursive: true });
 const results = [];
 try {
-  for (const app of ["grimoire", "moving"]) {
+  for (const app of ["moving"]) {
     for (const sessions of [[app], ["grimoire", "moving"]]) {
       const context = await browser.newContext();
       await context.addCookies(
@@ -240,14 +233,8 @@ try {
       const style = await page
         .locator(`.${app}`)
         .first()
-        .evaluate(
-          (el, app) =>
-            getComputedStyle(el)
-              .getPropertyValue(
-                app === "grimoire" ? "--grim-accent" : "--cream",
-              )
-              .trim(),
-          app,
+        .evaluate((el) =>
+          getComputedStyle(el).getPropertyValue("--cream").trim(),
         );
       assert.ok(style, `${app} stylesheet applied`);
       assert.ok(
@@ -263,15 +250,6 @@ try {
           .filter((r) => r.status === 200)
           .every((r) => new URL(r.url).pathname.startsWith(`/${app}/_app/`)),
       );
-      if (app === "grimoire") {
-        await page
-          .getByRole("link", { name: "Character sheets", exact: true })
-          .click();
-        await page.waitForURL("**/grimoire/sheets");
-        await page.waitForLoadState("networkidle");
-        await page.goBack();
-        await page.waitForLoadState("networkidle");
-      }
       assert.deepEqual(errors, []);
       const assets = responses.filter((r) => r.status === 200);
       results.push({
@@ -291,14 +269,14 @@ try {
   }
   const request = await browser.newContext();
   const asset = records
-    .find(
-      (r) => r.path.startsWith("/grimoire/_app/") && r.path.endsWith(".css"),
-    )
-    .path.replace("/grimoire", "");
+    .find((r) => r.path.startsWith("/moving/_app/") && r.path.endsWith(".css"))
+    .path.replace("/moving", "");
   for (const referer of [
     "",
-    origin + "/grimoireevil",
-    "https://evil.invalid/grimoire",
+    origin + "/movingevil",
+    "https://evil.invalid/moving",
+    // Grimoire no longer dispatches shared assets.
+    origin + "/grimoire",
   ]) {
     const r = await request.request.get(origin + asset, {
       headers: referer ? { Referer: referer } : {},
@@ -311,9 +289,9 @@ try {
     assert.equal(r.headers().location, undefined);
     assert.equal(await r.text(), "Not Found");
     dispatchChecks.push({ referer, status: r.status(), headers: r.headers() });
-    // EXACTLY the same URL, no cache-busting query, after every denial. Both
-    // lanes must still dispatch, including changing apps on the same asset.
-    for (const app of ["grimoire", "moving"]) {
+    // EXACTLY the same URL, no cache-busting query, after every denial. The
+    // lane must still dispatch.
+    for (const app of ["moving"]) {
       const valid = await request.request.get(origin + asset, {
         headers: { Referer: origin + "/" + app },
         maxRedirects: 0,
@@ -333,28 +311,30 @@ try {
   }
   assert.equal(negativeCache.size, 0);
   const redirected = await request.request.get(origin + asset + "?fixture=1", {
-    headers: { Referer: origin + "/grimoire?next=https://evil.invalid/" },
+    headers: { Referer: origin + "/moving?next=https://evil.invalid/" },
     maxRedirects: 0,
   });
   assert.equal(redirected.status(), 302);
   assert.equal(
     redirected.headers().location,
-    origin + "/grimoire" + asset + "?fixture=1",
+    origin + "/moving" + asset + "?fixture=1",
   );
   assert.equal(redirected.headers()["cache-control"], "no-store");
-  for (const app of ["moving", "grimoire"]) {
-    assert.equal(
-      (await request.request.get(origin + "/" + app + asset)).status(),
-      401,
-    );
-  }
+  assert.equal(
+    (await request.request.get(origin + "/moving" + asset)).status(),
+    401,
+  );
+  // Another lane's session opens nothing here.
+  await request.addCookies([
+    { name: "grimoire-id-token", value: "opaque-test-grimoire", url: origin },
+  ]);
+  assert.equal(
+    (await request.request.get(origin + "/moving" + asset)).status(),
+    401,
+  );
   await request.addCookies([
     { name: "moving-id-token", value: "opaque-test-moving", url: origin },
   ]);
-  assert.equal(
-    (await request.request.get(origin + "/grimoire" + asset)).status(),
-    401,
-  );
   assert.equal(
     (await request.request.get(origin + "/moving" + asset)).status(),
     200,

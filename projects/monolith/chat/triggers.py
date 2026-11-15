@@ -317,10 +317,6 @@ def update_trigger(
     return trigger
 
 
-def set_enabled(session: Session, name: object, enabled: bool) -> MessageTrigger:
-    return update_trigger(session, name, enabled=enabled)
-
-
 def delete_trigger(session: Session, name: object) -> MessageTrigger:
     trigger = _get_by_name(session, name)
     session.delete(trigger)
@@ -506,7 +502,7 @@ def manage_triggers(
             session.commit()
             return f"Updated trigger {row.name!r}."
         if op in {"enable", "disable"}:
-            row = set_enabled(session, name, op == "enable")
+            row = update_trigger(session, name, enabled=op == "enable")
             session.commit()
             return f"{op.title()}d trigger {row.name!r}."
         if op == "delete":

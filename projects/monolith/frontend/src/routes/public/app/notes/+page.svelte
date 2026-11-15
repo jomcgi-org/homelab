@@ -1,13 +1,114 @@
 <script>
+  import { flushSync, onMount } from "svelte";
   import { browser } from "$app/environment";
   import { page } from "$app/state";
-  import GraphView from "$lib/public/notes/GraphView.svelte";
+  import { overviewLeaseCurrent } from "$lib/public/notes/overview-lease.js";
   import {
     SiteIndex,
     TechnicalDrawingChrome,
     Trail,
   } from "$lib/public/components";
   import "$lib/public/styles/technical-drawing.css";
+
+  let { data = {} } = $props();
+  let GraphView = $state(null);
+  let graphStatus = $state("loading");
+  let attempt = $state(0);
+  let expired = $state(false);
+  let moduleFailed = false;
+  let stopped = false;
+  const overview = $derived(
+    !expired &&
+      data.overview &&
+      (browser
+        ? overviewLeaseCurrent(data.overviewDeadline, data.overviewClock)
+        : Date.now() < data.overview.expiresAt)
+      ? data.overview
+      : null,
+  );
+
+  $effect(() => {
+    const deadline = data.overviewDeadline;
+    const clock = data.overviewClock;
+    const remaining =
+      document.visibilityState === "hidden" ? 0 : deadline - performance.now();
+    const current = remaining > 0 && overviewLeaseCurrent(deadline, clock);
+    expired = !current;
+    if (!current) return;
+    let ended = false;
+    let frame;
+    const expire = () => {
+      ended = true;
+      flushSync(() => (expired = true));
+    };
+    const revalidate = () => {
+      if (!overviewLeaseCurrent(deadline, clock)) expire();
+    };
+    const beforePaint = () => {
+      if (ended) return;
+      revalidate();
+      if (!ended) frame = requestAnimationFrame(beforePaint);
+    };
+    // Recheck before the first post-sleep paint even if both the monotonic
+    // clock and timeout paused, and no visibility or pagehide event occurred.
+    frame = requestAnimationFrame(beforePaint);
+    window.addEventListener("focus", revalidate);
+    window.addEventListener("pageshow", revalidate);
+    // Expire unconditionally. A wall-clock adjustment cannot revive titles.
+    const timer = setTimeout(expire, remaining);
+    return () => {
+      ended = true;
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      window.removeEventListener("focus", revalidate);
+      window.removeEventListener("pageshow", revalidate);
+    };
+  });
+
+  async function loadGraph() {
+    if (moduleFailed) {
+      // Browsers retain a failed module evaluation for this document. Fetch a
+      // fresh manifest and module graph instead of retrying the same URL.
+      window.location.reload();
+      return;
+    }
+    graphStatus = "loading";
+    try {
+      const module = await import("$lib/public/notes/GraphView.svelte");
+      if (!stopped) {
+        GraphView = module.default;
+        attempt++;
+      }
+    } catch {
+      if (!stopped) {
+        moduleFailed = true;
+        graphStatus = "error";
+      }
+    }
+  }
+
+  onMount(() => {
+    const expire = () => flushSync(() => (expired = true));
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") expire();
+    };
+    // Clear before a page can be frozen or stored in the back-forward cache.
+    // Restoring the document cannot revive this first-view snapshot.
+    window.addEventListener("pagehide", expire);
+    document.addEventListener("visibilitychange", onVisibility);
+    onVisibility();
+    // Let the server-rendered titles paint before downloading the canvas,
+    // markdown renderer and D3. The full graph keeps its own HTTP lease.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(loadGraph);
+    });
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      window.removeEventListener("pagehide", expire);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  });
 </script>
 
 <svelte:head>
@@ -38,11 +139,54 @@
         <div class="ed-head">
           <a href="/slop/factory">Watch the factory</a>
         </div>
-        {#if browser}
-          <div class="graph">
-            <GraphView focusId={page.url.searchParams.get("focus")} />
+        <div class="graph">
+          <div
+            class="graph-overview"
+            hidden={graphStatus === "painted"}
+            aria-label="Public notes overview"
+          >
+            {#if overview}
+              <p class="graph-counts">
+                <span>{overview.nodeCount} notes</span>
+                <span>{overview.edgeCount} links</span>
+              </p>
+              {#if overview.titles.length}
+                <p class="sec-label">/ Connected notes</p>
+                <ul>
+                  {#each overview.titles as note (note.id)}
+                    <li>
+                      <a href={`?focus=${encodeURIComponent(note.id)}`}
+                        >{note.title}</a
+                      >
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p>No current public notes.</p>
+              {/if}
+            {:else}
+              <p>No current snapshot is available.</p>
+            {/if}
+            {#if graphStatus === "error"}
+              <p>The graph is unavailable right now.</p>
+              <button type="button" onclick={loadGraph}>TRY AGAIN</button>
+            {/if}
           </div>
-        {/if}
+          {#if GraphView}
+            <div
+              class="interactive-graph"
+              class:ready={graphStatus === "painted"}
+              inert={graphStatus !== "painted"}
+            >
+              {#key attempt}
+                <GraphView
+                  focusId={page.url.searchParams.get("focus")}
+                  onStatus={(status) => (graphStatus = status)}
+                />
+              {/key}
+            </div>
+          {/if}
+        </div>
       </section>
     </div>
   </div>
@@ -50,8 +194,53 @@
 
 <style>
   .graph {
+    position: relative;
     height: 80dvh;
     min-height: 480px;
     min-width: 0;
+  }
+  .graph-overview,
+  .interactive-graph {
+    position: absolute;
+    inset: 0;
+  }
+  .graph-overview {
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+  .graph-counts {
+    display: flex;
+    gap: 24px;
+    font-family: var(--font-code);
+  }
+  .graph-overview ul {
+    padding: 0;
+    list-style: none;
+  }
+  .graph-overview li {
+    border-bottom: 1px solid var(--line);
+  }
+  .graph-overview a {
+    display: block;
+    padding: 12px 0;
+    overflow-wrap: anywhere;
+  }
+  .graph-overview button {
+    min-height: 44px;
+    padding: 8px 12px;
+    font: inherit;
+    color: var(--ink);
+    background: var(--band);
+    border: 1px solid var(--stroke);
+  }
+  .graph-overview :is(a, button):focus-visible {
+    outline: 2px solid var(--accent-ink);
+    outline-offset: 2px;
+  }
+  .interactive-graph {
+    visibility: hidden;
+  }
+  .interactive-graph.ready {
+    visibility: visible;
   }
 </style>

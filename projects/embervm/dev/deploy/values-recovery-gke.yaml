@@ -78,7 +78,6 @@ noded:
     enabled: true
     onepassword:
       itemPath: vaults/k8s-homelab/items/embervm-recovery-noded-token
-  requireRestoreCapability: true
   warmthHeartbeat:
     intervalSeconds: 30
     staleAfterSeconds: 600
@@ -96,8 +95,6 @@ noded:
     # use this profile for workspace restoration or executor-loss recovery.
     endpoint: ''
     bucket: ''
-    compress: true
-    encrypt: true
     credentials:
       enabled: false
       secretName: ''
@@ -291,17 +288,12 @@ rootfsReclaim:
 envelopeRewrap:
   enabled: false
 grpcConnectionSweeper:
-  enabled: ''
   sweepIntervalMs: ''
-statefulSweeper:
-  pressureBanking:
-    enabled: false
 tracing:
   endpoint: ''
   serviceName: embervm-recovery-control
 hypervisorEpoch: fc-v1.16.1-r2-recovery-gke-1
 
-# Retain the verified node-confirmed ordering and serialize create workers.
-nodeConfirmedDestroy: true
+# Serialize create workers.
 controlPlane:
   createConcurrency: 1

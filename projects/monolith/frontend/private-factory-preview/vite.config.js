@@ -5,10 +5,10 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 export const aliases = [
-  { find: /^\$lib\/public\/components$/, replacement: here("./components.js") },
   { find: "$lib", replacement: here("../src/lib") },
   { find: "$app/stores", replacement: here("./state.js") },
   { find: "$app/navigation", replacement: here("./state.js") },
+  { find: "$app/state", replacement: here("./app-state.svelte.js") },
   { find: "$app/forms", replacement: here("./forms.js") },
 ];
 export default defineConfig({

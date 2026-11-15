@@ -4,7 +4,6 @@ The old receipt stays terminal. Restrictions are copied by the server, never
 accepted from the caller, and checked against the audit again before admission.
 """
 
-import hashlib
 import json
 
 from sqlmodel import select
@@ -18,10 +17,6 @@ ACTION = "refinement_delivery_prepared"
 MARKER = "refinement_delivery"
 
 
-def _digest(value):
-    return hashlib.sha256(dumps(value).encode()).hexdigest()
-
-
 def _inherited(row):
     direction = json.loads(row.direction_json or "{}")
     hold = direction.get("landing_hold")
@@ -29,7 +24,15 @@ def _inherited(row):
     # This operation carries the refinement's staging restriction only. Other
     # hold types, delivery grants and unknown direction semantics need their owner.
     if (
-        set(direction) != {"landing_hold", "conductor_gates"}
+        not {"landing_hold", "conductor_gates"} <= set(direction)
+        or set(direction)
+        - {
+            "landing_hold",
+            "conductor_gates",
+            "landing_hold_provenance",
+            "landing_hold_refusals",
+        }
+        or not controls.landing_held(row)
         or not isinstance(hold, dict)
         or hold.get("actor") != "factory:conductor"
         or hold.get("cause") != f"refine-gate:{row.task_id}"
@@ -67,7 +70,7 @@ def _preview(db, control, receipt_id, reason, observation):
         execution_authorized=False,
         landing_authorized=False,
     )
-    result["preview_sha256"] = _digest(result)
+    result["preview_sha256"] = controls.digest(result)
     return result
 
 

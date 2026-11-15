@@ -44,16 +44,6 @@ cat >"$STUB_HELM" <<'EOF'
 sub="${1:-} ${2:-}"
 case "$sub" in
   "show chart")
-    # STUB_CHART_PUBLISH_AFTER simulates main's publish landing mid-poll: the
-    # first N calls report unpublished, later ones published. Call count is
-    # kept in STUB_CHART_COUNT_FILE (unique per test case).
-    if [[ -n "${STUB_CHART_PUBLISH_AFTER:-}" ]]; then
-      n=$(cat "${STUB_CHART_COUNT_FILE}" 2>/dev/null || echo 0)
-      n=$((n + 1))
-      echo "$n" > "${STUB_CHART_COUNT_FILE}"
-      [[ "$n" -gt "${STUB_CHART_PUBLISH_AFTER}" ]] && exit 0
-      exit 1
-    fi
     exit "${STUB_CHART_RC:-0}" ;;
   "show values")
     [[ -n "${STUB_NO_IMAGES:-}" ]] && exit 0
@@ -82,7 +72,7 @@ run_check() {
 	env HELM="$STUB_HELM" \
 		REPOSITORY="oci://ghcr.io/jomcgi/homelab/charts" \
 		"$@" \
-		bash "$SCRIPT" foo 1.2.3 "$FAKE_TGZ" projects/foo >"$TMP/out" 2>&1
+		bash "$SCRIPT" foo 1.2.3 "$FAKE_TGZ" >"$TMP/out" 2>&1
 	local rc=$?
 	set -e
 	echo "$rc"
@@ -108,16 +98,10 @@ expect() {
 	echo "PASS: ${name}"
 }
 
-# 1. Published + digests differ -> FAIL with the bump command.
+# 1. Published + digests differ -> FAIL.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
 	STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "published+drift fails" 1 "$rc" "will NOT deploy"
-[[ "$rc" == 1 ]] && grep -qF "bazel/tools/git/bump-chart.sh projects/foo" "$TMP/out" &&
-	echo "PASS: fail message names the bump command" ||
-	{
-		echo "FAIL: fail message missing bump command"
-		FAILURES=$((FAILURES + 1))
-	}
+expect "published+drift fails" 1 "$rc" "must not be reused"
 
 # 2. Published + identical digests (different build-timestamp tags) -> OK.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
@@ -146,7 +130,7 @@ expect "unpinned fresh chart fails open" 0 "$rc" "nothing to check"
 # guard for every chart that carries one floating-tag image.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
 	STUB_TAG_ONLY_SIBLING=1 STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "tag-only sibling still detects drift" 1 "$rc" "will NOT deploy"
+expect "tag-only sibling still detects drift" 1 "$rc" "must not be reused"
 
 # 4e. ...and still passes when the pinned digests match.
 rc=$(run_check STUB_CHART_RC=0 STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub \
@@ -162,34 +146,6 @@ expect "unpushed fresh tag still compares" 0 "$rc" "digests match"
 # 5. No ghcr.io/jomcgi images pinned -> OK, nothing to compare.
 rc=$(run_check STUB_CHART_RC=0 STUB_NO_IMAGES=1)
 expect "no images passes" 0 "$rc" "nothing to check"
-
-# 6. Unpublished but origin/main claims a DIFFERENT version -> this PR carries
-# the bump; still OK.
-rc=$(run_check STUB_CHART_RC=1 MAIN_CHART_VERSION=1.2.2 \
-	STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "unpublished with own bump passes" 0 "$rc" "carries the bump"
-
-# 7. Unpublished AND origin/main claims the SAME version, publish never lands
-# -> FAIL CLOSED (collision signature / broken main publish).
-rc=$(run_check STUB_CHART_RC=1 MAIN_CHART_VERSION=1.2.3 \
-	PUBLISH_WAIT_TRIES=2 PUBLISH_WAIT_SECS=0 \
-	STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "unpublished main version fails closed" 1 "$rc" "not in the registry"
-
-# 8. Same, but main's publish lands mid-poll and digests match -> OK.
-rc=$(run_check MAIN_CHART_VERSION=1.2.3 \
-	STUB_CHART_PUBLISH_AFTER=2 STUB_CHART_COUNT_FILE="$TMP/count8" \
-	PUBLISH_WAIT_TRIES=5 PUBLISH_WAIT_SECS=0 \
-	STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub STUB_FRESH_DIGEST=same STUB_PUB_DIGEST=same)
-expect "publish lands mid-poll + match passes" 0 "$rc" "digests match"
-
-# 9. Same, publish lands mid-poll but digests DIFFER -> FAIL with the bump
-# command (the dropped-bump case caught after the forced branch update).
-rc=$(run_check MAIN_CHART_VERSION=1.2.3 \
-	STUB_CHART_PUBLISH_AFTER=2 STUB_CHART_COUNT_FILE="$TMP/count9" \
-	PUBLISH_WAIT_TRIES=5 PUBLISH_WAIT_SECS=0 \
-	STUB_FRESH_TAG=fresh STUB_PUB_TAG=pub STUB_FRESH_DIGEST=aaa STUB_PUB_DIGEST=bbb)
-expect "publish lands mid-poll + drift fails" 1 "$rc" "will NOT deploy"
 
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"

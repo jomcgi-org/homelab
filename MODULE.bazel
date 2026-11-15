@@ -239,7 +239,7 @@ go_deps.gazelle_override(
 # genrules (//projects/embervm/proto/embervm/node/v1), not by any Go import go_deps
 # can see, so both are `// indirect` in go.mod and `bazel mod tidy` would drop them
 # from this list. Re-add them after any tidy or node_go_src stops resolving.
-use_repo(go_deps, "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_klauspost_compress", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sync", "org_golang_x_sys")
+use_repo(go_deps, "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_klauspost_compress", "com_github_lib_pq", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sync", "org_golang_x_sys")
 
 #########################
 # JavaScript and pnpm package manager
@@ -375,6 +375,10 @@ use_repo(postgres, "postgres_test")
 # Configure apko for container images
 apko = use_extension("@rules_apko//apko:extensions.bzl", "apko")
 apko.translate_lock(
+    name = "factory_landing_lock",
+    lock = "//projects/factory-landing:apko.lock.json",
+)
+apko.translate_lock(
     name = "monolith_frontend_lock",
     lock = "//projects/monolith/frontend:apko.lock.json",
 )
@@ -439,6 +443,18 @@ apko.translate_lock(
     lock = "//projects/embervm/tokenbroker/image:apko.lock.json",
 )
 apko.translate_lock(
+    name = "factory_broker_lock",
+    lock = "//projects/factory/broker/image:apko.lock.json",
+)
+apko.translate_lock(
+    name = "factory_connector_lock",
+    lock = "//projects/factory/connector/image:apko.lock.json",
+)
+apko.translate_lock(
+    name = "factory_reviewer_lock",
+    lock = "//projects/factory/reviewer/image:apko.lock.json",
+)
+apko.translate_lock(
     name = "scotland_connector_lock",
     lock = "//projects/scotland-connector/image:apko.lock.json",
 )
@@ -470,7 +486,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_broker_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
@@ -603,32 +619,16 @@ multiarch_http_file(
     package_dir = "/usr/local/bin",
 )
 
-# Codex CLI for the EmberVM claude runtime guest, the Luna/Terra/Sol adapter
-# (issue #4234). Vendored from the GitHub release rather than npm: the npm
-# @openai/codex package is a thin JS launcher that resolves a per-platform
-# package at runtime, and those platform packages are not on the public
-# registry. The release tarball holds a single statically linked musl binary,
-# so unlike the claude CLI it needs no glibc from the base image.
-#
-# amd64 only, matching claude_code_cli and the guest image (runtimes/claude
-# apko.yaml declares archs: [x86_64]): every cluster node and the RBE executor
-# are amd64. It is also forced here, because each release tarball holds a single
-# ARCH-NAMED file (codex-x86_64-unknown-linux-musl) and multiarch_http_file
-# takes ONE extract_path for both arches. Adding arm64 means teaching the rule
-# per-arch extract paths, not just adding a URL.
-#
-# Pinned, not floating: the shim's adapter depends on observed behaviour
-# (thread.started/thread_id, item.completed agent_message, turn.completed
-# usage, and the `exec resume <id> <prompt>` argument order, which differs from
-# plain `exec` in that it rejects --sandbox and -C). A silent upgrade could
-# change those.
-multiarch_http_file(
+# Codex app-server for the EmberVM claude runtime, amd64 like the guest image.
+# The official full package includes the code-mode and exec hosts, resource
+# manifest, bundled tools and their licenses. Import the entire archive under
+# /usr/local in the runtime BUILD; copying only bin/codex breaks tool execution.
+# The pinned producer is exercised by the runtime's codex_compat_test target.
+http_file(
     name = "codex_cli",
-    amd64_sha256 = "5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a",
-    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz",
-    binary_name = "codex",
-    extract_path = "codex-x86_64-unknown-linux-musl",
-    package_dir = "/usr/local/bin",
+    downloaded_file_path = "codex-package.tar.gz",
+    sha256 = "3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e",
+    urls = ["https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-package-x86_64-unknown-linux-musl.tar.gz"],
 )
 
 multiarch_http_file(

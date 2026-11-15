@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Factory-only resources beside the shared Authentik chart
+# (projects/platform/authentik, values-factory.yaml): the Job that generates
+# its secrets, the grant for the edge route, and the namespace's allowlist.
+resources:
+  - secret-init.yaml
+  - reference-grant.yaml
+  - network-policy.yaml
+
+configMapGenerator:
+  - name: authentik-secret-init
+    namespace: authentik
+    files:
+      - secret_init.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

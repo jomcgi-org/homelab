@@ -72,24 +72,17 @@ type activator struct {
 	server *Server
 	client *http.Client
 
-	mu      sync.Mutex
+	parkLedger
 	flights map[string]*activatorFlight
-	boots   int
-	// parked counts requests waiting on a wake, per workload: the cap is a
-	// per-workload bound, so one cold workload's burst cannot 503 every other
-	// workload's node-local wake (the stateful and group activators already key
-	// theirs by workload).
-	parked map[string]int
-	wakes  []time.Time
 }
 
 func newActivator(s *Server) *activator {
 	return &activator{
 		server: s,
 		// A relayed request never follows a guest's redirect (serving.RefuseRedirect).
-		client:  &http.Client{CheckRedirect: serving.RefuseRedirect},
-		flights: make(map[string]*activatorFlight),
-		parked:  make(map[string]int),
+		client:     &http.Client{CheckRedirect: serving.RefuseRedirect},
+		parkLedger: parkLedger{parked: make(map[string]int)},
+		flights:    make(map[string]*activatorFlight),
 	}
 }
 
@@ -228,41 +221,43 @@ func (a *activator) join(workload string) (*activatorFlight, bool, int) {
 	return f, true, 0
 }
 
-func (a *activator) allowWakeLocked(now time.Time) bool {
+// parkLedger is the boot, parked-request and wake-rate accounting the serving,
+// stateful and group activators share. mu also guards each activator's flights.
+type parkLedger struct {
+	mu    sync.Mutex
+	boots int
+	// parked counts requests waiting on a wake, per workload: the cap is a
+	// per-workload bound, so one cold workload's burst cannot 503 every other
+	// workload's node-local wake.
+	parked map[string]int
+	wakes  []time.Time
+}
+
+// allowWakeLocked reserves a wake-rate slot. Caller holds mu.
+func (l *parkLedger) allowWakeLocked(now time.Time) bool {
 	cutoff := now.Add(-activatorWakeWindow)
-	kept := a.wakes[:0]
-	for _, woke := range a.wakes {
+	kept := l.wakes[:0]
+	for _, woke := range l.wakes {
 		if woke.After(cutoff) {
 			kept = append(kept, woke)
 		}
 	}
-	a.wakes = kept
-	if len(a.wakes) >= activatorWakeMax {
+	l.wakes = kept
+	if len(l.wakes) >= activatorWakeMax {
 		return false
 	}
-	a.wakes = append(a.wakes, now)
+	l.wakes = append(l.wakes, now)
 	return true
 }
 
-func (a *activator) unpark(workload string) {
-	a.mu.Lock()
-	if a.parked[workload] <= 1 {
-		delete(a.parked, workload)
+func (l *parkLedger) unpark(workload string) {
+	l.mu.Lock()
+	if l.parked[workload] <= 1 {
+		delete(l.parked, workload)
 	} else {
-		a.parked[workload]--
+		l.parked[workload]--
 	}
-	a.mu.Unlock()
-}
-
-// parkedTotal is the number of requests parked across every workload.
-func (a *activator) parkedTotal() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	total := 0
-	for _, n := range a.parked {
-		total += n
-	}
-	return total
+	l.mu.Unlock()
 }
 
 func (a *activator) complete(workload string, flight *activatorFlight, entry *servingEntry, err error) {

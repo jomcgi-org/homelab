@@ -1,0 +1,60 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: controller
+  namespace: cfgate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      control-plane: controller-manager
+  egress:
+    - toEntities: [kube-apiserver]
+    - toFQDNs:
+        - matchName: api.cloudflare.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# cloudflared: outbound to Cloudflare's tunnel edge and to the one origin, the
+# authenticated Envoy proxy in `edge` (projects/platform-factory/edge/).
+# Another origin would need an egress rule here, so every public path is a
+# reviewed change to this file as well as to the edge Gateway.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflared
+  namespace: cfgate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+      app.kubernetes.io/managed-by: cfgate
+  egress:
+    # Tunnel edge: region1/region2.v2.argotunnel.com on 7844 over QUIC (UDP)
+    # or HTTP/2. cloudflared resolves these once at start and reconnects to the
+    # cached addresses, so a toFQDNs rule loses them; Cloudflare publishes the
+    # fixed ranges instead (developers.cloudflare.com, Tunnel firewall rules).
+    - toCIDR:
+        - 198.41.192.0/24
+        - 198.41.200.0/24
+      toPorts:
+        - ports:
+            - port: "7844"
+              protocol: ANY
+    - toFQDNs:
+        - matchName: api.cloudflare.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # The Envoy proxy's listener (Service port 80 maps to container port 10080).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - port: "10080"
+              protocol: TCP

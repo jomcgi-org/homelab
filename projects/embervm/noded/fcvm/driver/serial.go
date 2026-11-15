@@ -165,21 +165,31 @@ func (f *serialFollower) Stop() {
 type guestOutputProcess struct {
 	Process
 	follower *serialFollower
-	waitOnce sync.Once
+	waitMu   sync.Mutex
+	waited   bool
 	waitErr  error
 }
 
 func (p *guestOutputProcess) Kill() error {
-	err := p.Process.Kill()
-	_ = p.Wait()
-	return err
+	if err := p.Process.Kill(); err != nil {
+		return err
+	}
+	if err := p.Wait(); !waitProvesExit(err) {
+		return err
+	}
+	return nil
 }
 
 func (p *guestOutputProcess) Wait() error {
-	p.waitOnce.Do(func() {
+	p.waitMu.Lock()
+	defer p.waitMu.Unlock()
+	if !p.waited {
 		p.waitErr = p.Process.Wait()
-		p.follower.Stop()
-	})
+		if waitProvesExit(p.waitErr) || processExited(p.Process) {
+			p.waited = true
+			p.follower.Stop()
+		}
+	}
 	return p.waitErr
 }
 
@@ -307,15 +317,14 @@ func serialTail(path string, maxBytes int64) ([]byte, bool) {
 // the guest's last output (kernel panic, init failure) into the error callers
 // already log and forward. The wrap is best-effort and additive: with no
 // readable sink (or zero bytes of output) the cause is returned unchanged.
-func (d *Driver) abortWithSerialDiag(proc Process, cause error, threadID string) (substrate.Handle, error) {
-	_ = proc.Kill()
+func (d *Driver) abortWithSerialDiag(inst *instance, cause error, threadID string) (substrate.Handle, error) {
 	tail, ok := serialTail(d.serialOutputPath(threadID), serialTailBytes)
 	if !ok || len(tail) == 0 {
-		return substrate.Handle{}, cause
+		return d.retainFailedLaunch(inst, cause)
 	}
 	slog.Warn("driver: guest serial output at boot failure",
 		"thread", threadID,
 		"tail_bytes", len(tail),
 	)
-	return substrate.Handle{}, fmt.Errorf("%w\nnoded: guest serial tail (%d bytes kept):\n%s", cause, len(tail), tail)
+	return d.retainFailedLaunch(inst, fmt.Errorf("%w\nnoded: guest serial tail (%d bytes kept):\n%s", cause, len(tail), tail))
 }

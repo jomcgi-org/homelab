@@ -77,7 +77,7 @@ Within a tier, sort by most-recently-updated first. Cap the whole digest at
 
 ### 4. Post to Discord
 
-Call `mcp__homelab__monolith-monolith-agent-notify` **once** with a markdown
+Call `monolith-monolith-agent-notify` **once** with a markdown
 message. Keep it under Discord's 2000-character limit. Shape:
 
 ```

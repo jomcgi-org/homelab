@@ -24,12 +24,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+def ready(page):
+    # This fixture mounts the routes in the browser. networkidle alone can
+    # precede the root :has(.td) font-size and descendant rem layout settling
+    # after reload. Use the same font and frame boundary for both captures.
+    page.evaluate("""async () => {
+      await document.fonts.ready;
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+    }""")
+
+
 def geometry(page):
     result = page.evaluate("""() => ({
       viewport: {width: innerWidth, height: innerHeight},
       scrollWidth: document.documentElement.scrollWidth,
       scrollHeight: document.documentElement.scrollHeight,
       scrollY,
+      rootFontSize: getComputedStyle(document.documentElement).fontSize,
       bodyOverflowY: getComputedStyle(document.body).overflowY,
       sheet: (() => { const s = getComputedStyle(document.querySelector('main.sheet'));
         return {background: s.backgroundColor, ink: s.color, padding: s.padding}; })(),
@@ -113,7 +125,8 @@ def leaderboard_checks(page):
     assert "m=" not in urlsplit(page.url).query
     toggle = page.locator("button.scheme")
     result["scheme_focus"] = focus(page, toggle)
-    before = geometry(page)["sheet"]["background"]
+    before_layout = geometry(page)
+    before = before_layout["sheet"]["background"]
     toggle.press("Enter")
     page.wait_for_function(
         "before => getComputedStyle(document.querySelector('main.sheet')).backgroundColor !== before",
@@ -124,8 +137,11 @@ def leaderboard_checks(page):
     selected = page.locator("html").get_attribute("data-theme")
     assert page.evaluate("localStorage.getItem('td-theme')") == selected
     page.reload(wait_until="networkidle")
+    ready(page)
     assert page.locator("html").get_attribute("data-theme") == selected
-    assert geometry(page)["sheet"]["background"] == result["scheme_after"]
+    result["reload_layout"] = geometry(page)
+    assert result["reload_layout"]["rootFontSize"] == before_layout["rootFontSize"]
+    assert result["reload_layout"]["sheet"]["background"] == result["scheme_after"]
     return result
 
 
@@ -266,7 +282,7 @@ def check(root, output, executable=None):
                             page.goto(
                                 f"{base}/?surface={surface}", wait_until="networkidle"
                             )
-                            page.evaluate("document.fonts.ready")
+                            ready(page)
                             record["layout"] = geometry(page)
                             record["accessibility"] = page.locator(
                                 "body"

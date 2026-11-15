@@ -3,6 +3,26 @@
 grimoireLinkEnrollment:
   enabled: false
 
+# Optional Discord sign-in and self-enrollment for Grimoire (#7461). Adds a
+# Grimoire-only authentication flow with a Discord source; the shared default
+# login flow and every other application are unchanged. Requires the
+# 1Password item at itemPath with client-id and client-secret fields. No
+# group, permission or token. The hub overlay enables it and supplies the
+# GRIMOIRE_DISCORD_CLIENT_ID/SECRET environment the blueprint reads.
+grimoireDiscordSource:
+  enabled: false
+  # The shared Discord application (Bosun), not one made for Grimoire. The
+  # cluster Secret keeps the name grimoire-discord-oauth.
+  itemPath: vaults/k8s-homelab/items/discord-bosun
+
+# Directory of authentik blueprints rendered into the blueprints ConfigMap.
+# The factory cluster uses its own set (values-factory.yaml).
+blueprintsDirectory: blueprints
+
+# The Grimoire OIDC client secret from 1Password. Hub only.
+grimoireOidc:
+  enabled: true
+
 platformManagement:
   # Adds protected account-type claims for explicit operator bootstrap before
   # enrollment/enforcement. No group, permission or flow gate changes.

@@ -332,7 +332,8 @@ def test_in_flight_timeout_keeps_transport_uncertainty_after_stop(monkeypatch):
             )
         )
     assert len(requests) == 1
-    assert checks == 1
+    # One check before receipt preparation and one before the POST; none after.
+    assert checks == 2
 
 
 def test_nested_unrelated_delivery_temporarily_clears_factory_check(monkeypatch):

@@ -37,27 +37,21 @@ describe("monthLabel / monthShort", () => {
 
 describe("monthBars", () => {
   it("returns 12 bars in month order with short labels", () => {
-    const bars = monthBars({});
+    const bars = monthBars([]);
     expect(bars).toHaveLength(12);
     expect(bars[0]).toMatchObject({ month: 1, short: "Jan" });
     expect(bars[11]).toMatchObject({ month: 12, short: "Dec" });
   });
 
-  it("normalizes frac against the tallest month and flags it", () => {
-    const bars = monthBars({ 1: 5, 6: 20, 12: 10 });
+  it("normalizes frac against the tallest month and flags it (index 0 = January)", () => {
+    const bars = monthBars(months({ 1: 5, 6: 20, 12: 10 }));
     expect(bars[0]).toMatchObject({ value: 5, frac: 0.25, isMax: false });
     expect(bars[5]).toMatchObject({ value: 20, frac: 1, isMax: true });
     expect(bars[11]).toMatchObject({ value: 10, frac: 0.5, isMax: false });
   });
 
-  it("accepts string keys (JSON object keys stringify)", () => {
-    const bars = monthBars({ 3: 8, 9: 16 });
-    expect(bars[2]).toMatchObject({ value: 8, frac: 0.5 });
-    expect(bars[8]).toMatchObject({ value: 16, frac: 1, isMax: true });
-  });
-
-  it("yields all-zero bars (frac 0, no max) for an empty or missing map", () => {
-    for (const bars of [monthBars({}), monthBars(null), monthBars(undefined)]) {
+  it("yields all-zero bars (frac 0, no max) for an empty or missing array", () => {
+    for (const bars of [monthBars([]), monthBars(null), monthBars(undefined)]) {
       expect(bars.every((b) => b.value === 0 && b.frac === 0 && !b.isMax)).toBe(
         true,
       );
@@ -65,18 +59,11 @@ describe("monthBars", () => {
   });
 
   it("coerces negative or non-finite counts to zero", () => {
-    const bars = monthBars({ 1: -4, 2: NaN, 3: "x", 4: 6 });
+    const bars = monthBars(months({ 1: -4, 2: NaN, 3: "x", 4: 6 }));
     expect(bars[0].value).toBe(0);
     expect(bars[1].value).toBe(0);
     expect(bars[2].value).toBe(0);
     expect(bars[3]).toMatchObject({ value: 6, frac: 1, isMax: true });
-  });
-
-  it("accepts a 12-element array (index 0 = January), the /history shape", () => {
-    const bars = monthBars(months({ 1: 5, 6: 20, 12: 10 }));
-    expect(bars[0]).toMatchObject({ value: 5, frac: 0.25, isMax: false });
-    expect(bars[5]).toMatchObject({ value: 20, frac: 1, isMax: true });
-    expect(bars[11]).toMatchObject({ value: 10, frac: 0.5, isMax: false });
   });
 });
 
@@ -208,6 +195,34 @@ describe("nightKey", () => {
 
   it("returns null for an unparseable time", () => {
     expect(nightKey("nope")).toBe(null);
+  });
+
+  it.each([
+    ["2026-03-29T11:00:00Z", "2026-03-28"],
+    ["2026-03-29T12:00:00Z", "2026-03-29"],
+    ["2026-10-25T10:59:00Z", "2026-10-24"],
+    ["2026-10-25T11:00:00Z", "2026-10-25"],
+    ["2026-01-01T00:00:00Z", "2025-12-31"],
+  ])("preserves the absolute twelve-hour shift for %s", (iso, expected) => {
+    expect(nightKey(iso)).toBe(expected);
+    expect(nightKey(iso)).toBe(expected);
+  });
+
+  it("shares a night across equivalent offsets and keeps later nights separate", () => {
+    expect(nightKey("2026-06-16T03:00:00+01:00")).toBe("2026-06-15");
+    expect(nightKey("2026-06-16T02:00:00Z")).toBe("2026-06-15");
+    expect(nightKey("2026-06-17T02:00:00Z")).toBe("2026-06-16");
+  });
+
+  it("retains the same results as the forecast horizon advances", () => {
+    const first = "2026-01-01T22:00:00Z";
+    const expected = nightKey(first);
+    const start = Date.parse(first);
+    for (let day = 1; day <= 1100; day++) {
+      const iso = new Date(start + day * 86_400_000).toISOString();
+      expect(nightKey(iso)).toBe(iso.slice(0, 10));
+    }
+    expect(nightKey(first)).toBe(expected);
   });
 });
 

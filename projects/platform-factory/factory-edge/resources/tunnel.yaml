@@ -1,0 +1,28 @@
+# The operator creates the tunnel in the account, stores its token and runs
+# cloudflared; nothing about it is configured in the dashboard.
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareTunnel
+metadata:
+  name: factory
+  namespace: cfgate-system
+spec:
+  tunnel:
+    name: factory-home
+  cloudflare:
+    # Not a secret.
+    accountId: "7c56b458cd657d96b095c63d181c051f"
+    secretRef:
+      name: cloudflare-api-credentials
+  cloudflared:
+    replicas: 3
+    # Upstream cloudflared rather than cfgate's default h2c fork, which this
+    # cluster does not need.
+    image: docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+  # Every hostname with no route answers 404 at the connector.
+  fallbackTarget: http_status:404

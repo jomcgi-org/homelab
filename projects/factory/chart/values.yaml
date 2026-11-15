@@ -1,0 +1,524 @@
+# The software factory umbrella chart (projects/factory/ARCHITECTURE.md,
+# "Umbrella chart"). This version installs kagent with its CRD hook, namespace,
+# Substrate credential grant and Cilium policies, the credential broker, and
+# the repository bindings' agents. The sections at the end are placeholders for
+# later steps of the delivery plan and render nothing.
+
+# kagent: agent definitions, execution and sessions. Everything under this key
+# except `enabled` and `mode` is passed to the vendored kagent 1.0.1 subchart
+# (charts/kagent-1.0.1.tgz); see its values.yaml for the full set.
+kagent:
+  # install: this chart installs kagent and its namespace, CRDs and policies.
+  # existing: kagent is installed elsewhere and this chart renders none of it,
+  # CRD hook included. The CRDs in crds/ are applied only by that hook: the
+  # Application sets helm.skipCrds, so ArgoCD neither applies nor tracks them
+  # (and a prune can never delete them, or every Agent with them).
+  # `enabled` is the Helm dependency condition and must agree with `mode`
+  # (templates/validate.yaml checks).
+  mode: install
+  enabled: true
+
+  # Fixed names: Substrate grants the controller by its SPIFFE ID,
+  # spiffe://cluster.local/ns/kagent/sa/kagent-controller, in the router
+  # allowlist, the API server's bootstrap owners and the credential provider's
+  # namespace policy.
+  fullnameOverride: kagent
+  namespaceOverride: kagent
+
+  # Namespaced RBAC: kagent renders Roles in these namespaces only, and the
+  # controller watches only them. Without it the controller gets cluster-wide
+  # ClusterRoles, Secrets included, behind trusted-proxy auth that never
+  # verifies tokens. Each repository binding's namespace is added here.
+  rbac:
+    namespaces: [kagent]
+
+  # The factory runs no cluster-operations agents, so the built-in Kubernetes
+  # tool server (and its ClusterRole) is off.
+  kagent-tools:
+    enabled: false
+
+  # Providers come from repository bindings and the credential broker (step 7),
+  # so the chart's default ModelConfig is not rendered.
+  providers: null
+
+  config:
+    # runtimeDefaults (every agent runtime's CPU and memory limits) stays at
+    # kagent's 1 CPU and 1Gi here. kagent 1.0.1 applies it to all Agents at
+    # once, so templates/validate.yaml requires each bound agent's `resources`
+    # to match it; an install with bindings sets it to its agents' size.
+    server:
+      auth:
+        # The edge authenticates people and forwards their access token;
+        # kagent decodes it without verifying (ARCHITECTURE.md finding 5), so
+        # the Cilium policies below keep the edge, the UI, the connector and,
+        # when enabled, the factory-reviewer as the only paths in.
+        mode: trusted-proxy
+    substrate:
+      apiEndpoint: dns:///api.ate-system.svc:443
+      routerUrl: https://atenet-router.ate-system.svc:443
+      actorJwtIssuer: https://idp.ate-system.svc
+
+  controller:
+    # Substrate client certificates (pod identity) and its service-DNS trust
+    # bundle, both from Substrate's podcertificate signers.
+    substrateClientCertificate:
+      enabled: true
+    serviceAccount:
+      # Substrate's bootstrap owners, router allowlist and admission policies
+      # name exactly kagent/kagent-controller.
+      name: kagent-controller
+      # A kagent principal includes the ServiceAccount UID, so recreating it
+      # loses access to every session it owns (ARCHITECTURE.md finding 6).
+      annotations:
+        # Wave -2 with the namespace (ARCHITECTURE.md, "Ordering").
+        argocd.argoproj.io/sync-wave: "-2"
+        argocd.argoproj.io/sync-options: Prune=false,Delete=false
+        helm.sh/resource-policy: keep
+    image:
+      tag: "1.0.1@sha256:5d1c898971de419384144894c5406faaf88bcb34fdfd7698d071e9a757136318"
+
+  ui:
+    image:
+      tag: "1.0.1@sha256:ce5c3a9a05d1292afa3d94c3aaf1547feac4389fe4181840acb8d54179da6128"
+    # The edge publishes factory-agents.jomcgi.dev with route-specific OIDC
+    # access-token forwarding (projects/platform-factory/edge).
+    route:
+      enabled: false
+
+  # Secrets holding the owner and read/write connection strings; see
+  # `postgres` below.
+  database:
+    postgres:
+      ownerConnectionStringSecretRef:
+        name: kagent-postgres-owner
+        key: ownerConnectionString
+      readWriteConnectionStringSecretRef:
+        name: kagent-postgres-readwrite
+        key: readWriteConnectionString
+
+# Kept as a dependency for its pinned digest; never rendered (Chart.yaml).
+kagent-crds:
+  enabled: false
+
+# Server-side applies crds/ before every sync and upgrade (Helm pre-install and
+# pre-upgrade, ArgoCD PreSync), because Helm installs crds/ only once.
+crdHook:
+  image: registry.k8s.io/kubectl:v1.37.2@sha256:fe049faa65ae483ac200009a949a68fa4c9985daea12c9cb1195c9c7965301fc
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+# kagent's PostgreSQL. kagent 1.0.1 needs PostgreSQL; it has no SQLite mode.
+# The database must be prepared with kagent's setup script
+# (go/core/pkg/postgressetup/setup.sql at v1.0.1): roles kagent_owner and
+# kagent_readwrite, their login users and schema `kagent`.
+postgres:
+  # existing: the Secrets named in kagent.database.postgres are provided
+  # outside this chart. `install` (a CNPG Cluster rendered here) arrives with
+  # the CNPG operator, step 3 of the delivery plan.
+  mode: existing
+  existing:
+    # Cilium endpoint selectors for the database pods, for the controller's
+    # egress rule. Empty allows no database traffic.
+    endpoints: []
+    port: 5432
+
+# Agent Substrate, installed separately (projects/platform-factory/substrate).
+substrate:
+  namespace: ate-system
+  credentialProvider:
+    # Binds Substrate's ClusterRole k8s-credential-provider-secret-reader to
+    # its provider in the kagent namespace, so the egress gateway can inject
+    # Secrets from here, and in each repository binding's namespace (which
+    # also needs its own namespacePolicies entry in Substrate's provider
+    # configuration). Only Secrets labelled substrate.ate.dev/injectable=true
+    # are injectable; label only egress credentials, never kagent's database
+    # or application Secrets.
+    secretReaderBinding: true
+    serviceAccount: k8s-credential-provider
+    clusterRole: k8s-credential-provider-secret-reader
+
+networkPolicy:
+  # CiliumNetworkPolicies for the kagent namespace, under the cluster-wide
+  # default-deny (projects/platform-factory/network-policy/).
+  cilium: true
+  # The authenticated Envoy edge (projects/platform-factory/edge).
+  edge:
+    namespace: edge
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: edge
+      gateway.envoyproxy.io/owning-gateway-namespace: edge
+  # The factory connector (step 9), a bearer path into the controller.
+  connector:
+    namespace: factory
+    matchLabels:
+      app.kubernetes.io/name: factory-connector
+  # OTLP receivers the controller exports to, as Cilium endpoint selectors.
+  # Empty: no telemetry egress (the factory cluster has no trace gateway yet).
+  otlp:
+    endpoints: []
+    port: 4317
+
+# The cluster's DNS domain. Actor destinations must be fully qualified names.
+clusterDomain: cluster.local
+
+# Credential broker, projects/factory/broker (ARCHITECTURE.md, "Credential
+# broker"). It relays the Codex harness's model calls with its own ChatGPT
+# grant, and mints GitHub App tokens per repository binding once the App
+# exists. Provider credentials exist only in its pod.
+broker:
+  # Off by default, so an install renders nothing new until its values turn
+  # it on (projects/factory/deploy/values.yaml).
+  enabled: false
+  # The connector's namespace too (networkPolicy.connector). This chart owns
+  # it and keeps it.
+  namespace: factory
+  # Overwritten at build time by helm_chart(images = ...): the published chart
+  # deploys by digest, never by tag.
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/broker
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  # The relay, for actors through Substrate's egress gateway. ModelConfigs use
+  # http://factory-broker.<namespace>.svc.<clusterDomain>/v1 (Service port 80).
+  relayPort: 8080
+  # Device login, forced refresh, connector tokens and metrics.
+  adminPort: 8081
+  # The one Codex grant the relay serves: Secret factory-broker-grant-<grant>,
+  # pre-created empty; the broker's device login fills it.
+  grant: codex-primary
+  # Projected ServiceAccount token subjects (TokenReview usernames,
+  # system:serviceaccount:<ns>:<name>): adminSubjects may start the device
+  # login and force a refresh of the grant, connectorSubjects may fetch
+  # connector GitHub tokens. Empty: nobody yet.
+  adminSubjects: []
+  connectorSubjects: []
+  # A ServiceAccount in the broker's namespace for operators, who mint a
+  # token for it (audience factory-broker, with a short --duration) to call
+  # the admin endpoints. The chart creates it and adds its subject to
+  # adminSubjects; a ValidatingAdmissionPolicy keeps any Pod from running as
+  # it. It must not be a ServiceAccount the chart's own Pods use. Empty: none.
+  operatorServiceAccount: ""
+  # The factory GitHub App (jomcgi-factory) from 1Password item
+  # k8s-homelab/factory-github-app (app-id, installation-id, private-key).
+  # Off until that item exists: the broker then mints no GitHub tokens and the
+  # agents' git egress has no credential.
+  githubApp:
+    enabled: false
+    itemPath: vaults/k8s-homelab/items/factory-github-app
+  # Settings passed to the broker's config file over its defaults
+  # (projects/factory/broker/config).
+  config: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# GHCR pull credentials for the factory's first-party images (the broker's and
+# the connector's), which are private. A
+# OnePasswordItem syncs a kubernetes.io/dockerconfigjson Secret into the
+# factory namespace (broker.namespace) whenever a workload there is enabled.
+imagePullSecret:
+  enabled: true
+  name: ghcr-imagepull-secret
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+
+# Agent profiles a repository binding instantiates, one Agent per binding.
+agents:
+  codex:
+    # The Codex harness through the broker's relay (provider `broker`, the only
+    # provider so far): ModelConfig provider OpenAI, apiFormat responses, an
+    # actor JWT for audience factory-broker.
+    harness: codex
+    provider: broker
+    model: gpt-6-astra
+    # The actor's CPU and memory limits. kagent 1.0.1 takes every runtime's
+    # from kagent.config.runtimeDefaults, so these must equal them.
+    resources:
+      cpu: "4"
+      memory: 8Gi
+    # The Substrate worker pod hosting the actor. Its limits are the worker's
+    # capacity, which must hold the actor's limits plus the worker's own 64Mi
+    # reserve and gVisor's sentry: hence 1Gi more memory than the actor.
+    worker:
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "4"
+          memory: 9Gi
+    # Actors running at once: one Substrate worker each.
+    concurrency: 1
+    # Egress grants (EgressPolicies rendered in the binding's namespace).
+    # github-git: https://github.com with the broker-minted token injected as
+    # Authorization: Basic.
+    egress: [github-git]
+    systemPrompt: |
+      You are a software engineer working on one GitHub repository. Make the
+      requested change on the branch you are given, run the checks the
+      repository documents, and push the branch. Never print credentials.
+
+  reviewer:
+    harness: codex
+    provider: broker
+    model: gpt-6-astra
+    # All runtimes share kagent.config.runtimeDefaults, as for codex above.
+    resources:
+      cpu: "4"
+      memory: 8Gi
+    worker:
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "4"
+          memory: 9Gi
+    concurrency: 2
+    egress: [github-git]
+    systemPrompt: |
+      you review pull requests read-only per the rules in your task; you never push, commit or open PRs
+
+# Repository bindings: the access boundary. Each gets one namespace (its
+# Substrate atespace) holding one Agent, its ModelConfig, Harness,
+# EgressPolicies and Substrate WorkerPool, plus the broker's git token. Each
+# namespace must also be in kagent.rbac.namespaces and in Substrate's
+# credentialProvider.namespacePolicies. Each entry: name, owner, repo,
+# baseBranch, namespace, agent (a key of `agents`).
+# Optional toolchain: homelab adds the Alpine bootstrap instructions and its
+# public download origins to this coding binding. Enable in deploy values
+# only after CI publishes a chart version that supports this field.
+repositories: []
+
+# The Substrate worker image for binding WorkerPools, matching Substrate's
+# release and its gVisor SandboxConfig.
+workers:
+  image: ghcr.io/kagent-dev/substrate/ateworker-gvisor:v1.0.1@sha256:97ca74cd2cabc3fd28ac67790ed3b1f25b7b4247709a316ff374a428822c420e
+  sandboxConfig: gvisor-default
+  # Harness snapshots go to <prefix><namespace>/ in Substrate's snapshot store.
+  snapshotLocationPrefix: s3://ate-snapshots/
+
+# itsaplan Community v1.10.0: work requests, assignment and the run queue
+# (ARCHITECTURE.md, "itsaplan"). The chart's own templates run the upstream
+# images; upstream's chart renders its secrets from values (finding 4).
+itsaplan:
+  enabled: false
+  # Shared with the broker and the connector. The broker's template declares
+  # it while the broker is on; factory-buckets and factory-db-secrets create it
+  # either way. Must equal broker.namespace.
+  namespace: factory
+  # The public origin. The web app is served at /, the api under apiPath on
+  # the same host (upstream's path mode): the HTTPRoute removes the prefix,
+  # and the session cookie stays host-only (__Host-).
+  host: factory-plan.jomcgi.dev
+  apiPath: /backend
+  images:
+    api: ghcr.io/croffasia/itsaplan-api:1.10.0@sha256:9f53d060db6594b2e51bc224183e8e8c60e544a1fd65dcd451c053568c642753
+    web: ghcr.io/croffasia/itsaplan-web:1.10.0@sha256:be213d6861f66ac68320db2a1481c050bc811a740d558f5ebde576b34f78b289
+    worker: ghcr.io/croffasia/itsaplan-worker:1.10.0@sha256:840650f1dc8cec4d82cf8cdc6fa5cd43aa82df1fc9a9f9213358e3c33688aed0
+    # The secret-init and bootstrap Jobs (standard-library Python).
+    jobs: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+  # PostgreSQL, provided outside the chart: a Secret in `namespace` whose key
+  # DATABASE_URL is a connection URL for a role that owns the database (the
+  # migrations create its tables). `endpoints` are Cilium selectors for the
+  # api's and worker's egress.
+  database:
+    secretName: factory-itsaplan-db
+    endpoints: []
+    port: 5432
+  # S3, provided outside the chart: a Secret in `namespace` with
+  # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and
+  # BUCKET (garage-init's format).
+  s3:
+    secretName: factory-itsaplan-s3
+    endpoints: []
+    port: 3900
+  # Sign-in through the identity provider, set in god mode by the bootstrap
+  # Job. The api calls the discovery URL's host (discovery, keys, tokens) by
+  # name, through Cloudflare like a browser. The client secret comes from
+  # outside the chart: Secret `clientSecretName` in `namespace`, key
+  # client-secret, which Authentik's secret-init fills.
+  oidc:
+    discoveryUrl: https://factory-auth.jomcgi.dev/application/o/factory-itsaplan/.well-known/openid-configuration
+    clientId: factory-itsaplan
+    label: Authentik
+    clientSecretName: factory-itsaplan-oidc
+  # The break-glass instance admin (itsaplan's "god"), created by the bootstrap
+  # Job; secret-init generates its password into factory-itsaplan-admin.
+  admin:
+    email: factory-admin@jomcgi.dev
+    name: Factory admin
+  # What the bootstrap Job creates once: a team, its project and the external
+  # agents. Each agent's API key goes to Secret factory-itsaplan-agent-<username>
+  # (keys apiKey, agentId, teamId, projectKey, url); a lost Secret gets the
+  # same agent a new key.
+  bootstrap:
+    team:
+      name: Factory
+      slug: factory
+    project:
+      key: HOME
+      name: Homelab
+      description: Work for the jomcgi-org/homelab repository.
+    agents:
+      # Claims the project's runs (assignment and mentions).
+      - username: homelab-codex
+        name: Homelab Codex
+        triggerOnAssign: true
+        triggerOnMention: true
+      # The connector's own identity: comments, issue state and run lookups
+      # through the runner queue. It is never assigned work.
+      - username: factory-coordinator
+        name: Factory coordinator
+        triggerOnAssign: false
+        triggerOnMention: false
+  # Settings written to the api's environment over the chart's.
+  env: {}
+  resources:
+    api:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    web:
+      requests:
+        cpu: 20m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    worker:
+      requests:
+        cpu: 20m
+        memory: 192Mi
+      limits:
+        memory: 768Mi
+    jobs:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+  # The HTTPRoute on the authenticated edge Gateway, whose route namespaces
+  # must include `namespace`.
+  route:
+    enabled: true
+    gateway:
+      name: edge
+      namespace: edge
+
+# The connector, projects/factory/connector (ARCHITECTURE.md, "Connector"):
+# claims itsaplan runs, sends them to the repository binding's kagent Agent and
+# delivers the pushed branch as a pull request through review and the merge
+# queue. One replica in the broker's namespace, as ServiceAccount
+# factory-connector, which the chart keeps.
+connector:
+  # Off by default. Turning it on needs itsaplan and the broker on, and kagent
+  # authenticating ServiceAccount tokens:
+  # kagent.config.server.auth.serviceAccount.authority, which is part of every
+  # kagent principal ID, so it never changes once set.
+  enabled: false
+  # Overwritten at build time by helm_chart(images = ...).
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/connector
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  # itsaplan external agents, by username in itsaplan.bootstrap.agents, whose
+  # bootstrap writes each key to Secret factory-itsaplan-agent-<username>. The
+  # coordinator reads runs and issues, comments and moves merged issues to
+  # Done; each of `agents` claims runs, at most `concurrency` at once.
+  coordinator: factory-coordinator
+  agents:
+    - username: homelab-codex
+      concurrency: 1
+  # Per repository binding, by its `repositories` name; every binding needs
+  # one. Owner, repository, base branch and the kagent Agent come from the
+  # binding. Keys: itsaplanProject and agents (required); branchPrefix
+  # (factory/), maxEngineeringRetries (2), maxReviewRounds (3), doneColumn;
+  # the review policy trustedReviewers (GitHub logins), requiredChecks and
+  # reviewerCheck (each {name, appId} or {name, statusCreator}). Without a
+  # reviewer check or trusted reviewers no PR is ever enqueued.
+  bindings: {}
+  # Loop timings as Go durations over the connector's defaults: poll (5s),
+  # heartbeat (60s, at most 2m), reissueInterval (15s), dispatchWindow (4m, at
+  # least 210s), acquireRetry (5s), reviewPoll (60s).
+  intervals: {}
+  # URL templates in PR bodies and Done comments: {issue}, {issueId}, {run},
+  # {namespace}, {agent} and {session} are replaced. An empty issue link is
+  # itsaplan's https://<itsaplan.host>/issue/{issueId}; other empty links stay
+  # plain text.
+  links:
+    issue: ""
+    run: ""
+    session: ""
+  # PostgreSQL, provided outside the chart: a Secret in the broker's namespace
+  # whose key DATABASE_URL owns the connector's database (it migrates it at
+  # startup). `endpoints` are Cilium selectors for the connector's egress.
+  database:
+    secretName: factory-connector-db
+    endpoints: []
+    port: 5432
+  # Metrics and /healthz.
+  metricsPort: 9090
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# The independent reviewer. Enabling it needs the broker, kagent's fixed
+# serviceAccount.authority and each review namespace in kagent.rbac.namespaces
+# and Substrate credentialProvider.namespacePolicies. Deploy values follow the
+# chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
+reviewer:
+  enabled: false
+  # Overwritten at build time by helm_chart(images = ...).
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/reviewer
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  githubApp:
+    # app-id, installation-id and private-key, mounted only by the broker.
+    itemPath: vaults/k8s-homelab/items/factory-review-gh-app
+  appId: 5758326
+  checkName: factory review
+  concurrency: 2
+  enqueueAuthors: [jomcgi]
+  humanApprovers: [jomcgi]
+  # Per repository name: namespace defaults to <coding namespace>-review.
+  # Other keys are reviewer/config Binding policy fields (requiredChecks,
+  # skipLabels, enqueueAuthors, humanGatePaths, humanGateLabels,
+  # humanApprovers, trustedCommenters, contextDocs, generatedPaths,
+  # maxDiffLines, maxDiffFiles). Unset policy fields use the service defaults;
+  # explicit empty lists stay empty. Owner/repo/baseBranch/agent are derived.
+  bindings: {}
+  # Service defaults: poll 30s, taskPoll/reissue 15s, timeout 45m,
+  # retryBackoff 5m. Values use Go duration strings.
+  intervals: {}
+  ruleIds: []
+  # /healthz and /metrics; no scraper ingress is granted.
+  metricsPort: 9090
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Later steps of the delivery plan. Nothing below renders yet, and setting any
+# of it fails the render (templates/validate.yaml) rather than doing nothing.
+# ---------------------------------------------------------------------------
+
+# Model providers beyond the broker's relay.
+providers: {}

@@ -107,9 +107,18 @@ def factory_session_allowed(
                         not in controls._effective_policy(db, row)["allowed_models"]
                     ):
                         return False
-        return transport_allowed(
-            fields[1], fields[2], int(fields[3])
-        ) and refill_allowed(fields[1], fields[2], int(fields[3]), physical=True)
+        if not transport_allowed(fields[1], fields[2], int(fields[3])):
+            return False
+        if refill_allowed(fields[1], fields[2], int(fields[3]), physical=True):
+            return True
+        from factory.orchestration.funding_profile import session_profile
+
+        return (
+            session_profile(
+                local_session_id, model=None if model is _UNSPECIFIED_MODEL else model
+            )
+            is not None
+        )
     except Exception:  # unavailable evidence must not start speculative work
         return False
 

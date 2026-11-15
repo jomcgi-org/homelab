@@ -709,6 +709,99 @@ def test_codex_login_endpoints_validate_grant(client, monkeypatch):
     assert response.json() == {"detail": "invalid grant name"}
 
 
+@pytest.mark.parametrize(
+    ("method", "operation"), [("GET", "status"), ("POST", "start")]
+)
+def test_codex_login_dev_routes_use_only_fixed_dev_transport(
+    client, monkeypatch, method, operation
+):
+    calls = []
+
+    async def dev_request(actual_method, path, *, timeout):
+        calls.append((actual_method, path, timeout))
+        body = (
+            {"state": "granted", "detail": "secret-provider-detail"}
+            if operation == "status"
+            else {
+                "verification_url": "https://auth.example/device",
+                "user_code": "DEV-CODE",
+                "expires_in": 900,
+            }
+        )
+        return httpx.Response(
+            200,
+            request=httpx.Request(actual_method, "https://dev-broker" + path),
+            json={**body, "refresh_token": "secret-refresh"},
+        )
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("dev route must not use production broker")
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", dev_request)
+    monkeypatch.setattr(mcp, "_broker_request", unexpected)
+    response = client.request(
+        method,
+        f"/api/agents/codex-login/{operation}?environment=dev&url=https://other.example/token",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["environment"] == "dev"
+    assert response.json()["grant"] == "codex-cluster"
+    assert "secret" not in response.text
+    assert calls == [(method, f"/grants/codex-cluster/login/{operation}", 30)]
+
+
+@pytest.mark.parametrize("reason", ["login_pending", "login_starting"])
+def test_codex_login_dev_pending_response_is_sanitized(client, monkeypatch, reason):
+    async def dev_request(method, path, *, timeout):
+        body = {"reason": reason, "access_token": "secret", "detail": "secret"}
+        if reason == "login_pending":
+            body.update(
+                verification_url="https://auth.example/device",
+                user_code="DEV-CODE",
+                expires_in=900,
+            )
+        return httpx.Response(
+            409, request=httpx.Request(method, "https://dev-broker" + path), json=body
+        )
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", dev_request)
+    response = client.post("/api/agents/codex-login/start?environment=dev")
+
+    assert response.status_code == 200
+    assert response.json()["pending"] == (reason == "login_pending")
+    assert response.json()["environment"] == "dev"
+    assert "secret" not in response.text
+    if reason == "login_starting":
+        assert response.json()["retry_after"] == 10
+        assert "user_code" not in response.json()
+
+
+@pytest.mark.parametrize(
+    ("method", "operation"), [("GET", "status"), ("POST", "start")]
+)
+@pytest.mark.parametrize(
+    "query", ["environment=unknown", "environment=dev&grant=codex-other"]
+)
+def test_codex_login_invalid_target_returns_400_without_io(
+    client, monkeypatch, method, operation, query
+):
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("invalid target must not reach transport")
+
+    monkeypatch.setattr(mcp.broker_client, "dev_login_request", unexpected)
+    monkeypatch.setattr(mcp, "_broker_request", unexpected)
+    response = client.request(method, f"/api/agents/codex-login/{operation}?{query}")
+    assert response.status_code == 400
+
+
+def test_codex_login_unconfigured_dev_returns_generic_502(client, monkeypatch):
+    monkeypatch.delenv(mcp.broker_client.DEV_BROKER_LOGIN_URL_ENV, raising=False)
+    response = client.get("/api/agents/codex-login/status?environment=dev")
+    assert response.status_code == 502
+    assert response.json() == {"error": "Codex login broker unavailable"}
+
+
 def test_list_sessions_ordering(client, session):
     # A NULL last_turn_at is unrepresentable: the column is NOT NULL DEFAULT
     # NOW() in Postgres, and the model's default_factory backfills an explicit
@@ -1311,6 +1404,70 @@ def test_start_session_rejects_unknown_repo(client):
     ).json()
     assert body["accepted"] is False
     assert body["error"].startswith("unknown repo bad/repo; catalog:")
+
+
+@pytest.mark.parametrize("status", [200, 301, 503])
+def test_github_get_adapter(monkeypatch, status):
+    requests = []
+    real_client = httpx.AsyncClient
+    url = "https://api.github.com/repos/old-owner/repo"
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            status, headers={"Location": "/repositories/12345"}, json={}
+        )
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-execution")
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    if status != 200:
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(agent_router._github_get(url))
+    else:
+        assert asyncio.run(agent_router._github_get(url)).status_code == 200
+    assert len(requests) == 1  # Execution must never follow a repository 301.
+    request = requests[0]
+    assert request.method == "GET"
+    assert str(request.url) == url
+    assert request.extensions["timeout"] == dict.fromkeys(
+        ("connect", "read", "write", "pool"), 10.0
+    )
+    assert request.headers["User-Agent"] == "monolith-execution"
+    assert request.headers["Authorization"] == "Bearer fake-execution"
+    assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+
+
+def test_list_repos_transport_failure_cache(client, monkeypatch):
+    requests = []
+    real_client = httpx.AsyncClient
+    now = 1000.0
+    monkeypatch.setattr(agent_router, "_DEFAULT_BRANCH_CACHE", {})
+    monkeypatch.setattr(agent_router.time, "monotonic", lambda: now)
+    monkeypatch.setenv("GITHUB_API_TOKEN", "fake-execution")
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(503)
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    first = client.get("/api/agents/repos")
+    assert first.status_code == 200
+    assert all(repo["default_branch"] is None for repo in first.json()["repos"])
+    count = len(agent_router.REPO_CATALOG)
+    assert len(requests) == count
+    assert client.get("/api/agents/repos").json() == first.json()
+    assert len(requests) == count
+    now += agent_router._REPO_CACHE_FAILURE_TTL + 1
+    assert client.get("/api/agents/repos").status_code == 200
+    assert len(requests) == count * 2
 
 
 def test_list_repos_degrades_when_github_is_down(client, monkeypatch):
@@ -2088,30 +2245,6 @@ def _claimed_stop_session(session: Session, name: str = "stop-owner"):
     return row, identity
 
 
-def test_stop_control_is_hidden_and_inert_by_default(client, session, monkeypatch):
-    row, identity = _claimed_stop_session(session, "stop-disabled")
-    forwarded = []
-
-    async def must_not_forward(*args):
-        forwarded.append(args)
-
-    monkeypatch.delenv("AGENT_SESSION_STOP_CONTROL_ENABLED", raising=False)
-    monkeypatch.setattr(
-        "factory.execution.router._transport.interrupt_session", must_not_forward
-    )
-
-    detail = client.get(f"/api/agents/sessions/{row.id}").json()
-    assert detail["stop_control"] == {"enabled": False, "active": None}
-
-    response = client.post(
-        f"/api/agents/sessions/{row.id}/stop",
-        headers={"X-Auth-Email": "owner@example.com"},
-        json=identity,
-    )
-    assert response.status_code == 404
-    assert forwarded == []
-
-
 def test_stop_control_exposes_and_relays_only_the_observed_exact_turn(
     client, session, monkeypatch
 ):
@@ -2136,13 +2269,12 @@ def test_stop_control_exposes_and_relays_only_the_observed_exact_turn(
             },
         }
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", interrupt
     )
 
     detail = client.get(f"/api/agents/sessions/{row.id}").json()
-    assert detail["stop_control"] == {"enabled": True, "active": identity}
+    assert detail["stop_control"] == {"active": identity}
 
     response = client.post(
         f"/api/agents/sessions/{row.id}/stop",
@@ -2196,7 +2328,6 @@ def test_stop_control_rejects_cross_owner_and_stale_dispatch_without_forwarding(
     async def must_not_forward(*args):
         calls.append(args)
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2262,7 +2393,6 @@ def test_stop_control_rejects_observed_turn_after_successor_starts(
     async def must_not_forward(*args):
         calls.append(args)
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2374,7 +2504,6 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
         calls.append(args)
         raise AssertionError("settled Stop must not reach the transport")
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2427,15 +2556,6 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
                 ).status_code
                 == expected_status
             )
-        monkeypatch.delenv("AGENT_SESSION_STOP_CONTROL_ENABLED")
-        assert (
-            client.post(
-                f"/api/agents/sessions/{row.id}/stop",
-                headers={"X-Auth-Email": "owner@example.com"},
-                json=identity,
-            ).status_code
-            == 404
-        )
     assert calls == []
     assert (
         len(
@@ -2481,7 +2601,6 @@ def test_stop_control_completion_race_preserves_completed_turn(
     async def must_not_forward(*args):
         calls.append(args)
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", must_not_forward
     )
@@ -2516,7 +2635,6 @@ def test_stop_control_unknown_relay_keeps_active_claim(client, session, monkeypa
         destroyed.append(ember_session_id)
         return {"session_id": ember_session_id, "state": "destroyed"}
 
-    monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
     monkeypatch.setattr(
         "factory.execution.router._transport.interrupt_session", unavailable
     )

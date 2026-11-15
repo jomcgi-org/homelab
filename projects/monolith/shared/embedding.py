@@ -7,6 +7,7 @@ import os
 import httpx
 
 from shared.inference import is_retryable
+from shared.async_retry import async_retry
 
 logger = logging.getLogger(__name__)
 
@@ -49,45 +50,37 @@ class EmbeddingClient:
         survive a llama-server restart / model reload.
         """
         timeout = httpx.Timeout(EMBED_BATCH_READ_TIMEOUT, connect=EMBED_CONNECT_TIMEOUT)
-        elapsed = 0.0
-        last_exc: Exception | None = None
 
-        for attempt in range(EMBED_MAX_RETRIES):
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(  # nosemgrep: tainted-fastapi-http-request-httpx (self.base_url is a config value, not user input)
-                        f"{self.base_url}/v1/embeddings",
-                        json={"input": texts, "model": self.model},
-                    )
-                    resp.raise_for_status()
-                    try:
-                        data = resp.json()["data"]
-                        sorted_data = sorted(data, key=lambda item: item["index"])
-                        return [item["embedding"] for item in sorted_data]
-                    except (KeyError, IndexError, TypeError) as e:
-                        raise ValueError(
-                            f"unexpected embedding response shape: {e}"
-                        ) from e
-            except Exception as exc:
-                last_exc = exc
-                if not is_retryable(exc):
-                    raise
-
-                delay = min(
-                    EMBED_RETRY_BASE_DELAY * (2**attempt),
-                    EMBED_RETRY_MAX_DELAY,
+        async def operation() -> list[list[float]]:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(  # nosemgrep: tainted-fastapi-http-request-httpx (self.base_url is a config value, not user input)
+                    f"{self.base_url}/v1/embeddings",
+                    json={"input": texts, "model": self.model},
                 )
-                elapsed += delay
-                if elapsed > EMBED_RETRY_TIMEOUT:
-                    break
+                resp.raise_for_status()
+                try:
+                    data = resp.json()["data"]
+                    sorted_data = sorted(data, key=lambda item: item["index"])
+                    return [item["embedding"] for item in sorted_data]
+                except (KeyError, IndexError, TypeError) as e:
+                    raise ValueError(f"unexpected embedding response shape: {e}") from e
 
-                logger.warning(
-                    "Embedding call failed (attempt %d/%d), retrying in %.1fs: %s",
-                    attempt + 1,
-                    EMBED_MAX_RETRIES,
-                    delay,
-                    exc,
-                )
-                await asyncio.sleep(delay)
+        def on_retry(attempt: int, delay: float, exc: Exception) -> None:
+            logger.warning(
+                "Embedding call failed (attempt %d/%d), retrying in %.1fs: %s",
+                attempt,
+                EMBED_MAX_RETRIES,
+                delay,
+                exc,
+            )
 
-        raise last_exc  # type: ignore[misc]
+        return await async_retry(
+            operation,
+            is_retryable=is_retryable,
+            max_attempts=EMBED_MAX_RETRIES,
+            base_delay=EMBED_RETRY_BASE_DELAY,
+            max_delay=EMBED_RETRY_MAX_DELAY,
+            sleep_budget=EMBED_RETRY_TIMEOUT,
+            on_retry=on_retry,
+            sleep=asyncio.sleep,
+        )

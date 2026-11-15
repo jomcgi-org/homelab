@@ -1,7 +1,5 @@
 """Tests for UserChannelSummary SQLModel -- persistence to DB, uniqueness, and retrieval."""
 
-from datetime import datetime, timezone
-
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select

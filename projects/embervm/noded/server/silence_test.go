@@ -28,6 +28,14 @@ import (
 // nothing ever sleeps out the bound.
 const silenceBound = 21600
 
+// setLastContactForTest pins the contact instant so tests can age past the
+// silence bound without sleeping.
+func (s *Server) setLastContactForTest(t time.Time) {
+	s.contactMu.Lock()
+	s.lastContact = t
+	s.contactMu.Unlock()
+}
+
 // armSilence turns the silence gate on for an already-built test server.
 func armSilence(s *Server) {
 	s.cfg.SilenceTimeoutSeconds = silenceBound
@@ -106,7 +114,7 @@ func TestWatchNodeSendRefreshesContact(t *testing.T) {
 		Transport: &fakeTransport{},
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.slotCeiling = func(configured uint64) uint64 { return configured }
 	agedContact(s)
 	if !s.silenced() {

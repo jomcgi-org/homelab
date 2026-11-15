@@ -18,7 +18,7 @@ defmodule Embervm.Scheduler.Reservation do
   otherwise a deleted workload's pool reservation persists for the lifetime of the
   CP process.
 
-  NodeStatus does not report declared memory for any live VM. `adopt/3` therefore
+  NodeStatus does not report declared memory for any live VM. `observe/4` therefore
   requires a workload-to-memory catalog lookup supplied in its options; it must
   not derive memory from observed node usage. The per-VM declared memory is absent
   from `NodeStatus`, but the node-level declared SUM crosses the wire as
@@ -125,42 +125,10 @@ defmodule Embervm.Scheduler.Reservation do
     GenServer.call(server, {:reconcile, instance_id, MapSet.new(live_refs), now_ms})
   end
 
-  @doc "Adopts node-reported live VMs and absence-collects old claims."
-  @spec observe(GenServer.server(), term(), Enumerable.t(), keyword()) ::
-          {:ok, %{adopted: non_neg_integer(), skipped: non_neg_integer(), released: [term()]}}
-  def observe(server, instance_id, live_refs, opts) when is_list(opts) do
-    GenServer.call(server, {:observe, instance_id, Enum.to_list(live_refs), opts})
-  end
-
-  @doc "Queues node truth for reconciliation without making NodeRegistry depend on the ledger."
-  @spec observe_shadow(term(), Enumerable.t(), keyword()) :: :ok
-  def observe_shadow(instance_id, live_refs, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    safe_cast(server, {:observe, instance_id, Enum.to_list(live_refs), opts})
-  end
-
-  @spec drop_instance(term()) :: :ok
-  def drop_instance(instance_id), do: drop_instance(__MODULE__, instance_id)
-
-  @spec drop_instance(GenServer.server(), term()) :: :ok
-  def drop_instance(server, instance_id), do: GenServer.call(server, {:drop_instance, instance_id})
-
-  @doc "Drops an expired brick row without making expiry depend on the ledger."
-  @spec drop_instance_shadow(term(), keyword()) :: :ok
-  def drop_instance_shadow(instance_id, opts \\ []) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    safe_cast(server, {:drop_instance, instance_id})
-  end
-
-  @spec all(atom()) :: %{term() => [entry()]}
-  def all(table \\ @table) do
-    :ets.foldl(fn {instance_id, row}, acc -> Map.put(acc, instance_id, Map.values(row)) end, %{}, table)
-  end
-
   @doc """
-  Seeds `:instance` entries from an instance's node-reported live VMs, for
-  rebuilding the row after a control-plane restart. Declared memory comes from
-  the catalog, NOT from the node: `NodeStatus` carries no per-VM memory field.
+  Adopts node-reported live VMs and absence-collects old claims. Declared memory
+  comes from the catalog, NOT from the node: `NodeStatus` carries no per-VM
+  memory field.
 
   ## adoption is INCOMPLETE, by the wire format
 
@@ -191,11 +159,29 @@ defmodule Embervm.Scheduler.Reservation do
   data, a persistent CP-below-node gap after a restart is this, not a lost
   release, and it shrinks as assigned tasks complete rather than staying flat.
   """
-  @spec adopt(term(), Enumerable.t(), keyword()) ::
-          {:ok, %{adopted: non_neg_integer(), skipped: non_neg_integer()}}
-  def adopt(instance_id, live_refs, opts) when is_list(opts) do
+  @spec observe(GenServer.server(), term(), Enumerable.t(), keyword()) ::
+          {:ok, %{adopted: non_neg_integer(), skipped: non_neg_integer(), released: [term()]}}
+  def observe(server, instance_id, live_refs, opts) when is_list(opts) do
+    GenServer.call(server, {:observe, instance_id, Enum.to_list(live_refs), opts})
+  end
+
+  @doc "Queues node truth for reconciliation without making NodeRegistry depend on the ledger."
+  @spec observe_shadow(term(), Enumerable.t(), keyword()) :: :ok
+  def observe_shadow(instance_id, live_refs, opts \\ []) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:adopt, instance_id, Enum.to_list(live_refs), opts})
+    safe_cast(server, {:observe, instance_id, Enum.to_list(live_refs), opts})
+  end
+
+  @doc "Drops an expired brick row without making expiry depend on the ledger."
+  @spec drop_instance_shadow(term(), keyword()) :: :ok
+  def drop_instance_shadow(instance_id, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    safe_cast(server, {:drop_instance, instance_id})
+  end
+
+  @spec all(atom()) :: %{term() => [entry()]}
+  def all(table \\ @table) do
+    :ets.foldl(fn {instance_id, row}, acc -> Map.put(acc, instance_id, Map.values(row)) end, %{}, table)
   end
 
   @impl true
@@ -239,35 +225,6 @@ defmodule Embervm.Scheduler.Reservation do
   def handle_call({:observe, instance_id, live_refs, opts}, _from, state) do
     {result, state} = observe_live(state, instance_id, live_refs, opts)
     {:reply, {:ok, result}, state}
-  end
-
-  def handle_call({:drop_instance, instance_id}, _from, state) do
-    :ets.delete(state.table, instance_id)
-    {:reply, :ok, state}
-  end
-
-  def handle_call({:adopt, instance_id, live_refs, opts}, _from, state) do
-    now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
-
-    counts = Enum.reduce(live_refs, %{adopted: 0, skipped: 0}, fn live, counts ->
-      {ref, workload} = live_ref(live)
-
-      case catalog_memory(workload, Keyword.put(opts, :live, live)) do
-        {:ok, mem_mib} ->
-          put_entry(
-            state.table,
-            instance_id,
-            build_entry(ref, [workload: workload, mem_mib: mem_mib], now_ms, now_ms)
-          )
-
-          %{counts | adopted: counts.adopted + 1}
-
-        :error ->
-          %{counts | skipped: counts.skipped + 1}
-      end
-    end)
-
-    {:reply, {:ok, counts}, state}
   end
 
   @impl true

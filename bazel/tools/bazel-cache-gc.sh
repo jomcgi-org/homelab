@@ -6,8 +6,8 @@
 # automatic cleanup. This script prunes entries not accessed in MAX_AGE_DAYS.
 #
 # Usage:
-#   tools/bazel-cache-gc.sh              # dry-run (default)
-#   tools/bazel-cache-gc.sh --delete     # actually delete stale entries
+#   bazel/tools/bazel-cache-gc.sh              # dry-run (default)
+#   bazel/tools/bazel-cache-gc.sh --delete     # actually delete stale entries
 #
 # Recommended: run monthly or when disk usage gets high.
 set -o errexit -o nounset -o pipefail

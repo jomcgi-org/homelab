@@ -1,0 +1,109 @@
+import { lazy, Suspense } from "react";
+import { Outlet, Route, Routes } from "react-router";
+import { Button } from "@astryxdesign/core/Button";
+import { Skeleton } from "@astryxdesign/core/Skeleton";
+import { useLobby } from "./api/lobby";
+import { ChunkBoundary } from "./app/ChunkBoundary";
+import { Loaded } from "./app/Loaded";
+import { Page } from "./app/Page";
+import { gateway } from "./app/paths";
+import { NotFound } from "./screens/NotFound";
+import { Lobby } from "./screens/lobby/Lobby";
+
+// Each screen is its own chunk, so the lobby does not download the table.
+const Session = lazy(() =>
+  import("./screens/session/Session").then((m) => ({ default: m.Session })),
+);
+const Sheets = lazy(() =>
+  import("./screens/sheets/Sheets").then((m) => ({ default: m.Sheets })),
+);
+const Notes = lazy(() =>
+  import("./screens/notes/Notes").then((m) => ({ default: m.Notes })),
+);
+const CampaignJournal = lazy(() =>
+  import("./screens/journal/CampaignJournal").then((m) => ({
+    default: m.CampaignJournal,
+  })),
+);
+const Grants = lazy(() =>
+  import("./screens/grants/Grants").then((m) => ({ default: m.Grants })),
+);
+const Entity = lazy(() =>
+  import("./screens/entity/Entity").then((m) => ({ default: m.Entity })),
+);
+
+const JoinAccept = lazy(() =>
+  import("./screens/join/JoinAccept").then((m) => ({ default: m.JoinAccept })),
+);
+const Platform = lazy(() =>
+  import("./screens/platform/Platform").then((m) => ({ default: m.Platform })),
+);
+const FeedbackInbox = lazy(() =>
+  import("./screens/feedback/FeedbackInbox").then((m) => ({
+    default: m.FeedbackInbox,
+  })),
+);
+const Roadmap = lazy(() =>
+  import("./screens/roadmap/Roadmap").then((m) => ({ default: m.Roadmap })),
+);
+const Profile = lazy(() =>
+  import("./screens/platform/Profile").then((m) => ({ default: m.Profile })),
+);
+
+function Loading() {
+  return (
+    <Page title="Grimoire" showFeedback={false}>
+      <Skeleton width="60%" height={24} />
+    </Page>
+  );
+}
+
+/** Do not start audience-filtered reads before their identity baseline exists. */
+function GrimoireIdentity() {
+  const lobby = useLobby();
+  if (lobby.data) return <Outlet />;
+  return (
+    <Page
+      title="Grimoire"
+      showFeedback={false}
+      actions={
+        <Button label="Sign out" variant="ghost" href={gateway.signOut} />
+      }
+    >
+      <Loaded query={lobby} what="your account">
+        {() => null}
+      </Loaded>
+    </Page>
+  );
+}
+
+/** The route table. One screen per route; add a screen in `src/screens`. */
+export function App() {
+  // Keep the confirmed identity current on every route, including account pages.
+  useLobby();
+  return (
+    <ChunkBoundary>
+      <Suspense fallback={<Loading />}>
+        <Routes>
+          <Route path="join/accept" element={<JoinAccept />} />
+          <Route path="platform" element={<Platform />} />
+          <Route path="platform/profile" element={<Profile />} />
+          <Route element={<GrimoireIdentity />}>
+            <Route index element={<Lobby />} />
+            <Route path="sheets" element={<Sheets />} />
+            <Route path="feedback" element={<FeedbackInbox />} />
+            <Route path="roadmap" element={<Roadmap />} />
+            <Route path="campaigns/:campaignId">
+              <Route path="session" element={<Session />} />
+              <Route path="notes" element={<Notes />} />
+              <Route path="journal" element={<CampaignJournal />} />
+              <Route path="grants" element={<Grants />} />
+              <Route path="entities/:entityId" element={<Entity />} />
+            </Route>
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+      </Suspense>
+    </ChunkBoundary>
+  );
+}

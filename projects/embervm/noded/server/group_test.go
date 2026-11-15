@@ -225,7 +225,7 @@ func newGroupTestServer(t *testing.T, gn *fakeGroupNet, gr *fakeGroupRecords) *S
 		GroupRecords: gr,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	return s
 }
 

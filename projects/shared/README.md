@@ -1,7 +1,28 @@
 # shared
 
-Shared assets used across multiple projects in this repo. Currently contains
-one thing: the `homelab-library` Helm library chart.
+Shared assets used across multiple projects in this repo: the
+`homelab-library` Helm library chart and the `go/tokenbroker` Go packages.
+
+## go/tokenbroker
+
+OAuth grant brokering, extracted from EmberVM's token broker
+(`projects/embervm/tokenbroker`) so the factory credential broker (#7817) can
+reuse it. EmberVM's binary, HTTP server and authentik adapter stay in EmberVM.
+
+| Package                  | Provides                                                                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------- |
+| `provider`               | Device-flow `Adapter` and `Minter` interfaces, token types, `ErrInvalidGrant`, `ErrRefreshTokenReused` |
+| `provider/codexchatgpt`  | Codex ChatGPT device login, code exchange, refresh, `/wham/usage` and `x-codex-*` quota header parsing |
+| `broker`                 | Single-flight refresh, reused-token retry, `invalid_grant` login state, durable rotation |
+| `store`                  | Kubernetes Secret grant store with newer-only writes, ConfigMap quota persistence        |
+| `quota`                  | Quota observation store and read-time pacing                                             |
+| `metrics`                | Refresh and quota metrics, `tokenbroker_*` by default                                    |
+
+EmberVM uses the defaults: grant Secrets named `embervm-oauth-grant-<grant>`,
+`tokenbroker_*` metrics, and refresh 5 minutes before expiry or at 7 days. A
+second consumer sets `store.SecretStore.NamePrefix`, `metrics.NewWithPrefix`
+and `NewQuotaCollectorWithPrefix`, and `Broker.SetRefreshPolicy`; the factory
+broker (`projects/factory/broker`) does.
 
 ## homelab-library
 

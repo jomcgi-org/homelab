@@ -31,8 +31,11 @@ _GATEWAY_VALUES = (
 _ROUTE_ON = ["route.enabled=true", "route.hostname=connector.example.test"]
 
 
-def test_aurora_activation_defaults_off_and_has_explicit_enabled_wiring() -> None:
-    for overrides, expected in (([], "false"), (["config.auroraEnabled=true"], "true")):
+def test_aurora_is_enabled_in_deploy_and_has_explicit_enabled_wiring() -> None:
+    for overrides, expected in (
+        ([], "true"),
+        (["config.auroraEnabled=false"], "false"),
+    ):
         docs = _render(overrides)
         deployment = _one(docs, "Deployment")
         container = deployment["spec"]["template"]["spec"]["containers"][0]

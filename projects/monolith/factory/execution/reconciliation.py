@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
+from core.clock import aware, aware_iso
 from factory.execution import admission
 from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.models import AgentCapacityReservation, AgentSession
@@ -232,7 +233,6 @@ def read_never_dispatched_factory_attempt(
     read_not_invoked_factory_attempt, whose first dispatch was claimed and
     whose dispatch_count is exactly one.
     """
-    from datetime import timezone
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
@@ -310,9 +310,6 @@ def read_never_dispatched_factory_attempt(
         or message.partial_activities is not None
     ):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if aware(agent.last_turn_at) > aware(message.created_at):
         return None
@@ -446,13 +443,9 @@ def _interrupted_dispatch_receipts(
     mutable turn row. Missing, conflicting or non-drain responses are unknown.
     This proof says nothing about earlier spend and must never refund it.
     """
-    from datetime import timezone
     from sqlalchemy import or_
     from factory.execution import result_receipts, store
     from factory.execution.models import AgentResultReceipt
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     ids = db.exec(
         select(AgentResultReceipt.id)
@@ -562,7 +555,20 @@ def read_interrupted_retry_not_invoked_factory_attempt(db, pin, session_id):
 
 def read_not_invoked_factory_attempt(db, pin, session_id):
     """The existing first-dispatch proof, with no earlier model invocation."""
-    return _read_not_invoked_factory_attempt(db, pin, session_id)
+    proof = _read_not_invoked_factory_attempt(db, pin, session_id)
+    if proof is not None:
+        from factory.execution.models import AgentTurn
+        from factory.execution.preinvoke_failure import database_failure
+
+        turn = db.get(AgentTurn, proof["turn_id"])
+        failure = database_failure(
+            json.loads(turn.usage_json or "{}")
+            .get("recovery", {})
+            .get("database_failure")
+        )
+        if failure is not None:
+            proof["database_failure"] = failure
+    return proof
 
 
 def read_unknown_retry_factory_attempt(db, pin, session_id):
@@ -667,7 +673,7 @@ def _read_not_invoked_factory_attempt(
     evidence under pool/session locks; it never settles capacity, clears a
     binding, or infers physical cessation from an absent guest.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from sqlalchemy import or_
 
     from factory.execution import normalize_model, store
@@ -733,9 +739,6 @@ def _read_not_invoked_factory_attempt(
         )
     except (AttributeError, TypeError, ValueError):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     permits = db.exec(
         select(AgentCapacityReservation)
@@ -1010,8 +1013,6 @@ def factory_attempt_never_posted(db: Session, identity: dict) -> dict | None:
     from factory.execution import result_receipts
     from factory.execution.models import AgentResultReceipt, PendingMessage
 
-    if not result_receipts.enabled():
-        return None
     agent = db.get(AgentSession, identity["session_id"], populate_existing=True)
     if (
         agent is None
@@ -1284,7 +1285,7 @@ def read_bound_zero_turn_factory_attempt(
     or permit mutation refuses the proof.
     """
     import hashlib
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import or_
 
@@ -1396,11 +1397,6 @@ def read_bound_zero_turn_factory_attempt(
             raise ValueError("factory_bound_zero_turn_result_committed")
         receipt_id = receipt.id
 
-    def stamp(value: datetime) -> str:
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-
     protected = {
         "pin": pin,
         "session_id": agent.id,
@@ -1415,8 +1411,8 @@ def read_bound_zero_turn_factory_attempt(
         "model": message.model,
         "dispatch_count": message.dispatch_count,
         "claim_owner": message.claimed_by_replica,
-        "claimed_at": stamp(message.claimed_at),
-        "dispatched_at": stamp(message.last_dispatch_at),
+        "claimed_at": aware_iso(message.claimed_at),
+        "dispatched_at": aware_iso(message.last_dispatch_at),
         "permit_id": permit.id,
         "permit_state": permit.state,
         "permit_outcome": permit.outcome,
@@ -1606,7 +1602,7 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     supervisor before the separate settlement call consumes this identity.
     """
     import hashlib
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import or_
 
@@ -1710,13 +1706,8 @@ def read_drained_lost_factory_attempt(db: Session, pin: dict, session_id: int) -
     ):
         raise ValueError("missing_factory_dispatch_identity")
 
-    def stamp(value: datetime) -> str:
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-
-    dispatched_at = stamp(message.last_dispatch_at)
-    interrupted_at = stamp(turn.created_at)
+    dispatched_at = aware_iso(message.last_dispatch_at)
+    interrupted_at = aware_iso(turn.created_at)
     if datetime.fromisoformat(dispatched_at) > datetime.fromisoformat(interrupted_at):
         raise ValueError("missing_factory_dispatch_identity")
     identity = {
@@ -1771,14 +1762,12 @@ def read_interrupted_factory_continuation(
     except ValueError:
         return None
     # A drain response carries the spend of the dispatch it interrupted, so a
-    # priced interrupted turn is the ordinary shape, not a completed one. With
-    # the staged relay control it is retired like an unpriced one: the
-    # conductor still settles at unknown cost, so the reserved ceiling stays
-    # charged and nothing is refunded. On 2026-10-01 sessions 13510, 13517 and
-    # 13518 held their lanes after two drains because only this refused them.
-    if (
-        identity["cost_usd"] is not None and not drain_relay_continuation_enabled()
-    ) or identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES:
+    # priced interrupted turn is the ordinary shape, not a completed one. It is
+    # retired like an unpriced one: the conductor still settles at unknown
+    # cost, so the reserved ceiling stays charged and nothing is refunded. On
+    # 2026-10-01 sessions 13510, 13517 and 13518 held their lanes after two
+    # drains because only this refused them.
+    if identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES:
         return None
     agent = _locked_session(db, session_id)
     permit = db.get(AgentCapacityReservation, identity["permit_id"])
@@ -1848,6 +1837,24 @@ def read_provider_error_factory_attempt(
     returns None and leaves the attempt to the ordinary uncertain path. The
     caller holds the factory control lock through graph and start settlement.
     """
+    return _read_native_failed_factory_attempt(db, pin, session_id, workflow_status)
+
+
+def read_refill_preflight_factory_attempt(db, pin, session_id, workflow_status):
+    """Prove a pinned refill checkout failed before invoking its model.
+
+    This is a received native error, not the pre-POST not-invoked proof. Require
+    its authenticated receipt and immutable inspection contract in addition to
+    the common no-work/terminal-owner checks. Unknown spend remains reserved.
+    """
+    return _read_native_failed_factory_attempt(
+        db, pin, session_id, workflow_status, preflight=True
+    )
+
+
+def _read_native_failed_factory_attempt(
+    db, pin, session_id, workflow_status, *, preflight=False
+):
     import zlib
 
     from factory.execution.constants import PROVIDER_ERROR_TERMINAL_REASONS
@@ -1889,7 +1896,8 @@ def read_provider_error_factory_attempt(
     turn = turns[0]
     if (
         turn.seq != 1
-        or turn.terminal_reason not in PROVIDER_ERROR_TERMINAL_REASONS
+        or turn.terminal_reason
+        not in ({"error"} if preflight else PROVIDER_ERROR_TERMINAL_REASONS)
         or turn.stop_reason == UNKNOWN_INVOCATION
         or turn.artifact_blob is not None
         or turn.artifact_outcome == "ok"
@@ -1941,6 +1949,11 @@ def read_provider_error_factory_attempt(
         or permit.state not in ("uncertain", "settled")
     ):
         return None
+    receipt = None
+    if preflight:
+        receipt = _refill_preflight_receipt(db, pin, agent, turn, permit, usage)
+        if receipt is None:
+            return None
     error = " ".join((turn.result_text or "").split())[:PROVIDER_ERROR_TEXT_LIMIT]
     return {
         "session_id": agent.id,
@@ -1954,8 +1967,126 @@ def read_provider_error_factory_attempt(
         "error": error or turn.terminal_reason,
         "cost_usd": turn.cost_usd,
         "list_cost_usd": turn.list_cost_usd,
-        "invocation_phase": "provider_error_before_work",
+        "invocation_phase": "refill_inspection_preflight_failed"
+        if preflight
+        else "provider_error_before_work",
+        **({"native_receipt": receipt} if preflight else {}),
     }
+
+
+def _refill_preflight_receipt(db, pin, agent, turn, permit, usage):
+    from factory.execution import result_receipts
+    from factory.execution.constants import exact_dispatch_id
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration import backlog_refill
+
+    schema = backlog_refill.dispatch_schema(pin["task_id"], pin["node_key"], session=db)
+    source = (schema or {}).get("x-factory-refill-inspection")
+    if (
+        not isinstance(source, dict)
+        or pin.get("artifact_schema") != schema
+        or pin.get("read_only") is not True
+        or source.get("repo") != pin["repo"]
+        or pin["branch"] != "commit:" + str(source.get("sha"))
+        or pin.get("hydration_branch") != pin["branch"]
+    ):
+        return None
+    ids = db.exec(
+        select(AgentResultReceipt.id)
+        .where(AgentResultReceipt.session_id == agent.id)
+        .with_for_update()
+        .limit(2)
+    ).all()
+    if len(ids) != 1:
+        return None
+    row = result_receipts._receipt_metadata(db, ids[0])
+    if (
+        row is None
+        or row["local_session_id"] != agent.local_session_id
+        or row["seq"] != 1
+        or row["dispatch_count"] != 1
+        or row["claim_owner"] != permit.owner
+        or not row["claim_owner"]
+        or not row["guest_id"]
+        # A later normal cleanup may detach this guest; the authenticated
+        # receipt still proves this invocation ended. A different binding cannot.
+        or agent.ember_session_id not in (None, row["guest_id"])
+        or row["superseded_at"] is not None
+        or (
+            row["response_observed_at"] is None
+            and row["response_observer_released_at"] is None
+        )
+    ):
+        return None
+    try:
+        captured = result_receipts._result(db, row)
+        native = json.loads(captured["result_body"])
+    except (result_receipts.ReceiptRejected, ValueError, TypeError):
+        return None
+    # HTTP can win the observation race without adopting the callback. The
+    # same authenticated immutable body must still match the stored turn.
+    # Adopted provenance, when present, must name this exact receipt too.
+    provenance = usage.get("native_result_receipt")
+    if provenance is not None and provenance != captured["provenance"]:
+        return None
+    from factory.execution.transport import parse_native_turn
+
+    evidence = usage.get("refill_inspection_preflight")
+    dispatch = exact_dispatch_id(agent.id, row["guest_id"], 1, permit.owner, 1)
+    if (
+        not isinstance(evidence, dict)
+        or type(evidence.get("version")) is not int
+        or evidence["version"] != 1
+        or evidence.get("expected_sha") != source["sha"]
+        or (
+            evidence.get("observed_sha") is not None
+            and not re.fullmatch(r"[0-9a-f]{40}", str(evidence["observed_sha"]))
+        )
+        or evidence.get("invocation_started") is not False
+        or evidence.get("dispatch_id") != dispatch
+        or type(evidence.get("turn_seq")) is not int
+        or evidence["turn_seq"] != 1
+        or type(evidence.get("tracked_clean")) is not bool
+        or (evidence.get("observed_sha") == source["sha"] and evidence["tracked_clean"])
+        or not isinstance(native, dict)
+        or not isinstance(native.get("usage"), dict)
+        or native["usage"] != {"refill_inspection_preflight": evidence}
+        or type(native.get("num_turns")) is not int
+        or native["num_turns"] != 0
+        or parse_native_turn(native, row["guest_id"]).total_cost_usd != turn.cost_usd
+        or turn.list_cost_usd is not None
+        or native.get("terminal_reason") != "error"
+        or native.get("stop_reason") != "refill_inspection_preflight_failed"
+        or turn.stop_reason != native["stop_reason"]
+        or native.get("result") != turn.result_text
+        or native.get("dispatch_id") != dispatch
+        or native.get("turn_seq") != 1
+        or native.get("is_error") is not True
+        or native.get("num_turns") != 0
+        or native.get("activities") != []
+        or native.get("permission_denials") != []
+        or native.get("artifact") is not None
+        or native.get("diff") is not None
+    ):
+        return None
+    return captured["provenance"]
+
+
+def settle_refill_preflight_factory_attempt(db, pin, proof):
+    current = read_refill_preflight_factory_attempt(
+        db, pin, proof["session_id"], proof["workflow_status"]
+    )
+    if current != proof:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, proof["session_id"])
+    admission.settle(
+        db,
+        agent,
+        proof["seq"],
+        outcome=proof["invocation_phase"],
+        cessation_confirmed=True,
+    )
+    db.flush()
 
 
 def settle_provider_error_factory_attempt(db: Session, pin: dict, proof: dict) -> None:
@@ -2075,7 +2206,6 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
     returns no prompt, result body or credential, settles nothing.
     """
     import hashlib
-    from datetime import timezone
 
     from sqlalchemy import or_
 
@@ -2163,20 +2293,13 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
     ):
         raise ValueError("factory_result_committed")
 
-    def stamp(value):
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.isoformat()
-
     protected = {
         "pin": pin,
         "session_id": agent.id,
         "local_session_id": agent.local_session_id,
         "workflow_id": agent.workflow_id,
         "status": agent.status,
-        "recovery_completed_at": stamp(agent.recovery_completed_at),
+        "recovery_completed_at": aware_iso(agent.recovery_completed_at),
         "turns": [
             {
                 "id": turn.id,
@@ -2184,7 +2307,7 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
                 "terminal_reason": turn.terminal_reason,
                 "stop_reason": turn.stop_reason,
                 "cost_usd": turn.cost_usd,
-                "created_at": stamp(turn.created_at),
+                "created_at": aware_iso(turn.created_at),
             }
             for turn in turns
         ],
@@ -2194,8 +2317,8 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
                 "seq": message.seq,
                 "dispatch_count": message.dispatch_count,
                 "claimed_by_replica": message.claimed_by_replica,
-                "claimed_at": stamp(message.claimed_at),
-                "last_dispatch_at": stamp(message.last_dispatch_at),
+                "claimed_at": aware_iso(message.claimed_at),
+                "last_dispatch_at": aware_iso(message.last_dispatch_at),
             }
             for message in pending
         ],
@@ -2213,7 +2336,7 @@ def read_stranded_factory_attempt(db: Session, pin: dict, session_id: int) -> di
                 "dispatch_count": receipt.dispatch_count,
                 "claim_owner": receipt.claim_owner,
                 "guest_id": receipt.guest_id,
-                "superseded_at": stamp(receipt.superseded_at),
+                "superseded_at": aware_iso(receipt.superseded_at),
             }
             for receipt in receipts
         ],
@@ -2315,16 +2438,6 @@ def settle_stranded_factory_attempt(
     db.flush()
 
 
-def drain_relay_continuation_enabled() -> bool:
-    """One read of the staged drain-relay control (#6256), shared by its owners."""
-    import os
-
-    return (
-        os.environ.get("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "false").lower()
-        == "true"
-    )
-
-
 def _relay_continuation(db: Session, session_id: int, row) -> bool:
     """Whether a later dispatch count is this attempt's own relay continuation.
 
@@ -2340,8 +2453,7 @@ def _relay_continuation(db: Session, session_id: int, row) -> bool:
     from factory.execution.models import AgentTurn
 
     if (
-        not drain_relay_continuation_enabled()
-        or row.last_dispatch_at is None
+        row.last_dispatch_at is None
         or type(row.dispatch_count) is not int
         or not 2 <= row.dispatch_count <= store.MAX_PENDING_DISPATCHES
     ):
@@ -2465,9 +2577,6 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
         or row.partial_activities
     ):
         return None
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     # Initial creation precedes enqueue. A later last_turn_at is valid only
     # when the existing one-shot recovery wrote its matching completion marker;
@@ -2619,7 +2728,7 @@ def inspect_lost_before_guest_factory_attempt(
     Like the not-invoked proof this reads under the pool and session locks,
     settles nothing and clears nothing; settlement is a separate call.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
     from sqlalchemy import or_
 
     from factory.execution import normalize_model
@@ -2716,9 +2825,6 @@ def inspect_lost_before_guest_factory_attempt(
         )
     except (AttributeError, TypeError, ValueError):
         return None, "missing_dispatch_identity"
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if not aware(dispatched) <= aware(turn.created_at):
         return None, "missing_dispatch_identity"
@@ -2907,9 +3013,6 @@ def inspect_lost_before_session_factory_attempt(
         is not None
     ):
         return None, "result_receipt_exists"
-
-    def aware(value):
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
     if (_utcnow() - aware(start.created_at)).total_seconds() <= pin[
         "turn_timeout_seconds"

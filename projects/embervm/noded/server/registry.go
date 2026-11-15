@@ -151,14 +151,6 @@ func (r *vmRegistry) lineageVMIDs() map[string]struct{} {
 	return out
 }
 
-// liveCount is the current number of supervised VMs, for the node-level backstop
-// cap check in Prime.
-func (r *vmRegistry) liveCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.vms)
-}
-
 // snapshotRefInUse reports whether any live task VM (primed or assigned) was
 // restored from the given base ref, i.e. its birth base is still needed by a
 // running guest. It is the in-use guard for a local BASE eviction (PR-3): a base
@@ -215,7 +207,7 @@ type sessionEntry struct {
 // opaque vm_id the control plane holds. It is kept DISTINCT from the task
 // vmRegistry so a session VM is never reported in primed_vm_ids and never adopted
 // into the single-use task pool, while still counting against the node live-VM cap
-// (liveCount sums both registries at the call sites).
+// (the driver's LiveCount, read in admissionFactsLocked).
 type sessionRegistry struct {
 	mu  sync.Mutex
 	vms map[string]*sessionEntry
@@ -294,13 +286,6 @@ func (r *sessionRegistry) interruptTarget(id, sessionID, dispatchID string) (sub
 		return substrate.Handle{}, false
 	}
 	return e.handle, true
-}
-
-// endInFlight clears the in-flight guard for a session VM that is still live
-// (after a SessionAssign returns). A Bank instead remove()s the entry, so it never
-// calls this.
-func (e *sessionEntry) endInFlight() {
-	e.endSessionAssign("", false)
 }
 
 // endSessionAssign retains a caller-cancelled dispatch atomically with releasing

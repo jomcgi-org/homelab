@@ -1,0 +1,46 @@
+{{- if .Values.broker.enabled }}
+{{- /*
+RBAC cannot narrow the broker's Secret `create` in binding namespaces by name,
+so a create could otherwise mint any Secret there, a ServiceAccount token
+included. This policy confines every Secret write by the broker's
+ServiceAccount to the two it owns: its grant in its own namespace, and an
+Opaque `github-git` in a binding namespace.
+*/}}
+{{- $b := .Values.broker }}
+{{- $sa := printf "system:serviceaccount:%s:%s" $b.namespace (include "factory.brokerName" .) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-broker-secrets
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [secrets]
+  matchConditions:
+    - name: broker
+      expression: request.userInfo.username == {{ $sa | squote }}
+  validations:
+    - expression: >-
+        (request.namespace == {{ $b.namespace | squote }} &&
+          object.metadata.name == {{ include "factory.brokerGrantSecret" . | squote }}) ||
+        (request.namespace != {{ $b.namespace | squote }} &&
+          object.metadata.name == 'github-git' &&
+          has(object.type) && object.type == 'Opaque')
+      message: The factory broker may write only its grant Secret and Opaque github-git Secrets in binding namespaces.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-broker-secrets
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  policyName: factory-broker-secrets
+  validationActions: [Deny]
+{{- end }}

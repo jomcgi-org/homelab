@@ -117,13 +117,6 @@ def load_active_session(db: Session, session_id: str | None) -> ChatSession | No
     return session
 
 
-def touch(db: Session, session: ChatSession) -> None:
-    """Bump last_seen_at so an actively-used session keeps its TTL fresh."""
-    session.last_seen_at = utc_now()
-    db.add(session)
-    db.commit()
-
-
 def append_message(
     db: Session,
     session: ChatSession,

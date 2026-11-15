@@ -478,7 +478,7 @@ defmodule Embervm.EndpointPublisherTest do
     ]
   end
 
-  test "node re-registration and channel invalidation re-push an unchanged snapshot" do
+  test "node re-registration re-pushes an unchanged snapshot" do
     ctx = start_stack(epoch: 502)
     serving_workload(ctx, "wl-a", "wl-a.example")
     serving_node(ctx, "node-4", %{pod_uid: "pod-1", instance_id: "node-4/pod-1"})
@@ -488,15 +488,10 @@ defmodule Embervm.EndpointPublisherTest do
     serving_node(ctx, "node-4", %{pod_uid: "pod-2", instance_id: "node-4/pod-2"})
     :ok = EndpointPublisher.flush(ctx.pub)
 
-    :ok = EndpointPublisher.invalidate_node(ctx.pub, "node-4")
-    :ok = EndpointPublisher.flush(ctx.pub)
-
-    assert [{"node-4", first}, {"node-4", second}, {"node-4", third}] = last_puts(ctx)
+    assert [{"node-4", first}, {"node-4", second}] = last_puts(ctx)
     assert first.version == EndpointPublisher.format_version(502, 1)
     assert second.version == EndpointPublisher.format_version(502, 2)
-    assert third.version == EndpointPublisher.format_version(502, 3)
     assert Map.delete(first, :version) == Map.delete(second, :version)
-    assert Map.delete(second, :version) == Map.delete(third, :version)
   end
 
   test "the bounded interval forces an unchanged snapshot re-push" do

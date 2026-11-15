@@ -230,14 +230,6 @@ func TestNftGroupRulesetDeterministic(t *testing.T) {
 	}
 }
 
-func TestNftGroupTeardownArgs(t *testing.T) {
-	got := nftGroupTeardownArgs()
-	want := []string{"nft", "delete", "table", "inet", "embervm_group"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("nftGroupTeardownArgs: got %v want %v", got, want)
-	}
-}
-
 // TestGroupManagerCIDRValidation covers the /24-in-supernet rule and overlap
 // refusal.
 func TestGroupManagerCIDRValidation(t *testing.T) {

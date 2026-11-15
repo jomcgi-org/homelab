@@ -660,7 +660,6 @@ def test_reviewed_interactive_stop_settles_only_with_safe_preserved_queue(
             )
         )
         session.commit()
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(observer, "get_engine", lambda: db)
     monkeypatch.setattr(observer, "_now", lambda: NOW)
     intent = dict(

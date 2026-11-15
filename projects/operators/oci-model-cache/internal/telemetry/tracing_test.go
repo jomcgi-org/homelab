@@ -22,7 +22,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/otel"
 )
 
 // TestInitializeTracing_SDKDisabled verifies that when OTEL_SDK_DISABLED=true,
@@ -88,32 +87,6 @@ func TestShutdown_ValidProvider(t *testing.T) {
 
 	err = Shutdown(context.Background(), tp)
 	require.NoError(t, err)
-}
-
-// TestGetTracer_ReturnsNonNil verifies GetTracer never returns nil.
-func TestGetTracer_ReturnsNonNil(t *testing.T) {
-	tracer := GetTracer("test-component")
-	assert.NotNil(t, tracer)
-}
-
-// TestGetTracer_UsesGlobalProvider verifies GetTracer uses the global provider.
-func TestGetTracer_UsesGlobalProvider(t *testing.T) {
-	// GetTracer should return the same tracer type as otel.Tracer.
-	tracer1 := GetTracer("same-name")
-	tracer2 := otel.Tracer("same-name")
-
-	// Both should be non-nil; we can't compare interfaces directly but we can
-	// verify both are non-nil and don't panic when used.
-	assert.NotNil(t, tracer1)
-	assert.NotNil(t, tracer2)
-}
-
-// TestGetTracer_DifferentNames verifies tracers with different names are returned.
-func TestGetTracer_DifferentNames(t *testing.T) {
-	tracer1 := GetTracer("component-a")
-	tracer2 := GetTracer("component-b")
-	assert.NotNil(t, tracer1)
-	assert.NotNil(t, tracer2)
 }
 
 // TestInitializeTracing_DefaultServiceName verifies defaults are applied when

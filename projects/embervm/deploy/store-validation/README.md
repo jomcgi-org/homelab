@@ -178,12 +178,12 @@ numeric `h0melab` project resource, Cloud Storage service
 enabled notification channel. This is alerting only. It does not cap spending
 and has no Pub/Sub automation that could disable services.
 
-## Render and activate an isolated validation release
+## Render the alternate dev configuration
 
-Before activation, render the chart with the dev values, then the existing GKE
-overrides, then the inactive validation overlay. This order keeps the dev
-workload scope, applies the hub's no-Cilium, unpinned-brick, and scratch-prep
-requirements, and finally replaces the production GKE store settings. Inspect
+Before activation, render the chart with dev values, then dev's GKE
+overlay, then the inactive validation overlay. This preserves dev workload,
+broker and scratch identities and enables the separate validation bucket.
+Production's GKE overlay must not enter this stack. Inspect
 every control-plane, noded, and rootfs-builder store setting.
 Every bucket must be `h0melab-ember-bases-dev`, no rendered manifest may contain
 `h0melab-ember-bases` as a distinct value, and every store credential reference
@@ -194,11 +194,11 @@ not contain `EMBERVM_BASE_RETENTION_SWEEP`,
 `EMBERVM_WARMTH_S3_GC`.
 
 ```bash
-helm template embervm-store-validation projects/embervm/chart \
-  --namespace embervm-store-validation \
+helm template embervm-dev projects/embervm/chart \
+  --namespace embervm-dev \
   --values projects/embervm/chart/values.yaml \
   --values projects/embervm/dev/deploy/values.yaml \
-  --values projects/embervm/deploy/values-gke.yaml \
+  --values projects/embervm/dev/deploy/values-gke.yaml \
   --values projects/embervm/dev/deploy/values-store-validation-gke.yaml \
   > /tmp/embervm-store-validation.yaml
 grep -nE 'EMBERVM(_NODED)?_STORE_(ENDPOINT|BUCKET)|secretKeyRef|name: embervm-store-validation-gcs' \
@@ -212,8 +212,10 @@ item path in the overlay or otherwise create the exact named Secret. Required
 SecretKeyRefs deliberately prevent the release containers from starting when
 the Secret or either key is missing.
 
-Activate only as a separate release in an isolated namespace. Do not add this
-overlay to either checked-in Application or kustomization. After activation:
+This preset targets the existing `embervm-dev` release and namespace. Do not
+install a second release. It remains unreferenced in this repository stage;
+a separately authorized activation must replace the dev Application's value
+selection and restore the normal dev configuration afterwards. After activation:
 
 1. Read every rendered and live control-plane, noded, and rootfs-builder bucket.
 2. Write and read a disposable validation object through EmberVM.

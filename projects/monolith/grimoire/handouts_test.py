@@ -13,7 +13,6 @@ from grimoire.testing.leak_harness import PNG_BYTES, seed_handouts, sqlite_harne
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "handouts.db") as h:
         h.prepare("play")
         s3 = seed_handouts(h)
@@ -287,11 +286,6 @@ def test_upload_is_dm_only_and_hidden_from_outsiders(env):
     for viewer in ("outsider", "other_campaign"):
         assert upload(env, PNG_BYTES, viewer=viewer).status_code == 404
     assert s3.objects == stored
-
-
-def test_upload_is_hidden_when_play_is_disabled(env, monkeypatch):
-    monkeypatch.delenv("GRIMOIRE_PLAY_ENABLED")
-    assert upload(env, PNG_BYTES).status_code == 404
 
 
 # --- image route ------------------------------------------------------------

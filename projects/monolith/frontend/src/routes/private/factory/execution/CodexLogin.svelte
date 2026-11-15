@@ -10,6 +10,7 @@
     openLinkLabel,
     requestNewCodeLabel,
     startingLabel,
+    environment = "prod",
     initialUserCode = null,
     initialVerificationUrl = null,
     onError = () => {},
@@ -25,6 +26,7 @@
     requestedVerificationUrl ?? initialVerificationUrl,
   );
   let copiedTimer;
+  let disposed = false;
 
   $effect(() => {
     if (!initialUserCode) return;
@@ -32,7 +34,10 @@
     requestedVerificationUrl = null;
   });
 
-  onDestroy(() => clearTimeout(copiedTimer));
+  onDestroy(() => {
+    disposed = true;
+    clearTimeout(copiedTimer);
+  });
 
   async function authorize() {
     if (authorizing) return;
@@ -42,19 +47,31 @@
     onError(null);
     onNotice(null);
     try {
+      if (environment !== "prod" && environment !== "dev") {
+        throw new Error("Codex login environment must be prod or dev");
+      }
+      const query =
+        environment === "dev" ? "?grant=codex-cluster&environment=dev" : "";
       const response = await fetch(
-        "/private/factory/execution/codex-login/start",
+        `/private/factory/execution/codex-login/start${query}`,
         {
           method: "POST",
         },
       );
       const body = await response.json().catch(() => ({}));
+      if (disposed) return;
       if (!response.ok) {
         throw new Error(
           body?.error ||
             body?.detail ||
             `${unavailableLabel} (HTTP ${response.status})`,
         );
+      }
+      if (
+        environment === "dev" &&
+        (body.environment !== "dev" || body.grant !== "codex-cluster")
+      ) {
+        throw new Error(invalidResponseLabel);
       }
       if (typeof body.retry_after === "number" && body.retry_after > 0) {
         onNotice(startingLabel);
@@ -73,16 +90,19 @@
       if (navigator.clipboard?.writeText) {
         try {
           await navigator.clipboard.writeText(body.user_code);
+          if (disposed) return;
           copied = true;
           copiedTimer = setTimeout(() => (copied = false), 1200);
         } catch {
           copied = false;
         }
       }
+      if (disposed) return;
       if (body.pending !== true || body.user_code !== previousUserCode) {
         window.open(body.verification_url, "_blank", "noopener,noreferrer");
       }
     } catch (error) {
+      if (disposed) return;
       onError(error instanceof Error ? error.message : unavailableLabel);
     } finally {
       authorizing = false;

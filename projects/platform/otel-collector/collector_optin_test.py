@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import ssl
 import subprocess
 from pathlib import Path
@@ -1312,3 +1313,457 @@ def test_gke_log_agent_workload_shape():
     role = next(d for d in docs if d["kind"] == "ClusterRole")
     for rule in role["rules"]:
         assert set(rule["verbs"]) <= {"get", "list", "watch"}
+
+
+def test_container_metrics_are_absent_unless_enabled():
+    docs = _render_overlay(
+        "values", ["--set", "logs.enabled=true", "--set", "logs.namespaces={monolith}"]
+    )
+    config = _named_collector_config(docs, LOGS)
+    assert "metrics" not in config["service"]["pipelines"]
+    assert "kubelet_stats" not in config["receivers"]
+    role = next(d for d in docs if d["kind"] == "ClusterRole")
+    assert not any("nodes/stats" in rule["resources"] for rule in role["rules"])
+
+
+def test_container_metrics_require_namespaces():
+    result = _run_render(
+        ["values"],
+        [
+            "--set",
+            "logs.enabled=true",
+            "--set",
+            "logs.namespaces={monolith}",
+            "--set",
+            "logs.containerMetrics.enabled=true",
+        ],
+    )
+    assert result.returncode != 0
+    assert "logs.containerMetrics.namespaces" in result.stderr
+
+
+def test_gke_container_metrics_pipeline():
+    docs = _render_overlay("values-gke")
+    config = _named_collector_config(docs, LOGS)
+    _assert_pipelines_reference_defined_components(config)
+
+    receiver = config["receivers"]["kubelet_stats"]
+    assert receiver["auth_type"] == "serviceAccount"
+    assert receiver["endpoint"] == "https://${env:K8S_NODE_IP}:10250"
+    assert receiver["metric_groups"] == ["container"]
+
+    metrics = config["service"]["pipelines"]["metrics"]
+    assert metrics["receivers"] == ["kubelet_stats"]
+    processors = metrics["processors"]
+    assert processors[0] == "memory_limiter"
+    assert processors[-1] == "batch"
+    # Drop before the API-backed enrichment, as the logs pipeline does.
+    assert processors.index("filter/container-metrics") < processors.index(
+        "k8s_attributes"
+    )
+    conditions = config["processors"]["filter/container-metrics"]["metrics"]["metric"]
+    assert any("monolith-public" in c for c in conditions)
+    assert any("working_set" in c for c in conditions)
+
+    (exporter,) = metrics["exporters"]
+    assert exporter == "otlphttp/honeycomb-metrics"
+    headers = config["exporters"][exporter]["headers"]
+    assert headers["x-honeycomb-team"] == "${env:HONEYCOMB_API_KEY}"
+    assert headers["x-honeycomb-dataset"] == "k8s-metrics"
+
+    ds = next(d for d in docs if d["kind"] == "DaemonSet")
+    env = {e["name"]: e for e in ds["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["K8S_NODE_IP"]["valueFrom"]["fieldRef"]["fieldPath"] == "status.hostIP"
+
+    role = next(d for d in docs if d["kind"] == "ClusterRole")
+    assert {"apiGroups": [""], "resources": ["nodes/stats"], "verbs": ["get"]} in role[
+        "rules"
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Factory home cluster: node and cluster agents, no gateway.
+# ---------------------------------------------------------------------------
+CLUSTER = f"{RELEASE}-cluster"
+
+
+def test_gateway_is_on_by_default_in_hub_overlays():
+    for name in ("values", "values-prod", "values-gke"):
+        kinds = {(d["kind"], d["metadata"]["name"]) for d in _render_overlay(name)}
+        assert ("Deployment", RELEASE) in kinds
+        assert ("Service", RELEASE) in kinds
+        assert ("Deployment", CLUSTER) not in kinds
+
+
+def test_factory_renders_no_gateway():
+    kinds = {
+        (d["kind"], d["metadata"]["name"]) for d in _render_overlay("values-factory")
+    }
+    for kind in ("Deployment", "Service", "ConfigMap", "ServiceAccount"):
+        assert (kind, RELEASE) not in kinds
+    assert ("DaemonSet", LOGS) in kinds
+    assert ("Deployment", CLUSTER) in kinds
+
+
+def test_factory_node_agent_pipelines():
+    docs = _render_overlay("values-factory")
+    config = _named_collector_config(docs, LOGS)
+    _assert_pipelines_reference_defined_components(config)
+
+    pipelines = config["service"]["pipelines"]
+    assert set(pipelines) == {"logs", "metrics/node"}
+    node = pipelines["metrics/node"]
+    assert node["receivers"] == [
+        "kubelet_stats/node",
+        "host_metrics",
+        "prometheus/node",
+    ]
+    processors = node["processors"]
+    assert processors[0] == "memory_limiter"
+    assert processors[-1] == "batch"
+    assert processors.index("filter/node-metrics") < processors.index("k8s_attributes")
+    for pipeline in pipelines.values():
+        assert "resource/cluster" in pipeline["processors"]
+    assert config["processors"]["resource/cluster"]["attributes"] == [
+        {"key": "k8s.cluster.name", "value": "factory", "action": "upsert"}
+    ]
+
+    kubelet = config["receivers"]["kubelet_stats/node"]
+    assert kubelet["metric_groups"] == ["node", "pod"]
+    # Its own namespace (export errors), the identity provider and the agent
+    # substrate are never collected.
+    assert config["receivers"]["file_log"]["exclude"] == [
+        f"/var/log/pods/{ns}_*/*/*.log"
+        for ns in ("otel-collector", "authentik", "ate-system")
+    ]
+    # Sanitize before parsing; redact and dedup after filtering and before
+    # anything is enriched or exported.
+    order = pipelines["logs"]["processors"]
+    assert (
+        order.index("transform/sanitize")
+        < order.index("transform/parse")
+        < order.index("filter/severity")
+        < order.index("transform/redact")
+        < order.index("log_dedup")
+        < order.index("k8s_attributes")
+    )
+    redact = config["processors"]["transform/redact"]["log_statements"][0]["statements"]
+    # $${1}: the collector would otherwise expand ${1} as a config variable.
+    assert any("$${1}[REDACTED]" in st for st in redact)
+    assert not any(re.search(r"(?<!\$)\$\{", st) for st in redact)
+    assert any("bearer" in st for st in redact)
+    assert any("authorization" in st for st in redact)
+    assert any("password" in st for st in redact)
+    jobs = {
+        c["job_name"]: c
+        for c in config["receivers"]["prometheus/node"]["config"]["scrape_configs"]
+    }
+    assert set(jobs) == {"cilium-agent", "hubble"}
+    for job in jobs.values():
+        (target,) = job["static_configs"][0]["targets"]
+        assert target.startswith("${env:K8S_NODE_IP}:")
+        assert job["metric_relabel_configs"][0]["action"] == "keep"
+
+    ds = next(d for d in docs if d["kind"] == "DaemonSet")
+    pod = ds["spec"]["template"]["spec"]
+    # Host metrics read the container's /proc; no host filesystem beyond the
+    # pod logs and the agent's own state directory is mounted.
+    host_paths = {v["hostPath"]["path"] for v in pod["volumes"] if "hostPath" in v}
+    assert host_paths == {"/var/log/pods", "/var/lib/otel-collector-logs"}
+    assert "hostNetwork" not in pod
+
+
+def test_factory_cluster_agent():
+    docs = _render_overlay("values-factory")
+    config = _named_collector_config(docs, CLUSTER)
+    _assert_pipelines_reference_defined_components(config)
+    assert set(config["service"]["pipelines"]) == {"logs/events", "metrics/cluster"}
+    events = config["receivers"]["k8s_objects"]["objects"]
+    assert events == [
+        {"name": "events", "mode": "watch", "field_selector": "type=Warning"}
+    ]
+
+    deployment = next(
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == CLUSTER
+    )
+    # One watcher, never two: a surge replica would ship every event twice.
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    # Room to parse three ~11 MB API server /metrics bodies, with the Go
+    # runtime told to collect below the container limit.
+    assert container["resources"]["limits"]["memory"] == "512Mi"
+    env = {e["name"]: e for e in container["env"]}
+    assert env["GOMEMLIMIT"]["value"] == "400MiB"
+
+    # Repeating Events ship on threshold bumps only; expiries never.
+    conditions = config["processors"]["filter/events"]["logs"]["log_record"]
+    assert any('"DELETED"' in c for c in conditions)
+    assert any('"MODIFIED"' in c and "64" in c for c in conditions)
+
+    # Cluster-wide: Events and the metrics paths only. Discovery is namespaced.
+    role = next(
+        d
+        for d in docs
+        if d["kind"] == "ClusterRole" and d["metadata"]["name"] == CLUSTER
+    )
+    for rule in role["rules"]:
+        assert set(rule["verbs"]) <= {"get", "list", "watch"}
+        assert set(rule.get("resources", [])) <= {"events"}
+    roles = {
+        d["metadata"]["namespace"]: d
+        for d in docs
+        if d["kind"] == "Role" and d["metadata"]["name"] == CLUSTER
+    }
+    assert set(roles) == {"default", "kube-system"}
+    assert roles["kube-system"]["rules"] == [
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
+    ]
+    bindings = {
+        d["metadata"]["namespace"]
+        for d in docs
+        if d["kind"] == "RoleBinding" and d["metadata"]["name"] == CLUSTER
+    }
+    assert bindings == {"default", "kube-system"}
+
+
+def test_cluster_agent_requires_a_source():
+    result = _run_render(
+        ["values"],
+        [
+            "--set",
+            "gateway.enabled=false",
+            "--set",
+            "clusterAgent.enabled=true",
+            "--set",
+            "clusterAgent.events.enabled=false",
+        ],
+    )
+    assert result.returncode != 0
+    assert "clusterAgent" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Log redaction: the rendered OTTL rules, run with Python's re.
+# ---------------------------------------------------------------------------
+_OTTL_STRING = r'"((?:[^"\\]|\\.)*)"'
+_OTTL_BODY_RULE = re.compile(
+    rf"^replace_pattern\(log\.body, {_OTTL_STRING}, {_OTTL_STRING}\)"
+)
+_OTTL_ATTRIBUTE_RULE = re.compile(
+    rf'^replace_all_patterns\(log\.attributes, "value", {_OTTL_STRING}, {_OTTL_STRING}\)$'
+)
+_OTTL_DELETE = re.compile(rf"^delete_matching_keys\(log\.attributes, {_OTTL_STRING}\)$")
+
+
+def _ottl_literal(text: str) -> str:
+    """Undo OTTL string escaping and the collector's $$ escape."""
+    return re.sub(r"\\(.)", r"\1", text).replace("$$", "$")
+
+
+def _redaction_statements() -> list[str]:
+    config = _named_collector_config(_render_overlay("values-factory"), LOGS)
+    return config["processors"]["transform/redact"]["log_statements"][0]["statements"]
+
+
+def _rules(kind: re.Pattern) -> list[tuple[str, str]]:
+    """(pattern, replacement) pairs in statement order. The rules use only
+    syntax RE2 and Python's re read alike; ${1} becomes \\g<1>."""
+    rules = []
+    for statement in _redaction_statements():
+        match = kind.match(statement)
+        if match:
+            rules.append(
+                (
+                    _ottl_literal(match.group(1)),
+                    _ottl_literal(match.group(2)).replace("${1}", r"\g<1>"),
+                )
+            )
+    return rules
+
+
+def _redact(line: str) -> str:
+    """Apply the body rules in order, as replace_pattern does."""
+    for pattern, replacement in _rules(_OTTL_BODY_RULE):
+        line = re.sub(pattern, replacement, line)
+    return line
+
+
+def _flatten(value, prefix: str = "") -> dict:
+    """OTTL flatten(): nested maps join keys with '.', arrays use the index."""
+    if isinstance(value, dict):
+        items = value.items()
+    elif isinstance(value, list):
+        items = ((str(i), v) for i, v in enumerate(value))
+    else:
+        return {prefix: value}
+    flat = {}
+    for key, child in items:
+        flat.update(_flatten(child, f"{prefix}.{key}" if prefix else key))
+    return flat
+
+
+def _redact_attributes(attributes: dict) -> dict:
+    """flatten, every attribute rule on every string value, then the key
+    deletion, in the order the statements run."""
+    statements = _redaction_statements()
+    flatten = statements.index("flatten(log.attributes)")
+    attribute_rules = [
+        i for i, s in enumerate(statements) if _OTTL_ATTRIBUTE_RULE.match(s)
+    ]
+    (delete,) = [i for i, s in enumerate(statements) if _OTTL_DELETE.match(s)]
+    assert flatten < min(attribute_rules) and max(attribute_rules) < delete
+
+    flat = _flatten(attributes)
+    for pattern, replacement in _rules(_OTTL_ATTRIBUTE_RULE):
+        flat = {
+            k: re.sub(pattern, replacement, v) if isinstance(v, str) else v
+            for k, v in flat.items()
+        }
+    key_pattern = re.compile(
+        _ottl_literal(_OTTL_DELETE.match(statements[delete]).group(1))
+    )
+    return {k: v for k, v in flat.items() if not key_pattern.match(k)}
+
+
+PEM = (
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretkeymaterial\n"
+    "-----END RSA PRIVATE KEY-----"
+)
+
+
+@pytest.mark.parametrize(
+    "line,secret",
+    [
+        ("connecting to postgres://app:s3cr3tpw@db:5432/app", "s3cr3tpw"),
+        ("redis://:r3dispw@cache:6379/0", "r3dispw"),
+        ("ALTER ROLE app WITH LOGIN PASSWORD 'hunter2'", "hunter2"),
+        ("CREATE USER x PASSWORD 'it''s-quoted'", "it''s-quoted"),
+        ("push with ghp_" + "a" * 36, "ghp_" + "a" * 36),
+        ("auth gho_" + "B1" * 18 + " ok", "gho_" + "B1" * 18),
+        ("ghs_" + "c" * 36, "ghs_" + "c" * 36),
+        ("token github_pat_11ABCDEFG0" + "x" * 40, "github_pat_11ABCDEFG0"),
+        ("gitlab glpat-" + "g" * 20, "glpat-" + "g" * 20),
+        ("aws key AKIAIOSFODNN7EXAMPLE used", "AKIAIOSFODNN7EXAMPLE"),
+        ("session key ASIAIOSFODNN7EXAMPLE used", "ASIAIOSFODNN7EXAMPLE"),
+        ("key sk-ant-api03-" + "Z" * 40, "sk-ant-api03-"),
+        ("openai sk-proj-" + "q" * 30, "sk-proj-"),
+        ("honeycomb hcaik_01" + "k" * 40, "hcaik_01"),
+        (
+            "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqb2UifQ.c2lnbmF0dXJlLXBhcnQ",
+            "c2lnbmF0dXJlLXBhcnQ",
+        ),
+        ("loaded key " + PEM, "secretkeymaterial"),
+        ("-----BEGIN PRIVATE KEY----- MIIEvQIBADANsecret", "MIIEvQIBADANsecret"),
+        ("Cookie: session=abc123; csrftoken=def456", "abc123"),
+        ("Set-Cookie: id=a3fWa; Expires=Wed, 21 Oct 2026 07:28:00 GMT", "a3fWa"),
+        (
+            'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Cookie":["session=abc123"]}',
+            "dXNlcjpwYXNz",
+        ),
+        (
+            'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Cookie":["session=abc123"]}',
+            "abc123",
+        ),
+        ("header map[Authorization:[Bearer t0ken.v4lue] Accept:[*/*]]", "t0ken.v4lue"),
+        ("X-Api-Key: k3y-v4lue", "k3y-v4lue"),
+        ("x-auth-token: aut4-v4lue", "aut4-v4lue"),
+        ("Private-Token: pr1v-v4lue", "pr1v-v4lue"),
+        ("x-honeycomb-team: hcteam-v4lue", "hcteam-v4lue"),
+        ("run psql --password s3cret-flag -h db", "s3cret-flag"),
+        ("run cli --api-key=flagk3y", "flagk3y"),
+        ("api_key: yamlk3yv4lue", "yamlk3yv4lue"),
+        ("  token: yamlt0ken", "yamlt0ken"),
+        ('payload {\\"user\\":\\"joe\\",\\"password\\":\\"pa55w0rd\\"}', "pa55w0rd"),
+        ('payload {\\"password\\":\\"pa\\\\\\"55tail\\"}', "55tail"),
+        ('{"client_secret":"cs-value","user":"joe"}', "cs-value"),
+        ('{"password":"pa\\"ss-tail","user":"joe"}', "ss-tail"),
+        ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ("Authorization: Bearer abc.DEF-123", "abc.DEF-123"),
+        ("GET /cb?code=1&access_token=tok123&x=1", "tok123"),
+        ("password=hunter2 user=joe", "hunter2"),
+        ("retry with password: pw456", "pw456"),
+    ],
+)
+def test_redaction_masks(line, secret):
+    redacted = _redact(line)
+    assert secret not in redacted, redacted
+    assert "[REDACTED" in redacted
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Secret: ns/name not found",
+        'secret "monolith/db-credentials" not found',
+        "failed to refresh token: context canceled",
+        "failed to set cookie: invalid domain example.com",
+        "token: refresh failed after 3 attempts",
+        "max_tokens=4096 temperature=0",
+        "dial tcp 10.0.0.1:5432: connect: connection refused",
+        "GET http://argocd-server:8080/api/v1/applications@latest",
+        "task-runner-controller-manager restarted",
+        "user=joe action=login result=ok",
+        "--password-stdin given; reading from stdin",
+    ],
+)
+def test_redaction_leaves_ordinary_lines_alone(line):
+    assert _redact(line) == line
+
+
+def test_redaction_keeps_context_around_masked_values():
+    assert (
+        _redact('payload {\\"user\\":\\"joe\\",\\"password\\":\\"x-y\\"}')
+        == 'payload {\\"user\\":\\"joe\\",\\"password\\":\\"[REDACTED]\\"}'
+    )
+    assert (
+        _redact("postgres://app:pw@db:5432/app?sslmode=require")
+        == "postgres://app:[REDACTED]@db:5432/app?sslmode=require"
+    )
+    assert (
+        _redact('headers={"Authorization":["Basic dXNlcjpwYXNz"],"Accept":["*/*"]}')
+        == 'headers={"Authorization":["Basic [REDACTED]"],"Accept":["*/*"]}'
+    )
+    assert _redact("Cookie: a=1; b=2") == "Cookie: [REDACTED]"
+
+
+def test_redaction_covers_nested_attributes():
+    redacted = _redact_attributes(
+        {
+            "record": {
+                "message": "c9 password=nestedpw rejected",
+                "user_name": "app",
+                "password": "plainnested",
+            },
+            "headers": {
+                "Authorization": ["Basic dXNlcjpwYXNz"],
+                "Cookie": ["session=abc123"],
+                "X-Api-Key": ["k3y"],
+                "Accept": ["*/*"],
+            },
+            "client_secret": "cs",
+            "detail": "retry with password: pw456",
+            "secretName": "db-credentials",
+            "max_tokens": 4096,
+        }
+    )
+    assert redacted == {
+        "record.message": "c9 password=[REDACTED] rejected",
+        "record.user_name": "app",
+        "headers.Accept.0": "*/*",
+        "detail": "retry with password: [REDACTED]",
+        "secretName": "db-credentials",
+        "max_tokens": 4096,
+    }
+
+
+def test_redaction_is_off_in_hub_overlays():
+    for name in ("values", "values-prod", "values-gke"):
+        docs = _render_overlay(name)
+        for doc in docs:
+            if doc["kind"] == "ConfigMap" and "collector.yaml" in doc.get("data", {}):
+                assert "transform/redact" not in doc["data"]["collector.yaml"]

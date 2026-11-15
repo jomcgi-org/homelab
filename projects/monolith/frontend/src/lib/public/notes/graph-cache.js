@@ -7,7 +7,7 @@ export function getCachedGraph(now = Date.now()) {
   }
   return cache.graph;
 }
-export function setCachedGraph(graph, headers, now = Date.now()) {
+export function graphExpiresAt(headers, now = Date.now()) {
   const policy = headers?.get("cache-control") || "";
   const ttl = Number(policy.match(/(?:^|,)\s*max-age=(\d+)/)?.[1] || 0);
   const date = Date.parse(headers?.get("date"));
@@ -18,11 +18,17 @@ export function setCachedGraph(graph, headers, now = Date.now()) {
   const remaining = /(?:no-store|no-cache|private)/.test(policy)
     ? 0
     : ttl - age;
+  return remaining > 0 && Number.isFinite(remaining)
+    ? now + remaining * 1000
+    : now;
+}
+export function setCachedGraph(graph, headers, now = Date.now()) {
+  const expiresAt = graphExpiresAt(headers, now);
   cache =
-    remaining > 0 && Number.isFinite(remaining)
+    expiresAt > now
       ? {
-          graph: { ...graph, expiresAt: now + remaining * 1000 },
-          expiresAt: now + remaining * 1000,
+          graph: { ...graph, expiresAt },
+          expiresAt,
         }
       : null;
   return cache?.expiresAt ?? now;

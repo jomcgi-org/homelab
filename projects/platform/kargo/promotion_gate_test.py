@@ -183,3 +183,44 @@ def test_conformance_step_survives_runner_restarts():
     for key in _stages_with("verdictURL"):
         (step,) = [s for s in _steps(stages[key]) if s.get("as") == "conformance"]
         assert step["retry"]["errorThreshold"] >= 30, key
+
+
+def test_dev_requires_explicit_codex_success_for_the_candidate_chart():
+    stages = _stages(_render())
+    (step,) = _http_steps(stages[("kargo-embervm", "dev")])
+    expression = step["config"]["successExpression"]
+    assert "response.status == 200" in expression
+    assert "response.body.chart_version == '" in expression
+    assert "chartFrom(" in expression
+    assert "response.body.verdict == 'pass'" in expression
+    assert "response.body.scenarios != nil" in expression
+    assert (
+        "any(response.body.scenarios, { .id == 'S9' && .verdict == 'pass' })"
+        in expression
+    )
+    assert step["retry"]["timeout"] == "1h30m0s"
+    assert (
+        "response.body.previous.verdict == 'fail'"
+        in step["config"]["failureExpression"]
+    )
+    assert _http_steps(stages[("kargo-embervm", "prod")]) == []
+
+
+def test_scenario_requirement_is_optional_for_other_conformance_stages():
+    values = _values()
+    index = next(
+        i
+        for i, pipeline in enumerate(values["promotion"]["pipelines"])
+        if pipeline["name"] == "embervm"
+    )
+    stages = _stages(
+        _render(
+            [
+                "--set-json",
+                f"promotion.pipelines[{index}].stages[0].verdictRequiredScenarios=[]",
+            ]
+        )
+    )
+    (step,) = _http_steps(stages[("kargo-embervm", "dev")])
+    assert "scenarios" not in step["config"]["successExpression"]
+    assert "response.body.verdict == 'pass'" in step["config"]["successExpression"]

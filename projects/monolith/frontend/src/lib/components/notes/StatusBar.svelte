@@ -6,6 +6,8 @@
     zoom = 1,
     hoverTitle = "—",
     indexedAt = null,
+    // {label, href}: a way home for a tier whose bar is its only chrome.
+    home = null,
   } = $props();
 
   function formatAgo(iso) {
@@ -20,8 +22,11 @@
   }
 </script>
 
-<div class="statusbar">
+<div class="statusbar" class:with-home={Boolean(home)}>
   <div class="statusbar-track">
+    {#if home}
+      <a class="stat home" href={home.href}>&larr; {home.label}</a>
+    {/if}
     <span class="stat">~/KG</span>
     <span class="stat"><strong>{nodeCount.toLocaleString()}</strong> NOTES</span
     >
@@ -55,6 +60,18 @@
     gap: 32px;
     font-size: 11px;
     letter-spacing: 0.06em;
+  }
+  /* A bar that is a page's only way home grows to a thumb's height. */
+  .statusbar.with-home {
+    height: 44px;
+  }
+  .home {
+    align-self: stretch;
+    color: inherit;
+    text-decoration: none;
+  }
+  .home:hover {
+    color: var(--accent-ink, inherit);
   }
   .stat {
     display: inline-flex;

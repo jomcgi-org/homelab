@@ -4,8 +4,9 @@
   // Built as the graph half of the notes chat's chat-vs-graph toggle; the chat
   // is retired (#6913) and this is now the whole /app/notes page. The page
   // mounts it in the browser only (and, through it, the heavy KnowledgeGraph
-  // canvas + d3 layout), and the graph DATA is fetched here (on mount) from the
-  // same-origin /app/notes/graph proxy, so the SSR shell stays light.
+  // canvas + D3 controls), and the full graph is fetched here (on mount) from the
+  // same-origin /app/notes/graph proxy. The page first renders current titles
+  // from that same snapshot, retaining them until this canvas paints.
   //
   // Reuses the exact graph render + note panel from the standalone graph
   // (KnowledgeGraph / NotePanel / GraphSearch / GraphLegend). An optional
@@ -31,8 +32,9 @@
   /** @type {{
    *   touched?: { id: any, title: string }[],
    *   focusId?: any,
+   *   onStatus?: (status: string) => void,
    * }} */
-  let { touched = [], focusId = null } = $props();
+  let { touched = [], focusId = null, onStatus = () => {} } = $props();
 
   let touchedIds = $derived(new Set(touched.map((n) => n.id)));
 
@@ -43,6 +45,10 @@
   let nodes = $state([]);
   let edges = $state([]);
   let status = $state("loading"); // "loading" | "ready" | "error"
+
+  $effect(() => {
+    if (status !== "ready") onStatus(status);
+  });
 
   let activeClusters = $state(new Set());
   // Seed the cluster filter from the data once it is present (every type on).
@@ -183,6 +189,8 @@
         onNodeClick={(e) => (selectedId = e.id)}
         onNodeHover={(e) => (hoverTitle = e.title ?? "")}
         onZoom={(k) => (zoom = k)}
+        onReady={() => onStatus("painted")}
+        onError={() => (status = "error")}
       />
 
       <GraphSearch value={searchTerm} onChange={(v) => (searchTerm = v)} />

@@ -6,7 +6,6 @@ tests verify that:
   - Dict-shaped rows are correctly deserialized into Message instances
   - The embedding string representation ("[0.1, 0.2, ...]") from pgvector
     is parsed correctly via the _parse_embedding field_validator
-  - Empty results return an empty list
   - Multiple rows each become distinct Message objects
 """
 

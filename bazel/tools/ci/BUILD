@@ -7,8 +7,24 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "ci",
+    "oci_push_layout.py",
     "source_ratchet.py",
 ])
+
+py_library(
+    name = "oci_push_layout_lib",
+    srcs = ["oci_push_layout.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "oci_push_layout_test",
+    srcs = ["oci_push_layout_test.py"],
+    deps = [
+        ":oci_push_layout_lib",
+        "@pip//pytest",
+    ],
+)
 
 py_test(
     name = "complete_validation_test",

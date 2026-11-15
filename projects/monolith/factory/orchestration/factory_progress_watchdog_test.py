@@ -521,7 +521,6 @@ def test_issue_changes_do_not_dismiss_an_active_watchdog_pause(
 ):
     task_id, policy = looped(db, github, notices)
     before = json.loads(receipt(db, task_id).escalation_json)
-    monkeypatch.setenv("FACTORY_ESCALATION_REVALIDATION_ENABLED", "true")
     monkeypatch.setattr(conductor, "_last_escalation_revalidation", None)
     monkeypatch.setattr(
         conductor,
@@ -794,16 +793,9 @@ def test_health_reports_watchdog_paused_tasks(db, github, notices, model):
 # Notification policy and the daily digest (factory_notify_policy).
 
 
-def test_only_authority_kinds_page_once_the_digest_is_on(monkeypatch):
+def test_only_authority_kinds_page():
     from factory.orchestration import factory_notify_policy as policy
 
-    monkeypatch.delenv("FACTORY_NOTIFY_DIGEST_ENABLED", raising=False)
-    assert all(
-        policy.pages(kind)
-        for kind in ("refine", "escalation", "intervention", "deadline", "landing")
-    )
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
-    monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "true")
     assert not policy.pages("refine")
     assert not policy.pages("intervention") and not policy.pages("deadline")
     assert policy.pages("escalation") and policy.pages("landing")
@@ -811,15 +803,11 @@ def test_only_authority_kinds_page_once_the_digest_is_on(monkeypatch):
     assert policy.pages("rollout")
     assert "rollout" not in policy.DIGEST_KINDS
     assert "rollout" not in policy.SELF_RELEASING_KINDS
-    # With nothing to release a stranded slot, an intervention is a person's.
-    monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "false")
-    assert policy.pages("intervention") and policy.pages("deadline")
 
 
 def test_a_digested_notice_is_recorded_once_and_not_sent(db, notices, monkeypatch):
     from factory.orchestration import factory_notify_policy as policy
 
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
     task_id, _policy = admitted()
     for _ in range(2):
         assert conductor._notify_person_once(task_id, "refine question", kind="refine")
@@ -841,7 +829,6 @@ def test_the_daily_digest_lists_what_the_factory_decided_once_a_day(
 ):
     from factory.orchestration import factory_notify_policy as policy
 
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
     task_id, _policy = admitted()
     _audit(
         task_id,
@@ -895,22 +882,13 @@ def test_the_daily_digest_lists_what_the_factory_decided_once_a_day(
 def test_an_empty_day_sends_nothing(db, notices, monkeypatch):
     from factory.orchestration import factory_notify_policy as policy
 
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
     assert policy.digest_tick() == "empty"
     assert notices == []
-
-
-def test_the_digest_is_off_by_default(db, notices, monkeypatch):
-    from factory.orchestration import factory_notify_policy as policy
-
-    monkeypatch.delenv("FACTORY_NOTIFY_DIGEST_ENABLED", raising=False)
-    assert policy.digest_tick() == "disabled"
 
 
 def test_rollout_wait_digest_selects_and_renders_once(db, notices, monkeypatch):
     from factory.orchestration import factory_notify_policy as policy
 
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
     task_id, _policy = admitted()
     _audit(
         task_id,

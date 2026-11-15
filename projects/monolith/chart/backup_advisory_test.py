@@ -68,7 +68,7 @@ def test_reader_defaults_off_outside_hub():
             is False
         )
     env = backend_env(render())
-    assert env["CNPG_BACKUP_HEALTH_ENABLED"] == "false"
+    assert "CNPG_BACKUP_HEALTH_ENABLED" not in env
     assert "CNPG_BACKUP_STATUS_CONFIGMAP" not in env
 
 
@@ -83,7 +83,6 @@ def test_hub_reader_is_enabled_with_the_required_backup_targets():
             ]
         )
     )
-    assert env["CNPG_BACKUP_HEALTH_ENABLED"] == "true"
     assert env["CNPG_BACKUP_STATUS_NAMESPACE"] == "otel-collector"
     assert env["CNPG_BACKUP_STATUS_CONFIGMAP"] == "cnpg-backup-status"
     assert json.loads(env["CNPG_BACKUP_TARGETS"]) == [
@@ -99,7 +98,6 @@ def test_hub_reader_is_enabled_with_the_required_backup_targets():
 def test_reader_enablement_wires_targets_and_reuses_existing_read_permission():
     off, on = render(), render(True)
     env = backend_env(on)
-    assert env["CNPG_BACKUP_HEALTH_ENABLED"] == "true"
     assert env["CNPG_BACKUP_STATUS_NAMESPACE"] == "otel-collector"
     assert env["CNPG_BACKUP_STATUS_CONFIGMAP"] == "cnpg-backup-status"
     assert json.loads(env["CNPG_BACKUP_TARGETS"]) == [

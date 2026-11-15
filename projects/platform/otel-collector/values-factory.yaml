@@ -1,0 +1,208 @@
+# Factory home cluster (projects/factory-cluster/README.md). Node and cluster
+# telemetry only: no trace gateway, since nothing on the cluster emits traces
+# yet. Everything goes to the hub's Honeycomb environment (homelab) with
+# deployment.environment=factory and k8s.cluster.name=factory on every event;
+# those two attributes, not dataset names, separate the clusters. The
+# environment puts every metric in its `metrics` dataset and routes logs by
+# service.name, so the dataset values below only name the fallback for data
+# without a service.name. The README lists where each kind of data lands.
+#
+# Volume. The team shares one monthly event budget with the hub, so every
+# source is cut to an allowlist and scraped every 120s. Measured on
+# 2026-11-13 with 55 pods: about 120 metric datapoints a minute (kubelet and
+# host about 90, Hubble about 27, API servers and operators about 17), about
+# 5.3M a month at most. Logs ran at 45-60 lines a minute (about 2-2.6M a
+# month), most of them Cilium's "Skipping named port" warnings about
+# ate-system policies; Warning events add a few a minute. That is about 8M a
+# month beside the hub's 4M. The collector has no hard log rate cap: dedup
+# (below) absorbs repeats, and a noisy component needs its own fix or an
+# exclusion. Halve an interval only after checking Honeycomb's usage view.
+
+# The hub's ingest key (vault k8s-homelab, fields honeycomb-key-secret and
+# honeycomb-key-id). It writes to the homelab environment.
+onepassword:
+  enabled: true
+  itemPath: "vaults/k8s-homelab/items/honeycomb-ingest"
+
+# OTLP over HTTP, the path the hub proved (values-gke.yaml).
+honeycomb:
+  protocol: "http"
+
+environment: factory
+clusterName: factory
+
+gateway:
+  enabled: false
+
+logs:
+  enabled: true
+  # Every namespace, warning and above, except:
+  #   otel-collector: the agents' own export errors would be exported;
+  #   authentik: the identity provider logs sign-in details and its database
+  #     logs failed authentications;
+  #   ate-system: Agent Substrate carries agent session traffic and tokens.
+  # Lines from the rest pass through transform/redact before export.
+  namespaces:
+    - "*"
+  excludeNamespaces:
+    - otel-collector
+    - authentik
+    - ate-system
+  # Kyverno logs coloured zerolog console lines; sanitize makes them parse.
+  sanitize: true
+  redact: true
+  dedup:
+    enabled: true
+    interval: 60s
+  dataset: factory-k8s-logs
+  nodeMetrics:
+    enabled: true
+    dataset: factory-metrics
+    interval: 120s
+    hostMetrics:
+      enabled: true
+    # Node-local Cilium endpoints. The agent runs on the host network, so
+    # this node's IP reaches this node's agent; the CiliumNetworkPolicy in
+    # projects/platform-factory/otel-collector allows exactly these ports.
+    scrapeConfigs:
+      - job_name: cilium-agent
+        scrape_interval: 120s
+        static_configs:
+          - targets: ["${env:K8S_NODE_IP}:9962"]
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            action: keep
+            # Drops by reason, endpoint health, logged errors, and the
+            # unlabelled gauges (failing controllers, unreachable nodes, policy
+            # count), which share one event per scrape.
+            regex: "cilium_(drop_count_total|endpoint_state|errors_warnings_total|controllers_failing|unreachable_nodes|unreachable_health_endpoints|policy)"
+      - job_name: hubble
+        scrape_interval: 120s
+        static_configs:
+          - targets: ["${env:K8S_NODE_IP}:9965"]
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            action: keep
+            regex: "hubble_(drop_total|flows_processed_total|dns_responses_total|lost_events_total)"
+    # Hubble's flow and DNS counters carry per-subtype and per-answer-count
+    # labels that multiply events without changing what a query asks. Drops
+    # keep every label: they are the policy signal.
+    transforms:
+      - include: "^hubble_flows_processed(_total)?$"
+        match_type: regexp
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set: [verdict, type, protocol]
+            aggregation_type: sum
+      - include: "^hubble_dns_responses(_total)?$"
+        match_type: regexp
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set: [rcode]
+            aggregation_type: sum
+
+clusterAgent:
+  enabled: true
+  # Each k3s API server's /metrics is about 11 MB and is parsed in full
+  # before the keep rule drops all but three series, three servers at once.
+  # 192Mi left the memory_limiter refusing data (and dropping Warning events)
+  # at about 110 MiB; 512Mi gives the parse room. Measured 2026-11-13 at
+  # 512Mi: process RSS peaked at 348 MiB with the heap at 124 MiB, so
+  # GOMEMLIMIT makes the runtime return freed memory before the limit.
+  goMemLimit: 400MiB
+  resources:
+    requests:
+      cpu: 20m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+  events:
+    dataset: factory-k8s-events
+  metricsDataset: factory-metrics
+  scrapeConfigs:
+    # Each k3s server's API server, found through the default/kubernetes
+    # EndpointSlice. etcd's own metrics listen on 127.0.0.1:2381 on each
+    # node, out of reach of a pod; the API server's view of etcd is the
+    # cheap substitute: its readiness checks, database size and request
+    # errors.
+    - job_name: apiserver
+      scrape_interval: 120s
+      scheme: https
+      # A ceiling, not a filter: the response is parsed whole, so this only
+      # stops a much larger one from taking the agent's memory with it.
+      body_size_limit: 32MB
+      kubernetes_sd_configs:
+        - role: endpointslice
+          namespaces:
+            names: [default]
+      authorization:
+        credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpointslice_port_name]
+          action: keep
+          regex: "kubernetes;https"
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          action: keep
+          regex: "apiserver_storage_size_bytes|etcd_request_errors_total|k3s_etcd_snapshot_reconcile_duration_seconds_count"
+    - job_name: apiserver-health
+      scrape_interval: 120s
+      scheme: https
+      metrics_path: /metrics/slis
+      kubernetes_sd_configs:
+        - role: endpointslice
+          namespaces:
+            names: [default]
+      authorization:
+        credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpointslice_port_name]
+          action: keep
+          regex: "kubernetes;https"
+      metric_relabel_configs:
+        - source_labels: [__name__, name, type]
+          action: keep
+          regex: "kubernetes_healthcheck;(etcd|etcd-readiness|ping);readyz"
+    # Both Cilium operator replicas, wherever they are scheduled.
+    - job_name: cilium-operator
+      scrape_interval: 120s
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [kube-system]
+          selectors:
+            - role: pod
+              label: "io.cilium/app=operator"
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_container_port_name]
+          action: keep
+          regex: prometheus
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: k8s_node_name
+      metric_relabel_configs:
+        - source_labels: [__name__]
+          action: keep
+          regex: "cilium_operator_(errors_warnings_total|unmanaged_pods)"
+  # Only the API server metrics paths are cluster-wide; discovery reads two
+  # namespaces.
+  extraRules:
+    - nonResourceURLs: [/metrics, /metrics/slis]
+      verbs: [get]
+  namespacedRules:
+    default:
+      - apiGroups: [discovery.k8s.io]
+        resources: [endpointslices]
+        verbs: [get, list, watch]
+      - apiGroups: [""]
+        resources: [services, pods]
+        verbs: [get, list, watch]
+    kube-system:
+      - apiGroups: [""]
+        resources: [pods]
+        verbs: [get, list, watch]

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
-from core.clock import aware
+from core.clock import aware, aware_iso
 from factory.orchestration.factory_controls import (
     DEFAULT_TASK_CLASS,
     LANES,
@@ -31,7 +31,6 @@ from factory.orchestration.factory_controls import (
 )
 from factory.orchestration.factory_intake import (
     INTAKE_ACTOR,
-    admission_eligible,
     ceiling_below_lanes,
     lane_of,
     open_lanes,
@@ -501,7 +500,7 @@ def _local_candidates(
             "html_url": work_item.source_ref
             or f"https://github.com/{repo}/issues/{number}",
             "labels": work_item.labels,
-            "created_at": aware(created_at).isoformat(),
+            "created_at": aware_iso(created_at),
             "user": None,
         }
         candidates.append(
@@ -837,7 +836,22 @@ def intake_tick(
             exclude_labels = {
                 label.lower() for label in entries[slug]["exclude_labels"]
             }
-            from factory.orchestration import dependency_prs
+            from factory.orchestration import dependency_prs, owner_prs
+
+            if (
+                listing_due
+                and slug not in read_failed
+                and not intake["refinement_batch"]
+            ):
+                owner_candidates = owner_prs.candidates(slug, pulls, issues, policy)
+                eligible.update(
+                    (slug, candidate["number"]) for candidate in owner_candidates
+                )
+                candidates.extend(
+                    candidate
+                    for candidate in owner_candidates
+                    if room.get(candidate["lane"])
+                )
 
             if (
                 room.get("delivery")
@@ -1077,15 +1091,14 @@ def intake_tick(
                     else "oldest"
                 )
                 lane = lane_for(task_class)
-                if handoff.enabled():
-                    # Finished repository work with only live checks left is
-                    # delivered, whatever generation re-read its labels (#6288).
-                    handed_off = handoff.intake_exclusion(
-                        slug, number, rows, delivery_check_budget
-                    )
-                    if handed_off is not None:
-                        exclude(handed_off)
-                        continue
+                # Finished repository work with only live checks left is
+                # delivered, whatever generation re-read its labels (#6288).
+                handed_off = handoff.intake_exclusion(
+                    slug, number, rows, delivery_check_budget
+                )
+                if handed_off is not None:
+                    exclude(handed_off)
+                    continue
                 if delivery and "agent-ready" in labels:
                     eligible.add((slug, number))
                 if not room.get(lane):
@@ -1165,7 +1178,9 @@ def intake_tick(
             evaluation_complete = True
             return []
 
-        # One per lane, in lane-blind rank order, so the delivery lane keeps
+        # Admit one per lane. Retain at most five ranked alternatives so a
+        # proven pre-write owner-PR hold can release selection within this tick;
+        # unknown outcomes fence the lane. In lane-blind order, delivery keeps
         # its precedence over refine while an open advisory lane is not left
         # idle behind a delivery candidate it has nothing to do with.
         # The daily cap is per repo and checked here, while choosing: a
@@ -1174,10 +1189,10 @@ def intake_tick(
         # room would have used. The advisory lane has nothing to do with what
         # the cap bounds, so it is never consulted for one.
         chosen: list[dict] = []
-        taken: set[str] = set()
+        taken: dict[str, int] = {}
         capped: dict[str, dict] = {}
         for candidate in candidates:
-            if candidate["lane"] in taken:
+            if taken.get(candidate["lane"], 0) >= 5:
                 continue
             repo = candidate["repo"]
             repo_max_per_day = entries[repo]["max_per_day"]
@@ -1192,11 +1207,14 @@ def intake_tick(
                     "max_per_day": repo_max_per_day,
                 }
                 continue
-            taken.add(candidate["lane"])
+            taken[candidate["lane"]] = taken.get(candidate["lane"], 0) + 1
             chosen.append(candidate)
 
         received_all = []
+        settled_lanes = set()
         for candidate in chosen:
+            if candidate["lane"] in settled_lanes:
+                continue
             if evidence is not None:
                 evidence.reason(
                     candidate["repo"], candidate["number"], "evaluation_failed"
@@ -1242,7 +1260,41 @@ def intake_tick(
             delivery = candidate["lane"] == "delivery"
             repo = candidate["repo"]
             issue = candidate["issue"]
-            if candidate["source"] == "dependency_pr":
+            if candidate["source"] == "owner_pr":
+                try:
+                    received = owner_prs.receive(
+                        repo,
+                        candidate["pr_number"],
+                        {**policy, "owner_pr_issue_number": candidate["number"]},
+                        generation=generation,
+                    )
+                except owner_prs.OwnerPRHold as exc:
+                    with _locked_session() as (db, _control):
+                        _audit(
+                            db,
+                            ACTOR,
+                            "owner_pr_discussion_held",
+                            repo=repo,
+                            pr_number=candidate["pr_number"],
+                            pr_updated_at=candidate.get("pr_updated_at"),
+                            reason=str(exc),
+                        )
+                    # Positive pre-write refusal: try a bounded next candidate.
+                    continue
+                except Exception as exc:  # noqa: BLE001 - retain unknown ownership
+                    settled_lanes.add(candidate["lane"])
+                    _throttled(
+                        "owner_pr_held",
+                        {
+                            "repo": repo,
+                            "pr_number": candidate["pr_number"],
+                            "reason": str(exc)[:1000]
+                            if isinstance(exc, ValueError)
+                            else type(exc).__name__,
+                        },
+                    )
+                    continue
+            elif candidate["source"] == "dependency_pr":
                 try:
                     received = dependency_prs.receive(
                         repo, candidate["number"], policy, generation=generation
@@ -1276,6 +1328,7 @@ def intake_tick(
                     issue=issue,
                     work_item_id=candidate["work_item_id"],
                 )
+            settled_lanes.add(candidate["lane"])
             if not received.get("ok") or not received.get("receipt", {}).get("id"):
                 if evidence is not None:
                     evidence.reason(repo, candidate["number"], "receipt_refused")
@@ -1396,8 +1449,6 @@ def _refill_observation(policy, eligible, complete, lanes, observed_at):
 
 # Re-exported so a caller reading the loop finds the board's view of it here.
 __all__ = [
-    "ACTOR",
-    "CLASS_LABELS",
     "derive_task_class",
     "github_list",
     "intake_state",

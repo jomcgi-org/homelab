@@ -132,11 +132,6 @@ teamMapping:
     limits:
       memory: 128Mi
 
-# NetworkPolicies disabled. Context Forge enforces auth at the application
-# layer instead.
-networkPolicy:
-  enabled: false
-
 # CloudNativePG cluster backing the gateway, replacing mcp-stack's bundled
 # postgres:17 Deployment. Native GCS provides off-cluster base backups and WAL
 # archiving whenever this cluster is enabled.

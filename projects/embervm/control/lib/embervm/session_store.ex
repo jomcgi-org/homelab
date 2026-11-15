@@ -39,6 +39,7 @@ defmodule Embervm.SessionStore do
   require Logger
   use GenServer
 
+  alias Embervm.InstanceTable
   alias Embervm.OpLog.Op
   alias Embervm.{SessionId, SessionState}
 
@@ -288,6 +289,19 @@ defmodule Embervm.SessionStore do
   @spec adopt_state(GenServer.server(), String.t(), :running | :banked) :: :ok
   def adopt_state(store \\ __MODULE__, session_id, new_state) do
     GenServer.call(store, {:adopt_state, session_id, new_state})
+  end
+
+  @doc """
+  Recover a completed bank from an owned node inventory entry. Appends the
+  recovered snapshot facts before changing ETS, counts or residency. Repeated
+  matching inventory is a no-op. Inventory cannot replace an existing snapshot
+  identity or resurrect a terminal, destroying or parked session.
+
+  NodeStatus carries no generation or parent-base provenance. Keep the durable
+  row's generation and base identity instead of inferring either from a ref.
+  """
+  def adopt_banked(store, session_id, node_id, snapshot) do
+    GenServer.call(store, {:adopt_banked, session_id, node_id, snapshot})
   end
 
   @doc """
@@ -735,6 +749,37 @@ defmodule Embervm.SessionStore do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:adopt_banked, session_id, node_id, snapshot}, _from, state) do
+    with {:ok, session} <- fetch(state, session_id),
+         true <- session.state in [:creating, :running, :banking, :banked, :relighting],
+         true <- Map.get(snapshot, :session_id) == session_id and Map.get(snapshot, :workload) == session.workload,
+         true <- is_binary(node_id) and node_id != "" and node_id == session.node_id,
+         ref when is_binary(ref) and ref != "" <- Map.get(snapshot, :snapshot_ref),
+         true <- valid_inventory_snapshot_ref?(ref),
+         size <- Map.get(snapshot, :size_bytes),
+         true <- is_nil(size) or (is_integer(size) and size >= 0),
+         true <- session.snapshot_ref in [nil, "", ref] do
+      size = case size do
+        n when is_integer(n) and n > 0 -> n
+        _ -> session.snapshot_size_bytes
+      end
+      updates = %{snapshot_ref: ref, snapshot_size_bytes: size, node_id: node_id, vm_id: nil}
+
+      if session.state == :banked and Map.take(session, Map.keys(updates)) == updates do
+        {:reply, {:ok, session}, state}
+      else
+        payload = %{snapshot_ref: ref, size_bytes: size, generation: session.generation,
+          adopted: true}
+        case append_and_update(state, session, :session_banked, :banked, payload, updates) do
+          {:ok, updated, next} -> {:reply, {:ok, updated}, next}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      end
+    else
+      _ -> {:reply, {:error, :invalid_snapshot_inventory}, state}
     end
   end
 
@@ -1246,6 +1291,13 @@ defmodule Embervm.SessionStore do
   # snapshot_ref/generation/node_id/vm_id into the row atomically with the state
   # change. Terminal transitions record the reason, drop the residency fact, and
   # (for usage-carrying payloads) fire the metering hook.
+  # Session bundles are one path segment, matching noded's session identity
+  # boundary. Blank references cannot be consumed by WakeInstance.
+  defp valid_inventory_snapshot_ref?(ref) do
+    String.trim(ref) != "" and ref not in [".", ".."] and
+      not String.contains?(ref, ["/", "\\", <<0>>])
+  end
+
   defp append_and_update(state, session, op_kind, next_state, payload, updates) do
     ts = state.clock.()
 
@@ -1309,14 +1361,7 @@ defmodule Embervm.SessionStore do
   # prior bucket and increment the next. A terminal state is neither live nor
   # banked, so it decrements without a matching increment.
   defp bump_counts(state, prior, next, workload) do
-    counts = Map.get(state.counts, workload, %{live: 0, banked: 0})
-
-    counts =
-      counts
-      |> dec_bucket(bucket_of(prior))
-      |> inc_bucket(bucket_of(next))
-
-    %{state | counts: Map.put(state.counts, workload, counts)}
+    %{state | counts: InstanceTable.bump_counts(state.counts, workload, bucket_of(prior), bucket_of(next))}
   end
 
   defp bucket_of(nil), do: nil
@@ -1324,12 +1369,6 @@ defmodule Embervm.SessionStore do
   defp bucket_of(:parked), do: :banked
   defp bucket_of(state) when state in @live_states, do: :live
   defp bucket_of(_terminal), do: nil
-
-  defp inc_bucket(counts, nil), do: counts
-  defp inc_bucket(counts, bucket), do: Map.update!(counts, bucket, &(&1 + 1))
-
-  defp dec_bucket(counts, nil), do: counts
-  defp dec_bucket(counts, bucket), do: Map.update!(counts, bucket, &max(&1 - 1, 0))
 
   # -- helpers ---------------------------------------------------------------
 

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Prometheus and kube-state-metrics for the operators' metrics view
+# (projects/factory-cluster/README.md, "Metrics view"), with the namespace's
+# allowlist and the scrape ingress rules at each target.
+resources:
+  - network-policy.yaml
+  - scrape-ingress.yaml
+  - kube-state-metrics.yaml
+  - prometheus.yaml
+
+configMapGenerator:
+  - name: prometheus-config
+    namespace: prometheus
+    files:
+      - prometheus.yml

@@ -26,9 +26,9 @@ substrate:
 | [QUICKSTART.md](QUICKSTART.md) | Bootstrap one Linux host, run a hello-world task, and exercise session bank/relight continuity |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The design, standalone: current state and decided future, the capability matrix, invariants, threat model, and platform contract |
 | [STPA.md](STPA.md) | The safety model: unsafe control actions and feedback that drive the system into a loss, with severity |
-| [deploy/README.md](deploy/README.md) | The reference deployment: fleet shape, node enrollment, warmth GC operations |
+| [deploy/README.md](deploy/README.md) | The GKE hub reference deployment: value layers, placement, store and read-only preflight |
 | [ARCHITECTURE.md, section 13](ARCHITECTURE.md#13-decision-history) | Why: each decision's status and where its rationale now lives (the `**Why.**` paragraph per section) |
-| [specs/](specs/) | TLA+ models (`adoption`, `bank_relight`, `quota`, `session_create`), run under TLC in the build |
+| [specs/](specs/) | TLA+ models of the concurrency-critical protocols, run under TLC in the build; [specs/README.md](specs/README.md) lists them |
 
 ## Layout
 
@@ -38,11 +38,15 @@ substrate:
 | `noded/`    | Go node daemon: Firecracker driver, vsock, tap/DNAT, node-local activators |
 | `crd/`      | Workload CRD samples                                                   |
 | `proto/`    | gRPC contract between the control plane and noded                      |
-| `runtimes/` | Guest runtimes (zip lane plus claude, k3s, postgres); vsock guest contract in its README |
+| `runtimes/` | Guest runtimes: claude, k3s, pi, ping, postgres, python (zip lane), and shotter; see the claude, k3s, and python READMEs |
 | `tokenbroker/`, `image/`, `scratch-prep/` | Token broker, base image build, scratch provisioning |
 | `xds/`      | Envoy endpoint publisher sidecar                                       |
 | `chart/`, `deploy/` | Helm chart and ArgoCD wiring                                   |
-| `specs/`    | TLA+ models for the adoption, bank/relight, quota, and session-create protocols |
+| `specs/`    | TLA+ models of the concurrency-critical protocols |
+| `conformance/` | Conformance runner for the dev lane |
+| `dev/`      | Dev-lane values (`dev/deploy/`) and the Apple Silicon local harness (`dev/apple/`) |
+| `rootfs/`   | Rootfs chunk-sizing tools |
+| `stpa/`, `docs/drills/` | STPA model data and drill records |
 
 Everything builds in Bazel, including the Elixir control plane via a
 hermetic OTP toolchain with pinned hex dependencies. Images are apko-based;

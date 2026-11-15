@@ -374,7 +374,7 @@ async def test_collect_health_uses_snapshot_and_adds_freshness():
         patch.object(cluster_snapshot, "read_cluster_snapshot", return_value=snap),
         patch.object(cluster_snapshot, "scan_health_live", live),
     ):
-        health = await dashboard._collect_health(MagicMock())
+        health = await dashboard._collect_health()
 
     assert health["scanned"] == 42
     assert health["snapshot_at"] == "2026-07-12T20:00:00+00:00"
@@ -388,7 +388,7 @@ async def test_collect_health_falls_back_to_live_scan_when_no_snapshot():
         patch.object(cluster_snapshot, "read_cluster_snapshot", return_value=None),
         patch.object(cluster_snapshot, "scan_health_live", live),
     ):
-        health = await dashboard._collect_health(MagicMock())
+        health = await dashboard._collect_health()
 
     assert health["scanned"] == 7
     live.assert_awaited_once()

@@ -1,0 +1,17 @@
+/* Journal entries are a list of cards; the cards carry the spacing. */
+.journal-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.journal-list > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An action is typed with line breaks, and a long token must not widen a phone. */
+.journal-prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

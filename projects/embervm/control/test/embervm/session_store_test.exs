@@ -21,6 +21,117 @@ defmodule Embervm.SessionStoreTest do
     end
   end
 
+  defmodule BankOpLog do
+    def load_sessions({log, _reject}), do: SQLite.load_sessions(log)
+    def load_residency_intents({log, _reject}), do: SQLite.load_residency_intents(log)
+    def append({log, reject}, op) do
+      if op.kind == :session_banked and Agent.get(reject, & &1),
+        do: {:error, :injected_write_failure},
+        else: SQLite.append(log, op)
+    end
+  end
+
+  test "recovered bank append failure leaves the complete hot state retryable", %{path: path} do
+    {:ok, log} = SQLite.start_link(path: path, name: nil)
+    {:ok, reject} = Agent.start_link(fn -> true end)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: {log, reject}, op_log_mod: BankOpLog)
+    {:ok, created} = create(store)
+    id = created.session_id
+    {:ok, before} = SessionStore.get(store, id)
+    residency = SessionStore.residency(store, id)
+    counts = SessionStore.counts(store, "wl-a")
+    snapshot = %{session_id: id, workload: "wl-a", snapshot_ref: "sess-late", size_bytes: 42}
+    assert {:error, :injected_write_failure} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+    assert {:ok, ^before} = SessionStore.get(store, id)
+    assert SessionStore.residency(store, id) == residency
+    assert SessionStore.counts(store, "wl-a") == counts
+    assert {:ok, [%{kind: :session_created}]} = SQLite.read_from(log, 0)
+    Agent.update(reject, fn _ -> false end)
+    assert {:ok, recovered} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+    assert recovered.snapshot_ref == "sess-late"
+    assert recovered.snapshot_size_bytes == 42
+    assert recovered.state == :banked
+    assert recovered.vm_id == nil
+    assert SessionStore.residency(store, id) == :error
+    assert SessionStore.counts(store, "wl-a") == %{live: 0, banked: 1}
+    assert {:ok, ^recovered} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+    assert {:ok, ops} = SQLite.read_from(log, 0)
+    assert Enum.map(ops, & &1.kind) == [:session_created, :session_banked]
+  end
+
+  test "inventory repairs already banked metadata and preserves absent optional facts", %{path: path} do
+    {log, store} = start_pair(path)
+    {:ok, created} = create(store)
+    id = created.session_id
+    # Reproduce the old reconciliation's incomplete, ETS-only bank adoption.
+    :ok = SessionStore.adopt_state(store, id, :banked)
+    snapshot = %{session_id: id, workload: "wl-a", snapshot_ref: "sess-repaired", size_bytes: 73}
+    assert {:ok, repaired} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+    assert repaired.snapshot_ref == "sess-repaired"
+    assert repaired.snapshot_size_bytes == 73
+    assert repaired.base_snapshot_ref == "base:img@sha256:abc"
+    assert repaired.generation == 0
+    assert {:ok, ^repaired} = SessionStore.adopt_banked(store, id, "node-4", Map.delete(snapshot, :size_bytes))
+    assert {:ok, ^repaired} = SessionStore.adopt_banked(store, id, "node-4", %{snapshot | size_bytes: 0})
+    assert SessionStore.counts(store, "wl-a") == %{live: 0, banked: 1}
+    assert SessionStore.residency(store, id) == :error
+    assert {:ok, ops} = SQLite.read_from(log, 0)
+    assert Enum.map(ops, & &1.kind) == [:session_created, :session_banked]
+    GenServer.stop(store)
+    GenServer.stop(log)
+    {_log, rebooted} = start_pair(path)
+    assert {:ok, replayed} = SessionStore.get(rebooted, id)
+    for field <- [:state, :snapshot_ref, :snapshot_size_bytes, :generation, :base_snapshot_ref, :node_id, :vm_id] do
+      assert replayed[field] == repaired[field]
+    end
+  end
+
+  test "snapshot recovery rejects invalid ownership, identity and conflicting refs", %{path: path} do
+    {log, store} = start_pair(path)
+    {:ok, created} = create(store)
+    id = created.session_id
+    snapshot = %{session_id: id, workload: "wl-a", snapshot_ref: "sess-valid", size_bytes: 42}
+    {:ok, before} = SessionStore.get(store, id)
+    for invalid <- [Map.put(snapshot, :session_id, "another"), Map.put(snapshot, :workload, "other"),
+      Map.delete(snapshot, :workload), Map.put(snapshot, :size_bytes, -1)] ++
+      Enum.map([nil, "", " ", "../escape", "..", "bad\\ref", <<0>>], &Map.put(snapshot, :snapshot_ref, &1)) do
+      assert {:error, :invalid_snapshot_inventory} = SessionStore.adopt_banked(store, id, "node-4", invalid)
+      assert {:ok, ^before} = SessionStore.get(store, id)
+    end
+    assert {:error, :invalid_snapshot_inventory} = SessionStore.adopt_banked(store, id, "other-node", snapshot)
+    assert {:ok, [%{kind: :session_created}]} = SQLite.read_from(log, 0)
+    assert {:ok, recovered} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+    assert {:error, :invalid_snapshot_inventory} = SessionStore.adopt_banked(store, id, "node-4", %{snapshot | snapshot_ref: "sess-stale"})
+    assert {:ok, ^recovered} = SessionStore.get(store, id)
+  end
+
+  test "matching protobuf inventory preserves an established generation and base", %{path: path} do
+    {log, store} = start_pair(path)
+    {:ok, created} = create(store)
+    id = created.session_id
+    assert {:ok, _} = SessionStore.mark(store, id, :bank)
+    metadata = %{snapshot_ref: "sess-established", snapshot_size_bytes: 99, generation: 7, vm_id: nil}
+    assert {:ok, before} = SessionStore.transition(store, id, :bank_ready, :session_banked,
+      %{snapshot_ref: "sess-established", size_bytes: 99, generation: 7}, metadata)
+    snapshot = %Embervm.Node.V1.SessionSnapshot{session_id: id, workload: "wl-a", snapshot_ref: "sess-established"}
+    assert {:ok, ^before} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+    assert {:ok, ops} = SQLite.read_from(log, 0)
+    assert length(Enum.filter(ops, &(&1.kind == :session_banked))) == 1
+  end
+
+  for {event, kind} <- [begin_destroy: :session_destroying, fail: :session_failed,
+    destroy: :session_destroyed, expire: :session_expired] do
+    test "snapshot recovery cannot resurrect #{event}", %{path: path} do
+      {_log, store} = start_pair(path)
+      {:ok, created} = create(store)
+      id = created.session_id
+      assert {:ok, before} = SessionStore.transition(store, id, unquote(event), unquote(kind), %{}, %{})
+      snapshot = %{session_id: id, workload: "wl-a", snapshot_ref: "sess-stale"}
+      assert {:error, :invalid_snapshot_inventory} = SessionStore.adopt_banked(store, id, "node-4", snapshot)
+      assert {:ok, ^before} = SessionStore.get(store, id)
+    end
+  end
+
   test "relight append failure preserves state, residency and counts until a durable retry", %{path: path} do
     {:ok, log} = SQLite.start_link(path: path, name: nil)
     {:ok, reject} = Agent.start_link(fn -> true end)

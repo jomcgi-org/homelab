@@ -251,14 +251,40 @@ def test_setup_otel_installs_exporter_and_grid_tracer(monkeypatch):
     assert resource.attributes["service.name"] == "monolith-stars-grid"
 
 
-def test_shutdown_otel_flushes_and_shuts_down():
-    provider = mock.Mock()
-    provider.force_flush.return_value = True
+@pytest.mark.parametrize("endpoint", [None, "", "   "])
+def test_setup_otel_disabled_shape(monkeypatch, endpoint):
+    if endpoint is None:
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
+    with mock.patch(
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+    ) as exporter:
+        assert job._setup_otel() == (None, None)
+    exporter.assert_not_called()
 
-    job._shutdown_otel(provider)
 
-    provider.force_flush.assert_called_once_with()
-    provider.shutdown.assert_called_once_with()
+def test_setup_otel_strips_endpoint(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", " endpoint ")
+    with (
+        mock.patch.object(job.job_tracing, "setup", return_value=None) as setup,
+        mock.patch("opentelemetry.trace.get_tracer") as get_tracer,
+    ):
+        assert job._setup_otel() == (None, None)
+    setup.assert_called_once_with("endpoint", "monolith-stars-grid", job.logger)
+    get_tracer.assert_not_called()
+
+
+def test_tracer_acquisition_failure_is_non_fatal(monkeypatch, caplog):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "endpoint")
+    with (
+        mock.patch.object(job.job_tracing, "setup", return_value=mock.Mock()),
+        mock.patch(
+            "opentelemetry.trace.get_tracer", side_effect=RuntimeError("tracer")
+        ),
+    ):
+        assert job._setup_otel() == (None, None)
+    assert "Failed to initialize OpenTelemetry" in caplog.text
 
 
 def test_main_records_job_span_and_flushes(monkeypatch, config):
@@ -277,19 +303,26 @@ def test_main_records_job_span_and_flushes(monkeypatch, config):
     provider.shutdown.assert_called_once_with()
 
 
-def test_main_flushes_after_job_failure(monkeypatch, config):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_main_flushes_after_job_failure(monkeypatch, config, cleanup_fails):
     provider = mock.Mock()
     provider.force_flush.return_value = True
+    if cleanup_fails:
+        provider.force_flush.side_effect = RuntimeError("flush failed")
+        provider.shutdown.side_effect = RuntimeError("shutdown failed")
     monkeypatch.setattr(job, "_setup_otel", lambda: (provider, None))
     monkeypatch.setattr(GridJobConfig, "from_env", lambda: config)
 
+    failure = RuntimeError("database unavailable")
+
     def fail_run(_config, *, tracer):
-        raise RuntimeError("database unavailable")
+        raise failure
 
     monkeypatch.setattr(job, "run", fail_run)
 
-    with pytest.raises(RuntimeError, match="database unavailable"):
+    with pytest.raises(RuntimeError, match="database unavailable") as raised:
         job.main()
 
+    assert raised.value is failure
     provider.force_flush.assert_called_once_with()
     provider.shutdown.assert_called_once_with()

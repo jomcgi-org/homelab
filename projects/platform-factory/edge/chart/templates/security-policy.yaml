@@ -1,0 +1,31 @@
+{{- /*
+Every route on the edge Gateway signs in through Authentik before Envoy
+forwards the request. A SecurityPolicy that targets a route replaces this one
+for that route, so only the `edge` namespace may create SecurityPolicies
+(projects/platform-factory/edge-admission/). Authentik's own route is exempt;
+kagent's route uses the same OIDC settings with access-token forwarding.
+
+If the client secret is missing or empty, Envoy Gateway marks this policy
+invalid and answers every route with 500. The Secret starts with a placeholder
+value (oidc-client-secret.yaml) so the policy is never invalid in normal
+operation.
+
+The endpoints are listed rather than discovered so the controller makes no
+outbound calls. Envoy reaches the token endpoint through Cloudflare, like a
+browser, because the issuer must be the public URL.
+
+A new hostname needs its callback URL added to the factory-edge provider's
+redirect_uris (projects/platform/authentik/factory-blueprints/).
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: edge-authentik-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  oidc:
+    {{- include "edge.oidc" . | nindent 4 }}

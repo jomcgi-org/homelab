@@ -73,6 +73,48 @@ def db(tmp_path, monkeypatch):
     engine.dispose()
 
 
+@pytest.mark.parametrize("has_evidence", [False, True])
+def test_recovery_deadline_preserves_historical_status_read_budget(
+    db, monkeypatch, has_evidence
+):
+    from factory.orchestration.evidence_continuation import RECOVERY
+
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=30)
+    monkeypatch.setattr(controls, "_landing_recovery_deadline", lambda *_: None)
+    with Session(db) as session:
+        session.add(SwarmTask(id="deadline", task_text="test", conductor_model="astra"))
+        session.commit()
+        if has_evidence:
+            session.add_all(
+                [
+                    FactoryAudit(
+                        task_id="deadline",
+                        actor="test",
+                        action=RECOVERY,
+                        detail_json=dumps(
+                            {"proposal": {"deadline_at": value.isoformat()}}
+                        ),
+                    )
+                    for value in (deadline - timedelta(minutes=10), deadline)
+                ]
+            )
+            session.commit()
+        reads = []
+        connection = session.connection()
+
+        def count(_connection, _cursor, statement, _parameters, _context, _many):
+            reads.append(statement)
+
+        event.listen(connection, "before_cursor_execute", count)
+        try:
+            assert controls._recovery_deadline(session, "deadline") == (
+                deadline if has_evidence else None
+            )
+        finally:
+            event.remove(connection, "before_cursor_execute", count)
+        assert len(reads) == 1
+
+
 @pytest.fixture
 def policy():
     return {
@@ -105,6 +147,28 @@ def admitted(policy):
         "poller",
     )
     return admit_next("scheduler")["task_id"]
+
+
+def test_rollback_policy_is_optional_and_default_off(policy):
+    parsed = controls.validate_policy(policy)
+    assert parsed["rollback"] == {
+        "enabled": False,
+        "window_minutes": 15,
+        "max_per_hour": 2,
+        "charts": {},
+    }
+    policy["rollback"] = {"charts": {"demo": {"window_minutes": 3}}}
+    assert controls.validate_policy(policy)["rollback"]["charts"]["demo"] == {
+        "window_minutes": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    "config", [{"enabled": "false"}, {"max_per_hour": 3}, {"window_minutes": 0}]
+)
+def test_validate_policy_rejects_unsafe_rollback_blocks(policy, config):
+    with pytest.raises(ValueError):
+        controls.validate_policy({**policy, "rollback": config})
 
 
 def grant(task_id, key="one", **kwargs):
@@ -2122,6 +2186,7 @@ def test_status_defaults_intake_for_empty_control_policy(db):
         "last_swept": None,
         "last_evaluated": None,
         "last_error": None,
+        "owner_pr_backlog": None,
     }
 
 
@@ -4812,7 +4877,7 @@ def test_bounded_review_deficits_are_turns_only(db, recovery_case, monkeypatch):
     assert result["reason"] == "recovery_allowance_deficit"
     assert result["turn_deficit"] == 1 and "usd_deficit" not in result
     assert not calls
-    assert not recovery.held(task_id)
+    assert not controls.review_recovery_held(task_id)
     assert controls.task_snapshot(task_id)["turns_used"] == 16
     # A review whose reservation passes the dollar figures, the task budget
     # included, is recorded for accounting and never refused (#7161).
@@ -4884,7 +4949,7 @@ def test_bounded_review_head_change_invalidates_approval(
     monkeypatch.setattr(recovery.Reviewer, "review", review)
     result = recovery.run(**args)
     assert result["state"] == "review_head_or_ci_invalidated"
-    assert not result["ok"] and recovery.held(task_id)
+    assert not result["ok"] and controls.review_recovery_held(task_id)
     with pytest.raises(ValueError, match="head_or_state_changed"):
         recovery.run(**args)
     assert calls == ["post"]
@@ -4906,7 +4971,7 @@ def test_bounded_review_bad_inputs_no_spend(db, recovery_case, field, value, rea
     recovery, args, task_id, calls, _pr = recovery_case
     with pytest.raises(ValueError, match=reason):
         recovery.run(**{**args, field: value})
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_gate_blocks_landing_and_requeue(db, recovery_case, monkeypatch):
@@ -5060,7 +5125,7 @@ def test_bounded_review_counts_historical_tasks_and_reservations(db, recovery_ca
         session.commit()
     with pytest.raises(ValueError, match="unresolved_execution"):
         recovery.run(**args)
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_stop_before_post_releases_money_without_resuming(
@@ -5116,7 +5181,7 @@ def test_bounded_review_refuses_incomplete_or_stale_evidence(
         monkeypatch.setattr(landing, "_queued_ids", lambda _: {"PR_6953"})
     with pytest.raises(ValueError):
         recovery.run(**args)
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_changed_base_invalidates_replay(db, recovery_case):
@@ -5125,7 +5190,7 @@ def test_bounded_review_changed_base_invalidates_replay(db, recovery_case):
     pr["base"]["sha"] = "f" * 40
     with pytest.raises(ValueError, match="head_or_state_changed"):
         recovery.run(**args)
-    assert len(calls) == 1 and recovery.held(task_id)
+    assert len(calls) == 1 and controls.review_recovery_held(task_id)
 
 
 def test_bounded_review_needs_work_retry_is_new_explicit_paid_attempt(
@@ -5219,7 +5284,7 @@ def test_bounded_review_rechecks_receipt_identity_after_evidence(
     monkeypatch.setattr(recovery, "_evidence", evidence)
     with pytest.raises(ValueError, match="receipt_changed_during_evidence"):
         recovery.run(**args)
-    assert not calls and not recovery.held(task_id)
+    assert not calls and not controls.review_recovery_held(task_id)
     assert controls.task_snapshot(task_id)["committed_cost_usd"] == pytest.approx(
         48.2402535
     )
@@ -5745,6 +5810,19 @@ def test_operator_reader_excludes_terminal_history(
     assert after[-1][4]["pagination"]["recent"]["total"] == 12
 
 
+def _page(items: list[dict], offset: int, limit: int) -> tuple[list[dict], dict]:
+    page = items[offset : offset + limit]
+    next_offset = offset + limit if offset + limit < len(items) else None
+    return page, {
+        "offset": offset,
+        "limit": limit,
+        "returned": len(page),
+        "total": len(items),
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+    }
+
+
 @pytest.mark.parametrize("offset", [0, 2, 6, 11, 12, 100])
 @pytest.mark.parametrize("include_recent", [False, True])
 def test_operator_pages_match_browser_contract(
@@ -5803,7 +5881,7 @@ def test_operator_pages_match_browser_contract(
         ("queued", expected_queued),
         ("needs_operator", expected_needs),
     ):
-        page, pagination = mcp._page(expected, offset, 2)
+        page, pagination = _page(expected, offset, 2)
         assert result[name] == page
         assert result["pagination"][name] == pagination
     for key in (
@@ -5838,9 +5916,7 @@ def test_operator_pages_match_browser_contract(
         )[offset : offset + 2]
     )
     if include_recent:
-        page, pagination = mcp._page(
-            [mcp._task_row(r) for r in board["recent"]], offset, 2
-        )
+        page, pagination = _page([mcp._task_row(r) for r in board["recent"]], offset, 2)
         assert result["recent"] == page
         assert result["pagination"]["recent"] == pagination
         selected += board["recent"][offset : offset + 2]
@@ -5857,7 +5933,7 @@ def test_operator_pages_match_browser_contract(
                 include_resolved, offset=offset, limit=2, session=session
             )
         expected = [r for r in board["escalations"] if include_resolved or r["open"]]
-        page, pagination = mcp._page(expected, offset, 2)
+        page, pagination = _page(expected, offset, 2)
         assert result["escalations"] == page
         assert result["pagination"] == pagination
         assert result["open_count"] == len(expected_needs)
@@ -6466,3 +6542,19 @@ def test_issue_body_hash_ignores_the_factorys_own_gate_contracts():
         "Acceptance rewritten by a person\n\n"
         + blocks.render("t-1", "a" * 20, contract)
     )
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        {},
+        {"login": "joe"},
+        {"login": "joe", "id": True},
+        {"login": "joe", "id": 0},
+        {"login": "bot[bot]", "id": 42},
+        {"login": "joe", "id": 42, "scope": "all"},
+    ],
+)
+def test_owner_pr_intake_identity_rejects_incomplete_or_ambiguous_grants(owner):
+    with pytest.raises(ValueError, match="invalid owner_pr_author"):
+        controls.intake_policy({"intake": {"owner_pr_author": owner}})

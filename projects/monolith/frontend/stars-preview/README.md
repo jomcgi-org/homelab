@@ -41,6 +41,15 @@ base SHAs; an absent or changed historical harness is explicitly unavailable.
 This tooling integration leaves the owner's implementation and landing hold
 unchanged. Generated output remains outside Git.
 
+The checker samples the actual MapLibre WebGL canvas during a render and
+compares unobscured background pixels with the independent sheet contract:
+RGBA `[255, 255, 255, 255]` in light and `[24, 26, 32, 255]` in dark. It checks
+the initial scheme and four flips, alongside camera/source/canvas identity.
+The offline profile supplies the blank geography; production CSS, palette
+resolution and rendering remain real. A real-tile profile needs unobscured
+background samples too. `checks.json` records samples, expected colors, the
+build stamp, invocation, source SHA and browser version.
+
 The DOM tests mock the MapLibre boundary and color rasterizer for deterministic
 lifecycle assertions. They do not supply screenshot evidence. The browser
 check runs the actual map and production CSS, including repeated scheme flips.

@@ -7,8 +7,8 @@ their own publication identity after bounded reconciliation.
 
 from __future__ import annotations
 
-import hashlib
 import json
+import re
 from copy import deepcopy
 from datetime import timedelta
 from uuid import uuid4
@@ -39,10 +39,6 @@ REVIEW_CONTRACTS = (REVIEW_CONTRACT, REVIEW_FALLBACK)
 MAX_REVIEW_PROMPT_CHARS = 60000
 PREFIX = "backlog_refill_"
 TERMINAL = {"succeeded", "failed", "cancelled"}
-
-
-def digest(value) -> str:
-    return hashlib.sha256(dumps(value).encode()).hexdigest()
 
 
 def _events(db, action):
@@ -304,6 +300,12 @@ def observe(
         )
         db.add(row)
         db.flush()
+        from factory.orchestration import funding_profile
+        from factory.orchestration.backlog_refill_repair import (
+            CONTRACT_VERSION as repair_version,
+        )
+        from factory.orchestration.backlog_refill_repair import epoch
+
         record(
             db,
             "started",
@@ -313,9 +315,15 @@ def observe(
             generation=policy["generation"],
             policy=block,
             review_contract=contract,
+            inspection_contract=1,
             routine=routine,
             eligible=eligible,
-            policy_digest=digest(policy),
+            policy_digest=controls.digest(policy),
+            **(
+                {"repair_contract": {"version": repair_version, "epoch": epoch(db)}}
+                if repair_version == 2 or funding_profile.PROVIDER_ROUTE_AVAILABLE
+                else {}
+            ),
         )
         return {"ok": True, "run_id": run_id, "receipt_id": row.id}
 
@@ -501,6 +509,149 @@ def schema(node_key, *, reviewed=True):
     return COLLECT_SCHEMA if reviewed else SCHEMA
 
 
+def inspection_source(start, *, session=None):
+    """Read the immutable source of a new run; historical runs retain their pin."""
+    if "inspection_contract" not in start:
+        return None
+    if (
+        type(start["inspection_contract"]) is not int
+        or start["inspection_contract"] != 1
+    ):
+        raise ValueError("unsupported refill inspection contract")
+    with controls._read_session(session) as db:
+        event = latest_event(db, "inspection_pinned", run_id=start["run_id"])
+    if event is None:
+        raise ValueError("refill inspection source missing")
+    source = _detail(event)["source"]
+    if (
+        set(source) != {"version", "repo", "ref", "sha"}
+        or type(source["version"]) is not int
+        or source["version"] != 1
+        or source["repo"] != start["repo"]
+        or not isinstance(source["ref"], str)
+        or not source["ref"]
+        or not isinstance(source["sha"], str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source["sha"])
+    ):
+        raise ValueError("invalid refill inspection source")
+    return source
+
+
+def _inspection_owner_current(db, control, task, start):
+    owner = db.get(FactoryReceipt, start["receipt_id"])
+    current = latest_event(db, "started", run_id=start["run_id"])
+    return not (
+        owner is None
+        or owner.actor != ACTOR
+        or owner.task_id != task["id"]
+        or owner.repo != task["repo"]
+        or owner.recurrence_key != start["run_id"]
+        or owner.state != "admitted"
+        or owner.task_paused
+        or owner.cancellation_requested
+        or control.state != "enabled"
+        or controls.digest(json.loads(control.policy_json or "{}"))
+        != start["policy_digest"]
+        or current is None
+        or _detail(current) != start
+        or latest_event(db, "completed", run_id=start["run_id"])
+    )
+
+
+def prepare_inspection(task, start):
+    """Resolve the assigned base once, before either read-only role is created."""
+    if "inspection_contract" not in start:
+        return True
+    if (
+        type(start["inspection_contract"]) is not int
+        or start["inspection_contract"] != 1
+    ):
+        raise ValueError("unsupported refill inspection contract")
+    from urllib.parse import quote
+
+    from factory.orchestration import factory_conductor as conductor
+
+    with controls._read_session() as db:
+        if latest_event(db, "inspection_pinned", run_id=start["run_id"]):
+            inspection_source(start, session=db)
+            return True
+    # Bounded authenticated read, outside the control lock. No task branch is
+    # expected: neither role writes one. Pin the commit instead of a moving ref.
+    ref = task["base_branch"]
+    if not isinstance(ref, str) or not ref:
+        raise ValueError("refill inspection base missing")
+    value = conductor.github_get(task["repo"], f"commits/{quote(ref, safe='')}")
+    sha = value.get("sha")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("refill inspection commit unavailable")
+    with controls._locked_session() as (db, control):
+        if not _inspection_owner_current(db, control, task, start):
+            return False
+        if latest_event(db, "inspection_pinned", run_id=start["run_id"]):
+            inspection_source(start, session=db)
+            return True
+        from factory.orchestration.models import SwarmNodeRun
+
+        if db.exec(
+            select(SwarmNodeRun.id).where(SwarmNodeRun.task_id == task["id"])
+        ).first():
+            raise ValueError("refill inspection cannot replace a dispatched source")
+        record(
+            db,
+            "inspection_pinned",
+            run_id=start["run_id"],
+            source={"version": 1, "repo": task["repo"], "ref": ref, "sha": sha},
+        )
+    return True
+
+
+def fail_inspection_preparation(task, start, error):
+    """A losing or stale preparation read cannot settle another owner's work."""
+    from factory.orchestration.models import SwarmNodeRun
+
+    with controls._locked_session() as (db, control):
+        if (
+            not _inspection_owner_current(db, control, task, start)
+            or latest_event(db, "inspection_pinned", run_id=start["run_id"])
+            or db.exec(
+                select(SwarmNodeRun.id).where(SwarmNodeRun.task_id == task["id"])
+            ).first()
+        ):
+            return False
+        return controls.finish_task(
+            task["id"],
+            "failed",
+            ACTOR,
+            session=db,
+            evidence={"reason": f"refill_inspection_unavailable: {error}"},
+        )["ok"]
+
+
+def role_schema(start, node_key, *, session=None):
+    source = inspection_source(start, session=session)
+    result = schema(node_key, reviewed=start.get("review_contract") is not None)
+    if source is None:
+        return result
+    result = deepcopy(result)
+    result["x-factory-refill-inspection"] = source
+    result["required"] += ["status", "source_sha"]
+    result["properties"].update(
+        {
+            "status": {"enum": ["completed", "blocked"]},
+            "source_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        }
+    )
+    items = "decisions" if node_key == REVIEW_NODE else "findings"
+    result["allOf"] = [
+        {
+            "if": {"properties": {"status": {"const": "completed"}}},
+            "then": {"properties": {"source_sha": {"const": source["sha"]}}},
+            "else": {"properties": {items: {"maxItems": 0}}},
+        }
+    ]
+    return result
+
+
 def dispatch_schema(task_id, node_key, *, session=None):
     """Choose the stored contract for deferred starts as well as new ones."""
     with controls._read_session(session) as db:
@@ -517,7 +668,7 @@ def dispatch_schema(task_id, node_key, *, session=None):
             role(start, node_key)
         except ValueError:
             return None
-        return schema(node_key, reviewed=start.get("review_contract") is not None)
+        return role_schema(start, node_key, session=db)
 
 
 def role(start, node_key):
@@ -551,7 +702,7 @@ def review_brief(value):
         "Empty yield is valid. Return the exact collection_digest and an "
         "independent summary.\n"
         + json.dumps(
-            {"collection_digest": digest(value), "collection": value},
+            {"collection_digest": controls.digest(value), "collection": value},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -616,6 +767,7 @@ def dispatch_allowed(task_id, node_key=NODE, attempt=1, *, physical=False):
 
 def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
     from factory.orchestration.backlog_refill_policy import normalize
+    from factory.orchestration.backlog_refill_repair import attempt_allowed
 
     with controls._read_session() as db:
         receipt = db.exec(
@@ -642,11 +794,11 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
             or receipt.cancellation_requested
             or node_key not in NODES
             or type(attempt) is not int
-            or attempt != 1
+            or not attempt_allowed(db, receipt, node_key, attempt)
             or receipt.generation != policy.get("generation")
             or receipt.repo not in controls.enabled_repos(policy)
             or not normalize(policy)["enabled"]
-            or digest(policy) != _detail(start)["policy_digest"]
+            or controls.digest(policy) != _detail(start)["policy_digest"]
         ):
             return False
         if latest_event(db, "completed", run_id=receipt.recurrence_key):
@@ -661,7 +813,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
         from factory.orchestration.models import SwarmTask
 
         task = db.get(SwarmTask, task_id)
-        pinned = json.loads(receipt.policy_json or "{}")
+        pinned = controls._effective_policy(db, receipt)
         if task is None or controls._now() >= (
             controls._recovery_deadline(db, task_id)
             or aware(task.created_at)
@@ -675,7 +827,7 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                 select(SwarmNodeRun).where(
                     SwarmNodeRun.task_id == task_id,
                     SwarmNodeRun.node_key == node_key,
-                    SwarmNodeRun.attempt == 1,
+                    SwarmNodeRun.attempt == attempt,
                 )
             ).first()
             if run is None or run.status not in {"admitted", "dispatched", "uncertain"}:
@@ -687,17 +839,44 @@ def _dispatch_allowed(task_id, node_key, attempt, *, physical, observed=None):
                 or pin.get("task_id") != task_id
                 or pin.get("node_key") != node_key
                 or type(pin.get("attempt")) is not int
-                or pin["attempt"] != 1
+                or pin["attempt"] != attempt
                 or (
                     detail.get("review_contract") is not None
                     and (
                         pin.get("read_only") is not True
-                        or pin.get("artifact_schema") != schema(node_key)
+                        or pin.get("artifact_schema")
+                        != role_schema(detail, node_key, session=db)
                         or pin.get("effort") != expected["effort"]
                     )
                 )
             ):
                 return False
+            if "inspection_contract" in detail:
+                source = inspection_source(detail, session=db)
+                if (
+                    pin.get("branch") != "commit:" + source["sha"]
+                    or pin.get("hydration_branch") != "commit:" + source["sha"]
+                ):
+                    return False
+        from factory.orchestration import factory_funding_limits as funding
+        from factory.orchestration.backlog_refill_repair import (
+            REMAINING_GRANT,
+            native_repair_grant_valid,
+            remaining_allowance,
+        )
+
+        grant = funding.amendment(db, task_id)
+        if (
+            grant
+            and grant.get("grant_kind") == REMAINING_GRANT
+            and (
+                not native_repair_grant_valid(db, receipt, grant)
+                or not remaining_allowance(
+                    db, receipt, own_start=run.dispatch_key if physical else None
+                )
+            )
+        ):
+            return False
     # No broker I/O under a database/control lock. Recheck the durable gates
     # after a slow quota fetch before crossing physical transport.
     if observed is not None:

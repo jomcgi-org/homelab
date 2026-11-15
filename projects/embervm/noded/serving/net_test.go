@@ -328,14 +328,6 @@ func TestEndpointProjection(t *testing.T) {
 	}
 }
 
-func TestNftTeardownArgs(t *testing.T) {
-	got := nftTeardownArgs()
-	want := []string{"nft", "delete", "table", "inet", "embervm_serving"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("nftTeardownArgs: got %v want %v", got, want)
-	}
-}
-
 func TestEnsureNetworkTolLeratesExistingBridge(t *testing.T) {
 	// The first bridge-add fails "File exists" (a daemon restart re-enters); EnsureNetwork
 	// must treat that as idempotent success and still install nftables.

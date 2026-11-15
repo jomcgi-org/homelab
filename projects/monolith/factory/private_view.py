@@ -15,8 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime, timezone
+import json
 
-from sqlmodel import Session, select
+from sqlalchemy import JSON, cast
+from sqlmodel import Session, func, select
 
 from core.clock import aware, iso_or_str
 
@@ -24,6 +26,98 @@ RECENT_LIMIT = 12
 RESULT_HEAD = 240
 ACTIVE_STATES = ("admitted", "uncertain", "landing")
 QUEUED_STATES = ("queued",)
+SUMMARY_DECISION_LIMIT = 500
+
+
+def build_factory_summary(*, session: Session | None = None) -> dict:
+    """Bounded private dashboard read without board, plan or intake enrichment.
+
+    Counts are SQL aggregates. Decision shaping shares the board's identity,
+    pause eligibility and option projection. Overflow fails the read rather
+    than claiming a partial decision list is complete.
+    """
+    from core.db import get_engine
+    from factory.orchestration import factory_controls as controls, factory_pause
+    from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+
+    def build(db: Session) -> dict:
+        control = db.get(FactoryControl, "factory")
+        if control is None:
+            return {"ok": False, "reason": "not_initialized", "state": "disabled"}
+        counts = db.exec(
+            select(
+                FactoryReceipt.state, FactoryReceipt.task_paused, func.count()
+            ).group_by(FactoryReceipt.state, FactoryReceipt.task_paused)
+        ).all()
+        # The persisted column is text. Use each engine's JSON read operator
+        # so settled history cannot crowd older unresolved decisions out.
+        resolved = (
+            func.json_extract(FactoryReceipt.escalation_json, "$.resolved")
+            if db.get_bind().dialect.name == "sqlite"
+            else cast(FactoryReceipt.escalation_json, JSON)["resolved"].as_string()
+        )
+        rows = db.exec(
+            select(FactoryReceipt)
+            .where(FactoryReceipt.escalation_json.is_not(None), resolved.is_(None))
+            .order_by(FactoryReceipt.id)
+            .limit(SUMMARY_DECISION_LIMIT + 1)
+        ).all()
+        if len(rows) > SUMMARY_DECISION_LIMIT:
+            raise ValueError("factory summary decision coverage exceeded")
+        decisions = []
+        for row in rows:
+            brief = json.loads(row.escalation_json)
+            snapshot = {
+                key: getattr(row, key)
+                for key in (
+                    "id",
+                    "repo",
+                    "issue_number",
+                    "work_item_id",
+                    "generation",
+                    "title",
+                    "url",
+                    "state",
+                    "routing_tier",
+                    "task_paused",
+                )
+            }
+            snapshot.update(
+                task_class=controls.receipt_task_class(row),
+                escalation=brief,
+                paused_card_actionable=factory_pause.actionable(db, row, brief),
+            )
+            snapshot["pause_warning"] = (
+                "active_paused_without_actionable_question"
+                if row.state in controls._ACTIVE
+                and row.task_paused
+                and not snapshot["paused_card_actionable"]
+                else None
+            )
+            decisions.append(snapshot)
+        return {
+            "ok": True,
+            "state": control.state,
+            "policy": {
+                "conductor_model": json.loads(control.policy_json).get(
+                    "conductor_model"
+                )
+            },
+            "active_count": sum(n for state, _, n in counts if state in ACTIVE_STATES),
+            "queued_count": sum(n for state, _, n in counts if state in QUEUED_STATES),
+            "paused_count": sum(
+                n for state, paused, n in counts if state in ACTIVE_STATES and paused
+            ),
+            "escalations": [
+                item for item in controls.escalations(decisions) if item["open"]
+            ],
+        }
+
+    if session is not None:
+        return build(session)
+    with Session(get_engine()) as db:
+        return build(db)
+
 
 # Node run statuses come from factory.orchestration.graph; a node with no run yet is pending
 # and a node the planner discarded or cancelled in a later plan revision is

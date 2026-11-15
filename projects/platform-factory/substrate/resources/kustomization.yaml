@@ -1,0 +1,119 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Agent Substrate 1.0.1 from the kagent-dev fork, the release line kagent
+# v1.0.1 uses: its four Helm charts rendered by ../render-upstream.sh with ../values/
+# into upstream/, every image pinned by digest, plus the fork's bundled
+# PostgreSQL. The patches below and the files beside this one are what this
+# cluster adds; the generated CA and JWT pools and the snapshot store's key
+# come from projects/factory-cluster/bootstrap-substrate.sh.
+resources:
+  - upstream/substrate-crds/ate.dev_csidriverconfigs.yaml
+  - upstream/substrate-crds/ate.dev_sandboxconfigs.yaml
+  - upstream/substrate-crds/ate.dev_workerpools.yaml
+  - upstream/substrate-podcert/pod-certificate-controller.yaml
+  - upstream/substrate-atelet/atelet.yaml
+  - upstream/substrate/namespace.yaml
+  - upstream/substrate/role.yaml
+  - upstream/substrate/sandboxconfig-validation.yaml
+  - upstream/substrate/sandboxconfig-gvisor.yaml
+  - upstream/substrate/ate-api-config.yaml
+  - upstream/substrate/ate-api-server-envvars.yaml
+  - upstream/substrate/ate-api-server.yaml
+  - upstream/substrate/ate-client.yaml
+  - upstream/substrate/ate-idp-server.yaml
+  - upstream/substrate/ate-controller.yaml
+  - upstream/substrate/atenet-router.yaml
+  - upstream/substrate/atenet-egress.yaml
+  - upstream/substrate/k8s-credential-provider.yaml
+  # Ingress-only NetworkPolicies; network-policy.yaml adds egress under the
+  # cluster-wide default-deny.
+  - upstream/substrate/ate-system-networkpolicies.yaml
+  - upstream/postgres.yaml
+  - api-server-config.yaml
+  - snapshot-store.yaml
+  - network-policy.yaml
+  - kagent-identity-guard.yaml
+
+configMapGenerator:
+  # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
+  - name: postgres-setup
+    namespace: ate-system
+    files:
+      - setup.sql=upstream/postgres-setup.sql
+
+secretGenerator:
+  # The connection strings the substrate chart reads from these two Secrets,
+  # as the fork's hack/install-postgres.sh writes them. They hold no
+  # credential: each login authenticates with the pod certificate the strings
+  # name (pg_hba.conf in upstream/postgres.yaml).
+  - name: substrate-postgres-readwrite
+    namespace: ate-system
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - readWriteConnectionString=postgresql://substrate_readwrite_user@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/run/servicedns.podcert.ate.dev/trust-bundle.pem&sslcert=/run/postgres.podcert.ate.dev/substrate_readwrite_user.pem&sslkey=/run/postgres.podcert.ate.dev/substrate_readwrite_user.pem
+  - name: substrate-postgres-owner
+    namespace: ate-system
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - ownerConnectionString=postgresql://substrate_owner_user@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/run/servicedns.podcert.ate.dev/trust-bundle.pem&sslcert=/run/postgres.podcert.ate.dev/substrate_owner_user.pem&sslkey=/run/postgres.podcert.ate.dev/substrate_owner_user.pem
+
+patches:
+  # The credential provider's Secret reader ClusterRole is bound per namespace
+  # instead of cluster-wide: the kagent install binds it in kagent with a
+  # RoleBinding, so the provider can read no other namespace's Secrets.
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: k8s-credential-provider-secret-reader
+  # Removing or renaming this Application must not take the cluster's Substrate
+  # state with it: the CRDs (every WorkerPool and SandboxConfig), the
+  # namespaces holding bootstrap-substrate.sh's keys, and the snapshot volume.
+  # The postgres volume comes from a volumeClaimTemplate, which ArgoCD does not
+  # own.
+  - target:
+      kind: (CustomResourceDefinition|Namespace|PersistentVolumeClaim)
+    patch: |-
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: not-used
+        annotations:
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  # The chart sets the OTEL exporters on every component but the credential
+  # provider, which then retries an OTLP push to localhost:4317; turn it off
+  # here too, as values/common.yaml does for the rest.
+  - target:
+      kind: Deployment
+      name: k8s-credential-provider
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: k8s-credential-provider
+      spec:
+        template:
+          spec:
+            containers:
+              - name: k8s-credential-provider
+                env:
+                  - name: OTEL_TRACES_EXPORTER
+                    value: none
+                  - name: OTEL_METRICS_EXPORTER
+                    value: none
+                  - name: OTEL_LOGS_EXPORTER
+                    value: none
+  # The bundled PostgreSQL, sized for this cluster, with its role setup run on
+  # every start rather than by an installer over kubectl exec.
+  - path: patches/postgres.yaml
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 20Gi

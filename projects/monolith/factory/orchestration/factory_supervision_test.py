@@ -724,7 +724,6 @@ def _reconcile_harness(monkeypatch, raised):
     def locked(*_args, **_kwargs):
         yield ("db", "control")
 
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervisor.controls, "_locked_session", locked)
     monkeypatch.setattr(supervisor, "_records", lambda db, pin: [])
     monkeypatch.setattr(
@@ -810,7 +809,6 @@ def _backstop_harness(
     *,
     starts,
     task=None,
-    enabled=True,
     release_gate_open=True,
     finish_ok=True,
     permit_seq=1,
@@ -888,9 +886,6 @@ def _backstop_harness(
         lambda _db, session_id: {"session_id": session_id},
     )
 
-    monkeypatch.setenv(
-        "FACTORY_DEADLINE_BACKSTOP_ENABLED", "true" if enabled else "false"
-    )
     monkeypatch.setattr(
         conductor,
         "FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED",
@@ -1009,23 +1004,12 @@ def test_the_backstop_waits_out_the_grace_after_the_deadline(monkeypatch):
     assert finishes == []
 
 
-def test_the_backstop_is_off_by_default(monkeypatch):
-    released, finishes, outcomes, _e, _n, commits, _p = _backstop_harness(
-        monkeypatch, starts=[_Start("uncertain")], enabled=False
-    )
-
-    assert released is False
-    assert outcomes == []
-    assert finishes == []
-
-
 def test_the_backstop_cannot_release_while_repository_delivery_is_staged(
     monkeypatch,
 ):
     released, finishes, outcomes, escalations, _n, commits, permits = _backstop_harness(
         monkeypatch,
         starts=[_Start("uncertain")],
-        enabled=True,
         release_gate_open=False,
     )
 

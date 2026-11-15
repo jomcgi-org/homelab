@@ -90,7 +90,7 @@ defmodule Embervm.ServingStoreTest do
     assert published.port == 9000
 
     assert ServingStore.published_endpoints(store, "wl-a") == [%{ip: "10.99.0.9", port: 9000}]
-    assert ServingStore.serving_workloads(store) == ["wl-a"]
+    assert ServingStore.counts(store, "wl-a") == %{live: 1, banked: 0}
 
     # The durable audit record shows published with the endpoint.
     {:ok, [row]} = SQLite.load_serving_instances(op_log)
@@ -176,8 +176,6 @@ defmodule Embervm.ServingStoreTest do
     assert banked.state == :banked
     assert banked.snapshot_ref == "serving/s-1"
     assert ServingStore.counts(store, "wl-a") == %{live: 0, banked: 1}
-    # A banked instance is not a serving workload's LIVE set member.
-    assert ServingStore.serving_workloads(store) == []
   end
 
   test "an illegal transition is rejected and does not append or mutate", %{path: path} do

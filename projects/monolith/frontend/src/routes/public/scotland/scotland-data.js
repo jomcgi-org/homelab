@@ -3,11 +3,11 @@ import { PUBLIC_BASE } from "$lib/public/seo.js";
 // The connector itself is a separate service (projects/scotland-connector)
 // that owns /scotland/mcp and /scotland/v1/*; this page is the human front
 // door at /scotland and only links to it.
-export const BASE = `${PUBLIC_BASE}/scotland`;
+const BASE = `${PUBLIC_BASE}/scotland`;
 export const MCP_URL = `${BASE}/mcp`;
 export const SPEC_URL = `${BASE}/v1/openapi.json`;
 export const METHOD_URL = `${BASE}/v1/method`;
-export const MARKETPLACE_URL = `${BASE}/marketplace.json`;
+const MARKETPLACE_URL = `${BASE}/marketplace.json`;
 
 // The Claude Code plugin lives in the homelab monorepo. Served as a file at
 // MARKETPLACE_URL, the catalog lets `/plugin marketplace add` fetch it alone,

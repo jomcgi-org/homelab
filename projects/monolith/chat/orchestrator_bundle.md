@@ -82,6 +82,9 @@ The goose route requires only `route`.
 Top-level projects/ directories:
 - design-system
 - embervm
+- factory
+- factory-cluster
+- factory-landing
 - firecracker
 - gke-apps
 - gke-cluster
@@ -95,6 +98,7 @@ Top-level projects/ directories:
 - oom-inference
 - operators
 - platform
+- platform-factory
 - platform-gke
 - scotland-connector
 - sextant

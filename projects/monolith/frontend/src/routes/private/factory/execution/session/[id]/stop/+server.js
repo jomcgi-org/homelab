@@ -1,20 +1,6 @@
 const API_BASE = process.env.API_BASE;
 
-function enabled() {
-  return (
-    String(process.env.AGENT_SESSION_STOP_CONTROL_ENABLED).toLowerCase() ===
-    "true"
-  );
-}
-
 export async function POST({ params, request }) {
-  if (!enabled()) {
-    return new Response(JSON.stringify({ error: "session Stop is disabled" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
   try {
     const body = await request.json();
     const email = request.headers.get("x-auth-email");

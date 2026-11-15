@@ -1,4 +1,4 @@
-import { json } from "@sveltejs/kit";
+import { mintSession } from "$lib/server/grimoire-chat-session.js";
 
 // Server-only BFF for "fork this chat" (began as a copy of the retired
 // notes-chat proxy). A shared
@@ -12,16 +12,6 @@ import { json } from "@sveltejs/kit";
 // lands in the httpOnly "gcs" cookie, never the body, exactly like
 // /app/grimoire/chat/session. The browser never talks to the internal
 // grimoire_chat API directly.
-//
-// Same backend, same env var as the notes chat surface (both surfaces are one
-// public monolith binary): CHAT_API_BASE.
-const CHAT_API_BASE = process.env.CHAT_API_BASE || "http://localhost:8000";
-
-// "gcs" (grimoire chat session), distinct from the notes chat's "cps" cookie
-// so the two surfaces never collide on the same domain.
-const SESSION_COOKIE = "gcs";
-// Mirrors CHAT_PUBLIC_SESSION_TTL_SECONDS (chart values, default 1800s).
-const SESSION_COOKIE_MAX_AGE = 1800;
 
 export async function POST({ request, cookies }) {
   // The snapshot id to fork and the solved Turnstile token. A missing/invalid
@@ -41,45 +31,10 @@ export async function POST({ request, cookies }) {
     // Empty/malformed body: forwarded as nulls; the backend fails the challenge.
   }
 
-  // Forward coarse geo + user-agent for the new session's pseudonymous row, plus
-  // the real client IP from Cloudflare's CF-Connecting-IP header (salted-hashed
-  // by the backend for reactive abuse forensics). The backend trusts
-  // CF-Connecting-IP only on connections from the frontend (enforced by the web
-  // CiliumNetworkPolicy), so a direct caller cannot spoof it.
-  const headers = { "content-type": "application/json" };
-  const country = request.headers.get("cf-ipcountry");
-  if (country) headers["CF-IPCountry"] = country;
-  const userAgent = request.headers.get("user-agent");
-  if (userAgent) headers["User-Agent"] = userAgent;
-  const connectingIp = request.headers.get("cf-connecting-ip");
-  if (connectingIp) headers["CF-Connecting-IP"] = connectingIp;
-
-  const resp = await fetch(`${CHAT_API_BASE}/internal/grimoire-chat/fork`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      snapshot_id: snapshotId,
-      turnstile_token: turnstileToken,
-    }),
-    signal: AbortSignal.timeout(10_000),
+  // On success the client navigates to the live app, which rehydrates the
+  // seeded transcript.
+  return mintSession({ request, cookies }, "/internal/grimoire-chat/fork", {
+    snapshot_id: snapshotId,
+    turnstile_token: turnstileToken,
   });
-
-  if (!resp.ok) {
-    // Backend errors: 403 (failed challenge), 404 (unknown snapshot). Relay the
-    // status; no session cookie is set.
-    return json({ ok: false }, { status: resp.status });
-  }
-
-  const { session_id: sessionId } = await resp.json();
-  cookies.set(SESSION_COOKIE, sessionId, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_COOKIE_MAX_AGE,
-  });
-
-  // The session id stays server-side; the cookie is the carrier. The client now
-  // navigates to the live app, which rehydrates the seeded transcript.
-  return json({ ok: true });
 }

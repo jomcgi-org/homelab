@@ -711,6 +711,9 @@ def compose_master(
     decisions = (
         (decision_loader(workflow_ids) or {}) if decision_loader is not None else {}
     )
+    if callable(session_costs):
+        # A loader reads only the sessions of the runs being composed.
+        session_costs = session_costs(workflow_ids) or {}
     runs = []
     started = time.perf_counter() if not active else None
     for workflow, wf_id in zip(statuses, workflow_ids):

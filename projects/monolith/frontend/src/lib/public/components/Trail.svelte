@@ -8,7 +8,16 @@
   // last crumb is the current place unless `current` names a page of its
   // own, which then takes a second row so a long title wraps under the row
   // instead of stretching it.
-  let { crumbs = [], current = "", label = "You are here" } = $props();
+  //
+  // `root` names the first crumb. The public site is jomcgi.dev; the
+  // private host's "/" is the dashboard, so its pages name that instead of
+  // a public hostname the link does not go to.
+  let {
+    crumbs = [],
+    current = "",
+    label = "You are here",
+    root = { label: "jomcgi.dev", href: "/" },
+  } = $props();
 
   const rootIsCurrent = $derived(!crumbs.length && !current);
 </script>
@@ -18,8 +27,8 @@
     <a
       class="crumb"
       class:current={rootIsCurrent}
-      href="/"
-      aria-current={rootIsCurrent ? "page" : undefined}>jomcgi.dev</a
+      href={root.href ?? "/"}
+      aria-current={rootIsCurrent ? "page" : undefined}>{root.label}</a
     >
     {#each crumbs as crumb, index (`${crumb.label}-${index}`)}
       {@const last = index === crumbs.length - 1 && !current}
@@ -91,5 +100,16 @@
   .crumb:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: -2px;
+  }
+
+  /* On a phone the trail is tapped, not clicked: every crumb reaches the
+     44px floor the shared controls keep, without changing the row's type. */
+  @media (max-width: 760px) {
+    .trail-row .crumb,
+    .crumb.title {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+    }
   }
 </style>

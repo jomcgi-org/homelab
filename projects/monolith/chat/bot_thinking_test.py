@@ -251,31 +251,6 @@ class TestThinkingIntegration:
         assert view.thinking_text is None
 
     @pytest.mark.asyncio
-    async def test_empty_stream_sends_fallback(self):
-        """When stream produces no events, fallback message is sent."""
-        bot = _make_bot()
-        bot_user = bot.user
-
-        message = _make_message(content="Hi", mentions=[bot_user])
-        mock_store = _make_store()
-
-        bot.agent.run_stream_events = MagicMock(return_value=_async_iter([]))
-
-        with (
-            patch("chat.bot.get_engine"),
-            patch("chat.bot.Session") as mock_session_cls,
-            patch("chat.bot.MessageStore", return_value=mock_store),
-        ):
-            ctx = MagicMock()
-            mock_session_cls.return_value.__enter__ = MagicMock(return_value=ctx)
-            mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
-            await bot.on_message(message)
-
-        reply_text = message.reply.call_args_list[0][0][0]
-        assert "Sorry" in reply_text
-        assert "trouble" in reply_text
-
-    @pytest.mark.asyncio
     async def test_thinking_only_no_text_sends_fallback(self):
         """When stream produces only thinking events (no text), fallback is sent."""
         bot = _make_bot()

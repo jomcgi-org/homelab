@@ -5,7 +5,6 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - projects/monolith/frontend/**
-      - projects/design-system/tokens/**
       - projects/design-system/**
       - projects/monolith/chart/templates/httproute-friends*.yaml
       - projects/monolith/chart/templates/httproute-grimoire.yaml

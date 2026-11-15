@@ -7,7 +7,7 @@
 // Vibrant per-day line/accent colours. Not the restrained site tokens: a route
 // map needs ~12 visually distinct hues, so this is local data colour (same
 // rationale as ShipsMap's VESSEL_COLORS), not a new design system.
-export const DAY_COLORS = [
+const DAY_COLORS = [
   "#2563eb",
   "#059669",
   "#d97706",
@@ -26,6 +26,8 @@ export const dayColor = (i) => DAY_COLORS[i % DAY_COLORS.length];
 
 const NOISE_THRESHOLD = 5; // metres: GPS elevation noise floor near sea level
 const CHANGE_THRESHOLD = 5; // metres: ignore sub-5m wiggle in ascent/descent
+const dayFormatters = new Map();
+const MAX_DAY_FORMATTERS = 32;
 
 // "YYYY-MM-DD" for an ISO timestamp in the trip's IANA zone, so day grouping is
 // stable regardless of where the SSR render runs (the server clock is UTC).
@@ -34,18 +36,28 @@ export function dayKey(iso, tz) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz || "UTC",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(d);
+    const zone = tz || "UTC";
+    let formatter = dayFormatters.get(zone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      // Reuse the trip's formatter across every point and navigation. Bound
+      // the cache because server rendering shares the module across requests.
+      if (dayFormatters.size >= MAX_DAY_FORMATTERS) dayFormatters.clear();
+      dayFormatters.set(zone, formatter);
+    }
+    return formatter.format(d);
   } catch {
     return d.toISOString().slice(0, 10);
   }
 }
 
-function haversineKm(a, b) {
+// Great-circle distance in km between two {lat,lng} points (haversine).
+export function haversineKm(a, b) {
   if (a?.lat == null || b?.lat == null) return 0;
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;

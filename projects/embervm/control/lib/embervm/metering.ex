@@ -237,7 +237,7 @@ defmodule Embervm.Metering do
       payload: %{reason: reason}
     }
 
-    _ = safe(fn -> state.op_log_mod.append(state.op_log, op) end)
+    _ = Embervm.SafeCall.run(fn -> state.op_log_mod.append(state.op_log, op) end)
     {:noreply, state}
   end
 
@@ -261,7 +261,7 @@ defmodule Embervm.Metering do
   defp rebuild(state) do
     today = day_of(state.clock.())
 
-    case safe(fn -> state.op_log_mod.list_usage(state.op_log, since_day: today, limit: :infinity) end) do
+    case Embervm.SafeCall.run(fn -> state.op_log_mod.list_usage(state.op_log, since_day: today, limit: :infinity) end) do
       {:ok, %{items: items}} ->
         Enum.each(items, fn row ->
           cpu_ms = round(row.vcpu_seconds * 1000)
@@ -301,16 +301,6 @@ defmodule Embervm.Metering do
   defp budget_for(_quota, _principal), do: nil
 
   defp day_of(now_ms), do: div(now_ms, @day_ms)
-
-  defp safe(fun) do
-    try do
-      fun.()
-    rescue
-      _ -> :error
-    catch
-      _, _ -> :error
-    end
-  end
 
   defp default_clock, do: System.system_time(:millisecond)
 end

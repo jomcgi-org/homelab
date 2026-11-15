@@ -128,6 +128,46 @@ def test_noop_publication_proves_reused_chart_and_running_digest():
     assert result["applications"][0]["workloads"][0]["image_ids"] == [IMAGE]
 
 
+@pytest.mark.parametrize(
+    "revision,outcome", [("1.2.3", "failed"), ("1.2.2", "unknown")]
+)
+def test_failed_sync_rollback_evidence_names_published_revision(revision, outcome):
+    state = snapshot()
+    state["observed_at"] = "2026-10-30T12:00:00+00:00"
+    status = state["applications"][0]["status"]
+    status["sync"]["status"] = "OutOfSync"
+    status["sync"]["revisions"][0] = "1.2.2"
+    status["operationState"] = {
+        "phase": "Failed",
+        "syncResult": {"revisions": [revision, SOURCE]},
+    }
+    result = verify(state)
+    assert not result["verified"]
+    target = result["rollback_targets"][0]
+    assert target["revision"] == "1.2.3"
+    assert target["observations"][0]["outcome"] == outcome
+    assert target["observations"][0]["observed_at"] == state["observed_at"]
+
+
+def test_rollback_healthy_evidence_requires_current_comparison_and_workloads():
+    state = snapshot()
+    assert (
+        verify(state)["rollback_targets"][0]["observations"][0]["outcome"] == "healthy"
+    )
+    state["applications"][0]["status"]["sync"]["comparedTo"] = {}
+    assert (
+        verify(state)["rollback_targets"][0]["observations"][0]["outcome"] == "unknown"
+    )
+
+
+def test_rollback_unavailable_workloads_are_unknown():
+    state = snapshot()
+    state["unreadable"] = {"demo": "forbidden"}
+    assert (
+        verify(state)["rollback_targets"][0]["observations"][0]["outcome"] == "unknown"
+    )
+
+
 @pytest.fixture
 def paged_comparison(monkeypatch):
     """GitHub includes the whole comparison's file patches on page one."""
@@ -913,6 +953,7 @@ def test_own_application_unhealthy_names_application_and_resource():
     result = scoped_verify(
         ["projects/embervm/bricks.go"], state, get=fleet_github(moved=["embervm"])
     )
+    assert result.pop("rollback_targets")[0]["observations"][0]["outcome"] == "unknown"
     assert result == {
         "verified": False,
         "reason": "application_not_healthy_and_synced",
@@ -1262,7 +1303,9 @@ def test_all_checks_skip_out_of_scope_applications(change):
 def test_in_scope_unreadable_workload_is_pending_with_application():
     state = fleet()
     state["unreadable"]["embervm"] = "ApiException"
-    assert scoped_verify(["projects/embervm/deploy/values.yaml"], state) == {
+    result = scoped_verify(["projects/embervm/deploy/values.yaml"], state)
+    assert result.pop("rollback_targets")[0]["observations"][0]["outcome"] == "unknown"
+    assert result == {
         "verified": False,
         "reason": "workload_unreadable",
         "application": "embervm",

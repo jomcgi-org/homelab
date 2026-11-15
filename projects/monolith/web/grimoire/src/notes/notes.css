@@ -1,0 +1,21 @@
+/* Players write notes as plain text: keep their line breaks, wrap long words. */
+.note-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.note-list > li {
+  overflow-wrap: anywhere;
+}
+
+.note-list > li + li {
+  padding-block-start: var(--spacing-4);
+  border-block-start: 1px solid var(--color-border);
+}

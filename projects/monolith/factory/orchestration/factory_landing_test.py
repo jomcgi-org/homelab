@@ -13,6 +13,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import factory.orchestration.factory_controls as controls
 import factory.orchestration.factory_landing as landing
+from factory import review_publisher
 from factory.orchestration import factory_rollout
 from factory.orchestration.factory_models import (
     FactoryAudit,
@@ -28,6 +29,7 @@ from factory.orchestration.models import SwarmNodeRun, SwarmTask
 NOW = datetime(2026, 9, 11, 12, tzinfo=timezone.utc)
 POLICY = {"repo": "owner/repo", "auto_merge": True}
 HEAD = "a" * 40
+COLLECT_REVIEW = review_publisher.collect
 
 
 @pytest.fixture
@@ -79,7 +81,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(landing, "_notify_stuck", lambda *_args: None)
     from factory import review_publisher
 
-    def reviewed(task_id):
+    def reviewed(task_id, *, session=None):
         with Session(engine) as session:
             number, head = landing._delivery_prs(session, [task_id])[task_id]
         return review_publisher.ReviewEvidence(
@@ -608,7 +610,7 @@ def test_missing_publisher_token_refuses_to_arm_when_enabled(db, monkeypatch):
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda _task_id: review_publisher.ReviewEvidence(
+        lambda _task_id, **_: review_publisher.ReviewEvidence(
             task_id="t-1",
             repo="owner/repo",
             pr_number=3,
@@ -653,7 +655,7 @@ def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
         policy_version=1,
         details_url="https://private.jomcgi.dev/agents/session/11",
     )
-    monkeypatch.setattr(review_publisher, "collect", lambda _task_id: evidence)
+    monkeypatch.setattr(review_publisher, "collect", lambda _task_id, **_: evidence)
     monkeypatch.setattr(
         review_publisher,
         "publish",
@@ -1095,6 +1097,40 @@ def test_recovery_respects_delivery_capacity(
     monkeypatch.setattr(controls, "_now", lambda: deadline)
     with Session(db) as session:
         assert controls._landing_recovery_expired(session, "t-1")
+
+
+@pytest.mark.parametrize("settled", [False, True])
+def test_expired_recovery_holds_only_until_the_round_settles(db, monkeypatch, settled):
+    from factory.orchestration import factory_funding_limits as limits
+
+    delivered(db, "t-1", 11, 3)
+    deadline = NOW + timedelta(seconds=controls.LANDING_RECOVERY_TIMEOUT_SECONDS)
+    with Session(db) as session, session.begin():
+        controls._audit(
+            session,
+            "test",
+            "landing_recovery_requested",
+            task_id="t-1",
+            pr_number=3,
+            head_sha=HEAD,
+            source="delivered_pr",
+            reason="review_stale",
+            deadline_at=deadline.isoformat(),
+        )
+        if settled:
+            controls._audit(
+                session,
+                "test",
+                "delivery_ready",
+                task_id="t-1",
+                evidence={"head_sha": HEAD},
+            )
+    monkeypatch.setattr(controls, "_now", lambda: deadline)
+    with Session(db) as session:
+        assert controls._landing_recovery_expired(session, "t-1")
+        assert controls.landing_recovery_settled(session, "t-1") is settled
+        # A settled round leaves landing to its fresh review; an open one holds.
+        assert limits._recovery_held(session, "t-1") is not settled
 
 
 @pytest.mark.parametrize("constraint", ["lane", "chart", "repo"])
@@ -1553,9 +1589,11 @@ def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     # The landed delivery is not read again; only the one still working is.
     assert [suffix for suffix in calls["get"][reads:]] == [
         "pulls/4",
+        "pulls/4",  # Fresh queue authority under the control lock.
         "issues/12",
         "pulls/4",
         "pulls/4",
+        "pulls/4",  # The holder observation rechecks the same fence.
     ]
 
 
@@ -2120,7 +2158,6 @@ def test_rollout_page_real_notification_dedupe_and_failed_send_retry(db, monkeyp
     monkeypatch.setattr(conductor, "get_engine", lambda: db)
     merged_delivery(db)
     pending_rollout(monkeypatch)
-    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
     sent = []
 
     async def notify(message, *, level):
@@ -2639,6 +2676,35 @@ def test_close_reloads_live_gate_recorded_after_delivery_snapshot(db, monkeypatc
     ]
 
 
+@pytest.mark.parametrize("origin", ["planner", "operator", None])
+def test_landing_rechecks_exact_refusal_and_preserves_existing_holds(
+    db, monkeypatch, origin
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    delivered(db, "t-refused-hold", 11, 3)
+    hold = {"actor": "factory:conductor", "cause": "planner:test", "reason": "stage"}
+    direction = {
+        "landing_hold": hold,
+        "landing_hold_refusals": [{"cause": "planner:test", "gate_id": "exact"}],
+    }
+    if origin is not None:
+        direction["landing_hold_provenance"] = {
+            "origin": origin,
+            "cause": "planner:test",
+            "gate_id": "exact",
+            "hold": hold,
+        }
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-refused-hold").direction_json = json.dumps(
+            direction
+        )
+    pulls = {3: pull(3, armed=True)}
+    github(monkeypatch, pulls=pulls)
+    item = landing._deliveries(POLICY)[0]
+    assert landing._enforce_landing_hold(POLICY["repo"], item) is (origin != "planner")
+    assert (pulls[3]["auto_merge"] is None) is (origin != "planner")
+
+
 @pytest.mark.parametrize("paused", [False, True])
 @pytest.mark.parametrize("entry", ["auto-merge", "queue"])
 def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
@@ -2678,6 +2744,666 @@ def test_receipt_landing_hold_disarms_and_rechecks_even_with_global_flags_off(
     )
     assert not audits(db, "merge_armed")
     assert not audits(db, "landing_recovery_requested")
+
+
+def test_released_hold_refusal_no_longer_keeps_the_delivery_out_of_arming(
+    db, monkeypatch
+):
+    delivered(db, "t-held", 11, 3)
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, "t-held"
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    pulls = {3: pull(3)}
+    github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    assert (
+        audits(db, "merge_arm_refused", "t-held")[0]["reason"] == "receipt_landing_held"
+    )
+    # Releasing the hold leaves the old refusal in the audit trail. It must not
+    # keep the delivery refused forever.
+    with Session(db) as session, session.begin():
+        controls._receipt(session, "t-held").direction_json = "{}"
+    [item] = landing._deliveries(POLICY)
+    assert item["refusal"] is None
+    pulls[3] = {**pulls[3], "mergeable": False}
+    landing.landing_tick(POLICY)
+    [request] = audits(db, "landing_recovery_requested", "t-held")
+    assert request["source"] == "delivered_pr"
+    assert len(audits(db, "merge_arm_refused", "t-held")) == 1
+
+
+@pytest.mark.parametrize("terminal_before_hold", [False, True])
+def test_real_hold_release_preserves_terminal_refusal_and_mcp_provenance(
+    db, monkeypatch, terminal_before_hold
+):
+    from factory.orchestration import mcp
+
+    delivered(db, "t-held", 11, 3)
+    pulls = {3: pull(3)}
+    calls = github(monkeypatch, pulls=pulls)
+    arm, arm_calls = landing._arm, []
+
+    def counted_arm(repo, item):
+        arm_calls.append(item["task_id"])
+        return arm(repo, item)
+
+    monkeypatch.setattr(landing, "_arm", counted_arm)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: False)
+    if terminal_before_hold:
+        [item] = landing._deliveries(POLICY)
+        landing._refuse(item, "landing_recovery_exhausted")
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, "t-held"
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    # Exercise the real hold enforcement and once-per-epoch audit writer.
+    landing.landing_tick(POLICY)
+    landing.landing_tick(POLICY)
+    assert arm_calls == []
+    [held_refusal] = audits(db, "merge_arm_refused", "t-held")
+    assert held_refusal["reason"] == (
+        "landing_recovery_exhausted" if terminal_before_hold else "receipt_landing_held"
+    )
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-held")
+        assert controls.landing_held(row)
+        row.direction_json = "{}"
+    if not terminal_before_hold:
+        # A hold-only audit must leave room for the first terminal refusal.
+        pulls[3]["draft"] = True
+    for _ in range(3):
+        landing.landing_tick(POLICY)
+    assert arm_calls == ([] if terminal_before_hold else ["t-held"])
+    assert not audits(db, "merge_armed")
+    assert calls["graphql"] == calls["write"] == []
+    expected = (
+        "landing_recovery_exhausted"
+        if terminal_before_hold
+        else "pull request is not open and ready"
+    )
+    with Session(db) as session:
+        rows = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "merge_arm_refused")
+            .order_by(FactoryAudit.id)
+        ).all()
+        assert len(rows) == (1 if terminal_before_hold else 2)
+        assert json.loads(rows[0].detail_json) == held_refusal
+        [item] = landing._deliveries(POLICY, include_refused=True, session=session)
+        assert item["refusal"]["reason"] == expected
+        assert mcp._landing_refusal(session, "t-held") == {
+            "source": "recorded_landing_audit",
+            "audit_id": rows[-1].id,
+            "observed_at": mcp.iso_or_str(rows[-1].created_at),
+            "pr_number": 3,
+            "reason": expected,
+        }
+
+
+@pytest.mark.parametrize(
+    "site,seam,nth,setup",
+    [
+        ("_enforce_landing_hold", "github_get", 1, "held"),
+        ("_fence_ungranted_queue_entry", "github_get", 1, "ready"),
+        ("_fence_ungranted_queue_entry", "github_get", 2, "ready"),
+        ("_enforce_owner_pr_hold", "github_get", 1, "ready"),
+        ("_enforce_owner_pr_hold", "github_list", 1, "ready"),
+        ("_handoff_human_delivery", "github_get", 1, "ready"),
+        ("_handoff_human_delivery", "github_get", 2, "human"),
+        ("_recover_refused", "github_get", 1, "recovery"),
+        ("_recover_refused", "github_get", 1, "outside-page"),
+    ],
+)
+@pytest.mark.parametrize("entry", ["auto-merge", "queue"])
+def test_deferred_adopted_holder_fences_arming_after_early_filters(
+    db, monkeypatch, site, seam, nth, setup, entry
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    owner_delivery(db)
+    delivered(db, "t-later", 12, 4)
+    delivered(db, "t-merged", 13, 5)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        direction = json.loads(row.direction_json)
+        direction["delivery_branch"] = "feature/adopted"
+        if setup == "held":
+            direction["landing_hold"] = {"actor": "operator"}
+        row.direction_json = json.dumps(direction)
+        if setup == "outside-page":
+            # Recovery scans a broader batch than the rotating observation page.
+            landing._delivery_cursors[POLICY["repo"]] = row.id
+    landing._append("t-1", "merge_armed", pr_number=3, head_sha=HEAD)
+    if setup in {"recovery", "outside-page"}:
+        [item] = [i for i in landing._deliveries(POLICY) if i["task_id"] == "t-1"]
+        landing._refuse(item, "merge_conflict")
+    holder = pull(3, armed=entry == "auto-merge")
+    holder["head"]["ref"] = "feature/adopted"
+    holder["user"] = {"id": 42}
+    if entry == "queue":
+        holder["queue_entry"] = {"id": "MQ_3"}
+    pulls = {
+        3: holder,
+        4: {**pull(4, task_id="t-later"), "body": "Closes #12"},
+        5: {**pull(5, task_id="t-merged", merged=True), "body": "Closes #13"},
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: [] if "/comments?" in path else listing(repo, path),
+    )
+    monkeypatch.setattr(review_publisher, "enabled", lambda: False)
+    # The ordinary GitHub fallback intentionally does not discover adopted refs.
+    assert landing._armed_on_github(POLICY["repo"]) is None
+    original_phase, original_read = getattr(landing, site), getattr(landing, seam)
+    active, reads, failures = [], [], []
+
+    def phase(*args, **kwargs):
+        active.append(None if site == "_recover_refused" else args[1]["task_id"])
+        try:
+            return original_phase(*args, **kwargs)
+        finally:
+            active.pop()
+
+    def read(repo, path):
+        target = path.split("?", 1)[0] in {
+            "pulls/3",
+            "issues/11",
+            "issues/3/comments",
+        }
+        if site == "_recover_refused":
+            target = path == "pulls/3"
+        if active and (active[-1] == "t-1" or site == "_recover_refused") and target:
+            reads.append(path)
+            if len(reads) == nth:
+                failures.append(path)
+                raise GitHubReadDeferred("holder cooldown expires before later reads")
+            if setup == "human" and path == "issues/11":
+                return {"state": "open", "labels": [{"name": "human"}]}
+        return original_read(repo, path)
+
+    monkeypatch.setattr(landing, site, phase)
+    monkeypatch.setattr(landing, seam, read)
+    landing.landing_tick(POLICY)
+    assert len(failures) == 1
+    assert len(reads) == nth
+    assert audits(db, "issue_closed", "t-merged"), "later reads must succeed"
+    assert not audits(db, "merge_armed", "t-later")
+    assert calls["graphql"] == []
+    assert bool(pulls[3]["auto_merge"]) is (entry == "auto-merge")
+    assert bool(pulls[3].get("queue_entry")) is (entry == "queue")
+    assert audits(db, "merge_deferred", "t-later")
+    assert landing._deferred_items.get() is None
+
+
+def test_deferred_github_read_skips_one_item_without_aborting_the_tick(db, monkeypatch):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-held", 11, 3)
+    with Session(db) as session, session.begin():
+        controls._receipt(
+            session, "t-held"
+        ).direction_json = '{"landing_hold":{"actor":"operator"}}'
+    item = landing._deliveries(POLICY)[0]
+
+    def deferred(*_args, **_kwargs):
+        raise GitHubReadDeferred("deferred")
+
+    monkeypatch.setattr(landing, "github_get", deferred)
+    # Fails closed for this item, and does not raise into the landing tick.
+    assert landing._enforce_landing_hold(POLICY["repo"], item) is True
+
+
+# Site/read-path matrix. Wrapping the phase only selects the injection window;
+# the original production function and its nested guards still run. In
+# particular, a late read must not be hidden by an earlier mocked guard.
+@pytest.mark.parametrize(
+    "site,seam,nth,setup",
+    [
+        ("_enforce_landing_hold", "github_get", 1, "held"),
+        ("_enforce_landing_hold", "_queued_ids", 1, "held"),
+        ("_enforce_landing_hold", "_queued_ids", 2, "held-queued"),
+        ("_enforce_landing_hold", "github_get", 1, "operator"),
+        ("_enforce_landing_hold", "_queued_ids", 1, "operator"),
+        ("_enforce_landing_hold", "_queued_ids", 2, "operator-queued"),
+        ("_enforce_owner_pr_hold", "github_get", 1, "owner"),
+        ("_enforce_owner_pr_hold", "github_list", 1, "owner"),
+        ("_enforce_owner_pr_hold", "_queued_ids", 1, "owner-held"),
+        ("_enforce_owner_pr_hold", "_queued_ids", 2, "owner-held"),
+        ("_fence_ungranted_queue_entry", "github_get", 1, "ready"),
+        ("_fence_ungranted_queue_entry", "github_get", 2, "queued"),
+        ("_fence_ungranted_queue_entry", "_queued_ids", 2, "queued"),
+        ("_fence_operator_queue_entry", "github_get", 1, "operator-unheld"),
+        ("_fence_operator_queue_entry", "_queued_ids", 1, "operator-unheld"),
+        ("_fence_operator_queue_entry", "_queued_ids", 2, "operator-unheld-queued"),
+        ("_recover_refused", "github_get", 1, "recovery"),
+        ("_recover_refused", "github_get", 2, "recovery-merged"),
+        ("_recover_refused", "_queued_ids", 1, "recovery"),
+        ("_arm", "github_get", 1, "ready"),
+        ("_arm", "github_get", 2, "ready"),
+        ("_arm", "github_list", 2, "owner"),
+        ("_observe_merge", "github_get", 1, "ready"),
+        ("_observe", "github_get", 1, "armed"),
+        ("_observe", "_queued_ids", 2, "ejected"),
+        ("_observe", "_queued_ids", 2, "conflict"),
+        ("_handoff_human_delivery", "github_get", 1, "ready"),
+        ("_handoff_human_delivery", "github_get", 2, "human"),
+        ("_handoff_human_delivery", "_queued_ids", 1, "human"),
+        ("_handoff_human_delivery", "_queued_ids", 2, "human-queued"),
+        ("_recover_conflict_without_arming", "github_get", 1, "disabled"),
+        ("_close_issue", "github_get", 2, "merged"),
+    ],
+)
+def test_read_deferral_matrix_preserves_later_work_and_retries(
+    db, monkeypatch, caplog, site, seam, nth, setup
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    if setup in {"owner", "owner-held"}:
+        owner_delivery(db)
+    else:
+        delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    if setup in {"held", "operator", "held-queued", "operator-queued"}:
+        with Session(db) as session, session.begin():
+            row = controls._receipt(session, "t-1")
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator"}
+            row.direction_json = json.dumps(direction)
+    if setup in {
+        "operator",
+        "operator-queued",
+        "operator-unheld",
+        "operator-unheld-queued",
+    }:
+        monkeypatch.setattr(landing, "operator_target", lambda task: task == "t-1")
+        monkeypatch.setattr(
+            controls, "OPERATOR_DOCS_HANDOFF_TARGET", ("owner/repo", "t-1", 11, 3)
+        )
+    if setup in {"armed", "ejected", "conflict"}:
+        landing._append("t-1", "merge_armed", pr_number=3, head_sha=HEAD)
+    if setup in {"recovery", "recovery-merged"}:
+        landing._record(
+            "t-1", "merge_arm_refused", pr_number=3, reason="merge_conflict"
+        )
+    pulls = {
+        3: {
+            **pull(
+                3, armed=setup == "armed", merged=setup in {"merged", "recovery-merged"}
+            ),
+            "user": {"id": 42},
+            "mergeable": setup != "conflict",
+            "queue_entry": {"id": "MQ_3"}
+            if setup
+            in {
+                "queued",
+                "held-queued",
+                "operator-queued",
+                "operator-unheld-queued",
+                "owner-held",
+                "human-queued",
+            }
+            else None,
+            "labels": [{"name": "needs-human"}] if setup == "owner-held" else [],
+        },
+        4: {**pull(4, task_id="t-later", merged=True), "body": "Closes #12"},
+    }
+    calls = github(
+        monkeypatch,
+        pulls=pulls,
+        issues={
+            11: {"state": "open", "labels": [{"name": "human"}]}
+            if setup in {"human", "human-queued"}
+            else {"state": "open"}
+        },
+    )
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: [] if "/comments?" in path else listing(repo, path),
+    )
+    original_phase, original_read = getattr(landing, site), getattr(landing, seam)
+    active, reads, failures = [], [], []
+    failing = True
+
+    def phase(*args, **kwargs):
+        task = None if site == "_recover_refused" else args[1]["task_id"]
+        active.append(task)
+        try:
+            return original_phase(*args, **kwargs)
+        finally:
+            active.pop()
+
+    def read(*args, **kwargs):
+        target = (
+            args[0] == ["PR_3"]
+            if seam == "_queued_ids"
+            else args[1].split("?", 1)[0]
+            in {"pulls/3", "issues/11", "issues/3/comments"}
+        )
+        if site == "_recover_refused" and seam == "github_get":
+            # Ownership's earlier issue read must succeed. Reach recovery's
+            # own PR read (or its later closure verification) deliberately.
+            target = args[1] == "pulls/3"
+        if active and (active[-1] == "t-1" or site == "_recover_refused") and target:
+            reads.append(args)
+            if failing and len(reads) == nth:
+                failures.append(args)
+                raise GitHubReadDeferred("matrix cooldown")
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(landing, site, phase)
+    monkeypatch.setattr(landing, seam, read)
+    policy = {**POLICY, "auto_merge": setup != "disabled"}
+    landing.landing_tick(policy)
+    assert len(failures) == 1, (site, seam, nth, reads)
+    assert len(reads) == nth  # No later phase retried this receipt this tick.
+    assert audits(db, "issue_closed", "t-later"), "later delivery must still close"
+    assert not audits(db, "merge_armed", "t-1") or setup in {
+        "armed",
+        "ejected",
+        "conflict",
+    }
+    assert not audits(db, "landing_recovery_requested", "t-1")
+    assert not audits(db, "issue_closed", "t-1")
+    assert not audits(db, "review_publish_refused", "t-1")
+    first_mutations = [c for c in calls["graphql"] if c.get("pullRequestId") == "PR_3"]
+    # A successful membership read can authorize a dequeue before its verifying
+    # read defers. That unknown outcome must not permit publication or closure.
+    assert len(first_mutations) == int(
+        nth == 2
+        and setup
+        in {
+            "held-queued",
+            "operator-queued",
+            "operator-unheld-queued",
+            "owner-held",
+            "human-queued",
+        }
+    )
+    assert receipt_state(db, "t-1") != "cancelled"
+    assert landing._deferred_items.get() is None
+    assert not any(
+        record.message == "factory landing failed" for record in caplog.records
+    )
+    assert audits(db, "landing_error", "t-1")[-1]["error"] == "GitHubReadDeferred"
+    # The failed identity is not a durable refusal or a cross-tick skip.
+    failing = False
+    before = len(reads)
+    landing.landing_tick(policy)
+    if setup == "recovery-merged":
+        assert audits(db, "issue_closed", "t-1")
+    else:
+        assert len(reads) > before
+
+
+@pytest.mark.parametrize("nth", [1, 2])
+def test_deferred_arm_does_not_break_before_later_eligible_candidate(
+    db, monkeypatch, nth
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4, task_id="t-later")})
+    original_arm, original_read = landing._arm, landing.github_get
+    active, reads = [], []
+
+    def arm(repo, item):
+        active.append(item["task_id"])
+        try:
+            return original_arm(repo, item)
+        finally:
+            active.pop()
+
+    def read(repo, path):
+        if active and active[-1] == "t-1":
+            reads.append(path)
+            if len(reads) == nth:
+                raise GitHubReadDeferred("candidate unavailable")
+        return original_read(repo, path)
+
+    monkeypatch.setattr(landing, "_arm", arm)
+    monkeypatch.setattr(landing, "github_get", read)
+    landing.landing_tick(POLICY)
+    assert len(reads) == nth
+    assert calls["graphql"] == [{"pullRequestId": "PR_4"}]
+    assert not audits(db, "merge_arm_refused", "t-1")
+    assert audits(db, "merge_armed", "t-later")
+
+
+@pytest.mark.parametrize("seam", ["github_list", "_queued_ids"])
+def test_global_holder_deferral_fences_arming_but_not_independent_work(
+    db, monkeypatch, seam
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    calls = github(
+        monkeypatch,
+        pulls={
+            3: pull(3),
+            4: {**pull(4, merged=True, task_id="t-later"), "body": "Closes #12"},
+        },
+    )
+    original_phase, original_read = landing._armed_on_github, getattr(landing, seam)
+    active, reached = [], []
+
+    def holder(repo):
+        active.append(True)
+        try:
+            return original_phase(repo)
+        finally:
+            active.pop()
+
+    def read(*args, **kwargs):
+        if active:
+            reached.append(True)
+            raise GitHubReadDeferred("holder unknown")
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(landing, "_armed_on_github", holder)
+    monkeypatch.setattr(landing, seam, read)
+    landing.landing_tick(POLICY)
+    assert reached == [True]
+    assert audits(db, "issue_closed", "t-later")
+    assert not audits(db, "merge_armed")
+    assert calls["arm_heads"] == []
+    monkeypatch.setattr(landing, seam, original_read)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_armed", "t-1")
+
+
+@pytest.mark.parametrize("publish_enabled", [False, True])
+def test_publication_collect_cooldown_uses_real_collector_and_retries(
+    db, monkeypatch, publish_enabled
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-later", 12, 4)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        row.policy_json = json.dumps({**POLICY, "base_branch": "main"})
+        value = {
+            "verdict": "approve",
+            "head_sha": HEAD,
+            "pr_number": 3,
+            "summary": "Exact head",
+        }
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="test",
+                    task_id="t-1",
+                    action="admit_next",
+                    detail_json='{"policy_version": 0}',
+                ),
+                SwarmNodeRun(
+                    task_id="t-1",
+                    node_key="implement_fix",
+                    attempt=1,
+                    session_id=10,
+                    status="succeeded",
+                    head_sha=HEAD,
+                ),
+                SwarmNodeRun(
+                    task_id="t-1",
+                    node_key="review_fix",
+                    attempt=1,
+                    session_id=11,
+                    status="succeeded",
+                    head_sha=HEAD,
+                    outcome_json=json.dumps(
+                        {
+                            "value": value,
+                            "artifact": {"status": "ok", "value": value, "errors": []},
+                        }
+                    ),
+                ),
+            ]
+        )
+    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4, task_id="t-later")})
+    monkeypatch.setattr(review_publisher, "enabled", lambda: publish_enabled)
+    reviewed = review_publisher.collect
+    active, reached, published = [], [], []
+    original_get = landing.github_get
+
+    def collect(task_id, **kwargs):
+        if task_id != "t-1":
+            return reviewed(task_id, **kwargs)
+        active.append(True)
+        try:
+            return COLLECT_REVIEW(task_id, **kwargs)
+        finally:
+            active.pop()
+
+    def read(repo, path):
+        if active:
+            reached.append(path)
+            raise GitHubReadDeferred("real review read unavailable")
+        return original_get(repo, path)
+
+    def publish(evidence):
+        published.append(evidence.task_id)
+        return {
+            "action": "already_published",
+            "conclusion": "success",
+            "head_sha": HEAD,
+            "review_run_id": 1,
+            "check_id": 1,
+        }
+
+    monkeypatch.setattr(review_publisher, "collect", collect)
+    monkeypatch.setattr(review_publisher, "publish", publish)
+    monkeypatch.setattr(landing, "github_get", read)
+    landing.landing_tick(POLICY)
+    assert reached == ["pulls/3"]
+    assert published == (["t-later"] if publish_enabled else [])
+    assert calls["graphql"] == [{"pullRequestId": "PR_4"}]
+    assert not audits(db, "merge_arm_refused", "t-1")
+    assert not audits(db, "review_publish_refused", "t-1")
+    # Release the other holder, then the same receipt can publish and arm.
+    landing.github_graphql(landing._DISARM_AUTO_MERGE, {"pullRequestId": "PR_4"})
+    monkeypatch.setattr(landing, "github_get", original_get)
+    landing.landing_tick(POLICY)
+    assert ("t-1" in published) == publish_enabled
+    assert audits(db, "merge_armed", "t-1")
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_deferred_recovery_continues_candidates_but_success_remains_bounded(
+    db, monkeypatch, late
+):
+    from factory.orchestration.github_read_cooldown import GitHubReadDeferred
+
+    for number in range(1, 4):
+        task_id = f"t-{number}"
+        delivered(db, task_id, number + 10, number + 2)
+        landing._record(
+            task_id, "merge_arm_refused", reason="merge_conflict", pr_number=number + 2
+        )
+    github(
+        monkeypatch,
+        pulls={
+            number + 2: pull(
+                number + 2, task_id=f"t-{number}", merged=late and number == 1
+            )
+            for number in range(1, 4)
+        },
+    )
+    get = landing.github_get
+    reads, recoveries = [], []
+
+    def read(repo, path):
+        reads.append(path)
+        if path == "pulls/3" and reads.count(path) == (2 if late else 1):
+            raise GitHubReadDeferred("first recovery unknown")
+        return get(repo, path)
+
+    monkeypatch.setattr(landing, "github_get", read)
+    monkeypatch.setattr(
+        landing,
+        "_recover_delivery",
+        lambda item, *_a, **_kw: recoveries.append(item["task_id"]),
+    )
+    token = landing._deferred_items.set({})
+    try:
+        landing._recover_refused(POLICY)
+    finally:
+        landing._deferred_items.reset(token)
+    assert recoveries == ["t-2"]
+    assert "pulls/5" not in reads
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [None, "landing_recovery_exhausted", "merged_delivery_identity_mismatch"],
+)
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("barrier", [None, "landing_recovery_requested", "merged"])
+def test_legacy_refusal_history_preserves_terminal_and_reset_barriers(
+    db, monkeypatch, terminal, held, barrier
+):
+    delivered(db, "t-1", 11, 3)
+    if terminal:
+        landing._record("t-1", "merge_arm_refused", reason=terminal, pr_number=3)
+    if barrier:
+        landing._record("t-1", barrier, pr_number=3)
+    # Defensive coverage for imported histories the current writer cannot emit.
+    with Session(db) as session, session.begin():
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="factory:landing",
+                    action="merge_arm_refused",
+                    task_id="t-1",
+                    detail_json=json.dumps(
+                        {"reason": "receipt_landing_held", "pr_number": 3}
+                    ),
+                )
+                for _ in range(3)
+            ]
+        )
+        if held:
+            row = controls._receipt(session, "t-1")
+            direction = json.loads(row.direction_json)
+            direction["landing_hold"] = {"actor": "operator"}
+            row.direction_json = json.dumps(direction)
+    [item] = landing._deliveries(POLICY, include_refused=True)
+    expected = "receipt_landing_held" if held else terminal if barrier is None else None
+    assert (item["refusal"] or {}).get("reason") == expected
+    if terminal and not held and barrier is None:
+        calls = []
+        monkeypatch.setattr(landing, "_arm", lambda *_args: calls.append(True))
+        github(monkeypatch, pulls={3: pull(3)})
+        landing.landing_tick(POLICY)
+        assert calls == []
 
 
 @pytest.mark.parametrize("entry", ["auto-merge", "queue"])
@@ -3170,11 +3896,71 @@ def test_scoped_grant_never_substitutes_for_independent_review(
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task: review_publisher.Refusal(task, "review_not_independent"),
+        lambda task, **_: review_publisher.Refusal(task, "review_not_independent"),
     )
     landing.landing_tick(POLICY)
     assert not audits(db, "merge_armed")
     assert calls["graphql"] == []
+
+
+def test_scope_wait_records_each_change_of_reason_once(db):
+    delivered(db, "t-wait", 101, 9, state="landing")
+    delivered(db, "t-other", 102, 9, state="landing")
+    item = {"task_id": "t-wait", "pr_number": 9}
+    for reason in ("missing", "missing", "path_denied", "path_denied", "missing"):
+        landing._scope_wait(item, reason)
+    landing._scope_wait({"task_id": "t-wait", "pr_number": 10}, "missing")
+    landing._scope_wait({"task_id": "t-other", "pr_number": 9}, "missing")
+
+    assert [
+        (row["reason"], row["pr_number"])
+        for row in audits(db, "landing_authorization_wait", "t-wait")
+    ] == [("missing", 9), ("path_denied", 9), ("missing", 9), ("missing", 10)]
+    assert len(audits(db, "landing_authorization_wait", "t-other")) == 1
+    assert item["refused"] is True
+
+
+@pytest.mark.parametrize("publication", [False, True])
+@pytest.mark.parametrize("ready_index", [6, 16])
+def test_scope_waits_do_not_starve_later_observation_page_candidates(
+    db, monkeypatch, publication, ready_index
+):
+    from factory import review_publisher
+
+    pulls = {}
+    for index in range(1, ready_index + 1):
+        task_id = f"t-{index}"
+        delivered(db, task_id, 100 + index, index, state="landing")
+        pulls[index] = pull(index, task_id=task_id)
+        if index != ready_index:
+            with Session(db) as session, session.begin():
+                row = controls._receipt(session, task_id)
+                direction = json.loads(row.direction_json)
+                direction.pop("landing_authorization")
+                row.direction_json = json.dumps(direction)
+    calls = github(monkeypatch, pulls=pulls)
+    monkeypatch.setattr(review_publisher, "enabled", lambda: publication)
+    monkeypatch.setattr(
+        review_publisher,
+        "publish",
+        lambda evidence: {
+            "action": "published",
+            "conclusion": "success",
+            "check_id": evidence.pr_number,
+            "head_sha": evidence.head_sha,
+            "review_run_id": evidence.review_run_id,
+        },
+    )
+
+    # More than one complete observation cycle must reach the eligible suffix,
+    # including when publication has its own bounded candidate batch.
+    for _ in range(8):
+        landing.landing_tick(POLICY)
+
+    assert calls["graphql"] == [{"pullRequestId": f"PR_{ready_index}"}]
+    assert len(audits(db, "merge_armed", f"t-{ready_index}")) == 1
+    assert len(audits(db, "landing_authorization_wait")) == ready_index - 1
+    assert audits(db, "merge_arm_refused") == []
 
 
 @pytest.mark.parametrize("race", ["head", "base", "draft", "grant", "hold", "policy"])
@@ -3219,7 +4005,7 @@ def test_scoped_landing_rechecks_after_review_collection(db, monkeypatch, race):
 def test_ungranted_existing_holder_is_fenced(db, monkeypatch, queued):
     delivered(db, "t-1", 11, 3)
     pulls = {3: pull(3)}
-    calls = github(monkeypatch, pulls=pulls)
+    github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
     with Session(db) as session, session.begin():
         controls._receipt(session, "t-1").direction_json = "{}"
@@ -3329,3 +4115,499 @@ def test_holder_scan_bounds_serialized_pages_and_preserves_later_owner(
         assert audits(db, "merge_deferred", "t-1")[-1]["blocked_by_pr"] == 143
     else:
         assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+
+
+def owner_delivery(db, *, direct=False):
+    delivered(db, "t-1", 3 if direct else 11, 3)
+    with Session(db) as session, session.begin():
+        row = controls._receipt(session, "t-1")
+        direction = json.loads(row.direction_json)
+        direction["owner_pr"] = {"author_id": 42, "direct": direct}
+        row.direction_json = json.dumps(direction)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "absence",
+    [
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.",
+        "Current discussion contains no explicit leave-unmerged hold.",
+    ],
+)
+def test_owner_pr_absence_feedback_keeps_native_landing_gates(
+    db, monkeypatch, queued, absence
+):
+    owner_delivery(db)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    comments = [{"body": absence}]
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: comments if "/comments?" in path else listing(repo, path),
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "landing_authorization_wait")
+    assert pulls[3]["auto_merge"]
+    assert bool(calls["arm_heads"]) is not queued
+
+    # A positive hold elsewhere in that same comment wins on the next native
+    # observation, including for a previously queued exact-head delivery.
+    comments[0]["body"] += " Do not merge; explicit human hold."
+    landing.landing_tick(POLICY)
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+
+
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "absence",
+    [
+        "No explicit human, security or leave-unmerged hold was found in the PR labels, discussion or reviews.",
+        "Current discussion contains no explicit leave-unmerged hold.",
+    ],
+)
+@pytest.mark.parametrize(
+    "retraction",
+    [
+        "- That is wrong.",
+        "* Disregard the previous statement.",
+        "- Unless told otherwise.",
+        "- False.",
+    ],
+)
+def test_owner_pr_list_retraction_fences_native_landing(
+    db, monkeypatch, queued, absence, retraction
+):
+    owner_delivery(db)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: (
+            [{"body": f"{absence}\n\n{retraction}"}]
+            if "/comments?" in path
+            else listing(repo, path)
+        ),
+    )
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert not calls["arm_heads"]
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+    assert receipt_state(db, "t-1") == "succeeded"
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize(
+    "kind", ["discussion", "needs-human", "security", "assignment"]
+)
+def test_owner_pr_late_hold_fences_landing_and_existing_queue(
+    db, monkeypatch, direct, queued, kind
+):
+    owner_delivery(db, direct=direct)
+    pulls = {
+        3: {
+            **pull(3, armed=queued),
+            "user": {"id": 42},
+            "queue_entry": {"id": "MQ_3"} if queued else None,
+        }
+    }
+    calls = github(monkeypatch, pulls=pulls)
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: (
+            (
+                [{"body": "Do not merge; explicit human hold."}]
+                if kind == "discussion"
+                else []
+            )
+            if "/comments?" in path
+            else listing(repo, path)
+        ),
+    )
+    if kind in ("needs-human", "security"):
+        pulls[3]["labels"] = [{"name": kind}]
+    if kind == "assignment":
+        pulls[3]["assignees"] = [{"login": "joe"}]
+    landing.landing_tick(POLICY)
+    assert not audits(db, "merge_armed")
+    assert not calls["arm_heads"]
+    assert pulls[3]["auto_merge"] is None
+    assert not pulls[3].get("queue_entry")
+    assert audits(db, "landing_authorization_wait")
+    assert receipt_state(db, "t-1") == "succeeded"
+
+
+def test_owner_pr_landing_rechecks_discussion_after_review_collection(db, monkeypatch):
+    from factory import review_publisher
+
+    owner_delivery(db)
+    pulls = {3: {**pull(3), "user": {"id": 42}}}
+    calls = github(monkeypatch, pulls=pulls)
+    held = []
+    listing = landing.github_list
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda repo, path: held if "/comments?" in path else listing(repo, path),
+    )
+    reviewed = review_publisher.collect
+
+    def race(task_id):
+        result = reviewed(task_id)
+        held.append({"body": "Do not merge; newly observed operator hold."})
+        return result
+
+    monkeypatch.setattr(review_publisher, "collect", race)
+    landing.landing_tick(POLICY)
+    assert not calls["arm_heads"]
+    assert not audits(db, "merge_armed")
+    assert audits(db, "landing_authorization_wait")
+
+
+@pytest.mark.parametrize(
+    "stale_review,check_state,accepted",
+    [(False, "success", True), (True, "success", False), (False, "failure", False)],
+)
+def test_direct_owner_pr_preserves_exact_head_gates_without_self_closing_keyword(
+    monkeypatch, stale_review, check_state, accepted
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    # Pure GitHub/evidence verification. Durable owner holds are covered by the
+    # landing_tick regressions above using real receipts and queue observations.
+    monkeypatch.setattr(controls, "review_recovery_held", lambda *_: False)
+    task = {
+        "id": "t-1",
+        "repo": "owner/repo",
+        "base_branch": "main",
+        "conductor_model": "opus",
+        "issue_number": 3,
+        "delivery_pr_number": 3,
+        "owner_pr": {"direct": True, "author_id": 42},
+    }
+    pull = {
+        "state": "open",
+        "draft": False,
+        "user": {"id": 42},
+        "body": "Existing authorized maintenance PR",
+        "head": {
+            "sha": HEAD,
+            "ref": "factory/t-1",
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main"},
+        "html_url": "https://github.com/owner/repo/pull/3",
+    }
+    checks = {"statuses": [{"context": "pr-checks", "state": check_state}]}
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, path: pull if path.startswith("pulls/") else checks,
+    )
+    monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+    runs = [
+        {
+            "id": 1,
+            "node_key": "implement_fix",
+            "status": "succeeded",
+            "session_id": 10,
+            "outcome_json": json.dumps({"value": {"pr_number": 3, "head_sha": HEAD}}),
+        },
+        {
+            "id": 2,
+            "node_key": "review_fix",
+            "status": "succeeded",
+            "session_id": 11,
+            "head_sha": HEAD,
+            "pin": {"model": "opus"},
+            "outcome_json": json.dumps(
+                {
+                    "value": {
+                        "pr_number": 3,
+                        "head_sha": "b" * 40 if stale_review else HEAD,
+                        "verdict": "approve",
+                    }
+                }
+            ),
+        },
+    ]
+    if accepted:
+        assert (
+            conductor.verify_delivery(task, 3, runs, issue_number=3)["head_sha"] == HEAD
+        )
+    else:
+        with pytest.raises(ValueError, match="exact-head|integrated PR checks"):
+            conductor.verify_delivery(task, 3, runs, issue_number=3)
+
+
+MOVED = "c" * 40
+
+
+def test_head_moved_recovery_names_both_heads_and_needs_merge_policy(db):
+    delivered(db, "t-1", 11, 3)
+    with pytest.raises(ValueError, match="invalid current_head_sha"):
+        controls.request_landing_recovery(
+            "t-1", 3, HEAD, "delivered_pr", "test", reason="head_moved"
+        )
+    with pytest.raises(ValueError, match="head_not_moved"):
+        controls.request_landing_recovery(
+            "t-1",
+            3,
+            HEAD,
+            "delivered_pr",
+            "test",
+            reason="head_moved",
+            current_head_sha=HEAD,
+        )
+    with pytest.raises(ValueError, match="requires head_moved"):
+        controls.request_landing_recovery(
+            "t-1", 3, HEAD, "delivered_pr", "test", current_head_sha=MOVED
+        )
+    with controls._locked_session() as (_session, control):
+        control.policy_json = json.dumps({**POLICY, "auto_merge": False})
+    # No conflict-repair shortcut: a moved head needs the merge policy.
+    assert controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    ) == {"ok": False, "reason": "factory_disabled"}
+    with controls._locked_session() as (_session, control):
+        control.policy_json = json.dumps(POLICY)
+    assert controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    ) == {"ok": True, "replayed": False, "state": "admitted"}
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "head_moved"
+    assert request["head_sha"] == HEAD
+    assert request["current_head_sha"] == MOVED
+
+
+@pytest.mark.parametrize("guard", ["held", "paused", "limit"])
+def test_head_moved_recovery_keeps_existing_guards(db, monkeypatch, guard):
+    delivered(db, "t-1", 11, 3)
+    with Session(db) as session, session.begin():
+        row = session.exec(select(FactoryReceipt)).one()
+        if guard == "held":
+            row.direction_json = json.dumps({"landing_hold": None})
+        elif guard == "paused":
+            row.task_paused = True
+    if guard == "limit":
+        monkeypatch.setattr(controls, "MAX_LANDING_RECOVERIES", 0)
+    result = controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    )
+    assert (
+        result["reason"]
+        == {
+            "held": "receipt_landing_held",
+            "paused": "task_paused",
+            "limit": "recovery_limit",
+        }[guard]
+    )
+    assert receipt_state(db, "t-1") == "succeeded"
+    assert not audits(db, "landing_recovery_requested")
+
+
+def test_pending_head_moved_recovery_retries_when_capacity_opens(db, monkeypatch):
+    pulls, calls = recovery_at_capacity(db, monkeypatch, "chart")
+    pulls[3] = pull(3, head=MOVED)
+    assert controls.request_landing_recovery(
+        "t-1",
+        3,
+        HEAD,
+        "delivered_pr",
+        "test",
+        reason="head_moved",
+        current_head_sha=MOVED,
+    ) == {"ok": False, "reason": "delivery_capacity", "pending": True}
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    assert not audits(db, "merge_arm_refused", "t-1")
+    assert not audits(db, "landing_recovery_skipped", "t-1")
+    with Session(db) as session, session.begin():
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-2")
+        ).one()
+        row.state = "cancelled"
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    assert len(audits(db, "landing_recovery_requested", "t-1")) == 1
+    assert calls["graphql"] == []
+
+
+def _rereview_case(db, monkeypatch, *, head_sha=MOVED, **pull_fields):
+    from factory.orchestration import factory_conductor as conductor
+
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: {**pull(3, head=head_sha), **pull_fields}}
+    monkeypatch.setattr(conductor, "github_get", lambda _repo, _s: dict(pulls[3]))
+    with Session(db) as session:
+        receipt_id = session.exec(select(FactoryReceipt.id)).one()
+    return receipt_id, pulls
+
+
+def test_landing_rereview_preview_then_apply_requests_head_moved_recovery(
+    db, monkeypatch
+):
+    from factory.orchestration import landing_rereview
+
+    receipt_id, _pulls = _rereview_case(db, monkeypatch)
+    preview = landing_rereview.preview(receipt_id, 3, MOVED, "merged main")
+    proposal = preview["preview"]
+    assert proposal["approved_head_sha"] == HEAD
+    assert proposal["head_sha"] == MOVED
+    assert proposal["branch"] == "factory/t-1"
+    args = ("joe", receipt_id, 3, MOVED, "merged main", "key-1")
+    with pytest.raises(ValueError, match="landing_rereview_preview_changed"):
+        landing_rereview.apply(*args, "0" * 64)
+    result = landing_rereview.apply(*args, proposal["preview_sha256"])
+    assert result["ok"] is True
+    assert result["recovery"] == {"ok": True, "replayed": False, "state": "admitted"}
+    assert receipt_state(db, "t-1") == "admitted"
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "head_moved"
+    assert request["source"] == "delivered_pr"
+    assert (request["head_sha"], request["current_head_sha"]) == (HEAD, MOVED)
+    [row] = audits(db, landing_rereview.ACTION, "t-1")
+    assert row["request"]["request_key"] == "key-1"
+    assert row["proposal"] == proposal
+    assert row["result"] == result
+    # A lost response replays the stored result without a second request.
+    assert landing_rereview.apply(*args, proposal["preview_sha256"]) == result
+    assert len(audits(db, landing_rereview.ACTION)) == 1
+    assert len(audits(db, "landing_recovery_requested")) == 1
+    with pytest.raises(ValueError, match="landing_rereview_request_conflict"):
+        landing_rereview.apply(
+            "joe", receipt_id, 3, MOVED, "other", "key-1", proposal["preview_sha256"]
+        )
+
+
+def test_landing_rereview_requests_review_stale_for_an_unscoped_unmoved_head(
+    db, monkeypatch
+):
+    from factory.orchestration import landing_rereview
+
+    receipt_id, _pulls = _rereview_case(db, monkeypatch, head_sha=HEAD)
+    # No durable scoped approval exists for this head in the fixture.
+    assert not landing_rereview._review_scope_current(
+        Session(db), "t-1", "owner/repo", 3, HEAD
+    )
+    proposal = landing_rereview.preview(receipt_id, 3, HEAD, "scope missing")["preview"]
+    assert proposal["approved_head_sha"] == proposal["head_sha"] == HEAD
+    assert proposal["requests"] == "landing_recovery reason review_stale"
+    result = landing_rereview.apply(
+        "joe",
+        receipt_id,
+        3,
+        HEAD,
+        "scope missing",
+        "key-1",
+        proposal["preview_sha256"],
+    )
+    assert result["ok"] is True
+    assert receipt_state(db, "t-1") == "admitted"
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "review_stale"
+    assert request["head_sha"] == HEAD
+    assert "current_head_sha" not in request
+
+
+def test_pending_review_stale_recovery_retries_when_capacity_opens(db, monkeypatch):
+    pulls, calls = recovery_at_capacity(db, monkeypatch, "chart")
+    # Only the pending request, not a conflict, reopens this unmoved head.
+    pulls[3] = pull(3)
+    assert controls.request_landing_recovery(
+        "t-1", 3, HEAD, "delivered_pr", "test", reason="review_stale"
+    ) == {"ok": False, "reason": "delivery_capacity", "pending": True}
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "landing"
+    with Session(db) as session, session.begin():
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-2")
+        ).one()
+        row.state = "cancelled"
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-1") == "admitted"
+    [request] = audits(db, "landing_recovery_requested", "t-1")
+    assert request["reason"] == "review_stale"
+    assert calls["graphql"] == []
+
+
+@pytest.mark.parametrize(
+    "case,refusal",
+    [
+        ("unmoved", "landing_rereview_review_current"),
+        ("held", "landing_rereview_landing_held"),
+        ("branch", "landing_rereview_branch_mismatch"),
+        ("closed", "landing_rereview_pr_not_open"),
+        ("malformed", "landing_rereview_head_invalid"),
+        ("stale", "landing_rereview_head_changed"),
+        ("admitted", "landing_rereview_receipt_not_settled"),
+        ("other_pr", "landing_rereview_pr_mismatch"),
+    ],
+)
+def test_landing_rereview_preview_refusals(db, monkeypatch, case, refusal):
+    from factory.orchestration import landing_rereview
+
+    head = HEAD if case == "unmoved" else MOVED
+    # An unmoved head is refused only while its approval is already scoped.
+    monkeypatch.setattr(landing_rereview, "_review_scope_current", lambda *_a: True)
+    fields = {}
+    if case == "branch":
+        fields["head"] = {**pull(3)["head"], "sha": MOVED, "ref": "feature/other"}
+    if case == "closed":
+        fields["state"] = "closed"
+    receipt_id, pulls = _rereview_case(db, monkeypatch, head_sha=head, **fields)
+    sha = {"malformed": "C" * 40, "stale": "d" * 40}.get(case, head)
+    number = 3
+    if case == "other_pr":
+        number = 4
+        pulls[3] = {**pulls[3], "number": 4}
+    if case in ("held", "admitted"):
+        with Session(db) as session, session.begin():
+            row = session.get(FactoryReceipt, receipt_id)
+            if case == "held":
+                row.direction_json = json.dumps({"landing_hold": None})
+            else:
+                row.state = "admitted"
+    with pytest.raises(ValueError, match=refusal):
+        landing_rereview.preview(receipt_id, number, sha, "merged main")
+    assert not audits(db, "landing_recovery_requested")

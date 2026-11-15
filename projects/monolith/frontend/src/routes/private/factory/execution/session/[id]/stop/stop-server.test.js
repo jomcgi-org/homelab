@@ -20,23 +20,9 @@ function request(body, email = "owner@example.com") {
 describe("session Stop proxy", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    delete process.env.AGENT_SESSION_STOP_CONTROL_ENABLED;
   });
 
-  test("is inert by default and does not contact the backend", async () => {
-    global.fetch = vi.fn();
-
-    const response = await POST({
-      params: { id: "42" },
-      request: request({ turn_seq: 7, dispatch_id: "dispatch-7" }),
-    });
-
-    expect(response.status).toBe(404);
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  test("forwards the owner and exact observed turn identity when enabled", async () => {
-    process.env.AGENT_SESSION_STOP_CONTROL_ENABLED = "true";
+  test("forwards the owner and exact observed turn identity", async () => {
     global.fetch = vi.fn(
       async () =>
         new Response(JSON.stringify({ outcome: "requested" }), {
@@ -60,7 +46,6 @@ describe("session Stop proxy", () => {
   });
 
   test("reports relay loss as unknown", async () => {
-    process.env.AGENT_SESSION_STOP_CONTROL_ENABLED = "true";
     global.fetch = vi.fn(async () => {
       throw new Error("backend unavailable");
     });

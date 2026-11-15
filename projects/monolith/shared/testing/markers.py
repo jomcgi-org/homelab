@@ -24,10 +24,7 @@ def covers_route(path: str, method: str = "GET"):
 def covers_page(path: str):
     """Mark a test as covering a frontend page (requires a browser driver).
 
-    No test carries this marker right now: the browser suites that did were
-    deleted with issue #4219 because nothing could execute them. The marker and
-    its enforcement in app/bdd_completeness_test.py are kept so a future browser
-    lane has somewhere to land.
+    Records the page path as test metadata for browser coverage reporting.
     """
     return pytest.mark.covers_page(path=path)
 

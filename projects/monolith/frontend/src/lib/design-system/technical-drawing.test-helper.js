@@ -22,7 +22,7 @@ export const graphicRoles = [
   "--ds-err",
   ...seriesRoles,
 ];
-export const contrastRoles = [...new Set([...textRoles, ...graphicRoles])];
+const contrastRoles = [...new Set([...textRoles, ...graphicRoles])];
 
 export function boundary(scheme) {
   return `[data-ds-theme="technical-drawing-${scheme}"][data-ds-theme]`;

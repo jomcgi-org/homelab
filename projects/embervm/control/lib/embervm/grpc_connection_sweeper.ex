@@ -83,6 +83,8 @@ defmodule Embervm.GrpcConnectionSweeper do
   # respond within this window.
   @state_read_timeout_ms 1_000
 
+  @log_prefix "embervm grpc connection sweeper"
+
   # -- Client API
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -96,9 +98,8 @@ defmodule Embervm.GrpcConnectionSweeper do
   @doc """
   Run one sweep synchronously and return the list of {pid, reason} entries
   that meet the reap threshold. This is a REAL sweep: it advances strike counts
-  and terminates children when the gate is enabled and threshold is met. It is
-  not a read-only preview. Operators wanting to preview the plan should
-  read the dry-run logs instead.
+  and terminates children that meet the threshold. It is not a read-only
+  preview.
   """
   @spec sweep_now(GenServer.server()) :: [{pid(), String.t()}]
   def sweep_now(server \\ __MODULE__) do
@@ -125,19 +126,12 @@ defmodule Embervm.GrpcConnectionSweeper do
     sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms)
     strikes_required = Keyword.get(opts, :strikes_required, @wedged_strikes_required)
 
-    # Destructive gate: false (default, ships inert) means the sweep logs a
-    # dry-run plan but deletes NOTHING. true means it fires the terminations.
-    # Read from EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED so it flips via deploy
-    # values, no code change.
-    sweep_enabled = Keyword.get(opts, :sweep_enabled, false)
-
     state = %{
       status_fun: status_fun,
       supervisor: supervisor,
       terminate_child_fun: terminate_child_fun,
       start_args_target_fun: start_args_target_fun,
       sweep_interval_ms: sweep_interval_ms,
-      sweep_enabled: sweep_enabled,
       strikes_required: strikes_required,
       strikes: %{}
     }
@@ -218,6 +212,9 @@ defmodule Embervm.GrpcConnectionSweeper do
     reapable =
       classifications
       |> Enum.filter(&should_reap?/1)
+      |> Enum.filter(fn {_pid, strike_key, _reason} ->
+        MapSet.member?(reapable_keys, strike_key)
+      end)
       |> Enum.map(fn {pid, strike_key, reason} ->
         strike_count = Map.fetch!(strikes, strike_key)
 
@@ -432,17 +429,14 @@ defmodule Embervm.GrpcConnectionSweeper do
   defp should_reap?({_pid, _strike_key, :keep}), do: false
   defp should_reap?({_pid, _strike_key, _reason}), do: true
 
-  # Maybe reap a child. If the gate is enabled, terminate it; always return
-  # {pid, reason} for logging.
+  # Reap a child; return {pid, reason} for logging.
   defp maybe_reap(state, pid, reason) do
-    if state.sweep_enabled do
-      try do
-        state.terminate_child_fun.(state.supervisor, pid)
-      rescue
-        _e -> :ok
-      catch
-        :exit, _reason -> :ok
-      end
+    try do
+      state.terminate_child_fun.(state.supervisor, pid)
+    rescue
+      _e -> :ok
+    catch
+      :exit, _reason -> :ok
     end
 
     {pid, reason}
@@ -506,9 +500,9 @@ defmodule Embervm.GrpcConnectionSweeper do
   # Log the sweep results. Every pass ends with a heartbeat line so "swept and
   # found nothing" is distinguishable from "never ran" (#4419: the armed
   # sweeper used to be silent until it killed something). Pids accumulating
-  # strikes are listed in BOTH modes so a kill is visible before it lands.
+  # strikes are listed so a kill is visible before it lands.
   defp log_sweep(state, reaped, reapable, children, keep_set) do
-    prefix = log_prefix(state)
+    prefix = @log_prefix
 
     pending =
       Enum.filter(reapable, fn {_pid, strike_key, _reason} ->
@@ -523,8 +517,7 @@ defmodule Embervm.GrpcConnectionSweeper do
     )
 
     if reaped != [] do
-      verb = if state.sweep_enabled, do: "reaped", else: "WOULD reap"
-      Logger.info("#{prefix}: #{verb} #{length(reaped)} orchestrator(s)")
+      Logger.info("#{prefix}: reaped #{length(reaped)} orchestrator(s)")
       Enum.each(reaped, fn {pid, reason} -> Logger.info("  pid #{inspect(pid)}: #{reason}") end)
     end
 
@@ -538,9 +531,6 @@ defmodule Embervm.GrpcConnectionSweeper do
 
     :ok
   end
-
-  defp log_prefix(%{sweep_enabled: true}), do: "embervm grpc connection sweeper"
-  defp log_prefix(_state), do: "embervm grpc connection sweeper (DRY RUN, gate off)"
 
   defp schedule_sweep(%{sweep_interval_ms: ms}) when ms > 0 do
     Process.send_after(self(), :sweep, ms)

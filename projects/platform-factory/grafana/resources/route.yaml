@@ -1,0 +1,30 @@
+# Grafana on the authenticated edge: the gateway-wide OIDC policy signs every
+# request in before it gets here. The edge Gateway admits routes from this
+# namespace (projects/platform-factory/edge/chart, routeNamespaces), and
+# edge-admission lets routes here name only this hostname.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: grafana
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      namespace: edge
+  hostnames:
+    - factory-grafana.jomcgi.dev
+  # matches, kind, group and weight are the schema defaults, stated so
+  # ArgoCD's diff owns them.
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: grafana
+          port: 3000
+          weight: 1

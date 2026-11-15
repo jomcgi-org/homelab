@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
 )
 
 // Adapter mints authentik access tokens with the OAuth2 client_credentials

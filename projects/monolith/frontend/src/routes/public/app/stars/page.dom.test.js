@@ -3,8 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import Route from "../../../../../test/stars/Route.svelte";
 import { setPage, page } from "../../../../../test/profile-page.svelte.js";
-import { data, history, now } from "../../../../../test/stars/fixtures.js";
-import { instances } from "../../../../../test/stars/maplibre.js";
+import {
+  data,
+  history,
+  now,
+  twilightOnlySite,
+} from "../../../../../test/stars/fixtures.js";
+import {
+  instances,
+  initialization,
+} from "../../../../../test/stars/maplibre.js";
+import { shareForecastHours } from "../../../../lib/server/stars-payload.js";
 
 vi.mock("$app/environment", () => ({ browser: true }));
 vi.mock(
@@ -56,6 +65,7 @@ let mediaChange;
 let resizeDisconnect;
 let observerDisconnect;
 beforeEach(() => {
+  initialization.error = null;
   vi.useFakeTimers({
     toFake: [
       "Date",
@@ -127,6 +137,27 @@ async function click(text) {
 }
 
 describe("stars through the real page and public/root layouts", () => {
+  it("reads shared forecast hours without changing other sites' card data", async () => {
+    const snapshot = shareForecastHours(structuredClone(data.snapshot));
+    expect(snapshot.sites[0].best_hours[0]).toBe(
+      snapshot.sites[3].best_hours[0],
+    );
+    for (const site of snapshot.sites) {
+      site.best_hours.forEach(Object.freeze);
+      Object.freeze(site.best_hours);
+    }
+    const original = JSON.stringify(snapshot);
+    const map = await render("", { ...data, snapshot });
+    map.fire("click", { features: [{ properties: { id: 1 } }] }, "sites-cells");
+    await settle();
+    const first = target.querySelector(".card-windows").textContent;
+    expect(first).toContain("Cloud");
+    map.fire("click", { features: [{ properties: { id: 4 } }] }, "sites-cells");
+    await settle();
+    expect(target.querySelector(".card-windows").textContent).toBe(first);
+    expect(JSON.stringify(snapshot)).toBe(original);
+  });
+
   it.each(["", "?mode=historical&month=10"])(
     "renders one sheet and working controls for %s",
     async (query) => {
@@ -265,7 +296,7 @@ describe("stars through the real page and public/root layouts", () => {
       "Historical data is unavailable",
     );
     await vi.advanceTimersByTimeAsync(5000);
-    expect(fetch).toHaveBeenCalledTimes(2); // existing idle warm-up retries once
+    expect(fetch).toHaveBeenCalledTimes(1); // No background retry before a painted map.
     await click("Live");
     await click("Historical");
     expect(target.querySelector('[role="status"]')).toBeNull();
@@ -304,5 +335,116 @@ describe("stars through the real page and public/root layouts", () => {
     await vi.advanceTimersByTimeAsync(5 * 60_000);
     await settle();
     expect(page.url.searchParams.has("night")).toBe(false);
+  });
+
+  it("keeps the snapshot until a frame contains its data", async () => {
+    const map = await render();
+    const preview = target.querySelector(".map-snapshot");
+    expect(preview.textContent).toContain("Fixture site 1");
+    expect(preview.querySelectorAll("li")).toHaveLength(6);
+    map.sourceLoaded = false;
+    map.fire("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBe(preview);
+    map.sourceLoaded = true;
+    map.fire("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBeNull();
+  });
+
+  it("retains snapshot data when WebGL initialization fails", async () => {
+    initialization.error = new Error("WebGL unavailable");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    setPage("https://jomcgi.dev/app/stars", data);
+    instance = mount(Route, { target, props: { data } });
+    await vi.waitFor(() => expect(log).toHaveBeenCalled());
+    await settle();
+    expect(target.querySelector(".map-snapshot").textContent).toContain(
+      "Fixture site 1",
+    );
+    expect(target.querySelector(".snapshot-note").textContent).toContain(
+      "map is unavailable",
+    );
+    expect(instances).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["astronomical", false],
+    ["twilight", false],
+    ["none", false],
+    ["astronomical", true],
+    ["twilight", true],
+    ["none", true],
+  ])(
+    "keeps %s night snapshot rows consistent with the map, initialization failure %s",
+    async (darkness, failed) => {
+      const props = {
+        ...data,
+        snapshot: {
+          ...data.snapshot,
+          darkness,
+          sites: [twilightOnlySite, ...data.snapshot.sites],
+        },
+      };
+      if (failed) {
+        initialization.error = new Error("WebGL unavailable");
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        setPage("https://jomcgi.dev/app/stars?night=2026-10-19", props);
+        instance = mount(Route, { target, props: { data: props } });
+        await vi.waitFor(() => expect(log).toHaveBeenCalled());
+        await settle();
+        expect(target.querySelector(".snapshot-note").textContent).toContain(
+          "map is unavailable",
+        );
+      } else {
+        const map = await render("?night=2026-10-19", props);
+        const cells = map.getSource("sites-cells").setData.mock.calls.at(-1)[0];
+        expect(
+          cells.features.some((cell) => cell.id === twilightOnlySite.id),
+        ).toBe(darkness === "twilight");
+      }
+      const preview = target.querySelector(".map-snapshot");
+      expect(preview.textContent.includes(twilightOnlySite.name)).toBe(
+        darkness === "twilight",
+      );
+      expect(preview.textContent).toContain("Fixture site 1");
+      expect(preview.querySelectorAll("li")).toHaveLength(6);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("defers optional history warming until live data paints", async () => {
+    const map = await render();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetch).not.toHaveBeenCalled();
+    map.fire("render");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledWith("/app/stars/history-map");
+  });
+
+  it("retains the forecast snapshot while a historical deep link waits for data", async () => {
+    let resolve;
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const map = await render("?mode=historical");
+    map.fire("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot").textContent).toContain(
+      "Dark-sky forecast snapshot",
+    );
+    expect(target.querySelector(".map-snapshot").textContent).toContain(
+      "Fixture site 1",
+    );
+    resolve({ ok: true, json: async () => history });
+    await settle();
+    map.fire("render");
+    await settle();
+    expect(target.querySelector(".map-snapshot")).toBeNull();
   });
 });

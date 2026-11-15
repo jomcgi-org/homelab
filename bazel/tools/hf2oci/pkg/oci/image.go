@@ -103,54 +103,36 @@ func ConfigLayer(files map[string][]byte, modelDir string) (v1.Layer, error) {
 // streamed from body. The tar entry is placed at {modelDir}/{filename} with mode 0644.
 // Total layer size is len(headerBytes) + bodySize.
 func StreamingSplitGGUFLayer(headerBytes []byte, body io.ReadCloser, bodySize int64, modelDir, filename string) v1.Layer {
+	return streamTarLayer(path.Join(modelDir, filename), int64(len(headerBytes))+bodySize, headerBytes, body)
+}
+
+// StreamingWeightLayer creates a streaming tar layer from a reader.
+// The tar entry is placed at {modelDir}/{filename} with mode 0644.
+// The reader is consumed lazily as the layer is uploaded, so no temp files are needed.
+// It does not close body.
+func StreamingWeightLayer(body io.ReadCloser, size int64, modelDir, filename string) v1.Layer {
+	return streamTarLayer(path.Join(modelDir, filename), size, nil, io.NopCloser(body))
+}
+
+// streamTarLayer streams a single-entry tar layer holding prefix followed by
+// body, then closes body.
+func streamTarLayer(name string, size int64, prefix []byte, body io.ReadCloser) v1.Layer {
 	pr, pw := io.Pipe()
 
 	go func() {
 		defer body.Close()
 		tw := tar.NewWriter(pw)
 		hdr := &tar.Header{
-			Name: path.Join(modelDir, filename),
-			Mode: 0o644,
-			Size: int64(len(headerBytes)) + bodySize,
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			pw.CloseWithError(fmt.Errorf("writing tar header: %w", err))
-			return
-		}
-		if _, err := tw.Write(headerBytes); err != nil {
-			pw.CloseWithError(fmt.Errorf("writing GGUF header bytes: %w", err))
-			return
-		}
-		buf := make([]byte, 4<<20) // 4MB buffer to reduce context-switching on fast links
-		if _, err := io.CopyBuffer(tw, body, buf); err != nil {
-			pw.CloseWithError(fmt.Errorf("copying file data: %w", err))
-			return
-		}
-		if err := tw.Close(); err != nil {
-			pw.CloseWithError(fmt.Errorf("closing tar: %w", err))
-			return
-		}
-		pw.Close()
-	}()
-
-	return stream.NewLayer(pr)
-}
-
-// StreamingWeightLayer creates a streaming tar layer from a reader.
-// The tar entry is placed at {modelDir}/{filename} with mode 0644.
-// The reader is consumed lazily as the layer is uploaded, so no temp files are needed.
-func StreamingWeightLayer(body io.ReadCloser, size int64, modelDir, filename string) v1.Layer {
-	pr, pw := io.Pipe()
-
-	go func() {
-		tw := tar.NewWriter(pw)
-		hdr := &tar.Header{
-			Name: path.Join(modelDir, filename),
+			Name: name,
 			Mode: 0o644,
 			Size: size,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			pw.CloseWithError(fmt.Errorf("writing tar header: %w", err))
+			return
+		}
+		if _, err := tw.Write(prefix); err != nil {
+			pw.CloseWithError(fmt.Errorf("writing GGUF header bytes: %w", err))
 			return
 		}
 		buf := make([]byte, 4<<20) // 4MB buffer to reduce context-switching on fast links

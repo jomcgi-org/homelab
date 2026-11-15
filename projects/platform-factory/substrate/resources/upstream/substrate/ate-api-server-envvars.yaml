@@ -1,0 +1,13 @@
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
+# (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/ate-api-server-envvars.yaml. Do not edit.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-api-server-envvars
+  namespace: ate-system
+data:
+  ATE_API_SNAPSHOT_LOCATION: "s3://ate-snapshots/"
+  ATE_API_SNAPSHOT_TRANSFER_SERVICE_ACCOUNT: ""
+  ATE_API_POSTGRES_SCHEMA: "substrate"
+  ATE_API_ACTOR_JWT_ISSUER: "https://idp.ate-system.svc"

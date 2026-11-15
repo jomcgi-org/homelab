@@ -31,6 +31,7 @@ go_test(
     srcs = [
         "broker_transport_test.go",
         "classify_test.go",
+        "helpers_test.go",
         "main_test.go",
         "quota_test.go",
         "swap_test.go",

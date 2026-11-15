@@ -17,11 +17,11 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
+
+	"github.com/jomcgi/homelab/projects/firecracker/substrate/bootenv"
 )
 
 // shimCmd is the python bootstrap shim invocation, matching the apko entrypoint
@@ -75,17 +75,6 @@ const (
 	volumeDevCmdlineKey   = "ember.volume_dev"
 	volumeMountCmdlineKey = "ember.volume_mount"
 )
-
-// mmdsEnvCmdlinePrefix is the boot-arg token prefix noded's driver.bootArgsFor
-// appends for a STATEFUL FRESH/COLD cold boot's mmds_env. This MMDS-lite
-// boot-argument channel can migrate to a real MMDS service if needed. Each entry rides as
-// `ember.env.<KEY>=<base64url(value)>`; the guest process env variable name is
-// exactly <KEY> (verbatim, not further transformed), so a workload's catalog
-// entry naming e.g. POSTGRES_PASSWORD as an mmds_env key gets POSTGRES_PASSWORD
-// set directly in the environment the image init inherits. A RELIGHT never
-// carries these tokens (the kernel does not re-init on a snapshot resume), so
-// this decoder is a complete no-op past first boot.
-const mmdsEnvCmdlinePrefix = "ember.env."
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -169,11 +158,11 @@ func mountStatefulVolume(logger *slog.Logger) error {
 		// matching setServingPortEnv/setHandlerDiskEnv's no-op posture.
 		return nil
 	}
-	dev := valueFromCmdline(string(raw), volumeDevCmdlineKey)
+	dev := bootenv.Value(string(raw), volumeDevCmdlineKey)
 	if dev == "" {
 		return nil
 	}
-	mountPath := valueFromCmdline(string(raw), volumeMountCmdlineKey)
+	mountPath := bootenv.Value(string(raw), volumeMountCmdlineKey)
 	if mountPath == "" {
 		return fmt.Errorf("ember.volume_dev=%s present but ember.volume_mount is unset", dev)
 	}
@@ -193,7 +182,7 @@ func setHandlerDiskEnv(logger *slog.Logger) {
 	if err != nil {
 		return
 	}
-	dev := valueFromCmdline(string(raw), handlerDiskCmdlineKey)
+	dev := bootenv.Value(string(raw), handlerDiskCmdlineKey)
 	if dev == "" {
 		return
 	}
@@ -201,7 +190,7 @@ func setHandlerDiskEnv(logger *slog.Logger) {
 		logger.Warn("could not set handler zip device env", "err", err)
 		return
 	}
-	if n := valueFromCmdline(string(raw), handlerZipBytesCmdlineKey); n != "" {
+	if n := bootenv.Value(string(raw), handlerZipBytesCmdlineKey); n != "" {
 		if err := os.Setenv(handlerZipBytesEnv, n); err != nil {
 			logger.Warn("could not set handler zip bytes env", "err", err)
 		}
@@ -236,40 +225,25 @@ func setServingPortEnv(logger *slog.Logger) {
 // "" when the token is absent or has an empty value. The last occurrence wins,
 // matching how the kernel treats duplicated cmdline keys.
 func servingPortFromCmdline(cmdline string) string {
-	return valueFromCmdline(cmdline, servingPortCmdlineKey)
-}
-
-// valueFromCmdline extracts the value of a `key=value` token from a kernel command
-// line (space-separated `key` / `key=value` tokens). Returns "" when the token is
-// absent or has an empty value. The last occurrence wins, matching how the kernel
-// treats duplicated cmdline keys.
-func valueFromCmdline(cmdline, key string) string {
-	value := ""
-	for _, tok := range strings.Fields(cmdline) {
-		k, val, ok := strings.Cut(tok, "=")
-		if ok && k == key && val != "" {
-			value = val
-		}
-	}
-	return value
+	return bootenv.Value(cmdline, servingPortCmdlineKey)
 }
 
 // setMmdsEnv reads /proc/cmdline for every `ember.env.<KEY>=<base64url>` token
 // (R4, D-R4.PR-7.1) and sets each decoded value as a process env var named
 // exactly <KEY>. A missing /proc/cmdline, no matching tokens, a KEY that fails
-// isValidEnvKeyName, or a value that fails base64url decoding are each skipped
+// bootenv.ValidKey, or a value that fails base64url decoding are each skipped
 // individually (never fatal): one malformed secret must not block every other
 // one from being delivered, and a stateful guest whose bootstrap genuinely
 // needs the missing var will fail its own readiness loudly downstream, which is
 // the correct place for that failure to surface (not here, where guest-init has
 // no way to know which vars are actually required by the image). Duplicate
-// keys: the last occurrence wins, matching valueFromCmdline's convention.
+// keys: the last occurrence wins, matching bootenv.Value's convention.
 func setMmdsEnv(logger *slog.Logger) {
 	raw, err := os.ReadFile(procCmdlinePath)
 	if err != nil {
 		return
 	}
-	values := mmdsEnvFromCmdline(string(raw))
+	values := bootenv.Decode(string(raw))
 	if len(values) == 0 {
 		return
 	}
@@ -285,52 +259,6 @@ func setMmdsEnv(logger *slog.Logger) {
 		keys = append(keys, k)
 	}
 	logger.Info("stateful first-boot env: set from mmds_env boot-args", "keys", keys)
-}
-
-// mmdsEnvFromCmdline extracts every `ember.env.<KEY>=<base64url>` token from a
-// kernel command line and returns the decoded KEY -> value map. A KEY failing
-// isValidEnvKeyName or a value failing base64url decode is skipped (not fatal);
-// this mirrors the noded driver's own key-validation posture so a malformed or
-// adversarial token on either side of the seam degrades the same way. Uses
-// base64.RawURLEncoding (no padding, URL-safe alphabet), matching exactly what
-// the driver's mmdsEnvBootArgs encodes with.
-func mmdsEnvFromCmdline(cmdline string) map[string]string {
-	out := map[string]string{}
-	for _, tok := range strings.Fields(cmdline) {
-		k, val, ok := strings.Cut(tok, "=")
-		if !ok || val == "" || !strings.HasPrefix(k, mmdsEnvCmdlinePrefix) {
-			continue
-		}
-		key := strings.TrimPrefix(k, mmdsEnvCmdlinePrefix)
-		if !isValidEnvKeyName(key) {
-			continue
-		}
-		decoded, err := base64.RawURLEncoding.DecodeString(val)
-		if err != nil {
-			continue
-		}
-		out[key] = string(decoded)
-	}
-	return out
-}
-
-// isValidEnvKeyName mirrors the noded driver's isValidMmdsEnvKey exactly (a
-// shell/kernel-cmdline-safe identifier: letters, digits, underscore). Kept as
-// an independent copy rather than a shared package because the two live in
-// separate Go modules/binaries (noded vs guest-init) with no existing shared
-// dependency between them; duplicating this small pure function is simpler and
-// safer than introducing a new cross-binary shared package for one predicate.
-func isValidEnvKeyName(key string) bool {
-	if key == "" {
-		return false
-	}
-	for _, r := range key {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 // setDefaultEnv sets PATH and the baked frozen-contract defaults, so a raw boot

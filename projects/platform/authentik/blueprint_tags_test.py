@@ -104,6 +104,8 @@ def _parse_and_check_blueprint(yaml_text, label):
 
 # Real blueprint files
 BLUEPRINT_DIR = pathlib.Path(__file__).resolve().parent / "blueprints"
+# The factory cluster's set (values-factory.yaml, blueprintsDirectory).
+FACTORY_BLUEPRINT_DIR = BLUEPRINT_DIR.parent / "factory-blueprints"
 
 
 def _blueprint_files():
@@ -114,6 +116,7 @@ def _blueprint_files():
         return sorted(
             [
                 *BLUEPRINT_DIR.glob("*.yaml"),
+                *FACTORY_BLUEPRINT_DIR.glob("*.yaml"),
                 BLUEPRINT_DIR.parent / "dev" / "mcp-recovery.yaml",
             ]
         )
@@ -273,3 +276,32 @@ def test_grimoire_enrollment_requires_invitation_and_grants_no_admin_groups():
                 str(blueprint),
                 "exec",
             )
+
+
+def test_factory_edge_and_argocd_callback_hosts():
+    # BaseLoader preserves custom blueprint tags as scalar/sequence data.
+    blueprint = pathlib.Path(__file__).parent / "factory-blueprints/factory-auth.yaml"
+    entries = yaml.load(blueprint.read_text(), Loader=yaml.BaseLoader)["entries"]
+    providers = {
+        entry.get("id"): entry["attrs"]
+        for entry in entries
+        if entry["model"] == "authentik_providers_oauth2.oauth2provider"
+    }
+    edge_urls = {uri["url"] for uri in providers["edge-provider"]["redirect_uris"]}
+    assert edge_urls == {
+        "https://factory.jomcgi.dev/oauth2/callback",
+        "https://factory-argocd.jomcgi.dev/oauth2/callback",
+        "https://factory-plan.jomcgi.dev/oauth2/callback",
+        "https://factory-grafana.jomcgi.dev/oauth2/callback",
+        "https://factory-agents.jomcgi.dev/oauth2/callback",
+    }
+    assert all(
+        uri["matching_mode"] == "strict"
+        for uri in providers["edge-provider"]["redirect_uris"]
+    )
+    assert providers["argocd-provider"]["redirect_uris"] == [
+        {
+            "matching_mode": "strict",
+            "url": "https://factory-argocd.jomcgi.dev/auth/callback",
+        }
+    ]

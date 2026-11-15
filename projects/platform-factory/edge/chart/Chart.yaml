@@ -1,0 +1,21 @@
+apiVersion: v2
+name: factory-edge-gateway
+description: Envoy Gateway for the factory home cluster's authenticated edge
+type: application
+version: 0.1.0
+appVersion: "v1.8.3"
+
+# The same Envoy Gateway release as the hub (projects/platform/cloudflare-gateway).
+# Gateway API's own CRDs are not installed: k3s owns them on this cluster.
+dependencies:
+  - name: gateway-helm
+    repository: oci://docker.io/envoyproxy
+    version: 1.8.3
+  - name: gateway-crds-helm
+    repository: oci://docker.io/envoyproxy
+    version: 1.8.3
+
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"

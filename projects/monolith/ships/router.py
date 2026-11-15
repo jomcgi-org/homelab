@@ -20,6 +20,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 
 from core.clock import as_utc, iso
@@ -144,40 +145,73 @@ def _log_stops(counts, n=6):
 @router.get("/snapshot")
 def get_snapshot(
     request: Request,
-    response: Response,
     session: Session = Depends(get_session),
-):
+) -> Response:
     """All current vessel positions for the /app/ships map. SSR-only, CDN-cached."""
     rows = session.exec(
-        select(LatestPosition, Vessel).join(
-            Vessel, Vessel.mmsi == LatestPosition.mmsi, isouter=True
+        # The response uses only these scalars. Avoid hydrating two models and
+        # unused vessel metadata for every position in the fleet.
+        select(
+            LatestPosition.mmsi,
+            LatestPosition.lat,
+            LatestPosition.lon,
+            LatestPosition.speed,
+            LatestPosition.course,
+            LatestPosition.heading,
+            LatestPosition.nav_status,
+            LatestPosition.ship_name,
+            LatestPosition.recorded_at,
+            LatestPosition.first_seen_at_location,
+            LatestPosition.updated_at,
+            Vessel.name,
+            Vessel.ship_type,
+            Vessel.destination,
+            Vessel.eta,
         )
+        .select_from(LatestPosition)
+        .join(Vessel, Vessel.mmsi == LatestPosition.mmsi, isouter=True)
     ).all()
 
     vessels = []
     max_updated: datetime | None = None
-    for pos, vessel in rows:
-        updated = as_utc(pos.updated_at)
+    for (
+        mmsi,
+        lat,
+        lon,
+        speed,
+        course,
+        heading,
+        nav_status,
+        ship_name,
+        recorded_at,
+        first_seen_at_location,
+        updated_at,
+        name,
+        ship_type,
+        destination,
+        eta,
+    ) in rows:
+        updated = as_utc(updated_at)
         if updated is not None and (max_updated is None or updated > max_updated):
             max_updated = updated
         vessels.append(
             {
-                "mmsi": pos.mmsi,
-                "lat": pos.lat,
-                "lon": pos.lon,
-                "speed": pos.speed,
-                "course": pos.course,
-                "heading": pos.heading,
-                "nav_status": pos.nav_status,
+                "mmsi": mmsi,
+                "lat": lat,
+                "lon": lon,
+                "speed": speed,
+                "course": course,
+                "heading": heading,
+                "nav_status": nav_status,
                 # Prefer the position-message ship_name, fall back to vessel name.
-                "ship_name": pos.ship_name or (vessel.name if vessel else None),
-                "recorded_at": iso(pos.recorded_at),
-                "first_seen_at_location": iso(pos.first_seen_at_location),
-                "updated_at": iso(pos.updated_at),
-                "name": vessel.name if vessel else None,
-                "ship_type": vessel.ship_type if vessel else None,
-                "destination": vessel.destination if vessel else None,
-                "eta": iso(vessel.eta) if vessel else None,
+                "ship_name": ship_name or name,
+                "recorded_at": iso(recorded_at),
+                "first_seen_at_location": iso(first_seen_at_location),
+                "updated_at": iso(updated_at),
+                "name": name,
+                "ship_type": ship_type,
+                "destination": destination,
+                "eta": iso(eta),
             }
         )
 
@@ -187,9 +221,9 @@ def get_snapshot(
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
 
-    for key, value in headers.items():
-        response.headers[key] = value
-    return {"count": len(vessels), "vessels": vessels}
+    # Values are JSON primitives already. Skip FastAPI's second recursive copy
+    # of the whole fleet before JSON serialization.
+    return JSONResponse({"count": len(vessels), "vessels": vessels}, headers=headers)
 
 
 @router.get("/track/{mmsi}")
@@ -236,7 +270,7 @@ def get_track(
 
 
 @router.get("/heat")
-def get_heat(response: Response, session: Session = Depends(get_session)):
+def get_heat(session: Session = Depends(get_session)) -> JSONResponse:
     """All-time traffic-density grid for the /app/ships heatmap.
 
     Sums the live 7-day rollup (HeatCell) with the all-time accumulator
@@ -245,22 +279,31 @@ def get_heat(response: Response, session: Session = Depends(get_session)):
     log-spaced color stops (anchored on the p99 cell count) so the stepped ramp
     self-calibrates and the busy lanes stay legible. SSR-only, CDN-cached.
     """
-    live = [
-        (c.lat_bin, c.lon_bin, c.count) for c in session.exec(select(HeatCell)).all()
-    ]
-    hist = [
-        (c.lat_bin, c.lon_bin, c.count)
-        for c in session.exec(select(HeatCellHistorical)).all()
-    ]
+    # The grid needs only these scalars. Hydrating a model (and its timestamp)
+    # for every occupied cell dominates uncached requests as history grows.
+    live = session.exec(
+        select(HeatCell.lat_bin, HeatCell.lon_bin, HeatCell.count)
+    ).all()
+    hist = session.exec(
+        select(
+            HeatCellHistorical.lat_bin,
+            HeatCellHistorical.lon_bin,
+            HeatCellHistorical.count,
+        )
+    ).all()
     merged = _merge_cells(live, hist)
     cells = [[la, lo, c] for la, lo, c in merged]
     stops = _log_stops([c for _, _, c in merged])
 
-    response.headers["Cache-Control"] = _HEAT_CACHE_CONTROL
-    return {
-        "step_lat": HEAT_LAT_STEP,
-        "step_lon": HEAT_LON_STEP,
-        "count": len(cells),
-        "cells": cells,
-        "stops": stops,
-    }
+    # All values are JSON primitives already; avoid FastAPI recursively copying
+    # the entire grid through jsonable_encoder before JSONResponse renders it.
+    return JSONResponse(
+        {
+            "step_lat": HEAT_LAT_STEP,
+            "step_lon": HEAT_LON_STEP,
+            "count": len(cells),
+            "cells": cells,
+            "stops": stops,
+        },
+        headers={"Cache-Control": _HEAT_CACHE_CONTROL},
+    )

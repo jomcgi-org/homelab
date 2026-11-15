@@ -194,7 +194,7 @@ defmodule Embervm.GroupState do
     {:relighting, :destroy} => :destroyed,
     {:fresh_booting, :destroy} => :destroyed,
     # begin_destroy -> destroying -> destroy is the node-confirmed shape (ADR
-    # embervm/014 decision 5), gated by EMBERVM_NODE_CONFIRMED_DESTROY.
+    # embervm/014 decision 5).
     {:creating, :begin_destroy} => :destroying,
     {:running, :begin_destroy} => :destroying,
     {:banking, :begin_destroy} => :destroying,

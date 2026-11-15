@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The factory's database (projects/factory-cluster/README.md, "Postgres").
+resources:
+  - network-policy.yaml
+  - setup.yaml
+  - cluster.yaml
+
+configMapGenerator:
+  - name: factory-db-setup
+    namespace: factory-db
+    files:
+      - secret_init.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

@@ -5,6 +5,7 @@ import io
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState
@@ -65,10 +66,11 @@ class TestConfigureLogging:
         """
         logging.getLogger("uvicorn.access").filters.clear()
 
-    def test_sets_root_logger_level(self):
+    @pytest.mark.parametrize("level", [logging.DEBUG, logging.INFO, logging.WARNING])
+    def test_sets_root_logger_level(self, level):
         """configure_logging() sets the root logger to the specified level."""
-        configure_logging(logging.DEBUG)
-        assert logging.getLogger().level == logging.DEBUG
+        configure_logging(level)
+        assert logging.getLogger().level == level
         # reset
         configure_logging(logging.INFO)
 

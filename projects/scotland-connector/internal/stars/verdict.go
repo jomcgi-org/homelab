@@ -29,12 +29,6 @@ func localHour(day int32, hour int) time.Time {
 	return time.Date(y, m, d, hour, 0, 0, 0, london)
 }
 
-// NightCoverage is how much of night (a NightDay) lies before the hourly
-// horizon.
-func (d *Dataset) NightCoverage(night int32) Coverage {
-	return nightCoverageUntil(night, d.HourlyUntil)
-}
-
 func nightCoverageUntil(night int32, until time.Time) Coverage {
 	switch {
 	case !until.Before(localHour(night+1, nightEndHour)):

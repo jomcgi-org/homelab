@@ -60,6 +60,17 @@ func activatorRequest(t *testing.T, handler http.Handler, workload, path, body s
 	return rec
 }
 
+// parkedTotal is the number of requests parked across every workload.
+func (a *activator) parkedTotal() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	total := 0
+	for _, n := range a.parked {
+		total += n
+	}
+	return total
+}
+
 // waitForActivatorParked polls the activator's parked count under the mutex until
 // it reaches expected, or times out. This ensures the test does not release the
 // health handler before all concurrent requests have actually been admitted and
@@ -150,7 +161,7 @@ func TestActivatorWithdrawsUnhealthyRegisteredVM(t *testing.T) {
 	if driver.claims != 1 {
 		t.Errorf("ClaimServing calls = %d, want 1", driver.claims)
 	}
-	if _, ok := s.servingVMs.firstByWorkload("wl-serve"); !ok {
+	if len(s.servingVMs.snapshotByWorkload("wl-serve")) == 0 {
 		t.Fatal("replacement serving VM was not registered")
 	}
 }

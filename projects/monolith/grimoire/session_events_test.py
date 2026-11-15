@@ -7,7 +7,6 @@ from typing import get_args
 from uuid import uuid4
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, event, null
 from sqlalchemy.dialects import postgresql
@@ -29,8 +28,6 @@ from grimoire.session_events import (
     InvalidEventKindError,
     SessionEndedError,
     append_event,
-    play_enabled,
-    require_play_enabled,
 )
 from grimoire.testing.leak_harness import ROLES, sqlite_harness
 
@@ -173,7 +170,6 @@ def _append(session, game_session, **changes):
 
 @pytest.fixture
 def http_harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "http-events.db") as h:
         # These cases create and count their own reveal stream.
         for key in ("reveal_b", "reveal_partial", "reveal_name_only"):
@@ -298,9 +294,7 @@ def test_grant_reveal_contains_only_grantee_projection(http_harness, scope):
     assert all(row["kind"] != "reveal" for row in b_events.json())
 
 
-def test_grant_scope_changes_emit_once_and_flag_off_stays_legacy(
-    http_harness, monkeypatch
-):
+def test_grant_scope_changes_emit_once(http_harness):
     h, client = http_harness
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}/grants"
     grant = h.rows["grant_name_only"]
@@ -309,14 +303,6 @@ def test_grant_scope_changes_emit_once_and_flag_off_stays_legacy(
             f"{base}/{grant.id}", headers=h.headers("dm"), json={"grant_scope": scope}
         )
         assert response.status_code == 200
-    events = client.get(_url(h, "/events"), headers=h.headers("player_a")).json()
-    assert len([row for row in events if row["kind"] == "reveal"]) == 2
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-    response = client.patch(
-        f"{base}/{grant.id}", headers=h.headers("dm"), json={"grant_scope": "full"}
-    )
-    assert response.status_code == 200
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     events = client.get(_url(h, "/events"), headers=h.headers("player_a")).json()
     assert len([row for row in events if row["kind"] == "reveal"]) == 2
 
@@ -701,47 +687,6 @@ def test_party_notes_and_visible_event_pin(http_harness):
     )
 
 
-PLAY_ROUTES = (
-    ("GET", "journal"),
-    ("GET", "campaign_journal"),
-    ("GET", "list"),
-    ("POST", "append"),
-    ("GET", "poll"),
-    ("POST", "roll"),
-)
-
-
-@pytest.mark.parametrize("method,route", PLAY_ROUTES)
-@pytest.mark.parametrize("viewer", (*ROLES, "anonymous"))
-@pytest.mark.parametrize("flag", (None, "false"))
-def test_all_play_routes_flag_off_before_auth(
-    http_harness, monkeypatch, method, route, viewer, flag
-):
-    h, client = http_harness
-    if flag is None:
-        monkeypatch.delenv("GRIMOIRE_PLAY_ENABLED")
-    else:
-        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", flag)
-    paths = {
-        "journal": _url(h, "/journal"),
-        "campaign_journal": f"/api/grimoire/campaigns/{h.rows['campaign'].id}/journal",
-        "list": _url(h),
-        "append": _url(h, "/events"),
-        "poll": _url(h, "/events"),
-        "roll": _url(h, "/rolls"),
-    }
-    before = h.snapshot()
-    response = client.request(
-        method,
-        paths[route],
-        headers={} if viewer == "anonymous" else h.headers(viewer),
-        json={"kind": "action", "audience": "table", "body": {}},
-    )
-    assert response.status_code == 404, response.text
-    assert response.json() == {"detail": "Not found"}
-    assert h.snapshot() == before
-
-
 def test_journal_projection_random_audiences_never_include_hidden_canaries(
     http_harness,
 ):
@@ -913,20 +858,6 @@ def test_journal_latest_reveal_retraction_own_rolls_and_open_threads(http_harnes
     ).json()
     assert second["sessions"][0]["session_id"] == older.id
     assert second["next_cursor"] is None
-
-
-def test_existing_session_writes_work_with_flag_off(http_harness, monkeypatch):
-    h, client = http_harness
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-    response = client.patch(
-        _url(h, "") + f"/{h.rows['campaign_session'].id}",
-        headers=h.headers("dm"),
-        json={"status": "ended"},
-    )
-    assert response.status_code == 200
-    response = client.post(_url(h), headers=h.headers("dm"))
-    assert response.status_code == 200
-    assert response.json()["status"] == "active"
 
 
 @pytest.mark.parametrize("viewer", ("dm", "player_a", "player_b", "no_character"))
@@ -1465,52 +1396,6 @@ def test_integrity_error_not_hidden_or_retried(session, game_session, monkeypatc
         _append(session, game_session)
     assert caught.value is failure
     assert calls == [1]
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        (None, False),
-        ("false", False),
-        ("true", True),
-        ("junk", False),
-        ("TRUE", False),
-        (" true ", False),
-        ("1", False),
-        ("", False),
-    ],
-)
-def test_play_flag_exact_literal(monkeypatch, value, expected):
-    monkeypatch.delenv("GRIMOIRE_PLAY_ENABLED", raising=False)
-    if value is not None:
-        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", value)
-    assert play_enabled() is expected
-
-
-def test_play_flag_reads_at_call_time(monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
-    assert play_enabled() is True
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-    assert play_enabled() is False
-
-
-def test_dependency_404_and_enabled(monkeypatch):
-    monkeypatch.delenv("GRIMOIRE_PLAY_ENABLED", raising=False)
-    with pytest.raises(HTTPException) as caught:
-        require_play_enabled()
-    assert caught.value.status_code == 404
-    assert caught.value.detail == "Not found"
-    app = FastAPI()
-
-    @app.get("/play", dependencies=[Depends(require_play_enabled)])
-    def play():
-        return {"ok": True}
-
-    with TestClient(app) as client:
-        assert client.get("/play").status_code == 404
-        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
-        assert require_play_enabled() is None
-        assert client.get("/play").status_code == 200
 
 
 @pytest.mark.parametrize(

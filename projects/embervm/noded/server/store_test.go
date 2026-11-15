@@ -631,7 +631,7 @@ func newStoreTestServerWithVendor(t *testing.T, fs *fakeStore, vendor string) *S
 		Store:          fs,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	return s
 }
 
@@ -650,7 +650,7 @@ func newStoreTestServerWithSku(t *testing.T, fs *fakeStore, vendor, template str
 		Store:          fs,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	return s
 }
 
@@ -2109,10 +2109,13 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 		t.Fatalf("rm volume: %v", err)
 	}
 
-	// Restore the bundle.
+	// Restore the bundle. Principal exports are enveloped, so each restore
+	// carries a capability.
+	bundleArtifact := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef}
 	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "scratch-postgres", Ref: bundleRef},
-		Vendor:   "amd",
+		Artifact:   bundleArtifact,
+		Vendor:     "amd",
+		Capability: restoreCapabilityForTest(t, s, bundleArtifact, 4, nil),
 	})
 	if err != nil {
 		t.Fatalf("restore bundle: %v", err)
@@ -2137,8 +2140,10 @@ func TestRestoreArtifactRoundTrip(t *testing.T) {
 	}
 
 	// Restore the volume pair.
+	volumeArtifact := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "scratch-postgres"}
 	if _, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
-		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_VOLUME, Workload: "scratch-postgres"},
+		Artifact:   volumeArtifact,
+		Capability: restoreCapabilityForTest(t, s, volumeArtifact, 1, nil),
 	}); err != nil {
 		t.Fatalf("restore volume: %v", err)
 	}
@@ -2155,14 +2160,12 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 	tests := []struct {
 		name        string
 		encrypted   bool
-		require     bool
 		capability  func(*testing.T, *Server, *nodev1.ArtifactRef, uint64) []byte
 		wantCode    codes.Code
 		wantRestore bool
 	}{
 		{
 			name:        "plaintext_ignores_capability",
-			require:     true,
 			capability:  func(*testing.T, *Server, *nodev1.ArtifactRef, uint64) []byte { return []byte("invalid but ignored") },
 			wantCode:    codes.OK,
 			wantRestore: true,
@@ -2177,20 +2180,13 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 			wantRestore: true,
 		},
 		{
-			name:      "enveloped_missing_capability_enforcement_off",
+			name:      "enveloped_missing_capability",
 			encrypted: true,
-			wantCode:  codes.FailedPrecondition,
-		},
-		{
-			name:      "enveloped_missing_capability_enforcement_on",
-			encrypted: true,
-			require:   true,
 			wantCode:  codes.PermissionDenied,
 		},
 		{
 			name:      "enveloped_capability_for_another_node",
 			encrypted: true,
-			require:   true,
 			capability: func(t *testing.T, s *Server, ref *nodev1.ArtifactRef, generation uint64) []byte {
 				return restoreCapabilityForTest(t, s, ref, generation, func(scope *capabilityScope) {
 					scope.Node = "node-other"
@@ -2204,7 +2200,6 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fs := newFakeStore()
 			s := newStoreTestServer(t, fs)
-			s.cfg.RequireRestoreCapability = tt.require
 			const generation = 9
 			ref := &nodev1.ArtifactRef{
 				Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL,
@@ -2253,7 +2248,6 @@ func TestRestoreArtifactCapabilityGate(t *testing.T) {
 func TestExportPathsApplyPrincipalEncryptionPolicy(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	ctx := context.Background()
 
 	syncSession := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "sandbox-session", Ref: "sync-session"}
@@ -2349,7 +2343,6 @@ func TestSuccessfulArtifactAccessSchedulesLazyEnvelopeRewrap(t *testing.T) {
 func TestRefusedRestoreDoesNotScheduleLazyEnvelopeRewrap(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.RequireRestoreCapability = true
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_STATEFUL, Workload: "sandbox", Ref: "state-denied"}
 	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	fs.seedEncryptedArtifact(prefix, map[string]string{"memfile": "state"}, 2, s.cfg.CpuVendor, s.cfg.CpuTemplate)
@@ -2797,7 +2790,7 @@ func TestRestoreSessionWorkspaceWaitsForPendingRetirementExport(t *testing.T) {
 	}
 	restored := make(chan restoreResult, 1)
 	go func() {
-		resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref})
+		resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, Capability: restoreCapabilityForTest(t, s, ref, 0, nil)})
 		restored <- restoreResult{resp: resp, err: err}
 	}()
 
@@ -2903,11 +2896,25 @@ func TestRestoreSessionWorkspacePendingRetirementFailureAndCancellation(t *testi
 	})
 }
 
+// snapshot lists the live unexportable entries sorted by artifact.
+func (u *unexportableSet) snapshot() []unexportableArtifact {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.purgeExpiredLocked(u.now())
+	out := make([]unexportableArtifact, 0, len(u.entries))
+	for _, entry := range u.entries {
+		out = append(out, entry)
+	}
+	slices.SortFunc(out, func(a, b unexportableArtifact) int {
+		return strings.Compare(a.Artifact, b.Artifact)
+	})
+	return out
+}
+
 func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
 	fs := newFakeStore()
 	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	s.exportCh = make(chan exportJob, 1)
 	var logs bytes.Buffer
 	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -2956,7 +2963,6 @@ func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
 func TestRunExportJobSkipsJobMarkedUnexportableAfterEnqueue(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	s.exportCh = make(chan exportJob, 1)
 
 	ref := &nodev1.ArtifactRef{
@@ -2997,7 +3003,6 @@ func TestRunExportJobWrapRefusalStaysRetryable(t *testing.T) {
 			fs := newFakeStore()
 			fs.dataKeyErr = &WrapRejectedError{StatusCode: tc.status, Reason: tc.reason}
 			s := newStoreTestServer(t, fs)
-			s.cfg.StoreEncrypt = true
 			s.exportCh = make(chan exportJob, 1)
 			var logs bytes.Buffer
 			s.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -3040,7 +3045,6 @@ func TestRunExportJobWrapRefusalStaysRetryable(t *testing.T) {
 func TestSuccessfulDataKeyClearsUnexportableEntry(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	ref := &nodev1.ArtifactRef{
 		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
 		Workload: "sbx",
@@ -3067,7 +3071,6 @@ func TestUnexportableTTLExpiryAllowsRetry(t *testing.T) {
 	fs := newFakeStore()
 	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}
 	s := newStoreTestServer(t, fs)
-	s.cfg.StoreEncrypt = true
 	s.exportCh = make(chan exportJob, 1)
 	base := time.Unix(1_800_000_000, 0)
 	now := base
@@ -3872,7 +3875,7 @@ func TestDrainExportsSurviveShutdownSignal(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
 	signalCtx, sigterm := context.WithCancel(context.Background())
-	exportCtx, cancelExports := DrainExportContext(signalCtx, true)
+	exportCtx, cancelExports := DrainExportContext(signalCtx)
 	defer cancelExports()
 	s.startExportQueue(exportCtx)
 	sigterm()
@@ -3894,23 +3897,18 @@ func TestDrainExportsSurviveShutdownSignal(t *testing.T) {
 	}
 }
 
-// TestDrainExportContextDisabledFollowsSignal pins the flag-off behaviour: the
-// export context is the signal context itself, so it is cancelled with it.
-func TestDrainExportContextDisabledFollowsSignal(t *testing.T) {
+// TestDrainExportContextOutlivesSignal pins the export context lifetime: it
+// survives the signal and stops only when the returned cancel runs.
+func TestDrainExportContextOutlivesSignal(t *testing.T) {
 	signalCtx, sigterm := context.WithCancel(context.Background())
-	exportCtx, cancel := DrainExportContext(signalCtx, false)
-	defer cancel()
+	detached, cancelDetached := DrainExportContext(signalCtx)
 	sigterm()
-	if exportCtx.Err() == nil {
-		t.Fatal("flag off: export context must be cancelled by the signal")
-	}
-	detached, cancelDetached := DrainExportContext(signalCtx, true)
 	if detached.Err() != nil {
-		t.Fatal("flag on: export context must outlive the signal")
+		t.Fatal("export context must outlive the signal")
 	}
 	cancelDetached()
 	if detached.Err() == nil {
-		t.Fatal("flag on: the returned cancel must stop the export context")
+		t.Fatal("the returned cancel must stop the export context")
 	}
 }
 
@@ -4024,7 +4022,7 @@ func TestWorkspaceLineageFenceKeepsNewerStoreContent(t *testing.T) {
 	fingerprintX := resp.GetContentFingerprint()
 
 	// S moves to B: guarded restore of X, then new work Y, exported.
-	if _, err := b.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: fingerprintX}); err != nil {
+	if _, err := b.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: fingerprintX, Capability: restoreCapabilityForTest(t, b, ref, 0, nil)}); err != nil {
 		t.Fatalf("restore X on B: %v", err)
 	}
 	writeBundleFiles(t, b.artifactLocalDir(ref), map[string]string{"workspace.img": "content Y"})
@@ -4094,7 +4092,7 @@ func TestWorkspaceLineageFenceKeepsNewerStoreContent(t *testing.T) {
 	// Guarded and unguarded restores elsewhere still see Y.
 	for _, expected := range []string{fingerprintY, ""} {
 		c := newStoreTestServer(t, fs)
-		if _, err := c.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: expected}); err != nil {
+		if _, err := c.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: expected, Capability: restoreCapabilityForTest(t, c, ref, 0, nil)}); err != nil {
 			t.Fatalf("restore (expected=%q): %v", expected, err)
 		}
 		if got, err := os.ReadFile(filepath.Join(c.artifactLocalDir(ref), "workspace.img")); err != nil || string(got) != "content Y" {
@@ -4140,5 +4138,84 @@ func TestWorkspaceLineageFenceAllowsDescendantAndLegacyCopies(t *testing.T) {
 	fs.mu.Unlock()
 	if got != "v4" {
 		t.Fatalf("store holds %q, want v4", got)
+	}
+}
+
+func TestPrimeFailedLaunchRetainsWorkspaceFenceUntilTeardown(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	seedBase(s, "sbx__deadbeef03", "sbx")
+	done := make(chan struct{})
+	s.driver.(*fakeDriver).failClaim = &pendingLaunchError{done}
+	req := &nodev1.PrimeRequest{SnapshotRef: "sbx__deadbeef03", LineageId: "failed-workspace", VolumeMount: "/session", VolumeSizeBytes: 1 << 20}
+	ctx, cancel := context.WithCancel(t.Context())
+	_, err := s.Prime(ctx, req)
+	cancel()
+	if err == nil {
+		t.Fatal("expected failed launch")
+	}
+	if !s.lineageAttached("sbx", "failed-workspace") {
+		t.Fatal("failed process lost workspace ownership")
+	}
+	if _, err := s.DeleteVolume(t.Context(), &nodev1.DeleteVolumeRequest{Workload: "sbx", LineageId: "failed-workspace"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("deletion did not respect pending teardown: %v", err)
+	}
+	if _, err := s.Prime(t.Context(), req); err == nil || !strings.Contains(err.Error(), "teardown pending") {
+		t.Fatalf("workspace reuse did not respect pending teardown: %v", err)
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for s.lineageAttached("sbx", "failed-workspace") {
+		if time.Now().After(deadline) {
+			t.Fatal("workspace fence did not clear")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := s.DeleteVolume(t.Context(), &nodev1.DeleteVolumeRequest{Workload: "sbx", LineageId: "failed-workspace"}); err != nil {
+		t.Fatalf("confirmed teardown retained workspace: %v", err)
+	}
+}
+
+type failedVolumeLaunchError struct {
+	*pendingLaunchError
+	paths []string
+}
+
+func (e *failedVolumeLaunchError) FailedLaunchVolumePaths() []string { return e.paths }
+
+type failedSessionLaunchDriver struct {
+	*fakeDriver
+	err error
+}
+
+func (d *failedSessionLaunchDriver) RestoreSession(context.Context, string, string) (substrate.Handle, error) {
+	return substrate.Handle{}, d.err
+}
+
+func TestRelightFailedLaunchFencesEmbeddedWorkspace(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	done := make(chan struct{})
+	path := s.volumes.SessionVolumePath("sbx", "embedded")
+	s.sessionDriver = &failedSessionLaunchDriver{fakeDriver: &fakeDriver{}, err: &failedVolumeLaunchError{pendingLaunchError: &pendingLaunchError{done}, paths: []string{path}}}
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "session-old", workload: "sbx"})
+	_, err := s.Relight(t.Context(), &nodev1.RelightRequest{SnapshotRef: "session-old", SessionId: "session-id", Trace: &nodev1.Trace{Workload: "sbx"}})
+	if err == nil {
+		t.Fatal("expected failed restore")
+	}
+	if !s.lineageAttached("sbx", "embedded") {
+		t.Fatal("embedded workspace unprotected")
+	}
+	if s.lineageAttached("sbx", "unrelated") {
+		t.Fatal("known workspace path unnecessarily blocked unrelated lineage")
+	}
+	if _, err := s.DeleteVolume(t.Context(), &nodev1.DeleteVolumeRequest{Workload: "sbx", LineageId: "embedded"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("embedded workspace deletion allowed: %v", err)
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for s.lineageAttached("sbx", "embedded") {
+		if time.Now().After(deadline) {
+			t.Fatal("restored workspace fence never cleared")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

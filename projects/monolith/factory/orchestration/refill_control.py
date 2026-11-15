@@ -42,6 +42,8 @@ def _job(db, *, lock=False):
 
 
 def status(db, control):
+    from factory.orchestration.factory_problem_issues import recovery_status
+
     policy = json.loads(control.policy_json or "{}")
     events = db.exec(
         select(FactoryAudit)
@@ -98,8 +100,11 @@ def status(db, control):
         "policy": normalize(policy),
         "configured": "backlog_refill" in policy,
         "problem_issues": {
-            k: controls.problem_issues_policy(policy).get(k)
-            for k in ("enabled", "sources", "improvement_scout")
+            **{
+                k: controls.problem_issues_policy(policy).get(k)
+                for k in ("enabled", "sources", "improvement_scout")
+            },
+            "recovery": recovery_status(db, control),
         },
         "intake_selection": [
             {

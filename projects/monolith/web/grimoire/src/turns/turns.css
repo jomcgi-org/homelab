@@ -1,0 +1,41 @@
+/* The turn order reads left to right and wraps on a narrow screen. */
+.turn-order {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.turn-order > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-2);
+  min-width: 0;
+  padding: var(--spacing-2) var(--spacing-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+}
+
+.turn-order > li[aria-current="step"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-muted);
+}
+
+/* The DM's draft: one bordered block per entry, stacked. */
+.initiative-rows {
+  display: grid;
+  gap: var(--spacing-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.initiative-rows > li {
+  min-width: 0;
+  padding: var(--spacing-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+}

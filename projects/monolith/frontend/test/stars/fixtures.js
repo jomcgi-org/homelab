@@ -21,6 +21,14 @@ export const data = {
     darkness: "astronomical",
   },
 };
+export const twilightOnlySite = {
+  ...sites[0],
+  id: 10,
+  name: "Twilight-only site",
+  clear_dark_hours: 0,
+  clear_twilight_hours: 1,
+  best_hours: [{ ...sites[0].best_hours[0], dark: false }],
+};
 export const history = {
   sites: sites.map((site) => ({
     id: site.id,

@@ -1,23 +1,6 @@
-const DATE_FORMAT = new Intl.DateTimeFormat("en-CA", {
-  month: "long",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-});
+import { formatDate, monthLabel } from "$lib/public/dates.js";
 
-const MONTH_FORMAT = new Intl.DateTimeFormat("en-CA", {
-  month: "long",
-  year: "numeric",
-  timeZone: "UTC",
-});
-
-function asDate(value) {
-  return new Date(`${value}T12:00:00Z`);
-}
-
-export function formatDate(value) {
-  return DATE_FORMAT.format(asDate(value));
-}
+export { formatDate };
 
 export function groupByMonth(posts) {
   const groups = [];
@@ -25,11 +8,7 @@ export function groupByMonth(posts) {
     const key = post.date.slice(0, 7);
     let group = groups.at(-1);
     if (!group || group.key !== key) {
-      group = {
-        key,
-        label: MONTH_FORMAT.format(asDate(`${key}-01`)),
-        posts: [],
-      };
+      group = { key, label: monthLabel(key), posts: [] };
       groups.push(group);
     }
     group.posts.push(post);

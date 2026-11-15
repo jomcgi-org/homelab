@@ -30,8 +30,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, union_all
 from sqlmodel import Session, select
 
-from core.clock import aware_iso
-from grimoire.library import _PREVIEW_LEN
+from grimoire.library import _PREVIEW_LEN, _chunk_neighbours, _chunk_payload
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     Book,
@@ -104,27 +103,7 @@ def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
     if chunk is None:
         return None
 
-    prev_id: str | None = None
-    next_id: str | None = None
-    if chunk.seq is not None:
-        prev_id = session.exec(
-            select(KnowledgeChunk.id)
-            .where(
-                KnowledgeChunk.book_id == chunk.book_id,
-                KnowledgeChunk.seq < chunk.seq,
-            )
-            .order_by(KnowledgeChunk.seq.desc())
-            .limit(1)
-        ).first()
-        next_id = session.exec(
-            select(KnowledgeChunk.id)
-            .where(
-                KnowledgeChunk.book_id == chunk.book_id,
-                KnowledgeChunk.seq > chunk.seq,
-            )
-            .order_by(KnowledgeChunk.seq)
-            .limit(1)
-        ).first()
+    prev_id, next_id = _chunk_neighbours(session, chunk)
 
     mention_rows = session.exec(
         select(
@@ -144,27 +123,7 @@ def get_chunk_public(session: Session, chunk_id: str) -> dict[str, Any] | None:
         for entity_id, name, entity_type, mention_text in mention_rows
     ]
 
-    chunk_count = session.exec(
-        select(func.count())
-        .select_from(KnowledgeChunk)
-        .where(KnowledgeChunk.book_id == chunk.book_id)
-    ).one()
-
-    return {
-        "id": chunk.id,
-        "book_id": chunk.book_id,
-        "content": chunk.content,
-        "section_path": chunk.section_path,
-        "seq": chunk.seq,
-        "chunk_count": chunk_count,
-        "image_url": (
-            f"/api/grimoire/chunks/{chunk.id}/image" if chunk.image_ref else None
-        ),
-        "prev_id": prev_id,
-        "next_id": next_id,
-        "entities": entities,
-        "created_at": aware_iso(chunk.created_at),
-    }
+    return _chunk_payload(session, chunk, prev_id, next_id, entities)
 
 
 def _secondary_fields(entity_type: str, detail_row: Any) -> dict[str, Any]:

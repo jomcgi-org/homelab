@@ -1,3 +1,4 @@
+{{- if eq .Values.workloadKind "CronWorkflow" }}
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
@@ -89,3 +90,5 @@ spec:
         configMap:
           name: renovate-apko-lock-maintenance
           defaultMode: 0555
+
+{{- end }}

@@ -34,9 +34,11 @@ flowchart TD
 | `crates/oominf-format`      | The weight format: reader, writer, checksums                                                                         |
 | `crates/oominf-convert`     | Release checkpoint to the format, one adapter per model family                                                       |
 | `crates/oominf-cuda`        | The CUDA backend; kernels in `kernels/*.cu`, compiled to PTX by `build.rs`                                           |
+| `crates/oominf-metal`       | The Metal backend (Apple Silicon)                                                                                    |
 | `crates/oominf-cpu`         | Routed experts computed on the CPU                                                                                   |
 | `crates/oominf-tiers`       | Expert tiers, read paths, memory planning (`plan.rs`, `resources.rs`, `host.rs`)                                     |
 | `crates/oominf-models-qwen` | Qwen 3.8 Flash                                                                                                       |
+| `crates/oominf-models-qwen35` | Qwen3.5 text decoder on Metal                                                                                      |
 | `crates/oominf-models`      | The model registry                                                                                                   |
 | `crates/oominf-server`      | HTTP APIs, chat templates, parsers, sampling, scheduler, prefix store                                                |
 | `crates/oominf`             | The `oominf` CLI and composition root (`main.rs`, `load.rs`, `profile.rs`, `doctor.rs`)                              |

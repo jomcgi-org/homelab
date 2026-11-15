@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Push a packaged Helm chart to an OCI registry
-# Template substitutions: {{HELM}}, {{CRANE}}, {{CHART_TGZ}}, {{REPOSITORY}}, {{CHART_VERSION_SH}}, {{CHART_DIR}}, {{CHECK_MISSED_BUMP}}
+# Template substitutions: {{HELM}}, {{CHART_TGZ}}, {{REPOSITORY}}, {{CHART_VERSION_SH}}, {{CHART_DIR}}, {{CHECK_MISSED_BUMP}}
 
 set -o errexit -o nounset -o pipefail
 
@@ -21,9 +21,19 @@ else
 fi
 
 readonly HELM="$(rlocation "{{HELM}}")"
-readonly CRANE="$(rlocation "{{CRANE}}")"
 readonly CHART_TGZ="$(rlocation "{{CHART_TGZ}}")"
 readonly CHECK_MISSED_BUMP="$(rlocation "{{CHECK_MISSED_BUMP}}")"
+
+# rlocation prints nothing for a runfile that is in the manifest but missing on
+# disk, and `readonly` swallows its exit status. Under --remote_download_minimal
+# that is a package action whose output Bazel still believes is remote: the
+# factory chart's first publish read an empty CHART_TGZ and died in tar after
+# announcing the release. Stop here, before any registry call, with the cause.
+if [[ ! -f "$CHART_TGZ" ]]; then
+  echo "ERROR: packaged chart {{CHART_TGZ}} is not in the runfiles on disk." >&2
+  echo "       Run with --experimental_check_output_files so Bazel fetches remote-only outputs." >&2
+  exit 1
+fi
 REPOSITORY="{{REPOSITORY}}"
 CHART_VERSION_SH="{{CHART_VERSION_SH}}"
 CHART_DIR="{{CHART_DIR}}"
@@ -53,8 +63,7 @@ done
 # caller now runs check-missed-bump.sh, which reads the pinned digest out of the
 # chart values and so needs no registry read at all. See the call site for why
 # the registry round trip was unfixable on main (it raced the image pushes in
-# the same multirun and fell open to a warning). CRANE is still resolved above
-# because the PR-side call site passes it through.
+# the same multirun and fell open to a warning).
 
 # _fail_missed_bump lived here. Its manual bump advice no longer applies: with
 # the version computed post-merge there is no bump for a PR to miss.
@@ -176,13 +185,8 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         # place is what wedges ArgoCD into permanent OutOfSync (ADR 011).
         DIGESTS_MATCH="true"
         if [[ -n "$CHECK_MISSED_BUMP" ]] && [[ -f "$CHECK_MISSED_BUMP" ]]; then
-          if [[ -f "${ABS_CHART_DIR}/application.yaml" ]]; then
-            GUARD_PROJECT_DIR="$CHART_DIR"
-          else
-            GUARD_PROJECT_DIR=$(dirname "$CHART_DIR")
-          fi
           if ! env HELM="$HELM" REPOSITORY="$REPOSITORY" \
-            bash "$CHECK_MISSED_BUMP" "$CHART_NAME" "$CHART_VERSION" "$CHART_TGZ" "$GUARD_PROJECT_DIR"; then
+            bash "$CHECK_MISSED_BUMP" "$CHART_NAME" "$CHART_VERSION" "$CHART_TGZ"; then
             DIGESTS_MATCH="false"
           fi
         fi

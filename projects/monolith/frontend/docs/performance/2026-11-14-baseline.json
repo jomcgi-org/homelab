@@ -1,0 +1,686 @@
+{
+  "measured_at": "2026-11-14T22:34:00Z/2026-11-14T22:40:00Z",
+  "source_commit": "1f536d9",
+  "method": "Three curl GETs per page. Fresh TLS connection each page run through the managed HTTPS proxy. Compression negotiated by curl. CDN state observed without purging. Not mobile-throttled browser measurements. API uses 20 sequential GETs with reused connection, two endpoints concurrent. p95 nearest rank includes the initial request. Endpoint distributions distinguish TTFB from full-response duration. Cache-HIT full-response distributions exclude observed misses.",
+  "limitations": [
+    "Headless Chromium launch failed because socket() was not permitted. Sandbox escalation was rejected by automatic policy. Cloud browser surface has no CDP throttling/performance interface.",
+    "LCP, CLS, INP, browser total transfer, observed JavaScript transfer and request count are unmeasured.",
+    "Fresh-connection page TTFB includes approximately 3\u20135.6 seconds of managed proxy TLS setup and is not representative of direct visitor TTFB. Endpoint samples retain full timing and post-connection timing separately.",
+    "Cold origin/edge cache was not forced. Backend API and database EXPLAIN ANALYZE were not accessible; Svelte navigation data is explicitly labeled separately from origin backend API.",
+    "Public Grimoire admission-gated routes are excluded: their corpus must not be SSR-rendered before Turnstile admission. Retired campsites and dr-jobs routes are intentionally 404.",
+    "source_commit identifies the checkout inspected. The exact deployed revision was not verified for this baseline."
+  ],
+  "pages": [
+    {
+      "path": "/app/hikes",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5641.29,
+      "html_wire_bytes": 115350,
+      "html_decoded_bytes": 466101,
+      "cache_status": ["HIT", "HIT", "HIT"],
+      "cache_control": "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/ships",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5640.59,
+      "html_wire_bytes": 576563,
+      "html_decoded_bytes": 2689545,
+      "cache_status": ["HIT", "HIT", "HIT"],
+      "cache_control": "public, max-age=0, s-maxage=120, stale-while-revalidate=600, stale-if-error=86400",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/stars",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5653.18,
+      "html_wire_bytes": 310093,
+      "html_decoded_bytes": 9278618,
+      "cache_status": ["HIT", "HIT", "HIT"],
+      "cache_control": "public, max-age=0, s-maxage=1800, stale-while-revalidate=3600, stale-if-error=86400",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/trips",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5657.34,
+      "html_wire_bytes": 3930,
+      "html_decoded_bytes": 11458,
+      "cache_status": ["REVALIDATED", "HIT", "HIT"],
+      "cache_control": "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/scotland",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5738.01,
+      "html_wire_bytes": 5113,
+      "html_decoded_bytes": 16222,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/llm-leaderboard",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5654.24,
+      "html_wire_bytes": 20296,
+      "html_decoded_bytes": 124643,
+      "cache_status": ["HIT", "HIT", "HIT"],
+      "cache_control": "public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/notes",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5876.22,
+      "html_wire_bytes": 3619,
+      "html_decoded_bytes": 10589,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/frank",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5622.56,
+      "html_wire_bytes": 10807,
+      "html_decoded_bytes": 43311,
+      "cache_status": ["HIT", "HIT", "HIT"],
+      "cache_control": "public, max-age=300",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/firecracker",
+      "runs": 3,
+      "status": [301, 301, 301],
+      "ttfb_ms": 5661.47,
+      "html_wire_bytes": 0,
+      "html_decoded_bytes": 0,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/ember/firecracker",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5769.33,
+      "html_wire_bytes": 6065,
+      "html_decoded_bytes": 22400,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/scotland/privacy",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5850.48,
+      "html_wire_bytes": 5189,
+      "html_decoded_bytes": 16488,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/scotland/terms",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 3030.34,
+      "html_wire_bytes": 4817,
+      "html_decoded_bytes": 15372,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/scotland/support",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5685.57,
+      "html_wire_bytes": 4382,
+      "html_decoded_bytes": 13852,
+      "cache_status": ["BYPASS", "BYPASS", "BYPASS"],
+      "cache_control": null,
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/trips/2025-liard-hot-springs",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 3201.01,
+      "html_wire_bytes": 523177,
+      "html_decoded_bytes": 2281329,
+      "cache_status": ["HIT", "HIT", "HIT"],
+      "cache_control": "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/trips/2025-liard-hot-springs/timeline",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 3150.55,
+      "html_wire_bytes": 577572,
+      "html_decoded_bytes": 3517869,
+      "cache_status": ["REVALIDATED", "HIT", "HIT"],
+      "cache_control": "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    },
+    {
+      "path": "/app/trips/2025-liard-hot-springs/day/1",
+      "runs": 3,
+      "status": [200, 200, 200],
+      "ttfb_ms": 5523.66,
+      "html_wire_bytes": 521340,
+      "html_decoded_bytes": 2269557,
+      "cache_status": ["EXPIRED", "HIT", "HIT"],
+      "cache_control": "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+      "lcp_ms": null,
+      "cls": null,
+      "inp_ms": null,
+      "total_transfer_bytes": null,
+      "javascript_bytes": null,
+      "request_count": null
+    }
+  ],
+  "endpoints": [
+    {
+      "path": "/app/hikes/__data.json",
+      "n": 20,
+      "post_connection_p50_ms": 58.911,
+      "post_connection_p95_ms": 141.707,
+      "wire_bytes": 135234.0,
+      "status": [200],
+      "cache": {
+        "EXPIRED": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 58.992999999999995,
+      "ttfb_p95_ms": 142.15,
+      "full_response_p50_ms": 103.75,
+      "full_response_p95_ms": 198.193,
+      "cache_hit_full_response_p50_ms": 103.677,
+      "cache_hit_full_response_p95_ms": 198.193
+    },
+    {
+      "path": "/app/ships/__data.json",
+      "n": 20,
+      "post_connection_p50_ms": 61.080000000000005,
+      "post_connection_p95_ms": 119.114,
+      "wire_bytes": 634456.0,
+      "status": [200],
+      "cache": {
+        "EXPIRED": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 61.153,
+      "ttfb_p95_ms": 119.188,
+      "full_response_p50_ms": 124.2965,
+      "full_response_p95_ms": 203.217,
+      "cache_hit_full_response_p50_ms": 120.58099999999999,
+      "cache_hit_full_response_p95_ms": 203.217
+    },
+    {
+      "path": "/app/stars/__data.json",
+      "n": 20,
+      "post_connection_p50_ms": 57.682,
+      "post_connection_p95_ms": 114.94,
+      "wire_bytes": 499707.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 57.763000000000005,
+      "ttfb_p95_ms": 115.035,
+      "full_response_p50_ms": 114.4885,
+      "full_response_p95_ms": 171.95,
+      "cache_hit_full_response_p50_ms": 113.789,
+      "cache_hit_full_response_p95_ms": 171.95
+    },
+    {
+      "path": "/app/trips/__data.json",
+      "n": 20,
+      "post_connection_p50_ms": 19.61,
+      "post_connection_p95_ms": 32.985,
+      "wire_bytes": 349.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 19.684,
+      "ttfb_p95_ms": 33.050999999999995,
+      "full_response_p50_ms": 19.86,
+      "full_response_p95_ms": 33.222,
+      "cache_hit_full_response_p50_ms": 19.808,
+      "cache_hit_full_response_p95_ms": 33.222
+    },
+    {
+      "path": "/app/hikes/walk/7fc20756-89c2-5280-9be9-3ddb3db01e44",
+      "n": 20,
+      "post_connection_p50_ms": 12.563,
+      "post_connection_p95_ms": 55.643,
+      "wire_bytes": 423.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 12.623000000000001,
+      "ttfb_p95_ms": 55.698,
+      "full_response_p50_ms": 12.7545,
+      "full_response_p95_ms": 55.851,
+      "cache_hit_full_response_p50_ms": 12.71,
+      "cache_hit_full_response_p95_ms": 55.851
+    },
+    {
+      "path": "/app/ships/heat",
+      "n": 20,
+      "post_connection_p50_ms": 20.549000000000003,
+      "post_connection_p95_ms": 110.99,
+      "wire_bytes": 602428.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 20.621000000000002,
+      "ttfb_p95_ms": 111.078,
+      "full_response_p50_ms": 82.1935,
+      "full_response_p95_ms": 163.763,
+      "cache_hit_full_response_p50_ms": 77.033,
+      "cache_hit_full_response_p95_ms": 163.763
+    },
+    {
+      "path": "/app/ships/track/369514002",
+      "n": 20,
+      "post_connection_p50_ms": 16.242,
+      "post_connection_p95_ms": 30.756999999999998,
+      "wire_bytes": 41.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 16.304,
+      "ttfb_p95_ms": 30.927,
+      "full_response_p50_ms": 16.823,
+      "full_response_p95_ms": 33.336,
+      "cache_hit_full_response_p50_ms": 16.504,
+      "cache_hit_full_response_p95_ms": 33.336
+    },
+    {
+      "path": "/app/stars/map",
+      "n": 20,
+      "post_connection_p50_ms": 59.038,
+      "post_connection_p95_ms": 112.794,
+      "wire_bytes": 106449.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 59.127,
+      "ttfb_p95_ms": 112.895,
+      "full_response_p50_ms": 103.893,
+      "full_response_p95_ms": 157.651,
+      "cache_hit_full_response_p50_ms": 103.866,
+      "cache_hit_full_response_p95_ms": 157.651
+    },
+    {
+      "path": "/app/stars/history",
+      "n": 20,
+      "post_connection_p50_ms": 58.858000000000004,
+      "post_connection_p95_ms": 107.376,
+      "wire_bytes": 232167.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 58.936,
+      "ttfb_p95_ms": 107.46600000000001,
+      "full_response_p50_ms": 109.62700000000001,
+      "full_response_p95_ms": 159.037,
+      "cache_hit_full_response_p50_ms": 108.074,
+      "cache_hit_full_response_p95_ms": 159.037
+    },
+    {
+      "path": "/app/stars/history-map",
+      "n": 20,
+      "post_connection_p50_ms": 59.082,
+      "post_connection_p95_ms": 110.32799999999999,
+      "wire_bytes": 232155.0,
+      "status": [200],
+      "cache": {
+        "HIT": 20
+      },
+      "ttfb_p50_ms": 59.158,
+      "ttfb_p95_ms": 111.114,
+      "full_response_p50_ms": 108.52000000000001,
+      "full_response_p95_ms": 159.633,
+      "cache_hit_full_response_p50_ms": 108.52000000000001,
+      "cache_hit_full_response_p95_ms": 159.633
+    },
+    {
+      "path": "/app/notes/graph",
+      "n": 20,
+      "post_connection_p50_ms": 58.788,
+      "post_connection_p95_ms": 141.935,
+      "wire_bytes": 60982.0,
+      "status": [200],
+      "cache": {
+        "EXPIRED": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 58.967999999999996,
+      "ttfb_p95_ms": 142.064,
+      "full_response_p50_ms": 89.55199999999999,
+      "full_response_p95_ms": 142.85600000000002,
+      "cache_hit_full_response_p50_ms": 75.671,
+      "cache_hit_full_response_p95_ms": 142.85600000000002
+    },
+    {
+      "path": "/app/notes/stats",
+      "n": 20,
+      "post_connection_p50_ms": 13.353,
+      "post_connection_p95_ms": 19.102999999999998,
+      "wire_bytes": 286.0,
+      "status": [200],
+      "cache": {
+        "MISS": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 13.438,
+      "ttfb_p95_ms": 19.159,
+      "full_response_p50_ms": 13.6195,
+      "full_response_p95_ms": 19.311,
+      "cache_hit_full_response_p50_ms": 13.572000000000001,
+      "cache_hit_full_response_p95_ms": 19.311
+    },
+    {
+      "path": "/scotland/marketplace.json",
+      "n": 20,
+      "post_connection_p50_ms": 13.99,
+      "post_connection_p95_ms": 17.238,
+      "wire_bytes": 273.0,
+      "status": [200],
+      "cache": {
+        "EXPIRED": 1,
+        "HIT": 19
+      },
+      "ttfb_p50_ms": 14.045,
+      "ttfb_p95_ms": 17.320999999999998,
+      "full_response_p50_ms": 14.2165,
+      "full_response_p95_ms": 17.494,
+      "cache_hit_full_response_p50_ms": 14.161,
+      "cache_hit_full_response_p95_ms": 17.494
+    }
+  ],
+  "deployed_revision": null,
+  "emitted_bundles": {
+    "measured_on": "2026-11-14",
+    "source_commit": "1f536d94934ccfef73aa3a2129f00be60f8a44ca",
+    "provenance": "Local public-only Vite production build of the inspected checkout. Values match the baseline in performance/BUNDLE_BUDGETS.md, introduced by PR #7969. This source revision was not verified as the deployed revision.",
+    "method": "Private routes, friends routes and src/lib/private excluded, matching :src_public. Initial JavaScript includes the SvelteKit runtime, router, layouts, page and recursively resolved static imports. Deferred JavaScript includes dynamic imports reachable from that route, excluding router imports of other pages. Each file is counted once per category and independently compressed with gzip level 9. External worker scripts are counted separately.",
+    "limitations": [
+      "These are emitted build artifact sizes, not observed browser wire bytes. Browser JavaScript transfer, total transfer, request count, LCP, CLS and INP remain unmeasured.",
+      "JavaScript closures exclude SSR HTML, inline data, CSS, fonts, images, map tiles and API responses. Runtime conditions decide which deferred assets are requested.",
+      "Grimoire bundles were inspected without fetching or server rendering protected corpus data. Its admission boundary remains intact.",
+      "The /app/firecracker row is the emitted page closure of a server redirect; navigation does not download that closure. Its destination is listed separately.",
+      "Trips uses the MapLibre library default worker, with no separately emitted worker asset in its closure. Zero external worker bytes does not assert that no worker runs.",
+      "Generated version strings and chunk names can vary across builds; the budget-only rebuild differed by 7 to 16 gzip bytes per route."
+    ],
+    "routes": [
+      {
+        "route": "/app/firecracker",
+        "initial_javascript_gzip_bytes": 51311,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire",
+        "initial_javascript_gzip_bytes": 89693,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/adventure/[id]",
+        "initial_javascript_gzip_bytes": 73761,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/book/[book]",
+        "initial_javascript_gzip_bytes": 79371,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/book/[book]/c/[chunk]",
+        "initial_javascript_gzip_bytes": 72467,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/chat",
+        "initial_javascript_gzip_bytes": 84328,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/chat/s/[id]",
+        "initial_javascript_gzip_bytes": 66099,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/entities",
+        "initial_javascript_gzip_bytes": 72363,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/entity/[id]",
+        "initial_javascript_gzip_bytes": 77065,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/explore",
+        "initial_javascript_gzip_bytes": 72363,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/library",
+        "initial_javascript_gzip_bytes": 75332,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/grimoire/world",
+        "initial_javascript_gzip_bytes": 87302,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/hikes",
+        "initial_javascript_gzip_bytes": 72096,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 146653
+      },
+      {
+        "route": "/app/llm-leaderboard",
+        "initial_javascript_gzip_bytes": 72534,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/notes",
+        "initial_javascript_gzip_bytes": 91207,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/ships",
+        "initial_javascript_gzip_bytes": 68017,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 146653
+      },
+      {
+        "route": "/app/stars",
+        "initial_javascript_gzip_bytes": 72636,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 146653
+      },
+      {
+        "route": "/app/trips",
+        "initial_javascript_gzip_bytes": 62834,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/trips/[slug]",
+        "initial_javascript_gzip_bytes": 69684,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/trips/[slug]/day/[day]",
+        "initial_javascript_gzip_bytes": 72402,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/app/trips/[slug]/timeline",
+        "initial_javascript_gzip_bytes": 69555,
+        "deferred_javascript_gzip_bytes": 285621,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland",
+        "initial_javascript_gzip_bytes": 67463,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland/privacy",
+        "initial_javascript_gzip_bytes": 66832,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland/support",
+        "initial_javascript_gzip_bytes": 66831,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/scotland/terms",
+        "initial_javascript_gzip_bytes": 66833,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      },
+      {
+        "route": "/ember/firecracker",
+        "initial_javascript_gzip_bytes": 69345,
+        "deferred_javascript_gzip_bytes": 0,
+        "external_worker_gzip_bytes": 0
+      }
+    ],
+    "documents": [
+      {
+        "route": "/app/frank",
+        "whole_document_gzip_bytes": 10080,
+        "method": "Static HTML with inline scripts, gzip level 9 for the complete document. It has no separate Svelte JavaScript closure."
+      }
+    ]
+  }
+}

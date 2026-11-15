@@ -579,6 +579,95 @@ def test_size_and_format_changes_miss_without_reusing_legacy_cache(tmp_path):
     assert legacy.read_bytes() == b"legacy-digest-only-rootfs"
 
 
+@pytest.mark.parametrize("bake_format", ["b2", "b3"])
+@pytest.mark.parametrize(
+    "image,repository",
+    [
+        ("registry.example/guest:latest", "registry.example/guest"),
+        ("registry.example:5000/guest:latest", "registry.example:5000/guest"),
+        ("registry.example/guest@sha256:" + "b" * 64, "registry.example/guest"),
+    ],
+)
+def test_stamped_bake_exports_observed_digest_and_replaces_image_symlink(
+    tmp_path, bake_format, image, repository
+):
+    """Run the real producer through export and mkfs with bounded local fakes.
+
+    An image-supplied stamp symlink must not redirect the write outside the
+    extracted root. b2 keeps its previous bytes and export reference.
+    """
+    import json
+
+    script, env = _rootfs_download_harness(tmp_path)
+    binaries = tmp_path / "bin"
+    outside = tmp_path / "outside"
+    outside.write_text("unchanged image symlink target\n")
+    executable = f"#!{sys.executable}\n" + textwrap.dedent("""\
+        import json, os, stat, sys, tarfile
+        from pathlib import Path
+        root = Path(os.environ["TEST_ROOTFS_DIR"])
+        tool = Path(sys.argv[0]).name
+        if tool == "crane":
+            if sys.argv[1] == "digest":
+                print("sha256:" + "a" * 64)
+            else:
+                assert sys.argv[1] == "export", sys.argv
+                (root / "export-reference").write_text(sys.argv[-2])
+                with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+                    entry = tarfile.TarInfo("embervm-image-digest")
+                    entry.type = tarfile.SYMTYPE
+                    entry.linkname = str(root / "outside")
+                    archive.addfile(entry)
+        elif tool == "rootfs-store":
+            if sys.argv[1] == "get":
+                sys.exit(3)
+            assert sys.argv[1] == "put", sys.argv
+        elif tool == "mkfs.ext4":
+            directory = Path(sys.argv[sys.argv.index("-d") + 1])
+            stamp = directory / "embervm-image-digest"
+            (root / "captured-stamp").write_text(json.dumps({
+                "is_symlink": stamp.is_symlink(),
+                "content": stamp.read_text(),
+                "mode": stat.S_IMODE(stamp.stat().st_mode),
+            }))
+            Path(sys.argv[-2]).write_bytes(b"baked rootfs")
+        elif tool == "blkid":
+            print("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        else:
+            raise AssertionError(tool)
+        """)
+    for name in ("crane", "rootfs-store", "mkfs.ext4", "blkid"):
+        path = binaries / name
+        path.write_text(executable)
+        path.chmod(0o755)
+    env.update(
+        GUEST_IMAGE=image,
+        ROOTFS_BAKE_FORMAT=bake_format,
+        ROOTFS_WORK_DIR=str(tmp_path / "unpacked"),
+    )
+    process = _start_builder(script, env, tmp_path, "stamp")
+    try:
+        output, _ = process.communicate(timeout=15)
+        assert process.returncode == 0, output
+        captured = json.loads((tmp_path / "captured-stamp").read_text())
+        assert outside.read_text() == "unchanged image symlink target\n"
+        if bake_format == "b3":
+            assert (tmp_path / "export-reference").read_text() == (
+                repository + "@sha256:" + "a" * 64
+            )
+            assert captured == {
+                "is_symlink": False,
+                "content": "sha256:" + "a" * 64 + "\n",
+                "mode": 0o444,
+            }
+        else:
+            assert (tmp_path / "export-reference").read_text() == image
+            assert captured["is_symlink"] is True
+            assert captured["content"] == outside.read_text()
+    finally:
+        _stop_builders([process])
+
+
 def test_rootfs_waiter_recovers_after_builder_process_group_dies(tmp_path):
     import signal
 

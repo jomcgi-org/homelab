@@ -6,6 +6,23 @@ exports_files(
     visibility = ["//projects/platform-gke/authentik:__pkg__"],
 )
 
+argocd_app(
+    name = "authentik-factory",
+    chart = "projects/platform/authentik",
+    chart_files = ":chart",
+    namespace = "authentik",
+    release_name = "authentik",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_factory",
+    values_files = [
+        "values.yaml",
+        "values-factory.yaml",
+    ],
+)
+
 helm_chart(
     name = "chart",
     lint = False,
@@ -38,6 +55,7 @@ py_test(
     srcs = ["blueprint_tags_test.py"],
     data = glob([
         "blueprints/*.yaml",
+        "factory-blueprints/*.yaml",
         "dev/mcp-recovery.yaml",
     ]),
     deps = [
@@ -84,6 +102,28 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "blueprints/*.yaml",
+        "optional/*.yaml",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "grimoire_discord_source_test",
+    srcs = ["grimoire_discord_source_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "values-gke.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",

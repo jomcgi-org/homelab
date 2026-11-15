@@ -12,7 +12,7 @@ def bdd_test(name, srcs, size = "large", timeout = "moderate", **kwargs):
 
     Args:
         name: Target name.
-        srcs: Test source files (include the domain's tests/conftest.py).
+        srcs: Test source files (plus tests/conftest.py when it defines fixtures).
         size: Test size (default "large" since it starts real PostgreSQL).
         timeout: Test timeout (default "moderate").
         **kwargs: Passed to py_test.

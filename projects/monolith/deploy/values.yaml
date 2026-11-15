@@ -144,7 +144,6 @@ knowledge:
     coverageEnabled: true
     # Catch-up allowance. Actual coverage is reported separately from retries;
     # bounded batches retain an independent evidence verdict for each fact.
-    enabled: true
     maxDaily: 20000
     intervalSeconds: 1
     batchSize: 32
@@ -161,8 +160,11 @@ knowledge:
     maxRunCostUsd: 2.0
     clarityRepairs:
       enabled: false
+    # Process feedback: open a bounded issue when a defect pattern repeats
+    # across audit runs (threshold, window and weekly cap below). The audit
+    # itself has run since 2026-10-16.
     issues:
-      enabled: false
+      enabled: true
       thresholdDefects: 5
       thresholdRuns: 3
       windowDays: 28
@@ -182,28 +184,17 @@ knowledge:
   # there is no sidecar, no vault volume, and no git-sync backup left to wire.
   feeds:
     emberSessions:
-      # Dark feed verified in the 0.412 templates (#5527); no backfill because
-      # since is empty, so only sessions after the pod start are exported.
-      enabled: true
       # Pinned floor: the default floor is the pod's process start, which every
       # chart roll resets, so sessions that finish across a roll were never
       # exported. Persisting the floor is tracked in #5587.
       since: "2026-09-03T17:00:00Z"
     # Hourly scout over the main diff since the last processed SHA (#5570).
     repoDiff:
-      enabled: true
-    # Demand-driven verification of docfix PRs against main; comments only
-    # while docFixAutoMerge is off.
-    docFixReview:
-      enabled: true
-  # Read side of ADR agents/063 (#5680): recall top knowledge-graph facts into
-  # every Ember session's system prompt. Chart 0.432.1 carries the template.
-  recall:
-    enabled: true
-  # #5787 receipt-conversation maintenance and Planner input, enabled for the
-  # live checks on #6561. Set back to false to roll back.
-  conductorContinuity:
-    enabled: true
+      # Backfill authoritative raws for ranges first ingested from placeholder
+      # evidence. Idempotent: covered ranges are filtered, so a later pass
+      # writes nothing and makes no source calls.
+      reconcile:
+        enabled: true
 
 chat:
   enabled: true
@@ -294,10 +285,8 @@ metaSpark:
 # publisher and the operator prerequisites that remain before rollout are
 # documented in factory/orchestration/FACTORY.md under "Review publisher".
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
   enabled: true
-  # Requires the compatible sidecar exclusion from #7231 on every brick.
-  # Defer stale preferred-account work before enabling B-first egress.
-  codexExhaustedGrantExclusion: true
   codexPreferredGrant: codex-b
   # Webhook stays homelab-only: the legacy repository value in the chart is
   # ingested, and no extra repos are configured until the staged
@@ -346,11 +335,8 @@ grimoire:
   # Registered-player pilot (#6858). Account enrollment remains disabled;
   # this path requires no Authentik invitation credential or permission grant.
   invitationLinks:
-    enabled: true
     enrollmentEnabled: false
   enabled: true
-  play:
-    enabled: true
   s3Bucket: "grimoire"
   # Production default: direct DeepSeek (first-party, native precision, no fp4
   # quantization, prompt cache preserved). Model id is the bare DeepSeek id (not

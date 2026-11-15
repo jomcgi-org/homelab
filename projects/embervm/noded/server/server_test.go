@@ -91,17 +91,16 @@ type fakeDriver struct {
 	sessionBundles map[string]string // snapshot_ref -> banked state marker
 	// restoreMarkers maps a relit threadID back to the marker its bundle carried, so
 	// a fake transport can echo the persisted state on the post-relight round-trip.
-	restoreMarkers             map[string]string // threadID -> marker
-	sessionsDir                string
-	snapshotSessions           int
-	snapshotSessionStarted     chan struct{}
-	blockSnapshotSession       <-chan struct{}
-	restoreSessions            int
-	lastRestoreTrackDirtyPages bool
-	lastRestoreWorkload        string
-	guestReady                 int
-	removeSessions             int
-	nextBankMarker             string // the marker the NEXT Bank persists (the pre-bank guest state)
+	restoreMarkers         map[string]string // threadID -> marker
+	sessionsDir            string
+	snapshotSessions       int
+	snapshotSessionStarted chan struct{}
+	blockSnapshotSession   <-chan struct{}
+	restoreSessions        int
+	lastRestoreWorkload    string
+	guestReady             int
+	removeSessions         int
+	nextBankMarker         string // the marker the NEXT Bank persists (the pre-bank guest state)
 }
 
 func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
@@ -133,12 +132,6 @@ func (f *fakeDriver) claimSpec() substrate.ClaimSpec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastClaim
-}
-
-func (f *fakeDriver) restoreTracksDirtyPages() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lastRestoreTrackDirtyPages
 }
 
 func (f *fakeDriver) Release(_ context.Context, _ substrate.Handle) error {
@@ -281,7 +274,7 @@ func (f *fakeDriver) snapshotSessionCount() int {
 // banked (else it errors, exactly the unrestorable-ref case Relight maps to
 // FAILED_PRECONDITION), and the restored handle's threadID is bound to the banked
 // marker so a post-relight round-trip can echo the persisted state.
-func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
+func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	marker, ok := f.sessionBundles[snapshotRef]
@@ -290,7 +283,6 @@ func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef str
 	}
 	f.restoreSessions++
 	f.lastRestoreWorkload = workload
-	f.lastRestoreTrackDirtyPages = trackDirtyPages
 	f.claims++
 	f.live++
 	threadID := "relit-" + snapshotRef
@@ -510,8 +502,8 @@ func newTestServer(t *testing.T, drv vmDriver, tr *fakeTransport, maxLive int) (
 		Transport: tr,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }                           // deterministic, no cgroup read
-	s.slotCeiling = func(configured uint64) uint64 { return configured } // report configured max, no host cgroup read
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 } // deterministic, no cgroup read
+	s.slotCeiling = func(configured uint64) uint64 { return configured }      // report configured max, no host cgroup read
 
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
@@ -555,7 +547,7 @@ func newSessionTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxL
 		Transport:     tr,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.slotCeiling = func(configured uint64) uint64 { return configured }
 
 	lis := bufconn.Listen(1 << 20)
@@ -757,76 +749,6 @@ func TestPrimeVolumeRequestCarriesColdBootInputs(t *testing.T) {
 	}
 	if want := srv.volumes.SessionVolumePath("echo", "lineage"); spec.VolumeDiskPath != want {
 		t.Errorf("cold-boot volume = %q, want lineage-derived path %q", spec.VolumeDiskPath, want)
-	}
-}
-
-func TestPrimeTracksDirtyPagesOnlyForConfiguredBankingWorkload(t *testing.T) {
-	drv := &fakeDriver{}
-	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
-	srv.cfg.DiffBanking = true
-	srv.cfg.DiffBankingWorkloads = []string{"sandbox-session"}
-	seedBase(srv, "session__banking01", "sandbox-session")
-	seedBase(srv, "task__plain01", "echo")
-
-	banking, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "session__banking01"})
-	if err != nil {
-		t.Fatalf("banking Prime: %v", err)
-	}
-	if !drv.claimSpec().TrackDirtyPages {
-		t.Fatal("banking Prime did not request dirty-page tracking")
-	}
-	if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: banking.GetVmId()}); err != nil {
-		t.Fatalf("destroy banking VM: %v", err)
-	}
-
-	nonBanking, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "task__plain01"})
-	if err != nil {
-		t.Fatalf("non-banking Prime: %v", err)
-	}
-	if drv.claimSpec().TrackDirtyPages {
-		t.Fatal("non-banking Prime requested dirty-page tracking")
-	}
-	if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: nonBanking.GetVmId()}); err != nil {
-		t.Fatalf("destroy non-banking VM: %v", err)
-	}
-}
-
-func TestRelightTracksDirtyPagesOnlyForConfiguredBankingWorkload(t *testing.T) {
-	drv := &fakeDriver{}
-	client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
-	srv.cfg.DiffBanking = true
-	srv.cfg.DiffBankingWorkloads = []string{"sandbox-session"}
-
-	for _, tc := range []struct {
-		ref           string
-		workload      string
-		traceWorkload string
-		want          bool
-	}{
-		{ref: "banking-ref", workload: "sandbox-session", traceWorkload: "echo", want: true},
-		{ref: "plain-ref", workload: "echo", traceWorkload: "sandbox-session", want: false},
-	} {
-		drv.mu.Lock()
-		if drv.sessionBundles == nil {
-			drv.sessionBundles = map[string]string{}
-		}
-		drv.sessionBundles[tc.ref] = "state"
-		drv.mu.Unlock()
-		srv.sessionSnap.add(sessionSnapshotEntry{snapshotRef: tc.ref, workload: tc.workload})
-
-		resp, err := client.Relight(context.Background(), &nodev1.RelightRequest{
-			Trace:       &nodev1.Trace{Workload: tc.traceWorkload},
-			SnapshotRef: tc.ref,
-		})
-		if err != nil {
-			t.Fatalf("Relight %s: %v", tc.workload, err)
-		}
-		if got := drv.restoreTracksDirtyPages(); got != tc.want {
-			t.Errorf("Relight %s track dirty pages = %v, want %v", tc.workload, got, tc.want)
-		}
-		if _, err := client.Destroy(context.Background(), &nodev1.DestroyRequest{VmId: resp.GetVmId()}); err != nil {
-			t.Fatalf("destroy %s VM: %v", tc.workload, err)
-		}
 	}
 }
 
@@ -2555,7 +2477,7 @@ func TestParseMemHeadroomMib(t *testing.T) {
 	}{
 		{"max\n", "1048576\n", 0},        // unlimited
 		{"2097152\n", "1048576\n", 1},    // 2MiB - 1MiB = 1MiB
-		{"1048576", "2097152", 1},        // current over max: known exhausted, never the unknown 0
+		{"1048576", "2097152", 0},        // current over max: exhausted (reader preserves known flag)
 		{"garbage", "1", 0},              // unparseable
 		{"104857600\n", "4194304\n", 96}, // 100MiB - 4MiB
 	}
@@ -2666,7 +2588,7 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}
 	client, srv := newTestServer(t, drv, tr, 8)
-	srv.memBudget = func() uint64 { return 3584 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(3584); return v, v > 0 }
 	srv.cpuBudget = func() uint64 { return 2000 }
 	srv.cpuHeadroom = func() uint64 { return 1500 }
 
@@ -3059,7 +2981,7 @@ func TestAbandonedDispatchClearedByNextOperation(t *testing.T) {
 					t.Fatal("successor could not take the guard")
 				}
 				if action == "assign-ended" {
-					e.endInFlight()
+					e.endSessionAssign("", false)
 				}
 			case "bank-guard":
 				if _, ok := srv.sessionVMs.beginInFlight(vmID); !ok {
@@ -3688,7 +3610,7 @@ func TestSessionInventoryRescanOnRestart(t *testing.T) {
 		Transport:     &fakeTransport{},
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.ReconcileSessionsFromDisk()
 
 	ns := s.nodeStatus()

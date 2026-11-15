@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import itertools
 import json
+import re
 import threading
 import traceback
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ def measure(page):
         backLinks: document.querySelectorAll('.back-to-dashboard').length,
         backInk: document.querySelector('.back-to-dashboard') ? getComputedStyle(document.querySelector('.back-to-dashboard')).getPropertyValue('--ink').trim() : null,
         schemeControls: document.querySelectorAll('.scheme').length,
+        trails: document.querySelectorAll('.trail').length,
         containers: [...main.querySelectorAll('.grid,.launcher-grid,.edition,.chat-log')].map(el => ({
           name: el.className, client: el.clientWidth, scroll: el.scrollWidth
         }))
@@ -55,14 +57,14 @@ def main():
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{server.server_port}"
-    records, failures = [], []
+    records, failures, preferences = [], [], []
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         for width, scheme, scenario in itertools.product(
             (390, 1440), ("light", "dark"), ("populated", "empty", "unavailable")
         ):
             context = browser.new_context(
-                viewport={"width": width, "height": 900},
+                viewport={"width": width, "height": 844 if width == 390 else 900},
                 color_scheme="dark" if scheme == "light" else "light",
                 reduced_motion="reduce",
                 service_workers="block",
@@ -118,7 +120,11 @@ def main():
                     return result
 
                 root = capture("root")
-                assert root["scheme"] == scheme and root["bodyOverflow"] == "auto", root
+                phone = width <= 760
+                # The phone root is one screen: the page never scrolls, and
+                # everything below the decisions lives in bottom sheets.
+                assert root["scheme"] == scheme, root
+                assert root["bodyOverflow"] == ("hidden" if phone else "auto"), root
                 assert root["backLinks"] == 0 and root["schemeControls"] == 1, root
                 page.keyboard.press("Tab")
                 focus = page.evaluate(
@@ -130,8 +136,62 @@ def main():
                     "window.scrollTo(0, document.documentElement.scrollHeight)"
                 )
                 root["scrollY"] = page.evaluate("window.scrollY")
-                assert root["scrollY"] > 0, root
+                assert (root["scrollY"] == 0) if phone else (root["scrollY"] > 0), root
+
+                def sheet(key):
+                    """Open a sheet from the dock on a phone; no-op on desktop."""
+                    if not phone:
+                        return
+                    page.locator(f'[aria-controls="panel-{key}"]').click()
+                    expect(page.locator(f"#panel-{key}")).to_have_class(
+                        re.compile(r"\bopen\b")
+                    )
+                    # Ask opens to its question box; the rest to Done.
+                    target = "#panel-ask input" if key == "ask" else f"#close-{key}"
+                    expect(page.locator(target)).to_be_focused()
+
+                def close(how):
+                    if not phone:
+                        return
+                    if how == "back":
+                        page.go_back()
+                    elif how == "done":
+                        page.locator(".panel.open .close").click()
+                    elif how == "scrim":
+                        page.mouse.click(195, 40)
+                    else:
+                        # A held Escape repeats; it must close one sheet only.
+                        page.keyboard.down("Escape")
+                        page.keyboard.down("Escape")
+                        page.keyboard.up("Escape")
+                    expect(page.locator(".panel.open")).to_have_count(0)
+                    expect(page.locator("main.dashboard")).to_be_visible()
+                    expect(page).to_have_url(re.compile(r"view=dashboard"))
+
+                if phone:
+                    # Closed sheets are out of reach; open ones trap the page.
+                    expect(page.locator("#panel-today")).to_have_attribute("inert", "")
+                    sheet("today")
+                    # Behind an open sheet nothing takes focus or a tap.
+                    contained = page.evaluate(
+                        """() => [...document.querySelectorAll('.dashboard .needs, .dashboard .pulse, .dashboard .glance, .dashboard .dock')].every(el => el.inert)"""
+                    )
+                    assert contained, "content behind the open sheet is not inert"
+                    root["sheetOpen"] = measure(page)["bodyOverflow"]
+                    assert root["sheetOpen"] == "hidden", root
+                    page.screenshot(path=str(args.output / f"{name}-sheet.png"))
+                    close("back")
+                    expect(
+                        page.locator('[aria-controls="panel-today"]')
+                    ).to_be_focused()
+                    sheet("tools")
+                    close("escape")
+                    sheet("shipping")
+                    close("done")
+                    sheet("today")
+                    close("scrim")
                 if scenario == "populated":
+                    sheet("today")
                     task = page.get_by_role(
                         "button", name="Toggle Synthetic daily task", exact=True
                     )
@@ -151,7 +211,9 @@ def main():
                     expect(page.locator(".pulse")).to_contain_text(
                         "77 workloads scanned"
                     )
-                    for failure in ("refused", "error", "transport"):
+                    # Two failed refreshes keep the last good read; the third
+                    # ages it out, so a dead backend never reads as all quiet.
+                    for failure in ("refused", "error"):
                         page.evaluate(
                             "(failure) => window.__privateFixture.outcomes = [failure]",
                             failure,
@@ -160,6 +222,21 @@ def main():
                         expect(page.locator(".pulse")).to_contain_text(
                             "77 workloads scanned"
                         )
+                    page.evaluate('window.__privateFixture.outcomes = ["transport"]')
+                    page.clock.fast_forward(60000)
+                    expect(page.locator(".pulse")).to_contain_text(
+                        "cluster status unavailable"
+                    )
+                    expect(page.locator(".pulse")).to_contain_text(
+                        "factory unavailable"
+                    )
+                    # The next good read restores every section at once.
+                    page.clock.fast_forward(60000)
+                    expect(page.locator(".pulse")).to_contain_text(
+                        "77 workloads scanned"
+                    )
+                    close("back")
+                    sheet("ask")
                     chat = page.get_by_role("textbox", name="Ask the cluster")
                     chat.fill("Synthetic browser question")
                     chat.press("Enter")
@@ -175,9 +252,10 @@ def main():
                     assert len(history) == 2, history
                     root["chatHistory"] = history
                     root["taskAndPolling"] = (
-                        "optimistic success/refusal; 60s refresh and last-good retention"
+                        "optimistic success/refusal; 60s refresh, two-miss retention, then unavailable"
                     )
                     capture("interacted")
+                    close("escape")
 
                     # Same bundle and real layouts, after a sheet has been visited.
                     for child in ("updates", "qwen", "board"):
@@ -193,39 +271,52 @@ def main():
                                 and child_result["backLinks"] == 0
                             )
                             assert child_result["bodyOverflow"] == "auto"
+                        elif child == "updates":
+                            # The journal carries the shared trail and scheme
+                            # switch, like the factory documents, and no second
+                            # back chrome. It sits on the sheet and follows the
+                            # stored scheme, like the dashboard.
+                            assert (
+                                child_result["schemeControls"] == 1
+                                and child_result["backLinks"] == 0
+                                and child_result["trails"] >= 1
+                            ), child_result
+                            assert child_result["sheet"] == (
+                                "#ffffff" if scheme == "light" else "#181a20"
+                            ), child_result
+                            child_result["trailHome"] = page.evaluate(
+                                """() => document.querySelector('.trail a.crumb').getAttribute('href')"""
+                            )
+                            assert child_result["trailHome"] == "/", child_result
                         else:
-                            assert child_result["schemeControls"] == 0
-                            assert child_result["backLinks"] == (
-                                1 if child == "updates" else 0
-                            )
-                            if child == "updates":
-                                # The journal sits on the sheet: it follows the
-                                # stored scheme, like the dashboard.
-                                assert child_result["sheet"] == (
-                                    "#ffffff" if scheme == "light" else "#181a20"
-                                ), child_result
-                                assert child_result["backInk"] == root["ink"], (
-                                    child_result
-                                )
-                                child_result["backClearsContent"] = page.evaluate(
-                                    """() => document.querySelector('.back-to-dashboard').getBoundingClientRect().bottom < document.querySelector('.spine').getBoundingClientRect().top"""
-                                )
-                                assert child_result["backClearsContent"], child_result
-                            else:
-                                # Qwen still follows the OS, opposite to the stored scheme.
-                                assert child_result["sheet"] == (
-                                    "#181a20" if scheme == "light" else "#ffffff"
-                                ), child_result
+                            assert child_result["schemeControls"] == 1
+                            assert child_result["backLinks"] == 0
+                            # Qwen now shares the dashboard's persisted sheet
+                            # scheme, even when the OS preference is opposite.
+                            assert child_result["sheet"] == (
+                                "#ffffff" if scheme == "light" else "#181a20"
+                            ), child_result
                         if child == "qwen":
-                            assert child_result["bodyOverflow"] == "hidden", (
-                                child_result
-                            )
-                            # Qwen's mobile chat stays viewport-high, while its
-                            # existing stats panel flows below it.
+                            assert child_result["bodyOverflow"] == "auto", child_result
+                            # Phone sessions stay reachable above the chat;
+                            # the document can scroll to the stats below it.
                             child_result["chatHeight"] = page.locator(
                                 ".qwen-page .chat"
                             ).evaluate("(el) => el.getBoundingClientRect().height")
-                            assert child_result["chatHeight"] == 900, child_result
+                            if phone:
+                                child_result["viewportHeight"] = page.viewport_size[
+                                    "height"
+                                ]
+                                # Keep the 70dvh minimum at either fixture height;
+                                # Chromium rounds layout down to 1/64 CSS pixel.
+                                assert child_result["chatHeight"] + 1 / 64 >= (
+                                    child_result["viewportHeight"] * 0.7
+                                ), child_result
+                                expect(
+                                    page.locator(".qwen-page .sessions")
+                                ).to_be_visible()
+                            else:
+                                assert child_result["chatHeight"] == 900, child_result
                             child_result["transcriptOverflow"] = page.locator(
                                 ".qwen-page .log"
                             ).evaluate("(el) => getComputedStyle(el).overflowY")
@@ -241,6 +332,11 @@ def main():
                         )
                         expect(page.locator("main")).to_be_visible()
                         fresh = capture(f"fresh-{child}")
+                        if child == "updates":
+                            home = page.locator('.trail a[href="/"] >> visible=true')
+                            expect(home).to_have_count(1)
+                            home.click()
+                            expect(page.locator("main.dashboard")).to_be_visible()
                         for field in (
                             "bodyOverflow",
                             "mainOverflow",
@@ -346,6 +442,72 @@ def main():
                 )
             finally:
                 context.close()
+        # A fresh private page with no child preference component or toggle.
+        # Exercise browser execution, CSS system fallback and storage denial.
+        for width, os_scheme, stored in itertools.product(
+            (390, 1440), ("light", "dark"), ("opposite", "missing", "invalid", "throws")
+        ):
+            context = browser.new_context(
+                viewport={"width": width, "height": 900},
+                color_scheme=os_scheme,
+                reduced_motion="reduce",
+                service_workers="block",
+            )
+            expected = (
+                ("dark" if os_scheme == "light" else "light")
+                if stored == "opposite"
+                else os_scheme
+            )
+            if stored == "throws":
+                context.add_init_script(
+                    "Storage.prototype.getItem = () => { throw new Error('Storage denied'); };"
+                )
+            elif stored != "missing":
+                value = expected if stored == "opposite" else "invalid"
+                context.add_init_script(f"localStorage.setItem('td-theme', '{value}');")
+            page = context.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            try:
+                page.goto(origin + PREFIX + "?view=legacy")
+                link = page.locator(".back-to-dashboard")
+                expect(link).to_be_visible()
+                expect(link).to_have_attribute("href", "/")
+                expect(page.locator(".scheme")).to_have_count(0)
+                expect(link).to_have_css(
+                    "background-color",
+                    "rgb(255, 255, 255)" if expected == "light" else "rgb(24, 26, 32)",
+                )
+                attribute = page.evaluate(
+                    "document.documentElement.dataset.theme ?? null"
+                )
+                assert attribute == (expected if stored == "opposite" else None)
+                before_body = {}
+                for view in ("legacy", "updates", "board"):
+                    page.goto(origin + PREFIX + f"scheme-{view}.html")
+                    before_body[view] = page.evaluate("window.schemeBeforeBody")
+                    assert before_body[view] == attribute, before_body
+                assert not errors, errors
+                preferences.append(
+                    {
+                        "width": width,
+                        "os_scheme": os_scheme,
+                        "stored": stored,
+                        "expected": expected,
+                        "attribute": attribute,
+                        "ssr_before_body": before_body,
+                        "passed": True,
+                    }
+                )
+            except Exception as error:
+                failures.append(
+                    {
+                        "case": f"preference-{width}-{os_scheme}-{stored}",
+                        "error": str(error),
+                    }
+                )
+            finally:
+                context.close()
         version = browser.version
         browser.close()
     server.shutdown()
@@ -354,6 +516,7 @@ def main():
         "build": build,
         "chromium": version,
         "records": records,
+        "preferences": preferences,
         "failures": failures,
         "asset_sha256": {
             str(p.relative_to(artifact)): hashlib.sha256(p.read_bytes()).hexdigest()

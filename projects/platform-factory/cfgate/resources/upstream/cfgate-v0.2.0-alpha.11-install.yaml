@@ -1,0 +1,3270 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: cfgate
+    control-plane: controller-manager
+  name: cfgate-system
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: cloudflareaccessapplications.cfgate.io
+spec:
+  group: cfgate.io
+  names:
+    kind: CloudflareAccessApplication
+    listKind: CloudflareAccessApplicationList
+    plural: cloudflareaccessapplications
+    shortNames:
+    - cfaa
+    - cfaccessapp
+    singular: cloudflareaccessapplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.attachedTargets
+      name: Targets
+      type: integer
+    - jsonPath: .status.applications[0].id
+      name: Application
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CloudflareAccessApplication binds Gateway API targets to reusable
+          Cloudflare Access policies.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CloudflareAccessApplicationSpec defines Gateway API target
+              bindings to reusable Access policies.
+            properties:
+              application:
+                description: |-
+                  Application defines Access Application settings shared by generated apps.
+                  The path field overrides any path derived from HTTPRoute rules.
+                properties:
+                  allowedIdps:
+                    description: |-
+                      AllowedIdps restricts which identity providers can authenticate.
+                      Values are Cloudflare Identity Provider UUIDs.
+                      When empty, all IdPs configured in the account are allowed.
+                    items:
+                      type: string
+                    maxItems: 25
+                    type: array
+                  appLauncherVisible:
+                    default: true
+                    description: |-
+                      AppLauncherVisible controls whether the application appears in the
+                      Cloudflare App Launcher dashboard. Use pointer to distinguish
+                      explicit false (hidden) from absent (default visible).
+                    type: boolean
+                  autoRedirectToIdentity:
+                    description: |-
+                      AutoRedirectToIdentity auto-redirects to the identity provider
+                      when a single IdP is configured in allowedIdps. Skips the IdP
+                      selection page.
+                    type: boolean
+                  corsHeaders:
+                    description: |-
+                      CORSHeaders configures CORS for browser-based APIs behind Access.
+                      When set, Cloudflare responds to OPTIONS preflight on behalf of the origin.
+                      Mutually exclusive with optionsPreflightBypass.
+                    properties:
+                      allowAllHeaders:
+                        description: AllowAllHeaders allows all HTTP request headers.
+                        type: boolean
+                      allowAllMethods:
+                        description: AllowAllMethods allows all HTTP request methods.
+                        type: boolean
+                      allowAllOrigins:
+                        description: AllowAllOrigins allows all origins.
+                        type: boolean
+                      allowCredentials:
+                        description: |-
+                          AllowCredentials includes credentials (cookies, authorization headers,
+                          or TLS client certificates) with CORS requests.
+                        type: boolean
+                      allowedHeaders:
+                        description: |-
+                          AllowedHeaders lists specific allowed HTTP request headers.
+                          Ignored when allowAllHeaders is true.
+                        items:
+                          type: string
+                        maxItems: 50
+                        type: array
+                      allowedMethods:
+                        description: |-
+                          AllowedMethods lists specific allowed HTTP request methods.
+                          Ignored when allowAllMethods is true.
+                        items:
+                          description: CORSAllowedMethod is an HTTP method allowed
+                            for CORS requests.
+                          enum:
+                          - GET
+                          - POST
+                          - HEAD
+                          - PUT
+                          - DELETE
+                          - CONNECT
+                          - OPTIONS
+                          - TRACE
+                          - PATCH
+                          type: string
+                        maxItems: 9
+                        type: array
+                      allowedOrigins:
+                        description: |-
+                          AllowedOrigins lists specific allowed origins.
+                          Ignored when allowAllOrigins is true.
+                        items:
+                          type: string
+                        maxItems: 50
+                        type: array
+                      maxAge:
+                        description: MaxAge is the maximum number of seconds preflight
+                          results can be cached.
+                        maximum: 86400
+                        minimum: 0
+                        type: integer
+                    type: object
+                  customDenyMessage:
+                    description: CustomDenyMessage shown when access is denied.
+                    maxLength: 1024
+                    type: string
+                  customDenyUrl:
+                    description: CustomDenyURL redirects to this URL when denied (instead
+                      of message).
+                    type: string
+                  customNonIdentityDenyUrl:
+                    description: |-
+                      CustomNonIdentityDenyURL is the URL users are redirected to when
+                      denied by a non-identity (service auth) policy. Separate from
+                      customDenyUrl which handles identity-based denials.
+                    maxLength: 1024
+                    type: string
+                  domain:
+                    description: |-
+                      Domain is the protected domain (auto-generated from routes if omitted).
+                      Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                    maxLength: 253
+                    type: string
+                    x-kubernetes-validations:
+                    - message: each DNS label must not exceed 63 octets (RFC 1035
+                        section 2.3.4)
+                      rule: self == '' || self.split('.').all(s, size(s) <= 63)
+                  enableBindingCookie:
+                    default: false
+                    description: EnableBindingCookie enables binding cookies for sticky
+                      sessions.
+                    type: boolean
+                  httpOnlyCookieAttribute:
+                    default: true
+                    description: HttpOnlyCookieAttribute adds HttpOnly to session
+                      cookies.
+                    type: boolean
+                  logoUrl:
+                    description: LogoURL is the application logo in dashboard.
+                    maxLength: 1024
+                    type: string
+                  name:
+                    description: |-
+                      Name is the display name in Cloudflare dashboard.
+                      Defaults to CR name if omitted.
+                    maxLength: 255
+                    type: string
+                  optionsPreflightBypass:
+                    description: |-
+                      OptionsPreflightBypass allows OPTIONS preflight requests to bypass
+                      Access authentication and go directly to the origin. Enabling this
+                      removes all CORS header settings. Mutually exclusive with corsHeaders.
+                    type: boolean
+                  path:
+                    description: |-
+                      Path restricts protection to a specific absolute path prefix.
+                      Cloudflare Access paths must not include query strings or fragments.
+                    maxLength: 1024
+                    pattern: ^/[^?#]*$
+                    type: string
+                  pathCookieAttribute:
+                    description: |-
+                      PathCookieAttribute scopes the Access JWT cookie to the application
+                      path instead of the hostname. When enabled, users must re-authenticate
+                      for different paths on the same hostname.
+                    type: boolean
+                  readServiceTokensFromHeader:
+                    description: |-
+                      ReadServiceTokensFromHeader enables reading service tokens from a
+                      single custom HTTP header instead of the standard CF-Access-Client-Id
+                      and CF-Access-Client-Secret header pair. The value is the header name.
+                      The header value must contain a JSON object with "cf-access-client-id"
+                      and "cf-access-client-secret" keys.
+                    maxLength: 256
+                    type: string
+                  sameSiteCookieAttribute:
+                    default: lax
+                    description: SameSiteCookieAttribute controls cross-site cookie
+                      behavior.
+                    enum:
+                    - strict
+                    - lax
+                    - none
+                    type: string
+                  serviceAuth401Redirect:
+                    description: |-
+                      ServiceAuth401Redirect returns a 401 status code instead of
+                      redirecting to the Access login page when a request is blocked by a
+                      Service Auth (non_identity) policy. Enable for API consumers.
+                    type: boolean
+                  sessionDuration:
+                    default: 24h
+                    description: SessionDuration controls session cookie lifetime.
+                    pattern: ^([0-9]+(ns|us|ms|s|m|h))+$
+                    type: string
+                  skipInterstitial:
+                    default: false
+                    description: SkipInterstitial bypasses the Access login page for
+                      API requests.
+                    type: boolean
+                  type:
+                    default: self_hosted
+                    description: Type is the application type.
+                    enum:
+                    - self_hosted
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: corsHeaders and optionsPreflightBypass are mutually exclusive
+                  rule: '!(has(self.corsHeaders) && has(self.optionsPreflightBypass)
+                    && self.optionsPreflightBypass)'
+              cloudflareRef:
+                description: |-
+                  CloudflareRef references Cloudflare credentials. When omitted, credentials
+                  are inherited from each target's route -> Gateway -> CloudflareTunnel chain.
+                  Multiple targets must inherit the same Cloudflare account.
+                properties:
+                  accountId:
+                    description: AccountID is the Cloudflare account ID.
+                    maxLength: 32
+                    type: string
+                  accountName:
+                    description: AccountName is the Cloudflare account name (looked
+                      up via API).
+                    maxLength: 255
+                    type: string
+                  name:
+                    description: Name of the secret containing credentials.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret (defaults to policy namespace).
+                    type: string
+                  secretKeys:
+                    description: SecretKeys selects credential data keys; omitted
+                      keys use their defaults.
+                    properties:
+                      apiToken:
+                        default: CLOUDFLARE_API_TOKEN
+                        description: APIToken is the key name for the Cloudflare API
+                          token.
+                        maxLength: 253
+                        type: string
+                    type: object
+                required:
+                - name
+                type: object
+              policyRefs:
+                description: PolicyRefs lists reusable CloudflareAccessPolicy resources
+                  to attach.
+                items:
+                  description: AccessPolicyReference references a reusable CloudflareAccessPolicy.
+                  properties:
+                    name:
+                      description: Name is the CloudflareAccessPolicy name.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      default: ""
+                      description: |-
+                        Namespace is the CloudflareAccessPolicy namespace. Empty defaults to application namespace.
+                        Cross-namespace references require ReferenceGrant.
+                      maxLength: 253
+                      type: string
+                    precedence:
+                      description: |-
+                        Precedence determines policy evaluation order for the application. Lower values run first.
+                        When omitted, the controller uses list order starting at 1.
+                      maximum: 9999
+                      minimum: 1
+                      type: integer
+                  required:
+                  - name
+                  - namespace
+                  type: object
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                - namespace
+                x-kubernetes-list-type: map
+              targetRef:
+                description: TargetRef identifies a single Gateway API target.
+                properties:
+                  group:
+                    default: gateway.networking.k8s.io
+                    description: Group is the API group of the target resource.
+                    maxLength: 253
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource.
+                    enum:
+                    - Gateway
+                    - HTTPRoute
+                    maxLength: 63
+                    type: string
+                  name:
+                    description: Name is the name of the target resource.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace of the target resource.
+                      Cross-namespace targeting requires ReferenceGrant.
+                    maxLength: 253
+                    type: string
+                  sectionName:
+                    description: SectionName targets specific listener (Gateway) or
+                      rule (Route).
+                    maxLength: 253
+                    type: string
+                required:
+                - group
+                - kind
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: group must be gateway.networking.k8s.io
+                  rule: self.group == 'gateway.networking.k8s.io'
+                - message: kind must be Gateway or HTTPRoute
+                  rule: self.kind in ['Gateway', 'HTTPRoute']
+              targetRefs:
+                description: TargetRefs identifies multiple Gateway API targets.
+                items:
+                  description: |-
+                    PolicyTargetReference identifies a Gateway API resource for Access application attachment.
+
+                    PolicyTargetReference follows the Gateway API LocalPolicyTargetReferenceWithSectionName
+                    pattern. It targets Gateway API Gateway and HTTPRoute resources and extracts
+                    hostnames and paths from those resources to create corresponding Cloudflare Access
+                    applications.
+
+                    Cross-namespace references require a ReferenceGrant in the target namespace that permits
+                    CloudflareAccessApplication resources from the application's namespace.
+                  properties:
+                    group:
+                      default: gateway.networking.k8s.io
+                      description: Group is the API group of the target resource.
+                      maxLength: 253
+                      type: string
+                    kind:
+                      description: Kind is the kind of the target resource.
+                      enum:
+                      - Gateway
+                      - HTTPRoute
+                      maxLength: 63
+                      type: string
+                    name:
+                      description: Name is the name of the target resource.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the target resource.
+                        Cross-namespace targeting requires ReferenceGrant.
+                      maxLength: 253
+                      type: string
+                    sectionName:
+                      description: SectionName targets specific listener (Gateway)
+                        or rule (Route).
+                      maxLength: 253
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: group must be gateway.networking.k8s.io
+                    rule: self.group == 'gateway.networking.k8s.io'
+                  - message: kind must be Gateway or HTTPRoute
+                    rule: self.kind in ['Gateway', 'HTTPRoute']
+                maxItems: 16
+                minItems: 1
+                type: array
+            required:
+            - policyRefs
+            type: object
+            x-kubernetes-validations:
+            - message: either targetRef or targetRefs must be specified
+              rule: has(self.targetRef) || has(self.targetRefs)
+            - message: targetRef and targetRefs are mutually exclusive
+              rule: '!(has(self.targetRef) && has(self.targetRefs))'
+            - message: policyRefs must either all omit precedence or all specify precedence
+              rule: self.policyRefs.all(p, !has(p.precedence)) || self.policyRefs.all(p,
+                has(p.precedence))
+            - message: policyRefs precedence values must be unique
+              rule: self.policyRefs.all(p, !has(p.precedence)) || self.policyRefs.all(p,
+                has(p.precedence) && self.policyRefs.exists_one(q, has(q.precedence)
+                && q.precedence == p.precedence))
+          status:
+            description: CloudflareAccessApplicationStatus defines observed Access
+              application state.
+            properties:
+              accountId:
+                description: AccountID is the resolved Cloudflare account ID used
+                  for Access application cleanup.
+                maxLength: 32
+                type: string
+              ancestors:
+                description: Ancestors contains status for each targetRef.
+                items:
+                  description: |-
+                    PolicyAncestorStatus describes the policy attachment status for a specific target.
+
+                    PolicyAncestorStatus follows the Gateway API PolicyAncestorStatus pattern to report
+                    per-target attachment status. Each target reference in the spec has a corresponding
+                    ancestor status entry showing whether the policy was successfully attached.
+                  properties:
+                    ancestorRef:
+                      description: AncestorRef identifies the target.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          maxLength: 63
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          maxLength: 253
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                    conditions:
+                      description: Conditions for this specific target.
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      maxItems: 8
+                      type: array
+                    controllerName:
+                      description: ControllerName identifies the controller managing
+                        this attachment.
+                      maxLength: 253
+                      type: string
+                  required:
+                  - ancestorRef
+                  - controllerName
+                  type: object
+                maxItems: 64
+                type: array
+              applications:
+                description: Applications are Cloudflare Access Applications managed
+                  by this resource.
+                items:
+                  description: AccessApplicationObserved records a Cloudflare Access
+                    Application created for one host/path target.
+                  properties:
+                    aud:
+                      description: AUD is the Application Audience Tag.
+                      maxLength: 255
+                      type: string
+                    domain:
+                      description: Domain is the protected hostname/path in Cloudflare.
+                      maxLength: 1024
+                      type: string
+                    id:
+                      description: ID is the Cloudflare Access Application ID.
+                      maxLength: 36
+                      type: string
+                    targetRef:
+                      description: TargetRef identifies the Gateway API target that
+                        produced this application.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          maxLength: 63
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          maxLength: 253
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                  type: object
+                maxItems: 64
+                type: array
+              attachedTargets:
+                description: AttachedTargets is the count of successfully attached
+                  Gateway API targets.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions describe current state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              credentialSecretKeys:
+                description: CredentialSecretKeys preserves the selected token key
+                  for cleanup.
+                properties:
+                  apiToken:
+                    default: CLOUDFLARE_API_TOKEN
+                    description: APIToken is the key name for the Cloudflare API token.
+                    maxLength: 253
+                    type: string
+                type: object
+              credentialSecretRef:
+                description: |-
+                  CredentialSecretRef is the resolved credentials Secret used for cleanup.
+                  The namespace is always stored explicitly.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret. Defaults to the resource's
+                      namespace if empty.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the last generation processed.
+                format: int64
+                type: integer
+              ownerId:
+                description: OwnerID binds remote Access resources to this installation
+                  and CR incarnation.
+                pattern: ^[a-f0-9]{28}$
+                type: string
+              pendingApplications:
+                description: PendingApplications checkpoint successful targets while
+                  previous protection is retained.
+                items:
+                  description: AccessApplicationObserved records a Cloudflare Access
+                    Application created for one host/path target.
+                  properties:
+                    aud:
+                      description: AUD is the Application Audience Tag.
+                      maxLength: 255
+                      type: string
+                    domain:
+                      description: Domain is the protected hostname/path in Cloudflare.
+                      maxLength: 1024
+                      type: string
+                    id:
+                      description: ID is the Cloudflare Access Application ID.
+                      maxLength: 36
+                      type: string
+                    targetRef:
+                      description: TargetRef identifies the Gateway API target that
+                        produced this application.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          maxLength: 63
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          maxLength: 253
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                  type: object
+                maxItems: 64
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: cloudflareaccesspolicies.cfgate.io
+spec:
+  group: cfgate.io
+  names:
+    kind: CloudflareAccessPolicy
+    listKind: CloudflareAccessPolicyList
+    plural: cloudflareaccesspolicies
+    shortNames:
+    - cfap
+    - cfaccess
+    singular: cloudflareaccesspolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.policyId
+      name: Policy
+      type: string
+    - jsonPath: .status.appCount
+      name: Apps
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareAccessPolicy is the Schema for the cloudflareaccesspolicies API.
+
+          CloudflareAccessPolicy manages a reusable account-level Cloudflare Access Policy.
+          CloudflareAccessApplication attaches reusable policies to Gateway API targets.
+
+          Access rules are organized into implementation tiers based on IdP requirements:
+            - P0: IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken (no IdP)
+            - P1: Email, EmailList, EmailDomain, OIDCClaim (basic IdP required)
+            - P2: GSuiteGroup (Google Workspace required)
+            - P3: not in current product scope (Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.)
+
+          Status conditions:
+            - Ready: policy is synced and service tokens are ready when configured
+            - CredentialsValid: Cloudflare credentials have been validated
+            - ServiceTokensReady: all service tokens have been created
+            - PolicySynced: reusable Access policy exists in Cloudflare
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareAccessPolicySpec defines a reusable Cloudflare Access policy.
+
+              CloudflareAccessPolicySpec manages account-level reusable Access policies. Applications
+              attach these policies through CloudflareAccessApplication policyRefs.
+            properties:
+              approvalGroups:
+                description: ApprovalGroups defines who can approve access.
+                items:
+                  description: |-
+                    ApprovalGroup defines who can approve access requests for approval-required policies.
+
+                    ApprovalGroup specifies approvers by email address or email list UUID. When a
+                    policy requires approval, users matching this group can approve or deny access requests.
+                  properties:
+                    approvalsNeeded:
+                      default: 1
+                      description: ApprovalsNeeded is number of approvals required.
+                      minimum: 1
+                      type: integer
+                    emailListUuid:
+                      description: EmailListUUID is a Cloudflare Access email list
+                        UUID whose members can approve.
+                      maxLength: 36
+                      type: string
+                    emails:
+                      description: Emails of approvers.
+                      items:
+                        type: string
+                      maxItems: 50
+                      type: array
+                  type: object
+                  x-kubernetes-validations:
+                  - message: at least one approver (emails or emailListUuid) must
+                      be specified
+                    rule: (has(self.emails) && size(self.emails) > 0) || has(self.emailListUuid)
+                maxItems: 10
+                type: array
+              approvalRequired:
+                default: false
+                description: ApprovalRequired requires approval from specific users.
+                type: boolean
+              cloudflareRef:
+                description: CloudflareRef references Cloudflare credentials.
+                properties:
+                  accountId:
+                    description: AccountID is the Cloudflare account ID.
+                    maxLength: 32
+                    type: string
+                  accountName:
+                    description: AccountName is the Cloudflare account name (looked
+                      up via API).
+                    maxLength: 255
+                    type: string
+                  name:
+                    description: Name of the secret containing credentials.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret (defaults to policy namespace).
+                    type: string
+                  secretKeys:
+                    description: SecretKeys selects credential data keys; omitted
+                      keys use their defaults.
+                    properties:
+                      apiToken:
+                        default: CLOUDFLARE_API_TOKEN
+                        description: APIToken is the key name for the Cloudflare API
+                          token.
+                        maxLength: 253
+                        type: string
+                    type: object
+                required:
+                - name
+                type: object
+              decision:
+                default: allow
+                description: Decision is the policy action.
+                enum:
+                - allow
+                - deny
+                - bypass
+                - non_identity
+                type: string
+              exclude:
+                description: Exclude rules (if ANY match, policy does not apply).
+                items:
+                  description: |-
+                    AccessRule defines identity matching criteria for Access policies.
+
+                    AccessRule specifies conditions that identify users or services. Rules are organized
+                    into implementation tiers based on IdP requirements:
+                      - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
+                      - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
+                      - P2 (Google Workspace): GSuiteGroup
+                      - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+
+                    Selector types map to the Cloudflare API: IPRule, IPListRule, CountryRule,
+                    EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
+                    EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
+                  properties:
+                    anyValidServiceToken:
+                      description: |-
+                        AnyValidServiceToken matches any valid service token. When present, it must be true.
+                        Omit the rule to disable it.
+                        SDK: AnyValidServiceTokenRule
+                      type: boolean
+                      x-kubernetes-validations:
+                      - message: must be true; omit the rule to disable it
+                        rule: self == true
+                    country:
+                      description: |-
+                        Country matches source country codes (ISO 3166-1 alpha-2).
+                        SDK: CountryRule
+                      properties:
+                        codes:
+                          description: Codes are ISO 3166-1 alpha-2 country codes.
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - codes
+                      type: object
+                    email:
+                      description: |-
+                        Email matches specific email addresses.
+                        SDK: EmailRule
+                      properties:
+                        addresses:
+                          description: Addresses to match.
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - addresses
+                      type: object
+                    emailDomain:
+                      description: |-
+                        EmailDomain matches email domain suffix.
+                        SDK: DomainRule
+                      properties:
+                        domain:
+                          description: |-
+                            Domain suffix (e.g., "example.com").
+                            Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - domain
+                      type: object
+                    emailList:
+                      description: |-
+                        EmailList references a Cloudflare Access email list.
+                        SDK: EmailListRule
+                      properties:
+                        id:
+                          description: ID of the Access list in Cloudflare.
+                          maxLength: 36
+                          type: string
+                        name:
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
+                          maxLength: 255
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: id must be specified
+                        rule: has(self.id)
+                    everyone:
+                      description: |-
+                        Everyone matches all users. When present, it must be true.
+                        Omit the rule to disable it.
+                        SDK: EveryoneRule
+                      type: boolean
+                      x-kubernetes-validations:
+                      - message: must be true; omit the rule to disable it
+                        rule: self == true
+                    group:
+                      description: |-
+                        Group matches a Cloudflare Access Group by ID.
+                        SDK: GroupRule
+                      properties:
+                        id:
+                          description: ID is the Cloudflare Access Group ID.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    gsuiteGroup:
+                      description: |-
+                        GSuiteGroup matches Google Workspace groups.
+                        SDK: GSuiteGroupRule
+                      properties:
+                        email:
+                          description: Email is the Google Workspace group email.
+                          maxLength: 320
+                          minLength: 1
+                          type: string
+                        identityProviderId:
+                          description: IdentityProviderID in Cloudflare.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - email
+                      - identityProviderId
+                      type: object
+                    ip:
+                      description: |-
+                        IP matches source IP CIDR ranges.
+                        SDK: IPRule
+                      properties:
+                        ranges:
+                          description: Ranges are CIDR blocks (IPv4 or IPv6).
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - ranges
+                      type: object
+                    ipList:
+                      description: |-
+                        IPList references a Cloudflare IP List.
+                        SDK: IPListRule
+                      properties:
+                        id:
+                          description: ID of the IP list in Cloudflare.
+                          maxLength: 36
+                          type: string
+                        name:
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
+                          maxLength: 255
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: id must be specified
+                        rule: has(self.id)
+                    oidcClaim:
+                      description: |-
+                        OIDCClaim matches OIDC token claims.
+                        SDK: AccessOIDCClaimRule
+                      properties:
+                        claimName:
+                          description: ClaimName is the OIDC claim to match.
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        claimValue:
+                          description: ClaimValue is the expected value.
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        identityProviderId:
+                          description: IdentityProviderID in Cloudflare.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - claimName
+                      - claimValue
+                      - identityProviderId
+                      type: object
+                    serviceToken:
+                      description: |-
+                        ServiceToken matches a specific service token by ID.
+                        SDK: ServiceTokenRule
+                      properties:
+                        name:
+                          description: |-
+                            Name references an entry in spec.serviceTokens. The controller replaces it
+                            with the created Cloudflare service token ID during policy sync.
+                          maxLength: 255
+                          type: string
+                        tokenId:
+                          description: TokenID is the Cloudflare service token ID.
+                          maxLength: 36
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: either tokenId or name must be specified
+                        rule: has(self.tokenId) || has(self.name)
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one rule type must be specified
+                    rule: '[has(self.ip), has(self.ipList), has(self.country), has(self.everyone),
+                      has(self.serviceToken), has(self.anyValidServiceToken), has(self.email),
+                      has(self.emailList), has(self.emailDomain), has(self.oidcClaim),
+                      has(self.gsuiteGroup), has(self.group)].filter(x, x).size()
+                      == 1'
+                maxItems: 25
+                type: array
+              include:
+                description: Include rules (ANY must match for policy to apply).
+                items:
+                  description: |-
+                    AccessRule defines identity matching criteria for Access policies.
+
+                    AccessRule specifies conditions that identify users or services. Rules are organized
+                    into implementation tiers based on IdP requirements:
+                      - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
+                      - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
+                      - P2 (Google Workspace): GSuiteGroup
+                      - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+
+                    Selector types map to the Cloudflare API: IPRule, IPListRule, CountryRule,
+                    EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
+                    EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
+                  properties:
+                    anyValidServiceToken:
+                      description: |-
+                        AnyValidServiceToken matches any valid service token. When present, it must be true.
+                        Omit the rule to disable it.
+                        SDK: AnyValidServiceTokenRule
+                      type: boolean
+                      x-kubernetes-validations:
+                      - message: must be true; omit the rule to disable it
+                        rule: self == true
+                    country:
+                      description: |-
+                        Country matches source country codes (ISO 3166-1 alpha-2).
+                        SDK: CountryRule
+                      properties:
+                        codes:
+                          description: Codes are ISO 3166-1 alpha-2 country codes.
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - codes
+                      type: object
+                    email:
+                      description: |-
+                        Email matches specific email addresses.
+                        SDK: EmailRule
+                      properties:
+                        addresses:
+                          description: Addresses to match.
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - addresses
+                      type: object
+                    emailDomain:
+                      description: |-
+                        EmailDomain matches email domain suffix.
+                        SDK: DomainRule
+                      properties:
+                        domain:
+                          description: |-
+                            Domain suffix (e.g., "example.com").
+                            Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - domain
+                      type: object
+                    emailList:
+                      description: |-
+                        EmailList references a Cloudflare Access email list.
+                        SDK: EmailListRule
+                      properties:
+                        id:
+                          description: ID of the Access list in Cloudflare.
+                          maxLength: 36
+                          type: string
+                        name:
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
+                          maxLength: 255
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: id must be specified
+                        rule: has(self.id)
+                    everyone:
+                      description: |-
+                        Everyone matches all users. When present, it must be true.
+                        Omit the rule to disable it.
+                        SDK: EveryoneRule
+                      type: boolean
+                      x-kubernetes-validations:
+                      - message: must be true; omit the rule to disable it
+                        rule: self == true
+                    group:
+                      description: |-
+                        Group matches a Cloudflare Access Group by ID.
+                        SDK: GroupRule
+                      properties:
+                        id:
+                          description: ID is the Cloudflare Access Group ID.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    gsuiteGroup:
+                      description: |-
+                        GSuiteGroup matches Google Workspace groups.
+                        SDK: GSuiteGroupRule
+                      properties:
+                        email:
+                          description: Email is the Google Workspace group email.
+                          maxLength: 320
+                          minLength: 1
+                          type: string
+                        identityProviderId:
+                          description: IdentityProviderID in Cloudflare.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - email
+                      - identityProviderId
+                      type: object
+                    ip:
+                      description: |-
+                        IP matches source IP CIDR ranges.
+                        SDK: IPRule
+                      properties:
+                        ranges:
+                          description: Ranges are CIDR blocks (IPv4 or IPv6).
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - ranges
+                      type: object
+                    ipList:
+                      description: |-
+                        IPList references a Cloudflare IP List.
+                        SDK: IPListRule
+                      properties:
+                        id:
+                          description: ID of the IP list in Cloudflare.
+                          maxLength: 36
+                          type: string
+                        name:
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
+                          maxLength: 255
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: id must be specified
+                        rule: has(self.id)
+                    oidcClaim:
+                      description: |-
+                        OIDCClaim matches OIDC token claims.
+                        SDK: AccessOIDCClaimRule
+                      properties:
+                        claimName:
+                          description: ClaimName is the OIDC claim to match.
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        claimValue:
+                          description: ClaimValue is the expected value.
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        identityProviderId:
+                          description: IdentityProviderID in Cloudflare.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - claimName
+                      - claimValue
+                      - identityProviderId
+                      type: object
+                    serviceToken:
+                      description: |-
+                        ServiceToken matches a specific service token by ID.
+                        SDK: ServiceTokenRule
+                      properties:
+                        name:
+                          description: |-
+                            Name references an entry in spec.serviceTokens. The controller replaces it
+                            with the created Cloudflare service token ID during policy sync.
+                          maxLength: 255
+                          type: string
+                        tokenId:
+                          description: TokenID is the Cloudflare service token ID.
+                          maxLength: 36
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: either tokenId or name must be specified
+                        rule: has(self.tokenId) || has(self.name)
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one rule type must be specified
+                    rule: '[has(self.ip), has(self.ipList), has(self.country), has(self.everyone),
+                      has(self.serviceToken), has(self.anyValidServiceToken), has(self.email),
+                      has(self.emailList), has(self.emailDomain), has(self.oidcClaim),
+                      has(self.gsuiteGroup), has(self.group)].filter(x, x).size()
+                      == 1'
+                maxItems: 25
+                minItems: 1
+                type: array
+              name:
+                description: Name is the Cloudflare Access policy display name.
+                maxLength: 255
+                minLength: 1
+                type: string
+              purposeJustificationPrompt:
+                description: PurposeJustificationPrompt is the prompt shown to user.
+                maxLength: 1024
+                type: string
+              purposeJustificationRequired:
+                default: false
+                description: PurposeJustificationRequired requires user to provide
+                  justification.
+                type: boolean
+              require:
+                description: Require rules (ALL must match for policy to apply).
+                items:
+                  description: |-
+                    AccessRule defines identity matching criteria for Access policies.
+
+                    AccessRule specifies conditions that identify users or services. Rules are organized
+                    into implementation tiers based on IdP requirements:
+                      - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
+                      - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
+                      - P2 (Google Workspace): GSuiteGroup
+                      - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+
+                    Selector types map to the Cloudflare API: IPRule, IPListRule, CountryRule,
+                    EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
+                    EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
+                  properties:
+                    anyValidServiceToken:
+                      description: |-
+                        AnyValidServiceToken matches any valid service token. When present, it must be true.
+                        Omit the rule to disable it.
+                        SDK: AnyValidServiceTokenRule
+                      type: boolean
+                      x-kubernetes-validations:
+                      - message: must be true; omit the rule to disable it
+                        rule: self == true
+                    country:
+                      description: |-
+                        Country matches source country codes (ISO 3166-1 alpha-2).
+                        SDK: CountryRule
+                      properties:
+                        codes:
+                          description: Codes are ISO 3166-1 alpha-2 country codes.
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - codes
+                      type: object
+                    email:
+                      description: |-
+                        Email matches specific email addresses.
+                        SDK: EmailRule
+                      properties:
+                        addresses:
+                          description: Addresses to match.
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - addresses
+                      type: object
+                    emailDomain:
+                      description: |-
+                        EmailDomain matches email domain suffix.
+                        SDK: DomainRule
+                      properties:
+                        domain:
+                          description: |-
+                            Domain suffix (e.g., "example.com").
+                            Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - domain
+                      type: object
+                    emailList:
+                      description: |-
+                        EmailList references a Cloudflare Access email list.
+                        SDK: EmailListRule
+                      properties:
+                        id:
+                          description: ID of the Access list in Cloudflare.
+                          maxLength: 36
+                          type: string
+                        name:
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
+                          maxLength: 255
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: id must be specified
+                        rule: has(self.id)
+                    everyone:
+                      description: |-
+                        Everyone matches all users. When present, it must be true.
+                        Omit the rule to disable it.
+                        SDK: EveryoneRule
+                      type: boolean
+                      x-kubernetes-validations:
+                      - message: must be true; omit the rule to disable it
+                        rule: self == true
+                    group:
+                      description: |-
+                        Group matches a Cloudflare Access Group by ID.
+                        SDK: GroupRule
+                      properties:
+                        id:
+                          description: ID is the Cloudflare Access Group ID.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    gsuiteGroup:
+                      description: |-
+                        GSuiteGroup matches Google Workspace groups.
+                        SDK: GSuiteGroupRule
+                      properties:
+                        email:
+                          description: Email is the Google Workspace group email.
+                          maxLength: 320
+                          minLength: 1
+                          type: string
+                        identityProviderId:
+                          description: IdentityProviderID in Cloudflare.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - email
+                      - identityProviderId
+                      type: object
+                    ip:
+                      description: |-
+                        IP matches source IP CIDR ranges.
+                        SDK: IPRule
+                      properties:
+                        ranges:
+                          description: Ranges are CIDR blocks (IPv4 or IPv6).
+                          items:
+                            type: string
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                      required:
+                      - ranges
+                      type: object
+                    ipList:
+                      description: |-
+                        IPList references a Cloudflare IP List.
+                        SDK: IPListRule
+                      properties:
+                        id:
+                          description: ID of the IP list in Cloudflare.
+                          maxLength: 36
+                          type: string
+                        name:
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
+                          maxLength: 255
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: id must be specified
+                        rule: has(self.id)
+                    oidcClaim:
+                      description: |-
+                        OIDCClaim matches OIDC token claims.
+                        SDK: AccessOIDCClaimRule
+                      properties:
+                        claimName:
+                          description: ClaimName is the OIDC claim to match.
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        claimValue:
+                          description: ClaimValue is the expected value.
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        identityProviderId:
+                          description: IdentityProviderID in Cloudflare.
+                          maxLength: 36
+                          minLength: 1
+                          type: string
+                      required:
+                      - claimName
+                      - claimValue
+                      - identityProviderId
+                      type: object
+                    serviceToken:
+                      description: |-
+                        ServiceToken matches a specific service token by ID.
+                        SDK: ServiceTokenRule
+                      properties:
+                        name:
+                          description: |-
+                            Name references an entry in spec.serviceTokens. The controller replaces it
+                            with the created Cloudflare service token ID during policy sync.
+                          maxLength: 255
+                          type: string
+                        tokenId:
+                          description: TokenID is the Cloudflare service token ID.
+                          maxLength: 36
+                          type: string
+                      type: object
+                      x-kubernetes-validations:
+                      - message: either tokenId or name must be specified
+                        rule: has(self.tokenId) || has(self.name)
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one rule type must be specified
+                    rule: '[has(self.ip), has(self.ipList), has(self.country), has(self.everyone),
+                      has(self.serviceToken), has(self.anyValidServiceToken), has(self.email),
+                      has(self.emailList), has(self.emailDomain), has(self.oidcClaim),
+                      has(self.gsuiteGroup), has(self.group)].filter(x, x).size()
+                      == 1'
+                maxItems: 25
+                type: array
+              serviceTokens:
+                description: ServiceTokens for machine-to-machine authentication.
+                items:
+                  description: |-
+                    ServiceTokenConfig defines configuration for Cloudflare Access service tokens.
+
+                    ServiceTokenConfig enables machine-to-machine authentication. The controller creates
+                    the service token in Cloudflare and stores the credentials (client ID and secret) in
+                    the referenced Kubernetes Secret. The secret is only visible at creation time.
+                  properties:
+                    duration:
+                      default: 8760h
+                      description: |-
+                        Duration is the token validity period using Go duration format.
+                        Only hours (h) supported by Cloudflare API. Use "8760h" for 1 year.
+                      pattern: ^[1-9][0-9]*h$
+                      type: string
+                    name:
+                      description: Name is the token display name.
+                      maxLength: 255
+                      minLength: 1
+                      type: string
+                    rotationOverlap:
+                      default: 0h
+                      description: |-
+                        RotationOverlap keeps the previous secret valid during credential distribution.
+                        Zero expires the previous secret immediately. Consumers must reload credentials.
+                      pattern: ^(0|[1-9][0-9]{0,2})h$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: rotationOverlap must not exceed 720h
+                        rule: duration(self) <= duration('720h')
+                    secretRef:
+                      description: SecretRef stores the generated token credentials.
+                      properties:
+                        name:
+                          description: Name of the Secret.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - secretRef
+                  type: object
+                maxItems: 10
+                type: array
+                x-kubernetes-validations:
+                - message: service token names must be unique
+                  rule: self.all(t, self.filter(x, x.name == t.name).size() == 1)
+                - message: service token destination Secrets must be unique
+                  rule: self.all(t, self.filter(x, x.secretRef.name == t.secretRef.name).size()
+                    == 1)
+              sessionDuration:
+                description: SessionDuration overrides application session duration
+                  for this policy.
+                maxLength: 32
+                pattern: ^([0-9]+(ns|us|ms|s|m|h))+$
+                type: string
+            required:
+            - cloudflareRef
+            - decision
+            - include
+            - name
+            type: object
+            x-kubernetes-validations:
+            - message: include rules are required
+              rule: size(self.include) > 0
+          status:
+            description: CloudflareAccessPolicyStatus defines the observed state of
+              a CloudflareAccessPolicy resource.
+            properties:
+              accountId:
+                description: AccountID is the Cloudflare account ID used for this
+                  policy.
+                type: string
+              appCount:
+                description: AppCount is the number of Access Applications currently
+                  using this policy.
+                format: int64
+                type: integer
+              conditions:
+                description: Conditions describe current state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              credentialSecretKeys:
+                description: CredentialSecretKeys preserves selected token keys for
+                  cleanup.
+                properties:
+                  apiToken:
+                    default: CLOUDFLARE_API_TOKEN
+                    description: APIToken is the key name for the Cloudflare API token.
+                    maxLength: 253
+                    type: string
+                type: object
+              credentialSecretRef:
+                description: |-
+                  CredentialSecretRef is the resolved credentials Secret used for cleanup.
+                  The namespace is always stored explicitly.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret. Defaults to the resource's
+                      namespace if empty.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the last generation processed.
+                format: int64
+                type: integer
+              ownerId:
+                description: OwnerID binds remote Access resources to this installation
+                  and CR incarnation.
+                pattern: ^[a-f0-9]{28}$
+                type: string
+              policyId:
+                description: PolicyID is the Cloudflare Access reusable policy ID.
+                type: string
+              reusable:
+                description: Reusable reports whether Cloudflare returned this policy
+                  as reusable.
+                type: boolean
+              serviceTokenIds:
+                additionalProperties:
+                  type: string
+                description: ServiceTokenIDs maps token names to Cloudflare IDs.
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: cloudflarednses.cfgate.io
+spec:
+  group: cfgate.io
+  names:
+    kind: CloudflareDNS
+    listKind: CloudflareDNSList
+    plural: cloudflarednses
+    shortNames:
+    - cfdns
+    - dns
+    singular: cloudflaredns
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.syncedRecords
+      name: Synced
+      type: integer
+    - jsonPath: .status.pendingRecords
+      name: Pending
+      type: integer
+    - jsonPath: .status.failedRecords
+      name: Failed
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareDNS is the Schema for the cloudflarednses API.
+
+          CloudflareDNS manages DNS record synchronization independently from CloudflareTunnel resources.
+          It supports two target modes: tunnel references (for tunnel-based CNAME records) and external
+          targets (for non-tunnel DNS management). DNS records can be sourced from Gateway API routes
+          or explicitly defined.
+
+          CloudflareDNS implements ownership tracking via TXT records (aligned with external-dns patterns)
+          to enable safe multi-cluster deployments and prevent accidental deletion of records created
+          by other installations.
+
+          Status conditions:
+            - Ready: DNS sync is fully operational
+            - CredentialsValid: Cloudflare credentials have been validated
+            - ZonesResolved: All configured zones have been resolved via API
+            - RecordsSynced: DNS records have been synchronized to Cloudflare
+            - OwnershipVerified: TXT ownership records have been verified, when enabled
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareDNSSpec defines the desired state of a CloudflareDNS resource.
+
+              CloudflareDNSSpec configures DNS record synchronization, including the target
+              (tunnel or external), zones to manage, hostname sources, and ownership tracking.
+              Either tunnelRef or externalTarget must be specified (mutually exclusive).
+            properties:
+              cleanupPolicy:
+                description: CleanupPolicy defines cleanup behavior for records.
+                properties:
+                  deleteOnResourceRemoval:
+                    description: |-
+                      DeleteOnResourceRemoval deletes records when CloudflareDNS resource is deleted.
+                      nil defaults to true.
+                    type: boolean
+                  deleteOnRouteRemoval:
+                    description: |-
+                      DeleteOnRouteRemoval deletes obsolete hostname, type, or selected-zone records.
+                      This applies to discovered routes and explicit hostnames.
+                      nil defaults to true.
+                    type: boolean
+                  onlyManaged:
+                    description: |-
+                      OnlyManaged is retained for compatibility. Ownership verification is always required;
+                      setting false cannot authorize deletion of foreign or unmarked records.
+                    type: boolean
+                type: object
+              cloudflare:
+                description: |-
+                  Cloudflare API credentials (required when using externalTarget).
+                  When using tunnelRef, credentials are inherited from the tunnel.
+                properties:
+                  accountId:
+                    description: AccountID is the Cloudflare Account ID.
+                    maxLength: 32
+                    type: string
+                  accountName:
+                    description: AccountName is the Cloudflare Account name. Will
+                      be looked up via API.
+                    maxLength: 255
+                    type: string
+                  secretKeys:
+                    description: SecretKeys defines the key mappings within the secret.
+                    properties:
+                      apiToken:
+                        default: CLOUDFLARE_API_TOKEN
+                        description: APIToken is the key name for the Cloudflare API
+                          token.
+                        maxLength: 253
+                        type: string
+                    type: object
+                  secretRef:
+                    description: |-
+                      SecretRef references the Secret containing Cloudflare API credentials.
+                      The secret must contain an API token (not tunnel token).
+                    properties:
+                      name:
+                        description: Name of the secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the secret. Defaults to the tunnel's
+                          namespace.
+                        maxLength: 63
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - secretRef
+                type: object
+                x-kubernetes-validations:
+                - message: either accountId or accountName must be specified
+                  rule: has(self.accountId) || has(self.accountName)
+                - message: accountId must be a 32-character hex string
+                  rule: '!has(self.accountId) || self.accountId.matches(''^[a-f0-9]{32}$'')'
+              defaults:
+                description: Defaults defines default settings for DNS records.
+                properties:
+                  proxied:
+                    default: true
+                    description: Proxied enables Cloudflare proxy by default.
+                    type: boolean
+                  ttl:
+                    default: 1
+                    description: |-
+                      TTL is the default DNS record TTL in seconds.
+                      Valid values: 1 (auto) or 60-86400 (explicit).
+                    format: int32
+                    maximum: 86400
+                    minimum: 1
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: TTL must be 1 (auto) or between 60 and 86400 seconds
+                  rule: '!has(self.ttl) || self.ttl == 1 || (self.ttl >= 60 && self.ttl
+                    <= 86400)'
+              externalTarget:
+                description: ExternalTarget specifies a non-tunnel DNS target.
+                properties:
+                  type:
+                    description: Type is the DNS record type.
+                    enum:
+                    - CNAME
+                    - A
+                    - AAAA
+                    type: string
+                  value:
+                    description: |-
+                      Value is the target value (domain for CNAME, IP for A/AAAA).
+                      Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - type
+                - value
+                type: object
+              fallbackCredentialsRef:
+                description: |-
+                  FallbackCredentialsRef references fallback Cloudflare API credentials.
+                  Used during deletion when primary credentials are unavailable.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret. Defaults to the resource's
+                      namespace if empty.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+              ownership:
+                description: Ownership defines how to track record ownership.
+                properties:
+                  comment:
+                    description: |-
+                      Comment configures comment-based ownership.
+
+                      Deprecated: since v0.1.0-alpha.13. All fields are ignored. Will be removed in a future cleanup release.
+                    properties:
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled enables comment-based ownership tracking.
+
+                          Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
+                          writes an exact resource owner marker. Will be removed in a future cleanup release.
+                        type: boolean
+                      template:
+                        default: managed by cfgate
+                        description: |-
+                          Template is the comment template.
+
+                          Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
+                          uses an exact resource owner marker. Will be removed in a future cleanup release.
+                        maxLength: 255
+                        type: string
+                    type: object
+                  ownerId:
+                    description: |-
+                      OwnerID is a deprecated legacy migration hint, not an ownership authority.
+                      Since v0.2.0-alpha.6 the controller persists installation/resource UIDs in status.ownerId.
+                      Setting this field cannot adopt another resource's records.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(/[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
+                    type: string
+                  txtRecord:
+                    description: TXTRecord configures TXT record-based ownership.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled enables TXT record ownership tracking.
+                          nil defaults to true.
+                        type: boolean
+                      prefix:
+                        default: _cfgate
+                        description: Prefix is the immutable prefix for TXT record
+                          names.
+                        maxLength: 63
+                        type: string
+                    type: object
+                type: object
+              policy:
+                default: sync
+                description: Policy controls DNS record lifecycle.
+                enum:
+                - sync
+                - upsert-only
+                - create-only
+                type: string
+              source:
+                description: Source defines where to get hostnames to sync.
+                properties:
+                  explicit:
+                    description: Explicit defines explicit hostnames to sync.
+                    items:
+                      description: |-
+                        DNSExplicitHostname defines an explicit hostname to sync with optional per-hostname configuration.
+
+                        DNSExplicitHostname provides direct specification of DNS hostnames without depending on
+                        Gateway API route discovery. The Target field supports the {{ .TunnelDomain }} template
+                        variable for dynamic resolution when using tunnelRef.
+                      properties:
+                        hostname:
+                          description: |-
+                            Hostname is the DNS hostname to create.
+                            Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                          x-kubernetes-validations:
+                          - message: each DNS label must not exceed 63 octets (RFC
+                              1035 section 2.3.4)
+                            rule: self.split('.').all(s, size(s) <= 63)
+                        proxied:
+                          description: |-
+                            Proxied enables Cloudflare proxy for this record.
+                            nil inherits from zone or defaults.
+                          type: boolean
+                        target:
+                          description: |-
+                            Target overrides the resolved record target for this hostname.
+                            Supports template variable {{ .TunnelDomain }} when tunnelRef is used.
+                            Defaults to the resource-level resolved target when omitted.
+                            Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                          maxLength: 253
+                          type: string
+                        ttl:
+                          description: |-
+                            TTL is the DNS record TTL in seconds. 1 means auto (Cloudflare managed).
+                            Omitted values inherit spec.defaults.ttl. Valid values: 1 (auto) or 60-86400.
+                          format: int32
+                          maximum: 86400
+                          minimum: 1
+                          type: integer
+                      required:
+                      - hostname
+                      type: object
+                      x-kubernetes-validations:
+                      - message: TTL must be 1 (auto) or between 60 and 86400 seconds
+                        rule: '!has(self.ttl) || self.ttl == 1 || (self.ttl >= 60
+                          && self.ttl <= 86400)'
+                    maxItems: 100
+                    type: array
+                  gatewayRoutes:
+                    description: GatewayRoutes configures watching Gateway API routes.
+                    properties:
+                      annotationFilter:
+                        description: AnnotationFilter only syncs routes with this
+                          annotation.
+                        maxLength: 255
+                        type: string
+                      enabled:
+                        default: true
+                        description: Enabled enables watching Gateway API routes.
+                        type: boolean
+                      namespaceSelector:
+                        description: NamespaceSelector limits route discovery to specific
+                          namespaces.
+                        properties:
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            description: MatchLabels selects namespaces with matching
+                              labels.
+                            maxProperties: 10
+                            type: object
+                          matchNames:
+                            description: MatchNames selects namespaces by name.
+                            items:
+                              type: string
+                            maxItems: 50
+                            type: array
+                        type: object
+                        x-kubernetes-validations:
+                        - message: at least one selector must be specified
+                          rule: has(self.matchLabels) || has(self.matchNames)
+                    type: object
+                type: object
+              tunnelRef:
+                description: TunnelRef references a CloudflareTunnel for CNAME target
+                  resolution.
+                properties:
+                  name:
+                    description: Name is the name of the CloudflareTunnel.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace of the CloudflareTunnel.
+                      Defaults to the CloudflareDNS's namespace.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+              zones:
+                description: Zones defines the DNS zones to manage.
+                items:
+                  description: |-
+                    DNSZoneConfig defines a DNS zone where records will be managed.
+
+                    DNSZoneConfig identifies a Cloudflare DNS zone either by name (requiring API lookup)
+                    or by explicit zone ID. The optional Proxied field sets the default proxy behavior
+                    for all records in this zone.
+                  properties:
+                    id:
+                      description: ID is the optional explicit zone ID (skips API
+                        lookup).
+                      maxLength: 32
+                      pattern: ^[a-f0-9]{32}$
+                      type: string
+                    name:
+                      description: |-
+                        Name is the zone domain name (e.g., example.com).
+                        Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                      x-kubernetes-validations:
+                      - message: each DNS label must not exceed 63 octets (RFC 1035
+                          section 2.3.4)
+                        rule: self.split('.').all(s, size(s) <= 63)
+                    proxied:
+                      description: |-
+                        Proxied sets the default proxied setting for this zone.
+                        nil inherits from spec.defaults.proxied.
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                maxItems: 10
+                minItems: 1
+                type: array
+            required:
+            - zones
+            type: object
+            x-kubernetes-validations:
+            - message: either tunnelRef or externalTarget must be specified
+              rule: has(self.tunnelRef) || has(self.externalTarget)
+            - message: tunnelRef and externalTarget are mutually exclusive
+              rule: '!(has(self.tunnelRef) && has(self.externalTarget))'
+            - message: cloudflare credentials required when using externalTarget
+              rule: has(self.tunnelRef) || has(self.cloudflare)
+            - message: TXT ownership prefix is immutable
+              rule: '(has(self.ownership) && has(self.ownership.txtRecord) && has(self.ownership.txtRecord.prefix)
+                ? self.ownership.txtRecord.prefix : ''_cfgate'') == (has(oldSelf.ownership)
+                && has(oldSelf.ownership.txtRecord) && has(oldSelf.ownership.txtRecord.prefix)
+                ? oldSelf.ownership.txtRecord.prefix : ''_cfgate'')'
+          status:
+            description: |-
+              CloudflareDNSStatus defines the observed state of a CloudflareDNS resource.
+
+              CloudflareDNSStatus captures the synchronization state of all DNS records, including
+              counts of synced, pending, and failed records. The ResolvedTarget field shows the
+              actual CNAME target being used (either from tunnel or external target).
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              failedRecords:
+                description: FailedRecords is the number of records that failed to
+                  sync.
+                format: int32
+                type: integer
+              lastSyncTime:
+                description: LastSyncTime is the last time records were synced.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation observed by the
+                  controller.
+                format: int64
+                type: integer
+              ownerId:
+                description: OwnerID persists the installation namespace UID and resource
+                  UID for cleanup.
+                type: string
+              ownershipPrefix:
+                description: OwnershipPrefix pins the claim namespace used for publication
+                  and cleanup.
+                type: string
+              pendingRecords:
+                description: PendingRecords is the number of records pending sync.
+                format: int32
+                type: integer
+              pendingWrites:
+                description: PendingWrites retains destinations until their results
+                  are durably recorded.
+                items:
+                  description: |-
+                    DNSPendingWrite records a destination before an external write. It survives
+                    failed status writes and later edits to the desired zones or hostnames.
+                  properties:
+                    hostname:
+                      description: Hostname and Type identify the intended record.
+                      type: string
+                    operationId:
+                      description: OperationID distinguishes a creation from another
+                        record incarnation.
+                      pattern: ^[A-Za-z0-9_-]{10}$
+                      type: string
+                    previousOwned:
+                      description: PreviousOwned distinguishes an unowned baseline
+                        from a foreign replacement.
+                      type: boolean
+                    previousRecordId:
+                      description: PreviousRecordID identifies an existing owned record
+                        before an update.
+                      type: string
+                    type:
+                      type: string
+                    zoneId:
+                      description: ZoneID is the resolved destination, independent
+                        of current spec.zones.
+                      type: string
+                  required:
+                  - hostname
+                  - operationId
+                  - type
+                  - zoneId
+                  type: object
+                maxItems: 1000
+                type: array
+              records:
+                description: Records contains the status of individual DNS records.
+                items:
+                  description: |-
+                    DNSRecordSyncStatus represents the synchronization status of a single DNS record.
+
+                    DNSRecordSyncStatus tracks individual DNS record state including the Cloudflare record ID,
+                    current configuration, and sync status. The Status field indicates: Synced (successfully
+                    synchronized), Pending (awaiting sync), Skipped (policy prevented synchronization), or Failed (sync failed, see Error field).
+                  properties:
+                    error:
+                      description: Error contains the error message if status is Failed.
+                      type: string
+                    hostname:
+                      description: Hostname is the DNS hostname.
+                      type: string
+                    proxied:
+                      description: Proxied indicates if Cloudflare proxy is enabled.
+                      type: boolean
+                    recordId:
+                      description: RecordID is the Cloudflare record ID.
+                      type: string
+                    status:
+                      description: 'Status is the sync status: Synced, Pending, Skipped,
+                        Failed.'
+                      type: string
+                    target:
+                      description: Target is the record target/content.
+                      type: string
+                    ttl:
+                      description: TTL is the record TTL.
+                      format: int32
+                      type: integer
+                    type:
+                      description: Type is the DNS record type (CNAME, A, AAAA).
+                      type: string
+                    zoneId:
+                      description: ZoneID is the Cloudflare zone ID where the record
+                        was created.
+                      type: string
+                  required:
+                  - hostname
+                  - proxied
+                  - status
+                  - target
+                  - type
+                  type: object
+                maxItems: 1000
+                type: array
+              resolvedTarget:
+                description: ResolvedTarget is the resolved CNAME target (tunnel domain
+                  or external value).
+                type: string
+              syncedRecords:
+                description: SyncedRecords is the number of successfully synced records.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: cloudflaretunnels.cfgate.io
+spec:
+  group: cfgate.io
+  names:
+    kind: CloudflareTunnel
+    listKind: CloudflareTunnelList
+    plural: cloudflaretunnels
+    shortNames:
+    - cft
+    - cftunnel
+    singular: cloudflaretunnel
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.tunnelId
+      name: Tunnel ID
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Replicas
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CloudflareTunnel is the Schema for the cloudflaretunnels API.
+
+          CloudflareTunnel manages the lifecycle of a Cloudflare Tunnel and its cloudflared daemon
+          deployment. It handles tunnel creation or adoption, credential management, and deploys
+          cloudflared pods that establish secure connections to Cloudflare's edge network.
+
+          CloudflareTunnel follows a composable architecture where tunnel lifecycle is separate from
+          DNS management. Use CloudflareDNS with a tunnelRef to create DNS records pointing to this
+          tunnel's domain.
+
+          Status conditions:
+            - Ready: tunnel is fully operational
+            - CredentialsValid: API credentials have been validated
+            - TunnelReady: tunnel exists in Cloudflare
+            - ConfigurationSynced: ingress configuration is synced
+            - CloudflaredDeployed: cloudflared pods are running
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareTunnelSpec defines the desired state of a CloudflareTunnel resource.
+
+              CloudflareTunnelSpec configures the tunnel identity, Cloudflare credentials, cloudflared
+              deployment settings, and origin connection defaults. The tunnel manages lifecycle only;
+              DNS records are managed separately via CloudflareDNS resources.
+            properties:
+              cloudflare:
+                description: Cloudflare defines the Cloudflare API credentials.
+                properties:
+                  accountId:
+                    description: AccountID is the Cloudflare Account ID.
+                    maxLength: 32
+                    type: string
+                  accountName:
+                    description: AccountName is the Cloudflare Account name. Will
+                      be looked up via API.
+                    maxLength: 255
+                    type: string
+                  secretKeys:
+                    description: SecretKeys defines the key mappings within the secret.
+                    properties:
+                      apiToken:
+                        default: CLOUDFLARE_API_TOKEN
+                        description: APIToken is the key name for the Cloudflare API
+                          token.
+                        maxLength: 253
+                        type: string
+                    type: object
+                  secretRef:
+                    description: |-
+                      SecretRef references the Secret containing Cloudflare API credentials.
+                      The secret must contain an API token (not tunnel token).
+                    properties:
+                      name:
+                        description: Name of the secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the secret. Defaults to the tunnel's
+                          namespace.
+                        maxLength: 63
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - secretRef
+                type: object
+                x-kubernetes-validations:
+                - message: either accountId or accountName must be specified
+                  rule: has(self.accountId) || has(self.accountName)
+                - message: accountId must be a 32-character hex string
+                  rule: '!has(self.accountId) || self.accountId.matches(''^[a-f0-9]{32}$'')'
+              cloudflared:
+                description: Cloudflared defines the cloudflared deployment configuration.
+                properties:
+                  extraArgs:
+                    description: ExtraArgs are additional arguments to pass to cloudflared.
+                    items:
+                      type: string
+                    maxItems: 20
+                    type: array
+                  image:
+                    default: ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1@sha256:6c46ca006f9d6af5e973e59f2d71f5d6d3dc138c8a5484380d5797092171e3ad
+                    description: Image is the cloudflared container image.
+                    maxLength: 255
+                    type: string
+                  imagePullPolicy:
+                    default: IfNotPresent
+                    description: ImagePullPolicy is the pull policy for the cloudflared
+                      image.
+                    enum:
+                    - Always
+                    - Never
+                    - IfNotPresent
+                    type: string
+                  metrics:
+                    description: Metrics configures the cloudflared metrics endpoint.
+                    properties:
+                      enabled:
+                        default: true
+                        description: Enabled declares the metrics container port for
+                          scraping. Health probes and their shared listener remain
+                          enabled.
+                        type: boolean
+                      port:
+                        default: 44483
+                        description: Port is the port for the metrics endpoint.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                    type: object
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector is a selector for nodes to run cloudflared
+                      on.
+                    maxProperties: 50
+                    type: object
+                  podAnnotations:
+                    additionalProperties:
+                      type: string
+                    description: PodAnnotations are annotations to add to cloudflared
+                      pods.
+                    maxProperties: 50
+                    type: object
+                  protocol:
+                    default: auto
+                    description: 'Protocol is the tunnel transport protocol: auto,
+                      quic, http2.'
+                    enum:
+                    - auto
+                    - quic
+                    - http2
+                    type: string
+                  replicas:
+                    default: 2
+                    description: Replicas is the number of cloudflared replicas.
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: Resources are the resource requirements for cloudflared
+                      containers.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  tolerations:
+                    description: Tolerations are tolerations for the cloudflared pods.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    maxItems: 20
+                    type: array
+                type: object
+              fallbackCredentialsRef:
+                description: |-
+                  FallbackCredentialsRef references a secret containing fallback Cloudflare API credentials.
+                  Used during deletion when primary credentials (in Cloudflare.SecretRef) are unavailable.
+                  This enables cleanup of Cloudflare resources even if the per-tunnel secret is deleted.
+                  The secret must contain the same keys as the primary credentials secret.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret. Defaults to the resource's
+                      namespace if empty.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+              fallbackTarget:
+                default: http_status:404
+                description: FallbackTarget is the service for unmatched requests.
+                maxLength: 255
+                type: string
+              originDefaults:
+                description: OriginDefaults defines default settings for origin connections.
+                properties:
+                  caPoolSecretRef:
+                    description: CAPoolSecretRef references a Secret containing CA
+                      certificates for origin verification.
+                    properties:
+                      key:
+                        default: ca.crt
+                        description: Key is the key within the secret data.
+                        maxLength: 253
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  connectTimeout:
+                    default: 30s
+                    description: ConnectTimeout is the timeout for connecting to the
+                      origin.
+                    pattern: ^[0-9]+(s|m|h)$
+                    type: string
+                  h2cOrigin:
+                    default: false
+                    description: |-
+                      H2cOrigin enables HTTP/2 cleartext (h2c) for origin connections.
+                      Use this for origins that speak HTTP/2 without TLS (e.g., gRPC services).
+                      Mutually exclusive with http2Origin (TLS-based HTTP/2).
+                    type: boolean
+                  http2Origin:
+                    default: false
+                    description: HTTP2Origin enables HTTP/2 for origin connections.
+                    type: boolean
+                  noTLSVerify:
+                    default: false
+                    description: NoTLSVerify disables TLS verification for origin
+                      connections.
+                    type: boolean
+                type: object
+                x-kubernetes-validations:
+                - message: http2Origin and h2cOrigin are mutually exclusive
+                  rule: '!(self.http2Origin && self.h2cOrigin)'
+              tunnel:
+                description: Tunnel defines the tunnel identity configuration.
+                properties:
+                  name:
+                    description: |-
+                      Name is the tunnel name in Cloudflare. Existing tunnels require explicit
+                      cfgate.io/adopt-existing=true and an exclusive installation ownership claim.
+                      If not, create it. Tunnel ID is stored in status after resolution/creation.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - cloudflare
+            - tunnel
+            type: object
+          status:
+            description: |-
+              CloudflareTunnelStatus defines the observed state of a CloudflareTunnel resource.
+
+              CloudflareTunnelStatus captures the tunnel's Cloudflare-assigned identifiers, deployment
+              status, and reconciliation state. The TunnelDomain field provides the CNAME target
+              ({tunnelId}.cfargotunnel.com) that CloudflareDNS uses for DNS record creation.
+            properties:
+              accessDependencies:
+                description: |-
+                  AccessDependencies track applications needed by current or possibly applied configurations.
+                  Entries are cleared only after remote configuration withdrawal is confirmed.
+                items:
+                  description: TunnelAccessDependency records possibly active application
+                    and policy protection.
+                  properties:
+                    accountId:
+                      type: string
+                    hostnames:
+                      items:
+                        type: string
+                      maxItems: 64
+                      type: array
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    pending:
+                      description: Pending records an unconfirmed publication attempt;
+                        protection cannot be removed until a later confirmed sync.
+                      type: boolean
+                    policies:
+                      items:
+                        description: TunnelAccessPolicyDependency retains policy identity
+                          until remote withdrawal is verified.
+                        properties:
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          policyId:
+                            type: string
+                          uid:
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      maxItems: 64
+                      type: array
+                    tunnelId:
+                      type: string
+                    uid:
+                      type: string
+                  required:
+                  - accountId
+                  - hostnames
+                  - name
+                  - namespace
+                  - tunnelId
+                  type: object
+                maxItems: 256
+                type: array
+              accountId:
+                description: AccountID is the resolved Cloudflare account ID.
+                type: string
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the tunnel's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              connectedRouteCount:
+                description: ConnectedRouteCount is the number of routes connected
+                  to this tunnel.
+                format: int32
+                type: integer
+              lastFullReconcileTime:
+                description: |-
+                  LastFullReconcileTime is the last successful credentials, tunnel, deployment, and configuration reconciliation.
+                  Configuration-only reconciliations do not advance this timestamp.
+                format: date-time
+                type: string
+              lastSyncTime:
+                description: LastSyncTime is the last time the configuration was synced
+                  to Cloudflare.
+                format: date-time
+                type: string
+              lifecycleDependencyHash:
+                description: |-
+                  LifecycleDependencyHash identifies the Secret revisions and Deployment generation checked during the last full reconciliation.
+                  It contains no Secret data.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the generation observed by the
+                  controller.
+                format: int64
+                type: integer
+              readyReplicas:
+                description: ReadyReplicas is the number of ready cloudflared replicas.
+                format: int32
+                type: integer
+              replicas:
+                description: Replicas is the total number of cloudflared replicas.
+                format: int32
+                type: integer
+              tunnelDomain:
+                description: TunnelDomain is the tunnel's CNAME target domain (e.g.,
+                  {tunnelId}.cfargotunnel.com).
+                type: string
+              tunnelId:
+                description: TunnelID is the Cloudflare tunnel ID.
+                type: string
+              tunnelName:
+                description: TunnelName is the Cloudflare tunnel name.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cfgate-controller-manager
+  namespace: cfgate-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cfgate-manager-role
+  namespace: cfgate-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cfgate-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cfgate.io
+  resources:
+  - cloudflareaccessapplications
+  - cloudflareaccesspolicies
+  - cloudflarednses
+  - cloudflaretunnels
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cfgate.io
+  resources:
+  - cloudflareaccessapplications/finalizers
+  - cloudflareaccesspolicies/finalizers
+  - cloudflarednses/finalizers
+  - cloudflaretunnels/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - cfgate.io
+  resources:
+  - cloudflareaccessapplications/status
+  - cloudflareaccesspolicies/status
+  - cloudflarednses/status
+  - cloudflaretunnels/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses
+  - gateways
+  - httproutes
+  - referencegrants
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses/status
+  - gateways/status
+  - httproutes/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cfgate-tunnel-claims-rolebinding
+  namespace: cfgate-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cfgate-manager-role
+subjects:
+- kind: ServiceAccount
+  name: cfgate-controller-manager
+  namespace: cfgate-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cfgate-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cfgate-manager-role
+subjects:
+- kind: ServiceAccount
+  name: cfgate-controller-manager
+  namespace: cfgate-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/name: cfgate
+    control-plane: controller-manager
+  name: cfgate-controller-manager
+  namespace: cfgate-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-manager
+    spec:
+      containers:
+      - args:
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        image: ghcr.io/cfgate/cfgate:0.2.0-alpha.11
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: cfgate-controller-manager
+      terminationGracePeriodSeconds: 10

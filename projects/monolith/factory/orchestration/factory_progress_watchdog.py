@@ -24,7 +24,6 @@ ASSESSED = "watchdog_assessed"
 CLEARED = "funding_progress_cleared"
 LEGACY_CLEARED = "watchdog_cleared"
 ENACT_REFUSED = "funding_legacy_hold_refused"
-PROGRESSING = "progressing"
 LOOPING = "looping"
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 

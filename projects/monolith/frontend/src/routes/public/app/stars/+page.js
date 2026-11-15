@@ -1,3 +1,3 @@
-// Render the static page pitch on the server. The MapLibre application mounts
-// in the browser from StarsApp.svelte.
+// Render the controls and snapshot on the server. MapLibre enhances the
+// reserved map area after hydration.
 export const ssr = true;

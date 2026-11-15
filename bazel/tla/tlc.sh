@@ -20,6 +20,7 @@
 #   $5 output marker (TLC output is captured here; also the genrule's out)
 #   $6 expectation: "pass" (TLC must find no error) or "fail" (a negative mode
 #      that must still reproduce a known violation)
+#   $8.. supporting TLA+ modules (use an empty $7 for pass/temporal modes)
 #   $7 expected invariant name (optional, fail mode only). When present, the
 #      negative run must name this exact invariant as violated.
 set -euo pipefail
@@ -57,6 +58,11 @@ module="${spec_name%.tla}"      # e.g. adoption
 cp "$spec" "$work/$spec_name"
 cp "$cfg" "$work/$(basename "$cfg")"
 cfg_name="$(basename "$cfg")"
+
+# Dependencies are explicit Bazel inputs. Stage them beside the root module.
+for dependency in "${@:8}"; do
+	cp "$dependency" "$work/$(basename "$dependency")"
+done
 
 cd "$work"
 
@@ -130,7 +136,7 @@ elif [ "$expect" = "fail" ]; then
 		cat "$out" >&2
 		exit 1
 	fi
-	if ! grep -qE 'Invariant|Temporal properties were violated' "$out"; then
+	if ! grep -qE 'Invariant|Temporal properties were violated|Action property .* is violated' "$out"; then
 		echo "NEGATIVE MODE did not reproduce a violation for $spec_name: TLC exited" >&2
 		echo "nonzero but its output names no invariant or temporal-property" >&2
 		echo "violation (likely a crash, not a detection). Output:" >&2

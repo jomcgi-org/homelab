@@ -1,6 +1,8 @@
 import { writable } from "svelte/store";
 import { routes } from "./fixtures.js";
 
+export { pushState, replaceState } from "./app-state.svelte.js";
+
 export const page = writable({
   url: new URL("https://private.example.test/factory"),
   data: {},

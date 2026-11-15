@@ -227,23 +227,6 @@ def _context(prompt):
     return json.loads(prompt.rsplit("\n", 1)[1])
 
 
-def test_flag_off_keeps_legacy_planner_input(planner_db, monkeypatch):
-    _engine, task_id, _policy = planner_db
-    monkeypatch.delenv("CONDUCTOR_CONTINUITY_ENABLED", raising=False)
-    task = _task(task_id)
-    assert conductor._load_planner_factory_context(task["id"]) is None
-    context = _context(conductor.planner_prompt(task, [], []))
-    assert context["task"] == "STALE ADMISSION ACCEPTANCE"
-    assert "factory" not in context
-    assert "knowledge" not in context
-    assert set(context["omitted"]) == {
-        "task_characters",
-        "graph_records",
-        "run_records",
-        "decision_feedback_records",
-    }
-
-
 def test_planner_context_uses_exact_receipt_scope_without_private_chat(
     planner_db, monkeypatch
 ):
@@ -719,7 +702,6 @@ def test_operator_exchange_writer_retains_private_scope_and_receipt_provenance(
         "knowledge.api.ingest_raw_with_status", persist_without_external_storage
     )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     result = conductor_context.maintain_request_knowledge("operator", "request-1")
     assert result["status"] == "queued"
     with Session(engine) as db:
@@ -799,7 +781,6 @@ def test_prompt_pressure_drops_knowledge_before_required_evidence(
 
 def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def current_context(selected_task_id, query=None, limit=5):
         assert selected_task_id == task_id
@@ -852,7 +833,6 @@ def test_request_context_is_schema_bounded_and_durably_linked(planner_db, monkey
 
 def test_request_context_records_authorization_failure(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def refused(_task_id, query=None, limit=5):
         return {"ok": False, "reason": "invalid_receipt_authorization"}
@@ -879,7 +859,6 @@ def test_request_context_records_authorization_failure(planner_db, monkeypatch):
 
 def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
 
     async def failed(_task_id, query=None, limit=5):
         raise RuntimeError("database unavailable")
@@ -904,7 +883,6 @@ def test_request_context_records_bounded_retrieval_failure(planner_db, monkeypat
 
 def test_request_context_enforces_and_records_timeout(planner_db, monkeypatch):
     engine, task_id, _policy = planner_db
-    monkeypatch.setenv("CONDUCTOR_CONTINUITY_ENABLED", "true")
     monkeypatch.setattr(conductor, "PLANNER_CONTEXT_REQUEST_TIMEOUT_SECONDS", 0.001)
 
     async def slow(_task_id, query=None, limit=5):

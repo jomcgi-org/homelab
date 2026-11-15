@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, func, select
 
-from core.env import flag
 from factory.execution import (
     SUPPORTED_MODELS,
     mcp,
@@ -51,6 +50,7 @@ from factory.execution.mcp import (
 )
 from core.clock import as_utc, iso
 from core.db import get_session
+from core.github import async_github_get
 from core.identity import verified_email
 from faas.embervm_client import EmberVMTransportError
 from factory.execution.transport import EmberInterruptFailure
@@ -72,11 +72,6 @@ _BRANCH_LIST_CACHE_TTL = 60.0
 _BRANCH_LIST_CACHE_FAILURE_TTL = 10.0
 _PREWARM_TTL = 10.0
 _prewarm_timestamps: dict[int, float] = {}
-
-
-def session_stop_control_enabled() -> bool:
-    """The repository-only rollout gate for interactive Stop."""
-    return flag("AGENT_SESSION_STOP_CONTROL_ENABLED")
 
 
 def _aggregate_statement(status: str | None = None, session_id: int | None = None):
@@ -224,12 +219,7 @@ def _active_stop_identity(
     row: AgentSession, pending: list[PendingMessage]
 ) -> dict | None:
     """Return the exact currently claimed dispatch, without changing ownership."""
-    if (
-        not session_stop_control_enabled()
-        or row.id is None
-        or not row.ember_session_id
-        or not row.ember_session_token
-    ):
+    if row.id is None or not row.ember_session_id or not row.ember_session_token:
         return None
     active = next(
         (
@@ -355,6 +345,14 @@ def factory_board(task: str | None = None) -> dict:
     from factory.private_view import build_factory_view
 
     return build_factory_view(task)
+
+
+@router.get("/factory/summary")
+def factory_summary() -> dict:
+    """Read-only dashboard projection, under the same private boundary as board."""
+    from factory.private_view import build_factory_summary
+
+    return build_factory_summary()
 
 
 @router.get("/factory/work-items")
@@ -668,13 +666,20 @@ def list_offered_models() -> dict:
 
 
 @router.get("/codex-login/status")
-async def codex_login_status(grant: str = Query(default="codex-cluster")):
+async def codex_login_status(
+    grant: str = Query(default="codex-cluster"),
+    environment: str = Query(default="prod"),
+):
     try:
         grant = mcp._grant_or_raise(grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
-        return await mcp._broker_request("GET", f"/grants/{grant}/login/status")
+        mcp._login_environment_or_raise(environment, grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return await mcp._broker_login_request("GET", grant, environment=environment)
     except Exception:
         return JSONResponse(
             status_code=502,
@@ -683,13 +688,20 @@ async def codex_login_status(grant: str = Query(default="codex-cluster")):
 
 
 @router.post("/codex-login/start")
-async def codex_login_start(grant: str = Query(default="codex-cluster")):
+async def codex_login_start(
+    grant: str = Query(default="codex-cluster"),
+    environment: str = Query(default="prod"),
+):
     try:
         grant = mcp._grant_or_raise(grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid grant name") from exc
     try:
-        data = await mcp._broker_request("POST", f"/grants/{grant}/login/start")
+        mcp._login_environment_or_raise(environment, grant)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        data = await mcp._broker_login_request("POST", grant, environment=environment)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
             try:
@@ -722,6 +734,8 @@ async def codex_login_start(grant: str = Query(default="codex-cluster")):
             status_code=502,
             content={"error": "Codex login broker unavailable"},
         )
+    if environment == "dev":
+        return data
     return {
         "verification_url": data.get("verification_url"),
         "user_code": data.get("user_code"),
@@ -1060,7 +1074,6 @@ def get_session_detail(
         .where(PendingMessage.session_id == session_id)
         .order_by(PendingMessage.seq)
     ).all()
-    stop_enabled = session_stop_control_enabled()
     return {
         "session": _session_payload(
             row,
@@ -1107,10 +1120,7 @@ def get_session_detail(
             }
             for message in pending
         ],
-        "stop_control": {
-            "enabled": stop_enabled,
-            "active": _active_stop_identity(row, pending),
-        },
+        "stop_control": {"active": _active_stop_identity(row, pending)},
     }
 
 
@@ -1261,14 +1271,11 @@ async def _start_session(
 
 
 async def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        return response
+    response = await async_github_get(
+        url, timeout=10.0, follow_redirects=False, user_agent="monolith-execution"
+    )
+    response.raise_for_status()
+    return response
 
 
 @router.get("/repos")
@@ -1511,9 +1518,6 @@ def _stop_dispatch(
     session: Session = Depends(get_session),
 ) -> tuple[str | None, str | None, bool]:
     """Resolve owner and dispatch evidence in FastAPI's sync dependency worker."""
-    if not session_stop_control_enabled():
-        raise HTTPException(status_code=404, detail="session Stop is disabled")
-
     row = session.get(AgentSession, session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Agent session not found")

@@ -81,7 +81,7 @@
 (*                          durable :*_destroying intent op and issues the         *)
 (*                          Destroy RPC, but the VM stays LIVE on the node until    *)
 (*                          it confirms teardown (session_manager.ex do_destroy/2   *)
-(*                          under EMBERVM_NODE_CONFIRMED_DESTROY: intent op ->       *)
+(*                          intent op ->                                            *)
 (*                          RPC -> confirmed -> :*_destroyed).                       *)
 (*   ConfirmDestroy(v)   ~ noded Destroy/reap completes and returns                 *)
 (*                          teardown_confirmed=true (server.go Destroy, reap):       *)

@@ -1,0 +1,45 @@
+{{- /*
+A permanent route under the gateway-wide OIDC policy. Envoy Gateway adds the
+OAuth2 filter to the listener only while at least one route uses the policy.
+When that count goes from zero to one (an application's route recreated, its
+namespace dropped from routeNamespaces and re-added), Envoy can take the new
+route before the new listener and serve it once without OIDC, as the trial
+showed for the invalid-to-valid case. This route keeps the count above zero.
+Signed-in requests to it get 404.
+*/}}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: oidc-sentinel
+  namespace: {{ .Release.Namespace }}
+spec:
+  directResponse:
+    statusCode: 404
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: "Not found\n"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: oidc-sentinel
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - {{ .Values.sentinelHostname }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /oauth2-sentinel
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: oidc-sentinel

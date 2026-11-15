@@ -1,13 +1,11 @@
-"""met.no forecast fetch and viable-window computation.
+"""met.no forecast fetch and daylight-hour computation.
 
 Ported from projects/hikes/update_forecast/update.py with fetch split from
 the pure logic: fetch_forecast hits locationforecast/2.0/complete, parse_hourly
 flattens the timeseries, compute_hours keeps every future daylight hour
 (past hours, 7-day horizon, real per-coordinate daylight gate) as an hour
-tuple (see HOUR_FIELDS), and compute_windows applies the viability rule
-(precip > 2.0 mm or wind > 80 km/h is not viable) and emits the compact
-window tuples [timestamp, temp_c, precip_mm, wind_kmh, cloud_pct] with the
-original rounding rules so the windows match the old bundle format exactly.
+tuple (see HOUR_FIELDS). The read-time viability rule rejects precip > 2.0 mm
+or wind > 80 km/h.
 
 Every daylight hour is stored, good or not, so the Scotland connector can
 judge an hour by the caller's own limits; the hikes app filters on
@@ -202,7 +200,7 @@ def is_viable(precip_mm: float, wind_kmh: float) -> bool:
     return precip_mm <= MAX_PRECIPITATION_MM and wind_kmh <= MAX_WIND_KMH
 
 
-# compute_hours tuple layout. The first five match the window tuple; the
+# compute_hours tuple layout. The first five match the public window tuple; the
 # rest come from the complete forecast and are None when absent.
 HOUR_FIELDS = (
     "ts",
@@ -275,23 +273,6 @@ def compute_hours(
         )
 
     return hours
-
-
-def compute_windows(
-    hourly: list[dict], now: datetime, lat: float, lon: float
-) -> list[list]:
-    """Compute viable hiking windows from hourly forecast data. Pure.
-
-    compute_hours' daylight hours that pass is_viable, as the legacy
-    [timestamp, temp_c, precip_mm, wind_kmh, cloud_pct] tuple with wind
-    rounded to whole km/h. The daylight gate is the one deliberate divergence
-    from the legacy fixed 07:00-19:00 band (see the module docstring).
-    """
-    return [
-        [h[0], h[1], h[2], round(h[3]), h[4]]
-        for h in compute_hours(hourly, now, lat, lon)
-        if is_viable(h[2], h[3])
-    ]
 
 
 async def fetch_all_windows(

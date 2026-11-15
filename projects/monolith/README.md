@@ -11,12 +11,13 @@ audience needs; [jomcgi.dev](https://jomcgi.dev) is the public surface.
 The backend is a FastAPI app (`app/main.py`) organized into domains, one
 directory per feature area, each owning its own routes, models, and tests
 colocated as `*_test.py` files next to the code they cover. Domains talk to a
-shared Postgres database (`shared/`) through SQLModel, and a Postgres-backed
-scheduler (`scheduler/`) drives background jobs (ingest, retention, digests,
-backfills) without a separate workflow engine.
+shared Postgres database (`core/db.py`) through SQLModel. Argo CronWorkflows
+run background jobs (ingest, retention, digests, backfills) through
+`app/jobs_main.py`.
 
 The frontend is a SvelteKit app (`frontend/`) that renders both the public
-website and the private app surfaces. Public routes proxy to the backend's
+website and the private app surfaces. The friends Grimoire UI is a separate
+client-only React app (`web/grimoire/`). Public routes proxy to the backend's
 public API through `+page.server.js` loaders so pages render server-side and
 stay cacheable at the edge; private routes talk to the authenticated API.
 
@@ -82,8 +83,11 @@ becomes corrective training data. Current state:
 | `knowledge/`                                                                               | Evidence ingestion, extraction, retrieval, public views, and knowledge interventions       |
 | `chat/`                                                                                    | Discord bot, trust and safety, triggers, reminders, summaries, and session adapter          |
 | `factory/`                                                                                 | Factory execution, task planning, DAG orchestration, operator controls, and public snapshots |
-| `scheduler/`                                                                               | Postgres-backed job scheduler shared by all domains                                        |
-| `shared/`                                                                                  | Cross-domain database session/engine setup and test helpers                                |
+| `web/grimoire/`                                                                            | Client-only React app for the friends Grimoire UI                                          |
+| `framework/`                                                                               | App composition: `build_app`, profiles and modules                                         |
+| `core/`                                                                                    | Engine and session setup (`core/db.py`), clock, env, identity                              |
+| `scheduler/`                                                                               | Retained job rows and Argo run-now submission; schedules live in the chart's CronWorkflows |
+| `shared/`                                                                                  | Cross-domain clients (inference, embedding, notify, SSE) and test helpers                  |
 | `grimoire/`, `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/` | Individual apps, each with its own routes and models                       |
 | `campsites/`, `dr_jobs/` | Retained backend APIs, data models and jobs; frontend pages retired |
 | `e2e/`                                                                                     | End-to-end tests spanning the frontend and backend together                                |

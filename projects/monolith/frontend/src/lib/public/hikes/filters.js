@@ -76,7 +76,7 @@ export function filterWalksByLocation(walks, lat, lon, radiusKm) {
 // UK (Europe/London) calendar day string (YYYY-MM-DD) for a Date. Mirrors the
 // old code's day bucketing, which always used Europe/London because the walks
 // are in Scotland.
-export function ukDayString(date) {
+function ukDayString(date) {
   // en-CA renders ISO-style YYYY-MM-DD, so we get the London-local calendar day
   // without manual padding.
   return new Intl.DateTimeFormat("en-CA", {

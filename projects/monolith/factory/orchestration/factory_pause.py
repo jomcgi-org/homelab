@@ -7,14 +7,20 @@ this primitive takes no further locks and never performs network I/O.
 
 import json
 import os
+from datetime import timedelta
 
 from sqlmodel import select
 
+from core.clock import aware
 from core.jsonio import dumps
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
 
 KIND = "automatic_pause"
+EXPIRY_ACTOR = "factory:pause-expiry"
+# A person keeps this long after the card is written to answer it differently,
+# for example by resuming the task, before the factory applies the stop.
+STOP_CARD_GRACE = timedelta(hours=24)
 STOP = {
     "key": "stop",
     "label": "Stop this task, leave the issue open",
@@ -181,6 +187,104 @@ def pause_locked(db, row, actor, reason):
     ):
         return not was_paused
     _write_card(db, row, actor, reason, body=row.body, prior=prior)
+    return True
+
+
+def _repair_pending(db, task_id, pause_event):
+    """A recorded, unconsumed repair wait for this exact pause.
+
+    Deliberately independent of lane and policy state: pausing admissions or
+    switching the repair producer off must not let expiry destroy a repair
+    that is already under way.
+    """
+    from factory.orchestration import factory_funding as funding
+
+    wait = funding.latest(db, task_id, "repair_allocation_wait")
+    if not wait or wait.get("pause_id") != pause_event.id:
+        return False
+    consumed = funding.latest(db, task_id, "repair_funding_requested")
+    return not (consumed and consumed.get("wait_id") == wait["audit_id"])
+
+
+def expire_stop_card(task_id):
+    """Apply a machine pause's only option once its task deadline has passed.
+
+    A stop-only card offers no decision: stopping is its sole choice. Asking a
+    person to press it left paused tasks holding delivery slots for days. Past
+    the task deadline, and STOP_CARD_GRACE after both the card was written and
+    the current pause was taken, the factory applies that same stop. It never
+    invents another choice.
+
+    An operator's own pause, a landing hold, a pending repair of the paused
+    node, a decision in flight and any unknown execution all keep the card.
+    The checks and the answer share one control lock. Returns True when the
+    stop was applied.
+    """
+    from factory.orchestration import factory_decisions as decisions
+    from factory.orchestration import factory_funding as funding
+
+    with controls._locked_session() as (db, _control):
+        row = controls._receipt(db, task_id)
+        card = decisions.escalation_of(row) if row is not None else None
+        if (
+            not eligible(db, row)
+            or not decidable(row, card)
+            or card.get("options") != [STOP]
+            or card.get("resolved") is not None
+            or controls.landing_held(row)
+            or decisions.decision_in_flight(db, row.id)
+        ):
+            return False
+        # Paused, active, quiescent and past the deadline, read under this lock.
+        settlement = controls.paused_settlement_snapshot(task_id, session=db)
+        if not settlement["ok"] or not settlement["limits"]["deadline_expired"]:
+            return False
+        pause_event = funding._latest_pause(db, task_id)
+        written = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action.in_(
+                    ("paused_card_created", "paused_card_superseded")
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(1)
+        ).first()
+        decision_id = _identity(row, card)
+        if (
+            pause_event is None
+            or not pause_event.actor.startswith("factory:")
+            or written is None
+            or json.loads(written.detail_json).get("decision_id") != decision_id
+            or _repair_pending(db, task_id, pause_event)
+        ):
+            return False
+        # A resume leaves the card in place, and a later pause reuses it. Count
+        # the grace from whichever is newer so a fresh pause keeps a full one.
+        newest = max(aware(written.created_at), aware(pause_event.created_at))
+        if controls._now() < newest + STOP_CARD_GRACE:
+            return False
+        try:
+            fields, _escalation, resolved = decisions._claim(
+                row.id, STOP["key"], EXPIRY_ACTOR, decision_id, session=db
+            )
+            if resolved is not None:
+                return False
+            decisions._resolve(
+                row.id,
+                STOP,
+                EXPIRY_ACTOR,
+                "The task deadline passed and this pause offered only stop. "
+                "Applied automatically so cancellation is requested and the "
+                "delivery slot can be released. The issue stays open.",
+                {"held": True},
+                expected_decision_id=fields["decision_id"],
+                session=db,
+            )
+        except decisions.DecisionError:
+            # A generation change or a pending request keeps the card.
+            return False
     return True
 
 

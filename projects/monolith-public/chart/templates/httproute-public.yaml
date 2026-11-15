@@ -198,27 +198,7 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: {{ include "monolith-public.fullname" . }}-public
-  authorization:
-    defaultAction: Allow
-    rules:
-      # Cloudflare documents that same-zone Workers can alter x-real-ip, which
-      # becomes CF-Connecting-IP. CF-Worker is added to every fetch subrequest.
-      - name: deny-same-zone-workers
-        action: Deny
-        principal:
-          headers:
-            - name: CF-Worker
-              values:
-                - {{ .Values.cfIngress.public.clientIdentity.cloudflareZone | quote }}
-      # Cross-zone Worker traffic receives this fixed address rather than the
-      # visitor address. Reject it instead of treating all Workers as one client.
-      - name: deny-cross-zone-workers
-        action: Deny
-        principal:
-          headers:
-            - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
-              values:
-                - {{ .Values.cfIngress.public.clientIdentity.crossZoneWorkerAddress | quote }}
+  {{- include "monolith-public.workerDenyAuthorization" . | nindent 2 }}
 ---
 # /functions/ carries the same per-client shape described above, with its own
 # budget.
@@ -260,25 +240,5 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: {{ include "monolith-public.fullname" . }}-functions
-  authorization:
-    defaultAction: Allow
-    rules:
-      # Cloudflare documents that same-zone Workers can alter x-real-ip, which
-      # becomes CF-Connecting-IP. CF-Worker is added to every fetch subrequest.
-      - name: deny-same-zone-workers
-        action: Deny
-        principal:
-          headers:
-            - name: CF-Worker
-              values:
-                - {{ .Values.cfIngress.public.clientIdentity.cloudflareZone | quote }}
-      # Cross-zone Worker traffic receives this fixed address rather than the
-      # visitor address. Reject it instead of treating all Workers as one client.
-      - name: deny-cross-zone-workers
-        action: Deny
-        principal:
-          headers:
-            - name: {{ .Values.cfIngress.public.clientIdentity.clientHeader.name | quote }}
-              values:
-                - {{ .Values.cfIngress.public.clientIdentity.crossZoneWorkerAddress | quote }}
+  {{- include "monolith-public.workerDenyAuthorization" . | nindent 2 }}
 {{- end }}

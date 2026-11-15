@@ -1,7 +1,9 @@
 # See https://pnpm.io/pnpm-workspace_yaml
 packages:
   - projects/design-system
+  - projects/factory-landing/web
   - projects/monolith/frontend
+  - projects/monolith/web/grimoire
 
 # Dependency admission policy for new resolutions:
 # - Delay new registry releases for three days, matching Renovate's default.

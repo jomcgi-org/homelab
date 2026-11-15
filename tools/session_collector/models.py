@@ -1,8 +1,11 @@
-"""Shared data structures for transcript adapters."""
+"""Shared data structures and helpers for transcript adapters."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -34,3 +37,20 @@ class Session:
     git_origin: str | None = None
     usage: dict | None = None
     models: list[str] = field(default_factory=list)
+
+
+def token_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def read_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+    return records

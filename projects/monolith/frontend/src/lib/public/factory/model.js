@@ -4,6 +4,7 @@ const MODEL_LANES = new Map([
   ["luna", "luna"],
   ["terra", "codex"],
   ["sol", "codex"],
+  ["astra", "codex"],
   ["opus", "claude"],
   ["sonnet", "claude"],
   ["fable", "claude"],
@@ -51,6 +52,9 @@ export function modelLane(modelName) {
     model === "gpt-5.6-terra" ||
     model === "gpt-5.6-sol" ||
     model === "gpt-6-sol" ||
+    model === "gpt-6.1-sol" ||
+    model === "gpt-6.1-terra" ||
+    model === "gpt-6-astra" ||
     model === "codex-auto-review"
   )
     return "codex";
@@ -335,7 +339,7 @@ export function snapshotFreshness(
 const quotaNumber = (value) =>
   typeof value === "number" && Number.isFinite(value);
 
-export function quotaDuration(seconds) {
+function quotaDuration(seconds) {
   if (!quotaNumber(seconds) || seconds < 0) return "unknown";
   if (seconds >= 86400)
     return `${(seconds / 86400).toFixed(1).replace(/\.0$/, "")}d`;

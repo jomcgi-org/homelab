@@ -1,0 +1,70 @@
+{{- if and .Values.connector.enabled .Values.networkPolicy.cilium }}
+{{- /*
+The connector's allowlist under the cluster-wide default-deny. It accepts no
+connections (nothing scrapes its metrics yet; kubelet probes are host
+traffic) and calls only itsaplan's api, the kagent controller, the broker's
+admin port, its database and GitHub's API. Each peer admits it by
+networkPolicy.connector's labels in its own policy.
+*/}}
+{{- $c := .Values.connector }}
+{{- $kagentNs := include "factory.kagentNamespace" . }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "factory.connectorName" . }}
+  namespace: {{ .Values.broker.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.connectorSelector" . | nindent 6 }}
+  egress:
+    # itsaplan's runner and coordinator routes.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.itsaplan.namespace }}
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    # kagent's A2A gateway and SessionService share the controller's listener.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $kagentNs }}
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.kagent.controller.service.ports.targetPort | default 8083 | quote }}
+              protocol: TCP
+    {{- if include "factory.connectorDelivers" . }}
+    # Connector GitHub tokens on the broker's admin port.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.brokerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.broker.adminPort | quote }}
+              protocol: TCP
+    # Pull requests, reviews, checks and the merge queue.
+    - toFQDNs:
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+    {{- with $c.database.endpoints }}
+    # factory-db's instances behind its rw Service.
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $c.database.port | quote }}
+              protocol: TCP
+    {{- end }}
+{{- end }}

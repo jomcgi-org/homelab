@@ -260,8 +260,8 @@ def _reap_version_stranded_cycles(dbos) -> int:
     the worker is running the latest registered application version. Therefore
     an explicit mismatch is stranded, and a NULL-version row is stranded when
     this leader is a previously registered version after a rollback. Neither
-    produces a PENDING row for the staleness reaper to find, yet
-    _has_live_drain_cycle counts both, so every tick would otherwise return
+    produces a PENDING row for the staleness reaper to find, yet the worker
+    refill counts both as live, so every tick would otherwise return
     already_queued forever.
 
     Chaining widens the window that produces one of these. A cycle that
@@ -329,26 +329,6 @@ def _reap_version_stranded_cycles(dbos) -> int:
         logger.warning("Luna drainer stranded-cycle query failed", exc_info=True)
 
     return reaped
-
-
-def _has_live_drain_cycle(dbos) -> bool:
-    """Check worker activity. An unavailable inventory remains occupied."""
-    try:
-        workflows = dbos.list_workflows(
-            name="drain_cycle",
-            queue_name=_DRAINER_QUEUE_NAME,
-            status=["PENDING", "ENQUEUED"],
-            limit=1,
-            load_input=False,
-            load_output=False,
-        )
-        return len(workflows) > 0
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "Luna drainer status check failed",
-            exc_info=True,
-        )
-        return True
 
 
 @router.post("/drain", status_code=202)

@@ -29,7 +29,7 @@ export const ESCAPE_HOTKEYS = {
 };
 
 /** How a key name reads on a button, where the event name is not the label. */
-export const ESCAPE_KEY_LABEL = { Escape: "Esc" };
+const ESCAPE_KEY_LABEL = { Escape: "Esc" };
 
 function hasValue(value) {
   return value !== null && value !== undefined && value !== "";
@@ -283,11 +283,11 @@ export function needsConfirm(option) {
 
 /** The one line a close confirmation puts in front of the operator. */
 export function confirmLine(item) {
-  return `Close #${item?.issue_number} as not planned and drop needs-human? Press x again, or Esc to cancel.`;
+  return `Close #${item?.issue_number} as not planned and drop needs-human? Choose Confirm close to proceed or Cancel close to go back.`;
 }
 
 /** Clamp an index into a list, returning -1 for an empty one. */
-export function clampIndex(index, length) {
+function clampIndex(index, length) {
   if (!length) return -1;
   return Math.min(Math.max(index, 0), length - 1);
 }

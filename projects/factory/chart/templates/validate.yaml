@@ -1,0 +1,56 @@
+{{- /*
+Render-time checks for values the schema cannot express, and for later steps
+of the delivery plan that are not implemented yet: setting them fails here
+instead of silently rendering nothing.
+*/}}
+{{- if ne (eq .Values.kagent.mode "install") (.Values.kagent.enabled | default false) }}
+{{- fail "kagent.enabled must be true for kagent.mode install and false for existing" }}
+{{- end }}
+{{- if ne .Values.postgres.mode "existing" }}
+{{- fail "postgres.mode install arrives with the CNPG operator (delivery plan step 3); use existing" }}
+{{- end }}
+{{- if .Values.providers }}
+{{- fail "providers are not implemented in this chart version; agents use the broker's relay" }}
+{{- end }}
+{{- with .Values.broker.operatorServiceAccount }}
+{{- if or (has . (list "default" (include "factory.brokerName" $) (include "factory.connectorName" $) (include "factory.reviewerName" $))) (hasPrefix "factory-itsaplan" .) }}
+{{- fail (printf "broker.operatorServiceAccount %s is a ServiceAccount the chart's Pods use; name a separate one" .) }}
+{{- end }}
+{{- end }}
+{{- $runtime := .Values.kagent.config.runtimeDefaults }}
+{{- $watched := .Values.kagent.rbac.namespaces }}
+{{- $seen := dict }}
+{{- range $r := .Values.repositories }}
+{{- $a := index $.Values.agents $r.agent }}
+{{- if not $a }}
+{{- fail (printf "repositories %s: agent %q is not in agents" $r.name $r.agent) }}
+{{- end }}
+{{- if and (eq ($r.toolchain | default "") "homelab") (not (has "github-git" $a.egress)) }}
+{{- fail (printf "repositories %s: homelab toolchain needs agents.%s.egress github-git for release downloads" $r.name $r.agent) }}
+{{- end }}
+{{- if hasKey $seen $r.namespace }}
+{{- fail (printf "repositories %s: namespace %s is already bound; one namespace per repository" $r.name $r.namespace) }}
+{{- end }}
+{{- $_ := set $seen $r.namespace true }}
+{{- if or (eq $r.namespace (include "factory.kagentNamespace" $)) (eq $r.namespace $.Values.broker.namespace) }}
+{{- fail (printf "repositories %s: namespace %s is not a binding namespace" $r.name $r.namespace) }}
+{{- end }}
+{{- if not (has $r.namespace $watched) }}
+{{- fail (printf "repositories %s: add namespace %s to kagent.rbac.namespaces so the controller watches it" $r.name $r.namespace) }}
+{{- end }}
+{{- if not $.Values.broker.enabled }}
+{{- fail (printf "repositories %s: agent provider broker needs broker.enabled" $r.name) }}
+{{- end }}
+{{- /* kagent 1.0.1 applies one CPU and memory limit to every runtime. */}}
+{{- if or (ne (toString $a.resources.cpu) (toString $runtime.cpu)) (ne (toString $a.resources.memory) (toString $runtime.memory)) }}
+{{- fail (printf "agents %s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $r.agent $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- end }}
+{{- if .Values.itsaplan.enabled }}
+{{- if eq .Values.itsaplan.namespace (include "factory.kagentNamespace" .) }}
+{{- fail "itsaplan.namespace must not be kagent's: the kagent controller reads every Secret there" }}
+{{- end }}
+{{- if ne .Values.itsaplan.namespace .Values.broker.namespace }}
+{{- fail "itsaplan.namespace must be broker.namespace: they share the factory namespace the broker's template declares" }}
+{{- end }}
+{{- end }}

@@ -24,6 +24,7 @@ TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 FAILURES=0
 RUN="source-commit-123"
 REPO="ghcr.io/jomcgi/homelab/projects/demo/image"
+EXTRA_REPO="ghcr.io/jomcgi/homelab/projects/extra/image"
 INDEX_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 STALE_DIGEST="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
@@ -132,6 +133,31 @@ else
 	fail "stale pin diagnostics" "$out"
 fi
 
+# The expected pin still matches; only the final artifact broadens membership.
+setup extra-first-party-pin
+candidate_values "$INDEX_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+final_values "$INDEX_DIGEST" >"$CASE_DIR/final.values"
+printf 'extra:\n  repository: %s\n  digest: %s\n' "$EXTRA_REPO" "$STALE_DIGEST" >>"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/demo:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "extra first-party pin" "verifier incorrectly succeeded: $out"
+elif [[ "$out" == "ERROR: publish verification run=${RUN} chart=demo image=${EXTRA_REPO} expected=absent observed=${STALE_DIGEST} (unexpected first-party pin in final artifact)"$'\n'"1 published image verification failure(s)" ]]; then
+	pass "extra first-party pin is the only verification failure"
+else
+	fail "extra first-party pin diagnostics" "$out"
+fi
+
+setup extra-third-party-pin
+candidate_values "$INDEX_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+final_values "$INDEX_DIGEST" >"$CASE_DIR/final.values"
+printf 'extra:\n  repository: docker.io/library/alpine\n  digest: %s\n' "$STALE_DIGEST" >>"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/demo:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	pass "extra third-party pin in final artifact passes"
+else
+	fail "extra third-party pin" "$out"
+fi
+
 setup missing-push-result
 candidate_values "$INDEX_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
 final_values "$INDEX_DIGEST" >"$CASE_DIR/final.values"
@@ -188,6 +214,72 @@ elif [[ "$out" == *"expected=run=${RUN}"* && "$out" == *"observed=run=older-comm
 	pass "wrong-run image evidence fails closed"
 else
 	fail "stale invocation diagnostics" "$out"
+fi
+
+# A chart that deploys only third-party images has no first-party set to pin.
+third_party_values() {
+	printf 'image:\n  repository: ghcr.io/kagent-dev/kagent/controller\n  tag: 1.0.1\n  digest: sha256:eeee\n'
+}
+setup third-party-only
+third_party_values >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+third_party_values >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	pass "chart with no first-party images passes once its artifact is published"
+else
+	fail "third-party-only chart" "$out"
+fi
+
+setup third-party-only-extra-first-party
+third_party_values >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+third_party_values >"$CASE_DIR/final.values"
+printf 'extra:\n  repository: %s\n  digest: %s\n' "$EXTRA_REPO" "$INDEX_DIGEST" >>"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "third-party-only extra first-party pin" "verifier incorrectly succeeded: $out"
+elif [[ "$out" == "ERROR: publish verification run=${RUN} chart=demo image=- expected=no first-party pins observed=${EXTRA_REPO}"$'\t'"${INDEX_DIGEST} (unexpected first-party pin in final artifact)"$'\n'"1 published image verification failure(s)" ]]; then
+	pass "third-party-only extra first-party pin is the only verification failure"
+else
+	fail "third-party-only extra first-party pin diagnostics" "$out"
+fi
+
+setup third-party-only-unpublished
+third_party_values >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+FINAL_VALUES_OVERRIDE="$CASE_DIR/does-not-exist"
+if out=$(run_case); then
+	fail "unpublished third-party-only chart" "expected non-zero"
+elif [[ "$out" == *"final artifact bytes unavailable"* ]]; then
+	pass "chart with no first-party images still needs its published artifact"
+else
+	fail "unpublished third-party-only diagnostics" "$out"
+fi
+unset FINAL_VALUES_OVERRIDE
+
+# A first-party image left tag-only is the gap the empty-set check guards.
+setup first-party-tag-only
+printf 'tagOnly:\n  repository: ghcr.io/jomcgi/homelab/tools/tag-only\n  tag: main\n' >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+printf 'tagOnly:\n  repository: ghcr.io/jomcgi/homelab/tools/tag-only\n  tag: main\n' >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "first-party tag-only chart" "expected non-zero"
+elif [[ "$out" == *"expected image set is empty"* ]]; then
+	pass "first-party image without a digest pin still fails"
+else
+	fail "first-party tag-only diagnostics" "$out"
+fi
+
+# A first-party image in a layout _image_pins cannot read still fails closed.
+setup first-party-bare-image
+printf 'sidecar:\n  image: "ghcr.io/jomcgi/homelab/tools/sidecar:main"\n' >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+printf 'sidecar:\n  image: "ghcr.io/jomcgi/homelab/tools/sidecar:main"\n' >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/other:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "first-party bare image string" "expected non-zero"
+elif [[ "$out" == *"expected image set is empty"* ]]; then
+	pass "first-party image in an unpinnable layout still fails"
+else
+	fail "first-party bare image diagnostics" "$out"
 fi
 
 echo ""

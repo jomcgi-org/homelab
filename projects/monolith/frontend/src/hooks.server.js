@@ -1,7 +1,15 @@
+import { requiresNoStore } from "../server/response-cache-policy.js";
 import { startPublicSnapshotPrewarm } from "./lib/server/public-snapshots.js";
 
-export function init() {
+// The public build leaves out src/lib/private, so the private prewarm is
+// found by glob: an empty map there, a lazy import in the private build.
+const privateCache = import.meta.glob("./lib/private/backend-cache.js");
+
+export async function init() {
   startPublicSnapshotPrewarm();
+  for (const load of Object.values(privateCache)) {
+    (await load()).startPrivatePrewarm();
+  }
 }
 
 // SvelteKit server hook: negotiated response compression.
@@ -60,7 +68,26 @@ export function pickEncoding(accept) {
 
 /** @type {import('@sveltejs/kit').Handle} */
 export async function handle({ event, resolve }) {
-  const response = await resolve(event);
+  let response = await resolve(event);
+
+  // Apply after resolve, when Kit has added loader headers and cookies, and
+  // before every compression/HEAD/stream fast path. Origin headers cannot
+  // bypass an already stored Cloudflare hit; that rule is tracked in #7961.
+  if (requiresNoStore(event, response)) {
+    const headers = new Headers(response.headers);
+    headers.set("cache-control", "no-store");
+    headers.set("cloudflare-cdn-cache-control", "no-store");
+    if (headers.has("cdn-cache-control"))
+      headers.set("cdn-cache-control", "no-store");
+    // Kit evaluates If-None-Match after this hook. A private response must not
+    // validate a previously shared representation into a 304.
+    headers.delete("etag");
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
 
   // The Activity index still accepts legacy JSON clients at its HTML URL.
   // Cloudflare's URL cache key does not distinguish Accept, so neither
@@ -73,23 +100,6 @@ export async function handle({ event, resolve }) {
     response.headers.set("cloudflare-cdn-cache-control", "no-store");
     // Do not revalidate a previously cached representation into a 304. Kit
     // evaluates If-None-Match after this hook, so remove its validator too.
-    response.headers.delete("etag");
-  }
-
-  // Campaign pages contain private roster data and one-time invitation action
-  // results. Apply at the response boundary so action failures, navigation
-  // payloads and redirects cannot be cached even when no page load runs.
-  if (
-    event.route?.id === "/friends/grimoire" ||
-    event.route?.id?.startsWith("/friends/grimoire/")
-  ) {
-    response.headers.set("cache-control", "private, no-store");
-    response.headers.set("cloudflare-cdn-cache-control", "no-store");
-    // Native form POSTs need their same-origin Origin for CSRF checks.
-    // no-referrer makes navigation POST Origin null (Fetch section 3.2).
-    // same-origin still omits referrers to other origins; invitation fragments
-    // are cleared by the standalone landing before it sends any request.
-    response.headers.set("referrer-policy", "same-origin");
     response.headers.delete("etag");
   }
 

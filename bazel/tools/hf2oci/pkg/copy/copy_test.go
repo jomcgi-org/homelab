@@ -433,33 +433,6 @@ func TestCopyWithBaseModel(t *testing.T) {
 	assert.False(t, result.Cached)
 }
 
-func TestDeriveRepoName(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"NousResearch/Hermes-4.3-Llama-3-36B-AWQ", "nousresearch/hermes-4.3-llama-3-36b-awq"},
-		{"Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen/qwen2.5-0.5b-instruct-gguf"},
-		{"org/model", "org/model"},
-	}
-	for _, tt := range tests {
-		assert.Equal(t, tt.want, deriveRepoName(tt.input))
-	}
-}
-
-func TestDeriveVariantTag(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"Emilio407/nllb-200-distilled-1.3B-4bit", "emilio407-nllb-200-distilled-1.3b-4bit"},
-		{"Org/Model", "org-model"},
-	}
-	for _, tt := range tests {
-		assert.Equal(t, tt.want, deriveVariantTag(tt.input))
-	}
-}
-
 func TestCopyGGUFMultiFileRequiresSelector(t *testing.T) {
 	hfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

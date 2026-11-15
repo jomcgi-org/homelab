@@ -1,6 +1,6 @@
 import { RUN_LEXICON } from "./run-lexicon.js";
 
-export const IN_FLIGHT_STATUSES = new Set(["PENDING", "ENQUEUED"]);
+const IN_FLIGHT_STATUSES = new Set(["PENDING", "ENQUEUED"]);
 
 export function isInFlight(run) {
   return IN_FLIGHT_STATUSES.has(run?.dbos_status);

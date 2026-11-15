@@ -1,12 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CALLS,
-  CHAT_SCHEDULE,
-  PHASES,
-  clamp,
-  easeInOut,
-  sub,
-} from "./timeline.js";
+import { CALLS, CHAT_SCHEDULE, PHASES } from "./timeline.js";
 
 describe("agentstory timeline", () => {
   const order = [
@@ -30,14 +23,6 @@ describe("agentstory timeline", () => {
     }
     expect(PHASES.heroOut[0]).toBe(0);
     expect(PHASES.out[1]).toBe(1);
-  });
-  it("provides pure clamp, sub, and symmetric easing", () => {
-    expect(clamp(-1, 0, 1)).toBe(0);
-    expect(clamp(2, 0, 1)).toBe(1);
-    expect(sub(0.3, 0.2, 0.4)).toBeCloseTo(0.5);
-    expect(easeInOut(0)).toBe(0);
-    expect(easeInOut(1)).toBe(1);
-    expect(easeInOut(0.25) + easeInOut(0.75)).toBeCloseTo(1);
   });
   it("keeps wire calls and chat thresholds valid", () => {
     for (const [beat, calls] of Object.entries(CALLS)) {

@@ -263,6 +263,7 @@ grimoire:
 # reading. Dev is not gating a real merge, so the floor buys nothing and a
 # subscription-billed reviewer on a throwaway run buys less.
 swarm:
+  factoryPlannerHoldRefusalEnabled: false
   implementerModel: "luna"
   reviewerModel: "luna"
 

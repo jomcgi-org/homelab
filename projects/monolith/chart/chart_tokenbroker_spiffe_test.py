@@ -17,7 +17,11 @@ def _chart_dir() -> Path:
     return chart
 
 
-def _render(release: str, settings: list[str] | None = None) -> list[dict]:
+def _render(
+    release: str,
+    settings: list[str] | None = None,
+    values_files: list[Path] | None = None,
+) -> list[dict]:
     helm_bin = os.environ.get("HELM_BIN", "helm")
     argv = [
         helm_bin,
@@ -27,6 +31,8 @@ def _render(release: str, settings: list[str] | None = None) -> list[dict]:
         "--namespace",
         release,
     ]
+    for values_file in values_files or []:
+        argv += ["-f", str(values_file)]
     for setting in settings or []:
         argv += ["--set", setting]
     result = subprocess.run(argv, capture_output=True, text=True)
@@ -91,6 +97,7 @@ def test_default_render_preserves_plaintext_and_omits_spiffe_runtime() -> None:
 
     assert _env(backend)["EMBER_TOKENBROKER_URL"].startswith("http://")
     assert _env(backend)["EMBER_TOKENBROKER_SPIFFE_ENABLED"] == "false"
+    assert not any(name.startswith("EMBER_DEV_TOKENBROKER_") for name in _env(backend))
     assert not any(
         container["name"] == "tokenbroker-spiffe-helper"
         for container in deployment["spec"]["template"]["spec"]["containers"]
@@ -193,18 +200,85 @@ def test_enabled_render_rejects_non_tls_url_and_missing_server_identity() -> Non
             raise AssertionError(f"accepted invalid SPIFFE settings: {settings}")
 
 
-def test_all_checked_in_environment_overlays_keep_spiffe_default_off() -> None:
+def test_checked_in_overlays_keep_spiffe_off_except_the_hub() -> None:
     projects = _chart_dir().parents[1]
     paths = [
         _chart_dir() / "values.yaml",
         projects / "monolith/deploy/values.yaml",
-        projects / "monolith/deploy/values-gke.yaml",
         projects / "monolith/dev/deploy/values.yaml",
         projects / "monolith/dev/deploy/values-recovery-gke.yaml",
     ]
     for path in paths:
         values = yaml.safe_load(path.read_text())
         assert values["tokenBroker"]["spiffe"]["enabled"] is False, path
+
+    # #5791 stage 1: only the hub overlay turns the mTLS client on.
+    hub = yaml.safe_load((projects / "monolith/deploy/values-gke.yaml").read_text())
+    assert hub["tokenBroker"]["spiffe"]["enabled"] is True
+
+
+def test_hub_dev_login_reuses_private_identity_and_keeps_production_target() -> None:
+    projects = _chart_dir().parents[1]
+    objects = _render(
+        "monolith",
+        values_files=[
+            projects / "monolith/deploy/values.yaml",
+            projects / "monolith/deploy/values-gke.yaml",
+        ],
+    )
+    deployment = _object(objects, "Deployment", "monolith")
+    pod = deployment["spec"]["template"]["spec"]
+    env = _env(_container(deployment, "backend"))
+
+    assert pod["serviceAccountName"] == "monolith"
+    assert env["EMBER_DEV_TOKENBROKER_LOGIN_URL"] == (
+        "https://embervm-dev-embervm-tokenbroker.embervm-dev.svc:8443"
+    )
+    assert env["EMBER_DEV_TOKENBROKER_LOGIN_SPIFFE_ID"] == (
+        "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
+    )
+    assert env["EMBER_TOKENBROKER_URL"] == (
+        "https://embervm-embervm-tokenbroker.embervm.svc:8443"
+    )
+    assert env["EMBER_TOKENBROKER_SPIFFE_ID"] == (
+        "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-tokenbroker"
+    )
+    assert env["EMBER_TOKENBROKER_SVID_CERT"] == "/run/tokenbroker-svid/svid.pem"
+    assert env["EMBER_TOKENBROKER_SVID_KEY"] == "/run/tokenbroker-svid/svid_key.pem"
+    assert (
+        len([c for c in pod["containers"] if c["name"] == "tokenbroker-spiffe-helper"])
+        == 1
+    )
+    for container in pod["containers"]:
+        if container["name"] != "backend":
+            assert not any(
+                name.startswith("EMBER_DEV_TOKENBROKER_") for name in _env(container)
+            )
+    for workflow in objects:
+        if workflow.get("kind") == "CronWorkflow":
+            assert not any(
+                name.startswith("EMBER_DEV_TOKENBROKER_")
+                for name in _env(_job_container(workflow))
+            )
+
+
+def test_dev_login_render_requires_existing_spiffe_helper_and_fixed_target() -> None:
+    valid = [
+        "tokenBroker.spiffe.enabled=true",
+        "tokenBroker.devLoginUrl=https://dev-broker:8443",
+        "tokenBroker.devLoginServerId=spiffe://example.test/dev-broker",
+    ]
+    for setting, message in [
+        ("tokenBroker.spiffe.enabled=false", "requires tokenBroker.spiffe.enabled"),
+        ("tokenBroker.devLoginUrl=http://dev-broker:8080", "must use https"),
+        ("tokenBroker.devLoginServerId=", "devLoginServerId is required"),
+    ]:
+        try:
+            _render("invalid", [*valid, setting])
+        except RuntimeError as error:
+            assert message in str(error)
+        else:
+            raise AssertionError(f"accepted invalid dev login settings: {setting}")
 
 
 def _quota_job_settings() -> list[str]:
@@ -296,18 +370,11 @@ def test_quota_job_preserves_spiffe_transport_without_granting_job_identity() ->
 
 
 def test_codex_account_admission_activation_is_explicit_and_reachable() -> None:
-    for settings, enabled, preferred in [
-        ([], "false", ""),
-        (
-            [
-                "swarm.codexExhaustedGrantExclusion=true",
-                "swarm.codexPreferredGrant=codex-b",
-            ],
-            "true",
-            "codex-b",
-        ),
+    for settings, preferred in [
+        ([], ""),
+        (["swarm.codexPreferredGrant=codex-b"], "codex-b"),
     ]:
         objects = _render("monolith", ["swarm.enabled=true", *settings])
         env = _env(_container(_object(objects, "Deployment", "monolith"), "backend"))
-        assert env["SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION"] == enabled
+        assert "SWARM_CODEX_EXHAUSTED_GRANT_EXCLUSION" not in env
         assert env["SWARM_CODEX_PREFERRED_GRANT"] == preferred

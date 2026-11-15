@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -38,7 +37,7 @@ from factory.execution.constants import (
     KG_NODE_KEY,
 )
 from core.db import get_engine
-from core.github import GITHUB_API
+from core.github import GITHUB_API, github_get
 from factory.orchestration import drain_console
 
 router = APIRouter(prefix="/api/agents/drain", tags=["agents"])
@@ -57,14 +56,11 @@ _PR_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
 
 
 def _github_get(url: str) -> httpx.Response:
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_API_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-        return response
+    response = github_get(
+        url, timeout=10.0, follow_redirects=True, user_agent="monolith-drain-console"
+    )
+    response.raise_for_status()
+    return response
 
 
 def _enrich_pr(pr: dict) -> dict:

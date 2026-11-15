@@ -122,7 +122,6 @@ def test_response_lost_hold_accepts_an_unstamped_control_plane_outage(
     monkeypatch, tmp_path
 ):
     engine, schemas = _database(monkeypatch, tmp_path)
-    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "true")
     try:
         with Session(engine) as session:
             agent = store.create_session(session, "cp-outage", "<guest>", "main")
@@ -291,6 +290,44 @@ def test_create_turn_records_reported_and_list_costs_side_by_side(
                 assert turn.list_cost_usd > 0
             else:
                 assert turn.list_cost_usd is None
+    finally:
+        _restore_schemas(schemas)
+
+
+@pytest.mark.parametrize(
+    ("provider_model", "expected"),
+    [("gpt-6.1-terra", 1.0), ("gpt-5.6-terra", 4.0), ("gpt-unknown", None)],
+)
+def test_create_turn_prices_selected_id_and_preserves_requested_label(
+    monkeypatch, tmp_path, provider_model, expected
+):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    usage = {"provider_model": provider_model, "input_tokens": 1_000_000}
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "terra", "<guest>", "main")
+            turn = store.create_turn(
+                session,
+                session_id=agent.id,
+                seq=1,
+                prompt="price selected model",
+                voice_summary=None,
+                result_text="done",
+                terminal_reason="completed",
+                stop_reason=None,
+                permission_denials=None,
+                commit_sha=None,
+                usage=usage,
+                cost_usd=None,
+                model="terra",
+            )
+            assert turn.model == "terra"
+            assert json.loads(turn.usage_json) == usage
+            assert turn.cost_usd is None
+            if expected is None:
+                assert turn.list_cost_usd is None
+            else:
+                assert turn.list_cost_usd == pytest.approx(expected)
     finally:
         _restore_schemas(schemas)
 
@@ -1147,19 +1184,34 @@ def test_direct_claim_stops_a_previously_released_attempt(uncertain_lane):
         )
 
 
+def _hold_unknown(session_id, owner, dispatch_count):
+    with Session(store.get_engine()) as session:
+        held = store.finish_unknown_pending_in_session(
+            session,
+            session_id,
+            1,
+            owner,
+            dispatch_count,
+            "lost",
+            expected_guest_id="guest-investigate",
+            expected_workflow_id=None,
+        )
+        if held:
+            session.commit()
+        return held
+
+
 def test_unknown_reconciliation_is_idempotent_and_owner_fenced(uncertain_lane):
     engine, session_id = uncertain_lane
-    assert store.finish_unknown_pending_sync(session_id, 1, "other", 1, "lost") is False
-    assert (
-        store.finish_unknown_pending_sync(session_id, 1, "owner-1", 2, "lost") is False
-    )
+    assert _hold_unknown(session_id, "other", 1) is False
+    assert _hold_unknown(session_id, "owner-1", 2) is False
     from threading import Barrier
 
     barrier = Barrier(2)
 
     def reconcile():
         barrier.wait(timeout=5)
-        return store.finish_unknown_pending_sync(session_id, 1, "owner-1", 1, "lost")
+        return _hold_unknown(session_id, "owner-1", 1)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: reconcile(), range(2)))
@@ -1209,7 +1261,6 @@ def test_session_lock_heartbeat_skips_pool_lock_and_keeps_fences(
     uncertain_lane, monkeypatch
 ):
     engine, session_id = uncertain_lane
-    monkeypatch.setenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "true")
 
     def no_pool(_db):
         raise AssertionError("heartbeat took the capacity pool lock")
@@ -1237,20 +1288,6 @@ def test_session_lock_heartbeat_skips_pool_lock_and_keeps_fences(
         session.add(row)
         session.commit()
     assert store.refresh_claim_sync(session_id, 1, "owner-1") is False
-
-
-def test_heartbeat_takes_pool_lock_when_flag_off(uncertain_lane, monkeypatch):
-    _, session_id = uncertain_lane
-    monkeypatch.delenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", raising=False)
-    calls = []
-    original = store.admission.lock_pool
-    monkeypatch.setattr(
-        store.admission,
-        "lock_pool",
-        lambda db: calls.append(True) or original(db),
-    )
-    assert store.refresh_claim_sync(session_id, 1, "owner-1") is True
-    assert calls
 
 
 def test_expired_attempt_is_recorded_once(uncertain_lane):
@@ -1632,6 +1669,40 @@ def test_observation_without_pending_identity_is_unavailable():
     assert observation["requested_model"] is None
 
 
+@pytest.mark.parametrize(
+    "change", [None, "not_positive", "attempted", "sqlstate", "phase", "version"]
+)
+def test_typed_preinvoke_metadata_requires_positive_closed_vocabulary(
+    uncertain_lane, change
+):
+    engine, sid = uncertain_lane
+    failure = {
+        "version": 1,
+        "phase": "receipt_prepare",
+        "sqlstate": "42703",
+        "attempted": False,
+    }
+    if change in {"attempted", "sqlstate", "phase", "version"}:
+        failure[change] = {
+            "attempted": True,
+            "sqlstate": "42501",
+            "phase": "response_wait",
+            "version": 2,
+        }[change]
+    store.mark_turn_error_sync(
+        sid,
+        1,
+        "text is not authority",
+        "owner-1",
+        dispatch_count=1,
+        invocation_not_attempted=change != "not_positive",
+        preinvoke_database_failure=failure,
+    )
+    with Session(engine) as db:
+        recovery = json.loads(store.get_turn(db, sid, 1).usage_json).get("recovery", {})
+        assert ("database_failure" in recovery) is (change is None)
+
+
 @pytest.mark.parametrize("model", ["opus", "luna", "spark"])
 @pytest.mark.parametrize("tokens", [{}, {"input_tokens": 100, "output_tokens": 50}])
 def test_observation_does_not_change_top_level_pricing(model, tokens):
@@ -1855,7 +1926,7 @@ def test_completion_and_unknown_reconciliation_have_one_durable_winner(uncertain
 
     def hold():
         barrier.wait(timeout=5)
-        return store.finish_unknown_pending_sync(session_id, 1, "owner-1", 1, "lost")
+        return _hold_unknown(session_id, "owner-1", 1)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         completion = pool.submit(complete)

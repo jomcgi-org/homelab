@@ -317,9 +317,10 @@ def test_production_learning_activation_preserves_all_other_controls(tmp_path):
     for key in (
         "KG_COMPLETED_RAW_RECOVERY_ENABLED",
         "KG_AUDIT_CLARITY_REPAIRS_ENABLED",
-        "KG_AUDIT_ISSUES_ENABLED",
     ):
         assert env[key] == "false"
+    # Enabled on its own in deploy/values.yaml, not by the learning activation.
+    assert env["KG_AUDIT_ISSUES_ENABLED"] == "true"
     assert env["KG_FACT_REVIEW_MAX_DAILY"] == "20000"
     assert _cronworkflows(before) == _cronworkflows(after)
 

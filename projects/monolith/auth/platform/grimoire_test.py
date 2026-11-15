@@ -129,14 +129,26 @@ def test_username_invite_resolves_registered_identity_with_contact_email(
     engine.dispose()
 
 
+@pytest.mark.parametrize("email", [None, "player@example.test"])
+@pytest.mark.parametrize(
+    "local_enabled,allowed",
+    [
+        ("false", "player@example.test"),
+        ("true", "player@example.test"),
+        ("true", ""),
+        ("true", "other@example.test"),
+    ],
+)
 def test_username_login_preserves_campaign_ids_and_rechecks_grants(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, email, local_enabled, allowed
 ):
     from datetime import timedelta
 
     monkeypatch.setenv("PLATFORM_AUTH_MANAGEMENT_ENABLED", "true")
     monkeypatch.setenv("PLATFORM_AUTH_ENROLLMENT_ENABLED", "true")
     monkeypatch.setenv("PLATFORM_AUTH_ENFORCEMENT_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_CREATION_RESTRICTION_ENABLED", local_enabled)
+    monkeypatch.setenv("GRIMOIRE_CREATOR_EMAILS", allowed)
     issuer = "https://idp.test/grimoire/"
     monkeypatch.setenv("AUTH_AUTHENTIK_ISSUER", issuer)
     engine = create_engine(
@@ -180,7 +192,8 @@ def test_username_login_preserves_campaign_ids_and_rechecks_grants(
     player = Principal(
         subject="player",
         issuer=issuer,
-        email=None,
+        email=email,
+        email_verified=True,
         username="player",
         user_type="external",
         authority=Authority.STANDING,
@@ -252,17 +265,19 @@ def test_username_login_preserves_campaign_ids_and_rechecks_grants(
         lobby = client.get("/api/grimoire/lobby")
         assert lobby.status_code == 200
         assert lobby.json()["user"]["id"] == app_id
-        assert lobby.json()["user"]["email"] == "@player"
+        assert lobby.json()["user"]["email"] == (email or "@player")
         assert lobby.json()["can_create_game"] is False
         assert (
             client.post("/api/grimoire/campaigns", json={"name": "Denied"}).status_code
             == 403
         )
         manage("grant", permission="grimoire.create_game")
+        assert client.get("/api/grimoire/lobby").json()["can_create_game"] is True
         created = client.post("/api/grimoire/campaigns", json={"name": "Our game"})
         assert created.status_code == 200
         campaign_id = created.json()["id"]
         manage("revoke_grant", permission="grimoire.create_game")
+        assert client.get("/api/grimoire/lobby").json()["can_create_game"] is False
         assert (
             client.post(
                 "/api/grimoire/campaigns", json={"name": "Denied again"}

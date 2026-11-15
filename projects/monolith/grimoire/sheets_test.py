@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime, timezone
+
 import pytest
 from auth.api import Authority, Principal, PrincipalKind
 from core.db import get_session
@@ -11,7 +14,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from grimoire.access import get_authenticated_identity
 from grimoire.models import AppUser, CampaignMember
-from grimoire.models import CharacterSheetVersion, Entity, PlayerCharacter
+from grimoire.models import (
+    CharacterSheetVersion,
+    Entity,
+    KnowledgeGrant,
+    PlayerCharacter,
+)
 from grimoire.router import router
 
 DM = "dm@example.test"
@@ -161,6 +169,192 @@ def _version_path(campaign: dict, character: dict, version_id: str) -> str:
         f"/api/grimoire/campaigns/{campaign['id']}"
         f"/characters/{character['id']}/sheets/{version_id}"
     )
+
+
+@pytest.fixture(name="request_client")
+def request_client_fixture(session: Session, client: TestClient, table):
+    """Keep legacy setup helpers, then match production request-session cleanup."""
+    session.commit()
+    engine = session.get_bind()
+
+    def request_session():
+        with Session(engine) as request_session:
+            yield request_session
+
+    client.app.dependency_overrides[get_session] = request_session
+    try:
+        with TestClient(client.app, raise_server_exceptions=False) as request_client:
+            yield request_client
+    finally:
+        client.app.dependency_overrides[get_session] = lambda: session
+
+
+def _version_snapshot(engine, version_id: str) -> dict:
+    with Session(engine) as observer:
+        version = observer.get(CharacterSheetVersion, version_id)
+        assert version is not None
+        snapshot = deepcopy(version.model_dump())
+    # SQLite reloads timestamps without timezone information.
+    for key, value in snapshot.items():
+        if isinstance(value, datetime):
+            snapshot[key] = (
+                value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            )
+    return snapshot
+
+
+def _version_count(engine) -> int:
+    with Session(engine) as observer:
+        return len(observer.exec(select(CharacterSheetVersion)).all())
+
+
+_BAD_CLASS_FACTS = [
+    pytest.param(key, facts, detail, id=f"{key}-{case}")
+    for key, valid_other, values, detail in (
+        (
+            "hit_die",
+            {"saves": "Strength, Constitution"},
+            [
+                ("missing", {}),
+                ("null", {"hit_die": None}),
+                ("numeric", {"hit_die": 8}),
+                ("empty", {"hit_die": ""}),
+                ("whitespace", {"hit_die": " \t "}),
+                ("1d8", {"hit_die": "1d8"}),
+                ("d20", {"hit_die": "d20"}),
+            ],
+            "class corpus entry has no supported hit die",
+        ),
+        (
+            "saves",
+            {"hit_die": "d8 per level"},
+            [
+                ("missing", {}),
+                ("null", {"saves": None}),
+                ("numeric", {"saves": 12}),
+                ("empty", {"saves": ""}),
+                ("whitespace", {"saves": " \t "}),
+                ("unknown", {"saves": "Fortitude, Reflex"}),
+            ],
+            "class corpus entry has no supported saving throws",
+        ),
+    )
+    for case, malformed in values
+    for facts in [{**valid_other, **malformed}]
+]
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH"])
+@pytest.mark.parametrize("fact,detail,error", _BAD_CLASS_FACTS)
+def test_malformed_class_mechanics_refuse_without_persisting(
+    session: Session, request_client: TestClient, table, method, fact, detail, error
+):
+    campaign, character = table
+    class_name = f"Malformed {fact} Class"
+    session.add(
+        Entity(entity_type="class", name=class_name, is_global=True, detail=detail)
+    )
+    session.commit()
+    engine = session.get_bind()
+    path = _draft_path(campaign, character)
+    before = None
+    if method == "PATCH":
+        created = _post(request_client, path, PLAYER, _sheet())
+        assert created.status_code == 200
+        version_id = created.json()["id"]
+        path = _version_path(campaign, character, version_id)
+        before = _version_snapshot(engine, version_id)
+    count = _version_count(engine)
+    changed = {**_sheet(level=6), "class_name": class_name}
+    changed["ability_scores"]["constitution"] = 18
+    response = request_client.request(method, path, headers=_auth(PLAYER), json=changed)
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": error}
+    assert _version_count(engine) == count
+    if before is not None:
+        # All columns, including every decision field, are compared after cleanup.
+        assert _version_snapshot(engine, version_id) == before
+
+    valid = _sheet(level=6)
+    response = request_client.request(method, path, headers=_auth(PLAYER), json=valid)
+    assert response.status_code == 200, response.text
+    saved = _version_snapshot(engine, response.json()["id"])
+    assert saved["sheet"] == valid
+    assert saved["derived"] == response.json()["derived"]
+    assert saved["status"] == "draft"
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH"])
+@pytest.mark.parametrize(
+    "hit_die,saves,die,hp,bonuses",
+    [
+        (
+            "d10 per level",
+            "Strength, Constitution",
+            10,
+            44,
+            {
+                "strength": 6,
+                "dexterity": 2,
+                "constitution": 5,
+                "intelligence": 0,
+                "wisdom": 1,
+                "charisma": -1,
+            },
+        ),
+        (
+            "d8 per level",
+            "WIS/CHA",
+            8,
+            38,
+            {
+                "strength": 3,
+                "dexterity": 2,
+                "constitution": 2,
+                "intelligence": 0,
+                "wisdom": 4,
+                "charisma": 2,
+            },
+        ),
+    ],
+)
+def test_supported_class_mechanics_save(
+    session: Session,
+    request_client: TestClient,
+    table,
+    method,
+    hit_die,
+    saves,
+    die,
+    hp,
+    bonuses,
+):
+    campaign, character = table
+    session.add(
+        Entity(
+            entity_type="class",
+            name="Supported Prose Class",
+            is_global=True,
+            detail={"hit_die": hit_die, "saves": saves},
+        )
+    )
+    session.commit()
+    path = _draft_path(campaign, character)
+    if method == "PATCH":
+        created = _post(request_client, path, PLAYER, _sheet(level=1))
+        assert created.status_code == 200
+        path = _version_path(campaign, character, created.json()["id"])
+    sheet = {**_sheet(), "class_name": "Supported Prose Class"}
+    response = request_client.request(method, path, headers=_auth(PLAYER), json=sheet)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert int(data["derived"]["hit_die"].removeprefix("d")) == die
+    assert data["derived"]["max_hit_points"] == hp
+    assert data["derived"]["saving_throw_bonuses"] == bonuses
+    saved = _version_snapshot(session.get_bind(), data["id"])
+    assert saved["sheet"] == sheet
+    assert saved["derived"] == data["derived"]
+    assert saved["status"] == "draft"
 
 
 def test_approved_history_is_immutable_and_later_edits_create_new_draft(
@@ -322,3 +516,125 @@ def test_sheet_selections_must_exist_in_visible_campaign_corpus(
     assert response.json()["detail"] == (
         "ancestry is not available in this campaign corpus"
     )
+
+
+def _options_path(campaign: dict, character: dict) -> str:
+    return _draft_path(campaign, character).replace("/drafts", "/options")
+
+
+def test_sheet_options_offer_what_a_draft_accepts_with_class_facts(
+    session: Session, client: TestClient, table
+):
+    campaign, character = table
+    scopes = {"Full": "full", "Partial": "partial", "Named": "name_only"}
+    for label, scope in scopes.items():
+        entity = Entity(
+            entity_type="class",
+            name=f"{label} Homebrew",
+            is_global=False,
+            source_type="homebrew",
+            detail={"hit_die": "d8 per level", "saves": "WIS and CHA"},
+        )
+        session.add(entity)
+        session.flush()
+        session.add(
+            KnowledgeGrant(
+                campaign_id=campaign["id"],
+                entity_id=entity.id,
+                player_character_id=character["id"],
+                grant_scope=scope,
+            )
+        )
+    session.add(Entity(entity_type="class", name="Hidden", is_global=False, detail={}))
+    session.add(Entity(entity_type="class", name="fighter", is_global=True))
+    session.add(Entity(entity_type="class", name="Odd  Spacing", is_global=True))
+    session.add(Entity(entity_type="class", name="Bare", is_global=True, detail={}))
+    session.add(Entity(entity_type="spell", name="Fireball", is_global=True))
+    session.commit()
+
+    response = client.get(_options_path(campaign, character), headers=_auth(PLAYER))
+    assert response.status_code == 200
+    options = response.json()
+    assert [
+        (item["name"], item["size"], item["speed"]) for item in options["ancestries"]
+    ] == [("Human", None, "30 feet")]
+    classes = {item["name"]: item for item in options["classes"]}
+    assert sorted(classes) == ["Bare", "Fighter", "Full Homebrew"]
+    assert classes["Fighter"]["hit_die"] == "d10"
+    assert classes["Fighter"]["saves"] == "Strength, Constitution"
+    assert classes["Full Homebrew"]["hit_die"] == "d8 per level"
+    assert classes["Bare"] == {
+        "id": classes["Bare"]["id"],
+        "name": "Bare",
+        "hit_die": None,
+        "primary_ability": None,
+        "saves": None,
+    }
+
+    # Every offered pair is one a draft accepts or refuses for its class facts.
+    for name, expected in (("Partial Homebrew", 422), ("Full Homebrew", 200)):
+        draft = _post(
+            client,
+            _draft_path(campaign, character),
+            PLAYER,
+            {**_sheet(), "class_name": name},
+        )
+        assert draft.status_code == expected, name
+        if expected == 200:
+            assert (
+                draft.json()["derived"]["corpus"]["class_entity_id"]
+                == (classes[name]["id"])
+            )
+            assert draft.json()["derived"]["hit_die"] == "d8"
+
+    dm_view = client.get(_options_path(campaign, character), headers=_auth(DM))
+    assert dm_view.status_code == 200
+    assert dm_view.json() == options
+
+
+@pytest.mark.parametrize("scope", ["partial", "name_only"])
+def test_a_narrowed_global_entry_is_neither_offered_nor_accepted(
+    session: Session, client: TestClient, table, scope
+):
+    """A grant below full on a global class hides its mechanics from the character."""
+    campaign, character = table
+    entity = Entity(
+        entity_type="class",
+        name="Warlock",
+        is_global=True,
+        detail={"hit_die": "d8", "saves": "Wisdom, Charisma"},
+    )
+    session.add(entity)
+    session.flush()
+    session.add(
+        KnowledgeGrant(
+            campaign_id=campaign["id"],
+            entity_id=entity.id,
+            player_character_id=character["id"],
+            grant_scope=scope,
+        )
+    )
+    session.commit()
+
+    options = client.get(_options_path(campaign, character), headers=_auth(PLAYER))
+    assert options.status_code == 200
+    assert "Warlock" not in [item["name"] for item in options.json()["classes"]]
+    assert "Wisdom, Charisma" not in options.text
+    draft = _post(
+        client,
+        _draft_path(campaign, character),
+        PLAYER,
+        {**_sheet(), "class_name": "Warlock"},
+    )
+    assert draft.status_code == 422
+
+
+def test_sheet_options_are_hidden_from_other_players_and_campaigns(
+    client: TestClient, table
+):
+    campaign, character = table
+    other = _character(client, DM, campaign["id"], "Bryn")
+    _member(client, DM, campaign["id"], OTHER_PLAYER, other["id"])
+    path = _options_path(campaign, character)
+    assert client.get(path, headers=_auth(OTHER_PLAYER)).status_code == 404
+    assert client.get(path, headers=_auth(OTHER_DM)).status_code == 404

@@ -1,0 +1,28 @@
+# Garage's configuration (garage.yaml). The RPC secret and admin token come
+# from the GARAGE_RPC_SECRET and GARAGE_ADMIN_TOKEN environment variables.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "lmdb"
+# Snapshot the metadata database daily, so a corrupted LMDB can be restored
+# from the node's own copy instead of a full resync from its peers.
+metadata_auto_snapshot_interval = "24h"
+
+replication_factor = 3
+consistency_mode = "consistent"
+compression_level = 1
+
+rpc_bind_addr = "0.0.0.0:3901"
+# Each node advertises its pod IP through the GarageNode it publishes.
+
+[kubernetes_discovery]
+namespace = "garage"
+service_name = "garage"
+# The CRD is in crd.yaml, so the pods need no cluster-scoped access.
+skip_crd = true
+
+[s3_api]
+api_bind_addr = "0.0.0.0:3900"
+s3_region = "garage"
+
+[admin]
+api_bind_addr = "0.0.0.0:3903"

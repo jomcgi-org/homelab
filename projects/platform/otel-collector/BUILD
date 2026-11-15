@@ -6,6 +6,11 @@ exports_files(
     visibility = ["//projects/platform-gke/otel-collector:__pkg__"],
 )
 
+exports_files(
+    ["values-factory.yaml"],
+    visibility = ["//projects/platform-factory/otel-collector:__pkg__"],
+)
+
 # The chart mounts this script and runs it with the image's Python.
 # Keep it as chart data without a generated Bazel binary or nested package.
 # gazelle:exclude files/backup_check.py
@@ -92,6 +97,7 @@ py_test(
         "values.yaml",
         "values-gke.yaml",
         "values-prod.yaml",
+        "values-factory.yaml",
         "values-test-mixed-targets.yaml",
         "@multitool//tools/helm",
         # Chart.lock plus the vendored charts/ tree are load-bearing for

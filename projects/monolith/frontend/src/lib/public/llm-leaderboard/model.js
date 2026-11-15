@@ -125,7 +125,7 @@ export function kfmt(v) {
   return String(Math.round(v));
 }
 
-export const pct = (v) => `${Math.round(v * 100)}%`;
+const pct = (v) => `${Math.round(v * 100)}%`;
 
 // One reading per comparison, shared by the bar charts, the scatter tabs and
 // the table. `better` says which end wins so each chart sorts best-first.

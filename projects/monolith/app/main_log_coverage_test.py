@@ -1,16 +1,16 @@
-"""Extra coverage tests for core.log and app.main._wait_for_sidecar.
+"""Extra coverage tests for core.log and chat.leader.wait_for_sidecar.
 
-Covers branches not addressed by existing log_test.py / log_config_test.py:
+Covers branches not addressed by existing log_test.py:
 
 1. configure_logging() sets uvicorn logger to WARNING (line 33 of log.py).
 2. configure_logging() sets uvicorn.error logger to WARNING (line 34 of log.py).
 3. configure_logging() passes stream=sys.stdout to basicConfig.
 4. configure_logging() passes the expected format string to basicConfig.
 5. configure_logging() passes force=True to basicConfig.
-6. _wait_for_sidecar(): status 499 (< 500) → returns immediately (boundary).
-7. _wait_for_sidecar(): status 500 (>= 500) → retries, then status 200 → returns.
-8. _wait_for_sidecar(): asyncio.sleep is called between retries.
-9. _wait_for_sidecar(): multiple consecutive httpx.HTTPError exceptions before success.
+6. wait_for_sidecar(): status 499 (< 500) → returns immediately (boundary).
+7. wait_for_sidecar(): status 500 (>= 500) → retries, then status 200 → returns.
+8. wait_for_sidecar(): asyncio.sleep is called between retries.
+9. wait_for_sidecar(): multiple consecutive httpx.HTTPError exceptions before success.
 """
 
 from __future__ import annotations
@@ -18,15 +18,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# Ensure no valid static directory is set before importing main symbols.
-os.environ.pop("STATIC_DIR", None)
-
-from core.log import configure_logging  # noqa: E402
-from app.main import _wait_for_sidecar  # noqa: E402
+from core.log import configure_logging
+from chat.leader import wait_for_sidecar
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +125,20 @@ class TestConfigureLoggingBasicConfigArgs:
 
 
 # ---------------------------------------------------------------------------
-# _wait_for_sidecar() — status-code boundary conditions
+# wait_for_sidecar(): status-code boundary conditions
 # ---------------------------------------------------------------------------
 
 
 class TestWaitForSidecarStatusBoundary:
     @pytest.mark.asyncio
     async def test_status_499_returns_immediately(self):
-        """A 499 response (< 500) causes _wait_for_sidecar to return without retrying."""
+        """A 499 response (< 500) causes wait_for_sidecar to return without retrying."""
         mock_cm, mock_client = _make_mock_async_client([_resp(499)])
 
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         # Should have been called exactly once (499 < 500 → return)
         assert mock_client.get.call_count == 1
@@ -150,13 +147,13 @@ class TestWaitForSidecarStatusBoundary:
 
     @pytest.mark.asyncio
     async def test_status_200_returns_immediately(self):
-        """A 200 response (< 500) causes _wait_for_sidecar to return without retrying."""
+        """A 200 response (< 500) causes wait_for_sidecar to return without retrying."""
         mock_cm, mock_client = _make_mock_async_client([_resp(200)])
 
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         assert mock_client.get.call_count == 1
         mock_sleep.assert_not_called()
@@ -169,7 +166,7 @@ class TestWaitForSidecarStatusBoundary:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         assert mock_client.get.call_count == 2
 
@@ -181,7 +178,7 @@ class TestWaitForSidecarStatusBoundary:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         assert mock_client.get.call_count == 2
 
@@ -193,7 +190,7 @@ class TestWaitForSidecarStatusBoundary:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         mock_sleep.assert_called_once_with(2)
 
@@ -209,7 +206,7 @@ class TestWaitForSidecarStatusBoundary:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         mock_sleep.assert_called_once_with(2)
         assert mock_client.get.call_count == 2
@@ -225,7 +222,7 @@ class TestWaitForSidecarStatusBoundary:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         assert mock_client.get.call_count == 3
         # sleep called after each of the two errors
@@ -240,7 +237,7 @@ class TestWaitForSidecarStatusBoundary:
         with patch.dict(os.environ, {"FRONTEND_HEALTH_URL": "http://sidecar/healthz"}):
             with patch("httpx.AsyncClient", return_value=mock_cm):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                    await _wait_for_sidecar()
+                    await wait_for_sidecar()
 
         assert mock_client.get.call_count == 1
         mock_sleep.assert_not_called()

@@ -14,6 +14,7 @@ import os
 
 import httpx
 
+from shared.embervm_submit import submit_task
 from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
@@ -117,14 +118,15 @@ async def _run_embervm(payload: dict, language: str) -> dict:
     timeout = httpx.Timeout(SANDBOX_READ_TIMEOUT, connect=SANDBOX_CONNECT_TIMEOUT)
     workload = f"{SANDBOX_WORKLOAD_PREFIX}{language}"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{EMBERVM_URL}/v1/workloads/{workload}/tasks?wait=true",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await submit_task(
+            base_url=EMBERVM_URL,
+            workload=workload,
+            timeout=timeout,
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
     except httpx.ConnectError as exc:
         logger.exception("embervm connection failed")
         return {"error": f"could not reach embervm: {exc}"}

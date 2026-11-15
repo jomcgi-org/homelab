@@ -19,7 +19,7 @@ use oominf_core::{
     Decoded, LOOKUP_MATCH, PromptLookup, Proposal, Session, decode_many, decode_step_with,
 };
 
-use super::{CachedSeq, Engine, Event, FinishReason, Job, Seq, checkpoint_plan};
+use super::{CachedSeq, Engine, Event, FinishReason, Job, Seq, checkpoint_plan, record_rate};
 use crate::budget::{Acceptance, CostCurve, DEFAULT_STEP_COST, Offer, allocate};
 use crate::sampling::Sampler;
 
@@ -263,16 +263,7 @@ impl Engine {
             // Again after retiring: with nothing left, the loop next blocks on a job.
             self.telemetry.lock().unwrap().requests_active = (active.len() + queue.len()) as u64;
             let now = Instant::now();
-            rate.push_back((now, generated));
-            while rate.len() > 2 && now - rate[1].0 >= Duration::from_secs(1) {
-                rate.pop_front();
-            }
-            let tps = match (rate.front(), rate.back()) {
-                (Some(&(t0, n0)), Some(&(t1, n1))) if t1 > t0 => {
-                    Some((n1 - n0) as f64 / (t1 - t0).as_secs_f64())
-                }
-                _ => None,
-            };
+            let tps = record_rate(&mut rate, now, generated);
             self.publish(active.iter().map(|s| s.ids.len()).sum(), tps);
             if now - reported >= REPORT_EVERY && steps.steps > 0 {
                 eprintln!(

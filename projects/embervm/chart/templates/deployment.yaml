@@ -121,29 +121,10 @@ spec:
             # do not drive every guest to the worker timeout at once.
             - name: EMBERVM_CREATE_CONCURRENCY
               value: {{ .Values.controlPlane.createConcurrency | quote }}
-            # Node-confirmed destroy ordering (ADR embervm/014 decision 5).
-            #
-            # #4758: application.ex has read this gate since the ADR landed, and
-            # NO template rendered it, so the ordering it selects has never run
-            # in any environment. The code was reachable only by an env var
-            # nothing could set. Rendering it here is what makes arming it a
-            # values decision rather than an impossibility.
-            #
-            # Chart default stays false. Dev armed it first; production followed
-            # on 2026-08-22 after the dev drill passed (see deploy/values.yaml).
-            - name: EMBERVM_NODE_CONFIRMED_DESTROY
-              value: {{ if .Values.nodeConfirmedDestroy }}"true"{{ else }}"false"{{ end }}
-            - name: EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES
-              value: {{ if .Values.restartFlushInflightInvokes }}"true"{{ else }}"false"{{ end }}
-            # Drain only the sessions on the draining brick instance, not every
-            # session on its node (co-located bricks share a node).
-            - name: EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS
-              value: {{ if .Values.drainInstanceScopedSessions }}"true"{{ else }}"false"{{ end }}
-            # The same scoping for serving, stateful and group workloads.
+            # Drain only the serving, stateful and group guests on the draining
+            # brick instance, not every guest on its node.
             - name: EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS
               value: {{ if .Values.drainInstanceScopedWorkloads }}"true"{{ else }}"false"{{ end }}
-            - name: EMBERVM_CROSS_NODE_REJOIN
-              value: {{ if .Values.crossNodeRejoin }}"true"{{ else }}"false"{{ end }}
             # SpecTrace gate for spec validation (GitHub issue #4770):
             # the debug-gated, spec-shaped trace reads once at boot.
             # OFF means no process, no connection, no sweep.
@@ -518,8 +499,6 @@ spec:
             {{- end }}
             # StatefulSweeper resident-memory hysteresis. These are CP-only
             # settings over NodeCapacity facts and add no daemon surface.
-            - name: EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED
-              value: {{ .Values.statefulSweeper.pressureBanking.enabled | quote }}
             - name: EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION
               value: {{ .Values.statefulSweeper.pressureBanking.highWaterFraction | quote }}
             - name: EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION
@@ -528,12 +507,6 @@ spec:
               value: {{ .Values.statefulSweeper.pressureBanking.idleFloorMs | quote }}
             - name: EMBERVM_STATEFUL_SESSION_PRESSURE_IDLE_FLOOR_MS
               value: {{ .Values.statefulSweeper.pressureBanking.sessionPressureIdleFloorMs | quote }}
-            {{- if .Values.grpcConnectionSweeper.enabled }}
-            # gRPC connection sweep gate (default off, dry-run logging only). "1" or "true"
-            # arms destructive orphaned connection termination.
-            - name: EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED
-              value: {{ .Values.grpcConnectionSweeper.enabled | quote }}
-            {{- end }}
             {{- if .Values.grpcConnectionSweeper.sweepIntervalMs }}
             # gRPC connection sweep tick override (default 60000ms).
             - name: EMBERVM_GRPC_CONNECTION_SWEEP_INTERVAL_MS

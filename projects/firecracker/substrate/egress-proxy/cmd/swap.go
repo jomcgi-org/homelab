@@ -492,10 +492,6 @@ func better(candidate, incumbent grantBand) bool {
 	return candidate.resetsAt.Before(incumbent.resetsAt)
 }
 
-func newTokenBroker(rawURL string) *tokenBroker {
-	return newTokenBrokerWithClient(rawURL, brokerHTTPClient(nil, 10*time.Second))
-}
-
 func newTokenBrokerWithClient(rawURL string, client *http.Client) *tokenBroker {
 	if rawURL == "" {
 		return &tokenBroker{grants: make(map[string]*brokerGrantState), forced: make(map[string]time.Time)}
@@ -795,14 +791,10 @@ func (e *secretEntry) invalidate() {
 	e.mu.Unlock()
 }
 
-// headerValue renders what the sidecar SETS on the request: Basic when the
-// entry names a user, otherwise the prefix form. One place, so the two callers
-// (claim-bearing and plain) cannot diverge on encoding.
-func (e *secretEntry) headerValue() string {
-	return e.headerValueFor(e.resolvedValue())
-}
-
-// headerValueFor renders the header for one snapshotted credential value.
+// headerValueFor renders what the sidecar SETS on the request for one
+// snapshotted credential value: Basic when the entry names a user, otherwise
+// the prefix form. One place, so the two callers (claim-bearing and plain)
+// cannot diverge on encoding.
 func (e *secretEntry) headerValueFor(value string) string {
 	if e.BasicUser != "" {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(e.BasicUser+":"+value))
@@ -810,16 +802,8 @@ func (e *secretEntry) headerValueFor(value string) string {
 	return e.ValuePrefix + value
 }
 
-func (e *secretEntry) resolvedValue() string {
-	if e.mu != nil {
-		e.mu.RLock()
-		defer e.mu.RUnlock()
-	}
-	return e.value
-}
-
-// loadSecrets parses EGRESS_SECRETS (a JSON catalog) and resolves each real value
-// from the sidecar env.
+// loadSecretsWithBrokerClient parses EGRESS_SECRETS (a JSON catalog) and
+// resolves each real value from the sidecar env.
 //
 // FAIL CLOSED, in two different ways on purpose:
 //
@@ -830,14 +814,6 @@ func (e *secretEntry) resolvedValue() string {
 //     the entry (dead) and deny only its own egressTo hosts. Exiting instead would
 //     crash-loop the sidecar and take down all guest egress on the node over one
 //     unresolved credential.
-func loadSecrets(logger *slog.Logger) []secretEntry {
-	return loadSecretsWithBroker(logger, os.Getenv("EGRESS_TOKEN_BROKER_URL"))
-}
-
-func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry {
-	return loadSecretsWithBrokerClient(logger, brokerURL, brokerHTTPClient(nil, 10*time.Second))
-}
-
 func loadSecretsWithBrokerClient(logger *slog.Logger, brokerURL string, client *http.Client) []secretEntry {
 	raw := os.Getenv("EGRESS_SECRETS")
 	if strings.TrimSpace(raw) == "" {
@@ -1401,7 +1377,8 @@ func rejectSwapRequest(req *http.Request) bool {
 	return false
 }
 
-// injectRequest sets the entry's header to the real credential.
+// injectRequestWith sets the entry's header to one snapshotted credential, so
+// the token and the account id claim are always read from the same value.
 //
 // Only that one header, and only when the guest sent it AT ALL: presence is the
 // signal, not content, so an empty value counts. The guest has to send something
@@ -1423,12 +1400,6 @@ func rejectSwapRequest(req *http.Request) bool {
 // Whatever the guest put in the header is DISCARDED rather than matched. That is
 // the point: the guest's value is uncoupled config, and a prompt-injected guest
 // cannot authenticate as a different account by supplying its own token.
-func injectRequest(req *http.Request, sec *secretEntry) bool {
-	return injectRequestWith(req, sec, sec.credential())
-}
-
-// injectRequestWith injects one snapshotted credential, so the token and
-// the account id claim are always read from the same value.
 func injectRequestWith(req *http.Request, sec *secretEntry, cred credential) bool {
 	if sec.ClaimHeader != "" {
 		requested := len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(req.URL.Path)

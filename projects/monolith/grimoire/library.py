@@ -419,61 +419,46 @@ def _project_page_entity(
     return project_entity(entity, None, grant, viewer, context="relationship")
 
 
-def get_chunk(
-    session: Session, campaign_id: str, viewer: Viewer, chunk_id: str
-) -> dict[str, Any] | None:
-    """One chunk with full content, image URL, seq neighbours, and on-page
-    entities projected for ``viewer``. Returns None if the chunk is missing.
+def _chunk_neighbours(
+    session: Session, chunk: KnowledgeChunk
+) -> tuple[str | None, str | None]:
+    """The previous and next chunk ids in the book's ``seq`` order."""
+    if chunk.seq is None:
+        return None, None
+    prev_id = session.exec(
+        select(KnowledgeChunk.id)
+        .where(
+            KnowledgeChunk.book_id == chunk.book_id,
+            KnowledgeChunk.seq < chunk.seq,
+        )
+        .order_by(KnowledgeChunk.seq.desc())
+        .limit(1)
+    ).first()
+    next_id = session.exec(
+        select(KnowledgeChunk.id)
+        .where(
+            KnowledgeChunk.book_id == chunk.book_id,
+            KnowledgeChunk.seq > chunk.seq,
+        )
+        .order_by(KnowledgeChunk.seq)
+        .limit(1)
+    ).first()
+    return prev_id, next_id
 
-    prev/next walk the book's ``seq`` order (the reading order the loader
-    assigns), so the reader's back/next controls follow the page sequence, not
-    insertion order. Entities come from chunk_entity_mention, viewpoint-filtered.
-    """
-    chunk = session.get(KnowledgeChunk, chunk_id)
-    if chunk is None:
-        return None
 
-    prev_id: str | None = None
-    next_id: str | None = None
-    if chunk.seq is not None:
-        prev_id = session.exec(
-            select(KnowledgeChunk.id)
-            .where(
-                KnowledgeChunk.book_id == chunk.book_id,
-                KnowledgeChunk.seq < chunk.seq,
-            )
-            .order_by(KnowledgeChunk.seq.desc())
-            .limit(1)
-        ).first()
-        next_id = session.exec(
-            select(KnowledgeChunk.id)
-            .where(
-                KnowledgeChunk.book_id == chunk.book_id,
-                KnowledgeChunk.seq > chunk.seq,
-            )
-            .order_by(KnowledgeChunk.seq)
-            .limit(1)
-        ).first()
-
-    mention_rows = session.exec(
-        select(Entity.id, ChunkEntityMention.mention_text)
-        .join(ChunkEntityMention, ChunkEntityMention.entity_id == Entity.id)
-        .where(ChunkEntityMention.chunk_id == chunk_id)
-        .order_by(Entity.name)
-    ).all()
-    entities: list[dict[str, Any]] = []
-    for entity_id, mention_text in mention_rows:
-        projected = _project_page_entity(session, campaign_id, viewer, entity_id)
-        if projected is not None:
-            projected["mention_text"] = mention_text
-            entities.append(projected)
-
+def _chunk_payload(
+    session: Session,
+    chunk: KnowledgeChunk,
+    prev_id: str | None,
+    next_id: str | None,
+    entities: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The reader's chunk response, shared with public.get_chunk_public."""
     chunk_count = session.exec(
         select(func.count())
         .select_from(KnowledgeChunk)
         .where(KnowledgeChunk.book_id == chunk.book_id)
     ).one()
-
     return {
         "id": chunk.id,
         "book_id": chunk.book_id,
@@ -491,6 +476,38 @@ def get_chunk(
         "entities": entities,
         "created_at": aware_iso(chunk.created_at),
     }
+
+
+def get_chunk(
+    session: Session, campaign_id: str, viewer: Viewer, chunk_id: str
+) -> dict[str, Any] | None:
+    """One chunk with full content, image URL, seq neighbours, and on-page
+    entities projected for ``viewer``. Returns None if the chunk is missing.
+
+    prev/next walk the book's ``seq`` order (the reading order the loader
+    assigns), so the reader's back/next controls follow the page sequence, not
+    insertion order. Entities come from chunk_entity_mention, viewpoint-filtered.
+    """
+    chunk = session.get(KnowledgeChunk, chunk_id)
+    if chunk is None:
+        return None
+
+    prev_id, next_id = _chunk_neighbours(session, chunk)
+
+    mention_rows = session.exec(
+        select(Entity.id, ChunkEntityMention.mention_text)
+        .join(ChunkEntityMention, ChunkEntityMention.entity_id == Entity.id)
+        .where(ChunkEntityMention.chunk_id == chunk_id)
+        .order_by(Entity.name)
+    ).all()
+    entities: list[dict[str, Any]] = []
+    for entity_id, mention_text in mention_rows:
+        projected = _project_page_entity(session, campaign_id, viewer, entity_id)
+        if projected is not None:
+            projected["mention_text"] = mention_text
+            entities.append(projected)
+
+    return _chunk_payload(session, chunk, prev_id, next_id, entities)
 
 
 def list_entity_mentions(session: Session, entity_id: str) -> list[dict[str, Any]]:

@@ -22,7 +22,6 @@ ISSUER = "https://auth.example/application/o/grimoire/"
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_AUTH_ISSUER", ISSUER)
     monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     engine = create_engine(
@@ -81,6 +80,33 @@ def h(user):
     return {"test-subject": user}
 
 
+def test_creation_restriction_preserves_registered_player_link_acceptance(
+    setup, monkeypatch
+):
+    client, engine, cid = setup
+    monkeypatch.setenv("GRIMOIRE_CREATION_RESTRICTION_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_CREATOR_EMAILS", "")
+    # Empty creation authority does not remove existing owners' link authority.
+    link = issue(client, cid).json()
+    assert capability(client, "redeem", link["token"], "other").status_code == 403
+    assert capability(client, "redeem", link["token"], "player").json() == {
+        "campaign_id": cid,
+        "status": "accepted",
+    }
+    lobby = client.get("/api/grimoire/lobby", headers=h("player"))
+    assert lobby.status_code == 200
+    assert lobby.json()["campaigns"][0]["role"] == "player"
+    assert lobby.json()["can_create_game"] is False
+    assert (
+        client.post(
+            "/api/grimoire/campaigns", headers=h("player"), json={"name": "Denied"}
+        ).status_code
+        == 403
+    )
+    with Session(engine) as session:
+        assert len(session.exec(select(CampaignMember)).all()) == 2
+
+
 def issue(client, cid, user="owner", email="player@example.test", **options):
     return client.post(
         f"/api/grimoire/campaigns/{cid}/join-links",
@@ -95,16 +121,6 @@ def capability(client, action, token, user=None):
         headers=h(user) if user else {},
         json={"token": token},
     )
-
-
-def test_disabled_by_default_and_routes_fail_closed(setup, monkeypatch):
-    client, _, cid = setup
-    monkeypatch.delenv("GRIMOIRE_INVITATION_LINKS_ENABLED")
-    assert issue(client, cid).status_code == 503
-    assert capability(client, "inspect", "x" * 43).status_code == 503
-    lobby = client.get("/api/grimoire/lobby", headers=h("owner")).json()
-    assert not lobby["invitation_links_enabled"]
-    assert not lobby["invitation_enrollment_enabled"]
 
 
 def test_issue_inspect_join_replay_and_secret_projection(setup):

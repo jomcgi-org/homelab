@@ -38,7 +38,7 @@ def test_codex_transcript_cache_is_part_of_reported_input():
 
 
 @pytest.mark.parametrize(
-    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-5.6-terra")]
+    ("model", "model_ref"), [("sol", "gpt-6.1-sol"), ("terra", "gpt-6.1-terra")]
 )
 def test_codex_aliases_resolve_to_provider_models(model, model_ref):
     priced = price_usage(model, {"input_tokens": 1_000})
@@ -290,6 +290,91 @@ def test_fixed_openai_prices_reject_cache_reads_above_input(model):
 
 def test_unknown_model_returns_none():
     assert price_usage("gpt-unknown", {"input_tokens": 1_000}) is None
+
+
+@pytest.mark.parametrize("model", ["terra", "gpt-6.1-terra"])
+def test_terra_6_1_prices_input_cache_and_output(model):
+    priced = price_usage(
+        model,
+        {
+            "shape": "codex",
+            "input_tokens": 1_000_000,
+            "cache_read_tokens": 250_000,
+            "output_tokens": 100_000,
+        },
+    )
+    assert priced is not None
+    assert priced.model_ref == "gpt-6.1-terra"
+    assert priced.cost_usd == pytest.approx(1.2625)
+
+
+@pytest.mark.parametrize("requested", ["terra", "opus", None, ""])
+def test_selected_provider_model_takes_precedence_over_requested_alias(requested):
+    priced = price_usage(
+        requested,
+        {"provider_model": "gpt-6.1-terra", "input_tokens": 1_000_000},
+    )
+    assert priced is not None
+    assert priced.model_ref == "gpt-6.1-terra"
+    assert priced.cost_usd == pytest.approx(1.0)
+
+
+def test_historical_terra_id_keeps_its_existing_long_context_price():
+    recorded = {"provider_model": "gpt-5.6-terra", "input_tokens": 1_000_000}
+    priced = price_usage("terra", recorded)
+
+    assert priced is not None
+    assert priced.model_ref == "gpt-5.6-terra"
+    # The existing library's historical long-context tier remains $4/M.
+    assert priced.cost_usd == pytest.approx(4.0)
+    assert priced == price_usage("gpt-5.6-terra", {"input_tokens": 1_000_000})
+    assert price_usage("terra", {"input_tokens": 1_000_000}).cost_usd == 1.0
+
+
+@pytest.mark.parametrize(
+    "provider_model",
+    [
+        "gpt-unknown",
+        "gpt-6.1-terra-unknown",
+        "claude-opus-5-5-20261001",
+        "claude-opus-5-5-unknown",
+        "claude-haiku-4-5-20251001",
+        "terra",
+        "opus",
+    ],
+)
+def test_unknown_or_aliased_selected_id_does_not_fall_back(provider_model):
+    usage = {"provider_model": provider_model, "input_tokens": 1_000}
+    assert price_usage("terra", usage) is None
+    assert list_price_usd("terra", usage, None) is None
+
+
+def test_known_claude_selected_id_keeps_exclusive_cache_semantics():
+    priced = price_usage(
+        "terra",
+        {
+            "provider_model": "claude-opus-5-5",
+            "input_tokens": 1_000,
+            "cache_read_tokens": 9_000,
+            "output_tokens": 100,
+        },
+    )
+    assert priced is not None
+    assert priced.model_ref == "claude-opus-5-5"
+    assert priced.cost_usd == pytest.approx(0.0078)
+
+
+@pytest.mark.parametrize("provider_model", [None, "", False, 17, {}, []])
+def test_missing_or_malformed_selected_id_keeps_legacy_alias_fallback(provider_model):
+    usage = {"provider_model": provider_model, "input_tokens": 1_000_000}
+    assert price_usage("terra", usage) == price_usage(
+        "terra", {"input_tokens": 1_000_000}
+    )
+
+
+def test_reported_claude_cost_still_wins_with_an_unknown_selected_id():
+    usage = {"provider_model": "claude-opus-future", "input_tokens": 1_000}
+    assert list_price_usd("opus", usage, 2.5) == pytest.approx(2.5)
 
 
 def test_empty_usage_returns_none():

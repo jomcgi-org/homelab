@@ -17,9 +17,13 @@ embervm stateful volume quarantined: unblessed generation reported past the last
   event=:generation_quarantined workload=<wl> generation=<G+k> blessed_generation=<G>
 ```
 
-Downstream, the public health aggregate goes unhealthy and `jomcgi.dev/health` returns
-503 with `{"status":"unhealthy","backendStatus":503}` (the `demo_postgres` component
-reports `evicted (pair_broken) for <N>s, wake path likely broken`).
+Use the control-plane logs for the affected workload and the authenticated,
+read-only `GET /v1/stateful/<workload>` management endpoint. Its `state`,
+`instance.healthy`, `instance.terminal_reason`, `generation`, `bundle_generation`
+and `pair_valid` fields describe the instance and snapshot pair. The quarantine
+flag is not exposed by this endpoint, so a status response alone does not prove
+why a wake was refused. The public health aggregate no longer has a
+`demo_postgres` component.
 
 ## What it means
 
@@ -107,15 +111,19 @@ authoritative latest state; you are recording reality, not overwriting it.
 1. Read the quarantine warning to get `workload` and the reported `generation` (the node's
    current generation, `G+k` in the log).
 2. From an `iex` remote console on the control-plane pod
-   (`kubectl exec -n embervm <control-plane-pod> -c embervm -- ...` / `bin/embervm remote`),
+   (`kubectl exec -n embervm <control-plane-pod> -c control-plane -- ...` / `bin/embervm remote`),
    bless that exact generation:
    ```elixir
    Embervm.StatefulStore.bless_generation(Embervm.StatefulStore, "<workload>", <reported_generation>)
    ```
    The monotonicity guard refuses a value at or below the current watermark, so pass the
    node's reported generation (strictly greater than the stale blessed value).
-3. The next wake proceeds (`plan_wake` no longer refuses). Confirm with
-   `curl -s https://jomcgi.dev/health` returning 200 and the `demo_postgres` component OK.
+3. Observe the next authorized wake. The authenticated
+   `GET /v1/stateful/<workload>` must show `state: "serving"` and
+   `instance.healthy: true`, and the affected workload's control-plane logs
+   must show no new `volume quarantined` refusal for that wake. Confirm the
+   workload's own read-only health or data query succeeds. A control-plane
+   readiness response or an unrelated public health response is insufficient.
 
 If the wake still fails after blessing, the volume/snapshot pair is genuinely broken (not
 just unblessed) and this runbook does not apply: investigate `pair_valid?` and the banked

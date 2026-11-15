@@ -19,7 +19,7 @@ shortest wall time and lowest cost for a positive outcome.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 
@@ -41,7 +41,6 @@ class IndexConfig:
     tolerance: float = 0.05
     bootstrap: int = 1000
     seed: int = 0
-    descriptions: dict[str, str] = field(default_factory=dict)
 
 
 def load_config(path: Path) -> IndexConfig:
@@ -57,10 +56,6 @@ def load_config(path: Path) -> IndexConfig:
         tolerance=float(raw.get("tolerance", 0.05)),
         bootstrap=int(raw.get("bootstrap", 1000)),
         seed=int(raw.get("seed", 0)),
-        descriptions={
-            a: str(d.get("description", "")) if isinstance(d, dict) else str(d)
-            for a, d in (raw.get("axes") or {}).items()
-        },
     )
 
 

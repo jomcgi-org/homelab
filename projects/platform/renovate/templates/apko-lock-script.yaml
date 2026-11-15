@@ -1,3 +1,4 @@
+{{- if eq .Values.workloadKind "CronWorkflow" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -111,3 +112,5 @@ data:
       fi
     done
     exit "$result"
+
+{{- end }}

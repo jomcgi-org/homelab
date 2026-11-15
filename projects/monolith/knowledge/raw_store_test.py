@@ -78,3 +78,30 @@ class TestFetchRaw:
         client.get_object.side_effect = _client_error("NoSuchKey")
         with patch("knowledge.raw_store._s3_client", return_value=client):
             assert fetch_raw("missing") is None
+
+
+def test_upload_notfound_head_uses_shared_helper(monkeypatch):
+    from core.s3_upload import put_object
+    from knowledge import raw_store
+
+    assert raw_store.put_object is put_object
+    client = MagicMock()
+    client.head_object.side_effect = _client_error("NotFound")
+    monkeypatch.setattr(raw_store, "_s3_client", lambda: client)
+    with patch.object(raw_store, "put_object") as upload:
+        assert upload_raw("hash", "raw body") is None
+    upload.assert_called_once_with(
+        client,
+        bucket=RAW_BUCKET,
+        key="raws/hash.md",
+        body=b"raw body",
+        content_type="text/markdown",
+    )
+    client.create_bucket.assert_not_called()
+
+
+def test_unset_endpoint_never_constructs_client(monkeypatch):
+    monkeypatch.delenv("SEAWEEDFS_S3_ENDPOINT", raising=False)
+    with patch("knowledge.raw_store.path_style_client") as client:
+        assert upload_raw("hash", "body") is None
+    client.assert_not_called()

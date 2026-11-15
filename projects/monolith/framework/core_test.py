@@ -27,10 +27,8 @@ from framework import (
     PRIVATE_PROFILE,
     PUBLIC_PROFILE,
     Module,
-    Tier,
     build_app,
     build_private_lifespan,
-    domain_profile,
     register_leader_tasks,
     start_leader_singletons,
     stop_leader_singletons,
@@ -785,14 +783,6 @@ def test_public_tier_has_no_lifespan_side_effects_or_mcp():
     assert not mounts
 
 
-def test_domain_profile_shape():
-    profile = domain_profile("hikes")
-    assert profile.tier is Tier.PRIVATE
-    assert profile.service_name == "monolith-hikes"
-    assert profile.static_frontend is False
-    assert profile.leader_singletons is True
-
-
 # ---------------------------------------------------------------------------
 # MCP gating
 # ---------------------------------------------------------------------------
@@ -1297,7 +1287,14 @@ async def test_private_lifespan_true_enables_leader_singletons(monkeypatch):
 
 
 @pytest.mark.parametrize("raises", [False, True])
-def test_private_liveness_reports_failed_domain_and_recovers(raises):
+@pytest.mark.parametrize("revision", [None, "1.2.3"])
+def test_private_liveness_reports_failed_domain_and_recovers(
+    raises, revision, monkeypatch
+):
+    if revision is None:
+        monkeypatch.delenv("MONOLITH_CHART_VERSION", raising=False)
+    else:
+        monkeypatch.setenv("MONOLITH_CHART_VERSION", revision)
     healthy = False
 
     def progress():
@@ -1311,10 +1308,11 @@ def test_private_liveness_reports_failed_domain_and_recovers(raises):
     client = TestClient(app)
     response = client.get("/healthz")
     assert response.status_code == 503
+    assert response.json()["chart_version"] == revision
     assert response.json()["components"]["worker"]["ok"] is False
     assert "internal details" not in response.text
     healthy = True
-    assert client.get("/healthz").json() == {"status": "ok", "chart_version": None}
+    assert client.get("/healthz").json() == {"status": "ok", "chart_version": revision}
     assert client.get("/healthz").status_code == 200
 
 

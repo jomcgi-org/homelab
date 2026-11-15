@@ -1,0 +1,17 @@
+# Lets the authentik route in the edge namespace
+# (projects/platform-factory/edge/chart/templates/authentik-route.yaml) send
+# traffic to the Authentik server Service.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-routes
+  namespace: authentik
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: authentik-server

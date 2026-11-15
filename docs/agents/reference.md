@@ -48,12 +48,24 @@ they do not launch their own planner, review or landing sequence.
 - Run `ci` before pushing when available, otherwise use PR CI. Read failed
   logs before retrying. Never push to a merged branch.
 - The landing owner checks required CI and independent approval against the
-  current PR head. Review guidance: `docs/agents/review.md`.
+  current PR head. On main, that is `pr-checks` and the reviewer App's
+  `factory review` check. A failing `factory review` lists its findings, so
+  fix and push. On a PR authored by `jomcgi`, a human-gate finding clears
+  only when Joe merges it with his bypass. Review guidance:
+  `docs/agents/review.md`.
 - `homelab pr land <n>` follows merge, chart writeback and rollout. Otherwise,
   `gh pr merge <n> --auto` enters the merge queue; pass no strategy flag.
   Rebase only for conflicts or CI's branch writeback, not because main moved.
 - Queue entries can have `autoMergeRequest: null`; inspect
   `mergeQueueEntry{state}`. Read an ejection's failure before re-enqueueing.
+- The #7450 rollback implementation is staged default-off. Durable rollout
+  failure creates a recovery receipt only when enabled. Its worker reverses
+  the full landed PR range and creates or adopts `revert(<scope>): ...` with
+  `Reverts #N`. Ordinary admission, required Linux checks, independent exact-head
+  review and queue ordering still apply. Landing reopens the original issue
+  with evidence and records the reverted outcome. Source holds and human
+  ownership stay binding. The revision gate stays off; operational acceptance
+  remains on #7450 with the authorized landing and validation owner.
 - For deployable changes, wait for chart writeback and call
   `verify_deployment` with the expected revision until terminal. Without it,
   verify ArgoCD Synced/Healthy, the new pod image and a responding service.
@@ -137,10 +149,12 @@ when its row applies.
 
 | When | Read |
 |------|------|
-| Working under `projects/monolith/` or `projects/embervm/` | that directory's `AGENTS.md` |
+| Working under `projects/monolith/`, `projects/monolith/web/grimoire/` or `projects/embervm/` | that directory's `AGENTS.md` |
 | Factory orchestration, execution or controls | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md) first; [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) for ownership, trust, rationale and acceptance |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
 | Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
+| Running Go or pytest checks in a cloud session without `ci` | `docs/agents/local-tests.md` |
+| Proposing or judging a factory improvement | `docs/agents/evolution.md` |
 | Reviewing a finished PR diff | `docs/agents/review.md` |
 | Shipping a feature | `docs/agents/ship.md` |
 | Refreshing a system's STPA model | `docs/agents/stpa.md` |

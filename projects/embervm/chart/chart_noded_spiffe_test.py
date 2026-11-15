@@ -83,8 +83,8 @@ def _control_plane_service_account(
     return control_plane["spec"]["template"]["spec"]["serviceAccountName"]
 
 
-@pytest.mark.parametrize("values", [[], [_GKE_VALUES]])
-def test_default_and_gke_overlay_leave_noded_spiffe_fully_off(
+@pytest.mark.parametrize("values", [[]])
+def test_default_leaves_noded_spiffe_fully_off(
     values: list[Path],
 ) -> None:
     documents = _render("noded-off", values=values)
@@ -229,3 +229,10 @@ def test_render_rejects_disabling_both_grpc_listeners() -> None:
                 "noded.spiffe.enabled=false",
             ],
         )
+
+
+def test_hub_overlay_serves_the_noded_mtls_listener_beside_plaintext() -> None:
+    hub = yaml.safe_load(_GKE_VALUES.read_text())
+    assert hub["noded"]["spiffe"] == {"enabled": True}
+    # The plaintext listener stays on for the phase 2b dual window.
+    assert "plaintextGrpc" not in hub["noded"]

@@ -8,8 +8,52 @@ from pydantic import BaseModel, ConfigDict, Field
 from auth.api import Principal
 from factory.access import operator
 from goosecracker.api import REPO_CATALOG
+from factory.orchestration.recovery_delegation import (
+    Request as RecoveryAuthorizationRequest,
+)
 
 router = APIRouter(prefix="/api/swarm/factory", tags=["factory"])
+
+
+@router.post("/recovery-authorizations")
+async def factory_recovery_authorization(
+    body: RecoveryAuthorizationRequest, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.recovery_delegation import request_authorization
+
+    try:
+        return await request_authorization(principal, body)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/recovery-authorizations/{grant_id}")
+def factory_recovery_authorization_status(
+    grant_id: int, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.recovery_delegation import status
+
+    try:
+        return status(grant_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class RecoveryRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_preview_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.post("/recovery-authorizations/{grant_id}/revoke")
+def factory_recovery_revoke(
+    grant_id: int, body: RecoveryRevokeRequest, principal: Principal = Depends(operator)
+) -> dict:
+    from factory.orchestration.recovery_delegation import revoke
+
+    try:
+        return revoke(principal, grant_id, body.expected_preview_sha256)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 class ControlRequest(BaseModel):

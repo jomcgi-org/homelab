@@ -129,6 +129,8 @@ def lane(tmp_path, monkeypatch):
     cluster = Cluster()
     monkeypatch.setattr(pilot, "get_engine", lambda: engine)
     monkeypatch.setattr(pilot, "KubernetesClient", lambda: cluster)
+    # Source review status reads the production engine; it is not under test.
+    monkeypatch.setattr("knowledge.fact_review.status", lambda: {"enabled": True})
     monkeypatch.setenv("SCHEDULER_WORKFLOW_NAMESPACE", pilot.NAMESPACE)
     yield engine, cluster
     engine.dispose()

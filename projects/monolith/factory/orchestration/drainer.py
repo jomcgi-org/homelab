@@ -131,6 +131,11 @@ def hold_drainer_job(
 def pin_drainer_settings() -> dict:
     with tracer.start_as_current_span("drain.pin_settings") as span:
         settings = asdict(agent_config.load_drainer_settings())
+        from factory.orchestration import learning_inputs
+
+        # This checkpoint pins the branch for replay. Old histories lack the
+        # key and retain their original prompt step even after a flag change.
+        settings["learning_input_dedup_enabled"] = learning_inputs.enabled()
         set_attributes(
             span,
             {
@@ -142,9 +147,6 @@ def pin_drainer_settings() -> dict:
                     "grimoire_kg_max_jobs_per_day", 0
                 ),
                 "drain.docfix_auto_merge": settings.get("docfix_auto_merge", False),
-                "drain.docfix_review_enabled": settings.get(
-                    "docfix_review_enabled", False
-                ),
                 "drain.turn_timeout_seconds": settings["turn_timeout_seconds"],
                 "drain.kg_turn_timeout_seconds": settings["kg_turn_timeout_seconds"],
                 "drain.reasoning": settings["reasoning"],
@@ -695,19 +697,6 @@ def defer_drainer_job(
 
 
 @DBOS.step()
-def update_drainer_job_payload(
-    name: str, payload: dict, *, expected_holder: str | None = None
-) -> bool:
-    from agent.api import update_job_payload
-
-    return update_job_payload(
-        name,
-        payload,
-        **({"expected_holder": expected_holder} if expected_holder is not None else {}),
-    )
-
-
-@DBOS.step()
 def increment_kg_job_attempt(name: str, *, expected_holder: str | None = None) -> int:
     """Increment attempts on the current persisted payload and return the count."""
     from agent.api import lock_claim
@@ -1027,34 +1016,13 @@ def finish_drainer_job(
                 "drain.summary": first_line[:SPAN_SUMMARY_MAX_CHARS],
             },
         )
-        if status != "ok":
+        if status not in {"ok", "no_new_evidence"}:
             span.set_status(Status(StatusCode.ERROR))
         return completed
 
 
-@DBOS.step()
-def notify_drainer_failure(name: str, error: str) -> None:
-    from agent.api import notify
-
-    with tracer.start_as_current_span("drain.notify_failure") as span:
-        set_attributes(span, {"drain.job_name": name})
-        asyncio.run(notify(f"Luna drainer job {name} failed: {error}", level="warn"))
-
-
-def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
-    # settings.get keeps recovery compatible with workflows pinned before this
-    # setting existed. The new default is quiet Discord plus a warning log.
-    if not settings.get("notify_failures", False):
-        logger.warning("Luna drainer job %s failed: %s", name, error)
-        return
-    try:
-        notify_drainer_failure(name, error)
-    except Exception:
-        logger.warning(
-            "Luna drainer failure notification failed for job %s",
-            name,
-            exc_info=True,
-        )
+def _report_drainer_failure(name: str, error: str) -> None:
+    logger.warning("Luna drainer job %s failed: %s", name, error)
 
 
 @DBOS.step()
@@ -1296,15 +1264,6 @@ _TERMINAL_WORKFLOW_STATUSES = frozenset(
 )
 
 
-def lost_before_session_sweep_enabled() -> bool:
-    import os
-
-    return (
-        os.environ.get("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "false").lower()
-        == "true"
-    )
-
-
 def _drainer_workflow_state(session, workflow_id: str) -> tuple[str, int] | None:
     """(status, updated_at epoch ms) of a drain workflow, or None if unknown."""
     from sqlalchemy import text
@@ -1384,8 +1343,6 @@ def settle_lost_drainer_reservations(
     from factory.execution.models import AgentCapacityReservation
     from factory.execution.store import cancel_unqueued_drainer_start
 
-    if not lost_before_session_sweep_enabled():
-        return []
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=LOST_BEFORE_SESSION_GRACE_SECONDS)
     cutoff_ms = int(cutoff.timestamp() * 1000)
@@ -1586,6 +1543,13 @@ def build_retro_prompt(instructions: str) -> str:
         prompt = build_factory_retro_prompt(instructions)
         set_attributes(span, {"drain.prompt_chars": len(prompt)})
         return prompt
+
+
+@DBOS.step()
+def prepare_learning_input(name: str, holder: str) -> dict:
+    from factory.orchestration.learning_inputs import prepare_job
+
+    return prepare_job(name, holder)
 
 
 def _kg_raw_id(payload: object) -> str:
@@ -1991,7 +1955,26 @@ def drain_cycle() -> dict:
                             job.get("payload"), settings
                         )
                         model = _job_model(job.get("payload"), strict=True)
-                        prompt = _job_prompt(job.get("payload"), prompt)
+                        if (
+                            isinstance(job.get("payload"), dict)
+                            and job["payload"].get("learning_stage") == "evidence"
+                            and DBOS.patch("factory-learning-input-v1")
+                            and settings.get("learning_input_dedup_enabled", False)
+                        ):
+                            prepared = prepare_learning_input(
+                                name, job.get("locked_by")
+                            )
+                            if prepared["skip"]:
+                                finish_drainer_job(
+                                    name,
+                                    "no_new_evidence",
+                                    "Unchanged evidence already produced a verified empty result. Existing owner diagnosis retained.",
+                                    **ownership,
+                                )
+                                continue
+                            prompt = prepared["prompt"]
+                        else:
+                            prompt = _job_prompt(job.get("payload"), prompt)
                     set_attributes(
                         job_span,
                         {
@@ -2160,7 +2143,7 @@ def drain_cycle() -> dict:
                             else {}
                         ),
                     )
-                    _report_drainer_failure(settings, name, _summary(exc))
+                    _report_drainer_failure(name, _summary(exc))
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
                     if batch_review_key is not None:
@@ -2172,7 +2155,7 @@ def drain_cycle() -> dict:
                         recurring=recurring,
                         **ownership,
                     )
-                    _report_drainer_failure(settings, name, error)
+                    _report_drainer_failure(name, error)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
                     error = _summary(exc)
                     if batch_review_key is not None:
@@ -2187,7 +2170,7 @@ def drain_cycle() -> dict:
                         )
                     else:
                         finish_drainer_job(name, "error", error, **ownership)
-                    _report_drainer_failure(settings, name, error)
+                    _report_drainer_failure(name, error)
                 finally:
                     if not start_attempted:
                         cancel_drainer_reservation(local_session_id)

@@ -4,8 +4,7 @@ The block is computed once, from the task text and a cached vector, and stored o
 session row's system prompt, which the transport resends on every turn. Factory
 node sessions carry it at the end of their first user message instead, so their
 system prompt stays identical across tasks and cacheable. It
-does not refresh as the task evolves, and flipping the flag off only affects
-sessions created afterwards.
+does not refresh as the task evolves.
 """
 
 from __future__ import annotations
@@ -63,15 +62,6 @@ RECALL_MIN_SCORE = float(os.environ.get("KNOWLEDGE_RECALL_MIN_SCORE", "0.62"))
 DEFAULT_REPO_SCOPE = "repo:jomcgi-org/homelab"
 
 logger = logging.getLogger(__name__)
-
-
-def recall_enabled() -> bool:
-    """Return whether session prompt recall is enabled."""
-    return os.environ.get("KNOWLEDGE_RECALL_ENABLED", "").lower() in {
-        "true",
-        "1",
-        "yes",
-    }
 
 
 def recall_limit() -> int:
@@ -163,8 +153,6 @@ def recall_block(
     text: str | None, *, limit: int | None = None, now: datetime | None = None
 ) -> str | None:
     """Build an untrusted-data recall block for an agent task prompt."""
-    if not recall_enabled():
-        return None
     increment("attempts")
     text = query_text(text)
     if len(text) < RECALL_MIN_PROMPT_CHARS:
@@ -271,11 +259,7 @@ def recall_prompt_ready(prompt: str | None) -> bool:
 
 def defer_recall(prompt: str | None, *, node_key: str | None) -> bool:
     """Wait for the first meaningful user prompt on an otherwise empty session."""
-    return (
-        recall_enabled()
-        and node_key not in NO_RECALL_NODE_KEYS
-        and not recall_prompt_ready(prompt)
-    )
+    return node_key not in NO_RECALL_NODE_KEYS and not recall_prompt_ready(prompt)
 
 
 def attach_recall(

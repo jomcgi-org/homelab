@@ -17,7 +17,6 @@ from grimoire.testing.leak_harness import MEMBERS, ROLES, sqlite_harness
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "journal.db") as h:
         # Keep this fixture's original narration-to-handout audience oracle.
         # The route inventory separately exercises the expanded reveal seed.
@@ -75,18 +74,6 @@ def test_both_routes_pass_shared_leak_canaries(harness, session_route, view):
                 else True
             )
             assert all(item["body"] is not None for item in data["received"])
-
-
-@pytest.mark.parametrize("session_route", [False, True])
-def test_play_off_is_404(harness, monkeypatch, session_route):
-    h, client = harness
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
-    response = client.get(
-        url(h, session_route),
-        params={"view": "bogus", "limit": "abc"},
-        headers=h.headers("dm"),
-    )
-    assert response.status_code == 404
 
 
 @pytest.mark.parametrize("viewer", ["outsider", "other_campaign"])

@@ -37,6 +37,18 @@ from pathlib import Path
 import pytest
 import yaml
 
+# Must equal BROWSER_API_PREFIXES in projects/monolith/grimoire/browser_lane.py.
+GRIMOIRE_BROWSER_API_PREFIXES = [
+    "/api/grimoire/lobby",
+    "/api/grimoire/campaigns",
+    "/api/grimoire/invitations",
+    "/api/grimoire/feedback",
+    "/api/auth/platform/commands",
+    "/api/auth/platform/invitations",
+    "/api/auth/platform/management",
+    "/api/auth/platform/self",
+]
+
 # Kinds with no namespace: two Applications rendering the same name means one
 # object with two owners, not two objects.
 CLUSTER_SCOPED = {
@@ -1478,6 +1490,15 @@ def test_codex_synthetic_uses_release_derived_internal_api():
     assert container["resources"] == {"requests": {"cpu": "100m", "memory": "256Mi"}}
 
 
+def test_rollback_health_uses_release_derived_internal_api():
+    rendered = _render("alternate", [], namespace="another-namespace")
+    env = _env_by_name(_deployment_backend_env(rendered))
+    assert (
+        env["MONOLITH_INTERNAL_URL"]["value"]
+        == "http://alternate.another-namespace.svc:8000"
+    )
+
+
 @pytest.mark.parametrize("environment", ["prod", "gke"])
 def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     env = _env_by_name(_deployment_backend_env(renders[environment]))
@@ -1920,7 +1941,6 @@ def test_recovery_gke_keeps_real_failover_and_bounded_drainer(recovery_gke_rende
         "DRAINER_ENABLED": "true",
         "DRAINER_JOB_KINDS": "qwen-drain",
         "DRAINER_MAX_JOBS_PER_CYCLE": "1",
-        "DRAINER_NOTIFY_FAILURES": "false",
         "DRAINER_DOCFIX_ENABLED": "false",
         "DRAINER_DOCFIX_AUTO_MERGE": "false",
         "AGENT_SESSIONS_CHANNEL_NOTIFY": "none",
@@ -2027,7 +2047,12 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
         match["path"]["value"]
         for rule in route["spec"]["rules"]
         for match in rule["matches"]
-    ] == ["/grimoire/_app", "/grimoire"]
+    ] == [
+        # The client-only UI calls these from the browser. The list is exact:
+        # grimoire/browser_lane_test.py proves each enforces a verified identity.
+        *GRIMOIRE_BROWSER_API_PREFIXES,
+        "/grimoire",
+    ]
     assert policies[name]["spec"]["targetRefs"][0]["name"] == name
     provider = policies[name]["spec"]["jwt"]["providers"][0]
     assert provider["audiences"] == ["grimoire-friends"]
@@ -2040,6 +2065,8 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
     assert "GRIMOIRE_AUTH_AUDIENCE" in renders["prod"]
     assert "GRIMOIRE_AUTH_JWKS_URL" in renders["prod"]
     assert "GRIMOIRE_AUTH_ISSUER" not in renders["dev"]
+    assert "GRIMOIRE_BROWSER_ORIGIN" in renders["prod"]
+    assert "GRIMOIRE_BROWSER_ORIGIN" not in renders["dev"]
 
 
 def test_dev_cannot_promote_production_kargo_stages(renders):
@@ -2071,7 +2098,9 @@ def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
     # The unauthenticated root route only redirects or returns a static 404.
     # It cannot serve upstream bytes,
     # including if a caller supplies a forged Referer or Cookie header.
-    assert len(dispatch["spec"]["rules"]) == 3
+    # Only the moving app is SvelteKit now. Grimoire's assets live under
+    # /grimoire/assets on its own gated route, so it needs no dispatch.
+    assert len(dispatch["spec"]["rules"]) == 2
     assert dispatch["metadata"]["name"] not in policies
     _assert_friends_assets_not_found(docs, dispatch)
     for rule in dispatch["spec"]["rules"][:-1]:
@@ -2084,7 +2113,7 @@ def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
         assert redirect["statusCode"] == 302
         assert redirect["path"]["type"] == "ReplacePrefixMatch"
         prefix = redirect["path"]["replacePrefixMatch"]
-        assert prefix in {"/moving/_app", "/grimoire/_app"}
+        assert prefix == "/moving/_app"
         app = prefix.split("/")[1]
         assert rule["matches"] == [
             {
@@ -2240,7 +2269,7 @@ def test_disabled_friends_app_has_no_asset_dispatch(tmp_path, moving, grimoire):
         ),
         None,
     )
-    if not moving and not grimoire:
+    if not moving:
         assert dispatch is None
         assert not any(
             doc["metadata"]["name"].endswith("-friends-assets-not-found")

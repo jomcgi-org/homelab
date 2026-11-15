@@ -331,9 +331,4 @@ defmodule Embervm.SpecTrace.Writer do
   defp jsonable(value) when is_list(value), do: Enum.map(value, &jsonable/1)
   defp jsonable(value) when is_map(value), do: Map.new(value, fn {key, value} -> {stringify(key), jsonable(value)} end)
   defp jsonable(value), do: value
-
-  defp uuid do
-    <<a::binary-size(4), b::binary-size(2), c::binary-size(2), d::binary-size(2), e::binary-size(6)>> = :crypto.strong_rand_bytes(16)
-    Enum.join(Enum.map([a, b, c, d, e], &Base.encode16(&1, case: :lower)), "-")
-  end
 end

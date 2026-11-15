@@ -13,38 +13,49 @@ spec:
   hostnames:
     - {{ .Values.cfIngress.friends.hostname | quote }}
   rules:
-    # Keep compiled assets on this SAME route and SecurityPolicy. The OIDC
-    # filter decrypts the app's cookies before JWT checks, including when both
-    # friends apps have sessions. Rewrite only the asset prefix for sirv.
+    # The friends UI is a client-only app (projects/monolith/web/grimoire):
+    # static files served by the API port, whose browser code calls the API
+    # directly. Every rule sits on THIS route so the SecurityPolicy below gates
+    # every byte: the OIDC filter decrypts the session cookie and the JWT check
+    # verifies it before anything is forwarded.
+    #
+    # The API is routed by an explicit list, never as /api/grimoire wholesale.
+    # Library reads such as /api/grimoire/books carry no identity check of
+    # their own, so they must stay unreachable here. The list is pinned to
+    # grimoire/browser_lane.py by chart/grimoire_browser_lane_test.py, and
+    # grimoire/browser_lane_test.py proves every listed route enforces a
+    # verified identity.
+    {{- range .Values.cfIngress.grimoire.apiPrefixes }}
     - matches:
         - path:
             type: PathPrefix
-            value: /grimoire/_app
+            value: {{ . | quote }}
       filters:
-        - type: URLRewrite
-          urlRewrite:
-            path:
-              type: ReplacePrefixMatch
-              replacePrefixMatch: /_app
-        # Browser caching is fine; an edge/shared cache must not bypass auth.
+        # Campaign data is per viewer. No cache, shared or private, may keep it.
         - type: ResponseHeaderModifier
           responseHeaderModifier:
             set:
               - name: Cloudflare-CDN-Cache-Control
                 value: no-store
               - name: Cache-Control
-                value: private, no-cache
+                value: private, no-store
       backendRefs:
-        - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.cfIngress.friends.servicePort | int }}
-    # Only the Svelte BFF is reachable. Never expose the private API wholesale.
+        - name: {{ include "monolith.fullname" $ }}
+          port: {{ $.Values.service.apiPort | int }}
+    {{- end }}
+    # The app shell, its hashed assets, and the signed-in half of the
+    # invitation flow (/grimoire/join/accept). The API port sets cache and
+    # security headers itself (grimoire/web.py, grimoire/join_landing.py).
+    #
+    # The OAuth callback and logout paths fall inside this prefix. Envoy serves
+    # them itself, but the request has to select this route first.
     - matches:
         - path:
             type: PathPrefix
             value: /grimoire
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.cfIngress.friends.servicePort | int }}
+          port: {{ .Values.service.apiPort | int }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
@@ -98,7 +109,6 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   itemPath: {{ .Values.cfIngress.grimoire.onepasswordItemPath | quote }}
-{{- if .Values.grimoire.invitationLinks.enabled }}
 ---
 # Only this self-contained capability landing is anonymous. The token is in a
 # URL fragment, then an HttpOnly cookie; the API and /join/accept remain gated.
@@ -118,7 +128,7 @@ spec:
             value: /grimoire/join
       backendRefs:
         - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.cfIngress.friends.servicePort | int }}
+          port: {{ .Values.service.apiPort | int }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
@@ -135,7 +145,6 @@ spec:
         - limit:
             requests: 30
             unit: Minute
-{{- end }}
 {{- if .Values.platformAuth.enrollmentEnabled }}
 ---
 apiVersion: gateway.networking.k8s.io/v1

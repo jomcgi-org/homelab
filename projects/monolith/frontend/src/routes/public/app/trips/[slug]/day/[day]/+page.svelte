@@ -71,6 +71,8 @@
   // actually decoded (instant when preloaded), so the photo never flashes its
   // empty cell between shots while an arrow is held. Only the latest target wins.
   let displayedSrc = $state(photos[current]?.imgDisplay ?? null);
+  let decodedSrc = $state(null);
+  let mapPainted = $state(false);
   $effect(() => {
     const target = photo?.imgDisplay ?? null;
     if (!target) {
@@ -82,14 +84,24 @@
       return;
     }
     let cancelled = false;
-    const swap = () => {
-      if (!cancelled) displayedSrc = target;
+    const swap = (decoded = true) => {
+      if (!cancelled) {
+        displayedSrc = target;
+        decodedSrc = decoded ? target : null;
+      }
     };
     const img = new Image();
     img.src = target;
-    if (img.complete) swap();
-    else if (img.decode) img.decode().then(swap).catch(swap);
-    else img.onload = swap;
+    if (img.complete && img.naturalWidth > 0) swap();
+    else if (img.decode)
+      img
+        .decode()
+        .then(() => swap())
+        .catch(() => swap(false));
+    else {
+      img.onload = () => swap();
+      img.onerror = () => swap(false);
+    }
     return () => {
       cancelled = true;
     };
@@ -154,36 +166,56 @@
     current = closest;
   }
 
-  // Warm the browser/CDN cache so scrubbing is always instant: first the close
-  // neighbours (+-5, nearest first), then stream the rest of the day forward in
-  // the background (then backward as filler), paced so we never fire hundreds of
-  // requests at once. Browser-only. `warmed` persists across scrubs.
+  // Start nearby photos only after the visible photo and map have painted.
+  // One low-priority image at a time keeps scrubbing warm without downloading
+  // a whole day's gallery or competing with the first view.
   const warmed = new Set();
-  function warm(idx) {
-    const p = photos[idx];
-    if (!p?.imgDisplay || warmed.has(p.imgDisplay)) return false;
-    warmed.add(p.imgDisplay);
-    new Image().src = p.imgDisplay;
-    return true;
+  function remember(src) {
+    if (warmed.has(src)) return;
+    if (warmed.size >= 64) warmed.delete(warmed.values().next().value);
+    warmed.add(src);
   }
   $effect(() => {
     const i = current;
-    if (typeof Image === "undefined" || !photos.length) return;
-    for (let d = 1; d <= 5; d++) {
-      warm(i + d);
-      warm(i - d);
-    }
-    let fwd = i + 6;
-    let back = i - 6;
-    const timer = setInterval(() => {
-      let did = false;
-      for (let n = 0; n < 3 && !did; n++) {
-        while (fwd < photos.length && !(did = warm(fwd++)));
-        if (!did) while (back >= 0 && !(did = warm(back--)));
+    const visible = photos[i]?.imgDisplay;
+    if (
+      !visible ||
+      decodedSrc !== visible ||
+      !mapPainted ||
+      navigator.connection?.saveData
+    )
+      return;
+    remember(visible);
+    const neighbours = [i + 1, i - 1, i + 2]
+      .map((index) => photos[index]?.imgDisplay)
+      .filter(Boolean);
+    let cancelled = false;
+    let cancelPending;
+    (async () => {
+      for (const src of neighbours) {
+        if (cancelled) return;
+        if (warmed.has(src)) continue;
+        remember(src);
+        const img = new Image();
+        img.fetchPriority = "low";
+        const loaded = await new Promise((resolve) => {
+          img.onload = () => resolve(true);
+          img.onerror = () => resolve(false);
+          cancelPending = () => {
+            img.removeAttribute("src");
+            resolve(false);
+          };
+          img.src = src;
+          if (img.complete) resolve(img.naturalWidth > 0);
+        });
+        cancelPending = null;
+        if (!loaded) warmed.delete(src);
       }
-      if (fwd >= photos.length && back < 0) clearInterval(timer);
-    }, 100);
-    return () => clearInterval(timer);
+    })();
+    return () => {
+      cancelled = true;
+      cancelPending?.();
+    };
   });
 
   // Arrow keys step through photos; Escape closes the fullscreen overlay.
@@ -239,6 +271,7 @@
           {currentCoords}
           {sunPosition}
           onLocationClick={handleMapLocationClick}
+          onReady={(ready) => (mapPainted = ready)}
         />
 
         <!-- Photo and per-photo telemetry share one ruled panel. -->
@@ -252,6 +285,7 @@
               <img
                 src={displayedSrc}
                 alt={`Photo ${current + 1} of ${photos.length}`}
+                fetchpriority="high"
                 decoding="async"
               />
             </button>

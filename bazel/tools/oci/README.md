@@ -122,15 +122,16 @@ apko ignores a declared arch nobody builds. Changing `archs` requires
 regenerating the lock, which checksums the entire config.
 
 ```python
-# projects/monolith/obsidian-image/BUILD
+# projects/scotland-connector/image/BUILD
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 apko_image(
     name = "image",
     arm64 = False,
     config = "apko.yaml",
-    contents = "@monolith_obsidian_lock//:contents",
-    repository = "ghcr.io/jomcgi/homelab/projects/monolith/obsidian",
+    contents = "@scotland_connector_lock//:contents",
+    repository = "ghcr.io/jomcgi/homelab/projects/scotland-connector",
+    tars = [":connector_tar_amd64"],
 )
 ```
 
@@ -159,7 +160,6 @@ instead, and the macro appends `_amd64` / `_arm64`. `arm64 = False` with
 | `arm64`              | `True`                                  | Also build the aarch64 variant and an index; callers pass `False` |
 | `tars`               | `None`                                  | Tar layers added to every built platform                         |
 | `multiarch_tars`     | `None`                                  | Tar base names; macro appends `_amd64` / `_arm64`; needs `arm64 = True` |
-| `multiplatform_tars` | `None`                                  | Deprecated. Use `tars` and `multiarch_tars` instead              |
 | `visibility`         | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                 |
 
 Created targets:
@@ -234,7 +234,7 @@ helm_chart(
     images = {
         "backend.image":               "//projects/monolith:image.info",
         "frontend.image":              "//projects/monolith/frontend:image.info",
-        "knowledge.headlessSync.image": "//projects/monolith/obsidian-image:image.info",
+        "jobs.image":                  "//projects/monolith:jobs_image.info",
     },
     publish = True,
 )

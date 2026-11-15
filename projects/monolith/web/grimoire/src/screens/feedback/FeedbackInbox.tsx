@@ -1,0 +1,224 @@
+import { useRef, useState } from "react";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { Text } from "@astryxdesign/core/Text";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Timestamp } from "@astryxdesign/core/Timestamp";
+import { ApiError, SignInError } from "../../api/client";
+import {
+  dismissFeedback,
+  fileFeedback,
+  keys,
+  useFeedbackInbox,
+} from "../../api/feedback";
+import { keys as lobbyKeys } from "../../api/lobby";
+import type { FeedbackView } from "../../api/schema";
+import { Loaded } from "../../app/Loaded";
+import { Page } from "../../app/Page";
+import { paths } from "../../app/paths";
+import { useAction } from "../../app/useAction";
+import { FormDialog } from "../../inventory/FormDialog";
+import { NoteText } from "../../notes/NoteText";
+
+const TITLE_MAX = 120;
+const BODY_MAX = 4000;
+const REASON_MAX = 200;
+const changed = [keys.inbox, keys.roadmap, lobbyKeys.lobby];
+const votes = (count: number) => (count === 1 ? "1 vote" : `${count} votes`);
+
+/** The operator's inbox: file each item as an issue, or dismiss it. */
+export function FeedbackInbox() {
+  const inbox = useFeedbackInbox();
+  const refused =
+    inbox.data === undefined &&
+    inbox.error instanceof ApiError &&
+    !(inbox.error instanceof SignInError) &&
+    inbox.error.status === 403;
+  return (
+    <Page
+      title="Feedback inbox"
+      back={{ href: paths.lobby, label: "Back to Grimoire" }}
+    >
+      {refused ? (
+        <EmptyState title="The feedback inbox is for operators." />
+      ) : (
+        <Loaded query={inbox} what="the feedback">
+          {(items) => <Inbox items={items} />}
+        </Loaded>
+      )}
+    </Page>
+  );
+}
+
+function Inbox({ items }: { items: FeedbackView[] }) {
+  const [open, setOpen] = useState<{
+    item: FeedbackView;
+    dialog: "file" | "dismiss";
+  } | null>(null);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const close = () => {
+    setOpen(null);
+    // Wait for conditional dialog removal before returning keyboard focus.
+    requestAnimationFrame(() => trigger.current?.focus());
+  };
+  if (items.length === 0) {
+    return <EmptyState isCompact title="No new feedback." />;
+  }
+  return (
+    <>
+      {items.map((item) => (
+        <Card key={item.id}>
+          <VStack
+            gap={3}
+            as="article"
+            aria-label={`Feedback from ${item.author}`}
+          >
+            <NoteText text={item.text} />
+            <Text type="supporting">
+              {item.author} ·{" "}
+              {item.campaign_name ? `${item.campaign_name} · ` : ""}
+              {item.page} ·{" "}
+              <Timestamp
+                value={item.created_at}
+                format="date_time"
+                type="inherit"
+                color="inherit"
+                hasTooltip={false}
+              />{" "}
+              · {votes(item.votes)}
+            </Text>
+            <HStack gap={2} wrap="wrap">
+              <Button
+                label="File issue"
+                onClick={(event) => {
+                  trigger.current = event.currentTarget;
+                  setOpen({ item, dialog: "file" });
+                }}
+              />
+              <Button
+                label="Dismiss"
+                variant="ghost"
+                onClick={(event) => {
+                  trigger.current = event.currentTarget;
+                  setOpen({ item, dialog: "dismiss" });
+                }}
+              />
+            </HStack>
+          </VStack>
+        </Card>
+      ))}
+      {open?.dialog === "file" && (
+        <FileIssue key={open.item.id} item={open.item} onClose={close} />
+      )}
+      {open?.dialog === "dismiss" && (
+        <Dismiss key={open.item.id} item={open.item} onClose={close} />
+      )}
+    </>
+  );
+}
+
+/** A dismissed item moves to Rejected on the roadmap, with the reason if any. */
+function Dismiss({
+  item,
+  onClose,
+}: {
+  item: FeedbackView;
+  onClose: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const dismiss = useAction(dismissFeedback, {
+    invalidate: changed,
+    success: "Dismissed.",
+    onSuccess: onClose,
+  });
+  const submit = () => {
+    if (!dismiss.isPending)
+      dismiss.run({ id: item.id, reason: reason.trim() || undefined });
+  };
+  return (
+    <FormDialog
+      title="Dismiss"
+      submitLabel="Dismiss"
+      isPending={dismiss.isPending}
+      isInvalid={false}
+      onSubmit={submit}
+      onClose={onClose}
+    >
+      <NoteText text={item.text} />
+      <TextInput
+        label="Reason (shown on the roadmap)"
+        isOptional
+        value={reason}
+        onChange={(value) => setReason(value.slice(0, REASON_MAX))}
+        onEnter={submit}
+        width="100%"
+        hasAutoFocus
+      />
+    </FormDialog>
+  );
+}
+
+/**
+ * The repository is public and the factory reads the issue, so the operator
+ * writes what is published. The sender's words are shown for reference and
+ * are never the default body.
+ */
+function FileIssue({
+  item,
+  onClose,
+}: {
+  item: FeedbackView;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const file = useAction(fileFeedback, {
+    invalidate: changed,
+    success: (issue) => `Filed as issue #${issue.issue_number}.`,
+    onSuccess: onClose,
+  });
+  const cleanTitle = title.trim();
+  const cleanBody = body.trim();
+  const invalid = !cleanTitle || !cleanBody || cleanBody.length > BODY_MAX;
+  const submit = () => {
+    if (!invalid && !file.isPending)
+      file.run({ id: item.id, title: cleanTitle, body: cleanBody });
+  };
+  return (
+    <FormDialog
+      title="File issue"
+      submitLabel="File issue"
+      isPending={file.isPending}
+      isInvalid={invalid}
+      onSubmit={submit}
+      onClose={onClose}
+    >
+      <NoteText text={item.text} />
+      <TextInput
+        label="Title"
+        isRequired
+        value={title}
+        onChange={(value) => setTitle(value.slice(0, TITLE_MAX))}
+        onEnter={submit}
+        width="100%"
+        hasAutoFocus
+      />
+      <TextArea
+        label="Body"
+        isRequired
+        value={body}
+        onChange={setBody}
+        maxLength={BODY_MAX}
+        rows={8}
+        width="100%"
+      />
+      <Text type="supporting">
+        The title and body are published on the public repository. The
+        sender&apos;s name is not.
+      </Text>
+    </FormDialog>
+  );
+}

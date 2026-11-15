@@ -1,11 +1,10 @@
 """Text-only streaming client for OpenAI-compatible chat inference.
 
 Grimoire chat is text-in / text-out with NO tools and NO function-calling. This
-is a deliberate direct httpx call to the OpenAI-compatible
-``/v1/chat/completions`` endpoint rather than PydanticAI, precisely so that
-guarantee is obvious on the page: the request body carries only
-model/messages/max_tokens/stream, and there is no ``tools=`` argument anywhere
-that could be populated by accident. The reserved-headroom slot in ``limits.py``
+uses the shared text-only httpx transport for streaming and a direct httpx call
+for non-streaming completions. Both call ``/v1/chat/completions`` without tools
+or function-calling. Streaming also requests a trailing usage chunk via
+``stream_options.include_usage``. The reserved-headroom slot in ``limits.py``
 keeps public load bounded (the slot is held for the whole stream).
 
 The base URL is injected from the environment with an empty-string default and NO
@@ -17,16 +16,17 @@ provider unless a Grimoire-specific override is needed.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from dataclasses import dataclass
 
 import httpx
 
 from grimoire_chat import limits
 import shared.inference
+from shared.text_stream import RawUsage, stream_text
 
 logger = logging.getLogger(__name__)
 
@@ -115,42 +115,31 @@ async def stream_chat(
     unreachable, or returns a non-2xx status.
     """
     url = _require_url()
-    body = _payload(messages, max_tokens=max_tokens, stream=True)
     prompt_tokens = 0
     completion_tokens = 0
     usage_seen = False
     usage_dict = None
     text_parts: list[str] = []
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            async with client.stream(
-                "POST",
-                f"{url}/v1/chat/completions",
-                headers=shared.inference.auth_headers(url),
-                json=body,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[len("data:") :].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except ValueError:
-                        continue
-                    usage = chunk.get("usage")
-                    if usage:
-                        usage_dict = usage
-                        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                        completion_tokens = int(usage.get("completion_tokens") or 0)
-                        usage_seen = True
-                    for choice in chunk.get("choices") or []:
-                        delta = (choice.get("delta") or {}).get("content")
-                        if delta:
-                            text_parts.append(delta)
-                            yield TokenDelta(text=delta)
+        async with aclosing(
+            stream_text(
+                endpoint=url,
+                model=MODEL,
+                messages=messages,
+                max_tokens=max_tokens,
+                timeout=_TIMEOUT,
+            )
+        ) as events:
+            async for event in events:
+                if isinstance(event, RawUsage):
+                    usage = event.value
+                    usage_dict = usage
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage.get("completion_tokens") or 0)
+                    usage_seen = True
+                else:
+                    text_parts.append(event.text)
+                    yield TokenDelta(text=event.text)
     except httpx.HTTPError as exc:
         raise InferenceError(f"inference request failed: {type(exc).__name__}") from exc
 

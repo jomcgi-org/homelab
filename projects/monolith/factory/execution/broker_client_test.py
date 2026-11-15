@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import os
+import socket
 import ssl
 import threading
 import time
@@ -168,11 +170,31 @@ class _Handler(BaseHTTPRequestHandler):
             self.connection.getpeercert(binary_form=True)
         )
         type(self).calls.append((self.command, self.path, peer.serial_number))
+        phase = getattr(self.server, "slow_stream_phase", None)
+        if phase:
+            try:
+                if phase == "headers":
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+                else:
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\n\r\n")
+                for _ in range(30):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.04)
+                if phase == "headers":
+                    self.wfile.write(b"\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                # The bounded client closes the socket before this drip ends.
+                pass
+            return
         if self.path == "/slow":
             time.sleep(0.1)
         status = 503 if self.path == "/upstream-error" else 200
-        body = b'{"ok":true}'
+        status = getattr(self.server, "response_status", status)
+        body = getattr(self.server, "response_body", b'{"ok":true}')
         self.send_response(status)
+        for name, value in getattr(self.server, "response_headers", {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -188,7 +210,7 @@ class _Handler(BaseHTTPRequestHandler):
 @pytest.fixture
 def mtls_server(tmp_path):
     server_id = "spiffe://test.example/token-broker"
-    client_id = "spiffe://test.example/monolith"
+    client_id = "spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith"
     ca, ca_key = _ca(1)
     client_cert, client_key = _identity(
         tmp_path, "client", ca, ca_key, client_id, 3, server=False
@@ -391,3 +413,313 @@ def test_default_mode_preserves_plain_http(monkeypatch):
 
     assert response.json() == {"ok": True}
     assert calls == [("GET", "http://broker/quota")]
+
+
+@pytest.fixture
+def dev_mtls_server(monkeypatch, mtls_server):
+    _enable(monkeypatch, mtls_server)
+    server_id = (
+        "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
+    )
+    server, thread = _serve(
+        mtls_server["directory"],
+        server_id,
+        mtls_server["ca"],
+        mtls_server["ca_key"],
+        4,
+    )
+    monkeypatch.setenv(
+        broker_client.DEV_BROKER_LOGIN_URL_ENV,
+        f"https://127.0.0.1:{server.server_port}",
+    )
+    monkeypatch.setenv(broker_client.DEV_BROKER_LOGIN_SPIFFE_ID_ENV, server_id)
+    yield server
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=1)
+
+
+def test_dev_login_reuses_svid_without_changing_production_pin(
+    mtls_server, dev_mtls_server
+):
+    async def run():
+        responses = await asyncio.gather(
+            broker_client.dev_login_request(
+                "POST", "/grants/codex-cluster/login/start", timeout=5
+            ),
+            broker_client.dev_login_request(
+                "GET", "/grants/codex-cluster/login/status", timeout=5
+            ),
+            broker_client.request("GET", mtls_server["url"] + "/quota", timeout=5),
+        )
+        assert all(response.json() == {"ok": True} for response in responses)
+
+    asyncio.run(run())
+    assert os.environ[broker_client.BROKER_SPIFFE_ID_ENV] == mtls_server["server_id"]
+    assert sorted(_Handler.calls) == sorted(
+        [
+            ("POST", "/grants/codex-cluster/login/start", 3),
+            ("GET", "/grants/codex-cluster/login/status", 3),
+            ("GET", "/quota", 3),
+        ]
+    )
+
+
+def test_dev_rejects_production_server_identity_before_http(
+    monkeypatch, mtls_server, dev_mtls_server
+):
+    # A valid, trusted production server is still not the configured dev server.
+    monkeypatch.setenv(broker_client.DEV_BROKER_LOGIN_URL_ENV, mtls_server["url"])
+    with pytest.raises(httpx.ConnectError, match="URI SAN"):
+        asyncio.run(
+            broker_client.dev_login_request(
+                "GET", "/grants/codex-cluster/login/status", timeout=5
+            )
+        )
+    assert _Handler.calls == []
+
+
+def test_dev_mtls_rejects_no_client_certificate(
+    monkeypatch, mtls_server, dev_mtls_server
+):
+    # Exercise an actual TLS handshake with the client certificate omitted.
+    def context_without_svid(expected_id=None):
+        context = ssl.create_default_context(cafile=str(mtls_server["bundle"]))
+        context.check_hostname = False
+        return context, expected_id
+
+    monkeypatch.setattr(broker_client, "_spiffe_context", context_without_svid)
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(
+            broker_client.dev_login_request(
+                "POST", "/grants/codex-cluster/login/start", timeout=5
+            )
+        )
+    assert _Handler.calls == []
+
+
+def test_dev_missing_svid_never_falls_back(monkeypatch, mtls_server, dev_mtls_server):
+    monkeypatch.setenv(
+        broker_client.BROKER_SVID_CERT_ENV, str(mtls_server["directory"] / "absent.pem")
+    )
+    with pytest.raises(httpx.ConnectError, match="credentials unavailable"):
+        asyncio.run(
+            broker_client.dev_login_request(
+                "GET", "/grants/codex-cluster/login/status", timeout=5
+            )
+        )
+    assert _Handler.calls == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/grants/codex-cluster/token"),
+        ("POST", "/grants/codex-cluster/refresh"),
+        ("GET", "/quota"),
+        ("POST", "/grants/codex-other/login/start"),
+        ("GET", "/grants/codex-cluster/login/start"),
+        ("POST", "/grants/codex-cluster/login/status"),
+        ("GET", "/grants/codex-cluster/login/status?token=true"),
+        ("GET", "https://other.example/grants/codex-cluster/login/status"),
+    ],
+)
+def test_dev_bridge_rejects_other_capabilities_before_transport(
+    monkeypatch, method, path
+):
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("invalid route must not reach transport")
+
+    monkeypatch.setattr(broker_client, "_spiffe_request", unexpected)
+    with pytest.raises(ValueError, match="only codex-cluster"):
+        asyncio.run(broker_client.dev_login_request(method, path, timeout=5))
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, ""),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "http://broker:8080"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://user:secret@broker:8443"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:8443/path"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:8443?token=secret"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:8443?"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:8443#fragment"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:8443#"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://bro\nker:8443"),
+        (broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:invalid"),
+        (broker_client.DEV_BROKER_LOGIN_SPIFFE_ID_ENV, ""),
+        (broker_client.DEV_BROKER_LOGIN_SPIFFE_ID_ENV, "spiffe://broker:8443/id"),
+        (broker_client.BROKER_SPIFFE_ENABLED_ENV, "false"),
+    ],
+)
+def test_dev_login_requires_fixed_mtls_configuration(monkeypatch, name, value):
+    monkeypatch.setenv(broker_client.BROKER_SPIFFE_ENABLED_ENV, "true")
+    monkeypatch.setenv(broker_client.DEV_BROKER_LOGIN_URL_ENV, "https://broker:8443")
+    monkeypatch.setenv(
+        broker_client.DEV_BROKER_LOGIN_SPIFFE_ID_ENV, "spiffe://test.example/dev-broker"
+    )
+    monkeypatch.setenv(name, value)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("invalid configuration must not reach transport")
+
+    monkeypatch.setattr(broker_client, "_spiffe_request", unexpected)
+    with pytest.raises(broker_client.DevBrokerLoginUnavailable, match="not configured"):
+        asyncio.run(
+            broker_client.dev_login_request(
+                "GET", "/grants/codex-cluster/login/status", timeout=5
+            )
+        )
+
+
+def test_dev_login_does_not_follow_redirects(dev_mtls_server):
+    dev_mtls_server.response_status = 307
+    dev_mtls_server.response_headers = {"Location": "https://other.example/token"}
+    response = asyncio.run(
+        broker_client.dev_login_request(
+            "POST", "/grants/codex-cluster/login/start", timeout=5
+        )
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        response.raise_for_status()
+    assert response.status_code == 307
+    assert _Handler.calls == [("POST", "/grants/codex-cluster/login/start", 3)]
+
+
+def test_dev_login_bounds_response_bytes(dev_mtls_server):
+    dev_mtls_server.response_body = b"x" * ((1 << 20) + 1)
+    with pytest.raises(httpx.DecodingError, match="exceeded 1 MiB"):
+        asyncio.run(
+            broker_client.dev_login_request(
+                "GET", "/grants/codex-cluster/login/status", timeout=5
+            )
+        )
+
+
+@pytest.mark.parametrize("phase", ["headers", "body"])
+def test_dev_login_deadline_bounds_slow_streaming(dev_mtls_server, phase):
+    # Each byte arrives well inside the inactivity timeout. Only an absolute
+    # deadline can interrupt either HTTPResponse.readline() or read().
+    dev_mtls_server.slow_stream_phase = phase
+    started = time.monotonic()
+    with pytest.raises(httpx.TimeoutException):
+        asyncio.run(
+            broker_client.dev_login_request(
+                "GET", "/grants/codex-cluster/login/status", timeout=0.15
+            )
+        )
+    assert time.monotonic() - started < 0.9
+
+
+def test_dev_login_deadline_bounds_stalled_dns_and_resolver_capacity(
+    monkeypatch, mtls_server, dev_mtls_server
+):
+    resolve = socket.getaddrinfo
+    release = threading.Event()
+    finished = threading.Event()
+    calls = []
+
+    def stalled(*args):
+        if args[1] != dev_mtls_server.server_port:
+            return resolve(*args)
+        calls.append(args)
+        try:
+            assert release.wait(2), "test did not release its resolver"
+            return resolve(*args)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(broker_client, "_DEV_DNS_SLOTS", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(socket, "getaddrinfo", stalled)
+    try:
+        started = time.monotonic()
+        with pytest.raises(httpx.TimeoutException):
+            asyncio.run(
+                broker_client.dev_login_request(
+                    "GET", "/grants/codex-cluster/login/status", timeout=0.05
+                )
+            )
+        assert time.monotonic() - started < 0.5
+        # A second request must fail promptly, without another blocked thread.
+        started = time.monotonic()
+        with pytest.raises(httpx.TimeoutException):
+            asyncio.run(
+                broker_client.dev_login_request(
+                    "GET", "/grants/codex-cluster/login/status", timeout=5
+                )
+            )
+        assert time.monotonic() - started < 0.5
+        assert len(calls) == 1
+        # Dev's occupied capacity cannot make a healthy production lookup fail.
+        response = broker_client.request_sync(
+            "GET", mtls_server["url"] + "/quota", timeout=1
+        )
+        assert response.status_code == 200
+    finally:
+        release.set()
+        assert finished.wait(1)
+
+
+def test_connect_deadline_is_shared_across_resolved_addresses(monkeypatch):
+    addresses = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))
+        for port in (1, 2)
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: addresses)
+    attempts = []
+
+    class UnreachableSocket:
+        def __init__(self, *_args):
+            self.timeout = None
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            attempts.append((address, self.timeout))
+            time.sleep(min(0.04, self.timeout))
+            if self.timeout < 0.04:
+                raise socket.timeout("connect timed out")
+            raise OSError("address unreachable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket, "socket", UnreachableSocket)
+    started = time.monotonic()
+    with pytest.raises(socket.timeout):
+        broker_client._connect_with_deadline(("broker.test", 443), started + 0.07)
+    assert len(attempts) == 2
+    assert attempts[0][1] > attempts[1][1]
+    assert time.monotonic() - started < 0.2
+
+
+def test_connect_tries_ipv4_after_unsupported_ipv6_socket(monkeypatch):
+    create_socket = socket.socket
+    attempted = []
+    with create_socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        addresses = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ]
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *args: addresses)
+
+        def ipv4_only(family, kind, protocol):
+            attempted.append(family)
+            if family == socket.AF_INET6:
+                raise OSError("IPv6 address family unavailable")
+            return create_socket(family, kind, protocol)
+
+        monkeypatch.setattr(socket, "socket", ipv4_only)
+        connected = broker_client._connect_with_deadline(
+            ("broker.test", port), time.monotonic() + 1
+        )
+        try:
+            assert connected.getpeername() == ("127.0.0.1", port)
+            assert attempted == [socket.AF_INET6, socket.AF_INET]
+        finally:
+            connected.close()

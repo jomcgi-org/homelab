@@ -2066,7 +2066,7 @@ def test_dispatch_read_uses_persisted_timestamp_and_rejects_second_claim(
 
 @pytest.mark.parametrize(
     "case",
-    ["drain", "brick_preempted", "flag_off", "no_turn", "unknown_turn", "past_bound"],
+    ["drain", "brick_preempted", "no_turn", "unknown_turn", "past_bound"],
 )
 def test_dispatch_read_keeps_a_relay_continuation_on_its_attempt(
     queued_attempt, monkeypatch, case
@@ -2076,8 +2076,6 @@ def test_dispatch_read_keeps_a_relay_continuation_on_its_attempt(
     from factory.execution.models import PendingMessage
     from sqlmodel import select
 
-    if case != "flag_off":
-        monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
     with Session(queued_attempt.engine) as db:
         row = db.exec(select(PendingMessage)).one()
         row.dispatch_count = 4 if case == "past_bound" else 2

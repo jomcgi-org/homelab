@@ -13,7 +13,7 @@ two-part scheme:
 
 - **CI guardrail (deterministic, already enforced):**
   `bazel/tools/format/readme_structure/check_readme_structure.py` fails the
-  "Format check" action on a link to a deleted project or a new top-level
+  Format stage of `pr-checks` on a link to a deleted project or a new top-level
   `projects/*` dir mentioned nowhere. You do not need to re-police those; CI
   already blocks them at merge.
 - **This skill (judgment):** the staleness a test cannot decide, a wrong model

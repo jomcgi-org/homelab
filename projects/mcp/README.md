@@ -26,6 +26,7 @@ projects/mcp/
     │   ├── Chart.yaml          # Chart metadata; declares mcp-stack + homelab-library deps
     │   ├── values.yaml         # Chart defaults (feature flags off, auth flags, inert teamMapping)
     │   ├── files/reconcile_team_mapping.py   # Team-mapping reconciler run by the CronJob
+    │   ├── files/reconcile_tools.py          # Tool reconciler run by the same CronJob
     │   └── templates/
     │       ├── httproute.yaml            # mcp.jomcgi.dev: RFC 9728 discovery + /mcp rewrite
     │       ├── httproute-scoped.yaml     # Per-tier hostnames (friends.jomcgi.dev), allowlist routes
@@ -33,8 +34,7 @@ projects/mcp/
     │       ├── team-mapping-cronjob.yaml # Reconciles authentik group -> CF team from values
     │       ├── postgres-cnpg.yaml        # CloudNativePG cluster and scheduled GCS backup
     │       ├── cnpg-backup-gcs-secret.yaml
-    │       ├── onepassworditem.yaml      # 1Password secret sync (JWT_SECRET_KEY, etc.)
-    │       └── networkpolicy.yaml        # Cross-namespace ingress policy (disabled; see below)
+    │       └── onepassworditem.yaml      # 1Password secret sync (JWT_SECRET_KEY, etc.)
     ├── scripts/provision-mcp-auth.sh     # Creates the sso_providers row after a DB rebuild
     └── deploy/
         ├── application.yaml    # Home-cluster Application shape (no root references it)

@@ -17,14 +17,14 @@ from factory.orchestration import factory_improvements as improvements
 from factory.orchestration.factory_improvement_preview import digest, preview
 from factory.orchestration.factory_models import FactoryAudit, FactoryReceipt
 
-ACTOR = "factory:improvement-scout"
-TASK_CLASS = "advisory-diagnosis"
+ACTOR = fence.ACTOR
+TASK_CLASS = fence.TASK_CLASS
 CLAIM = "scout_claim"
 REVIEW = "scout_review"
 SETTLED = "scout_settled"
-COLLECT_KEY = "scout_collect_1"
-REVIEW_KEY = "scout_review_1"
-MODEL = "sol"
+COLLECT_KEY = fence.COLLECT_KEY
+REVIEW_KEY = fence.REVIEW_KEY
+MODEL = fence.MODEL
 MAX_PROMPT = 60_000
 
 FINDING_SCHEMA = {
@@ -251,11 +251,6 @@ def owns_task(task_id: str) -> bool:
 
 def is_scout(task_id: str) -> bool:
     return _receipt(task_id) is not None
-
-
-def transport_allowed(task_id: str, node_key: str, attempt: int) -> bool:
-    """Compatibility seam; the executor imports the minimal leaf directly."""
-    return fence.transport_allowed(task_id, node_key, attempt)
 
 
 def dispatch_allowed(task_id: str) -> dict:

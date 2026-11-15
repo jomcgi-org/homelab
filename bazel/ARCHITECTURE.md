@@ -70,6 +70,21 @@ belong in `tars`. The build-only per-domain image scaffold was retired under
 
 Digests are reproducible: `.bazelrc` pins `SOURCE_DATE_EPOCH` to a constant so apko stops stamping a wall-clock `created` time, and `--stamp` is applied only by the push job, never by `--config=ci`, because a stamped graph turns every image's digest rule into a cache miss. On main, `bazel/images/push/push-changed.sh` builds everything, reads each image's content digest from `//bazel/images/digests:manifest`, and pushes only what the registry does not already hold; PR branches `bazel build` the images and push nothing.
 
+Before the first selected image is pushed, the publisher checks every selected
+push target's real runfiles with `bazel run --run_under` and the same CI flags.
+The read-only wrapper takes the actual image path from the generated push script,
+walks index/manifest/config/layer descriptors, and checks readable files and sizes.
+It logs digests and broken-link paths without executing the push. Images already
+proven present remain skipped. OCI and Claude-runtime changes also exercise this
+check on the Claude push target in PR and queue CI.
+
+**Why.** After #7681, main's tests and image builds passed but publication failed
+opening a Claude image layer blob. A later runner could read all 17 referenced
+blobs; the original failure was not reproduced. Checking the runner's actual push
+closure catches this class of failure before registry writes, without changing
+cache policy or downloading images that would otherwise be skipped. Successful
+publication and verified rollout remain separate requirements.
+
 Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pins the host's execution platform so a registered foreign execution platform cannot hand it the wrong apko binary, as the aarch64 OCaml platform once did), `fix-apko-checksum.sh` re-hashes a config-only edit without Bazel, and the Renovate apko-lock CronWorkflow refreshes every lock weekly on its own PR. The lock checksums the whole YAML file, so a comment edit invalidates it.
 
 (see: `bazel/tools/oci/`, `bazel/images/README.md`, `bazel/images/push/push-changed.sh`, `bazel/tools/format/update-apko-locks.sh`, `bazel/tools/format/fix-apko-checksum.sh`, `projects/platform/renovate/`)
@@ -102,7 +117,7 @@ Stage skipping leaves the workflow invocation in place. The seven-day acceptance
 
 **Why.** Joe's 2026-10-28 decision retired the unused BDD future lane (#7088). Its commented action, CI tag exclusions and macro parameter were removed: no active target carried either excluded tag and no caller supplied the parameter. Ordinary `bdd_test` targets keep the `bdd` tag and run through the standard test selection.
 
-The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in `AGENTS.md`, "Git and PRs".
+The repository remains rebase-only, the merge queue remains the authoritative pre-merge gate, and a PR is never rebased by hand merely for BEHIND. The details are in `docs/agents/reference.md`, "Delivery mechanics".
 
 (see: `buildbuddy.yaml`, `bazel/remote.bazelrc`, `.bazelrc` under `common:ci`, `bazel/images/push/push-changed.sh`, `bazel/helm/write-back-versions.sh`, `bazel/helm/chart-version.sh`)
 
@@ -148,7 +163,7 @@ The repo-docs and public docs manifests are genrule outputs, not committed files
 
 ## 7. Hooks
 
-Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `block-kubectl-mutate.sh` (kubectl write verbs, `--dry-run` aside), `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), and `check-adr-architecture-sync.sh` (editing a covered config or build tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
+Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `block-kubectl-mutate.sh` (kubectl write verbs, `--dry-run` and commands with a `KUBECONFIG=~/.kube/factory.yaml` prefix and no context, kubeconfig or server flag aside), `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), and `check-adr-architecture-sync.sh` (editing a covered config or build tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
 
 Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above. `check-stale-pr.sh` lives in the same directory but is a Claude Bash hook registered in `.claude/settings.json`; it blocks pushes to a branch whose PR is closed or merged.
 
@@ -233,10 +248,37 @@ and fetches an `origin/*` base. Explicit targets bypass selection. Both guards
 and selectors fail closed. Reachability remains a separate workflow stage.
 Hook-versus-CI duplication remains intentional for fast feedback.
 
+## Fixture publisher request volume
+
+**Why.** The investigation in [#7917](https://github.com/jomcgi-org/homelab/pull/7917)
+records git-blob 403s followed by immediate Pages refusals on 2026-11-14,
+with successful runs between bursts using the same publisher and permissions.
+This suggests request-quota or rate limiting; historical headers do not
+identify the limit. The workflow still grants aggregate `pages: read`.
+Loading the recorded 1,691 state files required 1,694 REST reads.
+
+The repair defaults off in Python; the publisher workflow does not set
+`FIXTURE_PREVIEW_REPAIR_ENABLED`. When the authorized owner activates it,
+state loading uses three REST metadata reads and one public archive pinned to the state
+commit. The archive request sends no Authorization header and follows no
+redirects. Each member must match the validated tree's path, size and Git
+blob hash. State ownership, archive limits and preview completeness remain
+required. No fallback bypasses a failed Pages configuration check.
+
+Bounded decimal remaining/reset/retry-after diagnostics are always available.
+When enabled, GET requests retry at most twice, waiting at most 120 seconds
+per request, only for 429 or a 403 with zero remaining quota or numeric
+Retry-After. Longer server delays fail immediately. Writes and ordinary
+refusals are never retried. The enabled repair also publishes the validated
+`state.json` beside the site index, keeping the state branch layout compatible
+with the legacy loader. The [preview runbook](../docs/runbooks/fixture-previews.md)
+records activation, rollback and the acceptance checks still owned by #7905.
+
 ## Direction
 
-Nothing is decided and unbuilt here at present; outstanding work is
-tracked in GitHub Issues.
+| Work | Remaining acceptance |
+|---|---|
+| [Fixture publisher request volume #7905](https://github.com/jomcgi-org/homelab/issues/7905) | Within 72 hours after authorized landing, verify a naturally triggered closed-PR publisher run using the delivered protected-main revision succeeds through aggregate/prepare and required deploy, then read valid public state.json and confirm that closed PR is absent. Landing and validation remain with their authorized owners. |
 
 ## Decision history
 

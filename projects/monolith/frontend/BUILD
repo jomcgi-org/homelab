@@ -57,6 +57,75 @@ build_test(
 
 vite_bin.vite_binary(name = "vite")
 
+js_run_binary(
+    name = "chat_fixture_preview",
+    srcs = [
+        "chat-preview/index.html",
+        "chat-preview/main.js",
+        "chat-preview/vite.config.js",
+        "test/chat-fixtures.js",
+        ":src",
+    ],
+    args = [
+        "build",
+        "--config",
+        "chat-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["chat-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "chat_fixture_preview_build_test",
+    targets = [":chat_fixture_preview"],
+)
+
+# Five real private tools under production layouts with invented data only.
+js_library(
+    name = "tools_fixture_src",
+    srcs = glob(["tools-preview/**"]) + [
+        "preview/fonts.css",
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+    ],
+    deps = [
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/vitest",
+        ":src",
+        "//:node_modules/happy-dom",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "tools_page_dom_test",
+    args = [
+        "run",
+        "--config",
+        "tools-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":tools_fixture_src"],
+)
+
+js_run_binary(
+    name = "tools_fixture_preview",
+    srcs = [":tools_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "tools-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["tools-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "tools_fixture_preview_build_test",
+    targets = [":tools_fixture_preview"],
+)
+
 # The frontend package now owns a fixture-harness README. Keep it in the
 # same indexed documentation closure as every other repository package.
 filegroup(
@@ -66,18 +135,6 @@ filegroup(
         allow_empty = True,
         exclude = ["**/node_modules/**"],
     ),
-    visibility = ["//projects/monolith:__pkg__"],
-)
-
-# Golden reveal projections and the DM-only route list: read by the frontend
-# vitest (via :src) and by grimoire_visibility_test, so a server change and a
-# renderer or BFF change each fail the side that owns it.
-filegroup(
-    name = "reveal_projection_fixture",
-    srcs = [
-        "src/lib/grimoire/fixtures/dm-only-routes.json",
-        "src/lib/grimoire/fixtures/reveal-projections.json",
-    ],
     visibility = ["//projects/monolith:__pkg__"],
 )
 
@@ -113,7 +170,14 @@ js_library(
             "src/lib/public/docs/docs-manifest.json",
         ],
     ) + [
+        "adapter-cache.js",
         "package.json",
+        "performance/bundle-budgets.js",
+        "performance/bundle-budgets.json",
+        "server/cache-server.js",
+        "server/http-cache-policy.js",
+        "server/response-cache-policy.js",
+        "server/retained-assets.js",
         "svelte.config.js",
         "vite.config.js",
         ":docs_manifest",
@@ -180,7 +244,14 @@ js_library(
             "src/lib/public/docs/docs-manifest.json",
         ],
     ) + [
+        "adapter-cache.js",
         "package.json",
+        "performance/bundle-budgets.js",
+        "performance/bundle-budgets.json",
+        "server/cache-server.js",
+        "server/http-cache-policy.js",
+        "server/response-cache-policy.js",
+        "server/retained-assets.js",
         "svelte.config.js",
         "vite.config.js",
         ":docs_manifest",
@@ -303,6 +374,7 @@ js_library(
         "test/hikes/fixtures.js",
         "test/ships-fixtures.js",
         "test/ships-map-double.js",
+        "test/chat-fixtures.js",
         # Resolved by the $env/dynamic/private alias in vitest.config.js; same
         # rationale: lives outside src/ so it never reaches the app bundle.
         "test/env-dynamic-private-stub.js",
@@ -341,7 +413,7 @@ apko_image(
 )
 
 # Public-only frontend image (ADR 004 Phase 5d). Reuses the same apko.yaml
-# (node build/index.js on PORT 3000) but ships the private-route-free build, so
+# (node build/cache-server.js on PORT 3000) but ships the private-route-free build, so
 # the image literally does not contain the authenticated page code.
 apko_image(
     name = "image_public",
@@ -544,6 +616,7 @@ js_library(
         "src/lib/global.css",
         "src/lib/public/apps.js",
         "src/lib/public/components/Footer.svelte",
+        "src/lib/public/components/MapSnapshot.svelte",
         "src/lib/public/components/SchemePreference.svelte",
         "src/lib/public/components/SchemeToggle.svelte",
         "src/lib/public/components/Seo.svelte",
@@ -554,6 +627,7 @@ js_library(
         "src/lib/public/components/index.js",
         "src/lib/public/components/stars/StarsMap.svelte",
         "src/lib/public/seo.js",
+        "src/lib/public/stars/geojson-url.js",
         "src/lib/public/stars/heat.js",
         "src/lib/public/stars/mapTheme.js",
         "src/lib/public/stars/urlParams.js",
@@ -745,6 +819,7 @@ js_library(
         "src/lib/public/components/Trail.svelte",
         "src/lib/public/components/TurnstileGate.svelte",
         "src/lib/public/components/index.js",
+        "src/lib/public/dates.js",
         "src/lib/public/posts/CodeOutput.svelte",
         "src/lib/public/posts/ConformanceReplay.svelte",
         "src/lib/public/posts/DemoDisclosure.svelte",
@@ -842,6 +917,7 @@ js_library(
         "src/lib/public/components/TurnstileGate.svelte",
         "src/lib/public/components/index.js",
         "src/lib/public/seo.js",
+        "src/lib/public/sse-parser.js",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
         "src/lib/styles/shared/tokens.css",
@@ -990,9 +1066,12 @@ js_library(
     name = "theme_fixture_src",
     srcs = [
         "BUILD",
+        "adapter-cache.js",
         "factory-preview/fonts.css",
         "factory-preview/fonts/SchibstedGrotesk.ttf",
         "package.json",
+        "performance/bundle-budgets.js",
+        "performance/bundle-budgets.json",
         "src/app.html",
         "svelte.config.js",
         "theme-preview/DataDisplayFixture.svelte",

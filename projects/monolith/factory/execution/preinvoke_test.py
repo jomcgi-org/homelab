@@ -109,7 +109,6 @@ def database(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(drainer, "_turn_has_unknown_outcome_lookup", None)
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
     mcp._negative_oracle_verdicts.clear()
 
@@ -393,23 +392,18 @@ def test_synthetic_failed_result_persistence_does_not_destroy_guest(
     )
 
 
-@pytest.mark.parametrize("capture", [False, True])
 def test_synthetic_success_persists_before_normal_cleanup_and_pins_receipt(
-    database, monkeypatch, capture
+    database, monkeypatch
 ):
     requests = []
     receipt = None
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", str(capture).lower())
 
     async def handler(request):
         nonlocal receipt
         requests.append(request.method)
         if request.url.path.endswith("/invoke"):
             payload = json.loads(request.content)
-            if capture:
-                receipt = payload["result_receipt"]
-            else:
-                assert "result_receipt" not in payload
+            receipt = payload["result_receipt"]
         if request.method == "DELETE":
             state = _snapshot(database, _synthetic_id(database))
             assert state["pending"] == []
@@ -426,19 +420,17 @@ def test_synthetic_success_persists_before_normal_cleanup_and_pins_receipt(
     assert state["turns"][0]["cost_usd"] == 0.01
     with Session(database) as db:
         rows = db.exec(select(AgentResultReceipt)).all()
-        assert len(rows) == int(capture)
-        if capture:
-            assert rows[0].id == receipt["id"]
-            assert rows[0].session_id == state["session"]["id"]
-            assert rows[0].seq == rows[0].dispatch_count == 1
-            assert rows[0].claim_owner == state["permit"]["owner"]
-            assert rows[0].guest_id == "probe-guest"
+        assert len(rows) == 1
+        assert rows[0].id == receipt["id"]
+        assert rows[0].session_id == state["session"]["id"]
+        assert rows[0].seq == rows[0].dispatch_count == 1
+        assert rows[0].claim_owner == state["permit"]["owner"]
+        assert rows[0].guest_id == "probe-guest"
 
 
 def test_synthetic_receipt_mint_failure_before_model_post_is_not_invoked(
     database, monkeypatch
 ):
-    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     requests = []
 
     async def handler(request):
@@ -601,7 +593,6 @@ def _guest_answer(marked=True):
 
 
 def test_guest_answered_error_settles_the_permit_on_evidence(database, monkeypatch):
-    monkeypatch.setenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "true")
     sid = _queue(database, bound=True)
     _http(monkeypatch, _guest_answer())
     asyncio.run(mcp._execute_pending_message(sid))
@@ -618,17 +609,12 @@ def test_guest_answered_error_settles_the_permit_on_evidence(database, monkeypat
     assert not drainer._turn_has_unknown_outcome(turn, sid)
 
 
-@pytest.mark.parametrize("case", ["flag_off", "unmarked"])
-def test_guest_answer_settlement_needs_flag_and_marker(database, monkeypatch, case):
-    monkeypatch.setenv(
-        "AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED",
-        "false" if case == "flag_off" else "true",
-    )
+def test_guest_answer_settlement_needs_marker(database, monkeypatch):
     sid = _queue(database, bound=True)
-    _http(monkeypatch, _guest_answer(marked=case != "unmarked"))
+    _http(monkeypatch, _guest_answer(marked=False))
     asyncio.run(mcp._execute_pending_message(sid))
     state = _snapshot(database, sid)
-    # Without all three, the at-most-once handling is unchanged.
+    # Without the marker, the at-most-once handling is unchanged.
     assert state["permit"]["state"] == "uncertain"
     assert state["permit"]["outcome"] == "delivery_error"
     assert drainer._turn_has_unknown_outcome(state["turns"][0], sid)
@@ -638,7 +624,6 @@ def test_guest_answer_never_settles_a_factory_permit(monkeypatch):
     """Factory stop supervision settles through the uncertain permit."""
     from types import SimpleNamespace
 
-    monkeypatch.setenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "true")
     monkeypatch.setattr(mcp, "guest_answered_invoke", lambda _exc: True)
     factory = SimpleNamespace(local_session_id="factory:t-guest:implement_x:1")
     drainer_row = SimpleNamespace(
@@ -776,9 +761,18 @@ def test_not_invoked_evidence_requires_explicit_dispatch_identity(
 def test_prior_unknown_turn_cannot_be_overwritten_or_settled(database):
     sid = _queue(database, bound=True)
     count = _claim(database, sid)
-    assert store.finish_unknown_pending_sync(
-        sid, 1, "original-executor", count, "executor_cancelled"
-    )
+    with Session(database) as db:
+        assert store.finish_unknown_pending_in_session(
+            db,
+            sid,
+            1,
+            "original-executor",
+            count,
+            "executor_cancelled",
+            expected_guest_id="existing-guest",
+            expected_workflow_id=None,
+        )
+        db.commit()
     before = _snapshot(database, sid)
     assert before["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
     store.mark_turn_error_sync(
@@ -818,9 +812,7 @@ def test_prior_unknown_turn_cannot_be_overwritten_or_settled(database):
     assert after["session"] == before["session"]
 
 
-def test_executor_cancellation_before_create_retains_unknown_hold(
-    database, monkeypatch
-):
+def test_executor_cancellation_before_create_records_not_invoked(database, monkeypatch):
     sid = _queue(database)
 
     async def cancelled_create(request):
@@ -831,8 +823,10 @@ def test_executor_cancellation_before_create_retains_unknown_hold(
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(mcp._execute_pending_message(sid))
     state = _snapshot(database, sid)
-    assert state["permit"]["state"] == "uncertain"
-    assert state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+    # No invoke POST was attempted, so the permit settles as not_invoked.
+    assert state["permit"]["state"] == "settled"
+    assert state["permit"]["outcome"] == "not_invoked"
+    assert state["turns"][0]["stop_reason"] != UNKNOWN_INVOCATION
     assert state["turns"][0]["cost_usd"] is None
     assert state["pending"] == []
 
@@ -990,8 +984,6 @@ def test_cancelled_create_without_guest_blocks_next_hour_probe(database, monkeyp
         FactoryControl,
         FactoryReceipt,
         WorkItem,
-        WorkItemEdge,
-        WorkItemEvent,
     )
 
     # Add the factory ledger to the same file-backed execution database.

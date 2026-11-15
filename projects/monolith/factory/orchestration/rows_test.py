@@ -114,6 +114,29 @@ def test_workflow_filter_and_grouping(db):
     assert [row["id"] for row in grouped["wf-2"]] == [other]
 
 
+def test_workflow_ids_scope_rows_and_turn_aggregates(db):
+    shown = add_session(db, "wf-1", "shown")
+    hidden = add_session(db, "wf-2", "hidden")
+    with Session(db) as session:
+        session.add_all(
+            [
+                AgentTurn(
+                    session_id=shown, seq=1, prompt="p", result_text="r", cost_usd=0.5
+                ),
+                AgentTurn(
+                    session_id=hidden, seq=1, prompt="p", result_text="r", cost_usd=9
+                ),
+            ]
+        )
+        session.commit()
+        scoped = swarm_session_views(session, workflow_ids=["wf-1", "wf-1", "wf-3"])
+        empty = swarm_session_views(session, workflow_ids=[])
+    assert set(scoped) == {"wf-1"}
+    assert [row["id"] for row in scoped["wf-1"]] == [shown]
+    assert scoped["wf-1"][0]["total_cost_usd"] == pytest.approx(0.5)
+    assert empty == {}
+
+
 @pytest.mark.parametrize(
     ("activity", "expected"),
     [

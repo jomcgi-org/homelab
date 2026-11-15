@@ -59,6 +59,11 @@ spec:
       name: embervm-oauth-grant-codex-cluster
       jsonPointers:
         - /data
+    # The broker owns quota observations; a sync must not clear them.
+    - kind: ConfigMap
+      name: embervm-dev-embervm-tokenbroker-quota
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true

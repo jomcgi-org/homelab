@@ -112,7 +112,7 @@ func TestVMMExitWatcherReportsBeforeRelease(t *testing.T) {
 	observed := make(chan ExitReason, 1)
 	var waits atomic.Int32
 	p := &execProcess{
-		waitProcess:  func() error { waits.Add(1); <-done; return errors.New("unexpected wait error") },
+		waitProcess:  func() error { waits.Add(1); <-done; return nil },
 		killProcess:  func() error { return os.ErrProcessDone },
 		checkRunning: func() (bool, error) { return false, nil },
 		logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),

@@ -1,0 +1,395 @@
+"""Fresh native refill repair, owned by producer, funding and native execution."""
+
+import json
+from datetime import timedelta
+
+from sqlmodel import select
+
+from factory.orchestration import backlog_refill as refill
+from factory.orchestration import factory_controls as controls
+from factory.orchestration import funding_profile
+from factory.orchestration.factory_funding_limits import ROUTINE_HELD_LABELS
+from factory.orchestration.factory_models import FactoryAudit, FactoryControl, WorkItem
+
+CONTRACT_VERSION = 2
+REMAINING_GRANT = "native_repair_remaining_allowance"
+
+
+def repair_available(start):
+    version = (start or {}).get("repair_contract", {}).get("version")
+    return version == 2 or (version == 1 and funding_profile.PROVIDER_ROUTE_AVAILABLE)
+
+
+def remaining_allowance(db, row, *, own_start=None):
+    """Reserve room for every unfinished fixed role in the original allocation."""
+    from factory.orchestration.models import SwarmNodeRun
+
+    pinned = json.loads(row.policy_json)
+    done = set(
+        db.exec(
+            select(SwarmNodeRun.node_key).where(
+                SwarmNodeRun.task_id == row.task_id,
+                SwarmNodeRun.status == "succeeded",
+            )
+        ).all()
+    )
+    remaining = [key for key in refill.NODES if key not in done]
+    starts = controls._starts(db, row.task_id)
+    # At physical admission our exact reservation is already charged. Count it
+    # with the remaining roles once, retaining every other uncertain start.
+    if own_start is not None:
+        owned = [s for s in starts if s.start_key == own_start]
+        if (
+            len(owned) != 1
+            or owned[0].status != "reserved"
+            or owned[0].max_cost_usd > pinned["turn_budget_usd"]
+        ):
+            return False
+        starts = [s for s in starts if s.start_key != own_start]
+    spent = controls._accounting(starts)
+    return bool(
+        not spent["unresolved_starts"]
+        and spent["turns_used"] + len(remaining)
+        <= min(pinned["max_task_turns_hard"], pinned["max_turns_per_task"])
+        and spent["committed_cost_usd"] + len(remaining) * pinned["turn_budget_usd"]
+        <= pinned["task_budget_usd"]
+    )
+
+
+def epoch(db):
+    # Include disable/restore even when no refill tick observed the intermediate
+    # policy. Task-local pauses are separately bound by the funding owner.
+    row = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id.is_(None),
+            FactoryAudit.action.in_(
+                [
+                    "configure",
+                    "enable",
+                    "pause_admissions",
+                    "stop",
+                    "problem_issues_control_applied",
+                    "refill_control_applied",
+                    refill.PREFIX + "policy_observed",
+                ]
+            ),
+        )
+        .order_by(FactoryAudit.id.desc())
+        .limit(1)
+    ).first()
+    return row.id if row else 0
+
+
+def source(db, row):
+    if row is None or row.actor != refill.ACTOR or row.issue_number != refill.CHARTER:
+        return None
+    event = refill.latest_event(db, "started", run_id=row.recurrence_key)
+    control = db.get(FactoryControl, "factory")
+    live = json.loads(control.policy_json or "{}") if control else {}
+    start = refill._detail(event) if event else {}
+    contract = start.get("repair_contract")
+    item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+    if (
+        type(contract) is not dict
+        or type(contract.get("version")) is not int
+        or contract.get("version") not in {1, 2}
+        or contract != {"version": contract["version"], "epoch": epoch(db)}
+        or control is None
+        or control.state != "enabled"
+        or row.state != "admitted"
+        or row.cancellation_requested
+        or row.repo != start.get("repo")
+        or row.id != start.get("receipt_id")
+        or row.recurrence_key != start.get("run_id")
+        or row.generation != live.get("generation")
+        or start.get("generation") != row.generation
+        or start.get("policy_digest") != controls.digest(live)
+        or item is None
+        or {str(x).lower() for x in item.labels} & ROUTINE_HELD_LABELS
+        or item.authority != "github"
+        or item.github_repo != row.repo
+        or item.github_issue_number != refill.CHARTER
+        or row.repo not in controls.enabled_repos(live)
+        or not refill.normalize(live)["enabled"]
+        or refill._ledger(db, row.repo)[3] is not None
+        or refill.latest_event(db, "completed", run_id=row.recurrence_key)
+    ):
+        return None
+    return start
+
+
+def execution_failure_eligible(local_id):
+    """Only fresh fixed-role attempt one trades capacity wait for terminal proof."""
+    fields = (local_id or "").split(":")
+    if (
+        len(fields) != 4
+        or fields[0] != "factory"
+        or fields[2] not in refill.NODES
+        or fields[3] != "1"
+    ):
+        return False
+    with controls._read_session() as db:
+        return repair_available(source(db, controls._receipt(db, fields[1])))
+
+
+def objective_open(task, issue, *, session=None):
+    if session is None:
+        with controls._read_session() as db:
+            return objective_open(task, issue, session=db)
+    row = controls._receipt(session, task["id"])
+    if row is None or row.actor != refill.ACTOR:
+        return issue.get("state") == "open"
+    return bool(
+        issue.get("state") in {"open", "closed"}
+        and issue.get("number") == refill.CHARTER
+        and task.get("issue_number") == refill.CHARTER
+        and not issue.get("assignees")
+        and not {x.get("name", "").lower() for x in issue.get("labels", [])}
+        & ROUTINE_HELD_LABELS
+        and source(session, row)
+    )
+
+
+def _failure(db, task_id, run_id):
+    from factory.execution.preinvoke_failure import database_failure
+    from factory.execution.reconciliation import read_not_invoked_factory_attempt
+    from factory.orchestration.models import SwarmNodeRun
+
+    run = db.get(SwarmNodeRun, run_id)
+    if (
+        run is None
+        or run.task_id != task_id
+        or run.attempt != 1
+        or run.status != "failed"
+    ):
+        return None
+    proof = read_not_invoked_factory_attempt(
+        db, json.loads(run.pin_json), run.session_id
+    )
+    if (
+        not proof
+        or proof.get("capacity_denied")
+        or proof != json.loads(run.outcome_json).get("not_invoked")
+    ):
+        return None
+    return database_failure(proof.get("database_failure"))
+
+
+def failed(task, key):
+    from factory.orchestration import factory_funding as funding
+    from factory.orchestration import graph
+
+    if not funding.enabled() or funding.routine_labels_held(task):
+        return False
+    with controls._locked_session() as (db, _control):
+        row = controls._receipt(db, task["id"])
+        start = source(db, row)
+        if (
+            not repair_available(start)
+            or (
+                start["repair_contract"]["version"] == 2
+                and not remaining_allowance(db, row)
+            )
+            or row.escalation_json
+            or funding.routine_hold(db, row, task["id"])
+            or funding._recovery_held(db, task["id"])
+            or controls.decision_in_flight(db, row.id)
+            or funding.latest(db, task["id"], "repair_allocation_wait")
+            or funding.amendment(db, task["id"])
+            or controls._accounting(controls._starts(db, task["id"]))[
+                "unresolved_starts"
+            ]
+        ):
+            return False
+        graph._lock_task(db, task["id"])
+        retry = funding._retry_target(db, task["id"])
+        if (
+            not retry
+            or key not in refill.NODES
+            or retry["node_key"] != key
+            or retry["node"]["max_attempts"] != 1
+        ):
+            return False
+        failure = _failure(db, task["id"], retry["source_run_id"])
+        if failure is None:
+            return False
+        signature = controls.digest({"key": key, "failure": failure})
+        detail = {
+            "signature": signature,
+            "repair_contract": start["repair_contract"],
+            "policy_digest": start["policy_digest"],
+        }
+        if not funding.latest(db, task["id"], "refill_infrastructure_failure"):
+            funding.record_audit(
+                db,
+                funding.ACTOR,
+                "refill_infrastructure_failure",
+                task_id=task["id"],
+                source_run_id=retry["source_run_id"],
+                **detail,
+            )
+        prior = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action == "refill_infrastructure_failure",
+                FactoryAudit.actor == funding.ACTOR,
+                FactoryAudit.task_id != task["id"],
+                FactoryAudit.created_at >= controls._now() - timedelta(hours=24),
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(50)
+        ).all()
+        if not any(
+            all(json.loads(p.detail_json).get(k) == v for k, v in detail.items())
+            and _failure(db, p.task_id, json.loads(p.detail_json)["source_run_id"])
+            == failure
+            for p in prior
+        ):
+            return False
+        blocker = {"code": "refill_preinvoke:" + start["run_id"], "grant_id": None}
+        funding._record_blocker(db, row, task["id"], blocker, retry=retry)
+        funding.pause_allocation(db, task["id"], blocker, retry=retry)
+        return funding.latest(db, task["id"], "repair_allocation_wait") is not None
+
+
+def public_failure(db, task_id, run_id):
+    """Reauthenticate native evidence before exporting a closed public subset."""
+    from factory.execution.preinvoke_failure import repair_context
+    from factory.orchestration.models import SwarmNodeRun
+
+    row = controls._receipt(db, task_id)
+    if source(db, row) is None:
+        return None
+    failure = _failure(db, task_id, run_id)
+    run = db.get(SwarmNodeRun, run_id)
+    return repair_context(failure, run.node_key) if failure and run else None
+
+
+def attempt_allowed(db, row, key, attempt):
+    if type(attempt) is not int:
+        return False
+    if attempt == 1:
+        return True
+    if attempt != 2 or key not in refill.NODES or source(db, row) is None:
+        return False
+    from factory.orchestration import factory_funding_limits as funding
+
+    grant = funding.amendment(db, row.task_id)
+    if grant and grant.get("grant_kind") == REMAINING_GRANT:
+        return grant["node_retry"]["node_key"] == key and native_repair_grant_valid(
+            db, row, grant
+        )
+    if not funding_profile.PROVIDER_ROUTE_AVAILABLE:
+        return False
+    from factory.orchestration import factory_funding as funding
+
+    request = funding.latest(db, row.task_id, "funding_review_requested")
+    retry = (grant or {}).get("node_retry") or {}
+    return bool(
+        grant
+        and request
+        and grant.get("request_id") == request["audit_id"]
+        and retry.get("node_key") == key
+        and retry.get("before") == 1
+        and retry.get("after") == 2
+        and request.get("repair_recovery")
+        and funding._repair_review_valid(db, row.task_id, request["repair_recovery"])
+        and not funding.routine_hold(db, row, row.task_id)
+    )
+
+
+def reconcile(task, policy, runs, permission):
+    from factory.orchestration import factory_funding as funding
+
+    with controls._read_session() as db:
+        wait = funding.latest(db, task["id"], "repair_allocation_wait")
+        request = funding.latest(db, task["id"], "funding_review_requested")
+        grant = funding.amendment(db, task["id"])
+    if not wait:
+        return False
+    if grant and grant.get("grant_kind") == REMAINING_GRANT:
+        return False  # Existing dispatch/deadline owners enforce this finite lease.
+    if task.get("task_paused") or not request or not request.get("repair_recovery"):
+        return True
+    if not grant or grant.get("request_id") != request["audit_id"]:
+        funding.reconcile(task, policy, runs, permission)
+        return True
+    return False
+
+
+def useful_delivery(db, row):
+    if row.actor != refill.ACTOR:
+        return True
+    done = refill.latest_event(db, "completed", run_id=row.recurrence_key)
+    reviewed = refill.latest_event(db, "reviewed", run_id=row.recurrence_key)
+    return bool(
+        row.state == "succeeded"
+        and reviewed
+        and done
+        and refill._detail(done).get("success") is True
+        and refill._detail(done).get("new_issues", 0) > 0
+    )
+
+
+def native_repair_grant_valid(db, row, grant):
+    """Bind deterministic authority to its original pause, repair and renewal."""
+    from factory.orchestration import factory_funding_limits as limits
+    from factory.orchestration.models import SwarmPlanVersion
+
+    start = source(db, row)
+    if (
+        (start or {}).get("repair_contract", {}).get("version") != 2
+        or limits.routine_hold(db, row, row.task_id)
+        or limits._recovery_held(db, row.task_id)
+        or controls.decision_in_flight(db, row.id)
+    ):
+        return False
+    authorization = limits.latest(db, row.task_id, "native_repair_resume_authorized")
+    wait = limits.latest(db, row.task_id, "repair_allocation_wait")
+    pause = limits._latest_pause(db, row.task_id)
+    resume = limits.latest(db, row.task_id, "resume_task")
+    proof = grant.get("repair_recovery") or {}
+    if (
+        not authorization
+        or not wait
+        or not pause
+        or not resume
+        or grant.get("grant_kind") != REMAINING_GRANT
+        or grant.get("authorization_id") != authorization["audit_id"]
+        or db.get(FactoryAudit, authorization["audit_id"]).actor != "factory:funding"
+        or db.get(FactoryAudit, grant["audit_id"]).actor != "factory:funding"
+        or authorization["original_policy_sha256"]
+        != controls.digest(json.loads(row.policy_json))
+        or grant.get("policy_overlay") != authorization["policy_overlay"]
+        or grant.get("deadline_at") != authorization["deadline_at"]
+        or grant.get("review_due_at") != authorization["deadline_at"]
+        or proof != authorization["repair_recovery"]
+        or authorization["retry"] != wait["retry"]
+        or wait["audit_id"] != proof.get("wait_id")
+        or pause.id != proof.get("pause_id")
+        or resume["audit_id"] != proof.get("resume_id")
+        or json.loads(row.escalation_json or "null")
+        != {**wait["card"], "resolved": {"kind": REMAINING_GRANT, **proof}}
+        or not limits._repair_rollout_valid(db, proof)
+        or not _failure(db, row.task_id, authorization["retry"]["source_run_id"])
+    ):
+        return False
+    changes = db.exec(
+        select(SwarmPlanVersion).where(
+            SwarmPlanVersion.task_id == row.task_id,
+            SwarmPlanVersion.op == "renew_node_attempt",
+        )
+    ).all()
+    return bool(
+        len(changes) == 1
+        and changes[0].author == "factory:funding"
+        and changes[0].author_kind == "engine"
+        and json.loads(changes[0].change_json) == grant.get("node_retry")
+        and grant["node_retry"].get("request_id") == authorization["audit_id"]
+        and grant["node_retry"].get("node_key") == authorization["retry"]["node_key"]
+        and grant["node_retry"].get("source_run_id")
+        == authorization["retry"]["source_run_id"]
+        and grant["node_retry"].get("before") == 1
+        and grant["node_retry"].get("after") == 2
+    )

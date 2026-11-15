@@ -54,7 +54,7 @@ type fakeLauncher struct {
 	snapshotLoads   []map[string]any
 	serialPuts      []map[string]any
 	launchSpecs     []LaunchSpec
-	failDiffCreate  bool
+	failResume      bool
 	failPath        string // if set, return 500 for this API path
 	// serialOutput, when set, is what the fake guest "prints" to its UART: the
 	// PUT /serial handler truncates serial_out_path and writes it there,
@@ -108,12 +108,7 @@ func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, erro
 		_ = json.Unmarshal(b, &body)
 		l.mu.Lock()
 		l.snapshotCreates = append(l.snapshotCreates, body)
-		failDiffCreate := l.failDiffCreate && body["snapshot_type"] == "Diff"
 		l.mu.Unlock()
-		if failDiffCreate {
-			http.Error(w, "injected diff create failure", http.StatusInternalServerError)
-			return
-		}
 		// Persist the bundle files the controller asked for.
 		if sp, ok := body["snapshot_path"].(string); ok {
 			_ = os.WriteFile(sp, []byte("snap"), 0o600)
@@ -152,6 +147,19 @@ func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, erro
 		// bytes: the file at serial_out_path is truncated then filled.
 		if path, ok := body["serial_out_path"].(string); ok && len(output) > 0 {
 			_ = os.WriteFile(path, output, 0o640)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if l.failResume && body["state"] == "Resumed" {
+			http.Error(w, "resume failed", 500)
+			return
+		}
+		if l.fail(r.URL.Path, w) {
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -229,15 +237,6 @@ func shortTempDir(t *testing.T) string {
 	return d
 }
 
-func executableSnapshotEditor(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(shortTempDir(t), "snapshot-editor")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write snapshot-editor: %v", err)
-	}
-	return path
-}
-
 const testBundleRootfsIdentity = "550e8400-e29b-41d4-a716-446655440000"
 
 func writeTestExt4Rootfs(t *testing.T, path, identity string) {
@@ -251,6 +250,38 @@ func writeTestExt4Rootfs(t *testing.T, path, identity string) {
 	copy(b[ext4UUIDOffset:], raw)
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatalf("write test ext4 rootfs: %v", err)
+	}
+}
+
+func TestExt4UUID_Happy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rootfs.ext4")
+	writeTestExt4Rootfs(t, path, testBundleRootfsIdentity)
+	got, err := Ext4UUID(path)
+	if err != nil {
+		t.Fatalf("Ext4UUID: %v", err)
+	}
+	if got != testBundleRootfsIdentity {
+		t.Fatalf("Ext4UUID = %q, want %q", got, testBundleRootfsIdentity)
+	}
+}
+
+func TestExt4UUID_ShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "short.ext4")
+	if err := os.WriteFile(path, make([]byte, ext4MagicOffset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ext4UUID(path); err == nil {
+		t.Fatal("Ext4UUID accepted a short file")
+	}
+}
+
+func TestExt4UUID_BadMagic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-ext4.img")
+	if err := os.WriteFile(path, make([]byte, ext4HeaderSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ext4UUID(path); err == nil || !strings.Contains(err.Error(), "magic") {
+		t.Fatalf("Ext4UUID bad magic error = %v", err)
 	}
 }
 
@@ -398,7 +429,7 @@ func TestBundleRootfsIdentityCompatibilityEveryClass(t *testing.T) {
 				var err error
 				switch class {
 				case "session":
-					h, err = d.RestoreSession(context.Background(), "workload", "restore-ref", false)
+					h, err = d.RestoreSession(context.Background(), "workload", "restore-ref")
 				case "serving":
 					h, err = d.RestoreServing(context.Background(), "workload", "restore-ref")
 				case "stateful":
@@ -602,38 +633,6 @@ func TestDriverClaimColdBootUsesDeclaredSizing(t *testing.T) {
 	}
 	if configs[1]["vcpu_count"] != float64(1) || configs[1]["mem_size_mib"] != float64(1024) {
 		t.Fatalf("undeclared cold boot machine config = %v, want the driver default 1 vCPU and 1024 MiB", configs[1])
-	}
-}
-
-func TestDriverTracksDirtyPagesOnlyForBankingClaims(t *testing.T) {
-	launcher := &fakeLauncher{}
-	d := New(Config{
-		KernelImagePath:    "/opt/kata/vmlinux",
-		RootfsPath:         "/dev/mapper/thread",
-		SnapshotRoot:       shortTempDir(t),
-		DiffBanking:        true,
-		SnapshotEditorPath: executableSnapshotEditor(t),
-	}, launcher, nil)
-	banking, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "banking", TrackDirtyPages: true})
-	if err != nil {
-		t.Fatalf("banking Claim: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Release(context.Background(), banking) })
-	nonBanking, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "non-banking"})
-	if err != nil {
-		t.Fatalf("non-banking Claim: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Release(context.Background(), nonBanking) })
-
-	configs := launcher.machineConfigBodies()
-	if len(configs) != 2 {
-		t.Fatalf("machine configs = %d, want 2: %v", len(configs), configs)
-	}
-	if got := configs[0]["track_dirty_pages"]; got != true {
-		t.Fatalf("banking track_dirty_pages = %v, want true", got)
-	}
-	if got, present := configs[1]["track_dirty_pages"]; present {
-		t.Fatalf("non-banking track_dirty_pages = %v, want omitted false", got)
 	}
 }
 
@@ -1945,7 +1944,7 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	}
 
 	// Relight a fresh VM from the banked bundle: a new microVM id and a fresh thread.
-	h2, err := d.RestoreSession(ctx, "test", "sref-abc123", false)
+	h2, err := d.RestoreSession(ctx, "test", "sref-abc123")
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -1966,7 +1965,7 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	if _, err := os.Stat(d.sessionDir("sref-abc123")); !os.IsNotExist(err) {
 		t.Fatalf("session bundle dir should be gone after evict, stat err=%v", err)
 	}
-	if _, err := d.RestoreSession(ctx, "test", "sref-abc123", false); err == nil {
+	if _, err := d.RestoreSession(ctx, "test", "sref-abc123"); err == nil {
 		t.Fatal("relight of an evicted session bundle should error")
 	}
 	// Idempotent evict: removing an already-gone bundle is not an error.
@@ -1996,7 +1995,7 @@ func TestRestoreLegacyBundleWithoutJailResourcesUsesDirectExec(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h, err := d.RestoreSession(ctx, "test", "legacy-bank", false)
+	h, err := d.RestoreSession(ctx, "test", "legacy-bank")
 	if err != nil {
 		t.Fatalf("RestoreSession legacy bundle: %v", err)
 	}
@@ -2066,29 +2065,18 @@ func TestRestoreStatefulStagesEmbeddedVolumeWithoutPatch(t *testing.T) {
 	}
 }
 
-func TestSessionBankSequenceFullThenDiff(t *testing.T) {
+// TestSessionRebankWritesFull pins full-snapshot banking as the only bank
+// path: a relit session banks a self-contained Full again, without resuming.
+func TestSessionRebankWritesFull(t *testing.T) {
 	ctx := context.Background()
 	launcher := &fakeLauncher{}
 	d := New(Config{
-		KernelImagePath:    "/opt/kata/vmlinux",
-		RootfsPath:         "/dev/mapper/thread",
-		SnapshotRoot:       shortTempDir(t),
-		Node:               "node-4",
-		Arch:               "amd64",
-		DiffBanking:        true,
-		SnapshotEditorPath: executableSnapshotEditor(t),
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
+		Node:            "node-4",
+		Arch:            "amd64",
 	}, launcher, nil)
-	d.mergeDiffMemory = func(_ context.Context, basePath, diffPath, outputPath string) error {
-		base, err := os.ReadFile(basePath)
-		if err != nil {
-			return err
-		}
-		diff, err := os.ReadFile(diffPath)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(outputPath, append(base, diff...), 0o600)
-	}
 
 	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "sess-first"})
 	if err != nil {
@@ -2101,11 +2089,11 @@ func TestSessionBankSequenceFullThenDiff(t *testing.T) {
 		t.Fatalf("Release first bank: %v", err)
 	}
 
-	restored, err := d.RestoreSession(ctx, "test", "bank-1", true)
+	restored, err := d.RestoreSession(ctx, "test", "bank-1")
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
-	diffRequestStart := len(launcher.requestPaths())
+	rebankRequestStart := len(launcher.requestPaths())
 	if _, err := d.SnapshotSession(ctx, restored, "bank-2"); err != nil {
 		t.Fatalf("second SnapshotSession: %v", err)
 	}
@@ -2117,304 +2105,25 @@ func TestSessionBankSequenceFullThenDiff(t *testing.T) {
 	if len(creates) != 2 {
 		t.Fatalf("snapshot creates = %d, want 2: %v", len(creates), creates)
 	}
-	if got, present := creates[0]["snapshot_type"]; present {
-		t.Fatalf("first bank snapshot_type = %v, want omitted Full", got)
-	}
-	if got := creates[1]["snapshot_type"]; got != "Diff" {
-		t.Fatalf("second bank snapshot_type = %v, want Diff", got)
-	}
-	if got, want := launcher.requestPaths()[diffRequestStart:], []string{"PATCH /vm", "PUT /snapshot/create"}; !slices.Equal(got, want) {
-		t.Fatalf("diff bank request order = %v, want %v (no resume)", got, want)
-	}
-	merged, err := os.ReadFile(d.sessionMemfile("bank-2"))
-	if err != nil {
-		t.Fatalf("read merged memory: %v", err)
-	}
-	if got, want := string(merged), "mem-image-bytesmem-image-bytes"; got != want {
-		t.Fatalf("merged memory = %q, want %q", got, want)
-	}
-}
-
-func TestLoadEnablesDiffSnapshotsOnlyForSessionBanks(t *testing.T) {
-	ctx := context.Background()
-	launcher := &fakeLauncher{}
-	d := New(Config{
-		SnapshotRoot:       shortTempDir(t),
-		Node:               "node-4",
-		Arch:               "amd64",
-		DiffBanking:        true,
-		SnapshotEditorPath: executableSnapshotEditor(t),
-	}, launcher, nil)
-
-	for _, path := range []string{
-		d.sessionSnapfile("session-bank"),
-		d.sessionMemfile("session-bank"),
-		d.sessionSnapfile("disabled-session-bank"),
-		d.sessionMemfile("disabled-session-bank"),
-		d.servingSnapfile("serving-bank"),
-		d.servingMemfile("serving-bank"),
-	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatalf("mkdir bundle: %v", err)
-		}
-		if err := os.WriteFile(path, []byte("snapshot"), 0o600); err != nil {
-			t.Fatalf("write bundle file: %v", err)
+	for i, create := range creates {
+		if got, present := create["snapshot_type"]; present {
+			t.Fatalf("bank %d snapshot_type = %v, want omitted Full", i+1, got)
 		}
 	}
-
-	session, err := d.RestoreSession(ctx, "test", "session-bank", true)
-	if err != nil {
-		t.Fatalf("RestoreSession: %v", err)
+	if got, want := launcher.requestPaths()[rebankRequestStart:], []string{"PATCH /vm", "PUT /snapshot/create"}; !slices.Equal(got, want) {
+		t.Fatalf("rebank request order = %v, want %v (no resume)", got, want)
 	}
-	if err := d.Release(ctx, session); err != nil {
-		t.Fatalf("Release session: %v", err)
-	}
-	serving, err := d.RestoreServing(ctx, "test", "serving-bank")
-	if err != nil {
-		t.Fatalf("RestoreServing: %v", err)
-	}
-	if err := d.Release(ctx, serving); err != nil {
-		t.Fatalf("Release serving: %v", err)
-	}
-	d.diffBanking = false
-	disabledSession, err := d.RestoreSession(ctx, "test", "disabled-session-bank", true)
-	if err != nil {
-		t.Fatalf("RestoreSession with knob disabled: %v", err)
-	}
-	if err := d.Release(ctx, disabledSession); err != nil {
-		t.Fatalf("Release disabled session: %v", err)
-	}
-
-	loads := launcher.snapshotLoadBodies()
-	if len(loads) != 3 {
-		t.Fatalf("snapshot loads = %d, want 3: %v", len(loads), loads)
-	}
-	if got := loads[0]["enable_diff_snapshots"]; got != true {
-		t.Fatalf("session enable_diff_snapshots = %v, want true", got)
-	}
-	if got := loads[0]["track_dirty_pages"]; got != true {
-		t.Fatalf("session track_dirty_pages = %v, want true", got)
-	}
-	if got, present := loads[1]["enable_diff_snapshots"]; present {
-		t.Fatalf("serving enable_diff_snapshots = %v, want omitted false", got)
-	}
-	if got, present := loads[1]["track_dirty_pages"]; present {
-		t.Fatalf("serving track_dirty_pages = %v, want omitted false", got)
-	}
-	if got, present := loads[2]["enable_diff_snapshots"]; present {
-		t.Fatalf("disabled session enable_diff_snapshots = %v, want omitted false", got)
-	}
-	if got, present := loads[2]["track_dirty_pages"]; present {
-		t.Fatalf("disabled session track_dirty_pages = %v, want omitted false", got)
-	}
-}
-
-func restoredDiffBankingSession(t *testing.T, launcher *fakeLauncher, baseRef string) (*Driver, substrate.Handle) {
-	t.Helper()
-	d := New(Config{
-		SnapshotRoot:       shortTempDir(t),
-		Node:               "node-4",
-		Arch:               "amd64",
-		DiffBanking:        true,
-		SnapshotEditorPath: executableSnapshotEditor(t),
-	}, launcher, nil)
-	if err := os.MkdirAll(d.sessionDir(baseRef), 0o700); err != nil {
-		t.Fatalf("mkdir base bank: %v", err)
-	}
-	if err := os.WriteFile(d.sessionSnapfile(baseRef), []byte("snap"), 0o600); err != nil {
-		t.Fatalf("write base snapfile: %v", err)
-	}
-	if err := os.WriteFile(d.sessionMemfile(baseRef), []byte("base-full"), 0o600); err != nil {
-		t.Fatalf("write base memfile: %v", err)
-	}
-	h, err := d.RestoreSession(context.Background(), "test", baseRef, true)
-	if err != nil {
-		t.Fatalf("RestoreSession: %v", err)
-	}
-	return d, h
-}
-
-func TestSessionDiffMergeFailureFallsBackToFull(t *testing.T) {
-	launcher := &fakeLauncher{}
-	d, h := restoredDiffBankingSession(t, launcher, "base-bank")
-	ctx, cancel := context.WithCancel(context.Background())
-	d.mergeDiffMemory = func(mergeCtx context.Context, _, _, _ string) error {
-		cancel()
-		if err := mergeCtx.Err(); err != nil {
-			t.Errorf("merge context inherited Bank cancellation: %v", err)
-		}
-		return errors.New("injected merge failure")
-	}
-	if _, err := d.SnapshotSession(ctx, h, "fallback-bank"); err != nil {
-		t.Fatalf("SnapshotSession fallback: %v", err)
-	}
-	if err := d.Release(context.Background(), h); err != nil {
-		t.Fatalf("Release fallback bank: %v", err)
-	}
-
-	creates := launcher.snapshotCreateBodies()
-	if len(creates) != 2 {
-		t.Fatalf("snapshot creates = %d, want Diff then Full: %v", len(creates), creates)
-	}
-	if got := creates[0]["snapshot_type"]; got != "Diff" {
-		t.Fatalf("first snapshot_type = %v, want Diff", got)
-	}
-	if got, present := creates[1]["snapshot_type"]; present {
-		t.Fatalf("fallback snapshot_type = %v, want omitted Full", got)
-	}
-	if _, err := os.Stat(d.sessionSnapfile("fallback-bank")); err != nil {
-		t.Fatalf("fallback full snapfile missing: %v", err)
-	}
-}
-
-func TestSessionDiffMissingBaseFallsBackToFull(t *testing.T) {
-	launcher := &fakeLauncher{}
-	d, h := restoredDiffBankingSession(t, launcher, "missing-base-bank")
-	inst := d.get(h.ID)
-	if inst == nil {
-		t.Fatal("restored instance missing")
-	}
-	if err := os.Remove(inst.bankBaseMemPath); err != nil {
-		t.Fatalf("remove bank base: %v", err)
-	}
-
-	if _, err := d.SnapshotSession(context.Background(), h, "missing-base-fallback"); err != nil {
-		t.Fatalf("SnapshotSession fallback: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
-
-	creates := launcher.snapshotCreateBodies()
-	if len(creates) != 1 {
-		t.Fatalf("snapshot creates = %d, want one Full fallback: %v", len(creates), creates)
-	}
-	if got, present := creates[0]["snapshot_type"]; present {
-		t.Fatalf("fallback snapshot_type = %v, want omitted Full", got)
-	}
-}
-
-func TestSessionDiffCreateFailureFallsBackToFull(t *testing.T) {
-	launcher := &fakeLauncher{failDiffCreate: true}
-	d, h := restoredDiffBankingSession(t, launcher, "diff-create-base")
-
-	if _, err := d.SnapshotSession(context.Background(), h, "diff-create-fallback"); err != nil {
-		t.Fatalf("SnapshotSession fallback: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
-
-	creates := launcher.snapshotCreateBodies()
-	if len(creates) != 2 {
-		t.Fatalf("snapshot creates = %d, want Diff then Full: %v", len(creates), creates)
-	}
-	if got := creates[0]["snapshot_type"]; got != "Diff" {
-		t.Fatalf("first snapshot_type = %v, want Diff", got)
-	}
-	if got, present := creates[1]["snapshot_type"]; present {
-		t.Fatalf("fallback snapshot_type = %v, want omitted Full", got)
-	}
-}
-
-func TestSessionFullBankRecordsBaseOnlyWhenTrackingArmed(t *testing.T) {
-	launcher := &fakeLauncher{}
-	d := New(Config{
-		KernelImagePath:    "/opt/kata/vmlinux",
-		RootfsPath:         "/dev/mapper/thread",
-		SnapshotRoot:       shortTempDir(t),
-		DiffBanking:        true,
-		SnapshotEditorPath: executableSnapshotEditor(t),
-	}, launcher, nil)
-	h, err := d.Claim(context.Background(), substrate.ClaimSpec{ThreadID: "untracked"})
-	if err != nil {
-		t.Fatalf("Claim: %v", err)
-	}
-	inst := d.get(h.ID)
-	if _, err := d.SnapshotSession(context.Background(), h, "untracked-bank"); err != nil {
-		t.Fatalf("SnapshotSession: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Release(context.Background(), h) })
-	if inst.bankBaseMemPath != "" {
-		t.Fatalf("untracked instance recorded bank base %q", inst.bankBaseMemPath)
-	}
-}
-
-func TestNewDisablesDiffBankingWithoutExecutableSnapshotEditor(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		path func(*testing.T) string
-	}{
-		{name: "missing", path: func(t *testing.T) string { return filepath.Join(shortTempDir(t), "missing-editor") }},
-		{name: "not executable", path: func(t *testing.T) string {
-			path := filepath.Join(shortTempDir(t), "snapshot-editor")
-			if err := os.WriteFile(path, []byte("editor"), 0o600); err != nil {
-				t.Fatalf("write non-executable editor: %v", err)
-			}
-			return path
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := New(Config{DiffBanking: true, SnapshotEditorPath: tc.path(t)}, &fakeLauncher{}, nil)
-			if d.diffBanking {
-				t.Fatal("diff banking stayed enabled without an executable snapshot-editor")
-			}
-		})
-	}
-}
-
-func TestMergeMemoryDiffArgs(t *testing.T) {
-	got := mergeMemoryDiffArgs("/snap/copy", "/snap/diff")
-	want := []string{"edit-memory", "rebase", "--memory-path", "/snap/copy", "--diff-path", "/snap/diff"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("snapshot-editor argv = %v, want %v", got, want)
-	}
-}
-
-func TestMergeMemoryDiffAtomicPreservesPreviousFull(t *testing.T) {
-	d := testDriver(t)
-	root := shortTempDir(t)
-	basePath := filepath.Join(root, "base")
-	diffPath := filepath.Join(root, "diff")
-	finalPath := filepath.Join(root, "full")
-	for path, contents := range map[string]string{
-		basePath:  "base",
-		diffPath:  "diff",
-		finalPath: "previous-full",
-	} {
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatalf("write %s: %v", path, err)
+	for _, load := range launcher.snapshotLoadBodies() {
+		if got, present := load["enable_diff_snapshots"]; present {
+			t.Fatalf("session restore enable_diff_snapshots = %v, want omitted", got)
 		}
 	}
-
-	d.mergeDiffMemory = func(_ context.Context, _, _, outputPath string) error {
-		if err := os.WriteFile(outputPath, []byte("partial"), 0o600); err != nil {
-			return err
-		}
-		return errors.New("crash before publish")
-	}
-	if err := d.mergeMemoryDiffAtomic(context.Background(), basePath, diffPath, finalPath); err == nil {
-		t.Fatal("merge should fail")
-	}
-	contents, err := os.ReadFile(finalPath)
+	mem, err := os.ReadFile(d.sessionMemfile("bank-2"))
 	if err != nil {
-		t.Fatalf("read preserved full: %v", err)
+		t.Fatalf("read rebanked memory: %v", err)
 	}
-	if got, want := string(contents), "previous-full"; got != want {
-		t.Fatalf("full after failed merge = %q, want %q", got, want)
-	}
-	if _, err := os.Stat(finalPath + ".merge.tmp"); !os.IsNotExist(err) {
-		t.Fatalf("merge temp survived failure: %v", err)
-	}
-
-	d.mergeDiffMemory = func(_ context.Context, _, _, outputPath string) error {
-		return os.WriteFile(outputPath, []byte("merged-full"), 0o600)
-	}
-	if err := d.mergeMemoryDiffAtomic(context.Background(), basePath, diffPath, finalPath); err != nil {
-		t.Fatalf("successful merge: %v", err)
-	}
-	contents, err = os.ReadFile(finalPath)
-	if err != nil {
-		t.Fatalf("read merged full: %v", err)
-	}
-	if got, want := string(contents), "merged-full"; got != want {
-		t.Fatalf("published full = %q, want %q", got, want)
+	if got, want := string(mem), "mem-image-bytes"; got != want {
+		t.Fatalf("rebanked memory = %q, want %q", got, want)
 	}
 }
 
@@ -2604,29 +2313,9 @@ func TestBootArgsForMmdsEnv(t *testing.T) {
 	if !strings.Contains(mixed, wantValid) {
 		t.Fatalf("bootArgsFor(mmdsEnv with invalid keys) = %q, want %q present", mixed, wantValid)
 	}
-}
-
-// TestMmdsEnvKeyNamesRedactsValues asserts the logging helper returns ONLY
-// sorted key names, never values, so a caller logging its output cannot
-// accidentally leak an mmds_env secret (D-R4.PR-7.1's redaction requirement).
-func TestMmdsEnvKeyNamesRedactsValues(t *testing.T) {
-	keys := mmdsEnvKeyNames(map[string]string{
-		"POSTGRES_PASSWORD": "hunter2",
-		"POSTGRES_USER":     "app",
-	})
-	want := []string{"POSTGRES_PASSWORD", "POSTGRES_USER"}
-	if len(keys) != len(want) {
-		t.Fatalf("mmdsEnvKeyNames() = %v, want %v", keys, want)
-	}
-	for i := range want {
-		if keys[i] != want[i] {
-			t.Fatalf("mmdsEnvKeyNames() = %v, want %v", keys, want)
-		}
-	}
-	for _, k := range keys {
-		if k == "hunter2" || k == "app" {
-			t.Fatalf("mmdsEnvKeyNames() leaked a value: %v", keys)
-		}
+	// The shared encoder retains digit-leading keys and emits empty values.
+	if got := d.bootArgsFor(coldBootSpec{mmdsEnv: map[string]string{"9_KEY": "f", "EMPTY": ""}}); got != "console=ttyS0 ember.env.9_KEY=Zg ember.env.EMPTY=" {
+		t.Fatalf("digit-leading and empty wire = %q", got)
 	}
 }
 
@@ -3183,5 +2872,387 @@ func TestBootArgsForCarriesSessionHarnessInit(t *testing.T) {
 	args := d.bootArgsFor(coldBootSpec{harnessInit: "/usr/local/bin/ember-runtime-guest-init"})
 	if !strings.Contains(args, "init=/usr/local/bin/ember-runtime-guest-init") {
 		t.Fatalf("boot args = %q, want the harness init", args)
+	}
+}
+
+func TestSnapshotBaseResumeFailureConfirmsInternalReap(t *testing.T) {
+	d := testDriverWithLauncher(t, &fakeLauncher{failResume: true})
+	h, err := d.Claim(t.Context(), substrate.ClaimSpec{ThreadID: "build-resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.SnapshotBase(t.Context(), h, "resume-base")
+	var proof interface{ TeardownConfirmed() bool }
+	if err == nil || !strings.Contains(err.Error(), "resume after base snapshot") || !errors.As(err, &proof) || !proof.TeardownConfirmed() {
+		t.Fatalf("missing internal reap evidence: %v", err)
+	}
+	if d.LiveCount() != 0 {
+		t.Fatal("reaped build still live")
+	}
+	if err := d.Release(t.Context(), h); err == nil {
+		t.Fatal("second release should be unknown")
+	}
+}
+
+func TestSnapshotAdmissionMemoryMatchesRestoreAndRejectsResize(t *testing.T) {
+	for _, kind := range []string{"base", "session", "serving", "stateful", "group"} {
+		for _, metadata := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/metadata=%v", kind, metadata), func(t *testing.T) {
+				d := testDriver(t)
+				paths := map[string]string{"base": d.baseMemfile("old"), "session": d.sessionMemfile("old"), "serving": d.servingMemfile("old"), "stateful": d.statefulMemfile("old"), "group": d.groupMemberMemfile("old", "member")}
+				mem := paths[kind]
+				if err := os.MkdirAll(filepath.Dir(mem), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.Create(mem)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Truncate(3072 * 1024 * 1024); err != nil {
+					t.Fatal(err)
+				}
+				f.Close()
+				if metadata {
+					if err := os.WriteFile(filepath.Join(filepath.Dir(mem), "mem_mib"), []byte("3072"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if got := d.SnapshotMemoryMib(kind, "old", "member"); got != 3072 {
+					t.Fatalf("need=%d", got)
+				}
+				// A stale admission read must also fail before creating a process or bundle.
+				ctx := substrate.WithMemoryReservation(t.Context(), 512)
+				_, err = d.loadInto(ctx, "echo", "no-launch", filepath.Join(filepath.Dir(mem), "snapfile"), mem, "api.sock")
+				if err == nil || !strings.Contains(err.Error(), "exceeds admission") {
+					t.Fatalf("undersized reservation: %v", err)
+				}
+				if len(d.launcher.(*fakeLauncher).specs()) != 0 {
+					t.Fatal("restore launched before admission check")
+				}
+				if _, err := os.Stat(d.threadDir("no-launch")); !os.IsNotExist(err) {
+					t.Fatalf("restore created a bundle: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSnapshotAdmissionMemoryFallbacks(t *testing.T) {
+	for _, kind := range []string{"base", "session", "serving", "stateful", "group"} {
+		for _, tc := range []struct {
+			name, metadata string
+			bytes          int64
+			want           uint64
+		}{
+			{"missing", "", 0, 128},
+			{"rounded file", "", 1048577, 2},
+			{"invalid metadata", "bad", 1048577, 2},
+			{"zero metadata", "0", 1048577, 2},
+			{"metadata authoritative", "3072", 1048577, 3072},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				d := testDriver(t)
+				paths := map[string]string{"base": d.baseMemfile("old"), "session": d.sessionMemfile("old"), "serving": d.servingMemfile("old"), "stateful": d.statefulMemfile("old"), "group": d.groupMemberMemfile("old", "member")}
+				path := paths[kind]
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if tc.bytes > 0 {
+					file, err := os.Create(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := file.Truncate(tc.bytes); err != nil {
+						t.Fatal(err)
+					}
+					if err := file.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.metadata != "" {
+					if err := os.WriteFile(filepath.Join(filepath.Dir(path), "mem_mib"), []byte(tc.metadata), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := tc.want
+				if tc.bytes == 0 {
+					want = uint64(d.cfg.MemMib)
+				}
+				if got := d.SnapshotMemoryMib(kind, "old", "member"); got != want {
+					t.Fatalf("snapshot requirement %d, want %d", got, want)
+				}
+			})
+		}
+	}
+}
+
+type countedExitProcess struct {
+	Process
+	calls  int
+	exited bool
+}
+
+func (p *countedExitProcess) Exited() bool { p.calls++; return p.exited }
+
+func TestLiveMemoryClaimsCoherentAndSaturating(t *testing.T) {
+	d := testDriver(t)
+	maxInt := int(^uint(0) >> 1)
+	live := &countedExitProcess{}
+	dead := &countedExitProcess{exited: true}
+	d.live["live"] = &instance{memMib: maxInt, proc: live}
+	d.live["dead"] = &instance{memMib: maxInt, proc: dead}
+	count, memory := d.LiveMemoryClaims()
+	if count != 1 || memory != uint64(maxInt) || live.calls != 1 || dead.calls != 1 {
+		t.Fatalf("incoherent snapshot count=%d memory=%d exit samples=%d,%d", count, memory, live.calls, dead.calls)
+	}
+	// Three maximum int claims exceed uint64 on the supported amd64 platform.
+	if uint64(maxInt) <= ^uint64(0)/3 {
+		t.Skip("requires 64-bit int")
+	}
+	d.live["second"] = &instance{memMib: maxInt}
+	d.live["third"] = &instance{memMib: maxInt}
+	if count, memory := d.LiveMemoryClaims(); count != 3 || memory != ^uint64(0) {
+		t.Fatalf("overflow snapshot=(%d,%d)", count, memory)
+	}
+}
+
+func TestColdBootAdmissionCeilingMatchesDeclaredOverrideAndDefault(t *testing.T) {
+	for _, requested := range []uint64{0, 3072} {
+		for _, fits := range []bool{false, true} {
+			t.Run(fmt.Sprintf("requested=%d/fits=%t", requested, fits), func(t *testing.T) {
+				d := testDriver(t)
+				need := d.ColdBootMemoryMib(requested)
+				want := requested
+				if want == 0 {
+					want = uint64(d.cfg.MemMib)
+				}
+				if need != want {
+					t.Fatalf("cold requirement=%d want=%d", need, want)
+				}
+				ceiling := need
+				if !fits {
+					ceiling--
+				}
+				ctx := substrate.WithMemoryReservation(t.Context(), ceiling)
+				h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "cold-ceiling", ColdBootMemMib: int(requested)})
+				if fits {
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+					if got := d.ClaimedMib(); got != need {
+						t.Fatalf("claim=%d want=%d", got, need)
+					}
+				} else {
+					if err == nil || !strings.Contains(err.Error(), "exceeds admission") {
+						t.Fatalf("undersized cold reservation: %v", err)
+					}
+					if len(d.launcher.(*fakeLauncher).specs()) != 0 {
+						t.Fatal("cold boot launched before ceiling check")
+					}
+					if _, err := os.Stat(d.threadDir("cold-ceiling")); !os.IsNotExist(err) {
+						t.Fatalf("cold boot created bundle: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// launchOwnershipProcess makes teardown failures explicit without reporting exit
+// merely because a signal was attempted. Its state is shared with retry workers.
+type launchOwnershipProcess struct {
+	Process
+	mu               sync.Mutex
+	killErr, waitErr error
+	kills            int
+}
+
+func (p *launchOwnershipProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.kills++
+	if p.killErr != nil {
+		return p.killErr
+	}
+	return p.Process.Kill()
+}
+
+func (p *launchOwnershipProcess) Wait() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.waitErr != nil {
+		return p.waitErr
+	}
+	return p.Process.Wait()
+}
+
+func (p *launchOwnershipProcess) allowCleanup() {
+	p.mu.Lock()
+	p.killErr = nil
+	p.waitErr = nil
+	p.mu.Unlock()
+}
+
+type launchOwnershipLauncher struct {
+	*fakeLauncher
+	proc                                *launchOwnershipProcess
+	partial, missingSerial, waitFailure bool
+	cancel                              context.CancelFunc
+}
+
+func (l *launchOwnershipLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, error) {
+	p, err := l.fakeLauncher.Launch(ctx, spec)
+	if err != nil {
+		return p, err
+	}
+	l.proc = &launchOwnershipProcess{Process: p, killErr: errors.New("injected unproven kill")}
+	if l.waitFailure {
+		l.proc.killErr = nil
+		l.proc.waitErr = errors.New("injected unproven wait")
+	}
+	if l.missingSerial {
+		if err := os.Remove(spec.SerialPath); err != nil {
+			return l.proc, err
+		}
+	}
+	if l.cancel != nil {
+		l.cancel()
+	}
+	if l.partial {
+		return l.proc, errors.New("injected partial launch")
+	}
+	return l.proc, nil
+}
+
+type launchTeardownProof interface {
+	TeardownDone() <-chan struct{}
+	TeardownConfirmed() bool
+	FailedLaunchHandle() substrate.Handle
+}
+
+func requireRetainedLaunch(t *testing.T, d *Driver, l *launchOwnershipLauncher, err error, wantMib uint64) {
+	t.Helper()
+	if l.proc == nil {
+		t.Fatalf("failure preceded process launch: %v", err)
+	}
+	// Also reap the fake on a failed assertion when this test runs against the old
+	// implementation, which has no retry owner.
+	defer func() { l.proc.allowCleanup(); _ = l.proc.Kill() }()
+	if err == nil {
+		t.Fatal("launch unexpectedly succeeded")
+	}
+	if got := d.ClaimedMib(); got != wantMib || d.LiveCount() != 1 {
+		t.Fatalf("unproven launch lost charge: live=%d memory=%d want=%d", d.LiveCount(), got, wantMib)
+	}
+	var proof launchTeardownProof
+	if !errors.As(err, &proof) {
+		t.Fatalf("launch failure has no teardown proof: %v", err)
+	}
+	if proof.TeardownConfirmed() {
+		t.Fatal("failed teardown was confirmed")
+	}
+	h := proof.FailedLaunchHandle()
+	if h.ID == "" || d.get(h.ID) == nil {
+		t.Fatal("failed launch lost retry identity")
+	}
+	select {
+	case <-proof.TeardownDone():
+		t.Fatal("teardown closed before exit proof")
+	default:
+	}
+	l.proc.allowCleanup()
+	// The cancelled-request case must be reaped by the independent retry owner.
+	if l.cancel == nil {
+		if err := d.Release(context.Background(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.proc.mu.Lock()
+	kills := l.proc.kills
+	l.proc.mu.Unlock()
+	select {
+	case <-proof.TeardownDone():
+	case <-time.After(3 * time.Second):
+		t.Fatal("retry owner failed to acknowledge completed release")
+	}
+	l.proc.mu.Lock()
+	after := l.proc.kills
+	l.proc.mu.Unlock()
+	if l.cancel == nil && after != kills {
+		t.Fatalf("retry killed already released process: %d -> %d", kills, after)
+	}
+	if !proof.TeardownConfirmed() || d.LiveCount() != 0 || d.ClaimedMib() != 0 {
+		t.Fatal("proven teardown retained charge")
+	}
+	if err := d.Release(context.Background(), h); err == nil {
+		t.Fatal("second public Release should report unknown handle")
+	}
+}
+
+func TestFailedLaunchRetainsMemoryUntilProvenTeardown(t *testing.T) {
+	for _, kind := range []string{"actions", "partial-launch", "cancelled", "unproven-wait", "serial-follower", "restore"} {
+		t.Run(kind, func(t *testing.T) {
+			l := &launchOwnershipLauncher{fakeLauncher: &fakeLauncher{failPath: "/actions"}}
+			d := testDriverWithLauncher(t, l)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch kind {
+			case "partial-launch":
+				l.partial = true
+			case "cancelled":
+				l.cancel = cancel
+			case "unproven-wait":
+				l.waitFailure = true
+			case "serial-follower":
+				l.missingSerial = true
+			}
+			var err error
+			if kind == "restore" {
+				d.launcher = &fakeLauncher{}
+				h, e := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "retained-restore", ColdBootMemMib: 3072})
+				if e != nil {
+					t.Fatal(e)
+				}
+				ref, e := d.Snapshot(ctx, h)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = d.Release(ctx, h); e != nil {
+					t.Fatal(e)
+				}
+				l.fakeLauncher.failPath = "/snapshot/load"
+				d.launcher = l
+				_, err = d.Restore(ctx, ref)
+			} else {
+				_, err = d.Claim(ctx, substrate.ClaimSpec{ThreadID: "retained-launch", ColdBootMemMib: 3072})
+			}
+			requireRetainedLaunch(t, d, l, err, 3072)
+		})
+	}
+}
+
+type exitedOwnershipProcess struct{ *delayedReleaseProcess }
+
+func (*exitedOwnershipProcess) Exited() bool { return true }
+func TestStopExitedProcessClosesSerialFollower(t *testing.T) {
+	d := testDriver(t)
+	path := filepath.Join(shortTempDir(t), "serial.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := newSerialFollower(path, d.logger, "test", "init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Stop()
+	p := &guestOutputProcess{Process: &exitedOwnershipProcess{&delayedReleaseProcess{killErr: errors.New("already exited")}}, follower: f}
+	if err := stopProcess(p); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.done:
+	default:
+		t.Fatal("exit proof released ownership but leaked serial follower")
 	}
 }

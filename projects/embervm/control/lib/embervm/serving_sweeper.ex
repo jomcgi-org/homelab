@@ -194,7 +194,6 @@ defmodule Embervm.ServingSweeper do
       # lets the test send {:bank_drained, id} by hand.
       timer_fun: Keyword.get(opts, :timer_fun, &default_timer/2),
       # ADR embervm/014 decision 5: node-confirmed destroy config plumbing.
-      node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
       destroying_alarm_ms: Keyword.get(opts, :destroying_alarm_ms, 300_000),
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       # status.serving {live,banked,published} writer (Task 10). Defaults to the K8s
@@ -710,7 +709,7 @@ defmodule Embervm.ServingSweeper do
                            }
                          } do
           try do
-            with {:ok, channel} <- safe_channel(channel_fun, dial_key),
+            with {:ok, channel} <- Embervm.NodeChannel.safe_dial(channel_fun, dial_key),
                  {:ok, %StopServingResponse{snapshot_ref: ref, size_bytes: size}}
                  when is_binary(ref) and ref != "" <-
                    stop_fun.(channel, bank_request(vm_id, workload)) do
@@ -1131,35 +1130,10 @@ defmodule Embervm.ServingSweeper do
 
   # -- destroy / evict RPCs + durable ops ------------------------------------
 
-  # Destroy a live instance. The gate-off branch is the existing best-effort
-  # StopServing(DESTROY) followed by serving_destroyed path. The ADR embervm/014
-  # branch durably records destroying first and waits for the daemon's real
-  # teardown_confirmed response before recording serving_destroyed.
+  # Destroy a live instance (ADR embervm/014 decision 5): durably record
+  # destroying first and wait for the daemon's real teardown_confirmed response
+  # before recording serving_destroyed.
   defp destroy_instance(state, instance, reason) do
-    if state.node_confirmed_destroy do
-      destroy_instance_node_confirmed(state, instance, reason)
-    else
-      destroy_instance_legacy(state, instance, reason)
-    end
-  end
-
-  defp destroy_instance_legacy(state, instance, reason) do
-    _ = stop_serving_destroy(state, instance)
-
-    _ =
-      ServingStore.transition(
-        state.store,
-        instance.instance_id,
-        :destroy,
-        :serving_destroyed,
-        %{reason: reason},
-        %{}
-      )
-
-    state
-  end
-
-  defp destroy_instance_node_confirmed(state, instance, reason) do
     intent =
       ServingStore.transition(
         state.store,
@@ -1252,7 +1226,7 @@ defmodule Embervm.ServingSweeper do
     # Dial the instance holding the banked serving bundle on disk, not the alias.
     dial_key = dial_for_serving_bundle(state, node_id, ref)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         state.evict_artifact_fun.(channel, req)
       rescue
@@ -1267,37 +1241,16 @@ defmodule Embervm.ServingSweeper do
 
   defp evict_remote_bundle(_state, _instance), do: :ok
 
-  defp stop_serving_destroy(state, %{node_id: node_id, vm_id: vm_id})
+  # The real StopServing(DESTROY) RPC, requiring the daemon's explicit
+  # confirmation. RPC, dial, and fault failures are all unconfirmed and leave the
+  # durable row in destroying for ServingManager reconciliation to re-drive.
+  defp stop_serving_destroy_confirmed(state, %{node_id: node_id, vm_id: vm_id})
        when is_binary(node_id) and is_binary(vm_id) do
     req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
     # Dial the OWNING instance running this serving vm_id, not the node-name alias.
     dial_key = dial_for_serving_vm(state, node_id, vm_id)
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
-      try do
-        state.stop_serving_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        _, _ -> :error
-      end
-    end
-
-    :ok
-  end
-
-  defp stop_serving_destroy(_state, _instance), do: :ok
-
-  # The node-confirmed destroy path uses the same real StopServing(DESTROY) RPC as
-  # the legacy sweeper path, but requires the daemon's explicit confirmation. RPC,
-  # dial, and fault failures are all unconfirmed and leave the durable row in
-  # destroying for ServingManager reconciliation to re-drive.
-  defp stop_serving_destroy_confirmed(state, %{node_id: node_id, vm_id: vm_id})
-       when is_binary(node_id) and is_binary(vm_id) do
-    req = %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_DESTROY}
-    dial_key = dial_for_serving_vm(state, node_id, vm_id)
-
-    with {:ok, channel} <- safe_channel(state.channel_fun, dial_key) do
+    with {:ok, channel} <- Embervm.NodeChannel.safe_dial(state.channel_fun, dial_key) do
       try do
         case state.stop_serving_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -1404,14 +1357,6 @@ defmodule Embervm.ServingSweeper do
 
   # -- daemon + timer seams --------------------------------------------------
 
-  defp safe_channel(channel_fun, node_id) do
-    channel_fun.(node_id)
-  rescue
-    e -> {:error, {:channel_raised, e}}
-  catch
-    kind, reason -> {:error, {:channel_raised, {kind, reason}}}
-  end
-
   # The channel key for a live serving-VM dial (bank/destroy): the OWNING instance
   # reporting `vm_id` in serving_vms, else the node name (single-instance / legacy
   # fallback). Instance-key unification (PR-B0b): a co-located node's node-name alias
@@ -1442,20 +1387,7 @@ defmodule Embervm.ServingSweeper do
   # upstream). Envoy's ?format=json emits {"stats":[{"name":..,"value":..}, ...]};
   # we keep only the cluster.*.upstream_rq_total gauges and strip to the raw cluster
   # name (cluster.<name>.upstream_rq_total -> <name>).
-  defp default_scrape(url) do
-    req = Finch.build(:get, url)
-
-    case Finch.request(req, Embervm.Finch, receive_timeout: 3_000) do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        parse_stats(body)
-
-      {:ok, %Finch.Response{status: status}} ->
-        {:error, {:stats_status, status}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
+  defp default_scrape(url), do: Embervm.EnvoyStats.scrape(url, &parse_stats/1)
 
   @rq_total_suffix ".upstream_rq_total"
   @cluster_stat_prefix "cluster."

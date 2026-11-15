@@ -23,7 +23,6 @@ from grimoire.testing.sql_capture import assert_no_knowledge_sql, capture_sql
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "fact-lens.db") as h:
         yield h
 
@@ -146,6 +145,7 @@ def test_parser_uses_last_fenced_result_not_earlier_example():
 
 def test_session_end_enqueues_each_viewer_once_even_when_cap_off(harness, monkeypatch):
     h = harness
+    h.prepare("play")
     monkeypatch.setenv("DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY", "0")
     url = f"/api/grimoire/campaigns/{h.rows['campaign'].id}/sessions/{h.rows['campaign_session'].id}"
     with capture_sql(h.session.get_bind()) as statements, TestClient(h.app()) as client:

@@ -146,7 +146,7 @@ func TestRestoreDataKeyDedicatedAndLegacyMigration(t *testing.T) {
 	})
 }
 
-func TestRestoreDataKeyRejectsInvalidCapabilitiesWithEnforcementUnchanged(t *testing.T) {
+func TestRestoreDataKeyRejectsInvalidCapabilities(t *testing.T) {
 	dedicatedKey := []byte("dedicated-capability-key")
 	legacyKey := []byte("legacy-bearer-key")
 	dataKey := bytes.Repeat([]byte{0x4c}, 32)
@@ -182,27 +182,17 @@ func TestRestoreDataKeyRejectsInvalidCapabilitiesWithEnforcementUnchanged(t *tes
 	}
 
 	for _, tt := range tests {
-		for _, enforcement := range []struct {
-			name     string
-			required bool
-			wantCode codes.Code
-		}{
-			{name: "required", required: true, wantCode: codes.PermissionDenied},
-			{name: "inert", required: false, wantCode: codes.FailedPrecondition},
-		} {
-			t.Run(tt.name+"/"+enforcement.name, func(t *testing.T) {
-				s := capabilityTestServer(config.Config{
-					Node:                     "node-a",
-					PodUID:                   "pod-a",
-					RestoreCapabilityKey:     string(dedicatedKey),
-					BearerToken:              string(legacyKey),
-					RequireRestoreCapability: enforcement.required,
-				})
-				if _, err := s.restoreDataKey(tt.raw(), ref, generation); status.Code(err) != enforcement.wantCode {
-					t.Fatalf("restoreDataKey error = %v (code %v), want code %v", err, status.Code(err), enforcement.wantCode)
-				}
+		t.Run(tt.name, func(t *testing.T) {
+			s := capabilityTestServer(config.Config{
+				Node:                 "node-a",
+				PodUID:               "pod-a",
+				RestoreCapabilityKey: string(dedicatedKey),
+				BearerToken:          string(legacyKey),
 			})
-		}
+			if _, err := s.restoreDataKey(tt.raw(), ref, generation); status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("restoreDataKey error = %v (code %v), want code %v", err, status.Code(err), codes.PermissionDenied)
+			}
+		})
 	}
 }
 

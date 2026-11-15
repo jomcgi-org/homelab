@@ -106,12 +106,6 @@ defmodule Embervm.ServingStateTest do
         do: refute(ServingState.terminal?(state))
   end
 
-  test "terminal_op_kind maps each terminal state to its op kind" do
-    assert ServingState.terminal_op_kind(:evicted) == :serving_evicted
-    assert ServingState.terminal_op_kind(:destroyed) == :serving_destroyed
-    assert ServingState.terminal_op_kind(:failed) == :serving_failed
-  end
-
   test "no terminal state has any outgoing edge (a serving instance dies terminally)" do
     for state <- ServingState.terminal_states(), event <- ServingState.events() do
       assert ServingState.transition(state, event) == {:error, {:illegal_transition, state, event}}

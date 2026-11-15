@@ -11,6 +11,7 @@ from __future__ import annotations
 from core.env import flag
 from factory.orchestration.runtime import running_app_version
 from factory.orchestration import dependency_prs
+from factory.orchestration.repair_landing_delegation import SCOPE_SCHEMA
 
 import asyncio
 from contextlib import nullcontext
@@ -41,13 +42,13 @@ from factory.orchestration.github_read_cooldown import (
     process_memory_snapshot,
 )
 from factory.execution import EFFORT_LEVELS
-from factory.orchestration import config as swarm_config
 from factory.orchestration import deviations, graph, runtime, factory_gates
 from factory.orchestration.factory_controls import (
     CONTINUE_EFFECT,
     DEFAULT_TASK_CLASS,
     EFFECT_WORD,
     JUDGMENT_CLASSES,
+    landing_held,
     LANES,
     MAX_OPTIONS,
     MIN_OPTIONS,
@@ -190,6 +191,7 @@ REVIEW_SCHEMA = {
         "summary": {"type": "string", "maxLength": 8000},
         "pr_number": {"type": "integer", "minimum": 1},
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "landing_scope": SCOPE_SCHEMA,
     },
 }
 IMPLEMENTATION_EXCEPTION_SCHEMA = {
@@ -264,6 +266,7 @@ DECISION_SCHEMA = {
                 "pause",
                 "request_funding",
                 "request_context",
+                "continue_evidence",
             ]
         },
         "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
@@ -287,6 +290,8 @@ DECISION_SCHEMA = {
         },
         "pr_number": {"type": "integer", "minimum": 1},
         "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_run_id": {"type": "integer", "minimum": 1},
+        "evidence_comment_id": {"type": "integer", "minimum": 1},
         # A pause is a decision request, so it leaves with the same shape a
         # refine escalation leaves with: the one question a person must
         # answer, and the two to four concrete things they could decide.
@@ -309,6 +314,19 @@ DECISION_SCHEMA = {
         "gate": factory_gates.GATE_SCHEMA,
     },
     "allOf": [
+        {
+            "if": {"properties": {"action": {"const": "continue_evidence"}}},
+            "then": {
+                "required": [
+                    "node_key",
+                    "source_run_id",
+                    "evidence_comment_id",
+                    "pr_number",
+                    "head_sha",
+                    "expected_version",
+                ]
+            },
+        },
         {
             "if": {"properties": {"action": {"const": "plan"}}},
             "then": {"required": ["edits"]},
@@ -644,6 +662,7 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
                 else receipt.issue_number
             ),
             "dependency_review": (direction or {}).get("dependency_review"),
+            "owner_pr": (direction or {}).get("owner_pr"),
             "landing_hold": landing_held(receipt),
             "task_paused": bool(receipt and receipt.task_paused),
             "cancellation_requested": bool(receipt and receipt.cancellation_requested),
@@ -665,33 +684,6 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
             ),
             "conductor_gates": (direction or {}).get("conductor_gates", []),
         }
-
-
-def lost_before_guest_settlement_enabled() -> bool:
-    """Whether the reconciler may settle an attempt that never bound a guest.
-
-    Off in code. The values key that turns it on is flipped in a follow-up PR,
-    after review, so a template change and a behaviour change never ship in the
-    same commit. The operator path in swarm/factory_controls.py is deliberately
-    not gated on this: while the flag is off it is the only repair available.
-    """
-    return (
-        os.environ.get("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false").lower()
-        == "true"
-    )
-
-
-def escalation_revalidation_enabled() -> bool:
-    """Whether open escalation cards may be checked against GitHub."""
-    return (
-        os.environ.get("FACTORY_ESCALATION_REVALIDATION_ENABLED", "false").lower()
-        == "true"
-    )
-
-
-def planner_knowledge_enabled() -> bool:
-    """Whether receipt-authorized KG evidence may enter planner inputs."""
-    return flag("CONDUCTOR_CONTINUITY_ENABLED")
 
 
 def planner_preview_enabled() -> bool:
@@ -1110,6 +1102,11 @@ def _schema(node_key: str, task_id: str | None = None) -> dict:
     if node_key.startswith("conductor_funding_"):
         from factory.orchestration.factory_funding import SCHEMA
 
+        if task_id:
+            from factory.orchestration.funding_profile import schema
+
+            return schema(task_id, node_key)
+
         return SCHEMA
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
@@ -1309,16 +1306,6 @@ def fan_out_wave(
     return wave[:limit] if len(wave) >= 2 else []
 
 
-def _pending_fan_ins(
-    task_id: str, nodes: list[dict], runs: list[dict], limit: int
-) -> int:
-    """Fan-in nodes this graph still owes: one for a wave nothing covers yet."""
-    wave = fan_out_wave(task_id, nodes, runs, limit)
-    if not wave or all(_covering_integrate(key, nodes) is not None for key in wave):
-        return 0
-    return 1
-
-
 def _dispatch_branch(
     task_id: str,
     node_key: str,
@@ -1369,6 +1356,8 @@ def _closing_instruction(task: dict, *, review: bool = False) -> str:
 
 
 def _issue_closing_instruction(task: dict, *, review: bool = False) -> str:
+    if (task.get("owner_pr") or {}).get("direct"):
+        return "Keep the existing PR; do not add a closing keyword for the PR itself."
     issue = task.get("issue_number")
     if not isinstance(issue, int):
         return ""
@@ -1458,6 +1447,13 @@ def _boundary(
         + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
             "report its SHA and verdict, and do not modify source. "
+            "Also report landing_scope with the PR's exact merge-base commit as base_sha "
+            "and complete changed paths, "
+            "classification private_internal_reversible or requires_operator, boolean "
+            "public_facing, security_sensitive, authentication_or_credentials and destructive, "
+            "and evidence explaining the scope. Authority, permission, credential, safety-gate "
+            "or public exposure changes require an operator; ambiguity is requires_operator. "
+            "This assessment never authorizes landing by itself. "
             if review
             else ""
         )
@@ -1806,7 +1802,7 @@ def _planner_direction(direction: dict) -> dict:
         "previous_task_id": direction.get("prior_task_id"),
         "previous_branch": direction.get("prior_branch"),
         "previous_pr_url": direction.get("prior_pr_url"),
-        "landing_hold": "landing_hold" in direction,
+        "landing_hold": landing_held({"direction": direction}),
         "nonrenewable_recovery": "nonrenewable_recovery" in direction,
     }
 
@@ -2154,6 +2150,13 @@ def planner_prompt(
         if funding_available
         else f"Only use plan, add_node, discard_node, finish, settle_external{context_action} or pause. "
     )
+    funding_rule += (
+        "continue_evidence requests one evidence-only next attempt on the existing "
+        "escalated correct_<n> and its unrun review_<n>, within current policy caps. "
+        "Name the exact source_run_id, expected_version, owned PR/head and a new "
+        "evidence_comment_id. It preserves history and requires an existing funding "
+        "direction, fresh evidence and independent review; it grants no source or access changes. "
+    )
     budget_rule = (
         "This is a nonrenewable operator recovery envelope. Submit one feasible graph within the recorded bounds, including correction and re-review reserves. "
         "A refused graph pauses this task without another planner, funding review or allowance extension. Funding renewal is unavailable. "
@@ -2276,10 +2279,8 @@ _PLANNER_CHARTER = (
 )
 
 
-def _load_planner_factory_context(task_id: str) -> dict | None:
-    """Refresh current factory and receipt-authorized KG evidence when staged on."""
-    if not planner_knowledge_enabled():
-        return None
+def _load_planner_factory_context(task_id: str) -> dict:
+    """Refresh current factory and receipt-authorized KG evidence."""
     from factory.orchestration.conductor_context import planner_context
 
     result = asyncio.run(planner_context(task_id))
@@ -2392,8 +2393,6 @@ def _request_planner_context(task: dict, decision: dict, cause: str) -> tuple[st
     """Execute one bounded, durable, server-authorized context follow-up."""
     from factory.orchestration.factory_models import FactoryAudit
 
-    if not planner_knowledge_enabled():
-        return "planner_knowledge_disabled", "planner knowledge is staged off"
     query = decision.get("query")
     if not isinstance(query, str) or not 2 <= len(query) <= PLANNER_CONTEXT_QUERY_CHARS:
         return "invalid_context_query", "context query is outside the server bound"
@@ -2583,6 +2582,9 @@ def verify_delivery(
     if granted_pr is not None and number != granted_pr:
         raise ValueError("delivery PR does not match the operator-granted PR")
     pr = github_get(task["repo"], f"pulls/{number}")
+    from factory.orchestration.owner_prs import assert_unheld
+
+    assert_unheld(task, pr)
     merged = allow_merged and pr.get("merged") is True
     if merged and task.get("landing_hold"):
         raise DeliveryRefused(
@@ -2665,8 +2667,10 @@ def verify_delivery(
             raise DeliveryRefused(
                 "pr_missing_rescope", "state the conductor rescope in the PR body"
             )
-    elif issue_number is not None and not closes_issue(
-        pr.get("body"), task["repo"], issue_number
+    elif (
+        issue_number is not None
+        and not (task.get("owner_pr") or {}).get("direct")
+        and not closes_issue(pr.get("body"), task["repo"], issue_number)
     ):
         raise DeliveryRefused(
             "pr_missing_close_keyword",
@@ -3045,8 +3049,6 @@ def revalidate_escalations() -> dict[str, int]:
         "generation_blocked": 0,
         "batches": 0,
     }
-    if not escalation_revalidation_enabled():
-        return counts
     now = _watchdog_clock()
     if (
         _last_escalation_revalidation is not None
@@ -4248,6 +4250,29 @@ def _apply_decision(
     from factory.orchestration.factory_controls import finish_task
 
     action = decision["action"]
+    from factory.orchestration.evidence_continuation import recovery_grant
+    from factory.orchestration.factory_controls import _locked_session
+
+    with _locked_session() as (db, _control):
+        evidence_recovery = recovery_grant(db, task["id"])
+    if evidence_recovery and (
+        action not in ("finish", "pause") or decision.get("gate")
+    ):
+        raise ValueError("evidence_continuation_acceptance_only")
+    if (
+        evidence_recovery
+        and action == "finish"
+        and any(
+            decision.get(key) != evidence_recovery["grant"][key]
+            for key in ("pr_number", "head_sha")
+        )
+    ):
+        raise ValueError("evidence_continuation_delivery_identity_changed")
+    if action == "continue_evidence":
+        from factory.orchestration import evidence_continuation
+
+        evidence_continuation.apply(task["id"], decision, cause, github_get=github_get)
+        return
     if action == "request_context":
         code, reason = _request_planner_context(task, decision, cause)
         _reject_decision(task["id"], cause, action, code, reason)
@@ -4401,6 +4426,11 @@ def _apply_decision(
             judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
             issue_number=task.get("issue_number"),
         )
+        if (
+            evidence_recovery
+            and evidence.get("head_sha") != evidence_recovery["grant"]["head_sha"]
+        ):
+            raise ValueError("evidence_continuation_delivery_head_changed")
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
             _reject_decision(
@@ -4428,6 +4458,21 @@ def _apply_decision(
                 "factory task settlement refused",
             )
     else:
+        from factory.orchestration import factory_funding
+
+        if not evidence_recovery and factory_funding.routine_pause(
+            task, decision, cause
+        ):
+            # The same task keeps its receipt, graph, PR and accounting; the
+            # judge's grant or its escalation card answers the pause.
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                "routine_pause_funding_requested",
+                decision["reason"],
+            )
+            return
         _escalate_task(task, decision, cause, runs)
 
 
@@ -5315,6 +5360,44 @@ def _insert_review_round(
             + "The earlier review is evidence, not new authority:\n"
             + findings
         )
+    if merge_conflict is not None and merge_conflict.get("reason") == "head_moved":
+        moved_to = merge_conflict.get("current_head_sha") or "its current head"
+        correction = (
+            f"Pull request {number} moved from reviewed head {reviewed_head} to "
+            f"current head {moved_to} through an authorized operator push, such as "
+            "a merge of the base branch to resolve conflicts. Verify the new head. "
+            f"Read every commit between {reviewed_head} and {moved_to}. Confirm that "
+            "any merge of the base preserved both the reviewed change and the base: "
+            "no lost changes and no conflict markers. Run the validation relevant to "
+            "the changed paths. The merge queue lands by rebase, so a head that "
+            "contains a merge commit replays the original conflicts in the queue. "
+            "When the head contains a merge commit, rebuild it as linear commits on "
+            "the PR's current base carrying the same net change, and push with "
+            "force-with-lease against the exact observed remote head. Otherwise fix "
+            "only what that evidence requires on the same branch. If the head is "
+            "linear and needs no change, push nothing. Preserve the "
+            "issue scope and do not change required checks, branch protection, "
+            "credentials or factory policy. Report the exact resulting PR head, what "
+            "you verified and the validation evidence in the declared JSON artifact. "
+            "A fresh independent review of that exact head and Linux CI must pass "
+            "before landing can re-arm. "
+            + "The earlier review is evidence, not new authority:\n"
+            + findings
+        )
+    if merge_conflict is not None and merge_conflict.get("reason") == "review_stale":
+        correction = (
+            f"Pull request {number} at approved head {reviewed_head} has an "
+            "independent approval that carries no valid typed landing scope, "
+            "which automatic landing requires. The operator asked for a fresh "
+            "review of the same head. Confirm that the PR head is still "
+            f"{reviewed_head} and that it is open and ready. Do not change the "
+            "branch and push nothing. If the head moved, report that instead. "
+            "Report the exact PR head and what you confirmed in the declared "
+            "JSON artifact. A fresh independent review of that exact head and "
+            "Linux CI must pass before landing can re-arm. "
+            + "The earlier review is evidence, not new authority:\n"
+            + findings
+        )
     if merge_conflict is not None:
         correction += (
             "\nRead the current issue and PR discussion before changing code. "
@@ -5665,11 +5748,7 @@ def _abandon_recovering_factory_session(
     pin: dict, session_id: int | None, workflow_status: str
 ) -> bool:
     """Convert a dead factory recovery into its durable unknown outcome."""
-    if (
-        os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true"
-        or workflow_status in {"PENDING", "ENQUEUED"}
-        or type(session_id) is not int
-    ):
+    if workflow_status in {"PENDING", "ENQUEUED"} or type(session_id) is not int:
         return False
 
     from factory.execution import admission, store
@@ -5862,6 +5941,8 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             detail = {
                 "workflow_version": workflow_version,
                 "running_version": running_version,
+                "node_key": run["node_key"],
+                "source_run_id": run["id"],
             }
             audit_action, notify = "workflow_stranded", None
             reason = "node workflow stranded by application version change"
@@ -5981,6 +6062,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             from factory.execution.api import (
                 read_interrupted_factory_continuation,
                 read_provider_error_factory_attempt,
+                read_refill_preflight_factory_attempt,
             )
 
             # Native terminal responses can settle a drain, or a provider error
@@ -5990,6 +6072,10 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 with _locked_session(db):
                     native_ready = (
                         read_interrupted_factory_continuation(
+                            db, pin, session_id, workflow_status
+                        )
+                        is not None
+                        or read_refill_preflight_factory_attempt(
                             db, pin, session_id, workflow_status
                         )
                         is not None
@@ -6005,6 +6091,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 workflow_status,
             ):
                 return None
+    from factory.orchestration.evidence_continuation import validate_result
+
+    # Read the owned PR before taking database locks. An unavailable read leaves
+    # settlement pending; a known completed attempt retains its measured cost.
+    result = validate_result(pin, result, task=task, github_get=github_get)
     with Session(get_engine()) as db:
         with _locked_session(db):
             if result["status"] == "uncertain":
@@ -6015,10 +6106,14 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 # rather than in execute_node so the pinned node workflow
                 # version holds across this deploy; execute_node still records
                 # these as uncertain, and this is the next thing that reads
-                # them. Unlike the proofs below it keeps a measured cost.
+                # them. A receipt-bound refill preflight error uses the same
+                # owner checks but its own proof and phase, preserving unknown
+                # spend instead of treating it as pre-POST non-invocation.
                 from factory.execution.api import (
                     read_provider_error_factory_attempt,
+                    read_refill_preflight_factory_attempt,
                     settle_provider_error_factory_attempt,
+                    settle_refill_preflight_factory_attempt,
                 )
                 from factory.orchestration.node_workflows import (
                     ACCOUNTING_LABELS,
@@ -6031,7 +6126,17 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                     result.get("session_id") or run.get("session_id"),
                     workflow_status,
                 )
+                settle_native_failure = settle_provider_error_factory_attempt
+                if provider_error is None:
+                    provider_error = read_refill_preflight_factory_attempt(
+                        db,
+                        pin,
+                        result.get("session_id") or run.get("session_id"),
+                        workflow_status,
+                    )
+                    settle_native_failure = settle_refill_preflight_factory_attempt
                 if provider_error is not None:
+                    phase = provider_error["invocation_phase"]
                     current = next(
                         (
                             value
@@ -6052,7 +6157,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         not in ("admitted", "dispatched", "uncertain")
                     ):
                         raise ValueError("provider-error factory attempt changed")
-                    settle_provider_error_factory_attempt(db, pin, provider_error)
+                    settle_native_failure(db, pin, provider_error)
                     cost, basis = _settlement_cost(
                         provider_error["cost_usd"], provider_error["list_cost_usd"]
                     )
@@ -6064,17 +6169,17 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "cost_basis": basis,
                         "accounting": ACCOUNTING_LABELS[basis],
                         "head_sha": current.get("head_sha") or result.get("head_sha"),
-                        "invocation_phase": "provider_error_before_work",
-                        "reason": (
-                            "provider_error_before_work: " + provider_error["error"]
-                        ),
+                        "invocation_phase": phase,
+                        "reason": phase + ": " + provider_error["error"],
                         "previous_outcome": _outcome(current) or result,
-                        "provider_error_before_work": provider_error,
+                        phase: provider_error,
                     }
                     _controls_audit(
                         db,
                         ACTOR,
-                        "provider_error_settled",
+                        "provider_error_settled"
+                        if phase == "provider_error_before_work"
+                        else "refill_preflight_failed",
                         task_id=task["id"],
                         workflow_id=key,
                         session_id=provider_error["session_id"],
@@ -6266,9 +6371,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                             attempt=run["attempt"],
                             session_id=proof["session_id"],
                         )
-                elif (
-                    never_dispatched is None and lost_before_guest_settlement_enabled()
-                ):
+                elif never_dispatched is None:
                     # The next window along. The not-invoked proof needs a turn
                     # that never reached its model POST; this one covers a turn
                     # that was invoked and lost its executor before a guest was
@@ -6491,6 +6594,23 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
+def _machine_paused(task_id: str) -> bool:
+    """Whether the factory, not an operator, took the task's current pause."""
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.factory_funding_limits import _latest_pause
+
+    from factory.orchestration import factory_funding as funding
+
+    with controls._read_session() as db:
+        pause = _latest_pause(db, task_id)
+        # A funding pause that waits for an operator's approval or answer is
+        # that person's decision, whoever took the pause.
+        awaited = funding._awaiting_operator(
+            db, task_id, funding.latest(db, task_id, "funding_review_settled")
+        )
+    return pause is not None and pause.actor.startswith("factory:") and not awaited
+
+
 def _settle_paused_task(
     task: dict, policy: dict, runs: list[dict], *, merge_unknown: bool = False
 ) -> bool:
@@ -6516,9 +6636,7 @@ def _settle_paused_task(
         task["id"], ACTOR, observed="human" in _label_names(issue)
     ):
         return True
-    closed_landing_hold = issue.get("state") == "closed" and "landing_hold" in (
-        snapshot.get("direction") or {}
-    )
+    closed_landing_hold = issue.get("state") == "closed" and landing_held(snapshot)
     if not merge_unknown and (
         issue.get("state") == "closed" or snapshot["limits"]["deadline_expired"]
     ):
@@ -6566,12 +6684,36 @@ def _settle_paused_task(
             factory_pause.STOP
         ]:
             # This typed stop-only card is already an actionable restriction,
-            # not a planner's two-to-four-option escalation. Keep it and its
-            # pause owner; expiry is not authority to invent a continue choice.
+            # not a planner's two-to-four-option escalation. Expiry is not
+            # authority to invent a continue choice, but a machine pause's
+            # single option needs no person: apply it after its grace period.
+            factory_pause.expire_stop_card(task["id"])
+            return True
+        open_question = previous.get("resolved") is None and previous.get("question")
+        if (
+            not open_question
+            and not landing_held(snapshot)
+            and _machine_paused(task["id"])
+        ):
+            # A factory-owned pause with no question left to answer has nothing
+            # for a person to decide. Stop it and release the slot; the issue
+            # stays open. A new task is never started here, so attempts are
+            # not reset. An operator's own pause, a retained question and a
+            # landing hold (whose delivery may have merged) still ask.
+            controls.finish_task(
+                task["id"],
+                "cancelled",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute task deadline elapsed while paused by the factory; all starts and runs are terminal.",
+                },
+                paused_trigger="deadline",
+            )
             return True
         decision = (
             previous
-            if previous.get("resolved") is None and previous.get("question")
+            if open_question
             else {
                 "reason": "Absolute task deadline elapsed while paused; all starts and runs are terminal.",
                 "question": "The paused task reached its deadline without a verified delivery. Continue with a new task or keep it on hold?",
@@ -6746,6 +6888,19 @@ def _adopt_saved_finish(task: dict, policy: dict, runs: list[dict]) -> bool:
         return True
 
 
+def _landing_recovery_settlement_held(task_id: str) -> bool:
+    """An explicit landing hold or in-flight operator decision owns the task."""
+    from factory.orchestration import factory_controls as controls
+
+    with controls._read_session() as db:
+        row = controls._receipt(db, task_id)
+        return (
+            row is None
+            or controls.landing_held(row)
+            or controls.decision_in_flight(db, row.id)
+        )
+
+
 def reconcile_task(
     task_id: str, policy: dict, dbos, *, human_owned: bool = False
 ) -> None:
@@ -6881,6 +7036,10 @@ def reconcile_task(
         # Outcome/issue reconciliation remains reachable while admissions are
         # paused or refill is disabled. Physical dispatch has its own fence.
         permission = can_start(task_id)
+        from factory.orchestration import backlog_refill_repair
+
+        if backlog_refill_repair.reconcile(task, policy, runs, permission):
+            return
         paused = not permission["ok"] and permission["reason"] == "task_paused"
         if paused:
             from factory.orchestration.factory_controls import (
@@ -6920,8 +7079,13 @@ def reconcile_task(
         )
         return
     from factory.orchestration import factory_funding
+    from factory.orchestration.evidence_continuation import recovery_grant
+    from factory.orchestration.factory_controls import _locked_session
 
-    if factory_funding.renew_continuation(task_id):
+    with _locked_session() as (db, _control):
+        evidence_recovery = recovery_grant(db, task_id)
+
+    if not evidence_recovery and factory_funding.renew_continuation(task_id):
         # Reload the task's effective policy on the next tick. Never dispatch
         # with the policy snapshot from before this audited lease renewal.
         return
@@ -6938,7 +7102,9 @@ def reconcile_task(
             # Legacy reconciler-pause expiry must not mask terminal facts.
             _expire_reconciler_pause(task_id)
         return
-    if factory_funding.reconcile(task, policy, runs, permission):
+    if not evidence_recovery and factory_funding.reconcile(
+        task, policy, runs, permission
+    ):
         return
     if not permission["ok"]:
         if permission["reason"] == "task_deadline":
@@ -6953,12 +7119,36 @@ def reconcile_task(
                     "reason": "Absolute task deadline elapsed; all admitted attempts are reconciled.",
                 },
             )
+        elif permission[
+            "reason"
+        ] == "landing_recovery_deadline" and not _landing_recovery_settlement_held(
+            task_id
+        ):
+            # The fixed landing-recovery cap is never renewed, so nothing
+            # else will start here. finish_task still refuses unresolved
+            # starts; a landing hold or open decision keeps its owner.
+            from factory.orchestration.factory_controls import finish_task
+
+            finish_task(
+                task_id,
+                "failed",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Landing recovery deadline elapsed; all admitted attempts are reconciled.",
+                },
+            )
         return
     if permission.get("continuation"):
         from factory.orchestration.factory_continuations import terminal_grant
 
         if terminal_grant(task, policy, runs):
             return
+    if evidence_recovery:
+        from factory.orchestration import evidence_recovery as recovery_owner
+
+        recovery_owner.reconcile(task, policy, graph.load_graph(task_id), runs)
+        return
     if not runs and not is_advisory(task_class_for(task_id)):
         if not factory_gates.adopt_delivery(task):
             _escalate_task(
@@ -7001,6 +7191,9 @@ def reconcile_task(
         if artifact.get("gate") and not _decision_processed(task_id, cause):
             try:
                 resolved = factory_gates.resolve(task, artifact, cause)
+            except factory_gates.LandingHoldRefused as exc:
+                _reject_decision(task_id, cause, role, exc.code, exc.reason)
+                resolved = False
             except ValueError:
                 # In-flight artifacts can predate the required effects contract.
                 # Leave their question for the planner without wedging this tick.
@@ -7311,16 +7504,19 @@ def _ready_nodes(
     that reported no cost is charged its reservation, and that charge used to
     leave an attempt the node could never dispatch.
     """
+    from factory.orchestration.evidence_continuation import attempt_limit, permits
+
     succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
     escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
     return [
         n
         for n in nodes
         if (funding_review or not n["node_key"].startswith("conductor_funding_"))
+        and not n.get("evidence_continuation_blocked")
         and n["node_key"] not in succeeded
-        and n["node_key"] not in escalated
+        and (n["node_key"] not in escalated or permits(n, runs))
         and all(dep in succeeded for dep in n["deps"])
-        and graph.attempts_spent(runs, n["node_key"]) < n["max_attempts"]
+        and graph.attempts_spent(runs, n["node_key"]) < attempt_limit(n)
     ]
 
 
@@ -7664,6 +7860,15 @@ def _dispatch_ready(
     ready = _ready_nodes(nodes, runs, funding_review=funding_review)
     if not ready or slots <= 0:
         return False
+    if task.get("owner_pr"):
+        from factory.orchestration.owner_prs import assert_unheld
+        from factory.orchestration import factory_pause
+
+        try:
+            assert_unheld(task)
+        except ValueError as exc:
+            factory_pause.pause(task["id"], ACTOR, str(exc))
+            return False
     budget = _slot_budget()
     solo = 0 if fan_out else 1
     extra = max(0, slots - solo)
@@ -7694,11 +7899,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
+        attempt = sum(r["node_key"] == node_key for r in runs) + 1
         refilling = node_key in {"backlog_refill_collect_1", "backlog_refill_review_1"}
         if refilling:
             from factory.orchestration.backlog_refill import dispatch_allowed
 
-            if not dispatch_allowed(task_id, node_key):
+            if not dispatch_allowed(task_id, node_key, attempt):
                 continue
         scouting = node_key in {"scout_collect_1", "scout_review_1"}
         if scouting:
@@ -7734,7 +7940,24 @@ def _dispatch_ready(
         )
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
-        artifact_schema = _schema(node_key, task_id) if refilling else _schema(node_key)
+        artifact_schema = (
+            _schema(node_key, task_id)
+            if refilling or node_key.startswith("conductor_funding_")
+            else _schema(node_key)
+        )
+        if "x-factory-funding-decision" in artifact_schema:
+            branch = task["base_branch"]
+        from factory.orchestration import evidence_continuation
+
+        try:
+            artifact_schema = evidence_continuation.prepare(
+                task, node, artifact_schema, github_get=github_get
+            )
+        except ValueError as exc:
+            evidence_continuation.block(
+                task_id, node["evidence_continuation"], str(exc)
+            )
+            continue
         context = {
             "repo": task["repo"],
             "branch": branch,
@@ -7772,6 +7995,11 @@ def _dispatch_ready(
             ),
         }
 
+        if refilling:
+            source = artifact_schema.get("x-factory-refill-inspection")
+            if source is not None:
+                context["branch"] = "commit:" + source["sha"]
+                context["hydration_branch"] = "commit:" + source["sha"]
         if scouting:
             context["read_only"] = True
             reviewer = "sol"  # Exact subscription model; no quota/provider fallback.
@@ -7926,11 +8154,20 @@ def _dispatch_ready(
                 break
         if dispatched == 0:
             from factory.orchestration import factory_funding
+            from factory.orchestration.evidence_continuation import recovery_grant
             from factory.orchestration.factory_controls import (
                 pause_nonrenewable_recovery,
             )
 
-            if pause_nonrenewable_recovery(
+            with Session(get_engine()) as db:
+                evidence_recovery = recovery_grant(db, task_id)
+
+            if evidence_recovery:
+                _pause_refusal(
+                    task,
+                    "Evidence continuation dispatch refused; no additional work or funding authorized",
+                )
+            elif pause_nonrenewable_recovery(
                 task_id,
                 f"Ready dispatch of {node_key} was refused within the operator envelope: "
                 f"{getattr(reservation, 'refusal_code', 'reservation_refused')}",
@@ -8088,9 +8325,6 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
     after the caller's snapshot. Settlement rechecks both ledgers and all pause
     holds under control-then-task locks before legacy expiry can cancel work.
     """
-    if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
-        return False
-
     from factory.orchestration.factory_controls import (
         _audit,
         _locked_session,
@@ -8197,9 +8431,7 @@ def _expire_reconciler_pause(task_id: str, *, held_only: bool = False) -> bool:
 
 
 def _deadline_backstop_enabled() -> bool:
-    return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED and (
-        flag("FACTORY_DEADLINE_BACKSTOP_ENABLED")
-    )
+    return FACTORY_DEADLINE_BACKSTOP_RELEASE_STAGED
 
 
 def _deadline_backstop_due(task: dict) -> bool:
@@ -8288,9 +8520,6 @@ def _warn_deadline_tripped(task: dict) -> None:
         else "Active cessation will destroy the recorded guest "
         f"{factory_cessation.GRACE_SECONDS // 3600} hours after the deadline "
         "and release the slot once the control plane reports it gone."
-        if factory_cessation.enabled()
-        else "The deadline backstop is off, so nothing will release the lane "
-        "slot on its own."
     )
     if _notify_person_once(
         task_id,
@@ -8848,14 +9077,13 @@ def _tick(checkpoint) -> None:
     # must not starve its neighbours of their tick, and a stale issue number
     # in the policy must not stall every in-flight task behind the ingest.
     for task in active:
-        if swarm_config.factory_lost_before_session_sweep_enabled():
-            try:
-                _sweep_sessionless_starts(task, dbos)
-            except Exception:  # noqa: BLE001 - missing proof never stalls neighbours
-                logger.exception(
-                    "factory sessionless-start sweep failed for task %s",
-                    task["task_id"],
-                )
+        try:
+            _sweep_sessionless_starts(task, dbos)
+        except Exception:  # noqa: BLE001 - missing proof never stalls neighbours
+            logger.exception(
+                "factory sessionless-start sweep failed for task %s",
+                task["task_id"],
+            )
         owned = False
         cancelling = bool(task.get("cancellation_requested"))
         try:
@@ -8965,6 +9193,16 @@ def _tick(checkpoint) -> None:
             generation=snapshot["policy"].get("generation", 0),
             observe_only=True,
         )
+        # The scout only queues an advisory receipt and admits nothing, so a
+        # full or stalled lane is exactly when repair discovery must still run.
+        try:
+            from factory.orchestration.factory_improvement_scout import (
+                tick as scout_tick,
+            )
+
+            scout_tick(snapshot["policy"])
+        except Exception:  # noqa: BLE001 - discovery cannot stall the lane
+            logger.exception("factory scout failed with a full lane")
         return
     checkpoint("intake")
     staged_sweeps = []
@@ -9104,18 +9342,23 @@ def disarm_watchdog() -> None:
 
 async def run_loop() -> None:
     global _last_loop_progress
-    while True:
-        try:
-            await asyncio.to_thread(tick)
-        except Exception:
-            # A later tick reconciles the same durable identity. It never
-            # creates a new attempt merely because this observation failed.
-            logger.exception("factory reconciliation failed")
-        # Returning with an error still means the loop can retry. Dependency
-        # failures must not turn into a restart storm. A hung tick never gets
-        # here and a cancelled loop is detected through its task state.
-        _last_loop_progress = _watchdog_clock()
-        await asyncio.sleep(TICK_SECONDS)
+    from factory.orchestration import recovery_delegation
+
+    try:
+        while True:
+            try:
+                await asyncio.to_thread(tick)
+            except Exception:
+                # A later tick reconciles the same durable identity. It never
+                # creates a new attempt merely because this observation failed.
+                logger.exception("factory reconciliation failed")
+            # Remote recovery must not delay ordinary task reconciliation.
+            # Its own durable claim admits at most one exact owner call.
+            recovery_delegation.launch_tick()
+            _last_loop_progress = _watchdog_clock()
+            await asyncio.sleep(TICK_SECONDS)
+    finally:
+        await recovery_delegation.stop()
 
 
 def start_loop() -> list[asyncio.Task]:

@@ -40,24 +40,20 @@ def containers(docs):
     }
 
 
-def test_default_flags_have_no_anonymous_route_or_invitation_secret():
+def test_default_flags_provision_no_invitation_secret():
     docs = documents(render())
-    assert not any(d["metadata"]["name"].endswith("grimoire-invitation") for d in docs)
     envs = containers(docs)
     for name in ("backend", "frontend"):
-        assert envs[name]["GRIMOIRE_INVITATION_LINKS_ENABLED"]["value"] == "false"
+        assert "GRIMOIRE_INVITATION_LINKS_ENABLED" not in envs[name]
         assert "GRIMOIRE_INVITATION_API_TOKEN" not in envs[name]
     assert envs["backend"]["GRIMOIRE_INVITATION_ENROLLMENT_ENABLED"]["value"] == "false"
 
 
-def test_only_exact_landing_is_anonymous_and_existing_policy_unchanged():
-    baseline = documents(render())
-    enabled = documents(render("grimoire.invitationLinks.enabled=true"))
-    policies = lambda docs: [d for d in docs if d["kind"] == "SecurityPolicy"]
-    assert policies(enabled) == policies(baseline)
+def test_only_exact_landing_is_anonymous():
+    docs = documents(render())
     route = next(
         d
-        for d in enabled
+        for d in docs
         if d["kind"] == "HTTPRoute"
         and d["metadata"]["name"].endswith("grimoire-invitation")
     )
@@ -68,7 +64,7 @@ def test_only_exact_landing_is_anonymous_and_existing_policy_unchanged():
     assert any(
         d["kind"] == "BackendTrafficPolicy"
         and d["metadata"]["name"] == route["metadata"]["name"]
-        for d in enabled
+        for d in docs
     )
 
 
@@ -77,11 +73,6 @@ def test_only_exact_landing_is_anonymous_and_existing_policy_unchanged():
     [
         ("grimoire.invitationLinks.enrollmentEnabled=true",),
         (
-            "grimoire.invitationLinks.enabled=true",
-            "grimoire.invitationLinks.enrollmentEnabled=true",
-        ),
-        (
-            "grimoire.invitationLinks.enabled=true",
             "grimoire.invitationLinks.enrollmentEnabled=true",
             "grimoire.invitationLinks.existingSecretName=reviewed-secret",
         ),
@@ -93,7 +84,6 @@ def test_enrollment_requires_explicit_existing_secret_and_flow(settings):
 
 def test_enrollment_secret_only_referenced_in_backend_and_no_secret_provisioned():
     settings = (
-        "grimoire.invitationLinks.enabled=true",
         "grimoire.invitationLinks.enrollmentEnabled=true",
         "grimoire.invitationLinks.existingSecretName=reviewed-secret",
         "grimoire.invitationLinks.flowID=22222222-2222-4222-8222-222222222222",

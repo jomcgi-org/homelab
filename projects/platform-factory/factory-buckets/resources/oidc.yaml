@@ -1,0 +1,38 @@
+# itsaplan's OIDC client secret (projects/factory/chart, itsaplan.oidc).
+# authentik-secret-init (projects/platform-factory/authentik/resources)
+# generates it and copies it here under key client-secret; this Role lets it
+# get and update only this name. Declared here rather than in the factory
+# chart so it exists, and is filled, whether or not the chart enables itsaplan.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-itsaplan-oidc
+  namespace: factory
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: authentik-secret-init
+  namespace: factory
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [factory-itsaplan-oidc]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: authentik-secret-init
+  namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: authentik-secret-init
+subjects:
+  - kind: ServiceAccount
+    name: authentik-secret-init
+    namespace: authentik

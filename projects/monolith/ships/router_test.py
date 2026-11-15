@@ -1,20 +1,19 @@
 """Unit tests for ships/router.py: /api/ships/snapshot and /track/{mmsi}.
 
-Uses an in-memory SQLite DB seeded with real rows and a minimal FastAPI app
-that mounts only the ships router, mirroring the schema-stripping +
-``app.dependency_overrides[get_session]`` pattern in
-``knowledge/note_review_endpoints_test.py`` and ``ships/store_test.py``.
+Uses a file-backed SQLite DB seeded with real rows and a minimal FastAPI app
+that mounts only the ships router.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import fastapi.routing
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
+from sqlalchemy import event
+from sqlmodel import SQLModel, Session, create_engine
 
 from core.db import get_session
 from ships.models import (
@@ -30,27 +29,27 @@ T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'ships.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+    ).execution_options(schema_translate_map={"ships": None})
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                Vessel,
+                Position,
+                LatestPosition,
+                HeatCell,
+                HeatCellHistorical,
+            )
+        ],
     )
-    # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
-    # SQLModel.metadata.create_all() lands every table in the default schema.
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
 
 
 @pytest.fixture(name="client")
@@ -143,6 +142,149 @@ class TestSnapshot:
         assert r.status_code == 200
         assert r.json() == {"count": 0, "vessels": []}
 
+    def test_exact_wire_body_preserves_nulls_zeroes_and_name_fallback(
+        self, client, session
+    ):
+        session.add(
+            Vessel(
+                mmsi="316001234",
+                name="ÉTOILE",
+                ship_type=0,
+                destination="",
+                eta=T0 + timedelta(hours=5),
+                imo="unused",
+                dimension_a=99,
+            )
+        )
+        session.add(
+            LatestPosition(
+                mmsi="316001234",
+                lat=0.0,
+                lon=-123.0,
+                speed=0.0,
+                course=0.0,
+                heading=0,
+                nav_status=0,
+                ship_name="",
+                recorded_at=T0,
+                updated_at=T0,
+            )
+        )
+        session.commit()
+
+        r = client.get("/api/ships/snapshot")
+        assert (
+            r.content
+            == (
+                '{"count":1,"vessels":[{"mmsi":"316001234","lat":0.0,"lon":-123.0,'
+                '"speed":0.0,"course":0.0,"heading":0,"nav_status":0,'
+                '"ship_name":"ÉTOILE","recorded_at":"2026-06-10T12:00:00+00:00",'
+                '"first_seen_at_location":null,"updated_at":"2026-06-10T12:00:00+00:00",'
+                '"name":"ÉTOILE","ship_type":0,"destination":"",'
+                '"eta":"2026-06-10T17:00:00+00:00"}]}'
+            ).encode()
+        )
+        assert r.headers["content-type"] == "application/json"
+        assert int(r.headers["content-length"]) == len(r.content)
+        assert r.headers["etag"] == '"2026-06-10T12:00:00+00:00-1"'
+
+    @pytest.mark.parametrize("ship_name", [None, "", "SOLO"])
+    def test_keeps_positions_without_vessel_metadata(self, client, session, ship_name):
+        session.add(
+            LatestPosition(
+                mmsi="999001234",
+                lat=49.0,
+                lon=-123.0,
+                ship_name=ship_name,
+                recorded_at=T0,
+                updated_at=T0,
+            )
+        )
+        session.commit()
+        r = client.get("/api/ships/snapshot")
+        assert r.status_code == 200
+        assert r.json() == {
+            "count": 1,
+            "vessels": [
+                {
+                    "mmsi": "999001234",
+                    "lat": 49.0,
+                    "lon": -123.0,
+                    "speed": None,
+                    "course": None,
+                    "heading": None,
+                    "nav_status": None,
+                    "ship_name": ship_name or None,
+                    "recorded_at": T0.isoformat(),
+                    "first_seen_at_location": None,
+                    "updated_at": T0.isoformat(),
+                    "name": None,
+                    "ship_type": None,
+                    "destination": None,
+                    "eta": None,
+                }
+            ],
+        }
+
+    def test_snapshot_does_not_hydrate_fleet_models(self, client, session):
+        _seed_snapshot(session)
+        session.expunge_all()
+        loaded = []
+
+        def on_load(instance, _context):
+            loaded.append(type(instance).__name__)
+
+        for model in (LatestPosition, Vessel):
+            event.listen(model, "load", on_load)
+        try:
+            assert client.get("/api/ships/snapshot").json()["count"] == 2
+        finally:
+            for model in (LatestPosition, Vessel):
+                event.remove(model, "load", on_load)
+        assert loaded == []
+
+    def test_snapshot_avoids_recursive_json_copy(self, client, session, monkeypatch):
+        _seed_snapshot(session)
+
+        def unexpected_copy(*_args, **_kwargs):
+            raise AssertionError("snapshot primitives must not be recursively copied")
+
+        monkeypatch.setattr(fastapi.routing, "jsonable_encoder", unexpected_copy)
+        assert client.get("/api/ships/snapshot").json()["count"] == 2
+
+    def test_snapshot_reads_updates_and_removals_without_changing_cache_policy(
+        self, client, session
+    ):
+        _seed_snapshot(session)
+        first = client.get("/api/ships/snapshot")
+        pos = session.get(LatestPosition, "316001234")
+        pos.lat = 50.0
+        pos.updated_at = T0 + timedelta(hours=1)
+        session.commit()
+        updated = client.get(
+            "/api/ships/snapshot", headers={"If-None-Match": first.headers["etag"]}
+        )
+        assert updated.status_code == 200
+        assert updated.headers["etag"] != first.headers["etag"]
+        assert {v["mmsi"]: v for v in updated.json()["vessels"]}["316001234"][
+            "lat"
+        ] == 50.0
+        session.delete(session.get(LatestPosition, "316005678"))
+        session.commit()
+        removed = client.get(
+            "/api/ships/snapshot", headers={"If-None-Match": updated.headers["etag"]}
+        )
+        assert removed.status_code == 200
+        assert removed.json()["count"] == 1
+        assert removed.headers["etag"] != updated.headers["etag"]
+        assert removed.headers["cache-control"] == first.headers["cache-control"]
+        unchanged = client.get(
+            "/api/ships/snapshot", headers={"If-None-Match": removed.headers["etag"]}
+        )
+        assert unchanged.status_code == 304
+        assert unchanged.content == b""
+        assert unchanged.headers["cache-control"] == first.headers["cache-control"]
+
 
 def _seed_track(session: Session) -> None:
     # Seed relative to now: the /track since= filter is computed from
@@ -229,6 +371,74 @@ def _seed_heat(session: Session) -> None:
 
 
 class TestHeat:
+    def test_exact_json_and_cache_headers(self, client, session):
+        session.add_all(
+            [
+                HeatCell(lat_bin=9856, lon_bin=-16416, count=22),
+                HeatCellHistorical(lat_bin=9856, lon_bin=-16416, count=100),
+                HeatCellHistorical(lat_bin=9520, lon_bin=-16312, count=7),
+            ]
+        )
+        session.commit()
+
+        r = client.get("/api/ships/heat")
+        assert r.status_code == 200
+        assert r.content == (
+            b'{"step_lat":0.005,"step_lon":0.0075,"count":2,'
+            b'"cells":[[9856,-16416,122],[9520,-16312,7]],'
+            b'"stops":[1,3,7,18,47,122]}'
+        )
+        assert r.headers["content-type"] == "application/json"
+        assert int(r.headers["content-length"]) == len(r.content)
+        assert r.headers["cache-control"] == (
+            "public, max-age=0, s-maxage=300, "
+            "stale-while-revalidate=3600, stale-if-error=86400"
+        )
+
+    def test_reads_only_cell_scalars(self, client, session, monkeypatch):
+        _seed_heat(session)
+        statements = []
+        execute = session.exec
+
+        def record(statement, *args, **kwargs):
+            statements.append(statement)
+            return execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "exec", record)
+        assert client.get("/api/ships/heat").status_code == 200
+        assert len(statements) == 2
+        assert [
+            [(column.table.name, column.name) for column in statement.selected_columns]
+            for statement in statements
+        ] == [
+            [("heat_cells", name) for name in ("lat_bin", "lon_bin", "count")],
+            [
+                ("heat_cells_historical", name)
+                for name in ("lat_bin", "lon_bin", "count")
+            ],
+        ]
+
+    def test_renders_json_without_a_second_recursive_copy(
+        self, client, session, monkeypatch
+    ):
+        _seed_heat(session)
+
+        def unexpected_copy(*args, **kwargs):
+            raise AssertionError("heat JSON primitives must not be recursively copied")
+
+        monkeypatch.setattr(fastapi.routing, "jsonable_encoder", unexpected_copy)
+        assert client.get("/api/ships/heat").json()["count"] == 2
+
+    def test_reads_new_rollup_on_each_request(self, client, session):
+        cell = HeatCellHistorical(lat_bin=-100, lon_bin=200, count=7)
+        session.add(cell)
+        session.commit()
+        assert client.get("/api/ships/heat").json()["cells"] == [[-100, 200, 7]]
+
+        cell.count = 9
+        session.commit()
+        assert client.get("/api/ships/heat").json()["cells"] == [[-100, 200, 9]]
+
     def test_returns_cells_and_steps(self, client, session):
         _seed_heat(session)
         r = client.get("/api/ships/heat")

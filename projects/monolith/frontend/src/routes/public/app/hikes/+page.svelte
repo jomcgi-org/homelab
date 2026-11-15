@@ -1,5 +1,4 @@
 <script>
-  import { browser } from "$app/environment";
   import HikesApp from "./HikesApp.svelte";
 
   let { data } = $props();
@@ -19,9 +18,7 @@
   the weather allows.
 </p>
 
-{#if browser}
-  <HikesApp {data} />
-{/if}
+<HikesApp {data} />
 
 <style>
   .sr-only {

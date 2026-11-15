@@ -31,6 +31,21 @@ def reconcile(task, policy, nodes, runs, expected_version):
     start = owned["start"]
     if start is None:
         return  # Missing intent is a refusal fence, never generic planner work.
+    if "inspection_contract" in start:
+        import httpx
+
+        try:
+            if not refill.prepare_inspection(task, start):
+                return
+        except (ValueError, httpx.HTTPError) as exc:
+            if refill.fail_inspection_preparation(task, start, type(exc).__name__):
+                refill.settle(
+                    start["run_id"],
+                    success=False,
+                    new_issues=0,
+                    summary=f"Inspection preparation failed: {type(exc).__name__}",
+                )
+            return
     completed = {run["node_key"]: run for run in runs if run["status"] == "succeeded"}
     collector = completed.get(refill.NODE)
     reviewing = start.get("review_contract") is not None
@@ -41,6 +56,21 @@ def reconcile(task, policy, nodes, runs, expected_version):
             producer.collection(
                 owned["run_id"], value, collector_run_id=collector.get("id")
             )
+            if "inspection_contract" in start and value["status"] == "blocked":
+                result = controls.finish_task(
+                    task["id"],
+                    "failed",
+                    refill.ACTOR,
+                    evidence={"reason": "refill_collection_blocked"},
+                )
+                if result["ok"]:
+                    refill.settle(
+                        start["run_id"],
+                        success=False,
+                        new_issues=0,
+                        summary=value["summary"],
+                    )
+                return
             if reviewing:
                 key = refill.REVIEW_NODE
                 if key in completed:
@@ -53,7 +83,9 @@ def reconcile(task, policy, nodes, runs, expected_version):
                         "succeeded" if outcome["success"] else "failed",
                         refill.ACTOR,
                         evidence={
-                            "reason": "reviewed_refill_published"
+                            "reason": "refill_output_blocked"
+                            if not outcome["success"]
+                            else "reviewed_refill_published"
                             if reviewing
                             else "refill_published"
                         },
@@ -66,6 +98,16 @@ def reconcile(task, policy, nodes, runs, expected_version):
             and run["status"] in conductor.graph.TERMINAL_RUN_STATUSES
             for run in runs
         ):
+            node = next((n for n in nodes if n["node_key"] == key), None)
+            if (
+                node
+                and conductor.graph.attempts_spent(runs, key) < node["max_attempts"]
+            ):
+                return
+            from factory.orchestration.backlog_refill_repair import failed
+
+            if failed(task, key):
+                return
             controls.finish_task(
                 task["id"],
                 "failed",
@@ -166,7 +208,7 @@ def tick(policy):
                     "summary": f"Receipt settled {status}",
                     "inconclusive": status == "cancelled"
                     or paused
-                    or start["policy_digest"] != refill.digest(policy),
+                    or start["policy_digest"] != controls.digest(policy),
                 }
             ),
         )

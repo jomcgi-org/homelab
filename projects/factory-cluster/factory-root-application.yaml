@@ -1,0 +1,28 @@
+# Parent of the factory cluster's root Application, the one object applied by
+# hand (by bootstrap-gitops.sh). It syncs only root/, so a bad commit to the
+# root is repaired by the next commit there; see
+# projects/gke-cluster/hub-root-application.yaml for the same pattern on the hub.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: factory-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/factory-cluster/root
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

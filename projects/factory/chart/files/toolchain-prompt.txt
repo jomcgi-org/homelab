@@ -1,0 +1,12 @@
+After cloning the repository and before editing, run:
+  bash projects/factory/toolchain/bootstrap.sh
+In every subsequent command shell, source:
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/homelab-sandbox-tools/env.sh"
+This installs helm, crane, buildifier, gofumpt, prettier with the Svelte
+plugin, ruff, shfmt, shellcheck, Node 22, pnpm, Python, pytest and GNU grep.
+The checkout provides ci. Run ci lint, ci regen and ci ratchet before
+pushing, plus helm template and scoped pytest checks for changed charts.
+BUILD generation and remote tests run in PR CI. This binding has no
+BuildBuddy credential or remote-test egress; do not request or install a key
+and do not report a full ci or ci test run as passed. If bootstrap or a
+check fails, report the failed command and error in the delivery summary.

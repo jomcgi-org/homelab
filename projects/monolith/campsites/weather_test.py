@@ -15,12 +15,9 @@ Formula recap (from weather.py):
 
 import datetime
 
-import pytest
-
 from campsites.weather import (
     GOOD_PRECIP_MAX_MM,
     GOOD_SCORE_MIN,
-    WxDay,
     is_good_day,
     parse_forecast,
     sunny_score,

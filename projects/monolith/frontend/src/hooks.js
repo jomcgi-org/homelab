@@ -21,6 +21,14 @@ const DOMAIN_PREFIX_MAP = {
 const APEX_HOST = "jomcgi.dev";
 const APEX_PREFIX = "/public";
 
+// Shotter navigates Chromium to this exact public Service hostname to avoid
+// .dev HSTS when using its plaintext in-cluster hop. Both SSR and subsequent
+// browser navigation must resolve that origin to the same public route tree.
+// Keep this aligned with the baked shotter-egress.json mapping; other service
+// names, including the private frontend, are not public aliases.
+const PUBLIC_SERVICE_HOST =
+  "monolith-public-frontend.monolith-public.svc.cluster.local"; // ratchet-allow: svc-url (exact inbound Host alias for the baked Shotter mapping)
+
 // Local previews (adapter-node build or vite dev on a workstation) serve the
 // public tier: without this every path 404s locally because nothing maps the
 // un-prefixed browser path into /public. Prod never serves on these hosts.
@@ -51,7 +59,9 @@ export function reroute({ url }) {
     }
   }
   if (
-    (url.hostname === APEX_HOST || LOCAL_HOSTS.has(url.hostname)) &&
+    (url.hostname === APEX_HOST ||
+      url.hostname === PUBLIC_SERVICE_HOST ||
+      LOCAL_HOSTS.has(url.hostname)) &&
     !url.pathname.startsWith(`${APEX_PREFIX}/`)
   ) {
     return `${APEX_PREFIX}${url.pathname}`;

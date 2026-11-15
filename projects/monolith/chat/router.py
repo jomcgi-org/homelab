@@ -39,6 +39,45 @@ def _history_to_messages(history: list[dict]) -> list[ModelMessage]:
     return messages
 
 
+def _agent_sse_response(
+    agent, body, deps, emitter: SSEEmitter, *, usage_label: str, failure_log: str
+) -> SSEStreamingResponse:
+    """Stream an agent run over SSE: text chunks, then done or error."""
+    messages = _history_to_messages(body.history)
+
+    async def produce():
+        try:
+            async with agent.run_stream(
+                body.message,
+                message_history=messages if messages else None,
+                deps=deps,
+            ) as stream:
+                async for text in stream.stream_text(delta=True):
+                    emitter.emit("text_chunk", {"text": text})
+                try:
+                    usage = stream.usage
+                    shared.inference.record_usage(
+                        {
+                            "prompt_tokens": usage.input_tokens,
+                            "completion_tokens": usage.output_tokens,
+                            "total_tokens": usage.total_tokens,
+                        },
+                        shared.inference.META_SPARK_MODEL,
+                        usage_label,
+                    )
+                except Exception:
+                    pass
+
+            emitter.emit("done", {})
+        except Exception as e:
+            logger.exception(failure_log)
+            emitter.emit("error", {"message": str(e)})
+        finally:
+            emitter.close()
+
+    return SSEStreamingResponse(emitter, produce)
+
+
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
@@ -67,40 +106,14 @@ async def explore(body: ExploreRequest, request: Request):
         embed_client=EmbeddingClient(),
         emitter=emitter,
     )
-
-    messages = _history_to_messages(body.history)
-
-    async def produce():
-        try:
-            async with agent.run_stream(
-                body.message,
-                message_history=messages if messages else None,
-                deps=deps,
-            ) as stream:
-                async for text in stream.stream_text(delta=True):
-                    emitter.emit("text_chunk", {"text": text})
-                try:
-                    usage = stream.usage
-                    shared.inference.record_usage(
-                        {
-                            "prompt_tokens": usage.input_tokens,
-                            "completion_tokens": usage.output_tokens,
-                            "total_tokens": usage.total_tokens,
-                        },
-                        shared.inference.META_SPARK_MODEL,
-                        "explorer",
-                    )
-                except Exception:
-                    pass
-
-            emitter.emit("done", {})
-        except Exception as e:
-            logger.exception("Explorer stream failed")
-            emitter.emit("error", {"message": str(e)})
-        finally:
-            emitter.close()
-
-    return SSEStreamingResponse(emitter, produce)
+    return _agent_sse_response(
+        agent,
+        body,
+        deps,
+        emitter,
+        usage_label="explorer",
+        failure_log="Explorer stream failed",
+    )
 
 
 class ClusterChatRequest(BaseModel):
@@ -124,37 +137,11 @@ async def cluster_chat(body: ClusterChatRequest, request: Request):
     agent = get_cluster_agent()
 
     deps = ClusterDeps(emitter=emitter)
-
-    messages = _history_to_messages(body.history)
-
-    async def produce():
-        try:
-            async with agent.run_stream(
-                body.message,
-                message_history=messages if messages else None,
-                deps=deps,
-            ) as stream:
-                async for text in stream.stream_text(delta=True):
-                    emitter.emit("text_chunk", {"text": text})
-                try:
-                    usage = stream.usage
-                    shared.inference.record_usage(
-                        {
-                            "prompt_tokens": usage.input_tokens,
-                            "completion_tokens": usage.output_tokens,
-                            "total_tokens": usage.total_tokens,
-                        },
-                        shared.inference.META_SPARK_MODEL,
-                        "cluster_agent",
-                    )
-                except Exception:
-                    pass
-
-            emitter.emit("done", {})
-        except Exception as e:
-            logger.exception("Cluster chat stream failed")
-            emitter.emit("error", {"message": str(e)})
-        finally:
-            emitter.close()
-
-    return SSEStreamingResponse(emitter, produce)
+    return _agent_sse_response(
+        agent,
+        body,
+        deps,
+        emitter,
+        usage_label="cluster_agent",
+        failure_log="Cluster chat stream failed",
+    )

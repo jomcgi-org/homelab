@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import typer
 
-from tools.cli.scheduler_cmd import _request
+from tools.cli.api import request as _request
 
 REPO = "jomcgi-org/homelab"
 POLL_SECS = 30

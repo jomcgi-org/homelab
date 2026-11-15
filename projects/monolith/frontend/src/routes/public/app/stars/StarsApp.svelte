@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
   import StarsMap from "$lib/public/components/stars/StarsMap.svelte";
@@ -29,7 +29,7 @@
   // night-chip set, and StarsMap dropping hours that elapse on a long-open page
   // (see the tick in onMount). Declared up top so the derivations below can read
   // it.
-  let nowMs = $state(Date.now());
+  let nowMs = $state(untrack(() => data.renderedAt ?? Date.now()));
 
   let sites = $derived(data.snapshot?.sites ?? []);
   let count = $derived(data.snapshot?.count ?? 0);
@@ -133,7 +133,10 @@
   // picker then filters this in memory (see mapSites below), so switching months
   // is instant and never hits the network. One payload, one cache entry, instead
   // of a per-month request that re-queried (and OOM-killed) the backend each time.
-  let historyAllSites = $state(null); // [{id,name,lat,lon,clear:[12],dark:[12]}]
+  // The fetched snapshot is replaced as a whole and never mutated. Keep its
+  // thousands of rows and month arrays plain: deep reactive proxies would be
+  // created on the first mode switch as historyView reads every monthly value.
+  let historyAllSites = $state.raw(null); // [{id,name,lat,lon,clear:[12],dark:[12]}]
   let historyLoading = $state(false); // template-facing only
   let historyError = $state(false);
   // Plain (non-reactive) guards. Keeping them out of $state means the loadHistory
@@ -224,14 +227,20 @@
 
   let agoLabel = $derived(formatAgo(data.snapshot?.fetched_at, nowMs));
 
+  let historyWarmup;
+  let idleWarmup = false;
+  function onMapPaint() {
+    if (historyLoaded || historyWarmup !== undefined || mode !== "live") return;
+    // Optional history must wait until the live source has actually painted.
+    // A deliberate switch to Historical still loads it immediately.
+    idleWarmup = typeof window.requestIdleCallback === "function";
+    historyWarmup = idleWarmup
+      ? window.requestIdleCallback(loadHistory, { timeout: 2000 })
+      : window.setTimeout(loadHistory, 1000);
+  }
+
   onMount(() => {
-    // Warm the tiny historical visual payload after the live page has mounted.
-    // Historical mode then swaps instantly for most visitors without putting
-    // its request on the critical path.
-    const warmHistory = () => loadHistory();
-    const idle = window.requestIdleCallback
-      ? window.requestIdleCallback(warmHistory, { timeout: 2000 })
-      : window.setTimeout(warmHistory, 1000);
+    nowMs = Date.now();
     // Live updates: re-run the SSR load every 30 min (the refresh job runs
     // 3-hourly). Same pattern as /app/hikes.
     const refresh = setInterval(() => {
@@ -243,10 +252,9 @@
     // sub-minute resolution.
     const clockTick = setInterval(() => (nowMs = Date.now()), 5 * 60_000);
     return () => {
-      if (window.cancelIdleCallback && typeof idle === "number") {
-        window.cancelIdleCallback(idle);
-      } else {
-        window.clearTimeout(idle);
+      if (historyWarmup !== undefined) {
+        if (idleWarmup) window.cancelIdleCallback(historyWarmup);
+        else window.clearTimeout(historyWarmup);
       }
       clearInterval(refresh);
       clearInterval(clockTick);
@@ -441,6 +449,9 @@
       </aside>
       <div class="content edition map-edition">
         <StarsMap
+          {onMapPaint}
+          dataReady={mode !== "historical" || histReady}
+          snapshotSites={sites}
           sites={mapSites}
           {activeNights}
           {nowMs}

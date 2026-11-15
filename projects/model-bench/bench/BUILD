@@ -44,6 +44,7 @@ py_library(
 py_test(
     name = "index_test",
     srcs = ["index_test.py"],
+    data = ["//projects/model-bench:index_config"],  # keep
     imports = [".."],
     deps = [
         ":bench",

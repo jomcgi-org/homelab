@@ -9,7 +9,7 @@
   "semanticCommitScope": "deps",
   "dependencyDashboard": true,
   "automerge": false,
-  "platformAutomerge": false,
+  "platformAutomerge": true,
   "dependencyDashboardTitle": "Dependency updates and lock maintenance",
   "labels": ["dependencies"],
   "timezone": "America/Vancouver",
@@ -198,26 +198,24 @@
       "enabled": false
     },
     {
-      "description": "Stage all ordinary update types, including majors; enable auto-merge only through #7186 after independent evidence enforcement and CI.",
+      "description": "Request native auto-merge for non-major updates through required pr-checks and factory review.",
       "matchUpdateTypes": [
-        "major",
         "minor",
         "patch",
         "pin",
         "digest",
         "pinDigest",
-        "lockFileMaintenance",
-        "replacement",
-        "bump",
-        "rollback"
+        "lockFileMaintenance"
       ],
-      "automerge": false,
-      "platformAutomerge": false,
+      "automerge": true,
+      "platformAutomerge": true,
       "automergeType": "pr"
     },
     {
-      "description": "Keep major upgrades separate and visible without requiring a routine human approval.",
+      "description": "Keep major upgrades separate and require manual merge.",
       "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "platformAutomerge": false,
       "addLabels": ["major-upgrade"]
     },
     {

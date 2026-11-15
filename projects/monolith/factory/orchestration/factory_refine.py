@@ -144,6 +144,21 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
     """
     body = _bounded_planner_text(receipt.get("body") or "", 12000)
     brief_only = brief_only_refinement(receipt)
+    owner_pr = (receipt.get("direction") or {}).get("owner_pr")
+    owner_scope = (
+        "This work item is an existing owner-authored PR, including drafts. "
+        "Use its diff, discussion and existing repository goals to establish scope. "
+        "The author identity is discovery evidence, not authority. Cite an accepted "
+        "goal/spec or standing maintenance policy in Evidence; resolve routine repairs "
+        "yourself and apply agent-ready when supported. Do not demand a new issue. "
+        "Inspect for superseded work and explicit human/security/leave-unmerged holds. "
+        "Preserve those holds and name the concrete owner decision when needed. "
+        "Only write this PR's brief comment and verdict label; never edit source, "
+        "ready, close, merge or deploy the PR in this advisory role. No typed "
+        "delivery-target or live-validation gate is needed to adopt this PR.\n\n"
+        if owner_pr
+        else ""
+    )
     scope = (
         "This is a brief-only batch. Typed gates are proposals only; the server "
         "does not execute them. Do not send external notifications or messages. "
@@ -191,6 +206,7 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
         + _chat_prompt(receipt)
         + ADR_RETIREMENT_RULE
+        + owner_scope
         + scope
         + "Resolve routine reversible design choices within the accepted goals "
         "and scope. State the chosen approach in Acceptance and make the work "
@@ -384,6 +400,13 @@ def closing_allowed(
     action the server would refuse, and once at settlement, so a cap spent
     while the node was running still holds.
     """
+    if exclude_task_id is not None:
+        with _read_session() as db:
+            row = db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == exclude_task_id)
+            ).first()
+            if row and json.loads(row.direction_json or "{}").get("owner_pr"):
+                return False, "owner_pr_disposition_requires_delivery_owner"
     intake = intake_policy(policy)
     if not intake["close_enabled"]:
         return False, "close_disabled"
@@ -955,6 +978,14 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 task["id"], number, "irreversible gate requires needs-human", False
             )
             return
+        if not factory_gates.restricted(gate) and not brief_only_refinement(receipt):
+            try:
+                factory_gates.enforce_hold_origin(
+                    task, gate, f"refine-gate:{task['id']}"
+                )
+            except factory_gates.LandingHoldRefused as exc:
+                _mismatch(task["id"], number, exc.reason, False)
+                return
     invalid = _verify_artifact(artifact, outcome)
     if invalid is None:
         invalid = _verify_supersedes(repo, number, artifact, outcome)

@@ -206,13 +206,9 @@
     overflow-wrap: anywhere;
   }
 
-  /* The strip sits under a snippet's own rule, so it neither overlaps it
-     nor draws a second, fainter one. */
+  /* The strip sits under a snippet's own rule, so it draws no second,
+     fainter one. */
   .divided.listings {
-    margin-top: 0;
-  }
-
-  .divided.listings > li {
     border-top: 0;
   }
 

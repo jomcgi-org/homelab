@@ -12,7 +12,6 @@ import re
 
 from sqlmodel import Session, select
 
-from core.env import flag
 from factory.execution.api import (
     inspect_factory_attempt_stop,
     fence_factory_attempt_stop,
@@ -24,10 +23,6 @@ from factory.orchestration.models import SwarmNodeRun
 REQUEST_ACTION = "attempt_stop_requested"
 CANCEL_ACTION = "attempt_stop_cancel"
 MAX_CANCEL_REQUESTS = 2
-
-
-def enabled() -> bool:
-    return flag("FACTORY_STOP_SUPERVISION_ENABLED")
 
 
 def _requests(db: Session, task_id: str) -> list[dict]:
@@ -140,8 +135,6 @@ def request_attempt_stop(
     expected_stop_precondition: dict | None = None,
 ) -> dict:
     """Persist authority and UNKNOWN atomically; no external cancellation here."""
-    if not enabled():
-        raise ValueError("stop_supervision_disabled")
     request = {
         "task_id": controls._text(task_id, "task_id"),
         "node_key": controls._text(node_key, "node_key"),
@@ -307,8 +300,6 @@ def process_attempt_stop(
     The original workflow may never have returned its session ID. The durable
     request supplies that same identity without recreating or replaying work.
     """
-    if not enabled():
-        return False, None
     with controls._locked_session() as (db, _control):
         records = [
             row

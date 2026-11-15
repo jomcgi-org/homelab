@@ -1,0 +1,42 @@
+# Grafana's OIDC client secret. authentik-secret-init
+# (projects/platform-factory/authentik/resources) generates it and copies it
+# here under key client-secret; this Role lets it get and update only this
+# name. Kept when the Application goes, since authentik-secret-init fails its
+# sync without them.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-oidc
+  namespace: grafana
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: authentik-secret-init
+  namespace: grafana
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [grafana-oidc]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: authentik-secret-init
+  namespace: grafana
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: authentik-secret-init
+subjects:
+  - kind: ServiceAccount
+    name: authentik-secret-init
+    namespace: authentik

@@ -1,0 +1,99 @@
+{{- /*
+The authenticated edge: one Envoy proxy Deployment behind a ClusterIP Service.
+The cfgate tunnel route (tunnel-route.yaml) is the only way traffic reaches it
+from outside the cluster.
+
+Routes attach only from the namespaces listed in routeNamespaces. The
+gateway-wide SecurityPolicy (security-policy.yaml) signs every one of them in
+through Authentik, and only `edge` may create the policy kinds that could
+override it (projects/platform-factory/edge-admission/).
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: edge
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: edge
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: edge
+  namespace: {{ .Release.Namespace }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        name: {{ .Values.proxy.serviceName }}
+        type: ClusterIP
+      envoyDeployment:
+        replicas: {{ .Values.proxy.replicas }}
+        pod:
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  gateway.envoyproxy.io/owning-gateway-name: edge
+                  gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
+        container:
+          resources: {{- toYaml .Values.proxy.resources | nindent 12 }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: {{ .Release.Namespace }}
+spec:
+  gatewayClassName: edge
+  listeners:
+    # Cloudflare terminates TLS; cloudflared forwards plain HTTP.
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        # group is the schema default, stated so ArgoCD's diff owns it.
+        kinds:
+          - group: gateway.networking.k8s.io
+            kind: HTTPRoute
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: {{- toYaml .Values.routeNamespaces | nindent 18 }}
+---
+# Client IP for Envoy is Cloudflare's CF-Connecting-IP, which Cloudflare sets
+# on every request it proxies; the tunnel is the only way in.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: edge-client-ip
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  clientIPDetection:
+    customHeader:
+      name: CF-Connecting-IP

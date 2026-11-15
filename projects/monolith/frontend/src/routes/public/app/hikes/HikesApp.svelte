@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/stores";
   import HikesMap from "$lib/public/components/hikes/HikesMap.svelte";
@@ -132,7 +132,7 @@
 
   // A coarse "current time" signal so the day strip and "viable today" count
   // roll over UK midnight on a long-open page (see the tick in onMount).
-  let nowMs = $state(Date.now());
+  let nowMs = $state(untrack(() => data.renderedAt ?? Date.now()));
 
   function numOr(value, fallback) {
     const n = parseFloat(value);
@@ -274,6 +274,7 @@
   });
 
   onMount(() => {
+    nowMs = Date.now();
     // If a shared link restored the "my location" sentinel, resolve the device
     // position so the region radius applies (the dropdown shows it as selected,
     // but nearCenter is null until coords arrive).

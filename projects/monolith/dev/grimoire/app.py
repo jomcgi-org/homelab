@@ -2,6 +2,12 @@
 
 This entrypoint is launched explicitly by dev/grimoire/run.py. Production module
 registration never imports it or registers its identity or embedding endpoints.
+
+One origin serves everything, as the friends gateway does in production: the
+built web app and the invitation landing under /grimoire, and the API under
+/api/grimoire. ``/__local/login/{role}`` stands in for the gateway's login: it
+sets the signed ID token in the ``grimoire-id-token`` cookie, which the backend
+accepts because run.py sets GRIMOIRE_BROWSER_ORIGIN to this origin.
 """
 
 import hashlib
@@ -15,10 +21,12 @@ from pathlib import Path
 
 import jwt
 from auth.api import AuthError, auth_error_handler
+from auth.browser_cookie import BROWSER_COOKIE
 from core.db import get_engine
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
+from grimoire import register as register_grimoire
 from grimoire.models import (
     AppUser,
     Campaign,
@@ -29,7 +37,6 @@ from grimoire.models import (
     GameSession,
     PlayerCharacter,
 )
-from grimoire.router import router
 from grimoire.sheets import CharacterSheetV1, derive_sheet
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -243,7 +250,11 @@ def build_app() -> FastAPI:
     public.update(kid="local-playground", alg="RS256", use="sig")
     app = FastAPI(title="Grimoire local playground")
     app.add_exception_handler(AuthError, auth_error_handler)
-    app.include_router(router)
+    # The production registration: the API, the invitation landing and the
+    # web app, in that order. GRIMOIRE_WEB_DIR names the bundle run.py built.
+    if not (Path(os.environ["GRIMOIRE_WEB_DIR"]) / "index.html").is_file():
+        raise RuntimeError("The playground requires the built Grimoire web app")
+    register_grimoire(app)
 
     @app.get("/__local/jwks")
     def jwks():
@@ -294,8 +305,12 @@ def build_app() -> FastAPI:
             algorithm="RS256",
             headers={"kid": "local-playground"},
         )
-        response = RedirectResponse(os.environ["GRIMOIRE_LOCAL_FRONTEND"] + "/grimoire")
-        response.set_cookie("grimoire-id-token", token, httponly=True, samesite="lax")
+        # The gateway's session cookie: host-only, HttpOnly, sent to the app
+        # and the API alike. It is not Secure because this origin is http.
+        response = RedirectResponse("/grimoire", status_code=303)
+        response.set_cookie(
+            BROWSER_COOKIE, token, path="/", httponly=True, samesite="lax"
+        )
         return response
 
     return app

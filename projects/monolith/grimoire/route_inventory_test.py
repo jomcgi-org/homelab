@@ -163,6 +163,9 @@ CASES = {
         denials={"player_a": 409, "player_b": 409, "dm": 403},
     ),
     ("GET", PREFIX + CHARACTER): Case(params={"player_character_id": "$character.id"}),
+    ("GET", PREFIX + CHARACTER + "/options"): Case(
+        params={"player_character_id": "$character.id"}
+    ),
     ("POST", PREFIX + CHARACTER + "/drafts"): Case(
         params={"player_character_id": "$character.id"},
         body=SHEET_BODY,
@@ -239,6 +242,7 @@ CASES = {
     ("PATCH", PREFIX + "/sessions/{session_id}"): Case(
         params={"session_id": "$campaign_session.id"},
         body={"status": "paused"},
+        state="play",
     ),
     ("POST", PREFIX + "/sessions/{session_id}/events"): Case(
         params={"session_id": "$campaign_session.id"},
@@ -318,9 +322,7 @@ CAPABILITY_CASES = {
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
-    monkeypatch.setenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "true")
     monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     with sqlite_harness(tmp_path / "inventory.db") as h:
         monkeypatch.setattr(search, "knn_embeddings", fake_knn)
@@ -374,7 +376,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 64  # Campaign routes, including eight transcript routes.
+    assert len(enumerated) == 65  # Campaign routes, including eight transcript routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -835,35 +837,6 @@ def test_capability_routes_have_explicit_positive_controls(harness, monkeypatch)
         assert h.snapshot() != before
         assert row.enrollment_id == provider_id
         assert row.status == "pending"
-
-
-@pytest.mark.parametrize(
-    "method,path",
-    [*CAPABILITY_CASES, *(key for key in CASES if "/join-links" in key[1])],
-)
-def test_every_join_link_route_fails_closed_when_disabled(
-    harness, monkeypatch, method, path
-):
-    monkeypatch.delenv("GRIMOIRE_INVITATION_LINKS_ENABLED")
-    before = harness.snapshot()
-    with TestClient(harness.app()) as client:
-        for viewer in ROLES:
-            response = client.request(
-                method,
-                path.format(
-                    campaign_id=harness.rows["campaign"].id,
-                    link_id=harness.rows["join_link"].id,
-                ),
-                headers=harness.headers(viewer),
-                json=(
-                    {"email": harness.emails["invitee"]}
-                    if path == PREFIX + "/join-links"
-                    else {"token": secrets.token_urlsafe(32)}
-                ),
-            )
-            assert response.status_code == 503, response.text
-            harness.assert_no_leak(response, viewer)
-            assert harness.snapshot() == before
 
 
 def test_handout_is_audience_scoped_in_search_events_and_image(harness):

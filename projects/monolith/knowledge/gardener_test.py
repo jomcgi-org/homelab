@@ -2,7 +2,7 @@
 
 import pytest
 
-from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
+from knowledge.gardener import MAX_GARDENER_RETRIES, _slugify
 
 
 class TestSlugify:
@@ -20,9 +20,6 @@ class TestSlugify:
 
 
 class TestSurvivingConstants:
-    def test_gardener_version_stamp(self):
-        assert GARDENER_VERSION == "claude-sonnet-4-6@v1"
-
     def test_max_retries_ceiling(self):
         assert MAX_GARDENER_RETRIES == 3
 

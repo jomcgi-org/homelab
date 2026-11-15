@@ -22,14 +22,12 @@ __all__ = ["register", "register_public"]
 
 
 def register(app: FastAPI) -> None:
-    """Register the read artifact router (full monolith)."""
+    """Register the read artifact router (both tiers)."""
     from artifact.router import read_router
+    from artifact.public_assets import router as public_assets_router
 
     app.include_router(read_router)
+    app.include_router(public_assets_router)
 
 
-def register_public(app: FastAPI) -> None:
-    """Register only the read artifact router (public, read-only tier)."""
-    from artifact.router import read_router
-
-    app.include_router(read_router)
+register_public = register

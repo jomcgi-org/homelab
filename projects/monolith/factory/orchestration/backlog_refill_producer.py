@@ -125,7 +125,7 @@ def _allowed(db, control, item):
         or owner.task_paused
         or owner.cancellation_requested
         or owner.generation != policy.get("generation")
-        or detail["policy_digest"] != refill.digest(policy)
+        or detail["policy_digest"] != controls.digest(policy)
         or refill.latest_event(db, "completed", run_id=item["run_id"])
     ):
         return False
@@ -135,7 +135,7 @@ def _allowed(db, control, item):
     task = db.get(SwarmTask, owner.task_id) if owner.task_id else None
     if task is None:
         return False
-    pinned = json.loads(owner.policy_json or "{}")
+    pinned = controls._effective_policy(db, owner)
     deadline = controls._recovery_deadline(db, owner.task_id) or (
         aware(task.created_at) + timedelta(seconds=pinned["task_timeout_seconds"])
     )
@@ -293,6 +293,7 @@ def publish(output, *, allow_new=True):
 def _role_run(db, start, node_key, run_id):
     """Authenticate one completed role against both ledgers and its session."""
     from factory.orchestration.node_workflows import resolve_node_session_id
+    from factory.orchestration.backlog_refill_repair import attempt_allowed
 
     owner = db.get(FactoryReceipt, start["receipt_id"])
     run = db.get(SwarmNodeRun, run_id) if type(run_id) is int else None
@@ -302,7 +303,7 @@ def _role_run(db, start, node_key, run_id):
         or run is None
         or run.task_id != owner.task_id
         or run.node_key != node_key
-        or run.attempt != 1
+        or not attempt_allowed(db, owner, node_key, run.attempt)
         or run.status != "succeeded"
         or run.model != expected["model"]
         or type(run.session_id) is not int
@@ -315,13 +316,20 @@ def _role_run(db, start, node_key, run_id):
         or pin.get("effort") != expected["effort"]
         or pin.get("task_id") != owner.task_id
         or pin.get("node_key") != node_key
-        or pin.get("attempt") != 1
+        or pin.get("attempt") != run.attempt
         or pin.get("read_only") is not True
-        or pin.get("artifact_schema") != refill.schema(node_key)
+        or pin.get("artifact_schema") != refill.role_schema(start, node_key, session=db)
         or pin.get("workflow_id") != run.dispatch_key
         or resolve_node_session_id(pin, session=db) != run.session_id
     ):
         raise ValueError("refill role pin mismatch")
+    if "inspection_contract" in start:
+        source = refill.inspection_source(start, session=db)
+        if (
+            pin.get("branch") != "commit:" + source["sha"]
+            or pin.get("hydration_branch") != "commit:" + source["sha"]
+        ):
+            raise ValueError("refill role source mismatch")
     grant = db.exec(
         select(FactoryStart).where(
             FactoryStart.task_id == owner.task_id,
@@ -344,7 +352,11 @@ def collection(run_id, value, *, collector_run_id=None):
     """Validate the bounded artifact before storing any publication authority."""
     if (
         not isinstance(value, dict)
-        or set(value) != {"summary", "findings"}
+        or set(value)
+        not in (
+            {"summary", "findings"},
+            {"summary", "findings", "status", "source_sha"},
+        )
         or not isinstance(value["summary"], str)
         or not 1 <= len(value["summary"]) <= 60000
         or not isinstance(value["findings"], list)
@@ -383,7 +395,11 @@ def collection(run_id, value, *, collector_run_id=None):
         if reviewed_contract:
             from jsonschema import Draft202012Validator
 
-            if list(Draft202012Validator(refill.COLLECT_SCHEMA).iter_errors(value)):
+            if list(
+                Draft202012Validator(
+                    refill.role_schema(detail, refill.NODE, session=db)
+                ).iter_errors(value)
+            ):
                 raise ValueError("invalid bounded refill collection")
             _run, artifact = _role_run(db, detail, refill.NODE, collector_run_id)
             if artifact != value:
@@ -424,16 +440,27 @@ def review(run_id, reviewer_run_id):
         if (
             value != collected["collection"]
             or collector.session_id == reviewer.session_id
-            or list(Draft202012Validator(refill.REVIEW_SCHEMA).iter_errors(verdict))
-            or verdict["collection_digest"] != refill.digest(value)
+            or list(
+                Draft202012Validator(
+                    refill.role_schema(detail, refill.REVIEW_NODE, session=db)
+                ).iter_errors(verdict)
+            )
+            or verdict["collection_digest"] != controls.digest(value)
             or "\u2014" in json.dumps(verdict, ensure_ascii=False)
             or "<!-- factory-" in json.dumps(verdict)
         ):
             raise ValueError("invalid independent refill review")
+        inspection = "inspection_contract" in detail
+        if inspection and value["status"] != "completed":
+            raise ValueError("blocked refill collection cannot authorize review")
+        blocked = inspection and verdict["status"] == "blocked"
         decisions = {item["key"]: item for item in verdict["decisions"]}
         if (
             len(decisions) != len(verdict["decisions"])
-            or set(decisions) != {item["key"] for item in value["findings"]}
+            or (
+                not blocked
+                and set(decisions) != {item["key"] for item in value["findings"]}
+            )
             or any(
                 not item[field].strip()
                 for item in verdict["decisions"]
@@ -443,6 +470,8 @@ def review(run_id, reviewer_run_id):
             raise ValueError("refill review must decide every finding")
         accepted = []
         for finding in value["findings"]:
+            if blocked:
+                break
             decision = decisions[finding["key"]]
             if decision["approved"]:
                 accepted.append(
@@ -463,6 +492,8 @@ def review(run_id, reviewer_run_id):
             + verdict["summary"],
             "findings": accepted,
         }
+        if inspection:
+            approved.update(status=verdict["status"], source_sha=verdict["source_sha"])
         if len(approved["summary"]) > 60000:
             raise ValueError("refill reviewed summary exceeds bound")
         result = {
@@ -471,8 +502,8 @@ def review(run_id, reviewer_run_id):
             "reviewer_run_id": reviewer.id,
             "collector_session_id": collector.session_id,
             "reviewer_session_id": reviewer.session_id,
-            "collection_digest": refill.digest(value),
-            "review_digest": refill.digest(verdict),
+            "collection_digest": controls.digest(value),
+            "review_digest": controls.digest(verdict),
             "collection": approved,
         }
         prior = refill.latest_event(db, "reviewed", run_id=run_id)
@@ -484,12 +515,12 @@ def review(run_id, reviewer_run_id):
 
 
 def output(repo, run_id, kind, key, title, body, labels):
-    output_id = refill.digest([repo, run_id, kind, key])
+    output_id = controls.digest([repo, run_id, kind, key])
     marker = f"<!-- factory-refill-output:{output_id} -->"
     # Finding identity is server-derived; renaming the model's key cannot
     # turn the same finding into fresh yield. Summaries remain per-run.
     identity = " ".join(title.casefold().split()) if kind == "finding" else key
-    dedup = f"<!-- factory-refill-finding:{refill.digest([repo, kind, identity])} -->"
+    dedup = f"<!-- factory-refill-finding:{controls.digest([repo, kind, identity])} -->"
     return {
         "repo": repo,
         "run_id": run_id,
@@ -538,6 +569,13 @@ def advance(start, *, allow_new=True):
     if row is None:
         return None
     value = refill._detail(row)["collection"]
+    if "inspection_contract" in start and value["status"] != "completed":
+        return {
+            "success": False,
+            "inconclusive": False,
+            "new_issues": 0,
+            "summary": value["summary"][:4000],
+        }
     results = []
     for finding in value["findings"]:
         item = output(

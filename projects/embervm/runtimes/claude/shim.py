@@ -193,6 +193,7 @@ VSOCK_ADDRESS_FAMILY = getattr(socket, "AF_VSOCK", -1)
 HEALTHZ_PATH = "/shim/healthz"
 READY_PATH = "/shim/ready"
 TURN_PATH = "/shim/turn"
+FUNDING_PATH = "/shim/funding-decision-v1"
 INTERRUPT_PATH = "/shim/interrupt"
 CLOCK_PATH = "/shim/clock"
 DEFAULT_WORKSPACE = "/workspace"
@@ -476,6 +477,45 @@ def _capture_turn_artifact(checkout_dir, artifact_path):
         }
 
 
+def _funding_profile(profile, model):
+    if (
+        type(profile) is not dict
+        or set(profile)
+        != {"name", "model", "request_id", "request_sha256", "schema_sha256"}
+        or profile["name"] != "factory-funding-v1"
+        or model not in {"opus", "sonnet", "fable"}
+        or profile["model"] != model
+        or type(profile["request_id"]) is not int
+        or profile["request_id"] <= 0
+        or any(
+            not isinstance(profile[k], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", profile[k])
+            for k in ("request_sha256", "schema_sha256")
+        )
+    ):
+        raise ValueError("invalid funding execution profile")
+    return profile
+
+
+def _decision_artifact(record, path, profile):
+    """Capture model text through the existing artifact/receipt protocol, no tool."""
+    raw = (record.get("result") or "").encode("utf-8")
+    valid = False
+    try:
+        valid = len(raw) <= MAX_TURN_ARTIFACT_BYTES and isinstance(
+            json.loads(raw), dict
+        )
+    except (ValueError, TypeError):
+        pass
+    record["artifact"] = {
+        "path": path,
+        "outcome": "ok" if valid else "unreadable",
+        "content_b64": base64.b64encode(raw).decode("ascii") if valid else None,
+    }
+    record.setdefault("usage", {})["execution_profile"] = profile
+    return record
+
+
 # Untracked files are capped so a stray build tree or vendored download cannot
 # turn the diff into megabytes of noise; the raw cap above still applies.
 MAX_TURN_DIFF_UNTRACKED_FILES = 200
@@ -658,10 +698,9 @@ SUPPORTED_PREWARM_CLIS = ("claude", "codex", "pi")
 # three families, runtimes/pi only pi). EMBER_PREWARM_CLIS stays as an explicit
 # override for tests and one-off boots.
 PREWARM_CLIS_FILE = "/usr/share/ember-shim/prewarm-clis"
-# GPT-6 has no Terra, so terra stays on GPT-5.6.
 CODEX_MODELS = {
     "luna": ("gpt-6-luna", "medium"),
-    "terra": ("gpt-5.6-terra", "high"),
+    "terra": ("gpt-6.1-terra", "high"),
     # GPT-6.1 Sol (2026-09-29): same list price as GPT-6 Sol, scores within a
     # point of GPT-6 Astra on the Artificial Analysis index at about a fifth of
     # its token price.
@@ -2816,13 +2855,23 @@ class ClaudeProcess:
     # attribute rather than an __init__ assignment so prewarm, which spawns
     # before any turn and legitimately has no checkout, reads the default.
     requires_git_checkout = False
+    decision_profile = None
 
-    def __init__(self, workspace=None, executable="claude"):
+    def __init__(self, workspace=None, executable="claude", decision_profile=None):
         self.workspace = workspace or os.environ.get(
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
         )
         self.executable = executable
-        _probe_cli_startup(executable)
+        self.decision_profile = decision_profile
+        if decision_profile is None:
+            _probe_cli_startup(executable)
+        else:
+            _funding_profile(
+                decision_profile,
+                decision_profile.get("model")
+                if isinstance(decision_profile, dict)
+                else None,
+            )
         self.process = None
         self.init_event = None
         self.fatal_error = None
@@ -2880,6 +2929,10 @@ class ClaudeProcess:
         system_prompt=None,
         effort=None,
     ):
+        # The pinned CLI cannot attest its tool set before receiving user input.
+        # Never deliver funding content to it, even through a future call path.
+        if self.decision_profile is not None:
+            raise StartupError("decision profile cannot invoke a CLI")
         if self.fatal_error is not None:
             raise StartupError(self.fatal_error)
         if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
@@ -3288,6 +3341,25 @@ class ClaudeProcess:
         _managed_child_pids.discard(process.pid)
         _reap_orphans()
 
+    def _funding_turn(self, message, session_id, model, system_prompt):
+        """Refuse the staged profile until a supported provider route exists.
+
+        The existing egress grant is subscription OAuth for Claude Code, not
+        authentication for a bespoke Messages client. The pinned CLI cannot
+        attest tools before input. Neither route may receive funding content.
+        Keep the versioned endpoint and one-shot fences for historical guests;
+        no environment variable or caller field can enable this path.
+        """
+        with self.turn_lock:
+            _funding_profile(self.decision_profile, model)
+            if not isinstance(message, str) or not message:
+                raise ValueError("decision input must be plain text")
+            if session_id or self.session_id or self.process is not None:
+                raise StartupError("decision profile requires a fresh provider call")
+            if getattr(self, "_interrupt_requested", False):
+                raise StartupError("decision interrupted before provider invocation")
+            raise StartupError("funding_provider_route_unavailable")
+
     def turn(
         self,
         message,
@@ -3297,6 +3369,8 @@ class ClaudeProcess:
         system_prompt=None,
         effort=None,
     ):
+        if self.decision_profile is not None:
+            return self._funding_turn(message, session_id, model, system_prompt)
         with self.turn_lock:
             cli_ready_start = _turn_timing_now()
             with self.process_lock:
@@ -3573,6 +3647,17 @@ class ClaudeProcess:
             self.interrupt(timeout=INTERRUPT_TIMEOUT)
 
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
+        if self.decision_profile is not None:
+            # There is no CLI to signal. An absent child is not cessation proof
+            # for an in-flight HTTP request. The manager still waits for its
+            # provider-done event and exact terminal receipt; never acknowledge
+            # a killed provider or fall back to another request.
+            self._interrupt_requested = True
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": self.current_result is None,
+            }
         with self.process_lock:
             process = self.process
         if process is None or process.poll() is not None:
@@ -3598,6 +3683,45 @@ class ClaudeProcess:
         reason = result.get("terminal_reason", "user_interrupt")
         self._close_process(kill=False)
         return {"terminal_reason": reason, "killed": timed_out, "timeout": timed_out}
+
+
+def _read_queued_json(adapter, timeout, runner):
+    """Read one JSONL event from an adapter's stdout pump queue."""
+    with adapter.process_lock:
+        output_queue = adapter._stdout_queue
+    if output_queue is None:
+        return None
+    try:
+        raw = output_queue.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise TimeoutError from exc
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("%s emitted invalid JSON: %s" % (runner, exc)) from exc
+
+
+def _interrupt_turn(adapter, send_abort, timeout):
+    """Send a turn abort and wait for the turn; kill the CLI if either fails."""
+    try:
+        send_abort()
+    except Exception:
+        adapter._close_process(kill=True)
+        return {
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
+        }
+    timed_out = not adapter._turn_done.wait(timeout=timeout)
+    if timed_out:
+        adapter._close_process(kill=True)
+    return {
+        "terminal_reason": "user_interrupt",
+        "killed": timed_out,
+        "timeout": timed_out,
+    }
 
 
 class CodexProcess:
@@ -3653,6 +3777,7 @@ class CodexProcess:
         # key is not part of ChatGPT subscription mode and must not confuse
         # the CLI or the egress sidecar.
         child_env.pop("OPENAI_API_KEY", None)
+        child_env.pop("CODEX_API_KEY", None)
         child_env.update(egress_proxy_env())
         child_env["CODEX_HOME"] = codex_home
         return child_env
@@ -3721,18 +3846,13 @@ class CodexProcess:
         # not at /backend-api/responses. The rmcp connector client above builds
         # from chatgpt_base_url at the backend-api root, so the two values must
         # diverge: chatgpt_base_url stays at the root, provider_base_url gets a
-        # /codex/ suffix. The trailing slash on provider_base_url is load
-        # bearing: it makes both plausible client join behaviors, trimming the
-        # trailing slash and concatenating, or an RFC 3986 Url::join with a
-        # relative segment, land on the same /codex/responses path.
+        # /codex/ suffix. The trailing slash keeps concatenation and relative
+        # URL joins on the same /codex/responses path.
         #
-        # The CLI stays on rust-v0.146.0 (#6498). rust-v0.158.0 omitted
-        # Authorization on most chatgpt.com requests, and the egress swap only
-        # injects when the guest presents it (or the path is in
-        # injectAlwaysPaths), so every turn died with "claim injection failed;
-        # request denied". A re-land needs those paths opted in first.
+        # Custom providers need requires_openai_auth in 0.167.0 to send the
+        # inert subscription Authorization header. The egress sidecar replaces
+        # that header with the broker-owned grant; no real token enters here.
         config = """model_provider = "ember-openai"
-enable_codex_api_key_env = false
 chatgpt_base_url = %s
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
@@ -3740,8 +3860,6 @@ approval_policy = "never"
 [projects.%s]
 trust_level = "trusted"
 
-# Codex 0.146.0 binary inspection exposes [tools].web_search, while
-# web_search_request is deprecated because web search is enabled by default.
 [tools]
 web_search = true
 
@@ -3749,6 +3867,7 @@ web_search = true
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
+requires_openai_auth = true
 """ % (
             json.dumps(base_url),
             json.dumps(self.workspace),
@@ -3891,20 +4010,7 @@ url = %s
         sys.stderr.flush()
 
     def _read_event(self, timeout):
-        with self.process_lock:
-            output_queue = self._stdout_queue
-        if output_queue is None:
-            return None
-        try:
-            raw = output_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError from exc
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("codex emitted invalid JSON: %s" % exc) from exc
+        return _read_queued_json(self, timeout, "codex")
 
     def _resume(self, session_id, system_prompt=None):
         params = {
@@ -4384,6 +4490,8 @@ url = %s
                             "terminal_reason": terminal_reason,
                             "session_id": self.session_id,
                             "model": model,
+                            # The full ID selected for turn/start. The protocol
+                            # does not independently attest the upstream model.
                             "provider_model": model_name,
                             "effort": effort,
                             "usage": usage,
@@ -4410,13 +4518,6 @@ url = %s
                         pass
                 self._turn_done.set()
 
-    @staticmethod
-    def _reap_process(process):
-        try:
-            process.wait()
-        finally:
-            _managed_child_pids.discard(process.pid)
-
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
         with self.process_lock:
             process = self.process
@@ -4433,7 +4534,8 @@ url = %s
                 "killed": False,
                 "timeout": False,
             }
-        try:
+
+        def send_abort():
             with self._write_lock:
                 self._rpc_id += 1
                 request_id = self._rpc_id
@@ -4445,21 +4547,8 @@ url = %s
                     "params": {"threadId": thread_id, "turnId": turn_id},
                 }
             )
-        except Exception:
-            self._close_process(kill=True)
-            return {
-                "terminal_reason": "user_interrupt",
-                "killed": False,
-                "timeout": False,
-            }
-        timed_out = not self._turn_done.wait(timeout=timeout)
-        if timed_out:
-            self._close_process(kill=True)
-        return {
-            "terminal_reason": "user_interrupt",
-            "killed": timed_out,
-            "timeout": timed_out,
-        }
+
+        return _interrupt_turn(self, send_abort, timeout)
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -5682,7 +5771,6 @@ class PiProcess:
         self._in_flight = False
         self._model = None
         self._system_prompt = None
-        self._session_file = None
         # Spawn-time workspace identity, read by the manager's remediation to
         # detect a volume mount hiding the tmpfs workspace this process was
         # spawned against. Same contract as ClaudeProcess.
@@ -5874,20 +5962,7 @@ class PiProcess:
             output_queue.put(None)
 
     def _read_event(self, timeout):
-        with self.process_lock:
-            output_queue = self._stdout_queue
-        if output_queue is None:
-            return None
-        try:
-            raw = output_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise TimeoutError from exc
-        if raw is None:
-            return None
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("pi emitted invalid JSON: %s" % exc) from exc
+        return _read_queued_json(self, timeout, "pi")
 
     def _send(self, command):
         with self._write_lock:
@@ -5919,12 +5994,9 @@ class PiProcess:
 
     def _state(self):
         data = self._command({"type": "get_state"})
-        session_file = data.get("sessionFile")
         session_id = data.get("sessionId")
         if isinstance(session_id, str) and session_id:
             self.session_id = session_id
-        if isinstance(session_file, str) and session_file:
-            self._session_file = session_file
         model = data.get("model")
         if isinstance(model, dict):
             model_id = model.get("id")
@@ -6439,23 +6511,7 @@ class PiProcess:
                 "timeout": False,
             }
         self._in_flight = False
-        try:
-            self._send({"type": "abort"})
-        except Exception:
-            self._close_process(kill=True)
-            return {
-                "terminal_reason": "user_interrupt",
-                "killed": False,
-                "timeout": False,
-            }
-        timed_out = not self._turn_done.wait(timeout=timeout)
-        if timed_out:
-            self._close_process(kill=True)
-        return {
-            "terminal_reason": "user_interrupt",
-            "killed": timed_out,
-            "timeout": timed_out,
-        }
+        return _interrupt_turn(self, lambda: self._send({"type": "abort"}), timeout)
 
     def _close_process(self, kill=False):
         with self.process_lock:
@@ -6681,6 +6737,9 @@ class ProcessManager:
             self._record_turn_phase("hydration", hydration_start, status)
 
     def _hydrate_workspace_inner(self, repo, branch, hydration_start):
+        pinned_commit = (
+            branch[7:] if re.fullmatch(r"commit:[0-9a-f]{40}", branch) else None
+        )
         if self._hydration_status in ("ok", "skipped_existing"):
             if _checkout_is_usable(self._checkout_dir):
                 self._hydration_status = "skipped_existing"
@@ -6767,6 +6826,10 @@ class ProcessManager:
             "https://github.com/%s.git" % repo,
             checkout_dir,
         ]
+        if pinned_commit:
+            # Clone with the existing credential/proxy configuration, then
+            # fetch the exact commit. Never pass a commit to clone --branch.
+            clone_command[3:5] = ["--no-checkout"]
         failure = None
         try:
             clone_start = _turn_timing_now()
@@ -6790,6 +6853,18 @@ class ProcessManager:
                     "git command failed with exit code %s%s"
                     % (result.returncode, ": " + stderr if stderr else "")
                 )
+            if pinned_commit:
+                for args in (
+                    ["fetch", "--no-tags", "origin", pinned_commit],
+                    ["checkout", "--detach", pinned_commit],
+                ):
+                    subprocess.run(
+                        ["git", "-C", checkout_dir, *args],
+                        capture_output=True,
+                        check=True,
+                        timeout=GIT_CLONE_TIMEOUT_SECONDS,
+                        **_cli_privilege_kwargs(),
+                    )
             validation = subprocess.run(
                 ["git", "-C", checkout_dir, "rev-parse", "--verify", "HEAD"],
                 capture_output=True,
@@ -6798,6 +6873,8 @@ class ProcessManager:
             )
             if validation.returncode != 0:
                 raise RuntimeError("cloned directory validation failed: HEAD not found")
+            if pinned_commit and validation.stdout.decode().strip() != pinned_commit:
+                raise RuntimeError("cloned directory does not match pinned commit")
         except Exception as exc:
             failure = exc
             # A partial clone from a failed attempt must not survive. A retry
@@ -6876,7 +6953,7 @@ class ProcessManager:
             return False
         # Base build safety depends on the noded placeholder volume staying blank
         # (zero-filled, no filesystem). Guest-init in guest init forbids mounting a
-        # placeholder during base build (volume_linux.go:97-100). If the placeholder
+        # placeholder during base build (volume_linux.go:94-97). If the placeholder
         # gains a superblock this probe would misfire and skip the build liveness check.
         volume_has_ext4 = _volume_has_ext4()
         if self._prewarm_clis and not volume_has_ext4:
@@ -6985,12 +7062,73 @@ class ProcessManager:
         runtime_meter=None,
         workspace_handoff=None,
         push_format=None,
+        execution_profile=None,
     ):
+        if getattr(self, "_decision_profile_bound", False) or os.path.exists(
+            os.path.join(self.workspace, ".funding-decision-started")
+        ):
+            raise SessionConflictError("decision guest cannot run an ordinary turn")
+        if execution_profile is not None:
+            _funding_profile(execution_profile, model)
+            if (
+                session_id
+                or repo
+                or branch
+                or workspace_handoff
+                or push_format
+                or runtime_meter
+                or not artifact_path
+                or not dispatch_id
+                or turn_seq != 1
+                or any(
+                    getattr(a, "session_id", None)
+                    for a in (self.claude, self.codex, self.pi, self.muse)
+                )
+            ):
+                raise SessionConflictError(
+                    "decision profile requires an unused tool-free session"
+                )
         total_start = _turn_timing_now()
         self._turn_started_at = total_start
         self._turn_phase_telemetry = {}
         with self._mount_lock:
             ensure_workspace_volume()
+            # Recheck after mount and under the same lock as profile selection:
+            # an ordinary request racing this one must not select another adapter.
+            if getattr(self, "_decision_profile_bound", False) or os.path.exists(
+                os.path.join(self.workspace, ".funding-decision-started")
+            ):
+                raise SessionConflictError("decision guest cannot run another turn")
+            ordinary_marker = os.path.join(
+                self.workspace, ".ordinary-execution-started"
+            )
+            if execution_profile is not None:
+                if os.path.exists(ordinary_marker):
+                    raise SessionConflictError(
+                        "decision profile requires a fresh guest"
+                    )
+                # Durable one-shot marker fences replay/restoration before a new
+                # model call. A lost result uses the ordinary receipt owner.
+                marker = os.path.join(self.workspace, ".funding-decision-started")
+                with open(marker, "x") as stream:
+                    json.dump(execution_profile, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                self._decision_profile_bound = True
+                self.claude._close_process(kill=True)
+                decision_dir = tempfile.mkdtemp(prefix="funding-decision-")
+                _ensure_cli_dir(decision_dir)
+                self.claude = ClaudeProcess(
+                    decision_dir,
+                    self.claude.executable,
+                    decision_profile=execution_profile,
+                )
+                self.claude._manager = self
+            elif not os.path.exists(ordinary_marker):
+                with open(ordinary_marker, "x") as stream:
+                    stream.write("ordinary\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
         # Re-apply per turn so a restored guest picks up CA rotation without a
         # fleet base rebuild. Prewarm already applied the build-time CA once.
         apply_egress_ca_trust()
@@ -7024,13 +7162,66 @@ class ProcessManager:
                     "", ["cloning %s@%s" % (repo, branch)]
                 )
             self._hydrate_workspace(repo, branch)
+            if re.fullmatch(r"commit:[0-9a-f]{40}", branch):
+                # Restored volumes and repeated turns must prove the same HEAD
+                # too. Refuse without changing an existing mismatched checkout.
+                checkout = os.path.join(self.workspace, "src")
+                try:
+                    observed = (
+                        subprocess.run(
+                            ["git", "-C", checkout, "rev-parse", "--verify", "HEAD"],
+                            capture_output=True,
+                            check=True,
+                            timeout=5,
+                            **_cli_privilege_kwargs(),
+                        )
+                        .stdout.decode()
+                        .strip()
+                    )
+                    clean = (
+                        subprocess.run(
+                            ["git", "-C", checkout, "diff", "--quiet", "HEAD", "--"],
+                            capture_output=True,
+                            timeout=5,
+                            check=False,
+                            **_cli_privilege_kwargs(),
+                        ).returncode
+                        == 0
+                    )
+                except (OSError, subprocess.SubprocessError, UnicodeError):
+                    observed = None
+                    clean = False
+                if observed != branch[7:] or not clean:
+                    evidence = {
+                        "version": 1,
+                        "expected_sha": branch[7:],
+                        "observed_sha": observed,
+                        "tracked_clean": clean,
+                        "invocation_started": False,
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
+                    return {
+                        "is_error": True,
+                        "result": "Pinned inspection checkout unavailable before model execution",
+                        "terminal_reason": "error",
+                        "stop_reason": "refill_inspection_preflight_failed",
+                        "num_turns": 0,
+                        "activities": [],
+                        "permission_denials": [],
+                        "usage": {"refill_inspection_preflight": evidence},
+                        "dispatch_id": dispatch_id,
+                        "turn_seq": turn_seq,
+                    }
         adapter = self._adapter(model)
         if runtime_meter is not None and adapter is not self.codex:
             raise RuntimeError("runtime metering requires the supported Codex adapter")
         checkout_dir = os.path.join(
             getattr(self, "workspace", DEFAULT_WORKSPACE), "src"
         )
-        turn_base = _capture_turn_base(checkout_dir)
+        turn_base = (
+            None if execution_profile is not None else _capture_turn_base(checkout_dir)
+        )
         push_format_state = None
         if push_format is not None:
             import push_format as push_format_guard
@@ -7178,6 +7369,8 @@ class ProcessManager:
                 if drift is not None:
                     record.setdefault("usage", {})["push_format"] = drift
             if isinstance(record, dict) and not reason:
+                if execution_profile is not None:
+                    return _decision_artifact(record, artifact_path, execution_profile)
                 diff = _capture_turn_diff(checkout_dir, turn_base)
                 if diff is not None:
                     record["diff"] = diff
@@ -7321,6 +7514,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _send(self, status, value):
         body = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        # #7731: a resumed turn's reply never reaches the host. Log the turn
+        # reply size before writing and the write time after, so a blocked
+        # vsock write is distinguishable from a reply that was never sent.
+        turn_reply = getattr(self, "command", None) == "POST" and getattr(
+            self, "path", None
+        ) in (TURN_PATH, FUNDING_PATH)
+        started = _turn_timing_now() if turn_reply else None
+        if turn_reply:
+            _emit_turn_timing(
+                "reply_start", 0, status=status, extra={"bytes": len(body)}
+            )
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -7328,6 +7532,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(body)
+        if turn_reply:
+            try:
+                self.wfile.flush()
+            finally:
+                _emit_elapsed("reply_written", started, status=status)
 
     def _load_phase_headers(self):
         self._phase_headers = {}
@@ -7369,7 +7578,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._phase_headers = {}
-        if self.path not in (TURN_PATH, CLOCK_PATH, INTERRUPT_PATH):
+        if self.path not in (TURN_PATH, FUNDING_PATH, CLOCK_PATH, INTERRUPT_PATH):
             self._send(404, {"error": "not found"})
             return
         try:
@@ -7527,6 +7736,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             thinking_override = {"thinking": thinking} if thinking is not None else {}
             effort_override = {"effort": effort} if effort is not None else {}
             dispatch = {"dispatch_id": dispatch_id.strip()} if dispatch_id else {}
+            if (self.path == FUNDING_PATH) != ("execution_profile" in payload):
+                self._send(
+                    400, {"error": "execution profile requires its versioned endpoint"}
+                )
+                return
+            if self.path == FUNDING_PATH:
+                _funding_profile(payload["execution_profile"], payload.get("model"))
+                dispatch["execution_profile"] = payload["execution_profile"]
             if "workspace_handoff" in payload:
                 dispatch["workspace_handoff"] = payload["workspace_handoff"]
             if "push_format" in payload:

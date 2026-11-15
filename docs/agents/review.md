@@ -1,37 +1,34 @@
 # Review
 
-Review the whole finished PR diff once, with surrounding code where needed.
-The reviewer must be independent of the author and reports findings without
-editing, committing, pushing or running `ci`.
+What to check and how to rate it is in the root [`REVIEW.md`](../../REVIEW.md),
+with every `REVIEW.md` that applies to the changed paths. This page is the
+process.
 
-Check the stated goal/spec or maintenance policy under `AGENTS.md` "Merge
-authority". Independent agent review satisfies the review step; routine human
-sign-off is unnecessary. The dispatcher owns landing.
+The reviewer is independent of the author. It reports findings without
+editing, committing, pushing, running `ci` or executing anything from the PR.
+Independent agent review satisfies the review step under `AGENTS.md` "Merge
+authority"; routine human sign-off is unnecessary outside `REVIEW.md` "Joe
+decides".
 
-## Focus on failures
+The first review covers the whole diff at the head SHA. Later heads follow
+`REVIEW.md` "Later heads". The landing owner confirms that the review and the
+required checks cover the current head: the reviewer service for the
+`factory review` check, the dispatcher on the hub factory. A passing review
+permits landing. Whether and when to land stays with the landing owner, and
+a hold on landing still applies.
 
-1. Correctness and security: name the concrete input or state that fails.
-2. Repository boundaries and applicable build/deploy gotchas in
-   `docs/agents/reference.md`. Judge the justification for any
-   `ratchet-allow` exception.
-3. Reachability: trace changed flags, environment variables and values to the
-   code that consumes them. Confirm that another gate does not disable that
-   path. Document intentionally staged behaviour where it is defined.
-4. Validation: require evidence proportionate to changed behaviour, including
-   regression coverage for actual bugs. Documentation and mechanical changes
-   do not need invented behaviour tests.
-5. Goal alignment and any explicit human hold or unresolved policy decision.
+## Changing rules
 
-Skip formatting covered by automation, style preferences, speculative risks
-and unrelated audits. Small diffs need small reviews.
+Prefer a CI check to a rule (`docs/agents/evolution.md`). A rule is for what
+a reviewer can check from a diff and CI cannot yet.
 
-## Report
-
-List concrete findings by severity with file/line, failure scenario and why it
-matters. Distinguish blocking defects from optional improvements; optional
-suggestions do not delay landing. Say when there are no blocking findings.
-
-Finish with a verdict and the reviewed head SHA. Fixes require checking the
-changed portion and its effects; repeat the full review only if scope or
-assumptions changed. The dispatcher confirms that the review, fixes and
-required checks cover the current PR head.
+- A rule is one bullet: a bold name, what the diff must show, the failure it
+  prevents, and the PR or issue it came from. It may name a severity.
+- The PR adding a rule gives one change the rule must still allow, and
+  checks the rules already on the path for a duplicate or a conflict.
+- A `REVIEW.md` holds at most twelve rules. A thirteenth replaces or merges
+  one.
+- A rule is removed in the PR that adds the check enforcing it or deletes
+  the code it guards. The owner of the domain's `ARCHITECTURE.md` prunes
+  rules that produced no finding in 90 days and whose source failure a test
+  now covers.

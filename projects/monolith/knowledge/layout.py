@@ -71,22 +71,11 @@ class EdgeRef:
     target: NoteId
 
 
-def _is_truthy(value: str) -> bool:
-    """Parse a string env value as a boolean.
-
-    Truthy: ``"1"``, ``"true"``, ``"yes"`` (case-insensitive).
-    Everything else (including empty string, ``"0"``, ``"false"``,
-    ``"no"``) is falsy.
-    """
-    return value.strip().lower() in {"1", "true", "yes"}
-
-
 @dataclass(frozen=True, slots=True)
 class LayoutParams:
     scaling_ratio: float = 2.0
     gravity: float = 0.1
     max_iter: int = 100
-    linlog: bool = False
     core_fraction: float = 0.99
     node_size_scale: float = 0.005
     seed: int = 42
@@ -127,7 +116,6 @@ class LayoutParams:
             scaling_ratio=float(env.get("KNOWLEDGE_LAYOUT_SCALING_RATIO", "2.0")),
             gravity=float(env.get("KNOWLEDGE_LAYOUT_GRAVITY", "0.1")),
             max_iter=int(env.get("KNOWLEDGE_LAYOUT_MAX_ITER", "100")),
-            linlog=_is_truthy(env.get("KNOWLEDGE_LAYOUT_LINLOG", "false")),
             core_fraction=float(env.get("KNOWLEDGE_LAYOUT_CORE_FRACTION", "0.99")),
             node_size_scale=float(env.get("KNOWLEDGE_LAYOUT_NODE_SIZE_SCALE", "0.005")),
             seed=int(env.get("KNOWLEDGE_LAYOUT_SEED", "42")),
@@ -286,7 +274,6 @@ def compute_layout(
         "max_iter": params.max_iter,
         "scaling_ratio": params.scaling_ratio,
         "gravity": params.gravity,
-        "linlog": params.linlog,
         "seed": params.seed,
     }
     # When node_size_scale > 0, pass a per-node halo radius dict to FA2

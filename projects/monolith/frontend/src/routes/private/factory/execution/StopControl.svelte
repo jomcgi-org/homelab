@@ -1,12 +1,7 @@
 <script>
   import { makeStopRequest, stopInFlight } from "./stop-control.js";
 
-  let {
-    enabled = false,
-    identity = null,
-    status = null,
-    onStop = () => {},
-  } = $props();
+  let { identity = null, status = null, onStop = () => {} } = $props();
 
   const busy = $derived(stopInFlight(status));
   const label = $derived(
@@ -30,7 +25,7 @@
   }
 </script>
 
-{#if enabled && (identity || status)}
+{#if identity || status}
   <div class="stop-control" data-outcome={status?.outcome ?? "idle"}>
     {#if status?.outcome}
       <span class="stop-state" role="status">

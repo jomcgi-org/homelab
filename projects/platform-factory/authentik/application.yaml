@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: authentik
+  namespace: argocd
+  annotations:
+    # After cloudnative-pg (its Cluster CRD) and edge (the namespace its secret
+    # Job writes the gateway's OIDC client secret to).
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform/authentik
+      helm:
+        releaseName: authentik
+        valueFiles:
+          - values.yaml
+          - values-factory.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/authentik/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: authentik
+  # The placeholder Secrets' values are written by authentik-secret-init.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: authentik-secrets
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: argocd-authentik-oidc
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -2,7 +2,8 @@
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
 TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
-the ten tracked specs are `adoption.tla`, `adoption_trace.tla`,
+the thirteen tracked specs are `adoption.tla`, `adoption_trace.tla`,
+`adoption_destroy.tla`, `destroy_contract.tla`, `admission.tla`,
 `bank_relight.tla`, `quota.tla`, `session_create.tla`,
 `generation_issuance.tla`, `stateful.tla`, `session_lineage.tla`,
 `warmth_gc.tla`, and `dual_wake.tla`. The directory also contains their registered
@@ -10,6 +11,36 @@ configurations and the layer-1 vocabulary sync guard. This inventory records
 what exists, not proof that a model corresponds to the current implementation or
 that an issue's closure establishes its evidence. Bounds and completed results
 are documented with the individual specs below.
+
+## Observed destruction contract
+
+`destroy_contract.tla` defines legal intent and completion transitions.
+`adoption_destroy.tla` checks the existing adoption model's `Next` against
+those predicates, mapping `destroying` and `cpDestroyed` to the contract.
+Its configurations check one node, VM, task and principal, with one controller
+crash and one node crash. The positive check explores 74,905 distinct states.
+The unowned-completion mutation must violate the action property; a separate
+`NeverCompletes` witness must fail to establish that completion is reachable.
+These are bounded correspondence checks, not a proof for arbitrary bounds.
+
+S6 uses those same predicates in `adoption_trace.tla` for observed
+`begin_destroy` and `confirm_destroy` events, keyed by session and VM.
+Repeated pending intents are allowed; completion twice and beginning after
+completion fail. Task `succeed` is not a session destruction intent in this
+contract. The two legacy ordering checks remain alongside it.
+
+The runner reads all specs to inspect sequence gaps and drop markers, orders
+one controller incarnation by writer sequence, then projects adoption events.
+Mixed incarnations, missing identity, incomplete lifecycles and unsupported
+confirmation evidence withhold a pass. A window without completed eligible
+destruction is vacuous. Only recorded teardown or absence evidence qualifies;
+`node_gone` and nonresident destruction remain outside this pilot. The debug
+writer cannot certify unreported loss, and the exact-stop completion path does
+not emit a confirmation event. Passing means the observed complete segments
+conform, not that every production destruction was observed or physically
+verified. S6 remains default-off; live evidence and factory adoption are tracked
+in [#7677](https://github.com/jomcgi-org/homelab/issues/7677). Full adoption
+trace conformance remains [#6415](https://github.com/jomcgi-org/homelab/issues/6415).
 
 ## What is here
 

@@ -70,7 +70,6 @@ def database(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setenv("FACTORY_RUNTIME_METER_ENABLED", "true")
     monkeypatch.setenv("FACTORY_RUNTIME_METER_TASK_IDS", "task")
-    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
     policy = {
         "repo": "org/repo",
         "issue_numbers": [7001],
@@ -175,6 +174,28 @@ def update(receipt, sequence, output=0, coverage="parent"):
             "coverage": coverage,
         },
     )
+
+
+def test_staged_receipt_binds_usage_only_at_attempt_and_never_twice(database):
+    body = b'{"model":"astra","dispatch_id":"exact-dispatch"}'
+    receipt = result_receipts.prepare_receipt(1, "owner", 1, "guest", body, staged=True)
+    assert "runtime_meter" not in receipt
+    with Session(database) as db:
+        assert not meter._records_for_receipt(db, receipt["id"], meter.BOUND)
+    additions = result_receipts.attempt_prepared_receipt(
+        receipt["id"], 1, "owner", 1, "guest", body, lambda: None
+    )
+    assert additions["runtime_meter"] is True
+    assert not update(receipt, 0)["stop"]
+    assert not update(receipt, 1, 100000)["stop"]
+    with pytest.raises(result_receipts.ReceiptRejected, match="receipt_not_prepared"):
+        result_receipts.attempt_prepared_receipt(
+            receipt["id"], 1, "owner", 1, "guest", body, lambda: None
+        )
+    with Session(database) as db:
+        assert len(meter._records_for_receipt(db, receipt["id"], meter.BOUND)) == 1
+        owner = db.get(FactoryReceipt, 838)
+        assert meter.objective_totals(db, owner)["known_list_usd"] == 5
 
 
 def test_native_binding_and_acknowledged_duplicates_are_durable(database):
@@ -2595,6 +2616,109 @@ def held_apply(owner, proposal, key="continuation"):
     )
 
 
+def refused_hold_direction(cause="refine-gate:task", origin="planner"):
+    hold = {"actor": "factory:conductor", "cause": cause, "reason": "stage"}
+    return {
+        "landing_hold": hold,
+        "landing_hold_provenance": {
+            "origin": origin,
+            "cause": cause,
+            "gate_id": "exact",
+            "hold": hold.copy(),
+        },
+        "landing_hold_refusals": [{"cause": cause, "gate_id": "exact"}],
+    }
+
+
+@pytest.mark.parametrize("origin", ["planner", "operator", "human_issue"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_refinement_continuation_preserves_hold_evidence(
+    database, held_refinement, monkeypatch, origin, enabled
+):
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", str(enabled).lower())
+    owner, _issue, direction = held_refinement
+    direction.update(refused_hold_direction(origin=origin))
+    with Session(database) as db, db.begin():
+        db.get(FactoryReceipt, 838).direction_json = json.dumps(direction)
+    if enabled and origin == "planner":
+        with pytest.raises(ValueError, match="restrictions_not_supported"):
+            owner.preview(838, "continue held work")
+        return
+    proposal = owner.preview(838, "continue held work")
+    result = held_apply(owner, proposal)
+    with Session(database) as db:
+        copied = json.loads(db.get(FactoryReceipt, result["receipt_id"]).direction_json)
+        assert all(copied[key] == value for key, value in direction.items())
+        assert controls.landing_held({"direction": copied})
+
+
+def test_operator_amendment_reasserts_previously_refused_hold(database, monkeypatch):
+    from factory.orchestration import factory_policy_amendment as amendments
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    paused(database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = json.dumps(refused_hold_direction())
+        assert not controls.landing_held(row)
+    proposal = amendments.preview(838, {"landing_hold": True}, "Operator hold")
+    amendments.apply(
+        838,
+        {"landing_hold": True},
+        "Operator hold",
+        actor="operator",
+        request_key="reassert",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db:
+        row = db.get(FactoryReceipt, 838)
+        assert controls.landing_held(row)
+        assert json.loads(row.direction_json)["landing_hold_refusals"]
+
+
+def test_operator_recovery_reasserts_previously_refused_hold(
+    database, expired_recovery, monkeypatch
+):
+    from factory.orchestration import factory_task_recovery as recovery
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    args, _issue, _now = expired_recovery
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        direction = json.loads(row.direction_json)
+        direction.update(refused_hold_direction())
+        row.direction_json = json.dumps(direction)
+        assert not controls.landing_held(row)
+    proposal = recovery.preview(**args)
+    recovery.apply(
+        **args,
+        actor="operator",
+        request_key="reassert",
+        expected_preview_sha256=proposal["preview_sha256"],
+    )
+    with Session(database) as db:
+        assert controls.landing_held(db.get(FactoryReceipt, 838))
+
+
+def test_unrelated_human_readmission_preserves_exact_refusal(database, monkeypatch):
+    from factory.orchestration import factory_decisions as decisions
+
+    monkeypatch.setenv("FACTORY_PLANNER_HOLD_REFUSAL_ENABLED", "true")
+    paused(database)
+    with Session(database) as db, db.begin():
+        row = db.get(FactoryReceipt, 838)
+        row.direction_json = json.dumps(refused_hold_direction())
+        direction = decisions._direction(
+            row,
+            {},
+            {"key": "chat", "label": "continue", "effect": "chat"},
+            "operator",
+            None,
+        )
+        assert not controls.landing_held({"direction": direction})
+        assert direction["landing_hold_refusals"]
+
+
 def test_held_refinement_creates_distinct_restricted_delivery(
     database, held_refinement
 ):
@@ -4699,7 +4823,7 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task: review_publisher.ReviewEvidence(
+        lambda task, *, session=None: review_publisher.ReviewEvidence(
             task_id=task,
             repo="org/repo",
             pr_number=7170,
@@ -4729,7 +4853,9 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
         monkeypatch.setattr(
             review_publisher,
             "collect",
-            lambda task: review_publisher.Refusal(task, "review_missing"),
+            lambda task, *, session=None: review_publisher.Refusal(
+                task, "review_missing"
+            ),
         )
     if queue_change == "head":
         pull["head"]["sha"] = "c" * 40
@@ -4739,7 +4865,9 @@ def test_public_docs_atomic_release_grant_replay_and_queue(
             direction = json.loads(row.direction_json)
             direction["landing_hold"] = {"actor": "operator", "reason": "new hold"}
             row.direction_json = json.dumps(direction)
-    queued = iter([{"PR_7170"}, set()])
+    # The fence observes membership before and again under the control lock,
+    # then verifies removal after the dequeue mutation.
+    queued = iter([{"PR_7170"}, {"PR_7170"}, set()])
     monkeypatch.setattr(landing, "_queued_ids", lambda *_: next(queued))
     assert landing._fence_ungranted_queue_entry("org/repo", item)
     assert len(actions) == 1

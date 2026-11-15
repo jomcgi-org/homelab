@@ -1,0 +1,908 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "factory chart values",
+  "type": "object",
+  "required": [
+    "kagent",
+    "postgres",
+    "substrate",
+    "networkPolicy",
+    "crdHook",
+    "broker",
+    "workers"
+  ],
+  "definitions": {
+    "endpointSelectors": {
+      "description": "Cilium endpoint selectors (matchLabels/matchExpressions); a k8s:io.kubernetes.pod.namespace label selects another namespace.",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "peer": {
+      "type": "object",
+      "required": ["namespace", "matchLabels"],
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "matchLabels": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "connectorCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "appId": { "type": "integer", "minimum": 1 },
+        "statusCreator": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        { "required": ["appId"], "not": { "required": ["statusCreator"] } },
+        { "required": ["statusCreator"], "not": { "required": ["appId"] } }
+      ]
+    }
+  },
+  "properties": {
+    "kagent": {
+      "description": "kagent install or reference. Other keys are the kagent 1.0.1 subchart's values.",
+      "type": "object",
+      "required": ["mode", "enabled"],
+      "properties": {
+        "mode": {
+          "enum": ["install", "existing"]
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Helm dependency condition; true exactly when mode is install."
+        },
+        "namespaceOverride": {
+          "type": "string"
+        }
+      }
+    },
+    "kagent-crds": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "enum": [false]
+        }
+      }
+    },
+    "crdHook": {
+      "type": "object",
+      "required": ["image"],
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "@sha256:[0-9a-f]{64}$"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "install (a CNPG Cluster) arrives with the CNPG operator.",
+          "enum": ["existing"]
+        },
+        "existing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoints": {
+              "$ref": "#/definitions/endpointSelectors"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
+        }
+      }
+    },
+    "substrate": {
+      "type": "object",
+      "required": ["namespace"],
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "credentialProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretReaderBinding": {
+              "type": "boolean"
+            },
+            "serviceAccount": {
+              "type": "string",
+              "minLength": 1
+            },
+            "clusterRole": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["cilium"],
+      "additionalProperties": false,
+      "properties": {
+        "cilium": {
+          "type": "boolean"
+        },
+        "edge": {
+          "$ref": "#/definitions/peer"
+        },
+        "connector": {
+          "$ref": "#/definitions/peer"
+        },
+        "otlp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoints": {
+              "$ref": "#/definitions/endpointSelectors"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
+        }
+      }
+    },
+    "itsaplan": {
+      "description": "itsaplan Community: the chart's own templates against the upstream images.",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "namespace": { "type": "string", "minLength": 1 },
+        "host": { "type": "string", "pattern": "^[a-z0-9.-]+$" },
+        "apiPath": {
+          "description": "The api's path on the web's host; / is the web app's.",
+          "type": "string",
+          "pattern": "^/[a-z0-9-]+$"
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["api", "web", "worker", "jobs"],
+          "properties": {
+            "api": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "web": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "worker": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+            "jobs": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["discoveryUrl", "clientId", "clientSecretName"],
+          "properties": {
+            "discoveryUrl": {
+              "type": "string",
+              "pattern": "^https://[^/]+/.*/\\.well-known/openid-configuration$"
+            },
+            "clientId": { "type": "string", "minLength": 1 },
+            "label": { "type": "string", "maxLength": 60 },
+            "clientSecretName": { "type": "string", "minLength": 1 }
+          }
+        },
+        "admin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["email", "name"],
+          "properties": {
+            "email": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+$" },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        },
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["team", "project", "agents"],
+          "properties": {
+            "team": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "slug"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 60 },
+                "slug": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$"
+                }
+              }
+            },
+            "project": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "name"],
+              "properties": {
+                "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{0,9}$" },
+                "name": { "type": "string", "minLength": 1 },
+                "description": { "type": "string", "maxLength": 2000 }
+              }
+            },
+            "agents": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["username", "name"],
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9.-]{1,40}$"
+                  },
+                  "name": { "type": "string", "minLength": 1 },
+                  "triggerOnAssign": { "type": "boolean" },
+                  "triggerOnMention": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "api": { "type": "object" },
+            "web": { "type": "object" },
+            "worker": { "type": "object" },
+            "jobs": { "type": "object" }
+          }
+        },
+        "route": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "gateway": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "namespace"],
+              "properties": {
+                "name": { "type": "string" },
+                "namespace": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "broker": {
+      "description": "The credential broker (projects/factory/broker).",
+      "type": "object",
+      "required": [
+        "enabled",
+        "namespace",
+        "image",
+        "relayPort",
+        "adminPort",
+        "grant"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository"],
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(|sha256:[0-9a-f]{64})$"
+            },
+            "pullPolicy": {
+              "enum": ["IfNotPresent", "Always", "Never"]
+            }
+          }
+        },
+        "relayPort": {
+          "$ref": "#/definitions/port"
+        },
+        "adminPort": {
+          "$ref": "#/definitions/port"
+        },
+        "grant": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "adminSubjects": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^system:serviceaccount:[^:]+:[^:]+$"
+          }
+        },
+        "connectorSubjects": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^system:serviceaccount:[^:]+:[^:]+$"
+          }
+        },
+        "operatorServiceAccount": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "githubApp": {
+          "type": "object",
+          "required": ["enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "itemPath": {
+              "type": "string",
+              "pattern": "^vaults/[^/]+/items/[^/]+$"
+            }
+          }
+        },
+        "config": {
+          "description": "Broker config file keys over the chart's (projects/factory/broker/config).",
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "reviewer": {
+      "description": "Independent reviewer (projects/factory/reviewer), off until deploy values enable it.",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "required": ["repository"],
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(|sha256:[0-9a-f]{64})$"
+            },
+            "pullPolicy": {
+              "enum": ["IfNotPresent", "Always", "Never"]
+            }
+          }
+        },
+        "githubApp": {
+          "type": "object",
+          "required": ["itemPath"],
+          "additionalProperties": false,
+          "properties": {
+            "itemPath": {
+              "type": "string",
+              "pattern": "^vaults/[^/]+/items/[^/]+$"
+            }
+          }
+        },
+        "appId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "enqueueAuthors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "humanApprovers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                "maxLength": 63
+              },
+              "requiredChecks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/connectorCheck"
+                }
+              },
+              "skipLabels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "enqueueAuthors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "humanGatePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "humanGateLabels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "humanApprovers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "trustedCommenters": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "contextDocs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "generatedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "maxDiffLines": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxDiffFiles": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "intervals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "poll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "taskPoll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "reissue": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "timeout": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "retryBackoff": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            }
+          }
+        },
+        "ruleIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "metricsPort": {
+          "$ref": "#/definitions/port"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "connector": {
+      "description": "The connector (projects/factory/connector).",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "required": ["repository"],
+          "additionalProperties": false,
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" },
+            "digest": {
+              "type": "string",
+              "pattern": "^(|sha256:[0-9a-f]{64})$"
+            },
+            "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] }
+          }
+        },
+        "coordinator": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["username"],
+            "properties": {
+              "username": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" },
+              "concurrency": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "bindings": {
+          "description": "Per repository binding, by its repositories name.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["itsaplanProject", "agents"],
+            "properties": {
+              "itsaplanProject": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9]{0,9}$"
+              },
+              "agents": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" }
+              },
+              "branchPrefix": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._/-]+/$"
+              },
+              "maxEngineeringRetries": { "type": "integer", "minimum": 0 },
+              "maxReviewRounds": { "type": "integer", "minimum": 0 },
+              "doneColumn": { "type": "string", "minLength": 1 },
+              "trustedReviewers": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "requiredChecks": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/connectorCheck" }
+              },
+              "reviewerCheck": { "$ref": "#/definitions/connectorCheck" }
+            }
+          }
+        },
+        "intervals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "poll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "heartbeat": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "reissueInterval": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "dispatchWindow": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "acquireRetry": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "reviewPoll": {
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            }
+          }
+        },
+        "links": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issue": { "type": "string" },
+            "run": { "type": "string" },
+            "session": { "type": "string" }
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
+        "metricsPort": { "$ref": "#/definitions/port" },
+        "resources": { "type": "object" }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "agents": {
+      "description": "Agent profiles, by key; repository bindings name one.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "harness",
+          "provider",
+          "model",
+          "resources",
+          "worker",
+          "concurrency"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "harness": {
+            "description": "Only the Codex harness speaks the broker's relay.",
+            "enum": ["codex"]
+          },
+          "provider": {
+            "description": "broker: the credential broker's Codex relay.",
+            "enum": ["broker"]
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resources": {
+            "description": "The actor's limits; must equal kagent.config.runtimeDefaults.",
+            "type": "object",
+            "required": ["cpu", "memory"],
+            "additionalProperties": false,
+            "properties": {
+              "cpu": {
+                "type": "string"
+              },
+              "memory": {
+                "type": "string"
+              }
+            }
+          },
+          "concurrency": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16
+          },
+          "egress": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": ["github-git"]
+            }
+          },
+          "systemPrompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "worker": {
+            "type": "object",
+            "required": ["resources"],
+            "additionalProperties": false,
+            "properties": {
+              "resources": {
+                "type": "object",
+                "required": ["limits"],
+                "properties": {
+                  "limits": {
+                    "type": "object",
+                    "required": ["cpu", "memory"]
+                  },
+                  "requests": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "repositories": {
+      "description": "Repository bindings: one namespace (Substrate atespace) and Agent per repository.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "owner",
+          "repo",
+          "baseBranch",
+          "namespace",
+          "agent"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+            "maxLength": 30
+          },
+          "owner": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9-]+$"
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "baseBranch": {
+            "type": "string",
+            "minLength": 1
+          },
+          "toolchain": {
+            "description": "Opt in to the homelab Alpine bootstrap and public download origins for this coding binding.",
+            "enum": ["homelab"]
+          },
+          "namespace": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+            "maxLength": 63
+          },
+          "agent": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "workers": {
+      "type": "object",
+      "required": ["image", "sandboxConfig", "snapshotLocationPrefix"],
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "@sha256:[0-9a-f]{64}$"
+        },
+        "sandboxConfig": {
+          "type": "string",
+          "minLength": 1
+        },
+        "snapshotLocationPrefix": {
+          "type": "string",
+          "pattern": "^s3://.+/$"
+        }
+      }
+    },
+    "clusterDomain": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "imagePullSecret": {
+      "description": "GHCR pull credentials for first-party images in the factory namespace.",
+      "type": "object",
+      "required": ["enabled", "name", "itemPath"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "itemPath": {
+          "type": "string",
+          "pattern": "^vaults/[^/]+/items/[^/]+$"
+        }
+      }
+    }
+  }
+}

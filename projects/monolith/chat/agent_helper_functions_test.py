@@ -1,8 +1,6 @@
 """Tests for agent helper functions and tool implementations.
 
 Covers gaps not addressed by existing test files:
-- _coerce_username: None input, dict extraction (username/name/display_name keys),
-  invalid dict, non-string types
 - ChatDeps: all three fields (channel_id, store, embed_client)
 - web_search tool: query delegation and return-value passthrough
 - search_history tool: query embedding, username coercion, similarity search,
@@ -13,7 +11,6 @@ Covers gaps not addressed by existing test files:
   multiple attachments per message, missing message id in attachment map
 """
 
-import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,7 +20,6 @@ from pydantic_ai.models.function import FunctionModel
 
 from chat.agent import (
     ChatDeps,
-    _coerce_username,
     _format_sandbox_result,
     build_system_prompt,
     create_agent,
@@ -341,89 +337,6 @@ class TestFormatContextMessagesAttachments:
         }
         result = format_context_messages([msg], attachments_map)
         assert "  [Image: Sunset]" in result
-
-
-# ===========================================================================
-# _coerce_username — gaps not covered elsewhere
-# ===========================================================================
-
-
-class TestCoerceUsernameNoneInput:
-    def test_none_returns_none(self):
-        """None input produces None without error."""
-        assert _coerce_username(None) is None
-
-
-class TestCoerceUsernameDictKeys:
-    def test_dict_with_username_key(self):
-        """Dict with 'username' key returns that string value."""
-        assert _coerce_username({"username": "alice"}) == "alice"
-
-    def test_dict_with_name_key(self):
-        """Dict with 'name' key (no 'username') returns name."""
-        assert _coerce_username({"name": "bob"}) == "bob"
-
-    def test_dict_with_display_name_key(self):
-        """Dict with only 'display_name' returns that value."""
-        assert _coerce_username({"display_name": "carol"}) == "carol"
-
-    def test_username_key_takes_priority_over_name_and_display_name(self):
-        """'username' wins when all three keys are present."""
-        assert (
-            _coerce_username(
-                {"username": "first", "name": "second", "display_name": "third"}
-            )
-            == "first"
-        )
-
-    def test_name_key_takes_priority_over_display_name(self):
-        """'name' wins over 'display_name' when 'username' is absent."""
-        assert _coerce_username({"name": "second", "display_name": "third"}) == "second"
-
-    def test_non_string_username_value_skipped_falls_through_to_name(self):
-        """Dict 'username' with a non-string value is skipped; 'name' is returned."""
-        assert _coerce_username({"username": 99, "name": "fallback"}) == "fallback"
-
-    def test_all_known_keys_with_non_string_values_returns_none(self, caplog):
-        """When all known keys exist but have non-string values, return None with warning."""
-        with caplog.at_level(logging.WARNING, logger="chat.agent"):
-            result = _coerce_username({"username": 1, "name": 2, "display_name": 3})
-        assert result is None
-        assert any("Could not extract username" in r.message for r in caplog.records)
-
-
-class TestCoerceUsernameInvalidDict:
-    def test_empty_dict_returns_none_with_warning(self, caplog):
-        """Empty dict logs a warning and returns None."""
-        with caplog.at_level(logging.WARNING, logger="chat.agent"):
-            result = _coerce_username({})
-        assert result is None
-        assert any("Could not extract username" in r.message for r in caplog.records)
-
-    def test_dict_with_unrelated_keys_returns_none_with_warning(self, caplog):
-        """Dict without any known username keys returns None and logs a warning."""
-        with caplog.at_level(logging.WARNING, logger="chat.agent"):
-            result = _coerce_username({"id": 42, "email": "x@example.com"})
-        assert result is None
-        assert any("Could not extract username" in r.message for r in caplog.records)
-
-
-class TestCoerceUsernameNonStringTypes:
-    def test_integer_coerced_to_string(self):
-        """Integer is str()-converted."""
-        assert _coerce_username(42) == "42"
-
-    def test_float_coerced_to_string(self):
-        """Float is str()-converted."""
-        assert _coerce_username(3.14) == "3.14"
-
-    def test_list_coerced_to_string(self):
-        """List (non-str, non-dict) is str()-converted."""
-        assert _coerce_username([1, 2]) == "[1, 2]"
-
-    def test_bool_coerced_to_string(self):
-        """bool (subclass of int, not str) is str()-converted."""
-        assert _coerce_username(True) == "True"
 
 
 # ===========================================================================

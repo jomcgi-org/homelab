@@ -1,0 +1,143 @@
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate:1.0.1
+# (sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86) templates/ate-controller.yaml. Do not edit.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ate-controller
+  namespace: ate-system
+  labels:
+    apps: ate-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ate-controller
+subjects:
+- kind: ServiceAccount
+  name: ate-controller
+  namespace: ate-system
+roleRef:
+  kind: ClusterRole
+  name: ate-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ate-controller
+  namespace: ate-system
+subjects:
+- kind: ServiceAccount
+  name: ate-controller
+  namespace: ate-system
+roleRef:
+  kind: Role
+  name: ate-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: ate-controller
+  namespace: ate-system
+  labels:
+    app: ate-controller
+spec:
+  selector:
+    app: ate-controller
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: metrics
+    protocol: TCP
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: ate-controller
+  namespace: ate-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ate-controller
+  template:
+    metadata:
+      labels:
+        app: ate-controller
+    spec:
+      serviceAccountName: ate-controller
+      containers:
+      - name: ate-controller
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop: [ALL]
+        image: ghcr.io/kagent-dev/substrate/atecontroller:v1.0.1@sha256:7a535bc5fe22e4db18d7444ecb2d4da9c5d344e69383ca79347932790b724829
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        args:
+        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy"
+        # The atecontroller binary defaults --ateapi-conn-spec to
+        # dns:///api.ate-system.svc:443, which is correct only for the
+        # canonical render (release name "substrate" in namespace
+        # "ate-system"). Pass the chart-resolved Service so the controller
+        # dials the right backend when substrate is installed as a subchart.
+        - "--ateapi-conn-spec=dns:///api.ate-system.svc:443"
+        - '--atelet-service-account=atelet'
+        - '--router-service-account=atenet-router'
+        - "--ateapi-ca-file=/run/servicedns-ca/trust-bundle.pem"
+        - "--ateapi-client-cert=/run/podidentity.podcert.ate.dev/credential-bundle.pem"
+        - "--dns-egress-policy=enforce-in-atunnel"
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: ATE_WORKER_OTEL_LOGS_EXPORTER
+          value: "none"
+        - name: ATE_WORKER_OTEL_TRACES_EXPORTER
+          value: "none"
+        - name: ATE_WORKER_OTEL_METRICS_EXPORTER
+          value: "none"
+        - name: OTEL_TRACES_EXPORTER
+          value: none
+        - name: OTEL_METRICS_EXPORTER
+          value: none
+        - name: OTEL_LOGS_EXPORTER
+          value: none
+        ports:
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: healthz
+          containerPort: 8081
+          protocol: TCP
+        volumeMounts:
+        - { name: servicedns-ca, mountPath: /run/servicedns-ca, readOnly: true }
+        - { name: podidentity,   mountPath: /run/podidentity.podcert.ate.dev, readOnly: true }
+      volumes:
+      - name: servicedns-ca
+        projected:
+          sources:
+          - clusterTrustBundle:
+              signerName: servicedns.podcert.ate.dev/identity
+              labelSelector:
+                matchLabels:
+                  podcert.ate.dev/canarying: live
+              path: trust-bundle.pem
+      - name: podidentity
+        projected:
+          sources:
+          - podCertificate:
+              signerName: podidentity.podcert.ate.dev/identity
+              keyType: ECDSAP256
+              credentialBundlePath: credential-bundle.pem

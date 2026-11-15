@@ -8,32 +8,16 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, select
 
 from knowledge.models import Gap, Note
+from shared.testing.sqlite import sqlite_session
 
 
 @pytest.fixture(name="session")
 def session_fixture():
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            yield session
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
+    with sqlite_session() as session:
+        yield session
 
 
 def _make_note(session: Session, note_id: str = "parent-note") -> Note:
@@ -52,7 +36,7 @@ def _make_note(session: Session, note_id: str = "parent-note") -> Note:
 
 def test_gap_defaults_state_and_created_at(session):
     """A newly-constructed Gap defaults to state='discovered' with a UTC created_at."""
-    note = _make_note(session)
+    _make_note(session)
     gap = Gap(
         term="Quantum Coherence",
         pipeline_version="gardener@v1",
@@ -79,7 +63,7 @@ def test_gap_defaults_state_and_created_at(session):
 
 def test_gap_with_explicit_class_and_context(session):
     """Optional fields (gap_class, context, answer) round-trip correctly."""
-    note = _make_note(session, "source")
+    _make_note(session, "source")
     gap = Gap(
         term="Linkerd mTLS",
         context="mentioned in [[Linkerd mTLS]] section of networking note",
@@ -99,8 +83,8 @@ def test_gap_with_explicit_class_and_context(session):
 
 def test_gap_unique_term(session):
     """A second Gap with the same term must fail (UNIQUE(term))."""
-    note_a = _make_note(session, "note-a")
-    note_b = _make_note(session, "note-b")
+    _make_note(session, "note-a")
+    _make_note(session, "note-b")
     gap1 = Gap(
         term="Duplicate Term",
         pipeline_version="gardener@v1",

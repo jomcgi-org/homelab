@@ -4,8 +4,10 @@ import { vi } from "vitest";
 // after remove. Rendering and provider loading are checked in the real browser.
 export const maps = [];
 export const setWorkerUrl = vi.fn();
+export const initialization = { error: null };
 export class Map {
   constructor(options) {
+    if (initialization.error) throw initialization.error;
     this.options = options;
     this.sources = new globalThis.Map();
     this.images = new globalThis.Map();
@@ -55,6 +57,9 @@ export class Map {
     for (const l of this.listeners)
       if (l.event === event && l.layer === layer) l.handler(data);
   }
+  isSourceLoaded() {
+    return this.sourceLoaded !== false;
+  }
   addControl() {}
   getCanvas() {
     return this.canvas;
@@ -74,6 +79,24 @@ export class Map {
       setData: vi.fn((data) => {
         this.assertLive();
         stored.data = data;
+      }),
+      updateData: vi.fn(({ update }) => {
+        this.assertLive();
+        const features = stored.data.features;
+        const ids = new Set(features.map((feature) => feature.id));
+        if (ids.has(undefined) || ids.size !== features.length)
+          throw new Error("updateData requires unique feature IDs");
+        const changes = new globalThis.Map(
+          update.map((change) => [change.id, change.newGeometry]),
+        );
+        stored.data = {
+          ...stored.data,
+          features: features.map((feature) =>
+            changes.has(feature.id)
+              ? { ...feature, geometry: changes.get(feature.id) }
+              : feature,
+          ),
+        };
       }),
     };
     this.sources.set(id, stored);

@@ -36,6 +36,7 @@ From `projects/monolith/frontend`, on a clean tested head:
 ```sh
 pnpm exec vitest run --config private-factory-preview/vitest.config.js
 FACTORY_PREVIEW_SHA=$(git rev-parse HEAD) pnpm exec vite build --config private-factory-preview/vite.config.js
+node private-factory-preview/scheme_ssr_check.js private-factory-fixture-preview
 python private-factory-preview/browser_check.py --artifact private-factory-fixture-preview --output /tmp/private-factory-evidence --expected-sha $(git rev-parse HEAD)
 ```
 
@@ -50,8 +51,29 @@ overflow, body scroll contract, sticky navigation, control styles and sizes,
 action requests and failures. The base matrix is all three routes at 390 and
 1440 in light/dark. Additional cases cover empty/unavailable/missing views,
 expanded tasks/events, relationship forms and the inline close confirmation.
-The existing relationship remove control sends immediately; this migration
-retains that behavior. The escalation close remains a two-step confirmation.
+Relationship removal names the row and requires Confirm remove; polling,
+navigation and Cancel remove clear the armed identity. Escalation close also
+requires two steps. Every open escalation has an independent labelled note;
+action feedback follows its exact receipt and decision through list reordering
+and remains visible when the card leaves the list. Receipt hashes select cards
+after initial or delayed loading. Phone captures use 390x844.
+
+## Issue #7520 coverage
+
+This staged PR covers the residual factory escalation fold, card feedback,
+close copy, notes, receipt links, relationship confirmation and heading items.
+It also removes the unused Space Mono request, extends reduced-motion handling
+to animations and reads the dashboard through a separate bounded factory
+summary. The shared shell's scheme and bootstrap scripts are retained.
+
+PR #7228 already delivered the sheet migration and one-line shortcut labels.
+Execution header, Inbox heading, reply growth and drain live-region work remain
+with #7155 / draft PR #7232. Chat stacking, notes viewport and review targets
+remain with #7156 / draft PR #7694. Qwen's disposition and retirement remain
+with #7042 / draft PR #7401. Those open PRs are outstanding owner-routed work.
+PR #7420 owns tracking-only task integration and its schema separately.
+Operational acceptance remains a verified monolith rollout within 72 hours of
+separately authorized landing and chart publication, recorded on #7520.
 
 Browser actions prove confirmation pinning across poll reordering, request-key
 replay versus refusal, busy/error feedback, query-state toggling, relationship
@@ -83,6 +105,17 @@ its own compatibility stylesheet. The shared back link uses `.td-chrome`, which
 shares only palette declarations with `.td` and does not opt full-screen
 children into `body:has(.td)` scrolling. Factory pages and the execution
 console keep their own Trail and scheme control, without duplicate back chrome.
+
+The updates journal has a shared Trail linking to the dashboard and no fixed
+back link. The SSR check renders the real layouts and requires exactly one
+preference script on every private fixture page and on a standalone public
+toggle. The private layout wraps its children in `SchemePreference`; nested
+instances inherit its context and skip the head script. The bootstrap source
+stays in that component. Separate SSR renders check context isolation. Browser
+checks parse those SSR documents and record
+the restored attribute before body content, then exercise the mounted layout's
+palette with explicit, missing, invalid and denied storage at both widths and
+OS schemes. The ordinary-page fixture has no child toggle or bootstrap.
 
 ## Non-factory task integration (#7400)
 

@@ -5,6 +5,10 @@ authentik service-account tokens. Credentials stay outside guests. It serves
 grant login, refresh and token routes, quota observations, health and metrics,
 with an optional SPIFFE mTLS listener.
 
+The grant, refresh, store, quota and Codex ChatGPT provider packages live in
+`projects/shared/go/tokenbroker` so other brokers can reuse them. This
+directory keeps the binary, its HTTP server and the authentik adapter.
+
 ## Quota observation durability
 
 The broker persists its complete provider and grant quota snapshot in the

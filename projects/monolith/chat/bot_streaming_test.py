@@ -13,7 +13,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
-from chat.bot import ChatBot, BotMessageView, STREAM_EDIT_INTERVAL
+from chat.bot import ChatBot, BotMessageView
 
 
 # ---------------------------------------------------------------------------

@@ -28,9 +28,7 @@ class DrainerSettings:
     repo: str
     branch: str
     reasoning: bool
-    notify_failures: bool = False
     docfix_auto_merge: bool = False
-    docfix_review_enabled: bool = False
     kg_turn_timeout_seconds: int = 900
     grimoire_kg_max_jobs_per_day: int = 0
 
@@ -41,16 +39,6 @@ _AGENT_SESSIONS_CHANNEL_NOTIFY_VALUES = {"needs-input", "all", "none"}
 
 def drainer_enabled() -> bool:
     return flag("DRAINER_ENABLED")
-
-
-def _bool_setting(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized not in {"true", "false"}:
-        raise ValueError(f"{name} must be true or false, got {value!r}")
-    return normalized == "true"
 
 
 def load_drainer_settings() -> DrainerSettings:
@@ -78,13 +66,11 @@ def load_drainer_settings() -> DrainerSettings:
             os.environ.get("DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY", "0")
         ),
         docfix_auto_merge=flag("DRAINER_DOCFIX_AUTO_MERGE"),
-        docfix_review_enabled=flag("KG_DOCFIX_REVIEW_ENABLED"),
         repo=os.environ.get("DRAINER_REPO", GITHUB_REPO),
         branch=os.environ.get("DRAINER_BRANCH", "main"),
         # Drain jobs are usually multi-step repo audits, so Luna uses high
         # reasoning by default while each job can still opt out in its payload.
         reasoning=os.environ.get("DRAINER_REASONING", "true").lower() == "true",
-        notify_failures=_bool_setting("DRAINER_NOTIFY_FAILURES", False),
     )
 
 

@@ -57,6 +57,7 @@ def _paths() -> set[str]:
 # ---------------------------------------------------------------------------
 
 REQUIRED_PATHS = [
+    "/internal/public-assets/{asset_path:path}",
     "/api/agents/public/activity",
     "/api/knowledge/public/graph",
     "/api/knowledge/public/entities",
@@ -147,6 +148,7 @@ ALLOWED_PREFIXES = (
     # kept off the public HTTPRoute (the frontend is the sole public origin). The
     # write router is NOT mounted here (the public tier stays read-only).
     "/internal/artifact",
+    "/internal/public-assets",
     # Public FaaS invocation surface (Task 13): jomcgi.dev/functions/<name> for
     # visibility=public functions only. This is the ONE public route that is not
     # under /api (it is the product URL, per ADR agents/045); the ingestion API

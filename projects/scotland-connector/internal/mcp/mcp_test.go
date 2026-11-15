@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jomcgi/homelab/projects/scotland-connector/internal/aurora"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/connector"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/meter"
@@ -19,6 +20,45 @@ import (
 func handler() *Handler {
 	return New(fixture.Service(true), meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
+}
+
+// auroraStore is an enabled aurora store whose snapshot has not loaded.
+type auroraStore struct{}
+
+func (auroraStore) Current() *aurora.Snapshot { return nil }
+
+func auroraHandler() *Handler {
+	svc := fixture.Service(true)
+	svc.AuroraData = auroraStore{}
+	return New(svc, meter.New(prometheus.NewRegistry()), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ServerInfo{Name: "scotland-connector", Version: "test"}, []string{"https://claude.ai"})
+}
+
+// aurora is listed, and named in the instructions, only when its store is
+// enabled: a disabled one answers every call unknown. A client holding an
+// older list can still call it.
+func TestAuroraListedOnlyWhenEnabled(t *testing.T) {
+	names := func(h *Handler) (out []string, instructions string) {
+		t.Helper()
+		_, _, r := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
+		for _, tool := range r.Result["tools"].([]any) {
+			out = append(out, tool.(map[string]any)["name"].(string))
+		}
+		_, _, r = post(t, h, `{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`, nil)
+		return out, r.Result["instructions"].(string)
+	}
+	off, offText := names(handler())
+	if strings.Join(off, ",") != "light,plan,check" || strings.Contains(offText, "aurora") {
+		t.Errorf("disabled: tools %v, instructions %q", off, offText)
+	}
+	on, onText := names(auroraHandler())
+	if strings.Join(on, ",") != "light,aurora,plan,check" || onText != Instructions {
+		t.Errorf("enabled: tools %v, instructions %q", on, onText)
+	}
+	code, _, r := post(t, handler(), `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"aurora","arguments":{"lat":58.44,"lon":-3.09,"at":"2026-06-15T22:00:00Z"}}}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
+	if code != http.StatusOK || r.Result["isError"] != false {
+		t.Fatalf("aurora call while unlisted: status %d result %v", code, r.Result)
+	}
 }
 
 type reply struct {
@@ -60,7 +100,7 @@ func modern(method, name string) map[string]string {
 // The Claude directory requires a title and readOnlyHint on every tool; the
 // list must also be deterministic and match the connector's surface.
 func TestToolListAndAnnotations(t *testing.T) {
-	code, _, r := post(t, handler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{`+modernMeta+`}}`, modern("tools/list", ""))
+	code, _, r := post(t, auroraHandler(), `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{`+modernMeta+`}}`, modern("tools/list", ""))
 	if code != http.StatusOK || r.Error != nil {
 		t.Fatalf("status %d error %+v", code, r.Error)
 	}
@@ -370,7 +410,7 @@ func TestLegacyClient(t *testing.T) {
 		t.Fatalf("notification status %d", code)
 	}
 	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
-	if code != http.StatusOK || len(r.Result["tools"].([]any)) != len(Tools) || r.Result["resultType"] != nil {
+	if code != http.StatusOK || len(r.Result["tools"].([]any)) != len(h.tools()) || r.Result["resultType"] != nil {
 		t.Fatalf("legacy tools/list: status %d result %v", code, r.Result)
 	}
 	code, _, r = post(t, h, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"plan","arguments":{"lat":56.41,"lon":-5.47}}}`, map[string]string{"MCP-Protocol-Version": "2025-11-25"})
@@ -394,7 +434,7 @@ func TestDiscoveryInstructionsIncludeLightScope(t *testing.T) {
 		{"server/discover", `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`, modern("server/discover", "")},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
-			code, _, r := post(t, handler(), tc.body, tc.headers)
+			code, _, r := post(t, auroraHandler(), tc.body, tc.headers)
 			if code != http.StatusOK || r.Error != nil {
 				t.Fatalf("status %d error %+v", code, r.Error)
 			}

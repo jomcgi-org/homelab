@@ -1,0 +1,11 @@
+.factory-page {
+  max-width: 72rem;
+  margin-inline: auto;
+  padding: var(--spacing-6);
+}
+
+.factory-tools {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: var(--spacing-4);
+}

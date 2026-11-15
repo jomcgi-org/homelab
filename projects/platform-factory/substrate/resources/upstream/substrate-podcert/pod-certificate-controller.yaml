@@ -1,0 +1,213 @@
+# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate-podcert:1.0.1
+# (sha256:366b0431ed99cd4ff74f49cb7746329a722c9f8ec9ce0ab4d0670817b34deb80) templates/pod-certificate-controller.yaml. Do not edit.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: podcertificate-controller-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: podcertificate-controller
+  namespace: podcertificate-controller-system
+  labels:
+    app: podcertificate-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: podcert-ate-dev-signer
+rules:
+# The service signer needs to be able to read services and pods.
+- apiGroups:
+  - ""
+  resources:
+  - services
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - podcertificaterequests
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - clustertrustbundles
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - delete
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - podcertificaterequests/status
+  verbs:
+  - update
+- apiGroups:
+  - certificates.k8s.io
+  resources:
+  - signers
+  resourceNames:
+  - servicedns.podcert.ate.dev/*
+  - podidentity.podcert.ate.dev/*
+  - postgres.podcert.ate.dev/*
+  verbs:
+  - sign
+  - attest
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: podcert-ate-dev-signer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: podcert-ate-dev-signer
+subjects:
+- kind: ServiceAccount
+  namespace: podcertificate-controller-system
+  name: podcertificate-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: podcertificate-controller-system
+  name: coordinator
+rules:
+- apiGroups:
+  - "coordination.k8s.io"
+  resources:
+  - "leases"
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: podcertificate-controller-is-a-coordinator
+  namespace: podcertificate-controller-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: coordinator
+subjects:
+- kind: ServiceAccount
+  namespace: podcertificate-controller-system
+  name: podcertificate-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podcertificate-controller
+  namespace: podcertificate-controller-system
+  labels:
+    app: podcertificate-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: podcertificate-controller
+  template:
+    metadata:
+      labels:
+        app: podcertificate-controller
+    spec:
+      containers:
+      - name: controller
+        image: ghcr.io/kagent-dev/substrate/podcertcontroller:v1.0.1@sha256:f6c4a40f9afedc46df580470ca12cc309b135543cda64396968936800fd4ee7f
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        args:
+        - --in-cluster=true
+        - --sharding-pod-namespace=$(POD_NAMESPACE)
+        - --sharding-pod-name=$(POD_NAME)
+        - --sharding-pod-uid=$(POD_UID)
+        - --sharding-application-name=podcertificate-controller
+        - --service-dns-ca-pool=/run/ca-state/service-dns-pool.json
+        - --pod-identity-ca-pool=/run/ca-state/pod-identity-pool.json
+        - --postgres-ca-pool=/run/ca-state/postgres-pool.json
+        - "--postgres-client-namespace=ate-system"
+        - "--postgres-client-service-account=ate-api-server"
+        - --workers-per-signer=$(WORKERS_PER_SIGNER)
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: WORKERS_PER_SIGNER
+          value: "1"
+        volumeMounts:
+        - name: "ca-state"
+          mountPath: "/run/ca-state"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: "ca-state"
+        projected:
+          sources:
+          - secret:
+              name: "service-dns-ca-pool"
+              items:
+              - key: "pool"
+                path: "service-dns-pool.json"
+          - secret:
+              name: "pod-identity-ca-pool"
+              items:
+              - key: "pool"
+                path: "pod-identity-pool.json"
+          - secret:
+              name: "postgres-ca-pool"
+              items:
+              - key: "pool"
+                path: "postgres-pool.json"
+      dnsPolicy: Default
+      nodeSelector:
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: podcertificate-controller
+      terminationGracePeriodSeconds: 30

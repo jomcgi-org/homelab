@@ -59,7 +59,7 @@ func init() {
 }
 
 // hf2ociResolver adapts hf2oci's copy.Resolve to the controller's Resolver interface.
-// This is the ONLY file that imports tools/hf2oci.
+// This is the ONLY file that imports bazel/tools/hf2oci.
 type hf2ociResolver struct {
 	client *hf.Client
 }

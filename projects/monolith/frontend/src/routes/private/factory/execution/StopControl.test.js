@@ -11,7 +11,7 @@ async function render(props = {}) {
   document.body.append(target);
   const component = mount(StopControl, {
     target,
-    props: { enabled: false, identity, onStop: vi.fn(), ...props },
+    props: { identity, onStop: vi.fn(), ...props },
   });
   mounted.push({ component, target });
   await tick();
@@ -26,20 +26,14 @@ afterEach(async () => {
 });
 
 describe("Stop control", () => {
-  test("is absent while the rollout flag is false", async () => {
-    const target = await render();
-    expect(target.querySelector("button")).toBe(null);
-  });
-
   test("sends the exact identity and disables duplicate requested clicks", async () => {
     const onStop = vi.fn();
-    const target = await render({ enabled: true, onStop });
+    const target = await render({ onStop });
     target.querySelector("button").click();
     await tick();
     expect(onStop).toHaveBeenCalledWith(identity);
 
     const pending = await render({
-      enabled: true,
       status: { ...identity, outcome: "requested" },
     });
     expect(pending.querySelector("button").disabled).toBe(true);
@@ -54,7 +48,6 @@ describe("Stop control", () => {
     ["unknown", "outcome unknown"],
   ])("presents %s truthfully", async (outcome, text) => {
     const target = await render({
-      enabled: true,
       status: { ...identity, outcome },
     });
     expect(target.textContent).toContain(text);

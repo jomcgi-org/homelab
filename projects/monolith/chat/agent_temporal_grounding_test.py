@@ -1,58 +1,123 @@
-"""Tests for temporal grounding (today's date + knowledge cutoff) injection.
+"""Offline coverage of UTC grounding delivered by both real agent constructors."""
 
-The model was confidently calling true, post-cutoff facts "fabrication" because
-it answered from stale training memory. These helpers feed it today's date and
-its cutoff so it knows where its knowledge ends and must search instead.
-"""
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
-import re
-from unittest.mock import patch
+import pytest
+from pydantic_ai import models
+from pydantic_ai.messages import ModelResponse, SystemPromptPart, TextPart
+from pydantic_ai.models.function import FunctionModel
 
 from chat.agent import (
     MODEL_KNOWLEDGE_CUTOFF,
+    ChatDeps,
+    create_agent,
     create_fact_check_agent,
     temporal_grounding_prompt,
     today_str,
 )
 
 
-class TestTodayStr:
-    def test_is_day_granular(self):
-        """The date is day-level (e.g. "30 June 2026"), not a finer timestamp.
-
-        Day granularity keeps the dynamic-system-prompt prefix stable within a
-        day so vLLM's KV cache is only evicted once per day, not per request.
-        """
-        assert re.fullmatch(r"\d{1,2} [A-Z][a-z]+ \d{4}", today_str())
-
-    def test_no_clock_time(self):
-        """No hours/minutes/seconds leak in (those would thrash the KV cache)."""
-        assert ":" not in today_str()
+UTC_CASES = [
+    (datetime(2026, 11, 5, 0, 0, 0, tzinfo=timezone.utc), "5 November 2026"),
+    (datetime(2026, 11, 5, 23, 59, 59, tzinfo=timezone.utc), "5 November 2026"),
+    (datetime(2026, 11, 6, 0, 0, 0, tzinfo=timezone.utc), "6 November 2026"),
+    (datetime(2027, 1, 1, 0, 0, 0, tzinfo=timezone.utc), "1 January 2027"),
+]
 
 
-class TestTemporalGroundingPrompt:
-    def test_includes_today_and_cutoff(self):
+@pytest.fixture(autouse=True)
+def offline_only(monkeypatch):
+    """Any accidental provider, HTTP, tool or embedding request must fail locally."""
+    monkeypatch.setattr(models, "ALLOW_MODEL_REQUESTS", False)
+    with (
+        patch("httpx.Client.send", side_effect=AssertionError("outbound HTTP")) as sync,
+        patch(
+            "httpx.AsyncClient.send", side_effect=AssertionError("outbound HTTP")
+        ) as async_send,
+        patch(
+            "chat.agent.search_web", side_effect=AssertionError("web tool request")
+        ) as search,
+        patch(
+            "chat.agent.EmbeddingClient.embed",
+            side_effect=AssertionError("embedding request"),
+        ) as embed,
+        patch(
+            "chat.agent.EmbeddingClient.embed_batch",
+            side_effect=AssertionError("embedding request"),
+        ) as embed_batch,
+    ):
+        yield
+    for request in (sync, async_send, search, embed, embed_batch):
+        request.assert_not_called()
+
+
+@pytest.mark.parametrize("instant, expected_date", UTC_CASES)
+def test_utc_date_and_grounding(instant, expected_date):
+    with patch("chat.agent.datetime") as clock:
+        clock.now.return_value = instant
+        assert today_str() == expected_date
+        clock.now.assert_called_once_with(timezone.utc)
+        clock.now.reset_mock()
         prompt = temporal_grounding_prompt()
-        assert today_str() in prompt
+        assert expected_date in prompt
         assert MODEL_KNOWLEDGE_CUTOFF in prompt
-
-    def test_instructs_to_search_not_trust_memory(self):
-        """The fragment must push the model off stale memory toward searching."""
-        prompt = temporal_grounding_prompt().lower()
-        assert "cutoff" in prompt
-        assert "search" in prompt
-        # The exact failure we are fixing: do not call something fake on sight.
-        assert "fabricated" in prompt or "false" in prompt
+        clock.now.assert_called_once_with(timezone.utc)
 
 
-class TestAgentConstruction:
-    def test_fact_check_agent_constructs_with_dynamic_grounding(self):
-        """create_fact_check_agent registers the dynamic system prompt cleanly.
+@pytest.mark.parametrize(
+    "constructor", [create_agent, create_fact_check_agent], ids=["chat", "fact_check"]
+)
+@pytest.mark.asyncio
+async def test_registered_grounding_is_evaluated_per_fresh_run(constructor):
+    captured = []
 
-        The bot tests patch the fact-check agent, so this is the only coverage
-        that the ``@fact_agent.system_prompt`` decorator API is actually valid;
-        without it a pydantic-ai API mismatch would only surface at pod start.
-        """
-        with patch("chat.agent.LLAMA_CPP_URL", "http://fake:8080"):
-            agent = create_fact_check_agent(base_url="http://fake:8080")
-        assert agent is not None
+    def terminal_model(messages, info):
+        captured.append(
+            [
+                part.content
+                for message in messages
+                for part in message.parts
+                if isinstance(part, SystemPromptPart)
+            ]
+        )
+        return ModelResponse(parts=[TextPart("done")])
+
+    store = MagicMock(spec=[])
+    embed_client = AsyncMock(spec=[])
+    deps = ChatDeps(
+        channel_id="offline-channel",
+        author_id="offline-author",
+        store=store,
+        embed_client=embed_client,
+    )
+    with (
+        patch("chat.agent.datetime") as clock,
+        patch("shared.inference.hosted_chat_provider", return_value=None),
+        patch("shared.inference.auth_headers", return_value={}),
+        patch("chat.directives.get_active", return_value=""),
+        patch("chat.directives.get_style_pref", return_value=""),
+    ):
+        clock.now.return_value = UTC_CASES[0][0]
+        agent = constructor(base_url="http://offline.invalid:8080")
+        model = FunctionModel(terminal_model)
+        fragments = []
+        for index, (instant, expected_date) in enumerate(UTC_CASES[:3]):
+            clock.now.return_value = instant
+            clock.now.reset_mock()
+            result = await agent.run("go", model=model, deps=deps)
+            assert result.output == "done"
+            assert result.usage().tool_calls == 0
+            clock.now.assert_called_once_with(timezone.utc)
+            assert len(captured) == index + 1
+            temporal = [
+                part for part in captured[index] if MODEL_KNOWLEDGE_CUTOFF in part
+            ]
+            assert len(temporal) == 1
+            assert expected_date in temporal[0]
+            fragments.append(temporal[0].encode("utf-8"))
+
+    assert fragments[0] == fragments[1]
+    assert fragments[1] != fragments[2]
+    assert store.mock_calls == []
+    assert embed_client.mock_calls == []

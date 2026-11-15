@@ -1,0 +1,18 @@
+# Callers authenticate to ate-api-server with Kubernetes ServiceAccount
+# tokens. The substrate chart mounts this ConfigMap but leaves creating it to
+# the installer (kubectl-ate's install writes the same shape). The issuer is
+# this cluster's (/.well-known/openid-configuration on the apiserver).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ate-api-authentication
+  namespace: ate-system
+data:
+  authentication.yaml: |-
+    jwtProviders:
+    - audiences:
+      - api.ate-system.svc
+      certificateAuthorityFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      discoveryTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      issuer: https://kubernetes.default.svc.cluster.local
+      name: kubernetes

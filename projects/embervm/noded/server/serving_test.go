@@ -375,7 +375,7 @@ func newServingTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeServingD
 		ServingDriver: fsd,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	// Seed a built serving image "img-a" mapping to the runtime rootfs "img-a" and a
 	// handler artifact, so a fresh cold boot resolves the serving-images inventory
 	// (D-R3.11.2) exactly as a real BuildBase would have populated it.
@@ -908,5 +908,37 @@ func TestReconcileServingFromDisk(t *testing.T) {
 	got, ok := s.servingSnap.get(ref)
 	if !ok || got.ip != "172.31.0.9" {
 		t.Errorf("rescan did not recover the pinned IP: %+v", got)
+	}
+}
+
+func TestServingFailedLaunchRetainsTapUntilTeardown(t *testing.T) {
+	s, network, driver := newServingTestServer(t)
+	done := make(chan struct{})
+	driver.failClaim = &pendingLaunchError{done}
+	ctx, cancel := context.WithCancel(t.Context())
+	_, err := s.StartServing(ctx, &nodev1.StartServingRequest{Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}, Source: &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}}, Port: 8080, Trace: &nodev1.Trace{Workload: "wl-serve"}})
+	cancel()
+	if err == nil {
+		t.Fatal("expected launch failure")
+	}
+	network.mu.Lock()
+	released := len(network.released)
+	network.mu.Unlock()
+	if released != 0 {
+		t.Fatal("tap released before process teardown")
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for {
+		network.mu.Lock()
+		released = len(network.released)
+		network.mu.Unlock()
+		if released == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tap cleanup count=%d", released)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

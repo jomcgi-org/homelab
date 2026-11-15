@@ -333,7 +333,7 @@ func TestRestoreIssuesPutSerialBeforeLoadSnapshot(t *testing.T) {
 		t.Fatalf("Release warm: %v", err)
 	}
 
-	h2, err := d.RestoreSession(ctx, "serial", ref.ID, false)
+	h2, err := d.RestoreSession(ctx, "serial", ref.ID)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestRestoreFailureAttachesSerialTailToError(t *testing.T) {
 	}
 	launcher.failPath = "/snapshot/load"
 
-	_, err = d.RestoreSession(ctx, "serial", ref.ID, false)
+	_, err = d.RestoreSession(ctx, "serial", ref.ID)
 	if err == nil {
 		t.Fatal("RestoreSession should fail when snapshot/load fails")
 	}

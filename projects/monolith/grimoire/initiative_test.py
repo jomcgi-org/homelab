@@ -17,7 +17,6 @@ SECRET_INITIATIVE = 7351
 
 @pytest.fixture
 def http_harness(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "initiative.db") as h:
         h.prepare("play")
         # The shared fixture seeds an order for the leak matrix; start clean.

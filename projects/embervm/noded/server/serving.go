@@ -152,7 +152,7 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 	h, err := s.servingDriver.ClaimServing(ctx, workload, img.RootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, handlerPath, handlerSizeBytes)
 	admissionLanded(ctx)
 	if err != nil {
-		s.servingNet.ReleaseTap(ctx, ip)
+		afterFailedLaunch(err, func() { s.servingNet.ReleaseTap(context.Background(), ip) })
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot serving vm: %v", err)
 	}
 	// A fresh cold boot has NO source snapshot ref (empty), so it never guards a bundle.
@@ -192,7 +192,7 @@ func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServi
 	h, err := s.servingDriver.RestoreServing(ctx, workload, ref)
 	admissionLanded(ctx)
 	if err != nil {
-		s.servingNet.ReleaseTap(ctx, ip)
+		afterFailedLaunch(err, func() { s.servingNet.ReleaseTap(context.Background(), ip) })
 		// The snapshot is left on disk (never deleted on a failed restore).
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight serving snapshot %q: %v", ref, err)
 	}

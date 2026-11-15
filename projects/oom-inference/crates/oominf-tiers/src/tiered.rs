@@ -80,7 +80,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{ExpertSource, ExpertStats, ExpertTiers, Memory, Staged, Transfer};
+use oominf_core::{ExpertSource, ExpertStats, ExpertTiers, Staged, Transfer};
 use oominf_format::Model;
 
 use crate::cache::{Place, SlotCache};
@@ -1099,12 +1099,6 @@ pub fn slots_for(model: &Model, layout: &str, gib: f64) -> usize {
         .find(|g| g.schema.layout == layout)
         .map_or(1, |g| g.schema.stride);
     ((gib * GIB) / stride as f64) as usize
-}
-
-/// Free device memory now, minus `reserve_gib`, in GiB (at least 0).
-pub fn free_vram_gib(b: &impl Memory, reserve_gib: f64) -> Result<f64> {
-    let (free, _) = b.mem_info()?;
-    Ok((free as f64 / GIB - reserve_gib).max(0.0))
 }
 
 /// Enqueues one record copy from a host slot to device address `dst` on `queue`.

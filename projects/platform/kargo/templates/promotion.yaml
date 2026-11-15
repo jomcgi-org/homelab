@@ -363,7 +363,14 @@ spec:
             method: GET
             url: {{ $stage.verdictURL | quote }}
             timeout: 10s
-            successExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'pass'"
+            {{- $success := printf "response.status == 200 && response.body.chart_version == '%s' && response.body.verdict == 'pass'" $pipeline.desiredRevisionExpr }}
+            {{- range $scenario := $stage.verdictRequiredScenarios | default (list) }}
+            {{- if not (regexMatch "^S[0-9]+$" $scenario) }}
+            {{- fail "verdictRequiredScenarios entries must be scenario IDs such as S9" }}
+            {{- end }}
+            {{- $success = printf "%s && response.body.scenarios != nil && any(response.body.scenarios, { .id == '%s' && .verdict == 'pass' })" $success $scenario }}
+            {{- end }}
+            successExpression: {{ $success | quote }}
             failureExpression: "response.status == 200 && response.body.chart_version == '{{ $pipeline.desiredRevisionExpr }}' && response.body.verdict == 'fail' && response.body.previous != nil && response.body.previous.verdict == 'fail'"
             errorExpression: "'conformance suite failed on chart ' + response.body.chart_version + ': ' + toJSON(response.body.scenarios)"
         {{- end }}

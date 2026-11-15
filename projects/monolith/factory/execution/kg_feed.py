@@ -19,10 +19,9 @@ from factory.execution.constants import (
 )
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 from factory.execution.rationale import parse_rationale
-from factory.execution.redact import redact_text
 from core.db import get_engine
 from framework import log_task_exception
-from knowledge.api import enqueue_extraction, ingest_raw_with_status
+from knowledge.api import enqueue_extraction, ingest_raw_with_status, redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +34,6 @@ DOCUMENT_CAP = 400 * 1024
 EMBER_SESSIONS_FEED = "ember-sessions"
 
 _kg_feed_task: asyncio.Task | None = None
-
-
-def _enabled() -> bool:
-    return os.environ.get("KG_FEED_ENABLED", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 def _configured_since_floor() -> datetime | None:
@@ -263,12 +253,6 @@ def _render_session_raw(
     return content, redactions, truncated
 
 
-def render_session_raw(session_row: AgentSession, turns: list[AgentTurn]) -> str:
-    """Render an incremental session transcript as bounded markdown."""
-    content, _, _ = _render_session_raw(session_row, turns)
-    return content
-
-
 def _raw_is_queued_or_handled(session: Session, raw_id: str) -> bool:
     dialect = session.get_bind().dialect.name
     jobs_table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
@@ -381,8 +365,6 @@ async def feed_once(
     is_handled=None,
 ) -> int:
     """Export up to KG_FEED_BATCH finished sessions."""
-    if not _enabled():
-        return 0
     try:
         return await asyncio.to_thread(
             _feed_once_sync,

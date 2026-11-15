@@ -31,15 +31,13 @@ from grimoire.models import (
     KnowledgeGrant,
     Relationship,
 )
+from grimoire.names import LEADING_ARTICLE_RE, MAP_KEY_PREFIX_RE, QUOTE_NORMALIZE
 
 SIGNAL_VERSION = "short-full-comention-v2"
 MAX_EVIDENCE = 3
 SNIPPET_CHARS = 320
 MAX_CONFLICT_RETRIES = 3
 _SCAN_ADVISORY_LOCK = 6_503_913
-_MAP_KEY_PREFIX_RE = re.compile(r"^[A-Za-z]{0,2}\d+[A-Za-z]?[.:]\s+")
-_LEADING_ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
-_QUOTE_NORMALIZE = {"‘": "'", "’": "'", "“": '"', "”": '"'}
 
 
 class AliasError(RuntimeError):
@@ -149,10 +147,10 @@ def _lock_merge_children(session: Session, entity_ids: list[str]) -> None:
 
 
 def _tokens(name: str) -> tuple[str, ...]:
-    for curly, straight in _QUOTE_NORMALIZE.items():
+    for curly, straight in QUOTE_NORMALIZE.items():
         name = name.replace(curly, straight)
-    canonical = _MAP_KEY_PREFIX_RE.sub("", name.strip())
-    canonical = _LEADING_ARTICLE_RE.sub("", canonical).strip().casefold()
+    canonical = MAP_KEY_PREFIX_RE.sub("", name.strip())
+    canonical = LEADING_ARTICLE_RE.sub("", canonical).strip().casefold()
     return tuple(re.findall(r"[^\W_]+(?:['’][^\W_]+)*", canonical))
 
 

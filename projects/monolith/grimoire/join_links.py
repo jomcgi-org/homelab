@@ -29,16 +29,7 @@ TTL = timedelta(days=7)
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
-def links_enabled() -> bool:
-    return os.getenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "") == "true"
-
-
-def require_enabled():
-    if not links_enabled():
-        raise HTTPException(503, "Invitation links are not enabled yet.")
-
-
-router = APIRouter(dependencies=[Depends(require_enabled)])
+router = APIRouter()
 DatabaseSession = Annotated[Session, Depends(get_session)]
 Identity = Annotated[Principal, Depends(get_authenticated_identity)]
 AuthEmail = Annotated[str, Depends(get_authenticated_email)]
@@ -350,9 +341,8 @@ def revoke(
     )
 
 
-@router.post("/join-links/inspect", response_model=InspectedLink)
-def inspect(body: TokenBody, session: DatabaseSession):
-    row = _token_row(session, _body_token(body))
+def inspect_link(session: Session, token: str) -> InspectedLink:
+    row = _token_row(session, token)
     # Accepted metadata stays available for the final authenticated page's
     # idempotent retry. Revoked/expired links expose no recipient metadata.
     if row.status != "accepted":
@@ -365,9 +355,9 @@ def inspect(body: TokenBody, session: DatabaseSession):
     )
 
 
-@router.post("/join-links/enroll")
-def enroll(body: TokenBody, session: DatabaseSession):
-    row = _token_row(session, _body_token(body), lock=True)
+def enroll_link(session: Session, token: str) -> str:
+    """Return the provider's enrollment URL for a pending new-account link."""
+    row = _token_row(session, token, lock=True)
     _pending(row)
     if not row.enrollment_allowed:
         raise HTTPException(
@@ -397,7 +387,17 @@ def enroll(body: TokenBody, session: DatabaseSession):
             raise HTTPException(
                 503, "Account enrollment could not be saved. Please retry."
             ) from None
-    return {"enrollment_url": provider.enrollment_url(row.enrollment_id)}
+    return provider.enrollment_url(row.enrollment_id)
+
+
+@router.post("/join-links/inspect", response_model=InspectedLink)
+def inspect(body: TokenBody, session: DatabaseSession):
+    return inspect_link(session, _body_token(body))
+
+
+@router.post("/join-links/enroll")
+def enroll(body: TokenBody, session: DatabaseSession):
+    return {"enrollment_url": enroll_link(session, _body_token(body))}
 
 
 @router.post("/join-links/redeem", response_model=JoinResult)
