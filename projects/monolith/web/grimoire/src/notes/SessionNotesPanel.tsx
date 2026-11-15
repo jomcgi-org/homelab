@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
@@ -67,6 +67,7 @@ export function SessionNotesPanel({
   onOpenKnowledge,
 }: SessionNotesPanelProps) {
   const [kind, setKind] = useState<NoteKind>("character");
+  const audienceId = useId();
   const [draft, setDraft] = useState<Draft>(blank);
   const [deleting, setDeleting] = useState<Note | null>(null);
   const titleInput = useRef<HTMLInputElement>(null);
@@ -120,24 +121,8 @@ export function SessionNotesPanel({
     titleInput.current?.focus();
   };
 
-  return (
-    <VStack gap={5} as="section" aria-label="Campaign notes">
-      <TabList
-        role="tablist"
-        aria-label="Notes audience"
-        value={kind}
-        onChange={(value) => {
-          setKind(value as NoteKind);
-          setDraft(blank);
-        }}
-      >
-        <Tab
-          value="character"
-          label={dm ? "Shared with you" : "My notes"}
-          aria-disabled={busy}
-        />
-        <Tab value="party" label="Party notes" aria-disabled={busy} />
-      </TabList>
+  const content = (
+    <VStack gap={5}>
       <Text type="body" color="secondary">
         {audience(kind, dm)}
       </Text>
@@ -273,6 +258,47 @@ export function SessionNotesPanel({
           )
         }
       </Loaded>
+    </VStack>
+  );
+
+  return (
+    <VStack gap={5} as="section" aria-label="Campaign notes">
+      <TabList
+        role="tablist"
+        aria-label="Notes audience"
+        value={kind}
+        onChange={(value) => {
+          setKind(value as NoteKind);
+          setDraft(blank);
+        }}
+      >
+        <Tab
+          id={`${audienceId}-character-tab`}
+          panelId={`${audienceId}-character-panel`}
+          value="character"
+          label={dm ? "Shared with you" : "My notes"}
+          aria-disabled={busy}
+        />
+        <Tab
+          id={`${audienceId}-party-tab`}
+          panelId={`${audienceId}-party-panel`}
+          value="party"
+          label="Party notes"
+          aria-disabled={busy}
+        />
+      </TabList>
+      {(["character", "party"] as const).map((audience) => (
+        <div
+          key={audience}
+          id={`${audienceId}-${audience}-panel`}
+          role="tabpanel"
+          aria-labelledby={`${audienceId}-${audience}-tab`}
+          tabIndex={kind === audience ? 0 : -1}
+          hidden={kind !== audience}
+        >
+          {kind === audience && content}
+        </div>
+      ))}
 
       <AlertDialog
         isOpen={deleting !== null}
