@@ -66,7 +66,13 @@ because its [throttling transaction](https://chromium.googlesource.com/chromium/
 returns the underlying unadjusted load timing. The
 [CDP response event](https://chromium.googlesource.com/chromium/src/+/refs/tags/151.0.7922.34/content/browser/devtools/protocol/network_handler.cc)
 uses the event's monotonic clock instead. The new header-arrival metric needs
-a hosted calibration before it can establish the mobile TTFB target. Never
+a hosted calibration before it can establish the mobile TTFB target. The
+workflow now runs three fresh-context pairs against a small local HTTP page,
+using 0 ms and 150 ms latency with the same bandwidth and CPU settings. It
+saves raw navigation and CDP timing in `calibration.json`. Every throttled
+header sample must reach 140 ms, and the median paired added delay must be
+between 100 and 400 ms. A failed or absent calibration cannot certify page
+timing; passing validates only the page target, not workers or frames. Never
 add 150 ms to the old value or compare it directly with the new value.
 
 The default observation ends 15 seconds after DOMContentLoaded. Increase
@@ -115,11 +121,17 @@ and a native CSS selector for real data, for example:
 --content-selector '/app/notes::.graph-overview li'
 ```
 
-`visibleContentMs` is the first animation frame where a matching element has
-visible layout intersecting the viewport. A mutation observer schedules the
-checks; it stops after a match. This is a DOM milestone, not a painted-pixel
+`visibleContentMs` is the first observed match with nonzero intersection
+reported by `IntersectionObserver`, including clipping by ancestor overflow.
+A mutation observer tracks matching elements. Checks of intersecting elements
+run on intersection changes and at a nominal 100 ms interval, so CSS-only
+opacity transitions are observed too. Busy frames can delay the sample;
+this is not the exact instant visibility changed. Observation ends on a
+match, the load cutoff, or the navigation-timeout-plus-settle deadline. This is a DOM milestone, not a painted-pixel
 or interactive-map readiness metric. It does not prove that an image decoded
-or that another element does not cover the match. Selectors must match the
+or that another element does not cover the match. The hosted browser fixture
+checks fully clipped content and CSS-only opacity and position animations
+before production measurements run. Selectors must match the
 release being compared; a missing or out-of-viewport match remains `null`,
 and an invalid selector fails the run. The summary reports how many runs
 matched and keeps its median unavailable if any successful run did not match. A content selector for a new SSR

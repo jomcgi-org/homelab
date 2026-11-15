@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { installPerformanceObservers } from "../src/lib/public/performance/browser-observers.js";
 import {
   cls,
   median,
@@ -142,7 +143,7 @@ const report = {
   notes: [
     "Cold browser context; observed edge state, no CDN purge.",
     "TTFB is the final main-document CDP responseReceived timestamp relative to its first requestWillBeSent, including redirect time. Raw NavigationTiming and complete navigation timing are saved separately; Chromium 151 NavigationTiming omits emulated latency. Calibration is required before claiming a mobile TTFB pass.",
-    "An optional visibleContentMs records the first visible selector match at an animation frame. It is a DOM milestone, not a paint or map-readiness guarantee.",
+    "An optional visibleContentMs records the first observed visible selector match with positive clipped intersection. Visibility is checked on intersection changes and at a nominal 100 ms interval until the cutoff; it is a DOM milestone, not a paint or map-readiness guarantee.",
     "Context-wide request events cover page, worker and child-frame requests. Request.sizes() supplies encoded body plus response-header sizes. Full transfer totals are unavailable when any request remains unfinished, failed or unsized at the observation cutoff; completed-response lower bounds remain in JSON.",
     "Worker bootstrap responses with zero reported body size and no explicit Content-Length:0 remain unsized. Header-byte lower bounds and reported size components are retained.",
     "Redirects without Content-Length have unknown body size: Playwright's fallback zero is not a measurement. Such a redirect keeps the whole-page transfer total unavailable.",
@@ -289,131 +290,10 @@ async function measure(route, run) {
       item.complete = true;
     }
   });
-  await page.addInitScript(
-    (contentSelector) => {
-      window.__publicAppPerf = {
-        lcp: [],
-        shifts: [],
-        events: [],
-        visibleContentMs: null,
-        contentSelector,
-        contentSelectorError: null,
-        supported: PerformanceObserver.supportedEntryTypes,
-      };
-      const observe = (type, callback, options = {}) => {
-        if (PerformanceObserver.supportedEntryTypes.includes(type))
-          new PerformanceObserver((list) =>
-            callback(list.getEntries()),
-          ).observe({
-            type,
-            buffered: true,
-            ...options,
-          });
-      };
-      function selectorFor(element) {
-        if (!element) return null;
-        const parts = [];
-        for (
-          let node = element;
-          node?.nodeType === 1 && parts.length < 6;
-          node = node.parentElement
-        ) {
-          const tag = node.tagName.toLowerCase();
-          if (node.id) {
-            parts.unshift(`${tag}#${CSS.escape(node.id)}`);
-            break;
-          }
-          const siblings = node.parentElement
-            ? [...node.parentElement.children].filter(
-                (sibling) => sibling.tagName === node.tagName,
-              )
-            : [node];
-          parts.unshift(`${tag}:nth-of-type(${siblings.indexOf(node) + 1})`);
-        }
-        return parts.join(" > ");
-      }
-      if (contentSelector) {
-        try {
-          document.querySelector(contentSelector);
-          let scheduled = false;
-          const observer = new MutationObserver(schedule);
-          function schedule() {
-            if (scheduled || window.__publicAppPerf.visibleContentMs !== null)
-              return;
-            scheduled = true;
-            requestAnimationFrame(check);
-          }
-          function check() {
-            scheduled = false;
-            const found = [...document.querySelectorAll(contentSelector)].some(
-              (element) => {
-                const rect = element.getBoundingClientRect();
-                return (
-                  element.checkVisibility({
-                    checkOpacity: true,
-                    checkVisibilityCSS: true,
-                  }) &&
-                  rect.width > 0 &&
-                  rect.height > 0 &&
-                  rect.bottom > 0 &&
-                  rect.right > 0 &&
-                  rect.top < innerHeight &&
-                  rect.left < innerWidth
-                );
-              },
-            );
-            if (!found) return;
-            window.__publicAppPerf.visibleContentMs = performance.now();
-            observer.disconnect();
-            document.removeEventListener("load", schedule, true);
-            window.removeEventListener("resize", schedule);
-          }
-          observer.observe(document, {
-            subtree: true,
-            childList: true,
-            attributes: true,
-          });
-          document.addEventListener("load", schedule, true);
-          window.addEventListener("resize", schedule);
-          schedule();
-        } catch (error) {
-          window.__publicAppPerf.contentSelectorError = error.message;
-        }
-      }
-      observe("largest-contentful-paint", (entries) =>
-        window.__publicAppPerf.lcp.push(
-          ...entries.map((e) => ({
-            startTime: e.startTime,
-            size: e.size,
-            url: e.url,
-            element: e.element?.tagName ?? null,
-            selector: selectorFor(e.element),
-          })),
-        ),
-      );
-      observe("layout-shift", (entries) =>
-        window.__publicAppPerf.shifts.push(
-          ...entries.map((e) => ({
-            startTime: e.startTime,
-            value: e.value,
-            hadRecentInput: e.hadRecentInput,
-          })),
-        ),
-      );
-      const record = (entries) =>
-        window.__publicAppPerf.events.push(
-          ...entries.map((e) => ({
-            startTime: e.startTime,
-            duration: e.duration,
-            interactionId: e.interactionId,
-            name: e.name,
-          })),
-        );
-      observe("event", record, { durationThreshold: 16 });
-      observe("first-input", record);
-    },
-    contentSelectors.get(route) ?? null,
-  );
+  await page.addInitScript(installPerformanceObservers, {
+    contentSelector: contentSelectors.get(route) ?? null,
+    contentTimeoutMs: 60_000 + settleMs,
+  });
   const result = { route, run, inpMs: null };
   try {
     const response = await page.goto(urlFor(route), {
@@ -424,11 +304,14 @@ async function measure(route, run) {
     result.finalUrl = page.url();
     result.headers = headersFor(response ? await response.allHeaders() : {});
     await page.waitForTimeout(settleMs);
-    const observation = await page.evaluate(() => ({
-      ...window.__publicAppPerf,
-      navigation: performance.getEntriesByType("navigation")[0]?.toJSON(),
-      observedUntilMs: performance.now(),
-    }));
+    const observation = await page.evaluate(() => {
+      window.__stopPublicAppContentObservation();
+      return {
+        ...window.__publicAppPerf,
+        navigation: performance.getEntriesByType("navigation")[0]?.toJSON(),
+        observedUntilMs: performance.now(),
+      };
+    });
     result.observedUntilMs = observation.observedUntilMs;
     Object.assign(
       result,
@@ -438,6 +321,10 @@ async function measure(route, run) {
     result.visibleContentMs = observation.visibleContentMs;
     result.contentSelector = observation.contentSelector;
     result.contentSelectorError = observation.contentSelectorError;
+    result.contentObservationIntervalMs =
+      observation.contentObservationIntervalMs;
+    result.contentObservationStopReason =
+      observation.contentObservationStopReason;
     result.lcpCandidates = observation.lcp;
     const lcp = observation.lcp.at(-1);
     result.lcpMs = lcp?.startTime ?? null;

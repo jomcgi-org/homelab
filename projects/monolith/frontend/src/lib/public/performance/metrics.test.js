@@ -9,6 +9,7 @@ import {
   responseTransferTotals,
   percentile,
   summarize,
+  summarizeTimingCalibration,
   transferTotals,
 } from "./metrics.js";
 
@@ -322,5 +323,40 @@ describe("public app measurement statistics", () => {
       incompleteRequests: 1,
       failedRequests: 1,
     });
+  });
+});
+
+describe("local network timing calibration", () => {
+  const pairs = (delayed) =>
+    [0, 1, 2].flatMap((pair) => [
+      {
+        pair,
+        latencyMs: 0,
+        headerArrivalMs: 10 + pair,
+        rawNavigationTtfbMs: 5,
+        status: 200,
+      },
+      {
+        pair,
+        latencyMs: 150,
+        headerArrivalMs: delayed + pair,
+        rawNavigationTtfbMs: 5,
+        status: 200,
+      },
+    ]);
+  it("accepts observed header delay even when raw navigation timing omits it", () => {
+    const result = summarizeTimingCalibration(pairs(160));
+    expect(result.passed).toBe(true);
+    expect(result.medianAddedLatencyMs).toBe(150);
+  });
+  it("rejects missing emulation, incomplete pairs, failed responses and excessive jitter", () => {
+    expect(summarizeTimingCalibration(pairs(10)).passed).toBe(false);
+    expect(summarizeTimingCalibration(pairs(160).slice(1)).passed).toBe(false);
+    expect(
+      summarizeTimingCalibration(
+        pairs(160).map((s, i) => (i ? s : { ...s, status: 500 })),
+      ).passed,
+    ).toBe(false);
+    expect(summarizeTimingCalibration(pairs(600)).passed).toBe(false);
   });
 });
