@@ -285,7 +285,24 @@ digest in namespace `factory`; `itsaplan.enabled` switches them on.
   declares so it exists before the chart enables itsaplan. Registration is
   invite-only, so a person is invited by an admin before their first OIDC
   sign-in. The break-glass admin (`factory-itsaplan-admin`) signs in with its
-  generated password, still behind the edge's sign-in.
+  generated password, still behind the edge's sign-in, for bootstrap and
+  recovery only.
+- **Joe's sessions.** Claude and Codex sessions on Joe's account use
+  `joe-sessions@jomcgi.dev`, displayed as "Joe (sessions)". itsaplan 1.10.0's
+  human username validator excludes hyphens, so its handle is `@joesessions`.
+  The bootstrap invites it into the bound project on the default member role,
+  which permits issue edits and comments, and checks that it is neither an
+  agent nor an admin of the factory workspace. Before signing it up, bootstrap
+  generates and saves its password in `factory/factory-itsaplan-joe-sessions`
+  (`email`, `password`). Reruns reuse the account and password, finish a pending
+  invitation, and refuse to replace a lost password for an existing account.
+  The chart keeps the Secret and ArgoCD ignores its data. Only the bootstrap
+  Job has in-cluster access through its existing RoleBinding; the Secret has
+  no sandbox injection label and its namespace has no credential-provider
+  grant. Joe's sessions read it with the factory kubeconfig
+  (`docs/agents/reference.md`, "Tracker"). This separates Joe's recorded
+  decisions from bootstrap activity ([HOME-59](https://factory-plan.jomcgi.dev/factory/issue/HOME-59),
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-57#comment-292)).
 - **Bootstrap** (PostSync, `files/itsaplan/bootstrap.py`) signs in as that
   admin, creating it on an empty database (the first account is itsaplan's
   instance admin); sets invite-only registration and the OIDC provider; and

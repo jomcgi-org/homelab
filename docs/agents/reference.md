@@ -119,22 +119,28 @@ behind Authentik, holds outstanding work. An issue's link is
 `#comment-<id>`. Columns are 1 Backlog, 2 Todo, 3 In Progress, 4 Done and
 5 Canceled; priorities are `urgent`, `high`, `medium` and `low`.
 
-A session on Joe's account uses the API. Until HOME-59 gives sessions their
-own `joe-sessions` account, it signs in as the break-glass `factoryadmin`,
-which the bootstrap Job also uses. A `factoryadmin` comment is never evidence
-of a decision. Record Joe's decisions from an account that is his alone:
-`joe` or `joe-sessions` in itsaplan, or, until `joe-sessions` exists, a
-`jomcgi` comment on GitHub. Link that record from the HOME issue. Dispatched
-agents have no itsaplan access; their issues come from the connector.
-
+A session on Joe's account uses the API as `joe-sessions` ("Joe (sessions)"),
+signing in with `joe-sessions@jomcgi.dev`. itsaplan 1.10.0 allows no hyphen in
+a human username, so its mention handle is `@joesessions`. It is a regular
+member of HOME; it has no admin role in the factory workspace and is not an
+agent. Record Joe's decisions as `joe` or this sessions account and link the
+record from the HOME issue. `factoryadmin` is reserved for bootstrap and
+break-glass recovery; its comments are never evidence of Joe's decisions.
+Dispatched agents have no itsaplan access; their issues come from the connector.
 
 - Port-forward the API: `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory
   port-forward svc/factory-itsaplan-api 13000:3000`.
 - Sign in with `POST /api/auth/sign-in/email`, using fields `email` and
-  `password` from Secret `factory/factory-itsaplan-admin`. Send header
+  `password` from Secret `factory/factory-itsaplan-joe-sessions`, read with
+  `KUBECONFIG=~/.kube/factory.yaml`. Keep the values and session cookie out of
+  command output and logs. Send header
   `Origin: https://factory-plan.jomcgi.dev`, keep the session cookie, and
   call `POST /api/auth/sign-out` when done. Sign-in is rate-limited (429), so
   use one sign-in per batch of calls.
+- Check `GET /me` returns `name: "Joe (sessions)"`, `username: "joesessions"`,
+  `role: "user"` and `isAgent: false` before writing. After the first rollout,
+  post a comment on HOME-59 mentioning `@joe` and confirm its author is
+  "Joe (sessions)". Do not fall back to `factoryadmin` if this sign-in fails.
 - Read the board with `GET /projects/HOME/issues/board`; user IDs are under
   `assignees` in `GET /projects/HOME`.
 - Write with `POST /projects/HOME/issues` (`title`, `description`,

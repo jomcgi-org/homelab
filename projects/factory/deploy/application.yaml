@@ -69,6 +69,11 @@ spec:
     - group: ""
       kind: Secret
       namespace: factory
+      name: factory-itsaplan-joe-sessions
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
       name: factory-itsaplan-bootstrap
       jsonPointers: [/data]
     - group: ""

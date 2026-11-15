@@ -117,6 +117,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
     assert {s["metadata"]["name"] for s in secrets} == {
         "factory-itsaplan",
         "factory-itsaplan-admin",
+        "factory-itsaplan-joe-sessions",
         "factory-itsaplan-bootstrap",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
@@ -217,10 +218,58 @@ def test_job_roles_name_only_their_secrets() -> None:
     assert bootstrap[0]["verbs"] == ["get"]
     assert bootstrap[1]["resourceNames"] == [
         "factory-itsaplan-bootstrap",
+        "factory-itsaplan-joe-sessions",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
+
+
+def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
+    docs = _render()
+    name = "factory-itsaplan-joe-sessions"
+    secret = _one(docs, "Secret", name)
+    assert secret["metadata"]["namespace"] == _NS
+    assert "substrate.ate.dev/injectable" not in secret["metadata"]["labels"]
+    # Resolve all chart RBAC that could read this Secret, including wildcard
+    # grants and ClusterRole bindings. No new reader or RoleBinding is needed.
+    readers = []
+    for binding in docs:
+        kind = binding["kind"]
+        if kind not in ("RoleBinding", "ClusterRoleBinding"):
+            continue
+        if kind == "RoleBinding" and binding["metadata"].get("namespace") != _NS:
+            continue
+        ref = binding["roleRef"]
+        role = _one(docs, ref["kind"], ref["name"])
+        for rule in role.get("rules", []):
+            if (
+                set(rule.get("apiGroups", [])) & {"", "*"}
+                and set(rule.get("resources", [])) & {"secrets", "*"}
+                and set(rule.get("verbs", [])) & {"get", "list", "watch", "*"}
+                and (not rule.get("resourceNames") or name in rule["resourceNames"])
+            ):
+                readers.append(binding["metadata"]["name"])
+                assert binding["subjects"] == [
+                    {
+                        "kind": "ServiceAccount",
+                        "name": "factory-itsaplan-bootstrap",
+                        "namespace": _NS,
+                    }
+                ]
+    assert readers == ["factory-itsaplan-bootstrap"]
+    assert {
+        d["metadata"]["name"] for d in _ours(docs) if d["kind"] == "RoleBinding"
+    } == {"factory-itsaplan-bootstrap", "factory-itsaplan-secret-init"}
+    bootstrap = _one(docs, "Job", "factory-itsaplan-bootstrap")
+    env = bootstrap["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert {e["name"]: e.get("value") for e in env}["SESSIONS_SECRET"] == name
+    # No pod, SandboxTemplate, credential mapping or injected environment
+    # references the Secret. Bootstrap reads it via its Kubernetes Role.
+    for doc in docs:
+        if doc["kind"] in ("Secret", "Role", "ConfigMap") or doc is bootstrap:
+            continue
+        assert name not in json.dumps(doc), doc["metadata"]["name"]
 
 
 def test_bootstrap_config_lists_the_agents() -> None:

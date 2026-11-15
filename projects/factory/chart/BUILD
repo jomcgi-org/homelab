@@ -129,6 +129,16 @@ py_test(
 )
 
 py_test(
+    name = "bootstrap_test",
+    srcs = ["bootstrap_test.py"],
+    data = ["files/itsaplan/bootstrap.py"],
+    env = {
+        "BOOTSTRAP": "$(rootpath files/itsaplan/bootstrap.py)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "connector_test",
     srcs = ["connector_test.py"],
     data = [

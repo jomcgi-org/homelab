@@ -10,7 +10,8 @@ itsaplan's two Jobs, both idempotent standard-library Python from files/itsaplan
 - bootstrap (PostSync) signs in as that admin through the api, creating it
   on a fresh database, where the first account is the instance admin; sets
   invite-only registration and the OIDC provider; and creates the team,
-  project and external agents in values. It writes each agent's API key,
+  project, Joe's sessions member and external agents. It generates and keeps
+  the sessions password in its own Secret. It writes each agent's API key,
   which the api returns only once, to that agent's Secret, and rotates the
   key of an agent whose Secret lost it rather than creating a second agent.
 
@@ -189,7 +190,7 @@ rules:
     verbs: [get]
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: {{ toJson (prepend $agentSecrets (printf "%s-bootstrap" $name)) }}
+    resourceNames: {{ toJson (concat (list (printf "%s-bootstrap" $name) (printf "%s-joe-sessions" $name)) $agentSecrets) }}
     verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -251,6 +252,8 @@ spec:
               value: {{ $i.oidc.clientSecretName }}
             - name: STATE_SECRET
               value: {{ $name }}-bootstrap
+            - name: SESSIONS_SECRET
+              value: {{ $name }}-joe-sessions
             - name: AGENT_SECRET_PREFIX
               value: {{ include "factory.itsaplanAgentSecret" "" }}
             - name: CONFIG
