@@ -52,11 +52,12 @@ network latency, 1.6 Mbps download, 750 Kbps upload and fourfold CPU slowdown.
 This is a reproducible lab approximation, not a calibrated physical Moto G.
 Each run uses a new browser context with no cookies, browser cache or service
 worker. The runner observes Cloudflare's actual cache state; it never purges
-or adds cache-busting query parameters. A browser-cold run can be an edge HIT.
+or alters page URLs. A browser-cold run can be an edge HIT. Optional endpoint
+probes use unique query keys as described below, separate from normal-key reads.
 Record misses separately when they occur naturally. A forced origin-cold test
 needs a controlled dev environment.
 
-Schema version 2 reports header arrival as `ttfbMs`: the final main-document
+Schema version 3 retains the version 2 definition and reports header arrival as `ttfbMs`: the final main-document
 CDP `responseReceived` event timestamp minus the initial document
 `requestWillBeSent`, including redirects. It retains the former
 `responseStart - startTime` as `rawNavigationTtfbMs`, plus the full navigation
@@ -74,6 +75,21 @@ header sample must reach 140 ms, and the median paired added delay must be
 between 100 and 400 ms. A failed or absent calibration cannot certify page
 timing; passing validates only the page target, not workers or frames. Never
 add 150 ms to the old value or compare it directly with the new value.
+
+Each page records UTC start, observation and finish timestamps, the browser's
+`performance.timeOrigin`, and top-level document request IDs with their URL
+chains and response headers. Redirects sharing a request ID count as one
+navigation; child frames do not. More than one top-level document request
+sets `comparisonEligible: false` and excludes the entire sample from medians,
+while retaining raw data and `comparisonExclusion`. This makes the requested
+run count incomplete and the command exits nonzero. A chunk-404 recovery can
+reload the page: its second document resets NavigationTiming and LCP clocks,
+while context requests still include the first document. Combining those
+clocks would produce an invalid comparison. The hosted local fixture verifies
+both a redirect and a script-triggered reload with a child frame, recording
+`navigation-fixture.json`. Navigation changes during an interaction also
+invalidate the run. These request-level exclusions are conservative; a
+second navigation request that later fails is excluded too.
 
 The default observation ends 15 seconds after DOMContentLoaded. Increase
 `--settle-ms` when the app still loads at that point. LCP is the last observed
@@ -171,6 +187,20 @@ subsequent data fetch or map rendering. A separate functional journey must
 verify the resulting view. Verify that the chosen day still has multiple
 photos before reusing the trip example; a missing control is a failed test.
 
+For a control that depends on a naturally loaded resource, add
+`--interaction-ready-url '/app/stars::/app/stars/history-map'`. After freezing
+the load observations, the runner waits up to 20 seconds for a successful
+response's `requestfinished` event, then allows two animation frames. It never
+fetches that resource itself. `interactionReadiness` records the wait, whether
+completion preceded the load cutoff, and whether the response finished.
+This is response-completion evidence, not a guarantee of parsing or map paint.
+A click made before completion retains its raw Event Timing but has
+`interactionComparable: false` and does not contribute to interaction medians.
+The summary counts these unready samples. The Stars workflow uses this guard
+because a click that merely opens a loading state does different work from
+one that renders already-loaded history. Compare equal readiness conditions;
+post-click data or map completion still needs a separate functional measure.
+
 Endpoint samples are full-response durations through Playwright's request
 client, without mobile throttling. They are separate from navigation TTFB.
 Use the same-origin public proxies or SvelteKit `__data.json` routes. The
@@ -178,6 +208,29 @@ public origin intentionally does not expose backend `/api/*`. A navigation
 response includes SvelteKit processing and is not a direct backend query
 measurement. Inspect backend SQL with `EXPLAIN ANALYZE` only on a local or dev
 database. Do not write to production to construct a baseline.
+
+To add a separate bounded unique-query series, pass `--cache-miss-probes`
+alongside selected `--endpoint` paths. It accepts only the thirteen fixed hosted
+endpoints and at most 20 samples per endpoint; duplicate paths are rejected.
+Each GET appends a fresh `__public_perf_probe` value. The normal-key series
+remains in `endpoints`; probes appear in `cacheMissProbes`, with individual
+headers and p50/p95 grouped by the actual `cf-cache-status`. A probe can still
+be a HIT or BYPASS if edge configuration ignores the key. It neither purges
+the CDN nor proves that a backend cache is cold. Even a MISS measures the
+public frontend and backend together, not a database query in isolation.
+No response body is saved. Probe mode is off by default in the CLI and manual
+workflow dispatch; the hosted PR validation job explicitly enables the bounded
+series and records that choice in provenance.
+
+The allowlist follows handlers that ignore query parameters: the Hikes,
+Ships, Stars and Trips index `+page.server.js` loaders request fixed backend
+URLs; Stars `map`, `history` and `history-map`, Ships `heat`, and Notes `stats` proxies
+also request fixed URLs. The fixed Hikes walk and Ships vessel detail proxies
+use only the path parameter, never the query. Notes `graph` reads the fixed public graph snapshot;
+Scotland `marketplace.json` serializes committed data. None reads or forwards
+the probe key. Before adding a path, inspect its loader, layout and proxy;
+do not use this option for filters, signed image URLs, private APIs or
+personalized routes.
 
 The runner uses GET for endpoint samples and stores no response bodies.
 Explicit interaction selectors must describe read-only controls. Public
@@ -251,3 +304,10 @@ was unavailable, so their durations remain unmeasured.
 The primary map apps already inline their initial data; they do not need a
 first-view client API fetch. Their browser-gated visible content still waits
 for hydration. Notes has a separate graph request before its data appears.
+
+The fixed detail probes retain the original HTTP-baseline identifiers:
+walk `7fc20756-89c2-5280-9be9-3ddb3db01e44` and vessel `369514002`.
+The vessel baseline returned an empty 41-byte track response, so its timing
+is not representative of a populated or worst-case track. Preserve decoded
+response sizes and this limitation when comparing it later. These probes do
+not benchmark note bodies or protected Grimoire corpus content.

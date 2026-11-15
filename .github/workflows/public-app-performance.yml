@@ -8,6 +8,11 @@ on:
       - projects/monolith/frontend/src/lib/public/performance/**
       - .github/workflows/public-app-performance.yml
   workflow_dispatch:
+    inputs:
+      cache_miss_probes:
+        description: "Add 20 unique-query GET probes for each of the thirteen fixed public endpoints"
+        type: boolean
+        default: false
 
 # Production observations use an anonymous browser on a fresh hosted runner.
 # PR code receives no secrets, deployment credentials or repository write token.
@@ -28,6 +33,7 @@ jobs:
         shell: bash
     env:
       HARNESS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CACHE_MISS_PROBES: ${{ github.event_name == 'pull_request' || inputs.cache_miss_probes || false }}
     steps:
       - name: Set measurement directories on the assigned runner
         run: |
@@ -60,6 +66,9 @@ jobs:
             measuredOrigin: 'https://jomcgi.dev',
             harnessSha: process.env.HARNESS_SHA,
             deployedSha: null,
+            cacheMissProbesEnabled: process.env.CACHE_MISS_PROBES === 'true',
+            probeEndpointCount: 13,
+            probeSamplesPerEndpoint: 20,
             representativeTripSlug: '2025-liard-hot-springs',
             admissionOnlyRoutes: ['/app/grimoire'],
             baselineNote: 'Grimoire admission is a new observation without an earlier browser baseline; no protected corpus or admission interaction is measured.',
@@ -89,10 +98,14 @@ jobs:
       - name: Measure the deployed public apps and core data endpoints
         timeout-minutes: 28
         run: |
+          probe_flags=()
+          if [[ "$CACHE_MISS_PROBES" == "true" ]]; then
+            probe_flags+=(--cache-miss-probes)
+          fi
           timeout --signal=TERM --kill-after=30s 26m \
             node projects/monolith/frontend/scripts/public-app-performance.mjs \
               --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
-              --origin https://jomcgi.dev \
+              --origin https://jomcgi.dev "${probe_flags[@]}" \
               --route /app/hikes \
               --route /app/ships \
               --route /app/stars \
@@ -119,13 +132,17 @@ jobs:
               --interaction '/app/hikes::button.filter-toggle' \
               --interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")' \
               --interaction '/app/stars::[aria-label="Map mode"] button:has-text("Historical")' \
+              --interaction-ready-url '/app/stars::/app/stars/history-map' \
               --interaction '/app/trips/2025-liard-hot-springs/day/1::button[aria-label="Next photo"]' \
               --endpoint /app/hikes/__data.json \
+              --endpoint /app/hikes/walk/7fc20756-89c2-5280-9be9-3ddb3db01e44 \
               --endpoint /app/ships/__data.json \
+              --endpoint /app/ships/track/369514002 \
               --endpoint /app/stars/__data.json \
               --endpoint /app/trips/__data.json \
               --endpoint /app/stars/map \
               --endpoint /app/stars/history-map \
+              --endpoint /app/stars/history \
               --endpoint /app/ships/heat \
               --endpoint /app/notes/graph \
               --endpoint /app/notes/stats \

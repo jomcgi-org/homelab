@@ -16,9 +16,10 @@ destination, Scotland's three policy/support pages, and a trip summary,
 timeline and day. The fixed representative public trip is
 `2025-liard-hot-springs`, with day 1; its slug is recorded in provenance. Each
 route gets three new anonymous browser contexts, with the documented mobile
-profile and a 15-second observation window after DOMContentLoaded. Ten fixed
+profile and a 15-second observation window after DOMContentLoaded. Thirteen fixed
 public data URLs get 20 sequential GET samples each. These cover the four
-primary SvelteKit data envelopes, stars map and history map, ships heat, notes
+primary SvelteKit data envelopes, one Hikes walk, one Ships track, stars map,
+history and history map, ships heat, notes
 graph and stats, and Scotland marketplace. Other trip slugs and protected
 Grimoire corpus journeys remain separate measurements. A seventeenth route,
 `/app/grimoire`, observes only the logged-out admission page with three new
@@ -74,3 +75,35 @@ Next photo button. It records synthetic Event Timing separately from INP.
 Other routes currently have no scripted interaction sample. The 26-minute
 command deadline is unchanged; partial observations are still uploaded if a
 requested control fails or the run times out.
+
+Pull request validation also runs 20 unique-query GETs for each of the same
+thirteen audited public endpoints, at most 260 additional reads. This validates
+the probe series on the hosted browser alongside the page observations, using
+the existing read-only job and fixed endpoint allowlist. Provenance records
+`cacheMissProbesEnabled` and the planned endpoint/sample counts.
+
+For manual runs, the `cache_miss_probes` workflow-dispatch input still defaults
+to false. To request that same bounded series explicitly:
+
+```sh
+gh workflow run public-app-performance.yml --ref main -f cache_miss_probes=true
+```
+
+Normal-key and probe distributions remain separate, including observed edge
+statuses. A unique key does not guarantee an edge MISS or a cold backend.
+The existing 26-minute command deadline still applies; incomplete samples
+are retained where available and cannot count as passes.
+
+The runner records per-sample UTC timestamps and browser time origins.
+Multiple top-level document requests, including automatic chunk-recovery
+reloads, exclude that sample from medians and fail the requested run count.
+The local fixture verifies redirect versus reload tracking before production
+reads and saves `navigation-fixture.json`.
+
+For Stars, the workflow waits up to 20 seconds after freezing load metrics
+for the naturally requested history-map response to finish, followed by two
+animation frames. Readiness and waiting time are explicit in JSON. This does
+not fetch data, prove map paint, or extend the load observation. If the
+response does not finish, the raw click duration remains recorded but is
+excluded from comparable interaction medians. A fast loading-state click
+cannot substitute for a click that renders already-loaded history.

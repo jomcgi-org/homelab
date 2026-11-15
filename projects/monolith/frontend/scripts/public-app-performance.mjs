@@ -1,10 +1,18 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import { createNavigationTracker } from "../src/lib/public/performance/navigation.js";
+import {
+  validateProbeEndpoints,
+  probeUrl,
+  endpointCacheGroups,
+} from "../src/lib/public/performance/endpoint-probes.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { installPerformanceObservers } from "../src/lib/public/performance/browser-observers.js";
 import {
+  interactionResourceReady,
   cls,
   median,
   navigationHeaderMetrics,
@@ -22,6 +30,7 @@ const { values } = parseArgs({
     origin: { type: "string", default: "https://jomcgi.dev" },
     route: { type: "string", multiple: true },
     endpoint: { type: "string", multiple: true },
+    "cache-miss-probes": { type: "boolean", default: false },
     runs: { type: "string", default: "3" },
     samples: { type: "string", default: "20" },
     "settle-ms": { type: "string", default: "15000" },
@@ -29,6 +38,7 @@ const { values } = parseArgs({
     "playwright-module": { type: "string" },
     executable: { type: "string" },
     proxy: { type: "string" },
+    "interaction-ready-url": { type: "string", multiple: true },
     interaction: { type: "string", multiple: true },
     "content-selector": { type: "string", multiple: true },
     help: { type: "boolean", default: false },
@@ -42,6 +52,9 @@ if (values.help) {
                                  Record an explicitly selected visible content milestone
   --interaction '/app/hikes::button.filter-toggle'
                                  Click an explicit read-only control after the load sample
+  --cache-miss-probes            Add a separate unique-query series for allowlisted endpoints (max 20 each)
+  --interaction-ready-url '/app/stars::/app/stars/history-map'
+                                 Observe natural response completion for up to 20s after load cutoff
   --origin https://jomcgi.dev    Origin to measure
   --runs 3 --samples 20          Page runs and endpoint samples
   --settle-ms 15000              Observation time after DOMContentLoaded
@@ -63,6 +76,8 @@ const number = (key, minimum) => {
 const runs = number("runs", 1);
 const samples = number("samples", 1);
 const settleMs = number("settle-ms", 0);
+if (values["cache-miss-probes"])
+  validateProbeEndpoints(values.endpoint ?? [], samples);
 const origin = new URL(values.origin);
 const routes = values.route ?? [
   "/app/hikes",
@@ -90,6 +105,12 @@ function selectors(option) {
 }
 const interactions = selectors("interaction");
 const contentSelectors = selectors("content-selector");
+const interactionReadyUrls = selectors("interaction-ready-url");
+for (const route of interactionReadyUrls.keys()) {
+  if (!interactions.has(route))
+    throw new Error("Interaction readiness requires a matching --interaction");
+  urlFor(interactionReadyUrls.get(route));
+}
 function urlFor(route) {
   const url = new URL(route, origin);
   if (url.origin !== origin.origin)
@@ -135,7 +156,7 @@ const browser = await chromium.launch({
   ...(proxy ? { proxy } : {}),
 });
 const report = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   startedAt: new Date().toISOString(),
   origin: origin.origin,
   profile,
@@ -150,11 +171,15 @@ const report = {
     "Detailed CDP initiators cover the page target only. A worker or child frame makes the complete initiator inventory unavailable; page-target partial observations remain in JSON.",
     "The separate page-target CDP byte estimate includes response bytes received plus body chunks. Finished-request totals replace the running estimate; this partial inventory is never used as a whole-page total.",
     "CPU/network throttling applies to the page target. Runs with workers or child frames have profileComplete=false and cannot certify the full mobile target profile.",
+    "Optional interaction readiness waits only for an already natural successful response to finish, after freezing load metrics, then allows two animation frames. It does not fetch the URL or prove map readiness; unready clicks retain raw Event Timing but are excluded from interaction medians.",
     "LCP and CLS are lab observations through that window. inpMs is null; interactionLatencyMs is an optional synthetic Event Timing sample.",
+    "Multiple top-level document requests make a sample ineligible for medians: a reload resets NavigationTiming/LCP clocks while the request inventory retains both documents. Raw observations and navigation chains remain in JSON.",
+    "Optional cache-miss probes append unique ignored query keys to allowlisted read-only endpoints. Actual edge status is recorded per sample; this does not guarantee a CDN miss or a cold backend.",
     "Endpoint timings are unthrottled full-response durations, separate from page navigation TTFB.",
   ],
   pages: [],
   endpoints: [],
+  cacheMissProbes: [],
 };
 async function save() {
   await writeFile(
@@ -164,6 +189,7 @@ async function save() {
 }
 
 async function measure(route, run) {
+  const startedAt = new Date().toISOString();
   const context = await browser.newContext({
     viewport: profile.viewport,
     deviceScaleFactor: profile.deviceScaleFactor,
@@ -226,8 +252,8 @@ async function measure(route, run) {
   await cdp.send("Emulation.setCPUThrottlingRate", {
     rate: profile.cpuSlowdown,
   });
-  let navigationStart;
-  let mainNavigationId;
+  const { frameTree } = await cdp.send("Page.getFrameTree");
+  const navigationTracker = createNavigationTracker(frameTree.frame.id);
   cdp.on("Network.requestWillBeSent", (event) => {
     if (event.redirectResponse && active.has(event.requestId)) {
       const previous = active.get(event.requestId);
@@ -239,18 +265,15 @@ async function measure(route, run) {
       );
       previous.complete = true;
     }
-    if (navigationStart === undefined && event.type === "Document") {
-      navigationStart = event.timestamp;
-      mainNavigationId = event.requestId;
-    }
+    navigationTracker.request(event);
     const stack = event.initiator?.stack?.callFrames ?? [];
     const item = {
       id: `${event.requestId}:${requests.length}`,
       url: event.request.url,
       type: event.type,
-      mainNavigation:
-        event.requestId === mainNavigationId && event.type === "Document",
-      startMs: (event.timestamp - (navigationStart ?? event.timestamp)) * 1000,
+      mainNavigation: navigationTracker.isInitialDocument(event),
+      startMs:
+        (event.timestamp - (navigationTracker.start ?? event.timestamp)) * 1000,
       initiator: event.initiator?.type,
       initiatorUrl:
         event.initiator?.url ?? stack.find((frame) => frame.url)?.url ?? null,
@@ -261,9 +284,21 @@ async function measure(route, run) {
     active.set(event.requestId, item);
   });
   cdp.on("Network.responseReceived", (event) => {
+    navigationTracker.response(
+      event,
+      headersFor(
+        Object.fromEntries(
+          Object.entries(event.response.headers ?? {}).map(([name, value]) => [
+            name.toLowerCase(),
+            value,
+          ]),
+        ),
+      ),
+    );
     const item = active.get(event.requestId);
     if (item) {
-      item.responseReceivedMs = (event.timestamp - navigationStart) * 1000;
+      item.responseReceivedMs =
+        (event.timestamp - navigationTracker.start) * 1000;
       item.responseTiming = event.response.timing ?? null;
       item.status = event.response.status;
       item.mimeType = event.response.mimeType;
@@ -279,7 +314,7 @@ async function measure(route, run) {
     const item = active.get(event.requestId);
     if (item) {
       recordTransferBytes(item, "finished", event.encodedDataLength);
-      item.endMs = (event.timestamp - navigationStart) * 1000;
+      item.endMs = (event.timestamp - navigationTracker.start) * 1000;
       item.complete = true;
     }
   });
@@ -294,7 +329,7 @@ async function measure(route, run) {
     contentSelector: contentSelectors.get(route) ?? null,
     contentTimeoutMs: 60_000 + settleMs,
   });
-  const result = { route, run, inpMs: null };
+  const result = { route, run, startedAt, inpMs: null };
   try {
     const response = await page.goto(urlFor(route), {
       waitUntil: "domcontentloaded",
@@ -310,9 +345,21 @@ async function measure(route, run) {
         ...window.__publicAppPerf,
         navigation: performance.getEntriesByType("navigation")[0]?.toJSON(),
         observedUntilMs: performance.now(),
+        timeOriginMs: performance.timeOrigin,
+        observedAt: new Date().toISOString(),
       };
     });
+    const loadCutoff = performance.now();
+    result.finalUrl = page.url();
+    result.observedAt = observation.observedAt;
+    result.timeOriginMs = observation.timeOriginMs;
     result.observedUntilMs = observation.observedUntilMs;
+    const loadNavigation = navigationTracker.snapshot();
+    result.navigationsDuringLoad = loadNavigation.navigations;
+    Object.assign(result, loadNavigation);
+    const finalDocument = loadNavigation.navigations.at(-1);
+    if (finalDocument?.status) result.status = finalDocument.status;
+    if (finalDocument?.headers) result.headers = finalDocument.headers;
     Object.assign(
       result,
       navigationHeaderMetrics(requests, observation.navigation),
@@ -380,15 +427,53 @@ async function measure(route, run) {
         startMs,
         endMs,
       }));
-    result.initiatorsBeforeLcp = result.unobservedTargets
-      ? null
-      : result.pageTargetInitiatorsBeforeLcp;
+    result.initiatorsBeforeLcp =
+      result.unobservedTargets || !result.comparisonEligible
+        ? null
+        : result.pageTargetInitiatorsBeforeLcp;
     result.interactionLatencyMs = null;
     if (result.contentSelectorError) result.error = result.contentSelectorError;
-    if (interactions.has(route)) {
+    if (interactions.has(route) && result.comparisonEligible) {
       result.interactionSelector = interactions.get(route);
-      const since = await page.evaluate(() => performance.now());
       try {
+        if (interactionReadyUrls.has(route)) {
+          const readyUrl = urlFor(interactionReadyUrls.get(route));
+          const start = performance.now();
+          const completedBeforeLoadCutoff = interactionResourceReady(
+            contextSnapshot,
+            readyUrl,
+          );
+          while (
+            !interactionResourceReady(
+              [...contextRequests.values()],
+              readyUrl,
+            ) &&
+            performance.now() - loadCutoff < 20000
+          )
+            await page.waitForTimeout(100);
+          const responseFinished = interactionResourceReady(
+            [...contextRequests.values()],
+            readyUrl,
+          );
+          if (responseFinished)
+            await page.evaluate(
+              () =>
+                new Promise((resolve) =>
+                  requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                ),
+            );
+          result.interactionReadiness = {
+            url: readyUrl,
+            completedBeforeLoadCutoff,
+            responseFinished,
+            waitedMs: performance.now() - start,
+            loadCutoffElapsedMs: performance.now() - loadCutoff,
+            maximumWaitMs: 20000,
+            animationFramesAfterCompletion: responseFinished ? 2 : 0,
+          };
+          result.interactionComparable = responseFinished;
+        }
+        const since = await page.evaluate(() => performance.now());
         await page
           .locator(result.interactionSelector)
           .first()
@@ -412,6 +497,8 @@ async function measure(route, run) {
   } catch (error) {
     result.error = error.message;
   } finally {
+    Object.assign(result, navigationTracker.snapshot());
+    result.finishedAt = new Date().toISOString();
     result.pageErrors = errors;
     result.otherTargets = structuredClone(otherTargets);
     // An interaction can create a worker after the load observation.
@@ -419,6 +506,61 @@ async function measure(route, run) {
     await context.close();
   }
   return result;
+}
+
+function summarizeEndpoint(rows) {
+  const times = rows
+    .filter((r) => !r.error && r.status >= 200 && r.status < 400)
+    .map((r) => r.totalMs);
+  return {
+    p50Ms: median(times),
+    p95Ms: percentile(times, 0.95),
+    successfulSamples: times.length,
+  };
+}
+async function measureEndpoint(endpoint, uniqueQuery) {
+  const entry = {
+    endpoint,
+    mode: uniqueQuery ? "unique-query" : "normal-key",
+    samples: [],
+  };
+  const nonce = randomUUID();
+  // No previous endpoint or response cookie may personalize a subsequent read.
+  const context = await browser.newContext();
+  try {
+    for (let sample = 1; sample <= samples; sample++) {
+      await context.clearCookies();
+      const url = uniqueQuery
+        ? probeUrl(origin, endpoint, nonce, sample)
+        : urlFor(endpoint);
+      const startedAt = new Date().toISOString();
+      const start = performance.now();
+      try {
+        const response = await context.request.get(url, { timeout: 60_000 });
+        try {
+          const body = await response.body();
+          entry.samples.push({
+            sample,
+            url,
+            startedAt,
+            status: response.status(),
+            totalMs: performance.now() - start,
+            decodedBytes: body.length,
+            headers: headersFor(response.headers()),
+          });
+        } finally {
+          await response.dispose();
+        }
+      } catch (error) {
+        entry.samples.push({ sample, url, startedAt, error: error.message });
+      }
+    }
+  } finally {
+    await context.close();
+  }
+  Object.assign(entry, summarizeEndpoint(entry.samples));
+  entry.byCacheStatus = endpointCacheGroups(entry.samples, summarizeEndpoint);
+  return entry;
 }
 
 try {
@@ -432,42 +574,18 @@ try {
       console.log(JSON.stringify({ route, run, ...entry.median }));
     }
   }
-  // Separate contexts prevent an endpoint's Set-Cookie from affecting later reads.
+  // Keep normal-key and unique-query observations in separate series.
   for (const endpoint of values.endpoint ?? []) {
-    const entry = { endpoint, samples: [] };
+    const entry = await measureEndpoint(endpoint, false);
     report.endpoints.push(entry);
-    const context = await browser.newContext();
-    try {
-      for (let sample = 1; sample <= samples; sample++) {
-        await context.clearCookies();
-        const start = performance.now();
-        try {
-          const response = await context.request.get(urlFor(endpoint), {
-            timeout: 60_000,
-          });
-          const body = await response.body();
-          entry.samples.push({
-            sample,
-            status: response.status(),
-            totalMs: performance.now() - start,
-            decodedBytes: body.length,
-            headers: headersFor(response.headers()),
-          });
-          await response.dispose();
-        } catch (error) {
-          entry.samples.push({ sample, error: error.message });
-        }
-      }
-    } finally {
-      await context.close();
-    }
-    const times = entry.samples
-      .filter((r) => !r.error && r.status >= 200 && r.status < 400)
-      .map((r) => r.totalMs);
-    entry.p50Ms = median(times);
-    entry.p95Ms = percentile(times, 0.95);
-    entry.successfulSamples = times.length;
     await save();
+  }
+  if (values["cache-miss-probes"]) {
+    for (const endpoint of values.endpoint) {
+      const entry = await measureEndpoint(endpoint, true);
+      report.cacheMissProbes.push(entry);
+      await save();
+    }
   }
 } finally {
   await browser.close();
@@ -477,30 +595,42 @@ try {
 const cell = (value, digits = 0) =>
   Number.isFinite(value) ? value.toFixed(digits) : "unavailable";
 const table = [
-  "| Route | Runs | Complete profile | Header arrival ms | Raw nav TTFB ms | Visible content ms | LCP ms | CLS | Lab interaction ms | INP | Transfer KiB | JS KiB | Requests | Edge |",
-  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
+  "| Route | Runs | Complete profile | Header arrival ms | Raw nav TTFB ms | Visible content ms | LCP ms | CLS | Lab interaction ms | Lab samples | INP | Transfer KiB | JS KiB | Requests | Edge |",
+  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |",
 ];
 for (const page of report.pages) {
   const m = page.median;
   table.push(
-    `| ${page.route} | ${m.successfulRuns}/${m.runs} | ${m.completeProfileRuns}/${m.runs} | ${cell(m.ttfbMs)} | ${cell(m.rawNavigationTtfbMs)} | ${cell(m.visibleContentMs)} | ${cell(m.lcpMs)} | ${cell(m.cls, 3)} | ${cell(m.interactionLatencyMs)} | unavailable | ${m.transferBytes === null ? "unavailable" : cell(m.transferBytes / 1024, 1)} | ${m.javascriptBytes === null ? "unavailable" : cell(m.javascriptBytes / 1024, 1)} | ${cell(m.requestCount)} | ${m.cacheStatus.join(", ")} |`,
+    `| ${page.route} | ${m.successfulRuns}/${m.runs} | ${m.completeProfileRuns}/${m.runs} | ${cell(m.ttfbMs)} | ${cell(m.rawNavigationTtfbMs)} | ${cell(m.visibleContentMs)} | ${cell(m.lcpMs)} | ${cell(m.cls, 3)} | ${cell(m.interactionLatencyMs)} | ${m.comparableInteractionRuns}/${m.runs} | unavailable | ${m.transferBytes === null ? "unavailable" : cell(m.transferBytes / 1024, 1)} | ${m.javascriptBytes === null ? "unavailable" : cell(m.javascriptBytes / 1024, 1)} | ${cell(m.requestCount)} | ${m.cacheStatus.join(", ")} |`,
   );
 }
-if (report.endpoints.length) {
+for (const [title, entries] of [
+  ["Normal-key endpoints", report.endpoints],
+  ["Unique-query probes (observed edge state)", report.cacheMissProbes],
+]) {
+  if (!entries.length) continue;
   table.push(
     "",
-    "| Public endpoint | Successful samples | p50 full response ms | p95 full response ms |",
-    "| --- | ---: | ---: | ---: |",
+    title,
+    "",
+    "| Public endpoint | Successful samples | p50 full response ms | p95 full response ms | Edge samples |",
+    "| --- | ---: | ---: | ---: | --- |",
   );
-  for (const e of report.endpoints)
+  for (const e of entries)
     table.push(
-      `| ${e.endpoint} | ${e.successfulSamples}/${e.samples.length} | ${cell(e.p50Ms)} | ${cell(e.p95Ms)} |`,
+      `| ${e.endpoint} | ${e.successfulSamples}/${e.samples.length} | ${cell(e.p50Ms)} | ${cell(e.p95Ms)} | ${Object.entries(
+        e.byCacheStatus,
+      )
+        .map(([status, group]) => `${status}: ${group.samples}`)
+        .join(", ")} |`,
     );
 }
 await writeFile(path.join(output, "table.md"), table.join("\n") + "\n");
 console.log(table.join("\n"));
 if (
   report.pages.some((p) => p.median.successfulRuns !== runs) ||
-  report.endpoints.some((e) => e.successfulSamples !== samples)
+  [...report.endpoints, ...report.cacheMissProbes].some(
+    (e) => e.successfulSamples !== samples,
+  )
 )
   process.exitCode = 1;
