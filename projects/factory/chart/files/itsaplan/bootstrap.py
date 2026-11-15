@@ -358,9 +358,7 @@ def ensure_sessions(admin, team_id):
             # An invalid stored password fails here; never reset an existing account.
             session.call("POST", "/api/auth/sign-in/email", credentials)
         else:
-            session.call(
-                "POST", "/api/auth/sign-up/email", {**credentials, **SESSIONS}
-            )
+            session.call("POST", "/api/auth/sign-up/email", {**credentials, **SESSIONS})
         me = session.call("GET", "/me")
         user = me.get("user") or {}
         if (
