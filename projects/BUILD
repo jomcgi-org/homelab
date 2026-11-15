@@ -1,5 +1,10 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
+exports_files(
+    ["platform-factory/network-policy/resources/argocd.yaml"],
+    visibility = ["//projects/platform-factory/external-secrets/chart:__pkg__"],
+)
+
 filegroup(
     name = "backup_status_application",
     # application.yaml lives in the generated platform-gke package, which
