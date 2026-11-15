@@ -2,6 +2,7 @@
 packages:
   - projects/design-system
   - projects/factory-landing/web
+  - projects/factory-storyboard/web
   - projects/monolith/frontend
   - projects/monolith/web/grimoire
 

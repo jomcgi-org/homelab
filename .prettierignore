@@ -59,3 +59,7 @@ projects/monolith/web/grimoire/src/theme/sheet.*
 # Vendored upstream release manifests are kept byte-for-byte so their
 # recorded sha256 still matches.
 **/upstream/*-install.yaml
+
+# Storyboard objects are addressed by the SHA-256 of their exact bytes.
+# Edit deliberately and run fixtures/rehash.mjs to update their addresses.
+projects/factory-storyboard/fixtures/objects/*.json

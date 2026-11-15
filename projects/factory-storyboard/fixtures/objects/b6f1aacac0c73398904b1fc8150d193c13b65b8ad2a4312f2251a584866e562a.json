@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "kind": "goal",
+  "id": "reading-list",
+  "title": "Return to the reading list",
+  "state": "Working",
+  "chapter": [
+    "I want a reading list that remembers where I stopped. The first change has shipped; the rest is being worked on.",
+    "So far, {{stat:shipped}} issue has shipped. The next chapter has {{stat:unknown}} measurements to draw on."
+  ],
+  "issueKeys": [
+    "DEMO-101",
+    "DEMO-102",
+    "DEMO-103",
+    "DEMO-104",
+    "DEMO-105"
+  ],
+  "burnUp": [
+    {
+      "date": "2030-05-06",
+      "shipped": 0,
+      "total": 2
+    },
+    {
+      "date": "2030-05-13",
+      "shipped": 0,
+      "total": 4
+    },
+    {
+      "date": "2030-05-20",
+      "shipped": 1,
+      "total": 5
+    }
+  ]
+}
