@@ -91,6 +91,15 @@ both a redirect and a script-triggered reload with a child frame, recording
 invalidate the run. These request-level exclusions are conservative; a
 second navigation request that later fails is excluded too.
 
+A navigation or observer failure still retains the context-wide and page-target
+request inventories collected before the error, including received HTTP 404
+statuses. `inventoryPhase` distinguishes a normal load cutoff from an error
+snapshot. Unfinished requests remain unfinished; the runner waits at most
+five seconds for already-finished response sizing, then separately bounds
+context cleanup to five seconds. The hosted navigation fixture also forces a
+missing-module 404 and destroys an in-progress observation by replacing the
+document, asserting that both request inventories retain the error evidence.
+
 The default observation ends 15 seconds after DOMContentLoaded. Increase
 `--settle-ms` when the app still loads at that point. LCP is the last observed
 candidate; the JSON now preserves every candidate's timestamp, size, element

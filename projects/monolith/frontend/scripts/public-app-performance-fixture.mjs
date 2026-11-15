@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import {
+  observeContextRequests,
+  ensureRequestInventory,
+  withinDeadline,
+} from "../src/lib/public/performance/request-inventory.js";
 import { createNavigationTracker } from "../src/lib/public/performance/navigation.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -133,6 +138,14 @@ async function calibrateTiming() {
 
 async function navigationFixture() {
   const server = createServer((request, response) => {
+    if (request.url === "/missing.js") {
+      response.writeHead(404, {
+        "content-type": "application/javascript",
+        "content-length": 0,
+      });
+      response.end();
+      return;
+    }
     if (request.url === "/redirect") {
       response.writeHead(302, { location: "/settled", "content-length": 0 });
       response.end();
@@ -155,20 +168,80 @@ async function navigationFixture() {
       server.listen(0, "127.0.0.1", resolve);
     });
     const origin = `http://127.0.0.1:${server.address().port}`;
-    for (const route of ["/redirect", "/reload"]) {
+    for (const route of ["/redirect", "/reload", "/interrupted"]) {
       const context = await browser.newContext();
+      const contextRequests = observeContextRequests(context);
+      const pageRequests = [];
+      const byId = new Map();
       try {
         const page = await context.newPage();
         const cdp = await context.newCDPSession(page);
         await cdp.send("Network.enable");
         const { frameTree } = await cdp.send("Page.getFrameTree");
         const tracker = createNavigationTracker(frameTree.frame.id);
-        cdp.on("Network.requestWillBeSent", (event) => tracker.request(event));
-        cdp.on("Network.responseReceived", (event) => tracker.response(event));
+        cdp.on("Network.requestWillBeSent", (event) => {
+          tracker.request(event);
+          const item = {
+            url: event.request.url,
+            type: event.type,
+            complete: false,
+          };
+          pageRequests.push(item);
+          byId.set(event.requestId, item);
+        });
+        cdp.on("Network.responseReceived", (event) => {
+          tracker.response(event);
+          const item = byId.get(event.requestId);
+          if (item) item.status = event.response.status;
+        });
         await page.goto(`${origin}${route}`, {
           waitUntil: "domcontentloaded",
           timeout: 10000,
         });
+        if (route === "/interrupted") {
+          const result = {};
+          try {
+            await withinDeadline(
+              page.evaluate(async () => {
+                await import("/missing.js").catch(() => null);
+                location.replace("/settled");
+                return new Promise(() => {});
+              }),
+              10000,
+              "fixture observation was not interrupted",
+            );
+          } catch (error) {
+            result.error = error.message;
+          } finally {
+            await ensureRequestInventory(
+              result,
+              contextRequests.values(),
+              pageRequests,
+              [],
+              "error",
+            );
+            Object.assign(result, tracker.snapshot());
+          }
+          assert.match(result.error ?? "", /context.*destroyed|navigation/i);
+          assert.ok(
+            result.requests.some(
+              (request) =>
+                request.url === `${origin}/missing.js` &&
+                request.status === 404,
+            ),
+          );
+          assert.ok(
+            result.pageTargetRequests.some(
+              (request) =>
+                request.url === `${origin}/missing.js` &&
+                request.status === 404,
+            ),
+          );
+          assert.equal(result.httpErrorRequests, 1);
+          assert.equal(result.inventoryPhase, "error");
+          navigationResults.push({ route, passed: true, ...result });
+          continue;
+        }
         await page.waitForURL(`${origin}/settled`, {
           waitUntil: "domcontentloaded",
           timeout: 10000,
@@ -185,7 +258,11 @@ async function navigationFixture() {
           assert.equal(state.navigations[0].urls.length, 2);
         navigationResults.push({ route, passed: true, ...state, ...clock });
       } finally {
-        await context.close();
+        await withinDeadline(
+          context.close(),
+          5000,
+          "fixture context cleanup timed out",
+        );
       }
     }
   } finally {

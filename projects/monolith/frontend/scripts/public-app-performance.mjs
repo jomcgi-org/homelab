@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import {
+  observeContextRequests,
+  ensureRequestInventory,
+  withinDeadline,
+} from "../src/lib/public/performance/request-inventory.js";
 import { createNavigationTracker } from "../src/lib/public/performance/navigation.js";
 import {
   validateProbeEndpoints,
@@ -16,13 +21,9 @@ import {
   cls,
   median,
   navigationHeaderMetrics,
-  workerTransferSize,
   recordTransferBytes,
-  responseTransferSize,
-  responseTransferTotals,
   percentile,
   summarize,
-  transferTotals,
 } from "../src/lib/public/performance/metrics.js";
 
 const { values } = parseArgs({
@@ -173,6 +174,7 @@ const report = {
     "CPU/network throttling applies to the page target. Runs with workers or child frames have profileComplete=false and cannot certify the full mobile target profile.",
     "Optional interaction readiness waits only for an already natural successful response to finish, after freezing load metrics, then allows two animation frames. It does not fetch the URL or prove map readiness; unready clicks retain raw Event Timing but are excluded from interaction medians.",
     "LCP and CLS are lab observations through that window. inpMs is null; interactionLatencyMs is an optional synthetic Event Timing sample.",
+    "Interrupted or failed page observations preserve context-wide and page-target request inventories, including received HTTP errors, with inventoryPhase=error. Size collection and context cleanup each have a 5 second bound.",
     "Multiple top-level document requests make a sample ineligible for medians: a reload resets NavigationTiming/LCP clocks while the request inventory retains both documents. Raw observations and navigation chains remain in JSON.",
     "Optional cache-miss probes append unique ignored query keys to allowlisted read-only endpoints. Actual edge status is recorded per sample; this does not guarantee a CDN miss or a cold backend.",
     "Endpoint timings are unthrottled full-response durations, separate from page navigation TTFB.",
@@ -198,34 +200,7 @@ async function measure(route, run) {
     serviceWorkers: "block",
     userAgent: `Mozilla/5.0 (Linux; Android 11; moto g power) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Mobile Safari/537.36`,
   });
-  const contextRequests = new Map();
-  context.on("request", (request) => {
-    const resourceType = request.resourceType();
-    contextRequests.set(request, {
-      url: request.url(),
-      type: resourceType[0].toUpperCase() + resourceType.slice(1),
-      complete: false,
-      transferBytes: null,
-    });
-  });
-  // Status must survive a failed, pending or timed-out body-size observation.
-  context.on("response", (response) => {
-    const item = contextRequests.get(response.request());
-    if (item) item.status = response.status();
-  });
-  context.on("requestfinished", (request) => {
-    const item = contextRequests.get(request);
-    if (!item) return;
-    item.complete = true;
-    item.sizing = responseTransferSize(request);
-  });
-  context.on("requestfailed", (request) => {
-    const item = contextRequests.get(request);
-    if (item) {
-      item.complete = true;
-      item.failed = request.failure()?.errorText ?? "request failed";
-    }
-  });
+  const contextRequests = observeContextRequests(context);
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   const requests = [];
@@ -389,34 +364,13 @@ async function measure(route, run) {
     const contextSnapshot = [...contextRequests.values()].map((item) => ({
       ...item,
     }));
-    result.pageTargetTotals = transferTotals(requests);
-    result.pageTargetRequests = structuredClone(requests);
-    const workerUrls = new Set(
-      otherTargets
-        .filter((target) => target.type === "worker")
-        .map((target) => target.url),
+    await ensureRequestInventory(
+      result,
+      contextSnapshot,
+      requests,
+      otherTargets,
+      "load-cutoff",
     );
-    result.requests = await Promise.all(
-      contextSnapshot.map(async ({ sizing, ...item }) => {
-        if (!sizing) return item;
-        let timer;
-        try {
-          const size = await Promise.race([
-            sizing,
-            new Promise((resolve) => {
-              timer = setTimeout(
-                () => resolve({ sizeError: "request.sizes timed out" }),
-                5000,
-              );
-            }),
-          ]);
-          return workerTransferSize({ ...item, ...size }, workerUrls);
-        } finally {
-          clearTimeout(timer);
-        }
-      }),
-    );
-    Object.assign(result, responseTransferTotals(result.requests));
     result.pageTargetInitiatorsBeforeLcp = result.pageTargetRequests
       .filter((r) => result.lcpMs !== null && r.startMs <= result.lcpMs)
       .map(({ url, type, initiator, initiatorUrl, startMs, endMs }) => ({
@@ -497,13 +451,30 @@ async function measure(route, run) {
   } catch (error) {
     result.error = error.message;
   } finally {
+    await ensureRequestInventory(
+      result,
+      contextRequests.values(),
+      requests,
+      otherTargets,
+      "error",
+    );
     Object.assign(result, navigationTracker.snapshot());
     result.finishedAt = new Date().toISOString();
     result.pageErrors = errors;
     result.otherTargets = structuredClone(otherTargets);
     // An interaction can create a worker after the load observation.
     result.profileComplete = otherTargets.length === 0 && !result.error;
-    await context.close();
+    try {
+      await withinDeadline(
+        context.close(),
+        5000,
+        "browser context cleanup timed out",
+      );
+    } catch (error) {
+      result.cleanupError = error.message;
+      result.error ??= error.message;
+      result.profileComplete = false;
+    }
   }
   return result;
 }
