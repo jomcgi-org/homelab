@@ -319,12 +319,14 @@ jobs:
     # Older orphans stay untouched and need a manual delete. The live embervm
     # namespace has 13 chart-managed unmarked Workloads; this sweep is inert
     # for all of them.
+    # Suspended 2026-11-15: EmberVM left the hub, so there are no FaaS
+    # Workloads to reconcile and no Role to list them.
     - name: faas-reconcile
       args: ["faas-reconcile"]
       schedule: "0 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 120
-      suspend: false
+      suspend: true
       serviceAccountName: monolith-stats
       resources:
         requests:
@@ -1236,6 +1238,8 @@ jobs:
         limits:
           memory: 512Mi
     # Agent lane probes cover production factory execution. Public demos are retired.
+    # Both suspended 2026-11-15: EmberVM, which ran the sessions they probe,
+    # left the hub with the hub factory.
     - name: ember-codex-session-synthetic
       args: ["ember-codex-synthetic-trigger"]
       schedule: "0 * * * *"
@@ -1243,7 +1247,7 @@ jobs:
       # The trigger's total client budget (240s, jobs_main._post_internal)
       # sits inside this deadline, so the client gives up first.
       activeDeadlineSeconds: 300
-      suspend: false
+      suspend: true
       internalApi: true
       resources:
         requests:
@@ -1263,9 +1267,8 @@ jobs:
       # gives up first and Argo does not reach this deadline.
       activeDeadlineSeconds: 480
       # Unsuspended 2026-09-10 after #5978 put Muse on the plaintext egress
-      # lane and session 3511 completed on the new runtime. Suspended again
-      # only if Spark fails two consecutive hours.
-      suspend: false
+      # lane and session 3511 completed on the new runtime.
+      suspend: true
       internalApi: true
       resources:
         requests:

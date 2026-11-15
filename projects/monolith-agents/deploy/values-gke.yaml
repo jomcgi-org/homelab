@@ -1,5 +1,22 @@
 # GKE hub destination overrides, layered after deploy/values.yaml by
 # projects/gke-apps/monolith-agents/application.yaml.
 
-# No destination-specific values remain after inert policy removal (#5816).
-{}
+# EmberVM left the hub on 2026-11-15, taking the embervm and kargo-embervm
+# namespaces. A Role rendered into a missing namespace fails the sync, so the
+# hub lists drop them. Helm replaces lists, so each is written out in full.
+kubernetesRead:
+  observationNamespaces:
+    - argocd
+    - authentik
+    - inference
+    - kargo
+    - kargo-monolith
+    - mcp
+    - monolith
+    - monolith-agents
+    - otel-collector
+  kargoNamespaces:
+    - kargo-monolith
+    - kargo-monolith-agents
+    - kargo-monolith-public
+    - kargo-scotland-connector

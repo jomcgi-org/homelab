@@ -548,7 +548,7 @@ def _rbac_objects(rendered):
     }
 
 
-def _expected_rbac(release, enabled):
+def _expected_rbac(release, enabled, kargo_namespaces=None):
     subject = {"kind": "ServiceAccount", "name": release, "namespace": release}
     expected = {}
     for gate, kind, namespace, name, rules, subjects in [
@@ -592,7 +592,11 @@ def _expected_rbac(release, enabled):
                 _DEFAULT_KARGO_PROMOTE_RULES,
                 [subject],
             )
-            for namespace in _KARGO_PROJECT_NAMESPACES
+            for namespace in (
+                _KARGO_PROJECT_NAMESPACES
+                if kargo_namespaces is None
+                else kargo_namespaces
+            )
         ),
     ]:
         if not enabled[gate]:
@@ -615,14 +619,22 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
     rendered = (
         _render(release, []) if environment == "defaults" else renders[environment]
     )
+    # The hub dropped EmberVM on 2026-11-15: no FaaS Role in the embervm
+    # namespace and no promote Role in kargo-embervm.
+    hub = environment == "gke"
     assert _rbac_objects(rendered) == _expected_rbac(
         release,
         {
             "clusterAccess": True,
             "schedulerWorkflows": True,
-            "faas": True,
+            "faas": not hub,
             "kargoPromote": True,
         },
+        kargo_namespaces=(
+            [n for n in _KARGO_PROJECT_NAMESPACES if n != "kargo-embervm"]
+            if hub
+            else None
+        ),
     )
 
 
@@ -1484,7 +1496,8 @@ def test_codex_synthetic_uses_release_derived_internal_api():
         }
     ]
     assert job["spec"]["schedules"] == ["0 * * * *"]
-    assert job["spec"]["suspend"] is False
+    # Suspended since EmberVM, which ran the probed sessions, left the hub.
+    assert job["spec"]["suspend"] is True
     assert job["spec"]["concurrencyPolicy"] == "Forbid"
     assert workflow["activeDeadlineSeconds"] == 300
     assert container["resources"] == {"requests": {"cpu": "100m", "memory": "256Mi"}}
@@ -1505,7 +1518,6 @@ def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
     names = (
         "monolith",
-        "embervm",
         "monolith-public",
         "monolith-agents",
         "scotland-connector",
