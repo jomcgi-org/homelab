@@ -80,6 +80,24 @@ export class Map {
         this.assertLive();
         stored.data = data;
       }),
+      updateData: vi.fn(({ update }) => {
+        this.assertLive();
+        const features = stored.data.features;
+        const ids = new Set(features.map((feature) => feature.id));
+        if (ids.has(undefined) || ids.size !== features.length)
+          throw new Error("updateData requires unique feature IDs");
+        const changes = new globalThis.Map(
+          update.map((change) => [change.id, change.newGeometry]),
+        );
+        stored.data = {
+          ...stored.data,
+          features: features.map((feature) =>
+            changes.has(feature.id)
+              ? { ...feature, geometry: changes.get(feature.id) }
+              : feature,
+          ),
+        };
+      }),
     };
     this.sources.set(id, stored);
   }
