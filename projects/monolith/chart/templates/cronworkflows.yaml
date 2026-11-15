@@ -241,15 +241,24 @@ spec:
                   key: GITHUB_TOKEN
             {{- end }}
             {{- if .grimoire }}
+            {{- $extractURL := urlParse ($.Values.grimoire.extractBaseUrl | default "https://openrouter.ai/api/v1/chat/completions") }}
+            {{- $extractHost := get $extractURL "host" | lower }}
+            {{- $extractKey := "" }}
+            {{- if eq (get $extractURL "scheme") "https" }}
+              {{- if eq $extractHost "api.deepseek.com" }}
+                {{- $extractKey = "DEEPSEEK_API_KEY" }}
+              {{- else if eq $extractHost "openrouter.ai" }}
+                {{- $extractKey = "OPENROUTER_API_KEY" }}
+              {{- end }}
+            {{- end }}
             # Grimoire ingest jobs (spec #4.2/#4.3): the loader reads R2 S3 env +
             # EMBEDDING_URL + GRIMOIRE_S3_BUCKET; extraction reads
             # GRIMOIRE_EXTRACT_API_KEY + GRIMOIRE_EXTRACT_MODEL/BASE_URL/LIMIT +
             # EMBEDDING_URL. Both get the union (the loader ignores the extract key,
             # the extractor ignores the S3 env) so the grimoire concern is one env
-            # block. The production default is direct DeepSeek, so
-            # GRIMOIRE_EXTRACT_API_KEY comes from the "goosecracker" Secret (field
-            # DEEPSEEK_API_KEY), Kyverno-cloned into monolith-workflows (see the
-            # clone-openrouter policy); the extract handler skips cleanly if absent.
+            # block. Hosted credentials follow the exact HTTPS provider host;
+            # custom endpoints receive no hosted-provider key. The existing
+            # goosecracker Secret is Kyverno-cloned into monolith-workflows.
             # R2 credentials (monolith-r2-s3 Secret) are also Kyverno-cloned.
             {{- /* Only the shared endpoint and credentials below follow the
                    sharedS3 gate; grimoire-owned env stays unconditional. */ -}}
@@ -280,28 +289,24 @@ spec:
               value: "300"
             - name: EMBED_RETRY_TIMEOUT
               value: "900"
+            {{- if $extractKey }}
             - name: GRIMOIRE_EXTRACT_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: goosecracker
-                  # Direct-DeepSeek key (production default). The client reads
-                  # GRIMOIRE_EXTRACT_API_KEY first, falling back to
-                  # OPENROUTER_API_KEY; to run against OpenRouter instead, point
-                  # this key at the goosecracker OPENROUTER_API_KEY field and set
-                  # GRIMOIRE_EXTRACT_BASE_URL/MODEL accordingly.
-                  key: DEEPSEEK_API_KEY
+                  key: {{ $extractKey }}
                   # Optional: the cloned "goosecracker" Secret only exists once
                   # goosecracker is enabled and Kyverno has replicated it into
                   # monolith-workflows; the pod must not be blocked on it (the
                   # extract job already skips cleanly when the key is unset).
                   optional: true
+            {{- end }}
             - name: GRIMOIRE_S3_BUCKET
               value: {{ $.Values.grimoire.s3Bucket | quote }}
             - name: GRIMOIRE_EXTRACT_MODEL
               value: {{ $.Values.grimoire.extractModel | quote }}
             {{- if .grimoireVerify }}
-            # Verification uses the existing extraction endpoint and model.
-            # Its key and per-run bounds are explicit on the manual job entry.
+            # Verification inherits the extraction credential above.
             - name: GRIMOIRE_VERIFY_MODEL
               value: {{ $.Values.grimoire.extractModel | quote }}
             - name: GRIMOIRE_VERIFY_BASE_URL

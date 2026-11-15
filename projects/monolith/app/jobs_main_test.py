@@ -75,6 +75,23 @@ def test_grimoire_embed_play_dispatches_to_offloaded_handler():
     )
 
 
+def test_grimoire_verifier_dispatches_only_report_mode():
+    with mock.patch.object(jobs_main, "_run_job") as run_job:
+        result = runner.invoke(jobs_main.app, ["grimoire-verify-entities", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    run_job.assert_called_once_with(
+        "grimoire-verify-entities", "grimoire.jobs", "grimoire_verify_entities"
+    )
+
+
+@pytest.mark.parametrize("options", [[], ["--apply"], ["--no-dry-run"]])
+def test_grimoire_verifier_cannot_dispatch_mutation(options):
+    with mock.patch.object(jobs_main, "_run_job") as run_job:
+        result = runner.invoke(jobs_main.app, ["grimoire-verify-entities", *options])
+    assert result.exit_code != 0
+    run_job.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("command", "handler_path"),
     [

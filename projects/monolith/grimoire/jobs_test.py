@@ -288,7 +288,7 @@ class TestVerifyEntitiesHandler:
     def test_skips_hosted_provider_without_key(self, monkeypatch):
         called = {"verify": False}
 
-        async def spy_verify_entities(session, client, limit, evidence_limit):
+        async def spy_verify_entities(session, client, limit, evidence_limit, dry_run):
             called["verify"] = True
             return {}
 
@@ -302,31 +302,40 @@ class TestVerifyEntitiesHandler:
         assert _run(jobs.grimoire_verify_entities(session=None)) is None
         assert called["verify"] is False
 
-    def test_passes_bounded_run_settings_and_provider_key(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "key_env", ["GRIMOIRE_VERIFY_API_KEY", "GRIMOIRE_EXTRACT_API_KEY"]
+    )
+    def test_enforces_report_only_with_bounded_settings_and_provider_key(
+        self, monkeypatch, key_env
+    ):
         captured = {}
 
         class SpyClient:
             def __init__(self, api_key):
                 captured["api_key"] = api_key
 
-        async def spy_verify_entities(session, client, limit, evidence_limit):
+        async def spy_verify_entities(session, client, limit, evidence_limit, dry_run):
             captured["session"] = session
             captured["client"] = client
             captured["limit"] = limit
             captured["evidence_limit"] = evidence_limit
+            captured["dry_run"] = dry_run
             return {"processed": 0}
 
         monkeypatch.setattr("grimoire.verifier.VerifierClient", SpyClient)
         monkeypatch.setattr("grimoire.verifier.verify_entities", spy_verify_entities)
-        monkeypatch.setenv("GRIMOIRE_VERIFY_API_KEY", "verify-key")
+        monkeypatch.delenv("GRIMOIRE_VERIFY_API_KEY", raising=False)
+        monkeypatch.delenv("GRIMOIRE_EXTRACT_API_KEY", raising=False)
+        monkeypatch.setenv(key_env, "provider-key")
         monkeypatch.setenv("GRIMOIRE_VERIFY_LIMIT", "7")
         monkeypatch.setenv("GRIMOIRE_VERIFY_EVIDENCE_LIMIT", "3")
 
         assert _run(jobs.grimoire_verify_entities(session="session")) is None
         assert captured == {
-            "api_key": "verify-key",
+            "api_key": "provider-key",
             "session": "session",
             "client": captured["client"],
             "limit": 7,
             "evidence_limit": 3,
+            "dry_run": True,
         }

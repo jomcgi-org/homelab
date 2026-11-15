@@ -9,7 +9,7 @@ The handlers wrap the async orchestrators in ``ingest.py``, ``extract.py``, and
     with a warning when OPENROUTER_API_KEY is unset, never crashing the
     scheduler) + embedding client, then run ``extract.extract_chunks``.
   - ``grimoire_verify_entities``: verify supported entity details against
-    marker-bearing mention chunks and atomically store corrections and markers.
+    marker-bearing mention chunks and report proposed outcomes without writes.
 
 ``app/jobs_main.py`` exposes all three through the shared ``_run_job`` helper.
 The loader and extractor run off-pod as Argo CronWorkflows; verification is an
@@ -373,8 +373,9 @@ async def grimoire_verify_entities(session: Session) -> None:
 
     The pass uses the extraction provider settings by default, with optional
     GRIMOIRE_VERIFY_* overrides. A missing hosted-provider key skips only this
-    run. Successful corrections and version markers persist atomically per
-    entity; failed calls and rejected output remain pending for a later run.
+    run. This handler always reports without writing corrections, nulls or
+    version markers. There is no apply switch: #7190 must resolve evidence-value
+    validation and missing-evidence data loss before mutation is exposed.
     """
     from grimoire.verifier import VerifierClient, verify_entities
 
@@ -407,9 +408,9 @@ async def grimoire_verify_entities(session: Session) -> None:
     )
     client = VerifierClient(api_key=api_key)
     summary = await verify_entities(
-        session, client, limit=limit, evidence_limit=evidence_limit
+        session, client, limit=limit, evidence_limit=evidence_limit, dry_run=True
     )
-    logger.info("grimoire_verify_entities done: %s", summary)
+    logger.info("grimoire_verify_entities report-only: %s", summary)
     return None
 
 
