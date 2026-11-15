@@ -20,6 +20,13 @@ is in `guest-init/cmd/screenshot.go`. The proxy forwards the internal Host
 unchanged. This change does not alter that mapping, its allowlist, runtime
 identities, or the screenshot tool's metadata contract.
 
+The `svc-url` source-ratchet exception covers only this inbound Host comparison.
+The hook never opens a connection to the literal. Shotter already bakes that
+exact identity into its guest mapping, so a Service rename must update both
+the mapping and this alias together. Keeping the accepted alias fixed also
+keeps browser and server routing identical without another runtime hostname
+setting. The exception does not apply to outbound Service URLs.
+
 ## Evidence and verification
 
 On 2026-11-15, the tool returned 404 images for public Hikes and Stars while a
