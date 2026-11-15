@@ -8,9 +8,10 @@
 #
 # Nothing here comes from 1Password. The authentik-secret-init Job generates
 # AUTHENTIK_SECRET_KEY and the OIDC client secrets into authentik-secrets once,
-# and CloudNativePG generates the database credentials. The secret key moves to
-# 1Password once Postgres has off-node backups: until then a lost cluster loses
-# the database too, so a key held elsewhere would protect nothing.
+# and CloudNativePG generates the database credentials. Three database instances
+# run on separate nodes, with WAL and daily base backups in Garage. Recovery
+# still needs the existing authentik-secrets; its 1Password copy and restore
+# drills remain on #7952. Never regenerate it or the OIDC client secrets.
 
 blueprintsDirectory: factory-blueprints
 
@@ -79,6 +80,16 @@ authentik:
   additionalObjects: []
 
 cnpg:
+  instances: 3
+  annotations:
+    # After authentik-pg-wait-for-key (wave -1). Keeping the Cluster also
+    # keeps its operator-owned PVCs, as for factory-db.
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
   storage:
     size: 5Gi
   resources:
@@ -87,7 +98,17 @@ cnpg:
       memory: 256Mi
     limits:
       memory: 1Gi
-  # No backups yet: the factory cluster has no off-node store
-  # (projects/factory-cluster/README.md, "Not yet done").
+  # Continuous WAL and daily base backups to replicated Garage, retained for
+  # 14 days. Garage shares the cluster's failure domain; off-site copies and
+  # restore drills remain on #7952 (projects/factory-cluster/README.md).
   backup:
-    enabled: false
+    enabled: true
+    provider: s3
+    destinationPath: s3://authentik-pg-backups/
+    serverName: authentik-pg-v1
+    endpointURL: http://garage.garage.svc:3900
+    credentialsSecret: authentik-pg-s3
+    retentionPolicy: "14d"
+    scheduledBackup:
+      # After kagent-pg (02:30) and factory-db (02:45).
+      cron: "0 0 3 * * *"

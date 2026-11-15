@@ -49,6 +49,7 @@ BUCKETS = [
     "ate-snapshots",
     "kagent-pg-backups",
     "factory-db-backups",
+    "authentik-pg-backups",
 ]
 # (bucket, namespace, Secret). ate-snapshots is granted to ate-system when
 # Substrate moves its snapshots from rustfs.
@@ -57,6 +58,7 @@ GRANTS = [
     ("factory-evidence", "factory", "factory-evidence-s3"),
     ("kagent-pg-backups", "kagent-pg", "kagent-pg-s3"),
     ("factory-db-backups", "factory-db", "factory-db-s3"),
+    ("authentik-pg-backups", "authentik", "authentik-pg-s3"),
 ]
 
 
