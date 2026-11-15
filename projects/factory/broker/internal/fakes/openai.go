@@ -38,6 +38,7 @@ type OpenAIAuth struct {
 	used         map[string]bool
 	revoked      bool
 	transient    bool
+	dropResponse bool
 	serial       int
 	refreshCalls int
 	beforeReuse  func(token string)
@@ -99,7 +100,14 @@ func (f *OpenAIAuth) token(w http.ResponseWriter, r *http.Request) {
 		case rt != "" && rt == f.current:
 			f.used[rt] = true
 			resp := f.issueLocked()
+			drop := f.dropResponse
+			f.dropResponse = false
 			f.mu.Unlock()
+			if drop {
+				// The provider committed the rotation, but the broker never
+				// receives its replacement token. Abort closes the connection.
+				panic(http.ErrAbortHandler)
+			}
 			writeJSON(w, http.StatusOK, resp)
 		case f.used[rt]:
 			hook := f.beforeReuse
@@ -149,6 +157,14 @@ func (f *OpenAIAuth) Rotate() string {
 func (f *OpenAIAuth) Revoke() {
 	f.mu.Lock()
 	f.revoked = true
+	f.mu.Unlock()
+}
+
+// DropNextRefreshResponse consumes the token and discards the successful
+// response on the next refresh, simulating a permanently lost rotation.
+func (f *OpenAIAuth) DropNextRefreshResponse() {
+	f.mu.Lock()
+	f.dropResponse = true
 	f.mu.Unlock()
 }
 

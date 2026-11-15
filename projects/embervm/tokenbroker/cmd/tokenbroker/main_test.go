@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -61,14 +62,15 @@ func (s *fakeStore) SaveGrantIfNewer(grant store.Grant) error {
 }
 
 type fakeAdapter struct {
-	refreshErr  error
-	deviceCode  provider.DeviceCodeResponse
-	deviceErr   error
-	startPanic  any
-	startWait   <-chan struct{}
-	startCalled chan struct{}
-	startOnce   sync.Once
-	pollWait    <-chan struct{}
+	refreshErr   error
+	refreshCalls atomic.Int32
+	deviceCode   provider.DeviceCodeResponse
+	deviceErr    error
+	startPanic   any
+	startWait    <-chan struct{}
+	startCalled  chan struct{}
+	startOnce    sync.Once
+	pollWait     <-chan struct{}
 }
 
 func (a *fakeAdapter) StartDeviceFlow(ctx context.Context) (provider.DeviceCodeResponse, error) {
@@ -105,6 +107,7 @@ func (a *fakeAdapter) ExchangeCode(context.Context, provider.AuthorizationCodeRe
 }
 
 func (a *fakeAdapter) RefreshToken(context.Context, string) (provider.TokenResponse, error) {
+	a.refreshCalls.Add(1)
 	if a.refreshErr != nil {
 		return provider.TokenResponse{}, a.refreshErr
 	}
@@ -548,6 +551,42 @@ func TestForceRefreshFailureReturnsNeedsLogin(t *testing.T) {
 	body := decodeBody(t, response)
 	if response.Code != http.StatusServiceUnavailable || body["reason"] != "refresh_failed" || body["needs_login"] != true {
 		t.Fatalf("response = %d %#v", response.Code, body)
+	}
+}
+
+func TestConsumedRefreshTokenStopsRetriesAndReportsLoginRequired(t *testing.T) {
+	now := time.Now().UTC()
+	st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
+		Name: "codex-cluster", ProviderName: "test", LastRefresh: now.Add(-time.Hour),
+		TokenBundle: store.TokenBundle{AccessToken: "expired", RefreshToken: "consumed", ExpiresAt: now.Add(-time.Minute)},
+	}}}
+	adapter := &fakeAdapter{refreshErr: provider.ErrRefreshTokenReused}
+	s := newTestServer(st, adapter)
+	response := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/refresh")
+	if response.Code != http.StatusServiceUnavailable || decodeBody(t, response)["needs_login"] != true {
+		t.Fatal("forced refresh did not report needs_login")
+	}
+	for i := 0; i < 3; i++ {
+		response = requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
+		if response.Code != http.StatusServiceUnavailable || decodeBody(t, response)["reason"] != "refresh_failed" {
+			t.Fatal("token route changed its refresh failure contract")
+		}
+	}
+	if calls := adapter.refreshCalls.Load(); calls != 2 {
+		t.Fatalf("provider calls = %d, want one attempt and one retry", calls)
+	}
+	status := decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+	if status["state"] != "none" || status["detail"] != "refresh failed, device login required" {
+		t.Fatal("login status did not expose the consumed refresh token")
+	}
+	g, _ := st.LoadGrant("codex-cluster")
+	g.LastRefresh = now
+	g.TokenBundle.RefreshToken = "replacement"
+	_ = st.SaveGrant(g)
+	adapter.refreshErr = nil
+	response = requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
+	if response.Code != http.StatusOK || adapter.refreshCalls.Load() != 3 || s.broker.NeedsLogin("codex-cluster") {
+		t.Fatal("newer durable grant did not restore token serving")
 	}
 }
 

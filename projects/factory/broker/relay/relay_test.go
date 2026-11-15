@@ -340,6 +340,44 @@ func TestRelayDeadGrant(t *testing.T) {
 	}
 }
 
+func TestRelayConsumedRefreshTokenIsCredentialBlock(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired-%t", expired), func(t *testing.T) {
+			h := newHarness(t, true)
+			// The replacement never reached durable storage.
+			h.auth.Rotate()
+			if expired {
+				st := &store.SecretStore{Client: h.client, Namespace: "factory", NamePrefix: "factory-broker-grant-"}
+				g, err := st.LoadGrant("codex-primary")
+				if err != nil {
+					t.Fatal(err)
+				}
+				g.TokenBundle.ExpiresAt = time.Now().Add(-time.Minute)
+				if err := st.SaveGrant(g); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				h.backend.set(func(b *backend) { b.accepts = func(string) bool { return false } })
+			}
+			for i := 0; i < 3; i++ {
+				resp := h.post("/v1/responses", h.actorJWT())
+				if resp.StatusCode != http.StatusUnauthorized || factoryError(t, resp)["factory_error"] != ErrLoginRequired {
+					t.Fatalf("consumed token response status = %d, want codex_login_required", resp.StatusCode)
+				}
+				if resp.Header.Get("Retry-After") != "" {
+					t.Fatal("credential block advertised a transient retry")
+				}
+			}
+			if h.auth.RefreshCalls() != 2 {
+				t.Fatalf("provider calls = %d, want one attempt and one retry", h.auth.RefreshCalls())
+			}
+			if expired && h.backend.count() != 0 {
+				t.Fatal("expired credential reached the backend")
+			}
+		})
+	}
+}
+
 func TestRelayUpstreamUnauthorizedRefreshesOnce(t *testing.T) {
 	h := newHarness(t, true)
 	h.backend.set(func(b *backend) { b.accepts = func(token string) bool { return token != h.access } })
