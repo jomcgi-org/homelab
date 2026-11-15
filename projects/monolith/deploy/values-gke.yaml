@@ -34,9 +34,11 @@ swarm:
   # One display-only GitHub comment per GitHub-sourced work item, linking its
   # durable factory record. Never read back. Rollback is this flag.
   factoryWorkItemPointerEnabled: true
-  # Make the bounded reconciler available on the existing GKE stack. Durable
-  # operator policy separately controls issue admission and starts disabled.
-  factoryEnabled: true
+  # Off: the hub factory is paused and retiring (#7817). Its reconciler still
+  # read GitHub every tick for stale receipts, about 3,300 REST calls an hour
+  # on Joe's token, and exhausted the shared quota on 2026-11-15. Rollback is
+  # setting this back to true.
+  factoryEnabled: false
   # Exact operator requests and original deadlines retain the existing task
   # bounds. Capacity is released only after durable guest cessation proof.
   factoryReservationReviewEnabled: true
