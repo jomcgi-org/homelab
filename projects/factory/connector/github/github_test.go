@@ -610,16 +610,79 @@ func pagedServer(t *testing.T, path string, n int, item func(i int) string) (*ht
 
 func TestListPullRequestsReadsEveryPage(t *testing.T) {
 	srv, seen := pagedServer(t, "/repos/example-org/homelab/pulls", 250, func(i int) string {
-		return fmt.Sprintf(`{"number": %d, "state": "open", "updated_at": "2026-11-14T12:00:00Z", "user": {"login": "u"},
+		return fmt.Sprintf(`{"number": %d, "state": "open", "created_at": "2026-11-14T11:00:00Z", "updated_at": "2026-11-14T12:00:00Z", "user": {"login": "u"},
 			"head": {"ref": "b", "sha": "s"}, "base": {"ref": "main"}}`, i)
 	})
 	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
 	prs, complete, err := c.ListPullRequests(context.Background(), "example-org/homelab", "main")
-	if err != nil || !complete || len(prs) != 250 || prs[249].Number != 250 || prs[0].UpdatedAt.IsZero() {
+	if err != nil || !complete || len(prs) != 250 || prs[249].Number != 250 || prs[0].UpdatedAt.IsZero() || prs[0].CreatedAt.IsZero() {
 		t.Fatalf("%d PRs, complete %v, err %v", len(prs), complete, err)
 	}
 	if len(*seen) != 3 || !strings.Contains((*seen)[2], "page=3") || !strings.Contains((*seen)[0], "sort=created") {
 		t.Fatalf("queries = %v", *seen)
+	}
+}
+
+func clientCheck(t *testing.T, ok bool, format string, args ...any) {
+	t.Helper()
+	if !ok {
+		t.Fatalf(format, args...)
+	}
+}
+
+// pagedReplyClient can put a complete valid page before the response under test.
+func pagedReplyClient(t *testing.T, later bool, code int, body string) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ghs_fixed" {
+			t.Error("history read omitted repository authentication")
+		}
+		if later && r.URL.Query().Get("page") == "1" {
+			items := make([]map[string]any, MaxListed)
+			for i := range items {
+				items[i] = map[string]any{"id": i + 1, "event": "labeled", "created_at": "2026-11-15T12:00:00Z", "label": map[string]string{"name": "human"}}
+			}
+			_ = json.NewEncoder(w).Encode(items)
+			return
+		}
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+}
+
+func TestPullRequestCreationBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		code int
+		ok   bool
+	}{
+		{`[{"state":"closed","draft":true,"created_at":"2026-11-15T12:00:00Z"}]`, 200, true},
+		{`[]`, 200, true},
+		{`null`, 200, false},
+		{`[{}]`, 200, false},
+		{`{}`, 200, false},
+		{`[{"created_at":"invalid"}]`, 200, false},
+		{`[{"created_at":"2026-11-15T12:00:00Z"},{"created_at":"2026-11-15T12:00:00Z"}]`, 200, false},
+		{`unavailable`, 502, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/repos/example-org/homelab/pulls" || r.URL.RawQuery != "direction=desc&per_page=1&sort=created&state=all" || r.Header.Get("Authorization") != "Bearer ghs_fixed" {
+					t.Errorf("unexpected creation boundary request: %s %s", r.Method, r.URL)
+				}
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			got, err := (&Client{BaseURL: srv.URL, Tokens: fixedTokens{}}).PullRequestCreationBoundary(context.Background(), "example-org/homelab")
+			want := time.Time{}
+			if tc.ok && tc.body != `[]` {
+				want = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+			}
+			clientCheck(t, (err == nil) == tc.ok && got.Equal(want), "creation boundary = %v, %v; want %v, success=%v", got, err, want, tc.ok)
+		})
 	}
 }
 
@@ -649,18 +712,9 @@ func TestPullRequestReviewsReadsEveryPage(t *testing.T) {
 func TestPullRequestReviewsRejectsAMissingPage(t *testing.T) {
 	for _, firstPage := range []bool{true, false} {
 		t.Run(fmt.Sprint("first page ", firstPage), func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if firstPage || r.URL.Query().Get("page") == "2" {
-					_, _ = w.Write([]byte("null"))
-					return
-				}
-				_ = json.NewEncoder(w).Encode(make([]map[string]any, MaxListed))
-			}))
-			defer srv.Close()
-			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			if reviews, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7); err == nil || reviews != nil {
-				t.Fatalf("missing page returned a usable snapshot: %v, %v", reviews, err)
-			}
+			c := pagedReplyClient(t, !firstPage, 200, "null")
+			reviews, err := c.PullRequestReviews(context.Background(), "example-org/homelab", 7)
+			clientCheck(t, err != nil && reviews == nil, "missing page returned a usable snapshot: %v, %v", reviews, err)
 		})
 	}
 }
@@ -675,7 +729,7 @@ func acknowledgementNode() map[string]any {
 }
 
 func TestPullRequestReviewAcknowledgementReadsOneReview(t *testing.T) {
-	for _, editor := range []string{"", "jomcgi", "someone-else", "unknown"} {
+	for editor, wantEditor := range map[string]string{"": "", "jomcgi": "jomcgi", "someone-else": "someone-else", "unknown": ""} {
 		t.Run(editor, func(t *testing.T) {
 			node := acknowledgementNode()
 			if editor != "" {
@@ -707,63 +761,43 @@ func TestPullRequestReviewAcknowledgementReadsOneReview(t *testing.T) {
 			defer srv.Close()
 			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
 			got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80")
-			if err != nil || got == nil || got.Author != "jomcgi" || got.Body != "factory hold acknowledgement" || got.State != "APPROVED" || got.CommitSHA != "sha-1" {
-				t.Fatalf("acknowledgement = %+v, %v", got, err)
-			}
-			wantEditor := editor
-			if editor == "unknown" {
-				wantEditor = ""
-			}
-			if got.Editor != wantEditor || (got.LastEditedAt == nil) != (editor == "") {
-				t.Fatalf("edit provenance changed: %+v", got)
-			}
-			if got.LastEditedAt != nil && !got.LastEditedAt.Equal(time.Date(2026, 11, 15, 12, 0, 1, 0, time.UTC)) {
-				t.Fatalf("edit timestamp = %v", got.LastEditedAt)
-			}
+			clientCheck(t, err == nil && got != nil && got.Author == "jomcgi" && got.Body == "factory hold acknowledgement" && got.State == "APPROVED" && got.CommitSHA == "sha-1", "acknowledgement = %+v, %v", got, err)
+			clientCheck(t, got.Editor == wantEditor && (got.LastEditedAt == nil) == (editor == ""), "edit provenance changed: %+v", got)
+			clientCheck(t, got.LastEditedAt == nil || got.LastEditedAt.Equal(time.Date(2026, 11, 15, 12, 0, 1, 0, time.UTC)), "edit timestamp = %v", got.LastEditedAt)
 		})
 	}
 }
 
 func TestPullRequestReviewAcknowledgementRejectsIncompleteOrForeignNode(t *testing.T) {
-	for _, change := range []struct {
-		name  string
-		apply func(map[string]any)
-	}{
-		{"wrong type", func(n map[string]any) { n["__typename"] = "IssueComment" }},
-		{"wrong node", func(n map[string]any) { n["id"] = "PRR_81" }},
-		{"wrong PR", func(n map[string]any) { n["pullRequest"].(map[string]any)["number"] = 8 }},
-		{"wrong repo", func(n map[string]any) {
+	for name, change := range map[string]func(map[string]any){
+		"wrong type": func(n map[string]any) { n["__typename"] = "IssueComment" },
+		"wrong node": func(n map[string]any) { n["id"] = "PRR_81" },
+		"wrong PR":   func(n map[string]any) { n["pullRequest"].(map[string]any)["number"] = 8 },
+		"wrong repo": func(n map[string]any) {
 			n["pullRequest"].(map[string]any)["repository"] = map[string]string{"nameWithOwner": "other/repo"}
-		}},
-		{"missing PR", func(n map[string]any) { n["pullRequest"] = nil }},
-		{"missing repo", func(n map[string]any) { n["pullRequest"].(map[string]any)["repository"] = nil }},
-		{"missing editor field", func(n map[string]any) { delete(n, "editor") }},
-		{"missing edit timestamp field", func(n map[string]any) { delete(n, "lastEditedAt") }},
-		{"malformed edit timestamp", func(n map[string]any) { n["lastEditedAt"] = "not a timestamp" }},
-		{"missing body", func(n map[string]any) { delete(n, "body") }},
-		{"missing state", func(n map[string]any) { delete(n, "state") }},
+		},
+		"missing PR":                   func(n map[string]any) { n["pullRequest"] = nil },
+		"missing repo":                 func(n map[string]any) { n["pullRequest"].(map[string]any)["repository"] = nil },
+		"missing editor field":         func(n map[string]any) { delete(n, "editor") },
+		"missing edit timestamp field": func(n map[string]any) { delete(n, "lastEditedAt") },
+		"malformed edit timestamp":     func(n map[string]any) { n["lastEditedAt"] = "not a timestamp" },
+		"missing body":                 func(n map[string]any) { delete(n, "body") },
+		"missing state":                func(n map[string]any) { delete(n, "state") },
 	} {
-		t.Run(change.name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			node := acknowledgementNode()
-			change.apply(node)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"node": node}})
-			}))
-			defer srv.Close()
-			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			if got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80"); err == nil || got != nil {
-				t.Fatalf("unusable node returned acknowledgement: %+v, %v", got, err)
-			}
+			change(node)
+			body, _ := json.Marshal(map[string]any{"data": map[string]any{"node": node}})
+			c := pagedReplyClient(t, false, 200, string(body))
+			got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80")
+			clientCheck(t, err != nil && got == nil, "unusable node returned acknowledgement: %+v, %v", got, err)
 		})
 	}
 	for _, reply := range []string{`{"data":{"node":null}}`, `{"data":{}}`, `{"data":null}`, `{"data":{"node":{}},"errors":[{"type":"FORBIDDEN","message":"no"}]}`} {
 		t.Run(reply, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(reply)) }))
-			defer srv.Close()
-			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			if got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80"); err == nil || got != nil {
-				t.Fatalf("missing/error node returned acknowledgement: %+v, %v", got, err)
-			}
+			c := pagedReplyClient(t, false, 200, reply)
+			got, err := c.PullRequestReviewAcknowledgement(context.Background(), "example-org/homelab", 7, "PRR_80")
+			clientCheck(t, err != nil && got == nil, "missing/error node returned acknowledgement: %+v, %v", got, err)
 		})
 	}
 }
@@ -782,19 +816,13 @@ func TestPullRequestLabelEventsReadEveryPage(t *testing.T) {
 		{ID: 1, Label: "needs-human", CreatedAt: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 		{ID: 250, Label: "needs-human", CreatedAt: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)},
 	}
-	if err != nil || !reflect.DeepEqual(events, want) {
-		t.Fatalf("label events = %+v, %v", events, err)
-	}
-	if len(*seen) != 3 || !strings.Contains((*seen)[2], "page=3") || !strings.Contains((*seen)[0], "per_page=100") {
-		t.Fatalf("queries = %v", *seen)
-	}
+	clientCheck(t, err == nil && reflect.DeepEqual(events, want), "label events = %+v, %v", events, err)
+	clientCheck(t, len(*seen) == 3 && strings.Contains((*seen)[2], "page=3") && strings.Contains((*seen)[0], "per_page=100"), "queries = %v", *seen)
 }
 
 func TestPullRequestLabelEventsRejectIncompleteHistory(t *testing.T) {
 	for _, body := range []string{
-		`null`,
-		`[null]`,
-		`[{}]`,
+		`null`, `[null]`, `[{}]`,
 		`[{"event":"labeled","created_at":"2026-11-15T12:00:00Z","label":{"name":"human"}}]`,
 		`[{"id":1,"event":"labeled","label":{"name":"human"}}]`,
 		`[{"id":1,"event":"labeled","created_at":"2026-11-15T12:00:00Z","label":{}}]`,
@@ -803,25 +831,9 @@ func TestPullRequestLabelEventsRejectIncompleteHistory(t *testing.T) {
 	} {
 		for _, laterPage := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s later=%v", body, laterPage), func(t *testing.T) {
-				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.Header.Get("Authorization") != "Bearer ghs_fixed" {
-						t.Error("event history read omitted repository authentication")
-					}
-					if laterPage && r.URL.Query().Get("page") == "1" {
-						items := make([]map[string]any, MaxListed)
-						for i := range items {
-							items[i] = map[string]any{"id": i + 1, "event": "labeled", "created_at": "2026-11-15T12:00:00Z", "label": map[string]string{"name": "human"}}
-						}
-						_ = json.NewEncoder(w).Encode(items)
-						return
-					}
-					_, _ = w.Write([]byte(body))
-				}))
-				defer srv.Close()
-				c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-				if events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7); err == nil || events != nil {
-					t.Fatalf("incomplete history returned usable events: %+v, %v", events, err)
-				}
+				c := pagedReplyClient(t, laterPage, 200, body)
+				events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7)
+				clientCheck(t, err != nil && events == nil, "incomplete history returned usable events: %+v, %v", events, err)
 			})
 		}
 	}
@@ -832,41 +844,18 @@ func TestPullRequestLabelEventsBoundAllEvents(t *testing.T) {
 		return fmt.Sprintf(`{"id":%d,"event":"closed"}`, i)
 	})
 	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-	if events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7); !errors.Is(err, ErrTooMany) || events != nil {
-		t.Fatalf("oversized history returned usable events: %+v, %v", events, err)
-	}
-	if len(*seen) != MaxIssueEventPages {
-		t.Fatalf("read %d pages, want %d", len(*seen), MaxIssueEventPages)
-	}
+	events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7)
+	clientCheck(t, errors.Is(err, ErrTooMany) && events == nil, "oversized history returned usable events: %+v, %v", events, err)
+	clientCheck(t, len(*seen) == MaxIssueEventPages, "read %d pages, want %d", len(*seen), MaxIssueEventPages)
 }
 
 func TestPullRequestLabelEventsEmptyAndFailedPages(t *testing.T) {
-	for _, failure := range []bool{false, true} {
+	for failure, code := range map[bool]int{false: http.StatusOK, true: http.StatusBadGateway} {
 		t.Run(fmt.Sprint("failure=", failure), func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if failure && r.URL.Query().Get("page") == "1" {
-					items := make([]map[string]any, MaxListed)
-					for i := range items {
-						items[i] = map[string]any{"id": i + 1, "event": "labeled", "created_at": "2026-11-15T12:00:00Z", "label": map[string]string{"name": "human"}}
-					}
-					_ = json.NewEncoder(w).Encode(items)
-					return
-				}
-				if failure {
-					http.Error(w, "unavailable", http.StatusBadGateway)
-					return
-				}
-				_, _ = w.Write([]byte(`[]`))
-			}))
-			defer srv.Close()
-			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			c := pagedReplyClient(t, failure, code, `[]`)
 			events, err := c.PullRequestLabelEvents(context.Background(), "example-org/homelab", 7)
-			if failure && (err == nil || events != nil) {
-				t.Fatalf("failed later page returned usable history: %+v, %v", events, err)
-			}
-			if !failure && (err != nil || len(events) != 0) {
-				t.Fatalf("empty history = %+v, %v", events, err)
-			}
+			clientCheck(t, !failure || (err != nil && events == nil), "failed later page returned usable history: %+v, %v", events, err)
+			clientCheck(t, failure || (err == nil && len(events) == 0), "empty history = %+v, %v", events, err)
 		})
 	}
 }

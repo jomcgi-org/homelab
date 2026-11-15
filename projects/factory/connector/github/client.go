@@ -64,11 +64,12 @@ type PullRequest struct {
 	HeadRef string
 	BaseRef string
 	Title   string
-	// Body, Author and UpdatedAt are filled from REST reads only; Labels
+	// Body, Author, CreatedAt and UpdatedAt come from REST reads only; Labels
 	// from REST reads and PullRequestDetail.
 	Body      string
 	Author    string
 	Labels    []string
+	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
@@ -282,6 +283,7 @@ type restPull struct {
 	Title     string     `json:"title"`
 	Body      *string    `json:"body"`
 	MergedAt  *string    `json:"merged_at"`
+	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt *time.Time `json:"updated_at"`
 	Merged    bool       `json:"merged"`
 	User      login      `json:"user"`
@@ -301,7 +303,7 @@ func (p restPull) pr() *PullRequest {
 	pr := &PullRequest{
 		Number: p.Number, NodeID: p.NodeID, URL: p.HTMLURL, State: p.State, Draft: p.Draft, Title: p.Title,
 		Merged: p.Merged || p.MergedAt != nil, HeadSHA: p.Head.SHA, HeadRef: p.Head.Ref, BaseRef: p.Base.Ref,
-		Author: p.User.Login,
+		Author: p.User.Login, CreatedAt: p.CreatedAt,
 	}
 	if p.Body != nil {
 		pr.Body = *p.Body

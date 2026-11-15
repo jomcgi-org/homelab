@@ -425,8 +425,8 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	}
 	g := &Gate{
 		Labels: []string{"human"}, ObservedLabels: []string{}, ApprovalAfter: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), Approver: "jomcgi",
-		ApprovalSnapshot: &ReviewSnapshot{IDs: []int64{11, 22}, Unavailable: true},
-		SharedHead:       true, ApprovalNonce: "nonce", LabelHistory: "history",
+		ApprovalSnapshot: &ReviewSnapshot{IDs: []int64{11, 22}, Unavailable: true, All: true},
+		SharedHead:       true, ApprovalNonce: "nonce", LabelHistory: "history", RecoveryEpoch: "epoch", RecoveryPR: 7, ContextToken: "context",
 	}
 	for i := range maxGatePaths {
 		g.Paths = append(g.Paths, fmt.Sprintf("%d/%s", i, huge))
@@ -445,10 +445,10 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 		!got.Gate.ApprovalAfter.Equal(g.ApprovalAfter) || got.Gate.Approver != g.Approver || !slices.Equal(got.Gate.Labels, g.Labels) {
 		t.Fatal("state trimming lost the approval cutoff, observed labels or approver")
 	}
-	if got.Gate.ApprovalSnapshot == nil || !got.Gate.ApprovalSnapshot.Unavailable || !slices.Equal(got.Gate.ApprovalSnapshot.IDs, g.ApprovalSnapshot.IDs) {
+	if got.Gate.ApprovalSnapshot == nil || !got.Gate.ApprovalSnapshot.Unavailable || !got.Gate.ApprovalSnapshot.All || !slices.Equal(got.Gate.ApprovalSnapshot.IDs, g.ApprovalSnapshot.IDs) {
 		t.Fatal("state trimming lost same-second approval evidence")
 	}
-	if !got.Gate.SharedHead || got.Gate.ApprovalNonce != g.ApprovalNonce || got.Gate.LabelHistory != g.LabelHistory {
+	if !got.Gate.SharedHead || got.Gate.ContextToken != g.ContextToken || got.Gate.RecoveryEpoch != g.RecoveryEpoch || got.Gate.RecoveryPR != g.RecoveryPR || got.Gate.ApprovalNonce != g.ApprovalNonce || got.Gate.LabelHistory != g.LabelHistory {
 		t.Fatal("state trimming lost duplicate, acknowledgement or durable history evidence")
 	}
 	for i, f := range got.Blocking {
@@ -493,7 +493,7 @@ func TestSameSecondApprovalNeedsNewIdentityAfterACompleteSnapshot(t *testing.T) 
 	after := second.Add(400 * time.Millisecond)
 	old := github.PullRequestReview{ID: 11, Author: "jomcgi", State: "APPROVED", CommitSHA: "h", SubmittedAt: second}
 	comment := github.PullRequestReview{ID: 22, Author: "other", State: "COMMENTED", CommitSHA: "h", SubmittedAt: second}
-	snapshot := snapshotReviews([]github.PullRequestReview{old, comment}, after)
+	snapshot := snapshotReviews([]github.PullRequestReview{old, comment}, after, false)
 	newer := old
 	newer.ID = 3 // Membership never depends on numeric ID ordering.
 	for _, tt := range []struct {
@@ -507,7 +507,7 @@ func TestSameSecondApprovalNeedsNewIdentityAfterACompleteSnapshot(t *testing.T) 
 		{"new approval", []github.PullRequestReview{old, comment, newer}, snapshot, "jomcgi"},
 		{"unknown snapshot", []github.PullRequestReview{newer}, nil, ""},
 		{"missing IDs", []github.PullRequestReview{newer}, &ReviewSnapshot{}, ""},
-		{"known empty snapshot", []github.PullRequestReview{newer}, snapshotReviews(nil, after), "jomcgi"},
+		{"known empty snapshot", []github.PullRequestReview{newer}, snapshotReviews(nil, after, false), "jomcgi"},
 		{"unavailable snapshot", []github.PullRequestReview{newer}, &ReviewSnapshot{Unavailable: true}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -520,17 +520,11 @@ func TestSameSecondApprovalNeedsNewIdentityAfterACompleteSnapshot(t *testing.T) 
 	// become eligible through a configuration or state change.
 	promoted := comment
 	promoted.Author, promoted.State = "jomcgi", "APPROVED"
-	if got := approvedBy(b, []github.PullRequestReview{promoted}, "h", after, snapshot, nil); got != "" {
-		t.Fatal("a captured ID became eligible after an author/state change")
-	}
+	failIf(t, approvedBy(b, []github.PullRequestReview{promoted}, "h", after, snapshot, nil) != "", "a captured ID became eligible after an author/state change")
 	newer.ID = 0
-	if got := approvedBy(b, []github.PullRequestReview{newer}, "h", after, snapshot, nil); got != "" {
-		t.Fatal("an approval without an ID proved same-second ordering")
-	}
+	failIf(t, approvedBy(b, []github.PullRequestReview{newer}, "h", after, snapshot, nil) != "", "an approval without an ID proved same-second ordering")
 	newer.ID, newer.SubmittedAt = 3, second.Add(-time.Second)
-	if got := approvedBy(b, []github.PullRequestReview{newer}, "h", after, snapshot, nil); got != "" {
-		t.Fatal("an unseen ID from an earlier second cleared the hold")
-	}
+	failIf(t, approvedBy(b, []github.PullRequestReview{newer}, "h", after, snapshot, nil) != "", "an unseen ID from an earlier second cleared the hold")
 }
 
 func TestApprovalSnapshotBoundsAndResetFailClosed(t *testing.T) {
@@ -540,36 +534,22 @@ func TestApprovalSnapshotBoundsAndResetFailClosed(t *testing.T) {
 	for i := range maxSnapshotReviews + 1 {
 		reviews = append(reviews, github.PullRequestReview{ID: int64(i + 1), SubmittedAt: second})
 	}
-	snapshot := snapshotReviews(reviews, after)
-	if !snapshot.Unavailable || len(snapshot.IDs) > maxSnapshotReviews {
-		t.Fatal("an oversized snapshot was treated as complete")
-	}
+	snapshot := snapshotReviews(reviews, after, false)
+	failIf(t, !snapshot.Unavailable || len(snapshot.IDs) > maxSnapshotReviews, "an oversized snapshot was treated as complete")
 	approval := github.PullRequestReview{ID: 1000, SubmittedAt: second}
-	if approvalAfter(approval, after, snapshot, false) {
-		t.Fatal("overflow accepted a same-second approval")
-	}
+	failIf(t, approvalAfter(approval, after, snapshot, false), "overflow accepted a same-second approval")
 	approval.SubmittedAt = second.Add(time.Second)
-	if !approvalAfter(approval, after, snapshot, false) {
-		t.Fatal("overflow blocked a provably later-second approval")
-	}
-	if snapshot := snapshotReviews([]github.PullRequestReview{{SubmittedAt: second}}, after); !snapshot.Unavailable {
-		t.Fatal("a missing review ID was treated as a complete snapshot")
-	}
-	if snapshot := snapshotReviews([]github.PullRequestReview{{ID: 1, State: "APPROVED"}}, after); !snapshot.Unavailable {
-		t.Fatal("a submitted review without a timestamp was treated as an empty second")
-	}
-	if snapshot := snapshotReviews([]github.PullRequestReview{{ID: 1, State: "PENDING"}}, after); snapshot.Unavailable || !approvalAfter(github.PullRequestReview{ID: 1, SubmittedAt: second}, after, snapshot, false) {
+	failIf(t, !approvalAfter(approval, after, snapshot, false), "overflow blocked a provably later-second approval")
+	failIf(t, !snapshotReviews([]github.PullRequestReview{{SubmittedAt: second}}, after, false).Unavailable, "a missing review ID was treated as a complete snapshot")
+	failIf(t, !snapshotReviews([]github.PullRequestReview{{ID: 1, State: "APPROVED"}}, after, false).Unavailable, "a submitted review without a timestamp was treated as an empty second")
+	if snapshot := snapshotReviews([]github.PullRequestReview{{ID: 1, State: "PENDING"}}, after, false); snapshot.Unavailable || !approvalAfter(github.PullRequestReview{ID: 1, SubmittedAt: second}, after, snapshot, false) {
 		t.Fatal("a review submitted after its pending snapshot could not establish freshness")
 	}
 	g := &Gate{Labels: []string{"human"}, ObservedLabels: []string{"human"}, ApprovalAfter: after, ApprovalSnapshot: snapshot}
 	g.observeLabels([]string{"human"}, after.Add(time.Minute))
-	if !g.ApprovalAfter.Equal(after) || g.ApprovalSnapshot != snapshot {
-		t.Fatal("an unchanged hold advanced its cutoff or snapshot")
-	}
+	failIf(t, !g.ApprovalAfter.Equal(after) || g.ApprovalSnapshot != snapshot, "an unchanged hold advanced its cutoff or snapshot")
 	g.observeLabels([]string{"human", "needs-human"}, after.Add(time.Minute))
-	if !g.ApprovalAfter.Equal(after.Add(time.Minute)) || g.ApprovalSnapshot != nil {
-		t.Fatal("a new hold retained the prior snapshot")
-	}
+	failIf(t, !g.ApprovalAfter.Equal(after.Add(time.Minute)) || g.ApprovalSnapshot != nil, "a new hold retained the prior snapshot")
 }
 
 func TestDurableLabelReadditionResetsFreshnessOnlyOnce(t *testing.T) {
@@ -577,22 +557,14 @@ func TestDurableLabelReadditionResetsFreshnessOnlyOnce(t *testing.T) {
 	second := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	events := []github.LabelEvent{{ID: 1, Label: "human", CreatedAt: second}}
 	g := &Gate{ObservedLabels: []string{}}
-	if !g.observeLabelEvents(b, events) {
-		t.Fatal("initial durable label was not applied")
-	}
+	failIf(t, !g.observeLabelEvents(b, events), "initial durable label was not applied")
 	nonce := g.ApprovalNonce
 	g.ApprovalSnapshot = &ReviewSnapshot{IDs: []int64{1}}
-	if g.observeLabelEvents(b, events) || g.ApprovalNonce != nonce {
-		t.Fatal("unchanged history reset approval")
-	}
+	failIf(t, g.observeLabelEvents(b, events) || g.ApprovalNonce != nonce, "unchanged history reset approval")
 	events = append(events, github.LabelEvent{ID: 2, Label: "human", CreatedAt: second})
-	if !g.observeLabelEvents(b, events) || g.ApprovalNonce == nonce || g.ApprovalSnapshot != nil {
-		t.Fatal("same-second re-addition reused the old approval")
-	}
+	failIf(t, !g.observeLabelEvents(b, events) || g.ApprovalNonce == nonce || g.ApprovalSnapshot != nil, "same-second re-addition reused the old approval")
 	slices.Reverse(events)
-	if g.observeLabelEvents(b, events) || !slices.Equal(g.Labels, []string{"human"}) {
-		t.Fatal("reordering history changed or removed the sticky hold")
-	}
+	failIf(t, g.observeLabelEvents(b, events) || !slices.Equal(g.Labels, []string{"human"}), "reordering history changed or removed the sticky hold")
 }
 
 func TestGateFindingsAreSetApartBeforeTheLowCap(t *testing.T) {
