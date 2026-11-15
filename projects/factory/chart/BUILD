@@ -49,6 +49,8 @@ py_test(
         "//projects/factory/deploy:application.yaml",
         "//projects/factory/deploy:deploy_values",
         "//projects/factory/deploy:render_lock",
+        # :chart carries chart_test.py, which this target also collects.
+        "//projects/platform-factory/substrate/resources:network-policy.yaml",
         "@multitool//tools/helm",
     ],
     env = {
@@ -57,6 +59,7 @@ py_test(
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
+        "SUBSTRATE_NETWORK_POLICY": "$(rootpath //projects/platform-factory/substrate/resources:network-policy.yaml)",
     },
     deps = [
         "@pip//pytest",
