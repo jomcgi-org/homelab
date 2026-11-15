@@ -1,17 +1,22 @@
 package grant
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/internal/fakes"
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
+	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -351,4 +356,200 @@ func TestDeviceLogin(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh endpoint with a dead grant = %d", rec.Code)
 	}
+}
+
+type loginAdapter struct {
+	starts, exchanges            int
+	tokens                       provider.TokenResponse
+	exchanged                    chan struct{}
+	afterExchange                func()
+	refreshStarted, refreshAllow chan struct{}
+}
+
+func (a *loginAdapter) StartDeviceFlow(context.Context) (provider.DeviceCodeResponse, error) {
+	a.starts++
+	return provider.DeviceCodeResponse{UserCode: "LOGIN-CODE"}, nil
+}
+
+func (a *loginAdapter) PollForAuthorization(context.Context, provider.DeviceCodeResponse) (provider.AuthorizationCodeResponse, error) {
+	return provider.AuthorizationCodeResponse{AuthorizationCode: "one-use-code"}, nil
+}
+
+func (a *loginAdapter) ExchangeCode(context.Context, provider.AuthorizationCodeResponse) (provider.TokenResponse, error) {
+	a.exchanges++
+	if a.afterExchange != nil {
+		a.afterExchange()
+	}
+	if a.exchanged != nil {
+		close(a.exchanged)
+	}
+	return a.tokens, nil
+}
+
+func (a *loginAdapter) RefreshToken(context.Context, string) (provider.TokenResponse, error) {
+	if a.refreshStarted != nil {
+		close(a.refreshStarted)
+		<-a.refreshAllow
+	}
+	expiry := time.Now().Add(10 * 24 * time.Hour)
+	return provider.TokenResponse{AccessToken: fakes.AccessToken("acct-1", expiry, "old-refresh"), RefreshToken: "old-refresh-result", ExpiresAt: expiry}, nil
+}
+
+func newLoginHarness(t *testing.T, a *loginAdapter) *harness {
+	t.Helper()
+	client := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: prefix + grantName, Namespace: namespace}})
+	mgr := New(Options{Grant: grantName, Client: client, Namespace: namespace, SecretPrefix: prefix, Adapter: a})
+	return &harness{client: client, store: mgr.store, metrics: mgr.opts.Metrics, mgr: mgr}
+}
+
+func newLoginAdapter() *loginAdapter {
+	expiry := time.Now().Add(10 * 24 * time.Hour)
+	return &loginAdapter{tokens: provider.TokenResponse{
+		IDToken: "exchanged-id", AccessToken: fakes.AccessToken("new-account", expiry, "login"), RefreshToken: "exchanged-refresh", ExpiresAt: expiry,
+	}}
+}
+
+func TestDeviceLoginSurvivesConcurrentRefresh(t *testing.T) {
+	for _, mode := range []string{"proactive", "forced", "rejected"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a := newLoginAdapter()
+				a.exchanged, a.refreshStarted, a.refreshAllow = make(chan struct{}), make(chan struct{}), make(chan struct{})
+				h := newLoginHarness(t, a)
+				if err := h.store.SaveGrant(store.Grant{Name: grantName, LastRefresh: time.Now().Add(-time.Hour), TokenBundle: store.TokenBundle{
+					AccessToken: "old-access", RefreshToken: "old-refresh", AccountID: "acct-1", ExpiresAt: time.Now().Add(time.Minute),
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				refreshed := make(chan struct{})
+				go func() {
+					defer close(refreshed)
+					switch mode {
+					case "proactive":
+						h.mgr.Check(context.Background())
+					case "forced":
+						_ = h.mgr.ForceRefresh(context.Background())
+					case "rejected":
+						_, _ = h.mgr.RefreshRejected(context.Background(), "old-access")
+					}
+				}()
+				<-a.refreshStarted
+				response := httptest.NewRecorder()
+				h.mgr.AdminHandler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/admin/codex/login", nil))
+				if response.Code != http.StatusOK {
+					t.Fatal("device login did not start")
+				}
+				<-a.exchanged
+				synctest.Wait()
+				time.Sleep(time.Second)
+				close(a.refreshAllow)
+				<-refreshed
+				synctest.Wait()
+				g := h.stored(t)
+				if g.TokenBundle.AccessToken != a.tokens.AccessToken || g.TokenBundle.RefreshToken != a.tokens.RefreshToken || g.TokenBundle.AccountID != "new-account" {
+					t.Fatal("concurrent refresh discarded or replaced the exchanged login")
+				}
+				if a.exchanges != 1 || h.mgr.login.state != "granted" {
+					t.Fatal("login did not finish with exactly one code exchange")
+				}
+			})
+		})
+	}
+}
+
+func TestDeviceLoginPersistenceRetryAfterCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := newLoginAdapter()
+		h := newLoginHarness(t, a)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		h.mgr.opts.Context = ctx
+		a.afterExchange = cancel
+		var logs bytes.Buffer
+		h.mgr.opts.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+		writes := 0
+		h.client.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+			writes++
+			if writes <= 5 {
+				return true, nil, errors.New("storage failure containing " + a.tokens.RefreshToken)
+			}
+			return false, nil, nil
+		})
+		handler := h.mgr.AdminHandler()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/admin/codex/login", nil))
+		time.Sleep(4 * time.Second)
+		synctest.Wait()
+		status := httptest.NewRecorder()
+		handler.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/admin/codex/login", nil))
+		var body map[string]any
+		if err := json.Unmarshal(status.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["login"] != "persistence_pending" || writes != 5 {
+			t.Fatal("failed writes did not expose a bounded, recoverable login state")
+		}
+		if strings.Contains(status.Body.String()+logs.String(), a.tokens.RefreshToken) {
+			t.Fatal("login persistence exposed credential contents")
+		}
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/admin/codex/login", nil))
+		if response.Code != http.StatusAccepted {
+			t.Fatal("login POST did not accept a persistence retry")
+		}
+		synctest.Wait()
+		if a.starts != 1 || a.exchanges != 1 || writes != 6 || h.mgr.login.state != "granted" {
+			t.Fatal("persistence recovery repeated the device flow or failed to complete")
+		}
+		g := h.stored(t)
+		if g.TokenBundle.RefreshToken != a.tokens.RefreshToken || g.TokenBundle.IDToken != a.tokens.IDToken {
+			t.Fatal("cancellation after exchange lost credentials")
+		}
+	})
+}
+
+func TestDeviceLoginRetriesDelayedSecretWrites(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := newLoginAdapter()
+		h := newLoginHarness(t, a)
+		writes := 0
+		h.client.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+			writes++
+			time.Sleep(time.Second)
+			if writes < 3 {
+				return true, nil, errors.New("temporarily unavailable")
+			}
+			return false, nil, nil
+		})
+		h.mgr.completeLogin(provider.DeviceCodeResponse{})
+		if a.exchanges != 1 || writes != 3 || h.mgr.login.state != "granted" {
+			t.Fatal("delayed Secret writes discarded the login or repeated the exchange")
+		}
+		if h.stored(t).TokenBundle.RefreshToken != a.tokens.RefreshToken {
+			t.Fatal("delayed writes did not persist the exchanged credentials")
+		}
+	})
+}
+
+func TestDeviceLoginConfirmsSecretCommitAfterLostResponse(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := newLoginAdapter()
+		h := newLoginHarness(t, a)
+		writes := 0
+		h.client.PrependReactor("update", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			writes++
+			secret := action.(k8stesting.UpdateAction).GetObject().(*corev1.Secret)
+			if err := h.client.Tracker().Update(corev1.SchemeGroupVersion.WithResource("secrets"), secret, namespace); err != nil {
+				return true, nil, err
+			}
+			return true, nil, errors.New("update committed but response lost")
+		})
+		h.mgr.completeLogin(provider.DeviceCodeResponse{})
+		if a.exchanges != 1 || writes != 1 || h.mgr.login.state != "granted" {
+			t.Fatal("lost update response prevented confirmation of the stored login")
+		}
+		if h.stored(t).TokenBundle.AccessToken != a.tokens.AccessToken {
+			t.Fatal("confirmed login differs from the exchanged credentials")
+		}
+	})
 }

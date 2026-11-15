@@ -662,6 +662,13 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 	value, _ := s.logins.LoadOrStore(name, &loginState{state: "none"})
 	state := value.(*loginState)
 	state.mu.Lock()
+	if state.state == "persistence_pending" {
+		state.state, state.detail = "pending", "saving exchanged credentials"
+		state.mu.Unlock()
+		go func() { s.finishLogin(name, s.broker.RetryPendingGrant(name)) }()
+		writeJSON(w, http.StatusAccepted, map[string]string{"state": "pending", "detail": "retrying credential persistence"})
+		return
+	}
 	if state.state == "pending" {
 		if state.code != nil {
 			response := map[string]any{
@@ -744,12 +751,20 @@ func (s *server) pollLogin(name string, adapter provider.Adapter, code provider.
 			err = s.broker.SaveGrant(store.Grant{Name: name, ProviderName: s.configs[name].ProviderName, LastRefresh: now, TokenBundle: store.TokenBundle{IDToken: tok.IDToken, AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, LastRefresh: now, ExpiresAt: tok.ExpiresAt}})
 		}
 	}
-	if err != nil {
-		s.logger.Error("tokenbroker login failed", "grant", name, "err", err)
-		s.setLogin(name, "failed", err.Error())
+	s.finishLogin(name, err)
+}
+
+func (s *server) finishLogin(name string, err error) {
+	if errors.Is(err, broker.ErrGrantPersistencePending) {
+		s.logger.Warn("tokenbroker login persistence pending", "grant", name)
+		s.setLogin(name, "persistence_pending", "credentials retained in memory; POST login/start to retry saving")
 		return
 	}
-	s.broker.ClearNeedsLogin(name)
+	if err != nil {
+		s.logger.Error("tokenbroker login failed", "grant", name)
+		s.setLogin(name, "failed", "device login failed")
+		return
+	}
 	s.setLogin(name, "granted", "device authorization complete")
 }
 
@@ -759,7 +774,7 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 	state.mu.RLock()
 	stateValue, detail := state.state, state.detail
 	state.mu.RUnlock()
-	if stateValue == "pending" {
+	if stateValue == "pending" || stateValue == "persistence_pending" {
 		writeJSON(w, http.StatusOK, map[string]string{"state": stateValue, "detail": detail})
 		return
 	}

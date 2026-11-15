@@ -23,6 +23,7 @@ type (
 )
 
 type grantState struct {
+	loginMu       sync.Mutex
 	mu            sync.Mutex
 	cond          *sync.Cond
 	refreshing    bool
@@ -31,6 +32,7 @@ type grantState struct {
 	lastExpiry    time.Time
 	needsLogin    bool
 	authoritative *store.Grant
+	pendingLogin  *store.Grant
 }
 
 func (b *Broker) NeedsLogin(grantName string) bool {
@@ -135,6 +137,11 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 		waited = true
 		s.cond.Wait()
 	}
+	// Never rotate the previous grant while an exchanged login awaits storage.
+	if s.pendingLogin != nil {
+		s.mu.Unlock()
+		return "", time.Time{}, ErrGrantPersistencePending
+	}
 	if waited {
 		access, expiry, err := s.lastAccess, s.lastExpiry, s.lastErr
 		s.mu.Unlock()
@@ -227,7 +234,11 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 	if result.RefreshToken != "" {
 		grant.TokenBundle.RefreshToken = result.RefreshToken
 	}
-	grant.LastRefresh = time.Now().UTC()
+	stamp := time.Now().UTC()
+	if !stamp.After(grant.LastRefresh) {
+		stamp = grant.LastRefresh.Add(time.Nanosecond)
+	}
+	grant.LastRefresh = stamp
 	grant.TokenBundle.LastRefresh = grant.LastRefresh
 	if err = b.saveRotatedGrant(grantName, grant); err != nil {
 		if errors.Is(err, store.ErrGrantNotNewer) {
@@ -359,24 +370,134 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 	return grant.TokenBundle.AccessToken, expires, nil
 }
 
+// SaveGrant installs an exchanged login after any active refresh. Once called,
+// persistence is independent of the device flow's context: its code is one-use.
+// Failed writes retain the bundle for RetryPendingGrant without another exchange.
 func (b *Broker) SaveGrant(grant store.Grant) error {
 	s, err := b.state(grant.Name)
 	if err != nil {
 		return err
 	}
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.refreshing {
-		return errors.New("grant refresh in progress")
+	if s.pendingLogin != nil {
+		s.mu.Unlock()
+		return ErrGrantPersistencePending
 	}
-	err = b.store.SaveGrantIfNewer(grant)
-	if errors.Is(err, store.ErrGrantNotNewer) {
+	// Assign the persistence order only once the preceding refresh has finished.
+	grant.LastRefresh = time.Time{}
+	// Secret timestamps round-trip through RFC3339 without monotonic data or
+	// local timezone pointers. Normalize for ambiguous-write confirmation.
+	grant.TokenBundle.ExpiresAt = grant.TokenBundle.ExpiresAt.UTC()
+	s.pendingLogin = &grant
+	for s.refreshing {
+		s.cond.Wait()
+	}
+	s.refreshing = true
+	s.mu.Unlock()
+	return b.persistLogin(s, grant)
+}
+
+// RetryPendingGrant retries only persistence of the retained login. The caller
+// must serialize device flows; SaveGrant refuses to replace a pending bundle.
+func (b *Broker) RetryPendingGrant(name string) error {
+	s, err := b.state(name)
+	if err != nil {
 		return err
 	}
-	return err
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	s.mu.Lock()
+	if s.pendingLogin == nil {
+		s.mu.Unlock()
+		return nil
+	}
+	grant := *s.pendingLogin
+	s.refreshing = true
+	s.mu.Unlock()
+	return b.persistLogin(s, grant)
+}
+
+func (b *Broker) persistLogin(s *grantState, grant store.Grant) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		// Secret writes have their own deadline, independent of login cancellation.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = b.persistLoginAttempt(ctx, s, &grant)
+		if errors.Is(err, store.ErrGrantNotNewer) {
+			// An update can commit even when its response is lost. Confirm that
+			// exact bundle before treating a duplicate write as successful.
+			saved, loadErr := b.loadLoginGrant(ctx, grant.Name)
+			if loadErr == nil && saved.LastRefresh.Equal(grant.LastRefresh) && saved.TokenBundle == grant.TokenBundle {
+				err = nil
+			}
+		}
+		cancel()
+		if err == nil {
+			break
+		}
+		if attempt < 4 {
+			time.Sleep(time.Duration(1<<attempt) * 250 * time.Millisecond)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshing = false
+	if err != nil {
+		// Storage errors may contain Secret contents. Expose only a fixed code.
+		s.lastErr = ErrGrantPersistencePending
+	} else {
+		s.pendingLogin = nil
+		s.authoritative = nil
+		s.needsLogin = false
+		s.lastErr = nil
+		s.lastAccess, s.lastExpiry = grant.TokenBundle.AccessToken, grant.TokenBundle.ExpiresAt
+	}
+	s.cond.Broadcast()
+	return s.lastErr
+}
+
+func (b *Broker) loadLoginGrant(ctx context.Context, name string) (store.Grant, error) {
+	if st, ok := b.store.(interface {
+		LoadGrantContext(context.Context, string) (store.Grant, error)
+	}); ok {
+		return st.LoadGrantContext(ctx, name)
+	}
+	return b.store.LoadGrant(name)
+}
+
+func (b *Broker) persistLoginAttempt(ctx context.Context, s *grantState, grant *store.Grant) error {
+	if grant.LastRefresh.IsZero() {
+		saved, err := b.loadLoginGrant(ctx, grant.Name)
+		if err != nil {
+			return err
+		}
+		// Include both the durable refresh and any rotation awaiting its own
+		// persistence retries. Keep this timestamp fixed across login retries.
+		stamp := time.Now().UTC()
+		if !stamp.After(saved.LastRefresh) {
+			stamp = saved.LastRefresh.Add(time.Nanosecond)
+		}
+		s.mu.Lock()
+		if s.authoritative != nil && !stamp.After(s.authoritative.LastRefresh) {
+			stamp = s.authoritative.LastRefresh.Add(time.Nanosecond)
+		}
+		grant.LastRefresh, grant.TokenBundle.LastRefresh = stamp, stamp
+		copy := *grant
+		s.pendingLogin = &copy
+		s.mu.Unlock()
+	}
+	if st, ok := b.store.(interface {
+		SaveGrantIfNewerContext(context.Context, store.Grant) error
+	}); ok {
+		return st.SaveGrantIfNewerContext(ctx, *grant)
+	}
+	return b.store.SaveGrantIfNewer(*grant)
 }
 
 var (
-	ErrNoGrant       = errors.New("no_grant")
-	ErrRefreshFailed = errors.New("refresh_failed")
+	ErrNoGrant                 = errors.New("no_grant")
+	ErrRefreshFailed           = errors.New("refresh_failed")
+	ErrGrantPersistencePending = errors.New("grant_persistence_pending")
 )

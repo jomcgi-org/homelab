@@ -62,7 +62,11 @@ func (s *SecretStore) SecretName(name string) string {
 }
 
 func (s *SecretStore) LoadGrant(name string) (Grant, error) {
-	secret, err := s.Client.CoreV1().Secrets(s.Namespace).Get(s.ctx(), s.SecretName(name), metav1.GetOptions{})
+	return s.LoadGrantContext(s.ctx(), name)
+}
+
+func (s *SecretStore) LoadGrantContext(ctx context.Context, name string) (Grant, error) {
+	secret, err := s.Client.CoreV1().Secrets(s.Namespace).Get(ctx, s.SecretName(name), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return Grant{}, fmt.Errorf("chart-managed OAuth Secret %q not found", s.SecretName(name))
 	}
@@ -120,8 +124,13 @@ func (s *SecretStore) SaveGrant(g Grant) error {
 var ErrGrantNotNewer = errors.New("grant_not_newer")
 
 func (s *SecretStore) SaveGrantIfNewer(g Grant) error {
+	return s.SaveGrantIfNewerContext(s.ctx(), g)
+}
+
+// SaveGrantIfNewerContext bounds both API requests for a persistence attempt.
+func (s *SecretStore) SaveGrantIfNewerContext(ctx context.Context, g Grant) error {
 	secrets := s.Client.CoreV1().Secrets(s.Namespace)
-	current, err := secrets.Get(s.ctx(), s.SecretName(g.Name), metav1.GetOptions{})
+	current, err := secrets.Get(ctx, s.SecretName(g.Name), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return fmt.Errorf("chart-managed OAuth Secret %q not found", s.SecretName(g.Name))
 	}
@@ -136,6 +145,6 @@ func (s *SecretStore) SaveGrantIfNewer(g Grant) error {
 		return ErrGrantNotNewer
 	}
 	current.Data = data(g.TokenBundle, g.LastRefresh)
-	_, err = secrets.Update(s.ctx(), current, metav1.UpdateOptions{})
+	_, err = secrets.Update(ctx, current, metav1.UpdateOptions{})
 	return err
 }

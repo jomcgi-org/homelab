@@ -1001,6 +1001,12 @@ and retries once, so a brief overlap during a rollout is safe.
   empty grant Secret: the store only updates it, so a missing Secret is a
   deployment fault (state `missing`, 503) that a login cannot fix. ActorJWT
   leaves no relay key to rotate.
+  Once a device code has been exchanged, installing the login waits for any
+  active refresh and retries persistence five times with a 10 s deadline per
+  attempt. Cancellation of the device flow does not cancel these writes.
+  Exhaustion reports `persistence_pending`; POST the login endpoint again to
+  save the retained bundle without exchanging the code again. This recovery
+  state is in memory and does not survive a broker restart.
 - **GitHub.** Installation tokens from the factory GitHub App (key, App ID
   and installation ID mounted from the 1Password Secret). Every 30 minutes
   the broker mints one token per repository binding (`repositories=[repo]`,
