@@ -63,3 +63,7 @@ projects/monolith/web/grimoire/src/theme/sheet.*
 # Copies of public-app performance workflow artifact files are kept
 # byte-for-byte so the SHA-256 in the evidence manifest still matches.
 projects/monolith/frontend/docs/performance/*-run/*.json
+
+# Storyboard objects are addressed by the SHA-256 of their exact bytes.
+# Edit deliberately and run fixtures/rehash.mjs to update their addresses.
+projects/factory-storyboard/fixtures/objects/*.json

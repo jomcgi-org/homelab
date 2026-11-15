@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "kind": "goal",
+  "id": "quiet-shelf",
+  "title": "A shelf for later",
+  "state": "Stopped",
+  "chapter": [
+    "I have left room for a future goal. No issues have been added."
+  ],
+  "issueKeys": [],
+  "burnUp": []
+}
