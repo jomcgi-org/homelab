@@ -227,6 +227,8 @@ type Run struct {
 	SeenVisible     bool
 	ClosedReason    string
 	Origin          string // OriginItsaplan or OriginConnector
+	StopRequested   bool   // survives a new run reactivating the work item
+	StoppedReason   string
 }
 
 // Run origins. A connector run is a review round the connector started; it
@@ -242,13 +244,14 @@ func (r *Run) Connector() bool { return r.Origin == OriginConnector }
 const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0), coalesce(issue_key, ''),
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
 	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, ''),
-	origin`
+	origin, stopped_reason IS NOT NULL, coalesce(stopped_reason, '')`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
 	err := row.Scan(&r.ID, &r.AgentKey, &r.WorkItemID, &r.IssueID, &r.IssueKey, &r.Trigger,
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
-		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin)
+		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin,
+		&r.StopRequested, &r.StoppedReason)
 	return r, err
 }
 
@@ -765,6 +768,7 @@ func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, expectedR
 			FROM run r JOIN work_item w ON w.id = r.work_item_id
 			WHERE a.id = $1 AND a.state = 'sending' AND r.id = a.run_id
 				AND r.state = 'dispatched' AND a.work_item_epoch = w.epoch AND r.attempt = $3
+				AND r.stopped_reason IS NULL
 				AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = r.id)
 				AND w.state NOT IN ('stopped', 'blocked')
 				AND NOT EXISTS (SELECT 1 FROM cancellation c JOIN run cr ON cr.id = c.run_id

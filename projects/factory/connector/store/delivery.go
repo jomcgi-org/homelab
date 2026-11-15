@@ -272,9 +272,10 @@ func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (ins
 // delivery was stopped, before a round could start.
 var ErrNotReview = errors.New("store: work item is no longer in review")
 
-// StopWork stops delivery for a work item and queues the announcement, in
-// one transaction. Dispatch then cancels its review rounds. stopped is false
-// when it was already stopped or is done.
+// StopWork stops delivery for a work item, persists the stop on its admitted
+// runs and queues the announcement in one transaction. Dispatch then cancels
+// those runs even if a new admission resumes the work item first. stopped is
+// false when it was already stopped or is done.
 func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (stopped bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		var issueID int64
@@ -292,6 +293,14 @@ func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (
 			return err
 		}
 		stopped = true
+		// ResolveWorkItem and MarkIssued also lock the work item, so a new
+		// admission cannot erase this stop and an old run cannot send past it.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE run SET stopped_reason = $2, updated_at = now()
+			WHERE work_item_id = $1 AND stopped_reason IS NULL
+				AND state IN ('claimed', 'waiting', 'dispatched', 'stale')`, workID, reason); err != nil {
+			return err
+		}
 		// Poll the PR at once, so a queued PR is dequeued without waiting.
 		if _, err := tx.ExecContext(ctx, `UPDATE pull_request SET polled_at = NULL WHERE work_item_id = $1`, workID); err != nil {
 			return err

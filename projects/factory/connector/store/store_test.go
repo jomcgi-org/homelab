@@ -71,6 +71,22 @@ func TestSingleWriterAndEpoch(t *testing.T) {
 	}
 }
 
+func TestRunStopMigrationPreservesExistingStops(t *testing.T) {
+	f := newRecoveryFixture(t)
+	_, err := f.st.DB.Exec(`
+		UPDATE work_item SET state = 'stopped', stopped_reason = 'stopped before upgrade';
+		ALTER TABLE run DROP COLUMN stopped_reason;
+		DELETE FROM schema_migrations WHERE version = '20261115210000_run_stops'`)
+	f.must(err)
+	f.must(migrations.Apply(f.ctx, f.st.DB))
+	f.must(migrations.Apply(f.ctx, f.st.DB))
+	r, err := f.st.GetRun(f.ctx, 1)
+	f.must(err)
+	if !r.StopRequested || r.StoppedReason != "stopped before upgrade" {
+		t.Fatalf("run lost its existing stop during upgrade: %+v", r)
+	}
+}
+
 func TestRecordingAMessageIDTwiceReturnsTheAttempt(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()

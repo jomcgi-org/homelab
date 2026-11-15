@@ -346,6 +346,7 @@ func TestSendAdmissionAfterTransportRedelivery(t *testing.T) {
 		{name: "ambiguous"},
 		{name: "stale executing run"},
 		{name: "stopped", gate: `UPDATE work_item SET state='stopped'`},
+		{name: "stopped then resumed"},
 		{name: "blocked", gate: `UPDATE work_item SET state='blocked'`},
 		{name: "canceling", gate: `UPDATE run SET state='canceling'`},
 		{name: "work epoch changed", gate: `UPDATE work_item SET epoch=epoch+1`},
@@ -374,6 +375,21 @@ func TestSendAdmissionAfterTransportRedelivery(t *testing.T) {
 				f.must(err)
 			}
 			switch tc.name {
+			case "stopped then resumed":
+				// The dispatcher still holds the old attempt when a stop and
+				// a new admission both commit. Even an empty stop reason fences it.
+				stopped, err := f.st.StopIssue(f.ctx, "HL-101", "", "operator:test")
+				f.must(err)
+				if !stopped {
+					t.Fatal("work item was not stopped")
+				}
+				_, _, err = f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: 2, AgentKey: "coder", Attempt: 1})
+				f.must(err)
+				work, _, err := f.st.ResolveWorkItem(f.ctx, 2, store.NewWorkItem{IssueID: 101, IssueKey: "HL-101", AgentKey: "coder"})
+				f.must(err)
+				if work.State != store.WorkActive {
+					t.Fatal("new admission did not resume the work item")
+				}
 			case "cancellation":
 				f.must(f.st.RequestCancellation(f.ctx, f.st.DB, a.ID, a.RunID, store.CancelReassignment))
 			case "superseded":

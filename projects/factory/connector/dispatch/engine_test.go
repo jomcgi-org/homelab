@@ -2000,6 +2000,65 @@ func TestInitialBriefHoldHonorsWorkItemStop(t *testing.T) {
 	}
 }
 
+func TestNewAdmissionDoesNotResumeStoppedBriefHold(t *testing.T) {
+	for _, mode := range []string{"next tick", "restart", "redelivery"} {
+		t.Run(mode, func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do not execute the stopped prompt.")
+			v.setIssueErr(itsaplan.ErrNotFound)
+			v.tick(v.e)
+			stopped, err := v.st.StopIssue(v.ctx, "HL-1", "operator stopped the held run", "operator:test")
+			v.requireReconciliationSetup(err)
+			if !stopped {
+				t.Fatal("held work item was not stopped")
+			}
+			// Claims precede stepRuns. Admit the new run while the old run
+			// still has not observed its stop, and keep both briefs unavailable.
+			v.its.add(2, "coder", 101, "HL-1", "Resume with the new prompt.")
+			claim, err := v.its.Claim(v.ctx, "coder")
+			v.requireReconciliationSetup(err)
+			if claim == nil || claim.ID != 2 {
+				t.Fatalf("claim = %+v, want the new admission", claim)
+			}
+			if err := v.e.HandleClaim(v.ctx, "coder", claim); !errors.Is(err, itsaplan.ErrNotFound) {
+				t.Fatalf("new admission = %v, want the unavailable brief hold", err)
+			}
+			if v.work(101).State != store.WorkActive || v.run(1).State != store.RunClaimed || v.run(2).State != store.RunClaimed {
+				t.Fatal("new admission did not reactivate the work item before the old run was stepped")
+			}
+			switch mode {
+			case "restart":
+				v.e.Release()
+				v.e = v.engine("connector-restarted")
+			case "redelivery":
+				v.its.reclaimElsewhere(1)
+				fr := v.its.Run(1)
+				redelivery := fr.run
+				redelivery.Attempts = fr.attempts
+				v.requireReconciliationSetup(v.e.HandleClaim(v.ctx, "coder", &redelivery))
+			}
+			v.tick(v.e)
+			if v.run(1).State != store.RunClosed || len(v.kg.Sends()) != 0 {
+				t.Fatal("new admission erased the old run's stop")
+			}
+			results := v.its.Run(1).results
+			if len(results) != 1 || results[0].Status != "failed" || !strings.Contains(results[0].Error, "operator stopped the held run") {
+				t.Fatalf("results = %+v, want the original stop reported without a brief", results)
+			}
+			v.setIssueErr(nil)
+			v.tick(v.e)
+			sends := v.kg.Sends()
+			if len(sends) != 1 || v.latest(2).MessageID != sends[0].msg.MessageID {
+				t.Fatalf("sends = %+v, want only the new run", sends)
+			}
+			text := sends[0].msg.Parts[0].Text
+			if !strings.Contains(text, "Resume with the new prompt.") || strings.Contains(text, "Do not execute the stopped prompt.") {
+				t.Fatalf("new session received the wrong prompt: %s", text)
+			}
+		})
+	}
+}
+
 func TestInitialIssueDescriptionClipping(t *testing.T) {
 	for _, tc := range []struct {
 		name, description, quoted string

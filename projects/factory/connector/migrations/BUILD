@@ -12,6 +12,7 @@ go_library(
         "20261115180000_recovery.sql",
         "20261115200000_idle_rounds.sql",
         "20261115203000_transcript.sql",
+        "20261115210000_run_stops.sql",
         "20261115210000_transcript_bytes.sql",
         "20261115220000_rebase_rounds.sql",
         "20261115230000_split_rounds.sql",
