@@ -229,19 +229,18 @@ successes and blob refusals preceding Pages refusals suggest rate limiting.
 The historical logs cannot distinguish a primary from a secondary limit or
 rule out a settings change.
 
-`FIXTURE_PREVIEW_REPAIR_ENABLED` defaults off in Python and is absent from
-`.github/workflows/fixture-preview-publish.yml`. The authorized activation
-owner can add the following workflow-level environment setting through
-reviewed delivery, covering aggregate, deploy and comment:
+`FIXTURE_PREVIEW_REPAIR_ENABLED` defaults off in Python.
+`.github/workflows/fixture-preview-publish.yml` turns it on for aggregate,
+deploy and comment with a workflow-level setting (HOME-104):
 
 ```yaml
 env:
   FIXTURE_PREVIEW_REPAIR_ENABLED: "true"
 ```
 
-That workflow edit requires the owner's existing workflow-write authority.
-No repository variable or Pages setting needs changing. Unset or other values
-retain the legacy blob loader and do not retry requests.
+Editing the workflow needs workflow-write authority. No repository variable
+or Pages setting needs changing. Unset or other values retain the legacy blob
+loader and do not retry requests.
 
 When enabled, the repair downloads one public state archive at the validated
 commit after reading the ref, commit and tree. Every file must match the
@@ -268,16 +267,17 @@ Run `ci` and the focused offline suite before delivery:
 python3 -m unittest discover -s bazel/tools/previews -p '*_test.py'
 ```
 
-Keep #7905 open after repository delivery. Within 72 hours after authorized
-landing, the validation owner must read a naturally triggered
-`pull_request_target` closed-event run and verify that its recorded trusted
-source revision contains this repair with activation enabled. Record the run
+HOME-104 tracks operational acceptance; #7905 closed when the staged repair
+merged. Within 72 hours after authorized landing, the validation owner must
+read a naturally triggered `pull_request_target` closed-event run and verify
+that its recorded trusted source revision contains this repair with
+activation enabled. Record the run
 URL, revision and closed PR number. Confirm `aggregate`, its `Validate
 provenance and reconcile all previews` step, and `deploy` all succeeded.
 Then read the [public state](https://jomcgi-org.github.io/homelab/state.json),
 validate its schema, repository, Pages URL and preview entries with
 `publish.validate_state`, and confirm the closed PR number is absent from
-`previews`. Record that evidence on #7905. A branch test, skipped deploy or
+`previews`. Record that evidence on HOME-104. A branch test, skipped deploy or
 successful aggregate alone does not satisfy operational acceptance.
 
 ## Publication boundary

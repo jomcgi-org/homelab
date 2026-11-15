@@ -14,6 +14,12 @@ on:
 
 permissions: {}
 
+# Load state from one verified archive and retry quota refusals briefly
+# (#7905; docs/runbooks/fixture-previews.md "Staged repair for Pages refusals").
+# Remove or set "false" to return to the legacy blob loader.
+env:
+  FIXTURE_PREVIEW_REPAIR_ENABLED: "true"
+
 # Pages replaces the entire site. Hold one lock across prepare, deploy and comment.
 # Queue up to 100 events; every accepted event reconciles every stored PR.
 concurrency:
