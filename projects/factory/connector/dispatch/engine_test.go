@@ -12,11 +12,12 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
-	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
+	"github.com/jomcgi/homelab/projects/factory/connector/migrations"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"github.com/jomcgi/homelab/projects/factory/internal/pgtest"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -37,7 +38,7 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	st, err := store.Open(pgtest.NewDB(t))
+	st, err := store.Open(pgtest.NewDB(t, migrations.Apply))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,6 @@
 // Package pgtest runs a real PostgreSQL 16 for tests from the binaries Bazel
 // extracts into @postgres_test, the way projects/monolith/shared/testing
-// does for pytest. Each test gets its own database with the connector's
-// migrations applied.
+// does for pytest. Each test gets its own database and supplies its migrations.
 package pgtest
 
 import (
@@ -21,8 +20,6 @@ import (
 	"time"
 
 	_ "github.com/lib/pq" // registers the postgres driver
-
-	"github.com/jomcgi/homelab/projects/factory/connector/migrations"
 )
 
 // Server is one running postgres.
@@ -59,7 +56,7 @@ func (s *Server) DSN(db string) string {
 }
 
 // NewDB creates an empty, migrated database for one test and returns its DSN.
-func NewDB(t testing.TB) string {
+func NewDB(t testing.TB, migrate func(context.Context, *sql.DB) error) string {
 	t.Helper()
 	mu.Lock()
 	srv := current
@@ -82,7 +79,7 @@ func NewDB(t testing.TB) string {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := migrations.Apply(context.Background(), db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	return dsn

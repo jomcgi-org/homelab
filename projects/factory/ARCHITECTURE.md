@@ -998,18 +998,16 @@ previews).
   permission loses only the comment; a failed write is logged and counted
   (`factory_reviewer_comment_writes_total`). It edits only a comment its bot
   login wrote, and its own comment never reaches the agent.
-  Check runs are its only state: the
-  in-progress run names its attempt and kagent task, and a completed one
-  keeps its blocking findings and human gate in a hidden block, at most
-  48,000 characters, for the next head. Duplicate ready PRs stop model work;
-  duplicate or foreign checks require a fresh review and human approval.
-  Holds survive new commits; complete label history recovers failed writes.
-  Each restart uses GitHub's latest all-state PR creation time to hold existing
-  and reopened PRs for exact-head approval until merge. Newer PRs stay autonomous
-  unless their check is foreign. Recovery records up to 64 review IDs; a new ID
-  or verified nonce clears its hold despite clock skew. Nonces also resolve
-  ambiguous timestamps and overflow; author, editor, state, commit and PR must
-  match. Read/write failures block recovery; revocation requires a GitHub write.
+  Postgres database `factory_reviewer`
+  owns gate state; check runs project it. In-progress checks still name their
+  attempts and kagent tasks, and completed checks retain blocking findings
+  for the next head. Gate observations and pending writes commit before any
+  check write or enqueue. Duplicate or foreign checks require a fresh review
+  and human approval. Real holds survive new commits, lost GitHub writes and
+  restarts; restarting never creates a hold. Approval baselines and authenticated
+  `factory-review-ack:<nonce>` acknowledgements still apply to real holds.
+  Database failures stop the writer without a new pass or enqueue. See
+  [Factory reviewer](#factory-reviewer) for persistence and migration.
 - **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
   one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
   and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
@@ -1185,6 +1183,38 @@ previews).
 
 Until the reviewer App exists, local review agents approve as `jomcgi` and
 the connector enqueues (bootstrap).
+
+## Factory reviewer
+
+The reviewer holds a session advisory lock and increments a writer epoch in
+`factory_reviewer`. Every state write verifies both on that same connection;
+losing either stops writes and exits the service. One replica with `Recreate`
+avoids overlapping workers. `DATABASE_URL` comes only from the
+`factory/factory-reviewer-db` Secret supplied by #8047. The chart defaults add
+that Secret reference and TCP 5432 egress to `factory-db` in namespace
+`factory-db`; deploy values do not need a new field.
+
+An atomic Postgres snapshot contains gates and context generations keyed by
+repository and PR, pending check projections, shared-head holds, merge-group
+conclusions and enqueue backoff. A commit precedes every GitHub check write
+and enqueue. A failed GitHub write retains its intent for the next poll or
+process. Pending failures are retried; a pending pass requires current evidence
+again. Approval remains revalidated on every poll. Check runs expose the gate
+and carry review reports and task IDs; their text cannot replace durable gate
+observations after startup.
+
+The first start imports all open PRs, including drafts, from the reviewer's
+check runs and complete label history before acting. The snapshot records
+completion atomically. Failed reads or incomplete history leave import pending.
+Legacy restart-only holds import without a hold; labels, gated paths, shared
+heads and human-gate findings remain binding. Later starts load Postgres.
+
+**Why.** [Joe's decision on 2026-11-15](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891505565)
+requires a person only where a hold actually applies. Durable observations
+replace #7979's restart hold without losing approval freshness or failed-write
+protection. Rollout acceptance checks both an unheld PR remaining passing and
+enqueueable across restart and a `human` PR remaining held. The implementation
+and its restart/failure tests are in [reviewer/README.md](reviewer/README.md).
 
 ## Delivery plan
 

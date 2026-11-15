@@ -67,10 +67,8 @@ type Gate struct {
 	Labels   []string  `json:"labels,omitempty"`
 	Findings []Finding `json:"findings,omitempty"`
 	// SharedHead makes a recorded duplicate itself a sticky human hold.
-	SharedHead    bool   `json:"shared_head,omitempty"`
-	RecoveryEpoch string `json:"recovery_epoch,omitempty"`
-	RecoveryPR    int    `json:"recovery_pr,omitempty"`
-	ContextToken  string `json:"context_token,omitempty"`
+	SharedHead   bool   `json:"shared_head,omitempty"`
+	ContextToken string `json:"context_token,omitempty"`
 	// Approver is the human whose APPROVED review of the head cleared it.
 	// It is revalidated every poll, never used as a cached authorization.
 	Approver string `json:"approver,omitempty"`
@@ -88,7 +86,7 @@ type Gate struct {
 type ReviewSnapshot struct {
 	IDs         []int64 `json:"ids"`
 	Unavailable bool    `json:"unavailable,omitempty"`
-	All         bool    `json:"all,omitempty"` // Recovery uses causal order, including when clocks differ.
+	All         bool    `json:"all,omitempty"` // A changed PR context uses causal order even when clocks differ.
 }
 
 const maxSnapshotReviews = 64
@@ -261,7 +259,7 @@ func approvalByPushes(b *Binding, pr github.PullRequest, events []github.RefActi
 
 // held reports whether the service itself holds the head, by path or label.
 func (g *Gate) held() bool {
-	return g != nil && (g.SharedHead || g.RecoveryEpoch != "" || len(g.Paths)+len(g.Labels) > 0)
+	return g != nil && (g.SharedHead || len(g.Paths)+len(g.Labels) > 0)
 }
 
 // inherit carries service holds, never a cached old-head approver.
@@ -275,11 +273,7 @@ func (g *Gate) inherit(prior *Gate) {
 			g.Labels = append(g.Labels, label)
 		}
 	}
-	newRecovery := prior.RecoveryEpoch != "" && (prior.RecoveryEpoch != g.RecoveryEpoch || prior.RecoveryPR != g.RecoveryPR)
-	if prior.RecoveryEpoch != "" {
-		g.RecoveryEpoch, g.RecoveryPR = prior.RecoveryEpoch, prior.RecoveryPR
-	}
-	if newRecovery || prior.ApprovalAfter.After(g.ApprovalAfter) {
+	if prior.ApprovalAfter.After(g.ApprovalAfter) {
 		g.ApprovalAfter, g.ApprovalNonce, g.ApprovalSnapshot = prior.ApprovalAfter, prior.ApprovalNonce, prior.ApprovalSnapshot
 	}
 }
@@ -397,9 +391,6 @@ func acknowledges(body, nonce string) bool {
 // waits for its human.
 func gateFinding(b *Binding, g *Gate) Finding {
 	var why []string
-	if g.RecoveryEpoch != "" {
-		why = append(why, "needs its context confirmed after reviewer recovery")
-	}
 	if g.SharedHead {
 		why = append(why, "shared its head with another ready PR")
 	}
@@ -420,7 +411,7 @@ func gateFinding(b *Binding, g *Gate) Finding {
 	if !g.ApprovalAfter.IsZero() {
 		fresh = " submitted after the hold was observed at " + g.ApprovalAfter.UTC().Format(time.RFC3339Nano)
 	}
-	if g.RecoveryEpoch != "" {
+	if g.ApprovalSnapshot != nil && g.ApprovalSnapshot.All {
 		fresh = " first seen after this hold's recorded review baseline"
 	}
 	ack := ""

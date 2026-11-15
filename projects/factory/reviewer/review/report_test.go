@@ -427,7 +427,7 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	g := &Gate{
 		Labels: []string{"human"}, ObservedLabels: []string{}, ApprovalAfter: time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), Approver: "jomcgi",
 		ApprovalSnapshot: &ReviewSnapshot{IDs: []int64{11, 22}, Unavailable: true, All: true},
-		SharedHead:       true, ApprovalNonce: "nonce", LabelHistory: "history", RecoveryEpoch: "epoch", RecoveryPR: 7, ContextToken: "context",
+		SharedHead:       true, ApprovalNonce: "nonce", LabelHistory: "history", ContextToken: "context",
 	}
 	for i := range maxGatePaths {
 		g.Paths = append(g.Paths, fmt.Sprintf("%d/%s", i, huge))

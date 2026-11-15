@@ -23,7 +23,7 @@ go_test(
     data = ["@postgres_test//:postgres"],
     deps = [
         ":store",
-        "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/migrations",
+        "//projects/factory/internal/pgtest",
     ],
 )

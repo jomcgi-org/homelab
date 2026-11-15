@@ -482,6 +482,13 @@ connector:
 # chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
 reviewer:
   enabled: false
+  database:
+    secretName: factory-reviewer-db
+    endpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: factory-db
+          cnpg.io/cluster: factory-db
+    port: 5432
   # Overwritten at build time by helm_chart(images = ...).
   image:
     repository: ghcr.io/jomcgi/homelab/projects/factory/reviewer

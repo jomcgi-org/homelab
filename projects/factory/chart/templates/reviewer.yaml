@@ -40,7 +40,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
-  # There is no writer lease: two instances would review every head twice.
+  # Postgres also fences overlapping writers; Recreate avoids lock contention.
   replicas: 1
   strategy:
     type: Recreate
@@ -69,6 +69,11 @@ spec:
           image: {{ include "factory.reviewerImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
           env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $c.database.secretName }}
+                  key: DATABASE_URL
             - name: FACTORY_REVIEWER_CONFIG
               value: /etc/factory-reviewer/config.yaml
           ports:

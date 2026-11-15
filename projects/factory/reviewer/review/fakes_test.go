@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,8 +23,13 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
+	"github.com/jomcgi/homelab/projects/factory/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
+	"github.com/jomcgi/homelab/projects/factory/reviewer/migrations"
+	"github.com/jomcgi/homelab/projects/factory/reviewer/store"
 )
+
+func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
 
 const (
 	testRepo  = "example-org/homelab"
@@ -1001,7 +1007,8 @@ type harness struct {
 	log             *syncBuffer
 	cfg             Config
 	srv             *httptest.Server
-	startupRecovery bool
+	db              *store.Store
+	writer          *store.Writer
 }
 
 type syncBuffer struct {
@@ -1022,10 +1029,23 @@ func (s *syncBuffer) String() string {
 }
 
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+	db, err := store.Open(pgtest.NewDB(t, migrations.Apply))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.DB.Close() })
+	writer, err := db.TryAcquireWriter(context.Background(), t.Name())
+	if err != nil || writer == nil {
+		t.Fatalf("writer: %v", err)
+	}
+	t.Cleanup(writer.Release)
 	gh, srv := newFakeGitHub(t)
 	h := &harness{
+		db: db, writer: writer,
 		t: t, gh: gh, k: newFakeKagent(), m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
 		cfg: Config{
+			Store: writer,
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
 			RetryBackoff: 2 * time.Millisecond, MaxSends: 3, DispatchWindow: 5 * time.Millisecond,
@@ -1066,12 +1086,6 @@ func (h *harness) engine() *Engine {
 		cfg.Comments = &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}}
 	}
 	e := New(cfg, gh, h.k, h.m, log)
-	if !h.startupRecovery { // Most cases isolate steady-state behavior; recovery cases exercise the startup scan.
-		e.epoch = "steady-state-test"
-		for i := range e.cfg.Bindings {
-			e.cfg.Bindings[i].startupBefore = &time.Time{}
-		}
-	}
 	return e
 }
 

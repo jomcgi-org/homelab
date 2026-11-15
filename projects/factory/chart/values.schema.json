@@ -421,6 +421,16 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName", "port"],
+          "properties": {
+            "secretName": { "type": "string", "minLength": 1 },
+            "endpoints": { "$ref": "#/definitions/endpointSelectors" },
+            "port": { "$ref": "#/definitions/port" }
+          }
+        },
         "enabled": {
           "type": "boolean"
         },

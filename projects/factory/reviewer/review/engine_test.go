@@ -1169,65 +1169,6 @@ func approvedQueuedHead(t *testing.T) (*harness, *Engine, context.Context) {
 	return h, e, ctx
 }
 
-func TestStartupRecoveryUsesCausalApprovalDespiteClockSkew(t *testing.T) {
-	for _, count := range []int{0, 1, maxSnapshotReviews + 1} {
-		t.Run(fmt.Sprint(count), func(t *testing.T) {
-			h := newPR7Harness(t)
-			for range count {
-				h.gh.review(7, "jomcgi", "APPROVED", shaA, "before restart")
-			}
-			h.gh.mu.Lock()
-			for i := range h.gh.prs[7].Reviews {
-				h.gh.prs[7].Reviews[i].SubmittedAt = time.Now().Add(time.Hour)
-			}
-			h.gh.mu.Unlock()
-			_, _, stop := startPassedReview(t, h)
-			stop()
-			h.startupRecovery = true
-			reads := "GET /repos/" + testRepo + "/pulls/7/reviews"
-			if count == 0 {
-				h.gh.failWith(reads, 502)
-			}
-			e, ctx, _ := h.start()
-			e.Tick(ctx)
-			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "clock skew reused a pre-restart approval")
-			st, _ := LoadState(h.gh.check(shaA).Text)
-			unchangedPoll(t, h, e, ctx, "unchanged recovery rewrote its gate")
-			body := "after the recovery baseline"
-			if count != 1 {
-				body = approvalAcknowledgement(st.Gate.ApprovalNonce)
-			}
-			h.gh.review(7, "jomcgi", "APPROVED", shaA, body)
-			h.gh.failWith(reads, 0)
-			e.Tick(ctx)
-			failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "causal approval or overflow acknowledgement did not clear recovery")
-		})
-	}
-}
-
-func TestStartupBoundaryIncludesClosedPRsAndAllowsLaterPRs(t *testing.T) {
-	h := newPR7Harness(t)
-	h.startupRecovery = true
-	boundary := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
-	h.gh.addPR(&fakePR{Number: 8, Head: strings.Repeat("b", 40), Created: boundary, Closed: true})
-	e, ctx, _ := h.start()
-	e.Tick(ctx)
-	eventually(t, "the startup task", func() bool { return h.taskOn(7, shaA, 1) != "" })
-	h.k.finishOpen(kagent.StateCompleted, report(t, passing))
-	eventually(t, "the startup hold", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
-	eventually(t, "the completed worker", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-	h.gh.withLock(func() { h.gh.prs[8].Closed = false })
-	h.gh.addPR(&fakePR{Number: 9, Head: strings.Repeat("c", 40), Created: boundary.Add(time.Second)})
-	e.Tick(ctx)
-	for _, n := range []int{8, 9} {
-		head := strings.Repeat(string(rune('b'+n-8)), 40)
-		eventually(t, "the later task", func() bool { return h.taskOn(n, head, 1) != "" })
-		h.k.finish(h.taskOn(n, head, 1), kagent.StateCompleted, report(t, passing))
-		eventually(t, "the later check", func() bool { return h.gh.check(head).Status == "completed" })
-		failIf(t, (h.gh.check(head).Conclusion == ConclusionSuccess) != (n == 9), "reopened PR borrowed the new PR exemption")
-	}
-}
-
 func TestApprovedGateIsRevalidatedUntilMerge(t *testing.T) {
 	for _, decision := range []string{"DISMISSED", "CHANGES_REQUESTED"} {
 		t.Run(decision, func(t *testing.T) {
@@ -1679,7 +1620,6 @@ func TestDuplicateHoldSurvivesNewHeadsAndLostWritesAcrossRestart(t *testing.T) {
 				head = strings.Repeat("b", 40)
 				h.gh.push(7, head)
 			}
-			h.startupRecovery = strings.HasPrefix(scenario, "lost")
 			if scenario != "cached head" {
 				e, ctx, _ = h.start()
 			}
@@ -1693,9 +1633,9 @@ func TestDuplicateHoldSurvivesNewHeadsAndLostWritesAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestInheritedRecoveryCannotBorrowAnotherPRsReviewSnapshot(t *testing.T) {
+func TestInheritedHoldCannotBorrowAnotherPRsReviewSnapshot(t *testing.T) {
 	h := newPR7Harness(t)
-	h.startupRecovery = true
+	h.gh.label(7, "human")
 	e, ctx, _ := h.start()
 	e.Tick(ctx)
 	eventually(t, "PR7 task", func() bool { return h.taskOn(7, shaA, 1) != "" })
@@ -1728,7 +1668,6 @@ func TestReplacementPRCannotReuseForeignPassAfterLostDuplicateWrites(t *testing.
 			stop()
 			h.gh.withLock(func() { h.gh.prs[7].Closed, h.gh.prs[8].Closed = true, true })
 			h.gh.failCheckWrites(shaA, 0)
-			h.startupRecovery = true
 			e, ctx, _ = h.start()
 			e.Tick(ctx) // Establish the server boundary before the replacement PR exists.
 			h.gh.addPR(&fakePR{Number: 9, Head: shaA, Created: h.gh.prs[8].Created.Add(time.Second)})
@@ -1739,6 +1678,7 @@ func TestReplacementPRCannotReuseForeignPassAfterLostDuplicateWrites(t *testing.
 			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 			e.Tick(ctx)
 			failIf(t, h.gh.check("mg-9").Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0, "replacement PR reused the foreign pass")
+			e.Tick(ctx) // A persisted pending hold is projected before the new PR's review starts.
 			eventually(t, "a current review or stale completion", func() bool { return h.taskOn(9, shaA, 1) != "" || h.gh.check(shaA).Status == "completed" })
 			failIf(t, h.taskOn(9, shaA, 1) == "", "replacement attached to a foreign task without its own review")
 			completeReview(t, h, runReview(t, h, e, ctx, 9, shaA), shaA, "replacement review")
@@ -1786,7 +1726,6 @@ func TestStartupReadFailureRevokesQueuedGroup(t *testing.T) {
 				}
 			})
 			if missing == "read error" {
-				h.startupRecovery = true
 				e = h.engine()
 				h.gh.failWith("GET /repos/"+testRepo+"/pulls", 502)
 			}
@@ -1976,6 +1915,11 @@ func TestLegacyGateStateCapturesHistoryOnceAndRevalidates(t *testing.T) {
 		}
 	}
 	h.gh.mu.Unlock()
+	// Only the one-time import reads legacy gate authority from check text.
+	if _, err := h.db.DB.Exec(`DELETE FROM reviewer_state`); err != nil {
+		t.Fatal(err)
+	}
+	e = h.engine()
 	n := h.gh.checkCount()
 	e.Tick(ctx)
 	h.gh.label(7, "human", "Needs-Human") // Order and case do not create a hold.

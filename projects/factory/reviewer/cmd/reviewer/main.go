@@ -25,7 +25,9 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
+	"github.com/jomcgi/homelab/projects/factory/reviewer/migrations"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/review"
+	"github.com/jomcgi/homelab/projects/factory/reviewer/store"
 )
 
 // reviewerTokenPath is the broker endpoint that mints the reviewer App's
@@ -68,6 +70,30 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL is required")
+	}
+	db, err := store.Open(dsn)
+	if err != nil {
+		return errors.New("open reviewer database failed")
+	}
+	defer db.DB.Close()
+	if err := migrations.Apply(ctx, db.DB); err != nil {
+		return errors.New("reviewer database migration failed")
+	}
+	holder, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	writer, err := db.TryAcquireWriter(ctx, holder)
+	if err != nil {
+		return errors.New("acquire reviewer database writer failed")
+	}
+	if writer == nil {
+		return store.ErrNotWriter
+	}
+	defer writer.Release()
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -132,6 +158,7 @@ func run(log *slog.Logger) error {
 		names = append(names, b.Name)
 	}
 	eng := review.New(review.Config{
+		Store:         writer,
 		CheckName:     cfg.CheckName,
 		AppID:         cfg.AppID,
 		Concurrency:   cfg.Concurrency,

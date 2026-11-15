@@ -15,6 +15,14 @@ spec:
     matchLabels:
       {{- include "factory.reviewerSelector" . | nindent 6 }}
   egress:
+    {{- with .Values.reviewer.database.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $.Values.reviewer.database.port | quote }}
+              protocol: TCP
+    {{- end }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}

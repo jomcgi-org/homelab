@@ -426,9 +426,9 @@ const (
 
 var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*) -->`)
 
-// State keeps a running review's label snapshot, then its blocking
-// findings and human gate on the completed check. The next round must
-// account for the findings; only a person clears the human gate.
+// State projects the durable gate alongside the review's blocking findings
+// on GitHub. The next round accounts for those findings; Postgres owns the
+// gate and its approval baseline, including when a projection write is lost.
 type State struct {
 	Blocking []Finding `json:"blocking"`
 	Gate     *Gate     `json:"gate,omitempty"`

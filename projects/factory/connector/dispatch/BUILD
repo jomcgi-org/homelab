@@ -38,11 +38,12 @@ go_test(
         ":dispatch",
         "//projects/factory/connector/config",
         "//projects/factory/connector/github",
-        "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
+        "//projects/factory/connector/migrations",
         "//projects/factory/connector/store",
+        "//projects/factory/internal/pgtest",
         "@com_github_prometheus_client_golang//prometheus/testutil",
     ],
 )

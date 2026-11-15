@@ -193,6 +193,15 @@ def test_one_kept_identity_and_private_image() -> None:
     assert container["ports"] == [{"name": "metrics", "containerPort": 9090}]
     assert container["env"] == [
         {
+            "name": "DATABASE_URL",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "factory-reviewer-db",
+                    "key": "DATABASE_URL",
+                }
+            },
+        },
+        {
             "name": "FACTORY_REVIEWER_CONFIG",
             "value": "/etc/factory-reviewer/config.yaml",
         }
@@ -432,10 +441,22 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     assert spec["endpointSelector"]["matchLabels"].items() <= labels.items()
     assert "ingress" not in spec
-    assert len(spec["egress"]) == 3
+    assert len(spec["egress"]) == 4
+    assert spec["egress"][0] == {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory-db",
+                    "cnpg.io/cluster": "factory-db",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}],
+    }
+    assert "DATABASE_URL" not in json.dumps(_config(docs, "factory-reviewer"))
     for rule, ns, name, port in (
-        (spec["egress"][0], "factory", "factory-broker", "8081"),
-        (spec["egress"][1], "kagent", "kagent-controller", "8083"),
+        (spec["egress"][1], "factory", "factory-broker", "8081"),
+        (spec["egress"][2], "kagent", "kagent-controller", "8083"),
     ):
         assert rule["toPorts"] == [{"ports": [{"port": port, "protocol": "TCP"}]}]
         peer = _in(docs, "CiliumNetworkPolicy", ns, name)["spec"]
@@ -459,7 +480,7 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
             )
             for entry in peer["ingress"]
         )
-    assert spec["egress"][2] == {
+    assert spec["egress"][3] == {
         "toFQDNs": [{"matchName": "api.github.com"}],
         "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
     }

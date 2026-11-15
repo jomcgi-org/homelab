@@ -7,16 +7,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/connector/migrations"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"github.com/jomcgi/homelab/projects/factory/internal/pgtest"
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
 
 func open(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(pgtest.NewDB(t))
+	st, err := store.Open(pgtest.NewDB(t, migrations.Apply))
 	if err != nil {
 		t.Fatal(err)
 	}
