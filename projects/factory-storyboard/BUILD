@@ -1,6 +1,7 @@
 # Hand-maintained snapshot contract, fixtures and their conformance test.
 # gazelle:ignore
 load("//bazel/tools/pytest:defs.bzl", "py_test")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
 
 filegroup(
     name = "schema",
@@ -25,4 +26,10 @@ py_test(
         "@pip//jsonschema",
         "@pip//pytest",
     ],
+)
+
+js_test(
+    name = "rehash_test",
+    data = ["fixtures/rehash.mjs"],
+    entry_point = "fixtures/rehash.test.mjs",
 )
