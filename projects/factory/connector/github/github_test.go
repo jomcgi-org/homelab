@@ -1025,3 +1025,53 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 		t.Fatalf("compare = %d files, truncated %v, err %v", len(cmp.Files), cmp.Truncated, err)
 	}
 }
+
+func TestCitedPullRequest(t *testing.T) {
+	merged := `{"data":{"repository":{"pullRequest":{"number":75,"state":"MERGED",
+		"merged":true,"mergedAt":"2026-11-15T15:35:36Z","baseRefName":"main","headRefOid":"sha-head",
+		"mergeCommit":{"oid":"sha-merge"},"author":{"login":"renovate-app"},"mergedBy":{"login":"renovate-app"},
+		"autoMergeRequest":null,"timelineItems":{"filteredCount":1},
+		"commits":{"nodes":[{"commit":{"oid":"sha-head","author":{"user":{"login":"renovate-app[bot]"}},
+		"signature":{"state":"VALID","wasSignedByGitHub":true}}}]}}}}}`
+	for _, tc := range []struct {
+		name, body string
+		want       *CitedPullRequest
+		err        error
+	}{
+		{"merged", merged, &CitedPullRequest{
+			Number: 75, State: "MERGED", Merged: true, MergedAt: time.Date(2026, 11, 15, 15, 35, 36, 0, time.UTC),
+			MergeCommitSHA: "sha-merge", BaseRef: "main", HeadSHA: "sha-head", Author: "renovate-app", MergedBy: "renovate-app",
+			Queued: true, HeadCommitAuthor: "renovate-app[bot]", HeadSignature: "VALID", HeadSignedByGitHub: true,
+		}, nil},
+		{"missing", `{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","message":"no"}]}`, nil, ErrNotFound},
+		// A last commit other than the head reports no signature.
+		{"stale-commit", strings.Replace(merged, `"commit":{"oid":"sha-head"`, `"commit":{"oid":"sha-other"`, 1), &CitedPullRequest{
+			Number: 75, State: "MERGED", Merged: true, MergedAt: time.Date(2026, 11, 15, 15, 35, 36, 0, time.UTC),
+			MergeCommitSHA: "sha-merge", BaseRef: "main", HeadSHA: "sha-head", Author: "renovate-app", MergedBy: "renovate-app",
+			Queued: true,
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				if !strings.Contains(req.Query, "ADDED_TO_MERGE_QUEUE_EVENT") || req.Variables["number"] != float64(75) {
+					t.Errorf("query = %q vars = %v", req.Query, req.Variables)
+				}
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer gh.Close()
+			c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+			got, err := c.CitedPullRequest(context.Background(), "example-org/homelab", 75)
+			if !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

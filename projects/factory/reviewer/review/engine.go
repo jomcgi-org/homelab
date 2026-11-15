@@ -45,6 +45,7 @@ type GitHub interface {
 	PullRequestQueue(ctx context.Context, repo string, number int) (*github.PullRequestQueue, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
 	MergeQueueEntries(ctx context.Context, repo, branch string) ([]github.MergeQueueEntry, error)
+	CitedPullRequest(ctx context.Context, repo string, number int) (*github.CitedPullRequest, error)
 	RulesReader
 }
 
@@ -1169,6 +1170,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		e.ghError(ctx, l, b, "comments", err)
 		return nil, err
 	}
+	cited := e.citedEvidence(ctx, b, pr, l)
 	var interdiff *github.CommitComparison
 	if in.priorHead != "" && in.priorHead != pr.HeadSHA {
 		interdiff, err = e.gh.CompareCommits(ctx, repo, in.priorHead, pr.HeadSHA)
@@ -1181,7 +1183,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
-		Comments: comments, DroppedComments: dropped, Gate: in.gate, Attempt: attempt,
+		Comments: comments, DroppedComments: dropped, Cited: cited, Gate: in.gate, Attempt: attempt, CheckName: e.cfg.CheckName,
 	})
 	msg := &kagent.Message{
 		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
@@ -1194,7 +1196,8 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	}
 	l.InfoContext(ctx, "review task built", "message_id", msg.MessageID, "attempt", attempt,
 		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead, "previous_unknown", in.priorUnknown,
-		"previous_findings", len(in.prior.Previous()), "trusted_comments", len(comments), "dropped_comments", dropped)
+		"previous_findings", len(in.prior.Previous()), "trusted_comments", len(comments), "dropped_comments", dropped,
+		"cited", len(cited))
 	return msg, nil
 }
 

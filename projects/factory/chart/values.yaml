@@ -282,9 +282,7 @@ agents:
           cpu: "4"
           memory: 9Gi
     concurrency: 2
-    # github-api: read-only REST reads (contents:read token) so cited PR,
-    # check and merge-queue evidence is inspectable.
-    egress: [github-git, github-api]
+    egress: [github-git]
     systemPrompt: |
       you review pull requests read-only per the rules in your task; you never push, commit or open PRs
 
