@@ -10,6 +10,16 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- $ns := .Values.broker.namespace }}
 {{- $name := include "factory.connectorName" . }}
 {{- $delivers := include "factory.connectorDelivers" . }}
+{{- if $c.notify.enabled }}
+{{- range $host := list $c.notify.hostname $c.notify.tokenHostname }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" $host) }}
+{{- fail "connector.notify requires DNS hostnames without ports or paths" }}
+{{- end }}
+{{- end }}
+{{- if not .Values.networkPolicy.cilium }}
+{{- fail "connector.notify requires networkPolicy.cilium" }}
+{{- end }}
+{{- end }}
 {{- if not .Values.itsaplan.enabled }}
 {{- fail "connector.enabled needs itsaplan.enabled: the connector claims itsaplan runs with the keys its bootstrap writes" }}
 {{- end }}
@@ -185,6 +195,14 @@ spec:
             {{- end }}
             - name: FACTORY_CONNECTOR_METRICS_ADDR
               value: {{ printf ":%d" (int $c.metricsPort) | quote }}
+            {{- if $c.notify.enabled }}
+            - name: FACTORY_CONNECTOR_NOTIFY_URL
+              value: {{ printf "https://%s/mcp/" $c.notify.hostname | quote }}
+            - name: FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
+              value: {{ printf "https://%s/application/o/token/" $c.notify.tokenHostname | quote }}
+            - name: FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE
+              value: /var/run/secrets/factory-notify/app-password
+            {{- end }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -227,12 +245,25 @@ spec:
             - name: kagent-token
               mountPath: /var/run/secrets/kagent
               readOnly: true
+            {{- if $c.notify.enabled }}
+            - name: notify-password
+              mountPath: /var/run/secrets/factory-notify
+              readOnly: true
+            {{- end }}
             {{- if $delivers }}
             - name: broker-token
               mountPath: /var/run/secrets/factory-broker
               readOnly: true
             {{- end }}
       volumes:
+        {{- if $c.notify.enabled }}
+        - name: notify-password
+          secret:
+            secretName: {{ required "connector.notify.secretName is required" $c.notify.secretName }}
+            items:
+              - key: app-password
+                path: app-password
+        {{- end }}
         - name: config
           configMap:
             name: {{ $name }}
@@ -273,4 +304,18 @@ spec:
                   expirationSeconds: 3600
                   path: token
         {{- end }}
+{{- if $c.notify.enabled }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ $c.notify.secretName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ required "connector.notify.itemPath is required" $c.notify.itemPath | quote }}
+{{- end }}
 {{- end }}

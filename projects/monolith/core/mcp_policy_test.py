@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 from fastmcp.exceptions import AuthorizationError
@@ -41,6 +42,62 @@ def _tool(name: str, *tags: str) -> SimpleNamespace:
 
 GATED = _tool("factory_status")
 PUBLIC = _tool("public_fixture", mcp_policy.PUBLIC_TAG)
+
+FACTORY = replace(
+    OUTSIDER,
+    subject="factory-subject",
+    username="factory-notify-sa",
+    issuer="https://auth.example/application/o/factory-notify/",
+    groups=("factory-notify",),
+    kind=PrincipalKind.WORKLOAD,
+)
+NOTIFY = _tool("monolith_agent_notify")
+
+
+def test_factory_grant_is_one_tool_even_with_escape_hatch(monkeypatch):
+    monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", FACTORY.issuer)
+    monkeypatch.setenv("MCP_GROUP_POLICY_ENFORCED", "false")
+    assert _call(FACTORY, NOTIFY.name, NOTIFY) == "ran"
+    for tool in (GATED, PUBLIC, None):
+        with pytest.raises(AuthorizationError):
+            _call(FACTORY, "unknown" if tool is None else tool.name, tool)
+
+    async def listed(_context):
+        return [NOTIFY, GATED, PUBLIC]
+
+    result = _run(FACTORY, lambda: mcp_policy.GroupPolicyMiddleware().on_list_tools(
+        _list_context(), listed
+    ))
+    assert result == [NOTIFY]
+
+
+@pytest.mark.parametrize("changes", [
+    {"issuer": "untrusted"}, {"username": "other"},
+    {"groups": ("factory-notify", "operators")}, {"groups": ()},
+    {"kind": PrincipalKind.HUMAN}, {"authority": Authority.DELEGATED},
+    {"authority": Authority.ANONYMOUS}, {"actor": ("actor",)},
+    {"delegation_claim_present": True},
+])
+def test_factory_identity_is_verified_and_narrow(monkeypatch, changes):
+    monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", FACTORY.issuer)
+    principal = replace(FACTORY, **changes)
+    assert not mcp_policy.permitted(NOTIFY, principal)
+    assert not mcp_policy.permitted(GATED, principal)
+
+
+def test_factory_arguments_use_default_channel_and_bounded_message(monkeypatch):
+    from core.notify_policy import check_notify_arguments
+
+    monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", FACTORY.issuer)
+    check_notify_arguments(FACTORY, "Factory notify sink is live", None, "key")
+    for channel in ("", "default", "other"):
+        with pytest.raises(AuthorizationError):
+            check_notify_arguments(FACTORY, "hello", channel, "key")
+    for message, key in (("", "key"), ("x" * 1001, "key"), ("é" * 501, "key"), ("hi", None)):
+        with pytest.raises(ValueError):
+            check_notify_arguments(FACTORY, message, None, key)
+    # Operators retain their established explicit-channel API.
+    check_notify_arguments(OPERATOR, "hello", "other", None)
 
 
 def _run(principal: Principal, coro_factory):

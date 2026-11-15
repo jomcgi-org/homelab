@@ -16,6 +16,7 @@ go_library(
         "20261115220000_rebase_rounds.sql",
         "20261115230000_split_rounds.sql",
         "20261116120000_run_stops.sql",
+        "20261116130000_notify_attempt.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

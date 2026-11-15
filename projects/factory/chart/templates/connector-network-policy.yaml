@@ -22,6 +22,16 @@ spec:
     matchLabels:
       {{- include "factory.connectorSelector" . | nindent 6 }}
   egress:
+    {{- if $c.notify.enabled }}
+    # Cloudflare-fronted MCP and Authentik, for this connector's pods only.
+    - toFQDNs:
+        - matchName: {{ $c.notify.hostname | quote }}
+        - matchName: {{ $c.notify.tokenHostname | quote }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- end }}
     # itsaplan's runner and coordinator routes.
     - toEndpoints:
         - matchLabels:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,36 @@ import (
 )
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
+
+func TestNotifyAttemptsRequireCurrentWriterAndContainNoPayload(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	w, err := st.TryAcquireWriter(ctx, "notify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Release()
+	key := "factory/2026-11-15/" + strings.Repeat("a", 64)
+	for i := 0; i < 2; i++ {
+		if err := st.RecordNotifyAttempt(ctx, w, key, "tools/call"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var attempts, epoch int64
+	if err := st.DB.QueryRow(`SELECT attempts, writer_epoch FROM notify_attempt WHERE dedupe_key=$1`, key).Scan(&attempts, &epoch); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || epoch != w.Epoch {
+		t.Fatal("attempt not recorded")
+	}
+	w.Release()
+	if err := st.RecordNotifyAttempt(ctx, w, key, "tools/call"); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("released writer: %v", err)
+	}
+	if err := st.RecordNotifyAttempt(ctx, nil, key, "token"); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("missing writer: %v", err)
+	}
+}
 
 func open(t *testing.T) *store.Store {
 	t.Helper()

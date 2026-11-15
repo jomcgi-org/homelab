@@ -181,6 +181,12 @@ func (e *Engine) Acquire(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// RecordNotifyAttempt checks the current epoch and commits the request audit
+// before the notification client makes each external call.
+func (e *Engine) RecordNotifyAttempt(ctx context.Context, key, phase string) error {
+	return e.st.RecordNotifyAttempt(ctx, e.w, key, phase)
+}
+
 // Epoch is the writer epoch held, 0 before Acquire.
 func (e *Engine) Epoch() int64 {
 	if e.w == nil {

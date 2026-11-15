@@ -29,6 +29,9 @@ type Config struct {
 	GitHubURL       string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
 	MetricsAddr     string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
 	Holder          string // POD_NAME, default hostname
+	NotifyURL       string // FACTORY_CONNECTOR_NOTIFY_URL; empty disables notify
+	NotifyTokenURL  string // FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
+	NotifyPasswordFile string // FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE
 
 	File File
 }
@@ -134,6 +137,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		GitHubURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
 		MetricsAddr:      getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
 		Holder:           getenv("POD_NAME"),
+		NotifyURL:        getenv("FACTORY_CONNECTOR_NOTIFY_URL"),
+		NotifyTokenURL:   getenv("FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"),
+		NotifyPasswordFile: getenv("FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE"),
 	}
 	if c.MetricsAddr == "" {
 		c.MetricsAddr = ":9090"

@@ -790,6 +790,14 @@ spec:
             {{- end }}
             - name: AUTH_JWKS_CACHE_TTL_S
               value: {{ .Values.auth.jwksCacheTtlSeconds | quote }}
+            {{- if .Values.factoryNotify.enabled }}
+            - name: AUTH_FACTORY_NOTIFY_JWKS_URL
+              value: {{ required "factoryNotify.jwksUrl is required" .Values.factoryNotify.jwksUrl | quote }}
+            - name: AUTH_FACTORY_NOTIFY_ISSUER
+              value: {{ required "factoryNotify.issuer is required" .Values.factoryNotify.issuer | quote }}
+            - name: AUTH_FACTORY_NOTIFY_AUDIENCE
+              value: {{ required "factoryNotify.audience is required" .Values.factoryNotify.audience | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

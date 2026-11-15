@@ -148,13 +148,22 @@ async def monolith_agent_notify(
     message: str,
     level: Literal["info", "warn", "error"] = "info",
     channel: str | None = None,
+    dedupe_key: str | None = None,
 ) -> dict:
     """Post a Discord message via the in-process bot.
 
     Defaults to the homelab channel from settings. The ``channel`` arg, if
     specified, must be a channel in a server the bot has been added to.
+    The factory caller may use only the default channel. A ``dedupe_key``
+    suppresses repeat enqueueing for that channel; include the occurrence or
+    UTC date in the key when a later occurrence should post again.
     """
-    return await notify_mod.notify(message, level=level, channel=channel)
+    from core.notify_policy import check_notify_arguments
+
+    check_notify_arguments(current_principal(), message, channel, dedupe_key)
+    return await notify_mod.notify(
+        message, level=level, channel=channel, dedupe_key=dedupe_key
+    )
 
 
 # --- Check ---------------------------------------------------------------

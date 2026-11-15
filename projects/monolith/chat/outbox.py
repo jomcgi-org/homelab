@@ -93,7 +93,7 @@ def _claim_pending(engine) -> list[dict]:
     """Read the oldest unposted, not-exhausted rows. Returns plain dicts so the
     async drain never holds an ORM row across an await."""
     with Session(engine) as session:
-        # A scheduled row left in sending across a process boundary has an
+        # A guarded row left in sending across a process boundary has an
         # unknowable Discord outcome. Quarantine it rather than risk a second
         # post. This is deliberately at-most-once after dispatch begins, not a
         # false exactly-once claim.
@@ -168,7 +168,7 @@ def _mark_failed(engine, row_id: int, error: str) -> None:
 
 
 def _mark_sending(engine, row_id: int) -> bool:
-    """Durably cross the no-retry boundary for a scheduled Discord send."""
+    """Durably cross the no-retry boundary for a guarded Discord send."""
     from sqlalchemy import update
 
     with Session(engine) as session:
@@ -293,7 +293,7 @@ async def drain_once(bot, engine) -> int:
     rows = await asyncio.to_thread(_claim_pending, engine)
     posted = 0
     for row in rows:
-        scheduled = row.get("kind") == "scheduled_task"
+        scheduled = row.get("kind") in ("scheduled_task", "factory_notify")
         channel = None
         if scheduled:
             # Channel lookup is known to happen before dispatch. A failure here

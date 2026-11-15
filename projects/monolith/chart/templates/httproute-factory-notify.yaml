@@ -1,0 +1,75 @@
+{{- if .Values.factoryNotify.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "monolith.fullname" . }}-factory-notify
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.cfIngress.private.gateway.name }}
+      namespace: {{ .Values.cfIngress.private.gateway.namespace }}
+  hostnames:
+    - {{ .Values.factoryNotify.hostname | quote }}
+  rules:
+    # Mount's canonical path avoids a bearer-carrying redirect. No UI/API
+    # paths, ingress-tier header identity, or anonymous notification handler.
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp/
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Cache-Control
+                value: no-store
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.service.apiPort | int }}
+          weight: 1
+---
+# This machine route has no anonymous catalogue discovery. Context Forge's
+# existing ClusterIP catalogue refresh remains on its original path.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ include "monolith.fullname" . }}-factory-notify
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith.fullname" . }}-factory-notify
+  jwt:
+    providers:
+      - name: factory-notify
+        issuer: {{ .Values.factoryNotify.issuer | quote }}
+        audiences: [{{ .Values.factoryNotify.audience | quote }}]
+        remoteJWKS:
+          uri: {{ .Values.factoryNotify.jwksUrl | quote }}
+          cacheDuration: 300s
+        extractFrom:
+          headers:
+            - name: Authorization
+              valuePrefix: "Bearer "
+        recomputeRoute: false
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: factory-notify-only
+        action: Allow
+        principal:
+          jwt:
+            provider: factory-notify
+            claims:
+              - name: groups
+                valueType: StringArray
+                values: [factory-notify]
+{{- end }}

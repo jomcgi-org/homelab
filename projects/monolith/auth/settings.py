@@ -18,6 +18,9 @@ class AuthSettings:
     authentik_agent_jwks_url: str = ""
     authentik_agent_issuer: str = ""
     authentik_agent_audience: str = ""
+    factory_notify_jwks_url: str = ""
+    factory_notify_issuer: str = ""
+    factory_notify_audience: str = ""
     cloudflare_access_jwks_url: str = ""
     cloudflare_access_issuer: str = ""
     # Only the Grimoire audience opts into the IdP's protected user-type claim.
@@ -42,6 +45,9 @@ class AuthSettings:
             authentik_agent_jwks_url=os.getenv("AUTH_AUTHENTIK_AGENT_JWKS_URL", ""),
             authentik_agent_issuer=os.getenv("AUTH_AUTHENTIK_AGENT_ISSUER", ""),
             authentik_agent_audience=os.getenv("AUTH_AUTHENTIK_AGENT_AUDIENCE", ""),
+            factory_notify_jwks_url=os.getenv("AUTH_FACTORY_NOTIFY_JWKS_URL", ""),
+            factory_notify_issuer=os.getenv("AUTH_FACTORY_NOTIFY_ISSUER", ""),
+            factory_notify_audience=os.getenv("AUTH_FACTORY_NOTIFY_AUDIENCE", ""),
             cloudflare_access_jwks_url=os.getenv("AUTH_CLOUDFLARE_ACCESS_JWKS_URL", ""),
             cloudflare_access_issuer=os.getenv("AUTH_CLOUDFLARE_ACCESS_ISSUER", ""),
         )

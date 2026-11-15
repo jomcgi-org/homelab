@@ -7,6 +7,39 @@ import importlib
 import pytest
 from pydantic import ValidationError
 
+
+@pytest.mark.asyncio
+async def test_factory_notify_cannot_override_channel(monkeypatch):
+    from dataclasses import replace
+    from auth.api import Authority, PrincipalKind, anonymous_principal
+    from auth.dependencies import reset_current_principal, set_current_principal
+    from fastmcp.exceptions import AuthorizationError
+    from agent import mcp
+
+    issuer = "https://auth.example/application/o/factory-notify/"
+    monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", issuer)
+    principal = replace(
+        anonymous_principal(), subject="factory", issuer=issuer,
+        username="factory-notify-sa", groups=("factory-notify",),
+        kind=PrincipalKind.WORKLOAD, authority=Authority.STANDING,
+    )
+    calls = []
+
+    async def notify(message, **kwargs):
+        calls.append((message, kwargs))
+        return {"ok": True, "queued": True}
+
+    monkeypatch.setattr(mcp.notify_mod, "notify", notify)
+    token = set_current_principal(principal)
+    try:
+        with pytest.raises(AuthorizationError):
+            await mcp.monolith_agent_notify("live", channel="other", dedupe_key="key")
+        assert not calls
+        await mcp.monolith_agent_notify("live", dedupe_key="key")
+    finally:
+        reset_current_principal(token)
+    assert calls == [("live", {"level": "info", "channel": None, "dedupe_key": "key"})]
+
 EXPECTED_TOOLS = {
     "monolith_agent_completed_raw_recovery",
     "monolith_agent_lock",

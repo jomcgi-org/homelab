@@ -16,6 +16,7 @@ go_library(
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
         "//projects/factory/connector/migrations",
+        "//projects/factory/connector/notify",
         "//projects/factory/connector/store",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",

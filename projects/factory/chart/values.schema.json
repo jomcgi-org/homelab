@@ -617,6 +617,18 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "notify": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "hostname", "tokenHostname", "secretName", "itemPath"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "hostname": { "type": "string", "minLength": 1 },
+            "tokenHostname": { "type": "string", "minLength": 1 },
+            "secretName": { "type": "string", "minLength": 1 },
+            "itemPath": { "type": "string", "pattern": "^vaults/[^/]+/items/[^/]+$" }
+          }
+        },
         "enabled": { "type": "boolean" },
         "image": {
           "type": "object",

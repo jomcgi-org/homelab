@@ -38,6 +38,8 @@ from fastmcp.server.middleware.middleware import (
 )
 from fastmcp.tools.base import Tool, ToolResult
 
+from core.notify_policy import factory_notify_permitted, is_factory_notify
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from auth.api import Principal
 
@@ -81,6 +83,10 @@ def permitted(tool: Tool | None, principal: Principal) -> bool:
     """
     if tool is None:
         return False
+    if is_factory_notify(principal):
+        return tool.name == "monolith_agent_notify" and factory_notify_permitted(
+            principal
+        )
     if PUBLIC_TAG in tool.tags:
         return True
     return principal.has_group(OPERATOR_GROUP)
@@ -103,7 +109,7 @@ class GroupPolicyMiddleware(Middleware):
         # and on_call_tool is what actually decides.
         if principal.authority is Authority.ANONYMOUS:
             return tools
-        if not enforced():
+        if not enforced() and not is_factory_notify(principal):
             return tools
         return [tool for tool in tools if permitted(tool, principal)]
 
@@ -120,13 +126,13 @@ class GroupPolicyMiddleware(Middleware):
         tool = None
         if server_context is not None:
             tool = await server_context.fastmcp.get_tool(name)
-        elif enforced():
+        elif enforced() or is_factory_notify(principal):
             # No server context means no tags to read, so the call cannot be
             # classified. Deny rather than assume the permissive branch.
             logger.warning("mcp policy: no server context for tool %s, denying", name)
             raise AuthorizationError(f"{name} is not available to this caller")
 
-        if not enforced():
+        if not enforced() and not is_factory_notify(principal):
             return await call_next(context)
 
         if not permitted(tool, principal):
