@@ -242,7 +242,7 @@ func Prompt(in PromptInput) string {
 					github.MaxCompareFiles, in.PreviousHead, in.SHA)
 			}
 			b.WriteString(" Block only on what changed since then and what that change affects: a new finding on code the earlier " +
-				"review covered and this head left alone is low with defer, unless its harm survives a revert.")
+				"review covered and this head left alone stays critical when it is critical, and is low with defer otherwise.")
 			if LaterScope(in.PreviousHead, d) != nil {
 				b.WriteString(" Mark such a finding \"earlier\": true; the reviewer service lowers a marked high or medium finding " +
 					"outside the listed files to a deferred low one. Never mark a finding this head's changes cause or affect, " +
