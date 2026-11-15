@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "kind": "issue",
+  "key": "DEMO-101",
+  "goalId": "reading-list",
+  "title": "Keep a reader's place",
+  "state": "Working",
+  "description": "This is an invented issue in the reading list example.",
+  "timeline": [
+    {
+      "kind": "opened",
+      "at": "2030-05-21T08:00:00Z",
+      "text": "The issue was added to the fictional reading list goal."
+    }
+  ]
+}

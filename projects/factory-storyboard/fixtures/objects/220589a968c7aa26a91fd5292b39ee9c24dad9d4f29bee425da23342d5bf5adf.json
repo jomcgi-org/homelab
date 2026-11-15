@@ -1,0 +1,323 @@
+{
+  "version": 1,
+  "kind": "session",
+  "id": "demo-build",
+  "issueKey": "DEMO-104",
+  "goalId": "reading-list",
+  "title": "Remember the saved reading list",
+  "state": "Shipped",
+  "turns": [
+    {
+      "number": 1,
+      "at": "2030-05-20T09:00:00Z",
+      "role": "user",
+      "withheld": false,
+      "text": "Make a fictional reading list reopen at the saved item. Use only the invented records in this example.",
+      "toolCalls": []
+    },
+    {
+      "number": 2,
+      "at": "2030-05-20T09:03:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 2. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 3,
+      "at": "2030-05-20T09:06:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "The sample title is <script>alert(\"fixture\")</script>. It should remain visible as text.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 3: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "at": "2030-05-20T09:09:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 4. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 5,
+      "at": "2030-05-20T09:12:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 5. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 6,
+      "at": "2030-05-20T09:15:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 6. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 6: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "at": "2030-05-20T09:18:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 7. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [],
+      "diff": "--- a/examples/reading-list.ts\n+++ b/examples/reading-list.ts\n@@ -1,2 +1,2 @@\n-const selected = null;\n+const selected = savedItem;\n renderList(selected);"
+    },
+    {
+      "number": 8,
+      "at": "2030-05-20T09:21:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 8. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 9,
+      "at": "2030-05-20T09:24:00Z",
+      "role": "assistant",
+      "withheld": true
+    },
+    {
+      "number": 10,
+      "at": "2030-05-20T09:27:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 10. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 11,
+      "at": "2030-05-20T09:30:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 11. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 12,
+      "at": "2030-05-20T09:33:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 12. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 12: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 13,
+      "at": "2030-05-20T09:36:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 13. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 14,
+      "at": "2030-05-20T09:39:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 14. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 15,
+      "at": "2030-05-20T09:42:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 15. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 15: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 16,
+      "at": "2030-05-20T09:45:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 16. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 17,
+      "at": "2030-05-20T09:48:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 17. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 18,
+      "at": "2030-05-20T09:51:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 18. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 18: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 19,
+      "at": "2030-05-20T09:54:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 19. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 20,
+      "at": "2030-05-20T09:57:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 20. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 21,
+      "at": "2030-05-20T10:00:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 21. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 21: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 22,
+      "at": "2030-05-20T10:03:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 22. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 23,
+      "at": "2030-05-20T10:06:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 23. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 24,
+      "at": "2030-05-20T10:09:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 24. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 24: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 25,
+      "at": "2030-05-20T10:12:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 25. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 26,
+      "at": "2030-05-20T10:15:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 26. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": []
+    },
+    {
+      "number": 27,
+      "at": "2030-05-20T10:18:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 27. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [
+        {
+          "name": "read_file",
+          "input": "examples/reading-list.ts",
+          "output": "const selected = \"invented-bookmark\";\n// Fictional file content."
+        },
+        {
+          "name": "run_check",
+          "input": "check fictional-reading-list",
+          "output": "Case 27: passed.\nThe saved item was selected."
+        }
+      ]
+    },
+    {
+      "number": 28,
+      "at": "2030-05-20T10:21:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I checked the fictional reading list at step 28. The selected item remains visible after opening the list again. This transcript was written for the fixture; it records no real session.",
+      "toolCalls": [],
+      "diff": "--- a/examples/reading-list.ts\n+++ b/examples/reading-list.ts\n@@ -1,2 +1,2 @@\n-const selected = null;\n+const selected = savedItem;\n renderList(selected);"
+    }
+  ]
+}

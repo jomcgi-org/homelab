@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "kind": "story",
+  "headline": "A reading list that keeps your place",
+  "notice": "Fixture edition. Every goal, issue, session and measurement here is made up.",
+  "narrative": [
+    "I am building a reading list that opens where I left it. Follow the work from a goal to the change that shipped.",
+    "There are {{stat:active}} issues in progress and {{stat:shipped}} shipped. A future measurement reads {{stat:unknown}} until it is available."
+  ],
+  "stats": {
+    "shipped": {
+      "label": "Shipped",
+      "value": 1,
+      "unit": "issues"
+    },
+    "active": {
+      "label": "In progress",
+      "value": 3,
+      "unit": "issues"
+    },
+    "mergeHours": {
+      "label": "Issue to merge",
+      "value": 6,
+      "unit": "hours"
+    },
+    "reviewRounds": {
+      "label": "Review rounds",
+      "value": 2,
+      "unit": "rounds"
+    },
+    "firstPass": {
+      "label": "First-pass review",
+      "value": 0,
+      "unit": "%"
+    }
+  },
+  "goals": [
+    {
+      "goalId": "reading-list",
+      "title": "Return to the reading list",
+      "chapter": [
+        "I want a reading list that remembers where I stopped. The first change has shipped; the rest is being worked on.",
+        "So far, {{stat:shipped}} issue has shipped. The next chapter has {{stat:unknown}} measurements to draw on."
+      ],
+      "state": "Working",
+      "shipped": 1,
+      "total": 5
+    },
+    {
+      "goalId": "quiet-shelf",
+      "title": "A shelf for later",
+      "chapter": [
+        "I have left room for a future goal. No issues have been added."
+      ],
+      "state": "Stopped",
+      "shipped": 0,
+      "total": 0
+    }
+  ],
+  "workInProgress": [
+    {
+      "issueKey": "DEMO-101",
+      "goalId": "reading-list",
+      "title": "Keep a reader's place",
+      "state": "Working"
+    },
+    {
+      "issueKey": "DEMO-102",
+      "goalId": "reading-list",
+      "title": "Review the empty reading list",
+      "state": "In review"
+    },
+    {
+      "issueKey": "DEMO-103",
+      "goalId": "reading-list",
+      "title": "Check the reading list export",
+      "state": "In merge queue"
+    }
+  ],
+  "recentlyShipped": [
+    {
+      "issueKey": "DEMO-104",
+      "goalId": "reading-list",
+      "title": "Open a saved reading list",
+      "state": "Shipped"
+    }
+  ],
+  "charts": {
+    "shippedPerWeek": [
+      {
+        "label": "Week of 2030-05-06",
+        "value": 0
+      },
+      {
+        "label": "Week of 2030-05-13",
+        "value": 0
+      },
+      {
+        "label": "Week of 2030-05-20",
+        "value": 1
+      }
+    ],
+    "issueToMergeHours": [
+      {
+        "label": "DEMO-104",
+        "value": 6
+      }
+    ],
+    "reviewRounds": [
+      {
+        "label": "PR #900004",
+        "value": 2
+      }
+    ],
+    "firstPassReviewRate": [
+      {
+        "label": "Week of 2030-05-20",
+        "value": 0
+      }
+    ]
+  }
+}

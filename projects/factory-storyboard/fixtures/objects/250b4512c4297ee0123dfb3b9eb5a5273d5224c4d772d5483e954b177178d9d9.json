@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "kind": "session",
+  "id": "demo-correction",
+  "issueKey": "DEMO-104",
+  "goalId": "reading-list",
+  "title": "Handle an empty saved list",
+  "state": "Shipped",
+  "turns": [
+    {
+      "number": 1,
+      "at": "2030-05-20T13:00:00Z",
+      "role": "user",
+      "withheld": false,
+      "text": "The invented reviewer found that an empty list needs a fallback.",
+      "toolCalls": []
+    },
+    {
+      "number": 2,
+      "at": "2030-05-20T13:10:00Z",
+      "role": "assistant",
+      "withheld": false,
+      "text": "I added the fallback and checked an empty list.",
+      "toolCalls": [
+        {
+          "name": "run_check",
+          "input": "check empty-list",
+          "output": "Empty and populated lists passed."
+        }
+      ],
+      "diff": "-open(saved.items[0]);\n+if (saved.items.length) open(saved.items[0]);\n+else showEmptyList();"
+    }
+  ]
+}
