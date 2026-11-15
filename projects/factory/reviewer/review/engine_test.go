@@ -24,7 +24,7 @@ func authoredPR() *fakePR {
 	pr := &fakePR{
 		Number: 7, Author: "jomcgi", Title: "fix(reviewer): gated change", Head: shaA,
 		HeadRepo: testRepo, HeadRef: "session/joe",
-		Files:    []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}},
+		Files: []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}},
 	}
 	for i, sha := range []string{"first", "second", shaA} {
 		var cm github.PullRequestCommit
@@ -121,7 +121,9 @@ func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
 		name   string
 		revoke func(*harness)
 	}{
-		{"factory pushed the same head", func(h *harness) { h.gh.withLock(func() { h.gh.prs[7].Activity[0].Actor.Login = "jomcgi-factory[bot]" }) }},
+		{"factory pushed the same head", func(h *harness) {
+			h.gh.withLock(func() { h.gh.prs[7].Activity[0].Actor.Login = "jomcgi-factory[bot]" })
+		}},
 		{"activity read fails", func(h *harness) { h.gh.failWith("GET /repos/"+testRepo+"/activity", 502) }},
 		{"Renovate identity changes", func(h *harness) { h.gh.setBaseFile("renovate.json", `{"gitAuthor":"Renovate <joe@example.com>"}`) }},
 		{"new hold label", func(h *harness) { h.gh.label(7, "human") }},
@@ -133,7 +135,7 @@ func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
 			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
 			eventually(t, "authorship pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
 			eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-			before := h.gh.countCalls("GET /repos/"+testRepo+"/activity")
+			before := h.gh.countCalls("GET /repos/" + testRepo + "/activity")
 			e.Tick(ctx)
 			if h.gh.countCalls("GET /repos/"+testRepo+"/activity") <= before {
 				t.Fatal("poll reused approval")

@@ -220,10 +220,10 @@ func TestHeadRefActivityRequiresCreationWithinOneCompletePage(t *testing.T) {
 
 func TestPullRequestCommitsFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
-		name                           string
-		count                          int
+		name                            string
+		count                           int
 		badEmail, mismatch, missingPage bool
-		ok                             bool
+		ok                              bool
 	}{
 		{name: "complete", count: 101, ok: true},
 		{name: "empty", count: 0},
@@ -243,7 +243,7 @@ func TestPullRequestCommitsFailsClosed(t *testing.T) {
 					return
 				}
 				out := []PullRequestCommit{}
-				for i := (page-1)*100; i < min(page*100, tc.count); i++ {
+				for i := (page - 1) * 100; i < min(page*100, tc.count); i++ {
 					var cm PullRequestCommit
 					cm.SHA, cm.Commit.Author.Email = strconv.Itoa(i), "joe@example.com"
 					if tc.badEmail {

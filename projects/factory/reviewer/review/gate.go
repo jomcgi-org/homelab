@@ -166,7 +166,7 @@ func (g *Gate) reviewRequired() bool {
 
 const (
 	defaultRenovateEmail = "renovate@whitesourcesoftware.com"
-	authorshipPrefix    = "Joe's approval by authorship: "
+	authorshipPrefix     = "Joe's approval by authorship: "
 )
 
 // authorshipApproval recomputes the waiver from GitHub on every evaluation.
