@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"strconv"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,12 +23,13 @@ type TokenBundle struct {
 type Grant struct {
 	Name         string
 	ProviderName string
-	// LoginID and LoginAt identify an authorization across token rotations.
-	// Legacy grants have neither; a new device login supersedes that lineage.
-	LoginID      string
-	LoginAt      time.Time
-	TokenBundle  TokenBundle
-	LastRefresh  time.Time
+	// LoginGeneration is allocated from the stored grant, with the Secret's
+	// resourceVersion fencing concurrent writes. LoginAt is diagnostic only.
+	LoginID         string
+	LoginGeneration uint64
+	LoginAt         time.Time
+	TokenBundle     TokenBundle
+	LastRefresh     time.Time
 }
 type Store interface {
 	LoadGrant(string) (Grant, error)
@@ -54,17 +55,29 @@ const RequestTimeout = 10 * time.Second
 // CompareGrantVersion orders logins first, then rotations within a login.
 // A late refresh from an older login cannot replace a newer authorization.
 func CompareGrantVersion(a, b Grant) int {
-	if order := a.LoginAt.Compare(b.LoginAt); order != 0 {
-		return order
+	if a.LoginGeneration < b.LoginGeneration {
+		return -1
 	}
-	if order := strings.Compare(a.LoginID, b.LoginID); order != 0 {
-		return order
+	if a.LoginGeneration > b.LoginGeneration {
+		return 1
+	}
+	// Concurrent logins may propose the same next generation. Only the first
+	// Secret update can win; a different identity cannot rotate that winner.
+	if a.LoginID != b.LoginID {
+		return 0
 	}
 	return a.LastRefresh.Compare(b.LastRefresh)
 }
 
 func grantVersion(data map[string][]byte) (Grant, error) {
 	g := Grant{LoginID: string(data["login_id"])}
+	if raw := string(data["login_generation"]); raw != "" {
+		generation, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return Grant{}, errors.New("invalid stored login generation")
+		}
+		g.LoginGeneration = generation
+	}
 	for key, dest := range map[string]*time.Time{"login_at": &g.LoginAt, "last_refresh": &g.LastRefresh} {
 		if len(data[key]) == 0 {
 			continue
@@ -75,7 +88,7 @@ func grantVersion(data map[string][]byte) (Grant, error) {
 		}
 		*dest = stamp
 	}
-	if (g.LoginID == "") != g.LoginAt.IsZero() {
+	if (g.LoginID == "") != g.LoginAt.IsZero() || (g.LoginGeneration != 0 && g.LoginID == "") {
 		return Grant{}, errors.New("incomplete stored login version")
 	}
 	return g, nil
@@ -144,14 +157,15 @@ func (s *SecretStore) LoadGrantContext(ctx context.Context, name string) (Grant,
 func data(g Grant) map[string][]byte {
 	b := g.TokenBundle
 	return map[string][]byte{
-		"id_token":      []byte(b.IDToken),
-		"access_token":  []byte(b.AccessToken),
-		"refresh_token": []byte(b.RefreshToken),
-		"account_id":    []byte(b.AccountID),
-		"last_refresh":  []byte(g.LastRefresh.UTC().Format(time.RFC3339Nano)),
-		"expires_at":    []byte(b.ExpiresAt.UTC().Format(time.RFC3339Nano)),
-		"login_id":      []byte(g.LoginID),
-		"login_at":      []byte(g.LoginAt.UTC().Format(time.RFC3339Nano)),
+		"id_token":         []byte(b.IDToken),
+		"access_token":     []byte(b.AccessToken),
+		"refresh_token":    []byte(b.RefreshToken),
+		"account_id":       []byte(b.AccountID),
+		"last_refresh":     []byte(g.LastRefresh.UTC().Format(time.RFC3339Nano)),
+		"expires_at":       []byte(b.ExpiresAt.UTC().Format(time.RFC3339Nano)),
+		"login_id":         []byte(g.LoginID),
+		"login_generation": []byte(strconv.FormatUint(g.LoginGeneration, 10)),
+		"login_at":         []byte(g.LoginAt.UTC().Format(time.RFC3339Nano)),
 	}
 }
 

@@ -24,13 +24,18 @@ second consumer sets `store.SecretStore.NamePrefix`, `metrics.NewWithPrefix`
 and `NewQuotaCollectorWithPrefix`, and `Broker.SetRefreshPolicy`; the factory
 broker (`projects/factory/broker`) does.
 
-Device logins carry a `login_id` and `login_at` in their grant Secret. Refresh
-preserves that identity. Writes compare login order before rotation time, so a
-late refresh from an older login cannot replace the new authorization. A retry
-adopts a newer durable login or a rotation of the retained login instead of
-replaying its consumed credentials. Secrets without login metadata remain
-readable and receive an identity on the next device login. Grant storage
-requests have a 10-second deadline, including refresh and background retries.
+Device logins carry a `login_id` and `login_generation` in their grant Secret.
+Each login proposes the stored generation plus one; Kubernetes resourceVersion
+checks serialize concurrent updates. When logins propose the same generation,
+the first committed identity wins. Refresh preserves both fields and can only
+advance rotation time within that identity. `login_at` is diagnostic and never
+orders authorizations, so replica clock skew cannot discard a new login.
+Retries retain their generation and adopt its durable winner, a later generation,
+or a rotation of the retained login instead of replaying consumed credentials.
+Legacy Secrets default to generation zero and advance on the next device login.
+Grant storage requests have a 10-second deadline, including refresh and background
+retries. Both login consoles offer a status check and persistence retry without
+another device approval.
 
 ## homelab-library
 

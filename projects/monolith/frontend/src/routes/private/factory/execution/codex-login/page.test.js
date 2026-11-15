@@ -42,7 +42,10 @@ describe("Codex login page", () => {
     await vi.waitFor(() => expect(target.textContent).toContain("Saving the approved login"));
     expect(target.querySelector('[role="alert"]')).toBeNull();
     expect(target.querySelector("code")).toBeNull();
-    expect(target.querySelector("button.primary-action").disabled).toBe(true);
+    expect(target.querySelector("button.primary-action").disabled).toBe(false);
+    expect(target.querySelector("button.primary-action").textContent.trim()).toBe(
+      "Check login status",
+    );
     expect(open).not.toHaveBeenCalled();
     expect(globalThis.fetch).toHaveBeenCalledOnce();
 

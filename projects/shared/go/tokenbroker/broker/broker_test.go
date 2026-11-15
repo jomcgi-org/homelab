@@ -542,9 +542,13 @@ func (s *competingLoginStore) SaveGrantIfNewerContext(_ context.Context, g store
 		competing.TokenBundle.RefreshToken = "competing-refresh"
 		switch s.scenario {
 		case "older login refresh":
-			competing.LoginID, competing.LoginAt = "previous-login", g.LoginAt.Add(-time.Hour)
+			competing.LoginID, competing.LoginAt = "previous-login", g.LoginAt.Add(time.Hour)
+			competing.LoginGeneration--
 		case "later login":
-			competing.LoginID, competing.LoginAt = "later-login", g.LoginAt.Add(time.Second)
+			competing.LoginID, competing.LoginAt = "later-login", g.LoginAt.Add(-time.Hour)
+			competing.LoginGeneration++
+		case "concurrent login":
+			competing.LoginID = "concurrent-login"
 		}
 		// For "rotated login", simulate a committed write whose response was
 		// lost, followed by another replica refreshing that same authorization.
@@ -557,7 +561,7 @@ func (s *competingLoginStore) SaveGrantIfNewerContext(_ context.Context, g store
 }
 
 func TestLoginReconcilesCompetingWrites(t *testing.T) {
-	for _, scenario := range []string{"older login refresh", "rotated login", "later login"} {
+	for _, scenario := range []string{"older login refresh", "rotated login", "later login", "concurrent login"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				st := &competingLoginStore{testStore: &testStore{grants: map[string]store.Grant{}}, scenario: scenario}
@@ -580,6 +584,37 @@ func TestLoginReconcilesCompetingWrites(t *testing.T) {
 				}
 				if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil || len(a.refreshInput) != 1 || a.refreshInput[0] != want {
 					t.Fatal("recovery left refresh blocked or replayed an older credential")
+				}
+			})
+		})
+	}
+}
+
+func TestLoginGenerationIgnoresReplicaClockSkew(t *testing.T) {
+	for _, generation := range []uint64{0, 17} {
+		t.Run(fmt.Sprintf("stored-generation=%d", generation), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				old := loginGrant()
+				old.LoginID, old.LoginGeneration = "ahead-replica", generation
+				old.LoginAt = time.Now().UTC().Add(24 * time.Hour)
+				old.LastRefresh = old.LoginAt
+				st := &failingLoginStore{testStore: &testStore{grants: map[string]store.Grant{"one": old}}, failures: 5}
+				b := New(st, nil, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+				login := loginGrant()
+				login.TokenBundle.RefreshToken = "approved-on-behind-replica"
+				if err := b.SaveGrant(login); !errors.Is(err, ErrGrantPersistencePending) {
+					t.Fatal("failed writes did not retain the approved login")
+				}
+				if err := b.RetryPendingGrant("one"); err != nil {
+					t.Fatal("retry did not install the approved login")
+				}
+				saved, _ := st.LoadGrant("one")
+				if saved.LoginGeneration != generation+1 || !saved.LoginAt.Before(old.LoginAt) || saved.TokenBundle.RefreshToken != login.TokenBundle.RefreshToken {
+					t.Fatal("replica clock skew discarded the newly approved login")
+				}
+				old.LastRefresh = saved.LastRefresh.Add(time.Hour)
+				if err := st.SaveGrantIfNewer(old); !errors.Is(err, store.ErrGrantNotNewer) {
+					t.Fatal("ahead replica's older refresh replaced the new login")
 				}
 			})
 		})
