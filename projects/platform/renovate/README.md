@@ -66,11 +66,19 @@ unaffected dependency.
 
 ## Review and auto-merge
 
-`renovate.json` enables native platform auto-merge for minor, patch, digest,
-pin (including digest pins) and lock-file maintenance updates. Major updates
+`renovate.json` normally enables native platform auto-merge for minor, patch,
+digest, pin (including digest pins) and lock-file maintenance updates. Major updates
 stay manual and carry `major-upgrade`. Replacement, bump and rollback updates
 also keep the default manual merge policy. Existing compatibility holds
 still disable auto-merge and require dashboard approval.
+
+OpenTelemetry and Pydantic/core use Renovate's own merge checks
+(`platformAutomerge: false`). Their PRs can open while a release is pending,
+but Renovate waits for `renovate/stability-days` to pass before requesting a
+merge. GitHub platform auto-merge would not enforce that status because it
+is not a required repository check. A security alert exempts the vulnerable
+package from the cooldown; unaffected peers still wait three days. The
+security group's immediate creation schedule and unlimited quotas remain.
 
 GitHub must require both `pr-checks` and the reviewer App's `factory review`
 before a PR can enter the merge queue. Renovate requests auto-merge and never
