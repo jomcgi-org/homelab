@@ -1088,7 +1088,9 @@ previews).
   `REVIEW.md` "Joe decides" under the same rule, matched by any rule segment
   of the ID that starts `human-gate`, at any severity. Factory-authored PRs
   require `jomcgi` to approve that exact head. Joe's
-  [authorship decision](https://github.com/jomcgi-org/homelab/issues/8049)
+  [authorship decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540),
+  recorded by `jomcgi` on 2026-11-15 and scoped in
+  [#8049](https://github.com/jomcgi-org/homelab/issues/8049),
   also permits a PR from a `humanApprovers` account with its head in the base
   repository, when every push since the head ref's latest creation is by
   those accounts and the newest push matches the head. The reviewer reads
@@ -1099,10 +1101,15 @@ previews).
   Git commit authors such as `ci-format-bot` do not identify push actors.
   Renovate is excluded by `renovate/` head branches or any PR commit with
   its git author email, read from base `renovate.json` `gitAuthor` when set;
-  `renovate@whitesourcesoftware.com` is always excluded. A separate
-  non-admin Renovate identity remains follow-up work. Sessions Joe guides
-  land gated changes only when he asked in that session. Hold labels,
-  shared-head, foreign-check and restart-recovery holds still require an
+  `renovate@whitesourcesoftware.com` and the maintenance workflow's
+  `renovate[bot]@users.noreply.github.com` are always excluded. A separate
+  non-admin Renovate identity remains follow-up work. The waiver checks
+  GitHub account provenance, which Joe's decision also accepted for other
+  traffic on his account. GitHub activity carries no evidence of session
+  supervision. His recorded condition was "agents can automerge if I ask
+  them to". Sessions Joe guides land gated changes only when he asked in
+  that session. Hold labels, shared-head, foreign-check and restart-recovery
+  holds still require an
   APPROVED review. Other findings still block. A hold is logged once as `human gate`
   and marked so the connector can skip its revision round.
 - **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to

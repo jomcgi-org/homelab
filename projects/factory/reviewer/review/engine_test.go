@@ -72,6 +72,13 @@ func TestAuthorshipWaiver(t *testing.T) {
 		{name: "gap in pushes", change: func(_ *harness, pr *fakePR) { pr.Activity[0].Before = "missing-push" }},
 		{name: "Renovate branch", change: func(_ *harness, pr *fakePR) { pr.HeadRef = "renovate/dependency" }},
 		{name: "Renovate git author", change: func(_ *harness, pr *fakePR) { pr.Commits[0].Commit.Author.Email = defaultRenovateEmail }},
+		{name: "Renovate maintenance commit on Joe's session branch", change: func(_ *harness, pr *fakePR) {
+			pr.Commits[0].Commit.Author.Email = "renovate[bot]@users.noreply.github.com"
+		}},
+		{name: "configured author does not override Renovate maintenance exclusion", change: func(h *harness, pr *fakePR) {
+			h.gh.setBaseFile("renovate.json", `{"gitAuthor":"Renovate <updates@example.com>"}`)
+			pr.Commits[0].Commit.Author.Email = "renovate[bot]@users.noreply.github.com"
+		}},
 		{name: "configured Renovate git author", change: func(h *harness, pr *fakePR) {
 			h.gh.setBaseFile("renovate.json", `{"gitAuthor":"Renovate <updates@example.com>"}`)
 			pr.Commits[1].Commit.Author.Email = "updates@example.com"
