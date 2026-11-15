@@ -97,8 +97,8 @@ type Config struct {
 	SessionCheck time.Duration
 	Links        Links
 	Now          func() time.Time
-	// AdmissionBudget bounds the total time spent on admission I/O per tick,
-	// independently of how many runs are held. Zero selects two seconds.
+	// AdmissionBudget bounds how long a tick waits for the admission worker.
+	// Reads continue independently when it expires. Zero selects two seconds.
 	AdmissionBudget time.Duration
 }
 
@@ -120,9 +120,13 @@ type Engine struct {
 	log      *slog.Logger
 	w        *store.Writer
 	locks    sync.Map // run ID -> *sync.Mutex
+	starts   sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
 	checked         sync.Map // attempt ID -> sessionCheck
 	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
+	admissionCtx    context.Context
+	admissionCancel context.CancelFunc
+	admissionDone   chan error // one worker, owned by Tick and joined by Release
 	// refusals holds when itsaplan began refusing the coordinator key for
 	// each bounded lookup. The heartbeat goroutine and the tick share it.
 	refusalsMu sync.Mutex
@@ -185,6 +189,7 @@ func (e *Engine) Acquire(ctx context.Context) (bool, error) {
 		}
 	}
 	e.w = w
+	e.admissionCtx, e.admissionCancel = context.WithCancel(ctx)
 	e.m.WriterEpoch.Set(float64(w.Epoch))
 	return true, nil
 }
@@ -199,6 +204,13 @@ func (e *Engine) Epoch() int64 {
 
 // Release drops the writer lock.
 func (e *Engine) Release() {
+	if e.admissionCancel != nil {
+		e.admissionCancel()
+	}
+	if e.admissionDone != nil {
+		<-e.admissionDone
+		e.admissionDone = nil
+	}
 	e.w.Release()
 	e.m.WriterEpoch.Set(0)
 }
@@ -285,13 +297,14 @@ func (e *Engine) Tick(ctx context.Context) error {
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	ctx = context.WithValue(ctx, admissionBudgetKey{}, &admissionBudget{remaining: e.cfg.AdmissionBudget, visited: map[int64]bool{}})
+	ctx = context.WithValue(ctx, deferAdmissionKey{}, true)
 	phases := []struct {
 		name string
 		fn   func(context.Context) error
 	}{
 		{"heartbeats", e.Heartbeats},
 		{"claims", e.claim},
+		{"admissions", e.stepAdmissions},
 		{"runs", e.stepRuns},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
@@ -524,10 +537,9 @@ func (e *Engine) stepRuns(ctx context.Context) error {
 		open[r.ID] = true
 	}
 	defer e.pruneLocks(open)
-	e.orderAdmissions(runs)
 	var errs []error
 	for _, r := range runs {
-		if err := e.stepLocked(ctx, r.ID); err != nil {
+		if err := e.tryStep(ctx, r.ID); err != nil {
 			if fatal(err) {
 				return err
 			}
@@ -535,6 +547,21 @@ func (e *Engine) stepRuns(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// A slow admission owns only its run's lock. The ordinary delivery loop must
+// never wait for that lock; the worker will advance the run itself.
+func (e *Engine) tryStep(ctx context.Context, id int64) error {
+	unlock, ok := e.tryLockRun(id)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+	r, err := e.st.GetRun(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.step(ctx, r)
 }
 
 func (e *Engine) stepLocked(ctx context.Context, id int64) error {
@@ -566,6 +593,9 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 			return err
 		}
 		if a == nil {
+			if deferred, _ := ctx.Value(deferAdmissionKey{}).(bool); deferred {
+				return nil
+			}
 			if stopped, err := e.st.AdmissionStopped(ctx, r); err != nil {
 				return err
 			} else if stopped {
@@ -573,12 +603,6 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 			}
 			if ready, err := e.admit(ctx, r); err != nil || !ready {
 				return err
-			}
-			if r.State == store.RunWaiting {
-				busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
-				if err != nil || busy >= e.concurrency(r.AgentKey) {
-					return err
-				}
 			}
 			if r.WorkItemID == 0 {
 				return e.dispatch(ctx, r)
@@ -717,6 +741,16 @@ func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, r
 // the work item's previous task or its grant. It is idempotent: a run that
 // already recorded an attempt resumes that attempt.
 func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
+	if !e.starts.TryLock() {
+		return nil
+	}
+	defer e.starts.Unlock()
+	if r.State == store.RunWaiting {
+		busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
+		if err != nil || busy >= e.concurrency(r.AgentKey) {
+			return err
+		}
+	}
 	if r.IssueID == 0 {
 		return e.failRun(ctx, e.st.DB, r, "factory runs must belong to an issue")
 	}
@@ -863,6 +897,10 @@ func (e *Engine) sessionBusy(ctx context.Context, r *store.Run, wi *store.WorkIt
 
 // resumeWaiting sends a waiting run once its work item is ready.
 func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
+	if !e.starts.TryLock() {
+		return nil
+	}
+	defer e.starts.Unlock()
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
 		return err
@@ -1786,6 +1824,15 @@ func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Ru
 			e.countRefusal(roleCoordinator, lookupRun, err)
 			e.log.WarnContext(ctx, "claimed run not visible to the coordinator", "run", r.ID, "error", err)
 		}
+	}
+	if deferred, _ := ctx.Value(deferAdmissionKey{}).(bool); deferred {
+		// Claims join the same queue as existing holds, without spending
+		// their read time first or taking an execution slot while queued.
+		e.admissionPolled.LoadOrStore(r.ID, time.Now())
+		if r.WorkItemID == 0 && r.HoldReason == "" {
+			return e.st.SetAdmissionHold(ctx, e.st.DB, r.ID, "Waiting for admission.", e.cfg.Now())
+		}
+		return nil
 	}
 	return e.step(ctx, r)
 }

@@ -837,12 +837,16 @@ func TestDispatchResumesRecordedAttempt(t *testing.T) {
 	// A failed run-state write used to leave the run claimed beside its
 	// recorded attempt; the run state now commits with the attempt.
 	v.failOnce("run", "TG_OP = 'UPDATE' AND NEW.state = 'dispatched'")
-	// The claim's send fails with its run-state write; the same pass's run
-	// step records and sends again without a duplicate message ID.
+	// The failed transaction leaves neither an attempt nor a send. Admission
+	// runs once per poll, so the next poll retries the rolled-back decision.
 	v.tick(v.e)
 	if !v.injected("run") {
 		t.Fatal("the failure was not injected")
 	}
+	if a, err := v.st.LatestAttempt(v.ctx, 1); err != nil || a != nil || len(v.kg.Sends()) != 0 {
+		t.Fatalf("failed run-state write escaped rollback: attempt=%+v, err=%v", a, err)
+	}
+	v.tick(v.e)
 	if n, _ := v.st.CountSends(v.ctx, 1); n != 1 {
 		t.Fatalf("attempts = %d, want 1", n)
 	}
@@ -888,13 +892,17 @@ func TestReassignmentCancellationCommitsWithEpoch(t *testing.T) {
 	epoch := v.work(101).Epoch
 	v.failOnce("cancellation", "TG_OP = 'INSERT'")
 	v.its.add(2, "coder-b", 101, "HL-1", "Take over.")
-	// The claim's reassignment fails with its cancellation and rolls back;
-	// the same pass's run step bumps the epoch once.
+	// Reassignment and cancellation roll back together. The next admission
+	// poll retries and bumps the epoch exactly once.
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if !v.injected("cancellation") {
 		t.Fatal("the failure was not injected")
 	}
+	if w := v.work(101); w.Epoch != epoch || w.AgentKey != "coder" || len(v.pendingCancellations()) != 0 {
+		t.Fatalf("failed cancellation escaped rollback: work=%+v", w)
+	}
+	v.tick(v.e)
 	if w := v.work(101); w.Epoch != epoch+1 {
 		t.Fatalf("epoch = %d, want %d", w.Epoch, epoch+1)
 	}

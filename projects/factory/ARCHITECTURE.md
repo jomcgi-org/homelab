@@ -453,13 +453,19 @@ changing ownership or state. Admission checks the root issue's workflow column
 on every poll; a completed or canceled root ends the run without creating a
 work item or task. Reopening it requires a new delegation.
 
-Claims and held-run polling share a two-second admission I/O budget per tick,
-including hold event delivery. Each run is polled at most once per tick;
-previously unpolled and oldest-polled runs take priority in the open-run pass.
-When the budget is exhausted, remaining admissions stay held with their
-journals pending, while cancellation, delivery and outbox phases proceed.
-The issue brief read during successful admission supplies the first attempt
-without a second network read outside that budget.
+Claims and existing holds join one admission queue, ordered by last poll;
+new claims enter at their arrival time. One worker processes a snapshot of
+that queue, with a thirty-second timeout per graph. Each tick waits at most
+two seconds for the worker before cancellation, delivery and outbox phases
+proceed. The worker continues its current poll across ticks, so a successful
+graph taking more than two seconds can still release admission. It checks
+the root again before release and dispatches directly, without caching a
+permission for a later tick. The delivery loop skips the worker's locked
+run; admission and waiting retries serialize their slot checks and starts
+without making the delivery loop wait for that lock. Shutdown cancels and
+joins the worker before releasing writer authority;
+a restart reads the graph again. The latest issue brief supplies the first
+attempt without another read in the send path.
 
 Admission traverses unfinished dependencies to detect cycles. Canceled
 dependencies hold the run and queue one explanatory comment per run and

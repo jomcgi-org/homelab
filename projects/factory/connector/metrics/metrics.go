@@ -84,7 +84,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}),
 		TickErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_tick_errors_total",
-			Help: "Errors by dispatch phase (heartbeats, claims, runs, cancellations, delivery, outbox, admission_metrics).",
+			Help: "Errors by dispatch phase (heartbeats, claims, admissions, runs, cancellations, delivery, outbox, admission_metrics).",
 		}, []string{"phase"}),
 		PullRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_pull_requests_total",

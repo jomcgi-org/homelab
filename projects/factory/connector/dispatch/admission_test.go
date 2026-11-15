@@ -377,7 +377,7 @@ func TestTerminalRootIssueStopsHeldFirstRun(t *testing.T) {
 	}
 }
 
-func TestAdmissionTimeoutsShareOneBudgetAndDoNotStallDelivery(t *testing.T) {
+func TestSlowAdmissionsDoNotStallDelivery(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Deliver this.")
 	v.its.add(2, "coder-b", 102, "HL-2", "Cancel this.")
@@ -403,14 +403,19 @@ func TestAdmissionTimeoutsShareOneBudgetAndDoNotStallDelivery(t *testing.T) {
 	v.e.Release()
 	v.cfg.AdmissionBudget = 200 * time.Millisecond
 	v.e = v.engine("bounded-admission")
-	var reads []int64
+	reads := make(chan int64, 20)
+	unblock := make(chan struct{})
 	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
 		if id < 1000 {
 			return nil
 		}
-		reads = append(reads, id)
-		<-ctx.Done()
-		return ctx.Err()
+		reads <- id
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-unblock:
+			return errors.New("dependency unavailable")
+		}
 	}
 	v.gh.push("factory/HL-1", "sha-1", "fix: delivered")
 	v.kg.finish(first.TaskID, kagent.StateCompleted, "Pushed the fix.", nil)
@@ -424,8 +429,8 @@ func TestAdmissionTimeoutsShareOneBudgetAndDoNotStallDelivery(t *testing.T) {
 		if err != nil || time.Since(started) > 1500*time.Millisecond {
 			t.Fatalf("admission stalled delivery: %v, elapsed %v", err, time.Since(started))
 		}
-		if len(reads) != round+1 {
-			t.Fatalf("timeouts multiplied within one tick: reads = %v", reads)
+		if len(reads) != 1 {
+			t.Fatalf("a tick restarted or duplicated the in-flight poll: reads = %d", len(reads))
 		}
 		if round == 0 {
 			if len(v.gh.PRs()) != 1 || len(v.its.Results(1)) != 1 {
@@ -439,8 +444,199 @@ func TestAdmissionTimeoutsShareOneBudgetAndDoNotStallDelivery(t *testing.T) {
 			}
 		}
 	}
-	if reads[0] == reads[1] {
-		t.Fatal("one slow hold monopolized successive poll budgets")
+	close(unblock)
+	v.e.Release() // joins all background reads before fixture cleanup
+}
+
+func TestNewSlowClaimsCannotStarveAnExistingHold(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Existing hold.")
+	v.dependency(101, 102, "HL-2", 2)
+	v.tick(v.e)
+	v.held(1)
+	v.its.moveTo(102, 3, "")
+	reads := make(chan int64, 10)
+	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+		if id < 103 {
+			return nil
+		}
+		reads <- id
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	// Keep the original engine: its scheduling history must put the old hold
+	// ahead of each newly arriving run, even though claims happen first.
+	v.its.add(2, "coder", 103, "HL-3", "Slow new claim.")
+	v.tick(v.e)
+	if v.kg.Executions() != 1 || v.run(1).State != store.RunDispatched {
+		t.Fatal("a slow new claim starved the existing hold after its blocker completed")
+	}
+	v.its.add(3, "coder", 104, "HL-4", "Another slow claim.")
+	v.tick(v.e)
+	if len(reads) != 1 {
+		t.Fatal("new claims displaced or duplicated the current admission poll")
+	}
+	v.e.Release()
+}
+
+func TestSuccessfulGraphCanOutlastTheTickWait(t *testing.T) {
+	for _, terminalRoot := range []bool{false, true} {
+		t.Run(fmt.Sprintf("terminal-root=%t", terminalRoot), func(t *testing.T) {
+			v := newEnv(t)
+			v.e.Release()
+			v.cfg.AdmissionBudget = 50 * time.Millisecond
+			v.e = v.engine("slow-successful-graph")
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.dependency(101, 102, "HL-2", 3)
+			v.dependency(101, 103, "HL-3", 3)
+			reads := make(chan int64, 4)
+			advance := make(chan struct{})
+			v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+				if id == 101 {
+					return nil
+				}
+				reads <- id
+				select {
+				case <-advance:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			// Each successful dependency read takes longer than the configured
+			// tick wait. Neither the tick nor the second read restarts the graph.
+			for _, id := range []int64{102, 103} {
+				v.tick(v.e)
+				v.held(1)
+				select {
+				case got := <-reads:
+					if got != id {
+						t.Fatalf("read %d, want %d without restarting the traversal", got, id)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("dependency read did not start")
+				}
+				if id == 103 && terminalRoot {
+					v.its.moveTo(101, 4, "")
+				}
+				select {
+				case advance <- struct{}{}:
+				case <-time.After(5 * time.Second):
+					t.Fatal("dependency read was canceled by the tick wait")
+				}
+			}
+			// Finish the original poll, including its fresh root read and result.
+			for range 20 {
+				v.tick(v.e)
+				if v.run(1).State == store.RunDispatched || v.run(1).State == store.RunClosed {
+					break
+				}
+			}
+			if terminalRoot {
+				if v.run(1).State != store.RunClosed || v.kg.Executions() != 0 {
+					t.Fatal("a root canceled during the slow graph was dispatched")
+				}
+			} else if v.run(1).State != store.RunDispatched || v.kg.Executions() != 1 {
+				t.Fatal("a successful graph exceeding the tick wait never dispatched")
+			}
+			if len(reads) != 0 {
+				t.Fatal("a completed part of the in-flight graph was read again")
+			}
+		})
+	}
+}
+
+func TestRestartDiscardsAnInFlightAdmission(t *testing.T) {
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.AdmissionBudget = 50 * time.Millisecond
+	v.e = v.engine("before-admission-restart")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.dependency(101, 102, "HL-2", 3)
+	v.its.waitIssueRead = func(ctx context.Context, id int64) error {
+		if id == 102 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	v.tick(v.e)
+	v.held(1)
+	v.e.Release()
+	v.its.waitIssueRead = nil
+	v.its.moveTo(102, 2, "")
+	v.e = v.engine("after-admission-restart")
+	v.tick(v.e)
+	v.held(1)
+	if v.kg.Calls() != 0 {
+		t.Fatal("a prior process's partial admission survived restart")
+	}
+}
+
+type admissionCaller struct {
+	*fakeKagent
+	entered chan struct{}
+	proceed chan struct{}
+}
+
+func (c *admissionCaller) Pin(ctx context.Context) (context.Context, kagent.CallerIdentity, error) {
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-c.proceed:
+		return c.fakeKagent.Pin(ctx)
+	case <-ctx.Done():
+		return ctx, kagent.CallerIdentity{}, ctx.Err()
+	}
+}
+
+func TestAdmissionAndGrantRetryShareConcurrency(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Original work.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "codex_login_required", nil)
+	v.tick(v.e)
+	v.its.add(2, "coder", 102, "HL-2", "Dependent work.")
+	v.dependency(102, 103, "HL-3", 2)
+	v.tick(v.e)
+	v.held(2)
+	v.e.Release()
+	v.cfg.Agents[0].Concurrency = 1
+	v.cfg.AdmissionBudget = 50 * time.Millisecond
+	caller := &admissionCaller{fakeKagent: v.kg, entered: make(chan struct{}, 1), proceed: make(chan struct{})}
+	v.cfg.Caller = caller
+	v.e = v.engine("concurrent-admission-and-retry")
+	v.its.moveTo(103, 3, "")
+	if ok, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || !ok {
+		t.Fatalf("unblock = %t, %v", ok, err)
+	}
+	// Pause admission at its caller lookup, with a slot reserved but no send.
+	// The delivery loop must defer the older grant retry without waiting on
+	// that same slow lookup or exceeding the configured concurrency.
+	ctx, cancel := context.WithTimeout(v.ctx, time.Second)
+	defer cancel()
+	if err := v.e.Tick(ctx); err != nil {
+		t.Fatalf("admission's start blocked the delivery loop: %v", err)
+	}
+	select {
+	case <-caller.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the admission did not reach its caller lookup")
+	}
+	if v.run(1).State != store.RunWaiting || len(v.kg.Sends()) != 1 {
+		t.Fatal("the grant retry raced admission for the same slot")
+	}
+	close(caller.proceed)
+	for range 20 {
+		v.tick(v.e)
+		if len(v.kg.Sends()) == 2 {
+			break
+		}
+	}
+	if v.run(2).State != store.RunDispatched || v.run(1).State != store.RunWaiting || len(v.kg.Sends()) != 2 {
+		t.Fatal("admission and the grant retry exceeded concurrency one")
 	}
 }
 
