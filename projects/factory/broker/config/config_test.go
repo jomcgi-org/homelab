@@ -71,7 +71,7 @@ func TestLoadRejects(t *testing.T) {
 		"review writes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', agentPermissions: {contents: write}}\n",
 		"review approves":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {pull_requests: write}}\n",
 		"review pushes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {contents: write, checks: write}}\n",
-		"comment approves":   "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {issues: write, pull_requests: write}}\n",
+		"comment workflows":  "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {issues: write, workflows: write}}\n",
 		"comment pushes":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {contents: write}}\n",
 		"author comments":    "namespace: f\ngithub: {commentPermissions: {issues: write}}\n",
 		"review namespace":   "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}]\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\nreviewBindings: [{name: a, namespace: n, repository: o/a}]\n",
@@ -88,7 +88,8 @@ func TestLoadRejects(t *testing.T) {
 		"reviewBindings: [{name: a, namespace: nr, repository: o/a}]\ntokenReview: {reviewerSubjects: [s]}\n"
 	if c, err := Load(write(t, "r.yaml", review), func(string) string { return "" }); err != nil || !c.GitHubReviewEnabled() ||
 		c.GitHubReview.AgentPermissions["contents"] != "read" || c.GitHubReview.ConnectorPermissions["checks"] != "write" ||
-		len(c.GitHubReview.CommentPermissions) != 1 || c.GitHubReview.CommentPermissions["issues"] != "write" {
+		len(c.GitHubReview.CommentPermissions) != 2 || c.GitHubReview.CommentPermissions["issues"] != "write" ||
+		c.GitHubReview.CommentPermissions["pull_requests"] != "write" {
 		t.Fatalf("reviewer config = %+v, %v", c.GitHubReview, err)
 	}
 	// An explicit empty map turns the comment token off.

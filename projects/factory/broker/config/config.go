@@ -192,9 +192,12 @@ func Defaults() Config {
 				"checks": "write", "pull_requests": "read", "contents": "read",
 				"statuses": "read", "merge_queues": "write",
 			},
-			// The reviewer's own PR comment. Issues write covers PR
-			// conversation comments without allowing a PR review.
-			CommentPermissions: map[string]string{"issues": "write"},
+			// The reviewer's own PR comment. GitHub refuses a PR
+			// conversation comment from a token with issues write alone
+			// (HTTP 403, 2026-11-15), so it also needs pull_requests write.
+			// The reviewer reaches this token only through review.Comments,
+			// which lists, creates and edits conversation comments.
+			CommentPermissions: map[string]string{"issues": "write", "pull_requests": "write"},
 		},
 	}
 }
@@ -391,11 +394,12 @@ func (c Config) validateReview() []error {
 			errs = append(errs, fmt.Errorf("githubReview.connectorPermissions %s: the reviewer may write only checks and merge_queues", k))
 		}
 	}
-	// Its comment token may write only issues, which posts the reviewer's PR
-	// comment; pull_requests write would let it approve.
+	// Its comment token may write only issues and pull_requests, which a PR
+	// conversation comment needs; contents or workflows write would let it
+	// author what it reviews.
 	for k, v := range r.CommentPermissions {
-		if v != "read" && (k != "issues" || v != "write") {
-			errs = append(errs, fmt.Errorf("githubReview.commentPermissions %s: the comment token may write only issues", k))
+		if v != "read" && ((k != "issues" && k != "pull_requests") || v != "write") {
+			errs = append(errs, fmt.Errorf("githubReview.commentPermissions %s: the comment token may write only issues and pull_requests", k))
 		}
 	}
 	author := map[string]bool{}

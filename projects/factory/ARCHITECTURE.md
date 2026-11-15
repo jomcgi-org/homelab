@@ -905,10 +905,14 @@ and retries once, so a brief overlap during a rollout is safe.
   and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
   only, with checks and merge queues write, pull requests, contents and
   statuses read. `GET /github/reviewer-comment-token?repository=` serves the
-  same subjects a separate token with only `issues: write`
-  (`githubReview.commentPermissions`) for the reviewer's PR comment: an App
-  without that permission fails only the comment, and the check token never
-  gains it. `merge_queues: write` alone does not let this token
+  same subjects a separate token with only `issues: write` and
+  `pull_requests: write` (`githubReview.commentPermissions`) for the
+  reviewer's PR comment. GitHub refused a PR conversation comment from a
+  token with `issues: write` alone (HTTP 403, 2026-11-15). An App without
+  those permissions fails only the comment, and the check token never gains
+  them. The reviewer service reaches the comment token only through
+  `review.Comments`, which lists, creates and edits conversation comments,
+  so it never posts a review or an approval. `merge_queues: write` alone does not let this token
   enqueue: the first live attempt was refused with `FORBIDDEN` (2026-11-14),
   so the reviewer enqueues nothing ("Merge authority"). With `reviewer.enabled`, the chart mounts the separate App from
   `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
@@ -990,8 +994,8 @@ previews).
   hold: the verdict, the human gate's reasons, the agent's summary, findings
   by severity and what the review cleared. The comment mirrors the
   assessment behind the check and gates nothing. It is written with the
-  broker's separate comment token (`issues: write`), so an App without that
-  permission loses only the comment; a failed write is logged and counted
+  broker's separate comment token (`issues: write` and
+  `pull_requests: write`), so an App without them loses only the comment; a failed write is logged and counted
   (`factory_reviewer_comment_writes_total`). It edits only a comment its bot
   login wrote, and its own comment never reaches the agent.
   Check runs are its only state: the
@@ -1220,8 +1224,8 @@ Each step is its own PR with live evidence recorded on #7817.
   read) owns review and enqueueing ("Merge authority"). Joe granted issues
   and pull requests write on 2026-11-15
   ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-73#comment-474)):
-  issues write for the reviewer's PR comment, and pull requests write for
-  inline findings (HOME-72), unused until then. Its 1Password item is
+  both for the reviewer's PR comment, which GitHub refuses with issues write
+  alone, and pull requests write also for inline findings (HOME-72). Its 1Password item is
   `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
   For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
   PRs and the connector the factory's, since it sees their stops.

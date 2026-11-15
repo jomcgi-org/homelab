@@ -169,8 +169,9 @@ func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.commentMinter == nil || !maps.Equal(d.commentMinter.ConnectorPermissions, map[string]string{"issues": "write"}) ||
-		d.commentMinter.App != d.reviewMinter.App || d.reviewMinter.ConnectorPermissions["issues"] != "" {
+	if d.commentMinter == nil || !maps.Equal(d.commentMinter.ConnectorPermissions, map[string]string{"issues": "write", "pull_requests": "write"}) ||
+		d.commentMinter.App != d.reviewMinter.App || d.reviewMinter.ConnectorPermissions["issues"] != "" ||
+		d.reviewMinter.ConnectorPermissions["pull_requests"] != "read" {
 		t.Fatalf("comment minter = %+v, review minter permissions %v", d.commentMinter, d.reviewMinter.ConnectorPermissions)
 	}
 	cfg.GitHubReview.CommentPermissions = map[string]string{}
