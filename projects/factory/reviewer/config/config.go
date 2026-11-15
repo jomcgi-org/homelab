@@ -30,6 +30,8 @@ type Config struct {
 	KagentURL       string `yaml:"kagentURL"`
 	KagentTokenFile string `yaml:"kagentTokenFile"`
 	GitHubURL       string `yaml:"githubURL"`
+	ItsaplanURL     string `yaml:"itsaplanURL"`
+	ItsaplanKeyFile string `yaml:"itsaplanKeyFile"`
 	MetricsAddr     string `yaml:"metricsAddr"`
 	// CheckName is the check run posted on every head; AppID is the reviewer
 	// GitHub App's ID, which only that App's check runs carry.
@@ -88,6 +90,10 @@ type Binding struct {
 	HumanApprovers  []string `yaml:"humanApprovers"`
 	// TrustedCommenters are the logins whose PR comments reach the agent.
 	TrustedCommenters []string `yaml:"trustedCommenters"`
+	// ItsaplanProject binds issue reads; BranchPrefix matches the connector.
+	ItsaplanProject       string   `yaml:"itsaplanProject"`
+	BranchPrefix          string   `yaml:"branchPrefix"`
+	TrustedItsaplanAuthors []string `yaml:"trustedItsaplanAuthors"`
 	// ContextDocs are read from the base branch into every prompt.
 	ContextDocs []string `yaml:"contextDocs"`
 	// A PR whose diff, without GeneratedPaths, exceeds MaxDiffLines changed
@@ -109,10 +115,12 @@ var (
 		"REVIEW.md", "**/REVIEW.md", ".github/CODEOWNERS",
 		"projects/factory/reviewer/config/**", "projects/factory/reviewer/review/report.go",
 		"projects/factory/reviewer/review/gate.go", "projects/factory/reviewer/review/rules.go",
+		"projects/factory/reviewer/review/issues.go",
 		"projects/factory/broker/config/**",
 	}
 	DefaultHumanGateLabels = []string{"human", "needs-human"}
 	DefaultHumanApprovers  = []string{"jomcgi"}
+	DefaultTrustedItsaplanAuthors = []string{"joe", "joe-sessions"}
 	DefaultContextDocs     = []string{"AGENTS.md", "docs/agents/reference.md"}
 	DefaultGeneratedPaths  = []string{
 		"**/*.lock", "**/*.lock.json", "**/*-lock.json", "**/*-lock.yaml", "**/go.sum",
@@ -171,6 +179,10 @@ func Parse(b []byte) (*Config, error) {
 	c.BrokerURL = strings.TrimSuffix(c.BrokerURL, "/")
 	c.KagentURL = strings.TrimSuffix(c.KagentURL, "/")
 	c.GitHubURL = strings.TrimSuffix(c.GitHubURL, "/")
+	c.ItsaplanURL = strings.TrimSuffix(c.ItsaplanURL, "/")
+	if c.ItsaplanURL != "" && c.ItsaplanKeyFile == "" {
+		c.ItsaplanKeyFile = "/var/run/secrets/itsaplan/apiKey"
+	}
 	for field, v := range map[string]string{"brokerURL": c.BrokerURL, "kagentURL": c.KagentURL} {
 		if v == "" {
 			return nil, fmt.Errorf("config: %s is required", field)
@@ -228,6 +240,12 @@ func Parse(b []byte) (*Config, error) {
 	names, repos := map[string]bool{}, map[string]bool{}
 	for i := range c.Bindings {
 		b := &c.Bindings[i]
+		if b.ItsaplanProject != "" && c.ItsaplanURL == "" {
+			return nil, fmt.Errorf("config: binding %s: itsaplanProject needs itsaplanURL", b.Name)
+		}
+		if b.BranchPrefix == "" {
+			b.BranchPrefix = "factory/"
+		}
 		for field, v := range map[string]string{
 			"name": b.Name, "owner": b.Owner, "repo": b.Repo, "baseBranch": b.BaseBranch,
 			"kagentNamespace": b.KagentNamespace, "kagentAgent": b.KagentAgent,
@@ -254,6 +272,7 @@ func Parse(b []byte) (*Config, error) {
 			{&b.HumanGateLabels, DefaultHumanGateLabels},
 			{&b.HumanApprovers, DefaultHumanApprovers},
 			{&b.TrustedCommenters, DefaultHumanApprovers},
+			{&b.TrustedItsaplanAuthors, DefaultTrustedItsaplanAuthors},
 			{&b.ContextDocs, DefaultContextDocs},
 			{&b.GeneratedPaths, DefaultGeneratedPaths},
 		} {

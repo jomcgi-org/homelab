@@ -48,12 +48,15 @@ func TestParseAppliesDefaults(t *testing.T) {
 		t.Fatalf("intervals = %+v", iv)
 	}
 	b := c.Bindings[0]
+	if strings.Join(b.TrustedItsaplanAuthors, ",") != "joe,joe-sessions" || b.BranchPrefix != "factory/" {
+		t.Fatalf("issue defaults = %+v", b)
+	}
 	if len(b.SkipLabels) != 0 || b.RequiredChecks[0].StatusCreator != "buildbuddy-io[bot]" {
 		t.Fatalf("binding = %+v", b)
 	}
 	gated := "REVIEW.md,**/REVIEW.md,.github/CODEOWNERS,projects/factory/reviewer/config/**," +
 		"projects/factory/reviewer/review/report.go,projects/factory/reviewer/review/gate.go," +
-		"projects/factory/reviewer/review/rules.go,projects/factory/broker/config/**"
+		"projects/factory/reviewer/review/rules.go,projects/factory/reviewer/review/issues.go,projects/factory/broker/config/**"
 	if strings.Join(b.EnqueueAuthors, ",") != "jomcgi" || strings.Join(b.HumanGatePaths, ",") != gated ||
 		strings.Join(b.HumanGateLabels, ",") != "human,needs-human" || strings.Join(b.HumanApprovers, ",") != "jomcgi" ||
 		strings.Join(b.TrustedCommenters, ",") != "jomcgi" || strings.Join(b.ContextDocs, ",") != "AGENTS.md,docs/agents/reference.md" ||
@@ -113,4 +116,12 @@ func TestLoadReadsTheNamedFile(t *testing.T) {
 	if err != nil || c.Concurrency != 3 {
 		t.Fatalf("load = %+v, %v", c, err)
 	}
+}
+
+func TestItsaplanConfiguration(t *testing.T) {
+	withIssue := sample + "    itsaplanProject: HOME\n    trustedItsaplanAuthors: []\n    branchPrefix: delivery/\n"
+	if _, err := Parse([]byte(withIssue)); err == nil { t.Fatal("issue binding accepted without API") }
+	c, err := Parse([]byte(withIssue + "itsaplanURL: http://itsaplan:3000/\n"))
+	if err != nil { t.Fatal(err) }
+	if c.ItsaplanURL != "http://itsaplan:3000" || c.ItsaplanKeyFile != "/var/run/secrets/itsaplan/apiKey" || len(c.Bindings[0].TrustedItsaplanAuthors) != 0 || c.Bindings[0].BranchPrefix != "delivery/" { t.Fatalf("issue config = %+v", c) }
 }

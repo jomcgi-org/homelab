@@ -70,6 +70,38 @@ type PullRequestFile struct {
 	Status       string `json:"status"` // added | removed | modified | renamed | copied | changed | unchanged
 	Additions    int    `json:"additions"`
 	Deletions    int    `json:"deletions"`
+	Patch        string `json:"patch"`
+}
+
+// PullRequestCommitMessages returns messages in PR order, only when the list
+// reaches the expected head. GitHub caps this endpoint at 250 commits.
+func (c *Client) PullRequestCommitMessages(ctx context.Context, repo string, number int, head string) ([]string, error) {
+	var messages []string
+	last := ""
+	for page := 1; page <= 3; page++ {
+		var out []struct {
+			SHA string `json:"sha"`
+			Commit struct {
+				Message string `json:"message"`
+			} `json:"commit"`
+		}
+		q := url.Values{"per_page": {"100"}, "page": {strconv.Itoa(page)}}
+		path := repoPath(repo) + "/pulls/" + strconv.Itoa(number) + "/commits?" + q.Encode()
+		if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
+			return nil, err
+		}
+		for _, commit := range out {
+			messages = append(messages, commit.Commit.Message)
+			last = commit.SHA
+		}
+		if len(out) < 100 {
+			if last != head || len(messages) > 250 {
+				return nil, errors.New("github: incomplete or changed PR commit list")
+			}
+			return messages, nil
+		}
+	}
+	return nil, errors.New("github: PR commit list exceeds bound")
 }
 
 // MaxFilePages bounds a PR file listing: GitHub lists at most 3000 files.

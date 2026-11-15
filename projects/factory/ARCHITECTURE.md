@@ -314,6 +314,13 @@ through the runner queue, and the connector step confirms its writes). Each
   agent's once-returned key goes to `factory-itsaplan-agent-<username>`. A
   Secret without a working key gets that agent a rotated key; an agent is
   never created twice. It signs out at the end.
+  With the reviewer enabled, bootstrap also creates `factory-reviewer`,
+  without triggers, and a dedicated role granting only `work_items read`.
+  It starts with no projects, then receives that role in the bound project;
+  reruns repair permission drift and remove other project memberships before
+  writing its key. The reviewer service mounts only that key, with an
+  optional Secret projection so the Deployment can become healthy before
+  PostSync bootstrap. Missing keys fail issue reads closed.
 - **Key safety.** secret-init counts the database's accounts, settings and
   stored secrets (read-only, the api image's psql) and refuses to replace a
   lost `BETTER_AUTH_SECRET` or `APP_ENCRYPTION_KEY` for a database that has
@@ -1027,8 +1034,8 @@ previews).
   write `github-git`. The broker admits the review atespaces to its relay,
   mounts the separate reviewer App's key files from 1Password and writes
   their read-only git tokens. Network policy permits the reviewer service
-  only to the broker's admin port (8081), kagent A2A (8083) and
-  `api.github.com:443`, and admits it at both peers.
+  only to the broker's admin port (8081), kagent A2A (8083), itsaplan's API
+  (3000 when enabled) and `api.github.com:443`, and admits it at each peer.
   The enable PR follows CI's chart write-back, adding review namespaces to
   `kagent.rbac.namespaces`. Substrate's policy values include
   `factory-r-homelab-review`; regenerate its upstream manifests before
@@ -1074,6 +1081,33 @@ previews).
   `cited` block. A number that names an issue or nothing reads as "not a
   pull request" (`pullRequest(number:)` needs no issues permission), and a
   failed read marks that PR unread instead of holding the review.
+- **Issue evidence (HOME-58).** The service resolves the connector's branch
+  for `jomcgi-factory[bot]` PRs; PR text cannot override it. Other PRs use
+  the first `Refs HOME-N` in the body, then commit messages in PR order.
+  The service supplies title, description and workflow status and asks both
+  whether the change is safe and whether it meets the issue's goal and
+  criteria. Live acceptance remains with the delivery owner. No resolvable
+  issue leaves the PR description as the goal.
+  v1.10.0 exposes authors through the creation activity's user ID, matched
+  to the project's account metadata. Only member accounts in
+  `trustedItsaplanAuthors` (default `joe`, `joe-sessions`) carry authority;
+  `factoryadmin`, agent accounts and claims in text do not. Untrusted text
+  is quoted in the same delimited blocks as PR data. These defaults implement
+  [HOME-58](https://factory-plan.jomcgi.dev/factory/issue/HOME-58); Joe's
+  sessions account is provisioned by HOME-59.
+  Per head the service fetches one issue body (16,000 bytes, title 300) and
+  at most ten decision links from both sides of the diff. Linked
+  comments are cut to 4,000 bytes; other issue links use search metadata and
+  creation authorship without importing another description. Bare issue
+  authorship never proves an unseen decision. Comment reads search at most
+  ten feed pages because upstream has no individual comment GET. The whole
+  evidence read has a 30-second deadline. Missing, untrusted, unreadable or
+  clipped decisions and exhausted bounds produce service-owned medium
+  `unverified` findings that model justifications cannot clear. Read errors
+  never supply issue text or a pass. The agent receives no itsaplan key.
+  An in-progress check records the evidence digest. After restart, a task
+  with missing or changed evidence is cancelled and retried within the
+  normal attempt bound; its earlier prompt cannot certify a new issue.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
   and narrowed it the same day to what could weaken the gate itself
@@ -1081,7 +1115,8 @@ previews).
   under the first scope almost every factory PR needed his bypass, which
   skips CI and the review. A PR touching `REVIEW.md`, `**/REVIEW.md`,
   `.github/CODEOWNERS`, `projects/factory/reviewer/config/**`, the
-  reviewer's `review/report.go`, `review/gate.go` or `review/rules.go`, or
+  reviewer's `review/report.go`, `review/gate.go`, `review/rules.go` or
+  `review/issues.go`, or
   `projects/factory/broker/config/**`, or labelled `human` or
   `needs-human`, gets a
   `human-gate` high finding from the service; the agent reports the rest of

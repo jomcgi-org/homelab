@@ -1,0 +1,128 @@
+package itsaplan
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
+	"strconv"
+)
+
+// Project supplies workflow names and authenticated account identities. Display
+// names and the activity feed's actorName are never proof of authorship.
+type Project struct {
+	Project struct {
+		ID  int64  `json:"id"`
+		Key string `json:"key"`
+	} `json:"project"`
+	Columns   []Column  `json:"columns"`
+	Assignees []Account `json:"assignees"`
+}
+
+type Account struct {
+	UserID   string `json:"userId"`
+	Username string `json:"username"`
+	Kind     string `json:"kind"` // member | agent
+}
+
+func (c *Client) GetProject(ctx context.Context, key string) (*Project, error) {
+	var p Project
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, "/projects/"+url.PathEscape(key), nil, &p); err != nil {
+		return nil, err
+	}
+	if p.Project.ID <= 0 || p.Project.Key != key {
+		return nil, errors.New("itsaplan: invalid project")
+	}
+	return &p, nil
+}
+
+func (c *Client) GetIssueByNumber(ctx context.Context, project string, number int64) (*Issue, error) {
+	var out Issue
+	path := "/projects/" + url.PathEscape(project) + "/issues/" + strconv.FormatInt(number, 10)
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.ID <= 0 || out.Identifier != project+"-"+strconv.FormatInt(number, 10) {
+		return nil, errors.New("itsaplan: invalid or moved issue")
+	}
+	return &out, nil
+}
+
+// FindIssue resolves a decision link without fetching another issue body. The
+// v1.10.0 search ranks an exact identifier first; still require an exact match.
+func (c *Client) FindIssue(ctx context.Context, identifier string) (*Issue, error) {
+	var out []Issue
+	q := url.Values{"q": {identifier}, "limit": {"1"}, "perProjectLimit": {"1"}}
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, "/issues/search?"+q.Encode(), nil, &out); err != nil {
+		return nil, err
+	}
+	if len(out) != 1 || out[0].Identifier != identifier || out[0].ID <= 0 {
+		return nil, ErrNotFound
+	}
+	// Search returns metadata only, never a second issue description.
+	out[0].Description = ""
+	return &out[0], nil
+}
+
+type FeedItem struct {
+	ID          int64  `json:"id"`
+	IssueID     int64  `json:"issueId"`
+	Kind        string `json:"kind"`
+	Action      string `json:"action"`
+	ActorUserID string `json:"actorUserId"`
+	Body        string `json:"body"`
+}
+
+type feedCursor struct {
+	TS string `json:"ts"`
+	ID int64  `json:"id"`
+}
+
+type feedPage struct {
+	Items      []FeedItem  `json:"items"`
+	NextCursor *feedCursor `json:"nextCursor"`
+}
+
+// IssueAuthor reads the creation event. Issues themselves have no author field
+// in v1.10.0. A missing creation event grants no authority.
+func (c *Client) IssueAuthor(ctx context.Context, id int64) (string, error) {
+	var out feedPage
+	path := "/issues/" + strconv.FormatInt(id, 10) + "/feed?filter=history&order=asc&limit=1"
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
+		return "", err
+	}
+	if len(out.Items) != 1 || out.Items[0].IssueID != id || out.Items[0].Kind != "activity" || out.Items[0].Action != "created" {
+		return "", errors.New("itsaplan: no creation event")
+	}
+	return out.Items[0].ActorUserID, nil
+}
+
+// LinkedComment reads at most ten feed pages. v1.10.0 has no GET /comments/:id;
+// comments (including replies) can only be read through their issue's feed.
+// Missing comments and exhaustion both return no evidence.
+func (c *Client) LinkedComment(ctx context.Context, issueID, commentID int64) (*FeedItem, error) {
+	q := url.Values{"filter": {"comments"}, "order": {"desc"}, "limit": {"100"}}
+	for range 10 {
+		var out feedPage
+		path := "/issues/" + strconv.FormatInt(issueID, 10) + "/feed?" + q.Encode()
+		if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
+			return nil, err
+		}
+		for _, item := range out.Items {
+			if item.ID == commentID && item.IssueID == issueID && item.Kind == "comment" {
+				return &item, nil
+			}
+		}
+		if out.NextCursor == nil {
+			return nil, ErrNotFound
+		}
+		// Cursor timestamps come from the API, never from the PR.
+		cursor, err := json.Marshal(out.NextCursor)
+		if err != nil {
+			return nil, err
+		}
+		q.Set("cursor", string(cursor))
+	}
+	return nil, errors.New("itsaplan: comment lookup exceeded feed bound")
+}

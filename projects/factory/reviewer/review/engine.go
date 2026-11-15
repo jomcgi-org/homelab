@@ -40,6 +40,7 @@ type GitHub interface {
 	PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error)
 	PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*github.ReviewAcknowledgement, error)
 	PullRequestComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
+	PullRequestCommitMessages(ctx context.Context, repo string, number int, head string) ([]string, error)
 	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	PullRequestQueue(ctx context.Context, repo string, number int) (*github.PullRequestQueue, error)
@@ -81,6 +82,9 @@ type Binding struct {
 	HumanGateLabels   []string
 	HumanApprovers    []string
 	TrustedCommenters []string
+	ItsaplanProject string
+	BranchPrefix string
+	TrustedItsaplanAuthors []string
 	ContextDocs       []string
 	GeneratedPaths    []string
 	MaxDiffLines      int
@@ -104,6 +108,7 @@ func containsFold(list []string, s string) bool {
 
 // Config holds the reviewer's settings.
 type Config struct {
+	Itsaplan Itsaplan
 	CheckName   string
 	AppID       int64
 	Concurrency int
@@ -745,11 +750,12 @@ type recorded struct {
 	Attempt int
 	ID      string
 	Sent    time.Time
+	Issues  string
 }
 
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
-var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*) -->`)
+var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: issues=([a-f0-9]{64}))? -->`)
 
 // RecordedTask is the attempt and kagent task an in-progress review check
 // run records.
@@ -760,7 +766,7 @@ func RecordedTask(summary string) recorded {
 	}
 	m := all[len(all)-1]
 	n, _ := strconv.Atoi(m[1])
-	rec := recorded{Attempt: max(n, 1), ID: m[2]}
+	rec := recorded{Attempt: max(n, 1), ID: m[2], Issues: m[4]}
 	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
 		rec.Sent = time.Unix(sec, 0)
 	}
@@ -786,13 +792,18 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 		if !rec.Sent.IsZero() {
 			sent = rec.Sent.Unix()
 		}
-		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d -->", rec.Attempt, rec.ID, sent)
+		issues := ""
+		if rec.Issues != "" {
+			issues = " issues=" + rec.Issues
+		}
+		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d%s -->", rec.Attempt, rec.ID, sent, issues)
 	}
 	return s
 }
 
 // inputs are what a review is judged with, read before its task is sent.
 type inputs struct {
+	issues *IssueContext
 	files     []github.PullRequestFile
 	size      DiffSize
 	gate      *Gate
@@ -909,6 +920,16 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				return
 			}
 		}
+		if rec.ID != "" && b.ItsaplanProject != "" && rec.Issues != issueDigest(in.issues) {
+			// An old task may predate issue-aware review, or its issue may
+			// have changed while the service was down. It cannot certify
+			// evidence that was never in its prompt.
+			_, _ = e.tasks.CancelTask(ctx, b.Agent, rec.ID)
+			if next("the recorded task did not review the current issue evidence.") {
+				return
+			}
+			continue
+		}
 		if rec.ID == "" {
 			if msg == nil {
 				m, err := e.message(ctx, b, pr, run, in, attempt, l)
@@ -943,6 +964,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend}
+				if b.ItsaplanProject != "" {
+					rec.Issues = issueDigest(in.issues)
+				}
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends)
 				e.recordProgress(ctx, b, run, in.gate, rec, "", l)
 			case errors.Is(err, kagent.ErrRejected):
@@ -1076,6 +1100,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		gate.inherit(prior.Gate)
 	}
 	return &inputs{
+		issues: e.issueContext(ctx, b, pr, files),
 		files: files, size: measure(b, files), gate: gate,
 		prior: prior, priorHead: head, priorUnknown: unknown,
 	}, nil
@@ -1184,6 +1209,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Gate: in.gate, Attempt: attempt, CheckName: e.cfg.CheckName,
+		Issues: in.issues,
 	})
 	msg := &kagent.Message{
 		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
@@ -1255,6 +1281,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		applyIssueFindings(r, in.issues)
 		a := Assess(r, in.prior.Previous())
 		gate := &Gate{ObservedLabels: []string{}}
 		if in.gate != nil {

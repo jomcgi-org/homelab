@@ -22,6 +22,20 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{/* The Secret holding one bootstrap agent's API key. */}}
 {{- define "factory.itsaplanAgentSecret" -}}factory-itsaplan-agent-{{ . }}{{- end }}
 
+{{/* The reviewer identity is mandatory when enabled, independent of user agent lists. */}}
+{{- define "factory.itsaplanAgents" -}}
+{{- $agents := .Values.itsaplan.bootstrap.agents | default list -}}
+{{- range $agents -}}
+{{- if eq (lower .username) "factory-reviewer" -}}
+{{- fail "factory-reviewer is reserved for the chart's read-only reviewer identity" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.reviewer.enabled -}}
+{{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false) -}}
+{{- end -}}
+{{- toJson $agents -}}
+{{- end -}}
+
 {{/* Keep annotations for state that must outlive the Application. */}}
 {{- define "factory.itsaplanKeep" -}}
 argocd.argoproj.io/sync-options: Prune=false,Delete=false

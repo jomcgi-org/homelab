@@ -4,6 +4,8 @@ least-privilege Job roles and policies that select the pods they guard."""
 
 from __future__ import annotations
 
+import copy
+import importlib.util
 import json
 import os
 import subprocess
@@ -129,6 +131,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-bootstrap",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
+        "factory-itsaplan-agent-factory-reviewer",
     }
     for s in secrets:
         assert "data" not in s and "stringData" not in s
@@ -229,6 +232,7 @@ def test_job_roles_name_only_their_secrets() -> None:
         "factory-itsaplan-joe-sessions",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
+        "factory-itsaplan-agent-factory-reviewer",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
 
@@ -294,9 +298,132 @@ def test_bootstrap_config_lists_the_agents() -> None:
     assert [a["username"] for a in config["agents"]] == [
         "homelab-codex",
         "factory-coordinator",
+        "factory-reviewer",
     ]
     assert config["project"]["key"] == "HOME"
     assert config["oidc"]["clientId"] == "factory-itsaplan"
+
+
+@pytest.fixture
+def bootstrap(tmp_path, monkeypatch):
+    (tmp_path / "token").write_text("test-token")
+    (tmp_path / "ca.crt").write_text("")
+    config = {
+        "project": {"key": "HOME"},
+        "agents": [{"username": "factory-reviewer", "name": "Factory reviewer"}],
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    for key, value in {
+        "SA_DIR": str(tmp_path),
+        "KUBERNETES_SERVICE_HOST": "kubernetes",
+        "KUBERNETES_SERVICE_PORT": "443",
+        "NAMESPACE": "factory",
+        "API_INTERNAL_URL": "http://api:3000",
+        "APP_URL": "https://example.invalid",
+        "CONFIG": str(tmp_path / "config.json"),
+        "AGENT_SECRET_PREFIX": "factory-itsaplan-agent-",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("ssl.create_default_context", lambda **_: None)
+    spec = importlib.util.spec_from_file_location(
+        "bootstrap", _CHART_DIR / "files" / "itsaplan" / "bootstrap.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "k8s", lambda *_: {"data": {}})
+    monkeypatch.setattr(module, "secret_data", lambda _: {"apiKey": "test-key"})
+    monkeypatch.setattr(module, "key_works", lambda *_: True)
+    return module
+
+
+class ReviewerBootstrapAPI:
+    def __init__(self):
+        self.agent = None
+        self.role = None
+        self.member = None
+        self.writes = []
+        self.fail_role = False
+
+    def call(self, method, path, body=None):
+        if method != "GET":
+            self.writes.append((method, path, copy.deepcopy(body)))
+        if path == "/permission-catalog":
+            return {
+                "resources": [{"key": k} for k in ("work_items", "ai_agents", "states")],
+                "actions": ["create", "read", "edit", "delete"],
+            }
+        if path.endswith("/roles/options"):
+            return [self.role] if self.role else []
+        if path.endswith("/roles") or path.endswith("/roles/7"):
+            if self.fail_role:
+                raise RuntimeError("role read/write failed")
+            self.role = {"id": 7, "system": False, **(self.role or {}), **body}
+            return self.role
+        if path == "/teams/1/ai-agents":
+            if method == "GET":
+                return copy.deepcopy([self.agent] if self.agent else [])
+            assert body["projectIds"] == []
+            self.agent = {"id": 9, "userId": "reviewer-id", "projects": [], **body}
+            return {"agent": copy.deepcopy(self.agent), "apiKey": "test-key"}
+        if path == "/teams/1/ai-agents/9":
+            self.agent.update(body)
+            return copy.deepcopy(self.agent)
+        if path.endswith("/projects"):
+            self.agent["projects"] = [{"id": p} for p in body["projectIds"]]
+            return copy.deepcopy(self.agent)
+        if path.startswith("/projects/HOME/members?"):
+            assert "pageSize=100" in path
+            return {"items": [self.member]}
+        if path.startswith("/projects/HOME/members"):
+            self.member = {"userId": "reviewer-id", **body}
+            self.agent["projects"] = [{"id": 3}]
+            return None
+        raise AssertionError((method, path))
+
+
+def test_reviewer_bootstrap_is_read_only_before_key_publication(bootstrap, monkeypatch):
+    api = ReviewerBootstrapAPI()
+    published = []
+
+    def publish(name, data):
+        assert api.agent["projects"] == [{"id": 3}]
+        assert api.member["role"] == "member" and api.member["roleId"] == 7
+        granted = {
+            (resource, action)
+            for resource, actions in api.role["permissions"].items()
+            for action, allowed in actions.items()
+            if allowed
+        }
+        assert granted == {("work_items", "read")}
+        assert not api.agent["triggerOnAssign"]
+        assert not api.agent["triggerOnMention"]
+        assert not api.agent["chatEnabled"]
+        assert api.agent["fieldTriggers"] == []
+        assert name == "factory-itsaplan-agent-factory-reviewer"
+        published.append(data)
+
+    monkeypatch.setattr(bootstrap, "write_secret", publish)
+    bootstrap.ensure_agents(api, 1, 3)
+    writes = len(api.writes)
+    bootstrap.ensure_agents(api, 1, 3)
+    assert len(api.writes) == writes  # no duplicate role, agent or membership
+    assert published[0] == published[1]
+    api.role["permissions"]["work_items"]["edit"] = True
+    api.member["roleId"] = 99
+    api.agent["projects"].append({"id": 4})
+    api.agent["triggerOnMention"] = True
+    bootstrap.ensure_agents(api, 1, 3)
+    assert len(published) == 3  # publish() checks every repaired boundary
+
+
+def test_reviewer_bootstrap_does_not_publish_when_role_fails(bootstrap, monkeypatch):
+    api = ReviewerBootstrapAPI()
+    api.fail_role = True
+    published = []
+    monkeypatch.setattr(bootstrap, "write_secret", lambda *args: published.append(args))
+    with pytest.raises(RuntimeError, match="role read/write failed"):
+        bootstrap.ensure_agents(api, 1, 3)
+    assert not published
 
 
 def test_policies_select_their_pods() -> None:

@@ -1,4 +1,4 @@
-// Package itsaplan is the connector's client for the itsaplan v1.10.0
+// Package itsaplan is the factory's client for the itsaplan v1.10.0
 // external-agent API: the runner routes a coding agent's key drains
 // (claim, heartbeat, events, result) and the reads and comments the
 // coordinator agent's key makes.
@@ -225,6 +225,7 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
 	ID          int64  `json:"id"`
+	ProjectID   int64  `json:"projectId"`
 	Identifier  string `json:"identifier"`
 	Title       string `json:"title"`
 	Description string `json:"description"`

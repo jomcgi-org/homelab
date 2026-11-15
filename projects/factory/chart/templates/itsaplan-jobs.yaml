@@ -21,7 +21,8 @@ Each gets/updates only the Secrets named in its Role.
 {{- $ns := $i.namespace }}
 {{- $name := include "factory.itsaplanName" . }}
 {{- $agentSecrets := list }}
-{{- range $i.bootstrap.agents }}
+{{- $agents := include "factory.itsaplanAgents" . | fromJsonArray }}
+{{- range $agents }}
 {{- $agentSecrets = append $agentSecrets (include "factory.itsaplanAgentSecret" .username) }}
 {{- end }}
 apiVersion: v1
@@ -48,7 +49,7 @@ data:
       "oidc" (dict "label" $i.oidc.label "discoveryUrl" $i.oidc.discoveryUrl "clientId" $i.oidc.clientId)
       "team" $i.bootstrap.team
       "project" $i.bootstrap.project
-      "agents" $i.bootstrap.agents
+      "agents" $agents
       | toPrettyJson | nindent 4 }}
 ---
 apiVersion: v1

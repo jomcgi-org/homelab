@@ -159,6 +159,32 @@ type fixedTokens struct{}
 func (fixedTokens) Token(context.Context, string) (string, error) { return "ghs_fixed", nil }
 func (fixedTokens) Invalidate(string)                             {}
 
+func TestPRCommitMessagesAreOrderedBoundedAndHeadMatched(t *testing.T) {
+	for _, count := range []int{2, 201, 250, 251} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != "/repos/o/r/pulls/7/commits" || r.URL.Query().Get("per_page") != "100" { t.Error("wrong commit request") }
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				out := []map[string]any{}
+				for i := (page-1)*100; i < min(page*100, min(count, 250)); i++ {
+					out = append(out, map[string]any{"sha": fmt.Sprintf("sha-%d", i), "commit": map[string]string{"message": fmt.Sprintf("commit %d\nRefs HOME-%d", i, i+1)}})
+				}
+				_ = json.NewEncoder(w).Encode(out)
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			messages, err := c.PullRequestCommitMessages(context.Background(), "o/r", 7, fmt.Sprintf("sha-%d", count-1))
+			if count > 250 {
+				if err == nil || messages != nil { t.Fatal("truncated commits supplied evidence") }
+			} else if err != nil || len(messages) != count || !strings.Contains(messages[0], "Refs HOME-1") || !strings.Contains(messages[count-1], fmt.Sprintf("Refs HOME-%d", count)) { t.Fatalf("messages %v, %v", messages, err) }
+			if calls > 3 { t.Fatal("unbounded commit reads") }
+			if messages, err := c.PullRequestCommitMessages(context.Background(), "o/r", 7, "new-head"); err == nil || messages != nil { t.Fatal("raced head supplied evidence") }
+		})
+	}
+}
+
 func TestFindPrefersOpenPullRequestAndMapsExisting(t *testing.T) {
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
