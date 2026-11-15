@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "generatedAt": "2030-05-21T18:00:00Z",
+  "story": "objects/1e20e914f5ede934962b9b1255fb79eb674ce768b842f27a8b3d1be60abacb18.json",
+  "goals": {
+    "reading-list": "objects/b6f1aacac0c73398904b1fc8150d193c13b65b8ad2a4312f2251a584866e562a.json",
+    "quiet-shelf": "objects/bc08a80dbf20d08012aab913356aff9c7a2067ff2005cfb4be3b464d2460f529.json"
+  },
+  "issues": {
+    "DEMO-101": "objects/add126305dc255a86f57c93aa9aeeb5f072a3c8f071221f1e61d6be3173a9944.json",
+    "DEMO-102": "objects/51e29eb1c2effe91c59c169fee23f8cc0df42d04037411498adf0b9cf3266ca2.json",
+    "DEMO-103": "objects/72fa6ddc1c8853f88ebd8300fe16841ea0512711aedb2b4f66bee251cf0ed602.json",
+    "DEMO-104": "objects/e7917b18dc60dcfa64774a6fcd39f924eeab71c7c6b7c065504b5bc55d51be43.json",
+    "DEMO-105": "objects/450f856dfe4053abbce4cd3cfb03bcf867e95eebf0f65e754064d55f056ea6cb.json"
+  },
+  "sessions": {
+    "demo-build": "objects/220589a968c7aa26a91fd5292b39ee9c24dad9d4f29bee425da23342d5bf5adf.json",
+    "demo-correction": "objects/250b4512c4297ee0123dfb3b9eb5a5273d5224c4d772d5483e954b177178d9d9.json"
+  }
+}

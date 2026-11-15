@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "kind": "issue",
+  "key": "DEMO-102",
+  "goalId": "reading-list",
+  "title": "Review the empty reading list",
+  "state": "In review",
+  "description": "This is an invented issue in the reading list example.",
+  "timeline": [
+    {
+      "kind": "opened",
+      "at": "2030-05-21T08:00:00Z",
+      "text": "The issue was added to the fictional reading list goal."
+    },
+    {
+      "kind": "pullRequest",
+      "at": "2030-05-21T09:00:00Z",
+      "text": "The empty state is ready for review.",
+      "prNumber": 900002
+    },
+    {
+      "kind": "review",
+      "at": "2030-05-21T10:00:00Z",
+      "text": "Clarify the empty-state copy.",
+      "prNumber": 900002,
+      "round": 1,
+      "outcome": "Changes requested"
+    }
+  ]
+}

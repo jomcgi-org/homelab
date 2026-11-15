@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "kind": "issue",
+  "key": "DEMO-104",
+  "goalId": "reading-list",
+  "title": "Open a saved reading list",
+  "state": "Shipped",
+  "description": "A fictional reader can reopen a saved list. A sample title, <script>alert(\"fixture\")</script>, must be shown as text.",
+  "timeline": [
+    {
+      "kind": "opened",
+      "at": "2030-05-20T08:30:00Z",
+      "text": "The fictional reader wants to return to the last saved item."
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:00:00Z",
+      "text": "Agent turn 1 recorded.",
+      "sessionId": "demo-build",
+      "turn": 1
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:03:00Z",
+      "text": "Agent turn 2 recorded.",
+      "sessionId": "demo-build",
+      "turn": 2
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:06:00Z",
+      "text": "Agent turn 3 recorded.",
+      "sessionId": "demo-build",
+      "turn": 3
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:09:00Z",
+      "text": "Agent turn 4 recorded.",
+      "sessionId": "demo-build",
+      "turn": 4
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:12:00Z",
+      "text": "Agent turn 5 recorded.",
+      "sessionId": "demo-build",
+      "turn": 5
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:15:00Z",
+      "text": "Agent turn 6 recorded.",
+      "sessionId": "demo-build",
+      "turn": 6
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:18:00Z",
+      "text": "Agent turn 7 recorded.",
+      "sessionId": "demo-build",
+      "turn": 7
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:21:00Z",
+      "text": "Agent turn 8 recorded.",
+      "sessionId": "demo-build",
+      "turn": 8
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:24:00Z",
+      "text": "A turn was withheld.",
+      "sessionId": "demo-build",
+      "turn": 9
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:27:00Z",
+      "text": "Agent turn 10 recorded.",
+      "sessionId": "demo-build",
+      "turn": 10
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:30:00Z",
+      "text": "Agent turn 11 recorded.",
+      "sessionId": "demo-build",
+      "turn": 11
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:33:00Z",
+      "text": "Agent turn 12 recorded.",
+      "sessionId": "demo-build",
+      "turn": 12
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:36:00Z",
+      "text": "Agent turn 13 recorded.",
+      "sessionId": "demo-build",
+      "turn": 13
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:39:00Z",
+      "text": "Agent turn 14 recorded.",
+      "sessionId": "demo-build",
+      "turn": 14
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:42:00Z",
+      "text": "Agent turn 15 recorded.",
+      "sessionId": "demo-build",
+      "turn": 15
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:45:00Z",
+      "text": "Agent turn 16 recorded.",
+      "sessionId": "demo-build",
+      "turn": 16
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:48:00Z",
+      "text": "Agent turn 17 recorded.",
+      "sessionId": "demo-build",
+      "turn": 17
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:51:00Z",
+      "text": "Agent turn 18 recorded.",
+      "sessionId": "demo-build",
+      "turn": 18
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:54:00Z",
+      "text": "Agent turn 19 recorded.",
+      "sessionId": "demo-build",
+      "turn": 19
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T09:57:00Z",
+      "text": "Agent turn 20 recorded.",
+      "sessionId": "demo-build",
+      "turn": 20
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:00:00Z",
+      "text": "Agent turn 21 recorded.",
+      "sessionId": "demo-build",
+      "turn": 21
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:03:00Z",
+      "text": "Agent turn 22 recorded.",
+      "sessionId": "demo-build",
+      "turn": 22
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:06:00Z",
+      "text": "Agent turn 23 recorded.",
+      "sessionId": "demo-build",
+      "turn": 23
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:09:00Z",
+      "text": "Agent turn 24 recorded.",
+      "sessionId": "demo-build",
+      "turn": 24
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:12:00Z",
+      "text": "Agent turn 25 recorded.",
+      "sessionId": "demo-build",
+      "turn": 25
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:15:00Z",
+      "text": "Agent turn 26 recorded.",
+      "sessionId": "demo-build",
+      "turn": 26
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:18:00Z",
+      "text": "Agent turn 27 recorded.",
+      "sessionId": "demo-build",
+      "turn": 27
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T10:21:00Z",
+      "text": "Agent turn 28 recorded.",
+      "sessionId": "demo-build",
+      "turn": 28
+    },
+    {
+      "kind": "pullRequest",
+      "at": "2030-05-20T11:00:00Z",
+      "text": "The proposed change is ready for review.",
+      "prNumber": 900004
+    },
+    {
+      "kind": "check",
+      "at": "2030-05-20T11:10:00Z",
+      "text": "The empty-list example failed.",
+      "name": "Reading list checks",
+      "result": "Failed"
+    },
+    {
+      "kind": "review",
+      "at": "2030-05-20T12:00:00Z",
+      "text": "Handle an empty list before opening its first item.",
+      "prNumber": 900004,
+      "round": 1,
+      "outcome": "Changes requested"
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T13:00:00Z",
+      "text": "Correction turn 1 recorded.",
+      "sessionId": "demo-correction",
+      "turn": 1
+    },
+    {
+      "kind": "session",
+      "at": "2030-05-20T13:10:00Z",
+      "text": "Correction turn 2 recorded.",
+      "sessionId": "demo-correction",
+      "turn": 2
+    },
+    {
+      "kind": "check",
+      "at": "2030-05-20T13:30:00Z",
+      "text": "Both empty and populated lists passed.",
+      "name": "Reading list checks",
+      "result": "Passed"
+    },
+    {
+      "kind": "review",
+      "at": "2030-05-20T14:00:00Z",
+      "text": "The correction addresses the review.",
+      "prNumber": 900004,
+      "round": 2,
+      "outcome": "Approved"
+    },
+    {
+      "kind": "mergeQueue",
+      "at": "2030-05-20T14:15:00Z",
+      "text": "The change entered the merge queue.",
+      "state": "Entered"
+    },
+    {
+      "kind": "merged",
+      "at": "2030-05-20T14:30:00Z",
+      "text": "The change shipped.",
+      "prNumber": 900004
+    }
+  ]
+}
