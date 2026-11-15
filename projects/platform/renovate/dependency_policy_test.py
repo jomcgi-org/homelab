@@ -429,9 +429,7 @@ def test_lockstep_automerge_enforces_age_and_preserves_security_exception(
     config = json.loads((ROOT / "renovate.json").read_text())
     upgrades = [
         {
-            **_python_update_config(
-                config, name, security=index == vulnerable_index
-            ),
+            **_python_update_config(config, name, security=index == vulnerable_index),
             "depName": name,
             "age": ages[index],
         }
@@ -450,8 +448,7 @@ def test_lockstep_automerge_enforces_age_and_preserves_security_exception(
         == "renovate/stability-days"
     )
     assert (
-        branch.get("statusCheckWhen", {}).get("minimumReleaseAge", "always")
-        == "always"
+        branch.get("statusCheckWhen", {}).get("minimumReleaseAge", "always") == "always"
     )
     for index, upgrade in enumerate(upgrades):
         assert upgrade["minimumReleaseAge"] == (
@@ -464,8 +461,7 @@ def test_lockstep_automerge_enforces_age_and_preserves_security_exception(
     # update/branch/index.ts checks EVERY member, including a pending peer
     # after a security alert. Missing release timestamps also remain pending.
     stability_pending = any(
-        upgrade["minimumReleaseAge"]
-        and (upgrade["age"] is None or upgrade["age"] < 3)
+        upgrade["minimumReleaseAge"] and (upgrade["age"] is None or upgrade["age"] < 3)
         for upgrade in upgrades
     )
     # update/pr/index.ts delegates without checking stabilityStatus. In contrast,
