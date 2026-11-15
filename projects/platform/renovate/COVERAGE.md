@@ -7,8 +7,8 @@ Majors stay manual. The factory CronJob authenticates as the dedicated
 and a 45-minute Job deadline. It resolves the bot's numeric user ID through
 GitHub and sets its username and noreply author; `platformCommit: enabled`
 uses the API for verified commits. The App is outside the ruleset's bypass
-list. The schedule stays suspended until a manual run proves authentication,
-bot PR authorship and verified commits; see [README.md](README.md).
+list. Manual runs proved authentication, bot PR authorship and verified
+commits before the daily schedule was enabled; see [README.md](README.md).
 The hub's values and `renovate-github` item remain unchanged. Its weekly helper
 keeps its separate automerge flag off. A configured extractor
 proves discovery; registry lookup, artifact regeneration, independent review

@@ -5,11 +5,11 @@ Renovate runs on the factory home cluster through the
 It loads `values.yaml` then `values-factory.yaml` and renders a Kubernetes
 CronJob in namespace `renovate`. The factory has no Argo Workflows.
 
-**The CronJob ships suspended.** After this change merges, Claude verifies
-one manual run as `jomcgi-factory-renovate[bot]`, including verified commits,
-before #8041 (rebased or replaced) sets `suspend: false` in
-`values-factory.yaml`. The hub's two suspended CronWorkflows remain in place;
-their removal is a follow-up to
+**The CronJob runs daily.** Manual runs on 2026-11-15 verified the App's
+authentication, `jomcgi-factory-renovate[bot]` authorship and verified commits
+(#8075). #8041 then set `suspend: false` in `values-factory.yaml`; setting it
+back to `true` stops the scheduled writer. The hub's two suspended
+CronWorkflows remain in place; their removal is a follow-up to
 [#7945](https://github.com/jomcgi-org/homelab/issues/7945). The separate weekly
 maintenance helper is not deployed on the factory cluster.
 
@@ -89,7 +89,7 @@ before a PR can enter the merge queue. Renovate requests auto-merge and never
 approves its own PR. This change does not edit rulesets, reviewer permissions
 or bypasses. Before running the writer, verify those required checks and
 repository auto-merge are enabled. The policy applies to any runner reading
-this repository, even while this CronJob is suspended.
+this repository, including while this CronJob is suspended.
 
 The hub's weekly maintenance helper retains its separate default-off
 `MAINTENANCE_AUTOMERGE_ENABLED` flag. Its old dependency-evidence rollout
@@ -125,7 +125,7 @@ its OnePasswordItem to materialize `private-key`, `app-id` and `installation-id`
 in Secret `factory-renovate-gh-app`, and its Cilium policy to exist. Check key
 names only; do not display Secret values. Confirm `pr-checks` and `factory review`
 are required, repository auto-merge is enabled, and this App has no bypass.
-Keep `suspend: true` during verification.
+Suspend the CronJob while re-verifying a credential change.
 
 Ensure no other Renovate Job is running. Manually created Jobs bypass the
 CronJob's concurrency policy.
