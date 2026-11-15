@@ -104,25 +104,38 @@ def check_blog(root, output):
                     assert not page.evaluate(
                         "document.documentElement.scrollWidth > innerWidth + 1"
                     ), "horizontal page overflow"
-                    # Each data table sits in its own scroller. Its rows fill
-                    # that box at every width, so a narrow table still runs to
-                    # the panel's edges, and the fixture's six-column table,
-                    # wider than a phone, scrolls there instead of the page.
+                    # Each data table sits in its own scroller, which really
+                    # scrolls. The table starts at the box's left edge and its
+                    # rows fill the box, so a narrow table runs to the panel's
+                    # edges. Only the six-column table, on a phone, is wider
+                    # than its box; it scrolls there instead of the page.
                     boxes = page.evaluate(
-                        """[...document.querySelectorAll('.prose .table-scroll')].map(box => ({
-                          scrolls: box.scrollWidth > box.clientWidth + 1,
-                          fills: box.querySelector('tr').getBoundingClientRect().width
-                            >= box.clientWidth - 1,
-                        }))"""
+                        """[...document.querySelectorAll('.prose .table-scroll')].map(box => {
+                          const b = box.getBoundingClientRect();
+                          const row = box.querySelector('tr').getBoundingClientRect();
+                          return {
+                            overflow: getComputedStyle(box).overflowX,
+                            columns: box.querySelector('tr').children.length,
+                            scrolls: box.scrollWidth > box.clientWidth + 1,
+                            aligned: Math.abs(row.left - b.left) <= 1,
+                            fills: row.width >= box.clientWidth - 1,
+                          };
+                        })"""
                     )
-                    assert len(boxes) == 2, f"expected two fixture tables: {boxes}"
-                    assert all(b["fills"] for b in boxes), (
-                        f"table rows stop short: {boxes}"
+                    assert [b["columns"] for b in boxes] == [2, 6], (
+                        f"expected a narrow and a six-column fixture table: {boxes}"
                     )
-                    if width < 760:
-                        assert any(b["scrolls"] for b in boxes), (
-                            "wide table does not scroll in its box"
+                    narrow, wide = boxes
+                    for b in boxes:
+                        assert b["overflow"] in ("auto", "scroll"), (
+                            f"table scroller does not scroll: {b}"
                         )
+                        assert b["aligned"], f"table is offset in its scroller: {b}"
+                        assert b["fills"], f"table rows stop short: {b}"
+                    assert not narrow["scrolls"], f"narrow table scrolls: {narrow}"
+                    assert wide["scrolls"] == (width < 760), (
+                        f"six-column table scrolling is wrong at {width}px: {wide}"
+                    )
                     assert (
                         page.locator("#landing-title").bounding_box()["y"] < height / 2
                     )
