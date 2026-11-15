@@ -249,7 +249,10 @@
   }
 
   function setMode(next) {
-    if (next === mode || !map || !layerReady) return;
+    if (next === mode || (next === "heat" && (mapError || !map || !layerReady)))
+      return;
+    // A shared Heat view must still return to vessel snapshot filters if
+    // WebGL initialization failed. applyModeLayers tolerates an absent map.
     mode = next;
     applyModeLayers(next);
   }
@@ -886,6 +889,11 @@
     <Button
       variant="secondary"
       aria-pressed={mode === "heat"}
+      disabled={mapError}
+      aria-label={mapError ? "Heat (interactive map unavailable)" : undefined}
+      title={mapError
+        ? "Heat requires the interactive map, which is unavailable."
+        : undefined}
       onclick={() => setMode("heat")}
     >
       Heat
