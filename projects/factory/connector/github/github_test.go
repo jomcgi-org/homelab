@@ -430,7 +430,7 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{
 			"id":"PR_5","number":5,"url":"https://github.com/example-org/homelab/pull/5","state":"MERGED","merged":true,
-			"mergedAt":"2026-11-14T12:00:00Z","headRefOid":"b","headRefName":"factory/HL-1","baseRefName":"main",
+			"mergedAt":"2026-11-14T12:00:00Z","headRefOid":"b","headRefName":"factory/HL-1","baseRefName":"main","baseRefOid":"base-sha",
 			"author":{"login":"jomcgi-factory"},"mergeCommit":{"oid":"m"},"mergeQueueEntry":null,
 			"labels":{"nodes":[{"name":"human"},{"name":"factory"}]},
 			"reviews":{"nodes":[
@@ -448,7 +448,7 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Merged || d.State != "closed" || d.MergeCommitSHA != "m" || d.MergeQueueState != "" || d.HeadSHA != "b" || d.Author != "jomcgi-factory" {
+	if d.BaseSHA != "base-sha" || !d.Merged || d.State != "closed" || d.MergeCommitSHA != "m" || d.MergeQueueState != "" || d.HeadSHA != "b" || d.Author != "jomcgi-factory" {
 		t.Fatalf("detail = %+v", d.PullRequest)
 	}
 	if strings.Join(d.Labels, ",") != "human,factory" {

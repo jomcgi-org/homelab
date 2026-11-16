@@ -18,6 +18,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/dispatch",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/factory/connector/buildbuddy",
         "//projects/factory/connector/github",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
@@ -47,6 +48,7 @@ go_test(
     data = ["@postgres_test//:postgres"],
     embed = [":dispatch"],
     deps = [
+        "//projects/factory/connector/buildbuddy",
         "//projects/factory/connector/config",
         "//projects/factory/connector/github",
         "//projects/factory/connector/internal/pgtest",
