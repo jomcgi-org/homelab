@@ -279,6 +279,7 @@ when its row applies.
 | Proposing or judging a factory improvement | `docs/agents/evolution.md` |
 | Reviewing a finished PR diff | `docs/agents/review.md` |
 | Shipping a feature | `docs/agents/ship.md` |
+| Writing a PR title and description | `docs/agents/pull-requests.md` |
 | Refreshing a system's STPA model | `docs/agents/stpa.md` |
 | Queueing or triaging drain-lane (`qwen-drain`) jobs | `docs/agents/drain-queue.md` |
 | Cutting BuildBuddy cache traffic | `docs/agents/buildbuddy-usage.md` |
