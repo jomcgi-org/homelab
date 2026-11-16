@@ -528,8 +528,9 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*)
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
-	Blocking []Finding `json:"blocking"`
-	Cleared  []Cleared `json:"cleared,omitempty"`
+	Semgrep  *SemgrepStamp `json:"semgrep,omitempty"`
+	Blocking []Finding     `json:"blocking"`
+	Cleared  []Cleared     `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`
@@ -944,7 +945,7 @@ func encodeState(st State) string {
 		// Without the cleared record, so it says the record is partial.
 		small := State{
 			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session,
-			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal,
+			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, Semgrep: st.Semgrep,
 		}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.

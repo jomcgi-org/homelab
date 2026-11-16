@@ -541,6 +541,8 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		http.NotFound(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && strings.HasSuffix(path, "/comments"):
+		f.get(w, r, []any{})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
 		p, _ := strconv.Atoi(q.Get("page"))

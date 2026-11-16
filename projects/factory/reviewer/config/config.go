@@ -20,6 +20,8 @@ const DefaultCheckName = "factory review"
 
 // Config is the reviewer's whole configuration.
 type Config struct {
+	// Semgrep enables evidence from the Semgrep GitHub App; nil is off.
+	Semgrep *Semgrep `yaml:"semgrep"`
 	// BrokerURL is the credential broker's admin port; the reviewer's GitHub
 	// tokens come from its /github/reviewer-token, authenticated with the
 	// projected token (audience factory-broker) in BrokerTokenFile.
@@ -49,6 +51,13 @@ type Config struct {
 	// counts as "other", which keeps the metric's labels bounded.
 	RuleIDs  []string  `yaml:"ruleIds"`
 	Bindings []Binding `yaml:"bindings"`
+}
+
+// Semgrep configures the scan check on each exact PR head.
+type Semgrep struct {
+	AppID     int64    `yaml:"appId"`
+	CheckName string   `yaml:"checkName"`
+	Wait      Duration `yaml:"wait"`
 }
 
 // Intervals are the loop timings.
@@ -205,6 +214,17 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.CheckName == "" {
 		c.CheckName = DefaultCheckName
+	}
+	if s := c.Semgrep; s != nil {
+		if s.AppID <= 0 || strings.TrimSpace(s.CheckName) == "" {
+			return nil, fmt.Errorf("config: semgrep needs appId and checkName")
+		}
+		if s.Wait < 0 {
+			return nil, fmt.Errorf("config: semgrep.wait must be positive")
+		}
+		if s.Wait == 0 {
+			s.Wait = Duration(10 * time.Minute)
+		}
 	}
 	c.CommentAuthor = strings.TrimSpace(c.CommentAuthor)
 	if strings.ContainsAny(c.CommentAuthor, " \t\n/") {

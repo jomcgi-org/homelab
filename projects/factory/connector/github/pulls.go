@@ -731,6 +731,9 @@ type restComment struct {
 	ID   int64  `json:"id"`
 	User login  `json:"user"`
 	Body string `json:"body"`
+	App  *struct {
+		ID int64 `json:"id"`
+	} `json:"performed_via_github_app"`
 }
 
 func (cm restComment) comment() Comment {

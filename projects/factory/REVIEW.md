@@ -23,9 +23,10 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   a provider reaches a prompt or an issue comment only from a trusted
   reviewer login or the reviewer App; the rest is dropped or reduced to a
   fixed class name. The reviewer's own prompt is an exception: it
-  receives PR text, file names and diffs from any author, because reviewing
-  them is its job, and only inside a delimited untrusted block, quoted and
-  sanitized so no text closes the block or starts a line of its own.
+  receives PR text, file names and diffs from any author, plus comments
+  and check output from the Semgrep App. These reach it only inside
+  delimited untrusted blocks, quoted and sanitized so no text closes a
+  block or starts a line of its own.
   The service reads itsaplan only for PRs by the factory App or a
   `humanApprovers` login
   ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469)).

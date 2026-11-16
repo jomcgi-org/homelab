@@ -131,3 +131,31 @@ func TestItsaplanConfiguration(t *testing.T) {
 		t.Fatalf("issue config = %+v", c)
 	}
 }
+
+func TestSemgrepConfig(t *testing.T) {
+	c, err := Parse([]byte(sample))
+	if err != nil || c.Semgrep != nil {
+		t.Fatalf("unset must be off: %+v, %v", c, err)
+	}
+	for _, tc := range []struct {
+		value string
+		valid bool
+		wait  time.Duration
+	}{
+		{"{appId: 4746654, checkName: semgrep-cloud-platform/scan}", true, 10 * time.Minute},
+		{"{appId: 4746654, checkName: semgrep-cloud-platform/scan, wait: 2m}", true, 2 * time.Minute},
+		{"{}", false, 0},
+		{"{appId: 4746654}", false, 0},
+		{"{appId: -1, checkName: scan}", false, 0},
+		{"{appId: 4746654, checkName: scan, wait: -1m}", false, 0},
+		{"{appId: 4746654, checkName: scan, tokenFile: secret}", false, 0},
+	} {
+		c, err := Parse([]byte(sample + "semgrep: " + tc.value + "\n"))
+		if (err == nil) != tc.valid {
+			t.Fatalf("%s: %v", tc.value, err)
+		}
+		if tc.valid && time.Duration(c.Semgrep.Wait) != tc.wait {
+			t.Fatalf("wait = %s", time.Duration(c.Semgrep.Wait))
+		}
+	}
+}

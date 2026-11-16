@@ -702,3 +702,42 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
 def test_invalid_wiring_fails_closed(override: str, message: str) -> None:
     with pytest.raises(RuntimeError, match=re.escape(message)):
         _render([override])
+
+
+def test_semgrep_is_opt_in_github_only_config() -> None:
+    assert "semgrep" not in _config(_render(), "factory-reviewer")
+    overrides = [
+        "reviewer.semgrep.appId=4746654",
+        "reviewer.semgrep.checkName=semgrep-cloud-platform/scan",
+        "reviewer.semgrep.wait=2m",
+    ]
+    docs = _render(overrides)
+    assert _config(docs, "factory-reviewer")["semgrep"] == {
+        "appId": 4746654,
+        "checkName": "semgrep-cloud-platform/scan",
+        "wait": "2m",
+    }
+    assert _pod(docs, "factory-reviewer") == _pod(_render(), "factory-reviewer")
+    assert not any(
+        "semgrep" in json.dumps(d).lower()
+        for d in docs
+        if d["kind"] in ("OnePasswordItem", "NetworkPolicy")
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["reviewer.semgrep.appId=4746654"],
+        ["reviewer.semgrep.checkName=scan"],
+        ["reviewer.semgrep.appId=0", "reviewer.semgrep.checkName=scan"],
+        [
+            "reviewer.semgrep.appId=4746654",
+            "reviewer.semgrep.checkName=scan",
+            "reviewer.semgrep.tokenFile=secret",
+        ],
+    ],
+)
+def test_semgrep_rejects_incomplete_or_token_config(overrides: list[str]) -> None:
+    with pytest.raises(RuntimeError):
+        _helm(overrides)

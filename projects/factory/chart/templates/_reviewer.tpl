@@ -70,5 +70,8 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- with $c.commentAuthor }}
 {{- $_ := set $config "commentAuthor" . }}
 {{- end }}
+{{- with $c.semgrep }}
+{{- $_ := set $config "semgrep" . }}
+{{- end }}
 {{- $config | toYaml }}
 {{- end }}
