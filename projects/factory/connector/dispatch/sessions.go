@@ -2,7 +2,9 @@ package dispatch
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -75,9 +77,11 @@ func (e *Engine) sweepSessions(ctx context.Context) error {
 			}
 			for _, f := range byAgent[ref] {
 				if s := listed[f.ContextID]; s == nil || s.State == kagent.RuntimeDeleted {
-					// A recorded delete whose session a complete listing no
-					// longer shows has taken effect.
-					if f.Requested && complete {
+					// A recorded delete has taken effect when a complete
+					// listing by the same caller no longer shows its session.
+					// kagent scopes a listing to the caller, so another
+					// caller's listing proves nothing.
+					if complete && f.RequestedBy != "" && f.RequestedBy == identity.Key() {
 						if err := e.confirmDeletion(ctx, f.ContextID); err != nil {
 							return err
 						}
@@ -88,7 +92,7 @@ func (e *Engine) sweepSessions(ctx context.Context) error {
 					return errors.Join(errs...)
 				}
 				budget--
-				if err := e.deleteFinished(ctx, f); err != nil {
+				if err := e.deleteFinished(ctx, f, identity.Key()); err != nil {
 					if fatal(err) {
 						return err
 					}
@@ -103,12 +107,14 @@ func (e *Engine) sweepSessions(ctx context.Context) error {
 // callerSessions lists the caller's sessions of agent by ID. kagent lists
 // only the caller's own; a session that names another creator is skipped as
 // well. complete is false for a listing cut short by maxSessionPages or a
-// repeated page token: an unlisted session may then still exist.
+// repeated page token: an unlisted session may then still exist. Each page
+// request is journaled before it is sent (BeginStatusRead), under a message
+// ID that a retry of the same request shares.
 func (e *Engine) callerSessions(ctx context.Context, agent kagent.AgentRef, identity kagent.CallerIdentity) (map[string]*kagent.Session, bool, error) {
 	out := map[string]*kagent.Session{}
 	token := ""
 	for page := 0; page < maxSessionPages; page++ {
-		if err := e.guard(ctx); err != nil {
+		if err := e.BeginStatusRead(ctx, listSessionsID(agent, token)); err != nil {
 			return nil, false, err
 		}
 		ss, next, err := e.sessions.ListSessions(ctx, agent, token)
@@ -131,11 +137,18 @@ func (e *Engine) callerSessions(ctx context.Context, agent kagent.AgentRef, iden
 	return out, false, nil
 }
 
+// listSessionsID is the read journal's message ID of one ListSessions page
+// request: the agent and a digest of the opaque page token.
+func listSessionsID(agent kagent.AgentRef, token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "kagent/ListSessions/" + agent.Namespace + "/" + agent.Name + "/" + hex.EncodeToString(sum[:8])
+}
+
 // deleteFinished records the delete, releasing a session its work item
 // still records in the same transaction, then sends it. A failed delete
 // leaves a recorded session the work item no longer records, which the next
 // sweep deletes again.
-func (e *Engine) deleteFinished(ctx context.Context, f store.FinishedSession) error {
+func (e *Engine) deleteFinished(ctx context.Context, f store.FinishedSession, caller string) error {
 	released := !f.Current
 	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
 		if f.Current {
@@ -144,7 +157,7 @@ func (e *Engine) deleteFinished(ctx context.Context, f store.FinishedSession) er
 				return err
 			}
 		}
-		return e.st.RecordSessionDeletion(ctx, tx, f, e.w.Epoch)
+		return e.st.RecordSessionDeletion(ctx, tx, f, e.w.Epoch, caller)
 	})
 	if err != nil || !released {
 		return err
