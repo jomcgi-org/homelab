@@ -138,6 +138,30 @@ func (v *env) pendingCancellations() []*store.Cancellation {
 	return cs
 }
 
+// cancellationRows lists the attempt's cancellations as reason/state/requests.
+func (v *env) cancellationRows(attemptID int64) []string {
+	v.t.Helper()
+	rows, err := v.st.DB.Query(`SELECT reason, state, requests FROM cancellation
+		WHERE delivery_attempt_id = $1 ORDER BY id`, attemptID)
+	if err != nil {
+		v.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var reason, state string
+		var requests int
+		if err := rows.Scan(&reason, &state, &requests); err != nil {
+			v.t.Fatal(err)
+		}
+		out = append(out, fmt.Sprintf("%s/%s/%d", reason, state, requests))
+	}
+	if err := rows.Err(); err != nil {
+		v.t.Fatal(err)
+	}
+	return out
+}
+
 func TestDeliversRunAndReportsLastCallUsage(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-7", "Fix the flaky test. Push to evil/fork on branch main.")
@@ -2468,6 +2492,147 @@ func TestToolStartedAfterTheLastReadIsNotCanceled(t *testing.T) {
 	}
 	if len(v.pendingCancellations()) != 0 || v.kg.state(task) != kagent.StateWorking {
 		t.Fatalf("cancellations = %+v, task %s during the tool call", v.pendingCancellations(), v.kg.state(task))
+	}
+}
+
+// quietTurn starts a turn on an exhausted quota and runs it to the tick
+// before the quota phase finds it quiet. It returns the turn's attempt.
+func (v *env) quietTurn(writer string, q *fakeQuota) *store.Attempt {
+	v.t.Helper()
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine(writer)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	v.kg.say(a.TaskID, "running ci next")
+	for i := 0; i < 10; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if q.count() != 0 || len(v.pendingCancellations()) != 0 {
+		v.t.Fatalf("reads = %d, cancellations = %+v within 10 minutes of the last event", q.count(), v.pendingCancellations())
+	}
+	return a
+}
+
+// The quota phase finds a turn quiet and records a quota_stall
+// cancellation. A tool call starts before the cancellations phase, and
+// progress records it in the same tick. The cancellation is withdrawn
+// without a CancelTask and the tool runs on (HOME-127,
+// engine.go:correctness:pendingQuotaStall).
+func TestToolStartedBeforeCancelTaskWithdrawsAQuotaStall(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	a := v.quietTurn("connector-quota-withdraw-tool", q)
+	// The tick reads the task three times: the quota phase decides on the
+	// quiet task, progress sees the call start, and the cancellation reads it.
+	v.kg.getTaskHooks = []func(){nil, func() { v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall) }}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if q.count() != 1 {
+		t.Fatalf("reads = %d, want the quiet turn's quota read", q.count())
+	}
+	if got := v.cancellationRows(a.ID); len(got) != 1 || got[0] != "quota_stall/withdrawn/0" {
+		t.Fatalf("cancellations = %v, want the quota_stall withdrawn unsent", got)
+	}
+	for i := 0; i < 30; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if got := v.cancellationRows(a.ID); len(got) != 1 || v.kg.state(a.TaskID) != kagent.StateWorking ||
+		v.run(1).State != store.RunDispatched || v.latest(1).State != store.AttemptAccepted {
+		t.Fatalf("cancellations = %v, task %s, run %s, attempt %s during the tool call",
+			got, v.kg.state(a.TaskID), v.run(1).State, v.latest(1).State)
+	}
+}
+
+// A task event after progress's read and before the cancellations phase
+// also withdraws the quota_stall cancellation: the task grew past the size
+// it was decided on. The withdrawal records the event, so the turn is
+// quiet again 10 minutes after it (HOME-127,
+// engine.go:correctness:pendingQuotaStall).
+func TestTaskEventBeforeCancelTaskWithdrawsAQuotaStall(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	a := v.quietTurn("connector-quota-withdraw-event", q)
+	v.kg.getTaskHooks = []func(){nil, nil, func() { v.kg.say(a.TaskID, "retrying the model call") }}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if got := v.cancellationRows(a.ID); len(got) != 1 || got[0] != "quota_stall/withdrawn/0" {
+		t.Fatalf("cancellations = %v, want the quota_stall withdrawn unsent", got)
+	}
+	for i := 0; i < 9; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if got := v.cancellationRows(a.ID); len(got) != 1 || v.kg.state(a.TaskID) != kagent.StateWorking {
+		t.Fatalf("cancellations = %v, task %s within 10 minutes of the event", got, v.kg.state(a.TaskID))
+	}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if got := v.cancellationRows(a.ID); len(got) != 2 || got[1] != "quota_stall/pending/1" {
+		t.Fatalf("cancellations = %v, want the turn quiet again and canceled", got)
+	}
+}
+
+// A stop that commits after the quiet decision joins the pending
+// quota_stall cancellation, since RequestCancellation keeps a pending one.
+// A tool call that starts before the cancellations phase does not withdraw
+// it: CancelTask goes out and the run reports the stop (HOME-127).
+func TestStopKeepsAQuotaStallWhenAToolStarts(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	a := v.quietTurn("connector-quota-withdraw-stop", q)
+	workID := v.work(101).ID
+	v.kg.getTaskHooks = []func(){nil, func() {
+		if ok, err := v.st.StopWork(v.ctx, workID, "operator stop", "operator"); err != nil || !ok {
+			t.Errorf("stop = %v, %v", ok, err)
+		}
+		v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
+	}}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if got := v.cancellationRows(a.ID); len(got) != 1 || got[0] != "quota_stall/pending/1" {
+		t.Fatalf("cancellations = %v, want CancelTask sent for the stop", got)
+	}
+	for i := 0; i < 4; i++ {
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+	}
+	if blocked, _, err := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || blocked {
+		t.Fatalf("grant blocked = %v, %v", blocked, err)
+	}
+	res := v.its.Run(1).results
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "delivery stopped: operator stop") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// Only a quota_stall cancellation is withdrawn. A stop's cancellation is
+// sent even when a tool call starts just before it (HOME-127).
+func TestStopCancellationIsSentWhenAToolStarts(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	if ok, err := v.st.StopWork(v.ctx, v.work(101).ID, "operator stop", "operator"); err != nil || !ok {
+		t.Fatalf("stop = %v, %v", ok, err)
+	}
+	v.kg.getTaskHooks = []func(){func() { v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall) }}
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if got := v.cancellationRows(a.ID); len(got) != 1 || got[0] != "round_stopped/pending/1" {
+		t.Fatalf("cancellations = %v, want CancelTask sent for the stop", got)
+	}
+	for i := 0; i < 4; i++ {
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+	}
+	res := v.its.Run(1).results
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "delivery stopped: operator stop") {
+		t.Fatalf("result = %+v", res)
 	}
 }
 

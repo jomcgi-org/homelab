@@ -60,7 +60,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}, []string{"outcome"}),
 		Cancellations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_cancellations_total",
-			Help: "kagent cancellations by reason and state (requested, confirmed).",
+			Help: "kagent cancellations by reason and state (requested, confirmed, withdrawn).",
 		}, []string{"reason", "state"}),
 		Events: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_event_batches_total",
