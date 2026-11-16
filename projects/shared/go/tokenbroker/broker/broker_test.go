@@ -511,6 +511,47 @@ func TestCachedAccessTokenNeverRefreshesOrMints(t *testing.T) {
 	}
 }
 
+func TestCacheAvailabilityUsesServingPolicyWithoutRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		token         string
+		expires       time.Duration
+		age           time.Duration
+		refreshBefore time.Duration
+		maxAge        time.Duration
+		want          bool
+	}{
+		{name: "usable", token: "cached", expires: time.Hour, age: time.Hour, want: true},
+		{name: "missing", expires: time.Hour, age: time.Hour},
+		{name: "expired", token: "cached", expires: -time.Minute, age: time.Hour},
+		{name: "refresh-window", token: "cached", expires: 4 * time.Minute, age: time.Hour},
+		{name: "aged", token: "cached", expires: time.Hour, age: 8 * 24 * time.Hour},
+		{name: "custom-window", token: "cached", expires: time.Hour, age: time.Hour, refreshBefore: 2 * time.Hour},
+		{name: "custom-age", token: "cached", expires: time.Hour, age: time.Hour, maxAge: 30 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			original := store.Grant{Name: "one", ProviderName: "test", LastRefresh: now.Add(-tc.age), TokenBundle: store.TokenBundle{
+				AccessToken: tc.token, RefreshToken: "existing", ExpiresAt: now.Add(tc.expires),
+			}}
+			st := &testStore{grants: map[string]store.Grant{"one": original}}
+			adapter := &testDualAdapter{testAdapter: &testAdapter{}}
+			b := New(st, map[string]provider.Adapter{"test": adapter}, map[string]provider.Minter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+			b.SetRefreshPolicy(tc.refreshBefore, tc.maxAge)
+			if got := b.CanServeCachedAccessToken("one"); got != tc.want {
+				t.Fatalf("cache availability = %t, want %t", got, tc.want)
+			}
+			if adapter.calls != 0 || adapter.mintCalls != 0 || st.grants["one"] != original {
+				t.Fatal("cache availability changed credentials or called the provider")
+			}
+			st.loadErr = errors.New("storage unavailable")
+			if b.CanServeCachedAccessToken("one") || b.CanServeCachedAccessToken("unknown") {
+				t.Fatal("unreadable or unknown grant reported a usable cache")
+			}
+		})
+	}
+}
+
 func TestRefreshPolicy(t *testing.T) {
 	now := time.Now().UTC()
 	grant := func() *testStore {

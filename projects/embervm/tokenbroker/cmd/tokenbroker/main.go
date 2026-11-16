@@ -812,7 +812,10 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 		return
 	}
 	if refreshBlocked {
-		writeJSON(w, http.StatusOK, map[string]string{"state": "blocked", "detail": "refresh token consumed; await a stored replacement or a new device login"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"state": "blocked", "detail": "refresh token consumed; await a stored replacement or a new device login",
+			"access_token_usable": s.broker.CanServeCachedAccessToken(name),
+		})
 		return
 	}
 	if stateValue == "failed" {

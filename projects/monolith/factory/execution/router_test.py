@@ -1818,6 +1818,29 @@ async def test_codex_login_gate_granted_does_not_start_login(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("usable", [True, False, None, "true"])
+async def test_codex_login_gate_distinguishes_usable_cache_from_refresh_block(
+    monkeypatch, usable
+):
+    calls = []
+    status = {"state": "blocked", "access_token_usable": usable}
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        return status
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    result = await codex_login_gate("luna")
+    if usable is True:
+        assert result is None
+    else:
+        assert result["refresh_blocked"] is True
+        assert result["login_required"] is False
+    assert status["state"] == "blocked"
+    assert calls == [("GET", "/grants/codex-cluster/login/status")]
+
+
+@pytest.mark.asyncio
 async def test_codex_login_gate_none_returns_device_login(monkeypatch):
     calls = []
 
@@ -3813,9 +3836,11 @@ def test_factory_edges_delete_removes_edge(tmp_path, monkeypatch):
         app.dependency_overrides.clear()
 
 
-@pytest.mark.parametrize("state", ["none", "blocked"])
+@pytest.mark.parametrize(
+    ("state", "usable"), [("none", False), ("blocked", False), ("blocked", True)]
+)
 def test_router_start_codex_credential_wait_preserves_session_and_resumes(
-    client, session, monkeypatch, state
+    client, session, monkeypatch, state, usable
 ):
     calls = []
     watched = []
@@ -3824,7 +3849,7 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
     async def broker_request(method, path):
         calls.append((method, path))
         if method == "GET":
-            return {"state": state}
+            return {"state": state, "access_token_usable": usable}
         assert state == "none", "a recoverable refresh must not start device login"
         return {"verification_url": "https://example.test", "user_code": "CODE"}
 
@@ -3864,6 +3889,20 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
     body = client.post(
         "/api/agents/sessions", json={"prompt": "Hello", "model": "luna"}
     ).json()
+
+    if usable:
+        assert body["accepted"] is True
+        assert store.get_session(session, body["session_id"]).status == "running"
+        assert (
+            store.get_pending_message(
+                session, body["session_id"], body["turn"]
+            ).message_text
+            == "Hello"
+        )
+        assert scheduled == [body["session_id"]]
+        assert watched == []
+        assert calls == [("GET", "/grants/codex-cluster/login/status")]
+        return
 
     assert body["accepted"] is False
     assert body["login_required"] is (state == "none")
@@ -3947,4 +3986,29 @@ async def test_login_watcher_keeps_device_flow_timeout(monkeypatch, state):
     )
     assert calls == [("GET", "/grants/codex-cluster/login/status")]
     assert resumed == []
+
+
+
+@pytest.mark.asyncio
+async def test_login_watcher_resumes_with_usable_cache_while_refresh_blocked(
+    monkeypatch,
+):
+    calls = []
+    resumed = []
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        return {"state": "blocked", "access_token_usable": True}
+
+    async def resume():
+        resumed.append(True)
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    previous = set(codex_login._login_watch_tasks)
+    codex_login.watch_for_login("codex-cluster", resume, refresh_blocked=True)
+    await asyncio.wait_for(
+        asyncio.gather(*(codex_login._login_watch_tasks - previous)), timeout=1
+    )
+    assert calls == [("GET", "/grants/codex-cluster/login/status")]
+    assert resumed == [True]
 

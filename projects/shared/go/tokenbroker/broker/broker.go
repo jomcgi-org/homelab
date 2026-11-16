@@ -387,6 +387,23 @@ func (b *Broker) CachedAccessToken(grantName string, ctx context.Context) (strin
 	return grant.TokenBundle.AccessToken, grant.TokenBundle.ExpiresAt, nil
 }
 
+// CanServeCachedAccessToken reports whether ordinary token serving can use the
+// durable access token without refreshing it. Unlike quota observation, this
+// respects both refresh policy thresholds. It never clears a refresh block,
+// rotates credentials, or returns token material to a login-status caller.
+func (b *Broker) CanServeCachedAccessToken(grantName string) bool {
+	if _, err := b.state(grantName); err != nil {
+		return false
+	}
+	grant, err := b.store.LoadGrant(grantName)
+	return err == nil && b.canServeCachedGrant(grant, time.Now())
+}
+
+func (b *Broker) canServeCachedGrant(grant store.Grant, now time.Time) bool {
+	return grant.TokenBundle.AccessToken != "" && !grant.TokenBundle.ExpiresAt.IsZero() &&
+		grant.TokenBundle.ExpiresAt.Sub(now) > b.refreshBefore && now.Sub(grant.LastRefresh) <= b.maxGrantAge
+}
+
 func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, time.Time, error) {
 	if _, err := b.state(grantName); err != nil {
 		return "", time.Time{}, err
@@ -420,7 +437,7 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 		}
 	}
 	expires := grant.TokenBundle.ExpiresAt
-	if time.Until(expires) <= b.refreshBefore || time.Since(grant.LastRefresh) > b.maxGrantAge {
+	if !b.canServeCachedGrant(grant, time.Now()) {
 		state, stateErr := b.state(grantName)
 		if stateErr != nil {
 			return "", time.Time{}, stateErr

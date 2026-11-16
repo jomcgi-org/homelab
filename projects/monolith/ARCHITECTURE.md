@@ -111,14 +111,18 @@ and **Check connection** reads its status. The execution console retains its
 production default.
 
 A broker status of `blocked` means a consumed refresh token is awaiting a
-replacement or operator recovery. Session preflight retains the pending turn
-under the existing `awaiting_login` credential wait, reports `refresh_blocked`
-instead of `login_required`, and starts no device flow. Its watcher inherits
-that state from preflight, so an outage before its first poll cannot introduce
+replacement or operator recovery. Its separate `access_token_usable` flag lets
+sessions proceed while the cached access token remains within the broker's
+serving policy; this does not clear the refresh block. Otherwise session
+preflight retains the pending turn under the existing `awaiting_login`
+credential wait, reports `refresh_blocked` instead of `login_required`, and
+starts no device flow. Its watcher inherits that state from preflight, so an
+outage before its first poll cannot introduce
 a device-flow deadline. The leader's existing pending-message sweep also
 reconciles persisted waits after restart using a status read of the production
-default grant. Only `granted` releases a wait; the transition rechecks session
-state, claims and recovery fences before ordinary dispatch can continue.
+default grant. A `granted` status or a `blocked` status with a usable access
+token releases a wait; the transition rechecks session state, claims and
+recovery fences before ordinary dispatch can continue.
 A recovered grant can supersede a pending device flow started for a consumed
 token. An operator's login started with a healthy stored grant stays pending
 until that flow completes. The login page offers both a status check and an

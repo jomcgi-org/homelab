@@ -637,6 +637,45 @@ func TestLoginStatusUsesDurableGrantAndNeedsLoginMarker(t *testing.T) {
 	}
 }
 
+func TestConsumedRefreshStatusKeepsUsableAccessTokenSeparate(t *testing.T) {
+	now := time.Now().UTC()
+	st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
+		Name: "codex-cluster", ProviderName: "test", LastRefresh: now,
+		TokenBundle: store.TokenBundle{AccessToken: "cached", RefreshToken: "consumed", ExpiresAt: now.Add(time.Hour)},
+	}}}
+	adapter := &fakeAdapter{refreshErr: provider.ErrRefreshTokenReused}
+	s := newTestServer(st, adapter)
+	forced := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/refresh")
+	if forced.Code != http.StatusServiceUnavailable {
+		t.Fatalf("forced refresh = %d", forced.Code)
+	}
+	for _, usable := range []bool{true, false} {
+		if !usable {
+			// Expiration changes serving availability, not the consumed-token marker.
+			grant, _ := st.LoadGrant("codex-cluster")
+			grant.TokenBundle.ExpiresAt = now.Add(-time.Minute)
+			_ = st.SaveGrant(grant)
+		}
+		status := decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+		if status["state"] != "blocked" || status["access_token_usable"] != usable {
+			t.Fatalf("login status did not distinguish cache availability (want %t)", usable)
+		}
+		for _, key := range []string{"access_token", "refresh_token", "id_token"} {
+			if _, ok := status[key]; ok {
+				t.Fatal("login status exposed token material")
+			}
+		}
+		token := requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/token")
+		wantCode := http.StatusServiceUnavailable
+		if usable {
+			wantCode = http.StatusOK
+		}
+		if token.Code != wantCode || !s.broker.RefreshBlocked("codex-cluster") || s.broker.NeedsLogin("codex-cluster") || adapter.refreshCalls.Load() != 2 {
+			t.Fatal("cache serving cleared the refresh block or retried a consumed token")
+		}
+	}
+}
+
 func TestExistingGrantDoesNotHideNewDeviceLogin(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
