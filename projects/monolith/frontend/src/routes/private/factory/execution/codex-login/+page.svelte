@@ -59,7 +59,8 @@
     {:else}
       {#if data.state === "persistence_pending"}
         <p>
-          Approval is complete. Retry saving the login, then check the connection.
+          Approval is complete. Retry saving the login, then check the
+          connection.
         </p>
       {:else}
         <p>
