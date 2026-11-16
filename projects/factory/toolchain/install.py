@@ -97,7 +97,8 @@ def install(repo: Path, root: Path) -> None:
             "--no-audit",
             "--no-fund",
             "--userconfig=/dev/null",
-            "--globalconfig=/dev/null",
+            # npm rejects loading the same path as both user and global config.
+            f"--globalconfig={root / 'npm-global.conf'}",
             "--registry=https://registry.npmjs.org",
             *packages,
         ],
