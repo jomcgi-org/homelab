@@ -22,11 +22,23 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   text: agents have no itsaplan tools (#7908). Text from GitHub, a model or
   a provider reaches a prompt or an issue comment only from a trusted
   reviewer login or the reviewer App; the rest is dropped or reduced to a
-  fixed class name. The reviewer's own prompt is the one exception: it
+  fixed class name. The reviewer's own prompt is an exception: it
   receives PR text, file names and diffs from any author, because reviewing
   them is its job, and only inside a delimited untrusted block, quoted and
   sanitized so no text closes the block or starts a line of its own.
   Critical.
+- **Planner exception.** `homelab-planner` may also receive text from any
+  author, in the same delimited, quoted and sanitized block as the reviewer.
+  It has a read-only repository token, no push, no coding-agent key or
+  session, no itsaplan tools and a fresh session per run. Its output reaches
+  itsaplan only through the connector's proposal path. The connector takes
+  each issue's title and instructions from a reviewed schedule template on
+  `main`. Planner text goes only into a delimited evidence block, and the
+  coder treats that block as data on every send, recovery included. A
+  schedule's config sets the highest disposition: delegated fix, Joe task or
+  Backlog. The planner can only lower it. Digests and alerts leave the
+  cluster only through the notify sink (HOME-51), with titles, links and
+  fixed fields. Critical.
 - **Credentials.** Provider and GitHub credentials never enter a sandbox, a
   log or the evidence bucket; they are injected at egress. A minted token
   names exactly the repository and permissions it needs. Critical.
