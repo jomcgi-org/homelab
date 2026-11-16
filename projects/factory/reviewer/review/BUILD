@@ -40,6 +40,9 @@ go_test(
     ],
     embed = [":review"],
     deps = [
+        "//projects/factory/broker/config",
+        "//projects/factory/broker/github",
+        "//projects/factory/broker/metrics",
         "//projects/factory/connector/github",
         "//projects/factory/connector/kagent",
         "//projects/factory/reviewer/metrics",
