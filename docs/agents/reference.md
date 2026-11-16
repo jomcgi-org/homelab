@@ -289,7 +289,7 @@ when its row applies.
 | Adding a service | "New service" in Gotchas above, `projects/platform/ARCHITECTURE.md` section 4, `projects/gke-apps/kustomization.yaml` (the live workload list) |
 | Observability or alerting | `docs/observability.md` |
 | Frontend or design: tokens, palette, motion, a11y | `.impeccable.md` |
-| Prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
+| Any writing: docs, PRs, commits, comments, tickets, chat, site copy | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
