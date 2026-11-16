@@ -66,16 +66,17 @@ authentik:
       # not look for a Kubernetes integration to manage them with.
       - name: AUTHENTIK_OUTPOSTS__DISCOVER
         value: "false"
-  # Sizes from the 2-day peaks (2026-11-16) plus about 15%. No CPU limits:
+  # Sizes from the 2-day peaks (2026-11-16) plus about 15%. CPU limits of 2:
   # the base's 500m throttled the worker 247k times in two days while its
-  # average stayed under 0.1 core.
+  # average stayed under 0.1 core. A null limit is not an option: Argo CD
+  # rendered it as a zero limit, which the API rejects (HOME-131).
   server:
     replicas: 1
     resources:
       requests:
         memory: 896Mi
       limits:
-        cpu: null
+        cpu: "2"
         memory: 1536Mi
     route:
       main:
@@ -87,7 +88,7 @@ authentik:
       requests:
         memory: 384Mi
       limits:
-        cpu: null
+        cpu: "2"
   # Only needed for managed outposts.
   serviceAccount:
     create: false
