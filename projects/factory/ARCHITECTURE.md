@@ -1095,6 +1095,15 @@ stateDiagram-v2
   active tasks CANCELED
   ([session_deletion.go](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_deletion.go#L37-L113)).
   DELETED or NOT_FOUND confirms the cancellation.
+- During a node partition, Substrate's NodeGone cleanup can report the Actor
+  gone while the old turn still runs on the cut-off machine. A DELETED or
+  NOT_FOUND result, or a complete and empty task scan, then frees the slot
+  while a second writer may exist. Joe accepted that risk so the factory
+  never stays stuck: it is rare on three nodes, and loud, as unexpected
+  commits on the work branch
+  ([decision](https://github.com/jomcgi-org/homelab/pull/8123#issuecomment-6931498421)).
+  Fencing old executions independently stays with HOME-38
+  ([#8011](https://github.com/jomcgi-org/homelab/issues/8011)).
 - kagent refuses a force delete while an idle suspend holds its claim. The
   run then keeps its slot, since kagent may still run the turn, and the
   `refused` step of `factory_connector_stuck_turns_total` counts it. After
