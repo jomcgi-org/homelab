@@ -20,6 +20,7 @@ def rehearse_bootstrap(pages, output, report, width):
         LOBBY,
         ORIGIN,
         assert_fits,
+        fetch_loopback_route,
         read,
         shot,
         use_loopback_requests,
@@ -153,13 +154,18 @@ def rehearse_bootstrap(pages, output, report, width):
         # The second tab changes only this disposable browser context's signed
         # demo cookie. Neither account access nor platform membership changes.
         switch = page_for("b")
+        # The fence reload can drop /self's body; capture it before delivery.
+        selves = {}
+
+        def observe_self(route):
+            fetched = fetch_loopback_route(route)
+            selves[route.request] = fetched.json() if fetched.ok else {}
+            route.fulfill(response=fetched)
+
+        page.route(self_url, observe_self)
         started = time.monotonic()
         with page.expect_response(
-            lambda response: (
-                response.url == self_url
-                and response.status == 200
-                and response.json().get("username") == "b"
-            ),
+            lambda response: selves.get(response.request, {}).get("username") == "b",
             timeout=20000,
         ) as response:
             switch.goto(f"{ORIGIN}/__local/login/b")
@@ -167,7 +173,7 @@ def rehearse_bootstrap(pages, output, report, width):
         report["timings"]["bootstrap_profile_identity_poll_seconds"] = (
             time.monotonic() - started
         )
-        second = response.value.json()
+        second = selves[response.value.request]
         assert second["id"] != first["id"] and second["email"] == "b@example.test"
         assert second["permissions"] == []
         scrub_started = time.monotonic()

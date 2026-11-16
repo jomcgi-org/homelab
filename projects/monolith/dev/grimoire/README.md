@@ -66,21 +66,18 @@ Run the complete regression gate with one command:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --all --output /tmp/grimoire-all
 ```
 
-The launcher builds once, then runs both scenarios at 1280px and 390px, each
-with a fresh database and three browser contexts. Every run executes even if
-one fails. The top-level report links the `<scenario>/<width>` reports; a
-missing report, failed check, console error or missed budget fails it.
-`--viewport 390` puts all seats at that width; without it, the DM is on desktop.
+The launcher builds once, then runs both scenarios at 1280px and 390px with
+fresh databases, linking the `<scenario>/<width>` reports. Any missing report,
+failed check, console error or missed budget fails it. `--viewport 390` puts
+all seats at that width; without it, the DM is on desktop.
 
 There are 53 required session checks and nine invitation checks. New journeys
-cover feedback drafts and votes, sheet edits across tabs and conflict recovery,
-character reassignment, disadvantage, own-fact disputes, shared pins with retry,
-the read-aloud queue, first-read failure and Retry, pending Enter submissions,
-private replies across sign-in renewal, session changes, cancellation and
-reassignment, clearing private notes after an account change, and refusing
-private reads until the first identity check succeeds. Profile checks use the
-real read-only `/api/auth/platform/self` route; the fixture registers no
-platform management, account-write or enrollment route.
+cover feedback, sheet edits across tabs and conflicts, reassignment,
+disadvantage, fact disputes, shared pins, read-aloud, first-read Retry, pending
+submissions, private replies across sign-in renewal and reassignment, clearing
+private notes after an account change, and refusing private reads before the
+first identity check. Profile checks use the real read-only
+`/api/auth/platform/self` route; no platform write route is registered.
 
 Deferred to [HOME-26](https://factory-plan.jomcgi.dev/factory/issue/HOME-26)
 ([#8001](https://github.com/jomcgi-org/homelab/issues/8001)): #8003's six-second
@@ -93,10 +90,9 @@ session and nine link steps, 2026-11-14). API requests have a two-second budget
 (observed maximum 459ms); held or delayed requests are marked `injected: true`.
 
 Application console and page errors fail the run. A deliberate refusal or
-dropped response is declared first with its seat, method, URL and status or
-failure. One browser diagnostic matches one declaration only when its location,
-observed request and step match; matches stay in `expected_console_diagnostics`.
-Any other diagnostic, including a CSP failure, fails the gate.
+dropped response is declared first (seat, method, URL, status or failure) and
+matches one browser diagnostic at that location and step, kept in
+`expected_console_diagnostics`. Any other diagnostic fails the gate.
 
 Fact fixtures use the normal writer and a deterministic embedder. The speech
 check fakes only the device voice engine. Device audio and transcript capture
@@ -142,8 +138,7 @@ GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/c
 ```
 
 Every report records its source SHA, dirty state, and Playwright and browser
-versions. The November 2026 baseline used Chromium headless shell 156 locally;
-CI's pinned browser is authoritative.
+versions; CI's pinned browser is authoritative.
 
 The wrapper installs the pinned runtime and Playwright, builds the React bundle
 once from the checkout (`web-build.log`), and runs the session scenario
