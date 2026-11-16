@@ -339,8 +339,9 @@ func (e *Engine) Tick(ctx context.Context) error {
 // checkQuota reads the broker's quota while a quota block stands or a
 // running turn has had no task event for QuotaStall (HOME-127). An
 // exhausted reading cancels each such quiet turn; kagent's confirmation
-// pauses it as a quota failure. A turn can go quiet for longer during a
-// long tool call, so a usable reading cancels nothing.
+// pauses it as a quota failure. A quiet turn with a tool call that has no
+// result yet, such as a 30-minute ci run, is busy and never quiet. A
+// usable reading cancels nothing.
 //
 // A usable reading clears quota blocks. Only a reading received after a
 // block began clears it: the failed turn's own readings predate the block,
@@ -1528,7 +1529,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	if n := taskSize(t); n != a.EventCount {
-		if err := e.st.SetAttemptEvents(ctx, a.ID, n, e.cfg.Now()); err != nil {
+		if err := e.st.SetAttemptEvents(ctx, a.ID, n, t.ToolRunning(), e.cfg.Now()); err != nil {
 			return err
 		}
 	}
@@ -1544,13 +1545,15 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 }
 
 // taskSize grows with every task event the connector reads: history
-// messages and artifact text.
+// messages, artifacts and their parts, and artifact text. A tool call and
+// its result are each an artifact with one data part.
 func taskSize(t *kagent.Task) int {
 	n := len(t.History)
 	for _, a := range t.Artifacts {
 		if a != nil {
+			n++
 			for _, p := range a.Parts {
-				n += len(p.Text)
+				n += 1 + len(p.Text)
 			}
 		}
 	}
@@ -1660,8 +1663,13 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 }
 
 // blockTurn finishes a turn that failed on its grant, pauses the grant,
-// announces the block once and leaves the run waiting without a slot.
+// announces the block once and leaves the run waiting without a slot. A
+// stop of the run or work item wins: blockTurn locks both first and does
+// nothing when either is stopped, so step's stopRun reports the stop.
 func (e *Engine) blockTurn(ctx context.Context, tx *sql.Tx, r *store.Run, wi *store.WorkItem, a *store.Attempt, class, msg string) error {
+	if stopped, err := e.st.LockStop(ctx, tx, wi.ID, r.ID); err != nil || stopped {
+		return err
+	}
 	e.m.Blocked.WithLabelValues(class).Inc()
 	e.log.WarnContext(ctx, "turn blocked", "run", r.ID, "attempt", a.Seq, "work_item", wi.ID,
 		"class", class, "status", msg)
@@ -1915,8 +1923,7 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 // quota as a quota failure: the run waits without a slot and resumes in the
 // same session when the quota is usable. A turn that ended on its own
 // meanwhile keeps its attempt open, and progress reads its outcome. So does
-// a turn whose run or work item was stopped meanwhile: step's stopRun
-// reports the stop, and the block would overwrite the stopped work item.
+// a turn whose run or work item was stopped, as blockTurn checks under lock.
 func (e *Engine) confirmQuotaStall(ctx context.Context, tx *sql.Tx, r *store.Run, a *store.Attempt, outcome string) error {
 	switch {
 	case r.State != store.RunDispatched || !a.Open():
@@ -1927,13 +1934,6 @@ func (e *Engine) confirmQuotaStall(ctx context.Context, tx *sql.Tx, r *store.Run
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
 		return err
-	}
-	var stopped bool
-	if err := tx.QueryRowContext(ctx, `SELECT stopped_reason IS NOT NULL FROM run WHERE id = $1`, r.ID).Scan(&stopped); err != nil {
-		return err
-	}
-	if stopped || wi.State == store.WorkStopped {
-		return nil
 	}
 	return e.blockTurn(ctx, tx, r, wi, a, ClassQuota, fmt.Sprintf(
 		"canceled after %s without a task event while the broker read the quota exhausted (kagent: %s)", e.cfg.QuotaStall, outcome))

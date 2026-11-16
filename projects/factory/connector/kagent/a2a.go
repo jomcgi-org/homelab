@@ -122,6 +122,40 @@ type Task struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
+// kagent v1.0.1 records each Codex tool or command as its own artifact: a
+// data part {id, name, args} marked function_call when Codex reports the
+// item started, and a function_response part with the same id when it
+// completes or the turn ends
+// (https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/harness/codex/internal/driver/events.go#L360-L394,
+// https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/api/a2a/tool_activity.go#L8-L26).
+const (
+	PartTypeKey      = "kagent.dev/a2a/part-type"
+	PartToolCall     = "function_call"
+	PartToolResponse = "function_response"
+)
+
+// ToolRunning reports whether a tool call in the task has no result yet:
+// a tool or command is still running.
+func (t *Task) ToolRunning() bool {
+	open := map[string]bool{}
+	for _, a := range t.Artifacts {
+		if a == nil {
+			continue
+		}
+		for _, p := range a.Parts {
+			data, _ := p.Data.(map[string]any)
+			id, _ := data["id"].(string)
+			switch p.Metadata[PartTypeKey] {
+			case PartToolCall:
+				open[id] = true
+			case PartToolResponse:
+				delete(open, id)
+			}
+		}
+	}
+	return len(open) > 0
+}
+
 // HasMessage reports whether the task's history holds the message ID.
 func (t *Task) HasMessage(id string) bool {
 	for _, m := range t.History {

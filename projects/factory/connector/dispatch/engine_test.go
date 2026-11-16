@@ -1563,6 +1563,15 @@ func (s *failedTaskSend) Send(ctx context.Context, ref kagent.AgentRef, msg kage
 	return s.Tasks.Send(ctx, ref, msg)
 }
 
+// retriesSpent is the engineering retries a grant failure's resend takes:
+// a credential retry takes one, a quota resume none (HOME-127).
+func retriesSpent(failure string) int {
+	if dispatch.Classify(kagent.StateFailed, failure) == dispatch.ClassQuota {
+		return 0
+	}
+	return 1
+}
+
 func TestUnacceptedNewerRunPreservesGrantFailureRetry(t *testing.T) {
 	for _, reviewRound := range []bool{false, true} {
 		for _, failure := range []string{"codex_login_required", "usage_limit_reached"} {
@@ -1616,7 +1625,7 @@ func TestUnacceptedNewerRunPreservesGrantFailureRetry(t *testing.T) {
 					}
 					retry := v.latest(runID)
 					if retry.ID == failed.ID || retry.State != store.AttemptAccepted || v.run(runID).State != store.RunDispatched ||
-						v.work(101).EngineeringRetries != 1 || v.kg.Executions() != beforeExecutions+1 {
+						v.work(101).EngineeringRetries != retriesSpent(failure) || v.kg.Executions() != beforeExecutions+1 {
 						t.Fatalf("older failure could not retry after rejection: %+v", retry)
 					}
 					preserved, err := v.st.GetAttempt(v.ctx, failed.ID)
@@ -1692,7 +1701,7 @@ func TestCanceledNewerRunPreservesGrantFailureRetry(t *testing.T) {
 					}
 					retry := v.latest(runID)
 					if retry.ID == failed.ID || retry.State != store.AttemptAccepted || v.run(runID).State != store.RunDispatched ||
-						v.work(101).EngineeringRetries != 1 || v.kg.Executions() != beforeExecutions+1 {
+						v.work(101).EngineeringRetries != retriesSpent(failure) || v.kg.Executions() != beforeExecutions+1 {
 						t.Fatalf("older failure could not retry after safe cancellation: %+v", retry)
 					}
 					preserved, err := v.st.GetAttempt(v.ctx, failed.ID)
@@ -1912,8 +1921,10 @@ func TestOperatorUnblockLetsRunsThrough(t *testing.T) {
 	}
 }
 
-// Codex's text after the broker's quota refusals (HOME-127).
-const codexQuotaFailure = "exceeded retry limit, last status: 429 Too Many Requests"
+// kagent v1.0.1's failed-task status after the broker's quota refusals,
+// verbatim: the Codex harness's prefix and Codex 0.161.0's RetryLimit text
+// (sources in classify.go, HOME-127).
+const codexQuotaFailure = "Codex execution failed: exceeded retry limit, last status: 429 Too Many Requests"
 
 // A quota block clears once the broker reads the grant usable after the
 // block began, and the stopped turn resumes without an operator (HOME-127).
@@ -2328,6 +2339,188 @@ func TestQuietTurnOnUsableQuotaKeepsRunning(t *testing.T) {
 	v.kg.finish(task, kagent.StateCompleted, "done", nil)
 	v.tick(v.e)
 	if res := v.its.Run(1).results; len(res) != 1 || res[0].Status != "success" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// A command can run with no task event for longer than QuotaStall, such as
+// a 30-minute ci run. While its tool call has no result the turn is busy,
+// and an exhausted reading does not cancel it. The quiet period starts
+// again at the result (HOME-127).
+func TestRunningToolOnExhaustedQuotaIsNotCanceled(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-tool")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	task := v.latest(1).TaskID
+	v.kg.tool(task, "exec-1", kagent.PartToolCall)
+	for i := 0; i < 30; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if len(v.pendingCancellations()) != 0 || v.kg.state(task) != kagent.StateWorking || v.run(1).State != store.RunDispatched {
+		t.Fatalf("cancellations = %+v, task %s, run %s during the tool call",
+			v.pendingCancellations(), v.kg.state(task), v.run(1).State)
+	}
+	// The command ends, and the next model call waits on the quota.
+	v.kg.tool(task, "exec-1", kagent.PartToolResponse)
+	for i := 0; i < 10; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("cancellations = %+v within 10 minutes of the tool result", cs)
+	}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall {
+		t.Fatalf("cancellations = %+v, want the quiet turn canceled", cs)
+	}
+}
+
+// stopInFlight starts StopWork and holds it after it writes the stop,
+// before it commits: an uncommitted outbox row with its announcement's key
+// makes its insert wait. Other sessions read the work item as not stopped
+// until release. It may run outside the test's goroutine.
+func (v *env) stopInFlight(workID int64, reason string) (release func()) {
+	tx, err := v.st.DB.BeginTx(v.ctx, nil)
+	if err == nil {
+		_, err = tx.Exec(`INSERT INTO outbox (kind, dedupe_key, payload) VALUES ('comment', $1, '{}')`,
+			fmt.Sprintf("comment/stopped/%d/1", workID))
+	}
+	if err != nil {
+		v.t.Error(err)
+		return func() {}
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := v.st.StopWork(v.ctx, workID, reason, "operator")
+		done <- err
+	}()
+	v.waitForLockWaits(1)
+	return func() {
+		if err := tx.Rollback(); err != nil {
+			v.t.Error(err)
+		}
+		if err := <-done; err != nil {
+			v.t.Error(err)
+		}
+	}
+}
+
+// waitForLockWaits waits until n sessions on the test database wait on a
+// row or transaction lock.
+func (v *env) waitForLockWaits(n int) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waits int
+		if err := v.st.DB.QueryRow(`SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waits); err != nil {
+			v.t.Error(err)
+			return
+		}
+		if waits >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			v.t.Errorf("%d sessions wait on a lock, want %d", waits, n)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A stop that StopWork has written but not committed when kagent confirms a
+// quota_stall cancellation still wins. The confirmation locks the work item
+// and run (InvalidateRecovery, then blockTurn's LockStop), so it waits for
+// the stop to commit and reads it (HOME-127).
+func TestStopCommittedDuringQuotaStallConfirmationStands(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-stall-race")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	for i := 0; i < 15 && len(v.pendingCancellations()) == 0; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall {
+		t.Fatalf("cancellations = %+v", cs)
+	}
+	// The next tick reads the task twice: progress, then the cancellation,
+	// which confirms it. The stop starts between them and commits only once
+	// the confirmation waits on its row locks.
+	workID := v.work(101).ID
+	started := make(chan func(), 1)
+	v.kg.getTaskHooks = []func(){nil, func() { started <- v.stopInFlight(workID, "operator stop") }}
+	v.clk.Advance(5 * time.Second)
+	ticked := make(chan error, 1)
+	go func() { ticked <- v.e.Tick(v.ctx) }()
+	var release func()
+	select {
+	case release = <-started:
+	case err := <-ticked:
+		t.Fatalf("tick ended before the stop started: %v", err)
+	}
+	v.waitForLockWaits(2)
+	release()
+	if err := <-ticked; err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+	}
+	if w := v.work(101); w.State != store.WorkStopped {
+		t.Fatalf("work item = %+v, want stopped", w)
+	}
+	if blocked, _, err := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || blocked {
+		t.Fatalf("grant blocked = %v, %v", blocked, err)
+	}
+	res := v.its.Run(1).results
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "delivery stopped: operator stop") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// A stop that commits while progress reads a turn that failed on its grant
+// wins: complete blocks under AttemptTx's locks, which reject the stopped
+// run, and blockTurn's LockStop reads the stop.
+func TestStopCommittedWhileReadingAGrantFailureStands(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	task := v.latest(1).TaskID
+	v.kg.finish(task, kagent.StateFailed, codexQuotaFailure, nil)
+	workID := v.work(101).ID
+	v.kg.getTaskHooks = []func(){func() {
+		if ok, err := v.st.StopWork(v.ctx, workID, "operator stop", "operator"); err != nil || !ok {
+			t.Errorf("stop = %v, %v", ok, err)
+		}
+	}}
+	v.clk.Advance(5 * time.Second)
+	if err := v.e.Tick(v.ctx); err != nil && !errors.Is(err, store.ErrAttemptChanged) {
+		t.Fatalf("tick: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+	}
+	if w := v.work(101); w.State != store.WorkStopped {
+		t.Fatalf("work item = %+v, want stopped", w)
+	}
+	if blocked, _, err := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || blocked {
+		t.Fatalf("grant blocked = %v, %v", blocked, err)
+	}
+	res := v.its.Run(1).results
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "delivery stopped: operator stop") {
 		t.Fatalf("result = %+v", res)
 	}
 }

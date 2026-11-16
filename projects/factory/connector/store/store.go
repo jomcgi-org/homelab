@@ -587,6 +587,21 @@ func (s *Store) SetSession(ctx context.Context, q Querier, workID int64, session
 // GrantScope names the grant a kagent Agent's runs use.
 func GrantScope(namespace, agent string) string { return "kagent:" + namespace + "/" + agent }
 
+// LockStop locks the work item, then the run, in StopWork's order, and
+// reports whether either is stopped. A stop that commits after the
+// caller's earlier reads is seen here, and a later StopWork waits until the
+// caller's transaction ends.
+func (s *Store) LockStop(ctx context.Context, tx *sql.Tx, workID, runID int64) (bool, error) {
+	var workStopped, runStopped bool
+	if err := tx.QueryRowContext(ctx, `SELECT state = 'stopped' FROM work_item WHERE id = $1 FOR UPDATE`, workID).Scan(&workStopped); err != nil {
+		return false, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT stopped_reason IS NOT NULL FROM run WHERE id = $1 FOR UPDATE`, runID).Scan(&runStopped); err != nil {
+		return false, err
+	}
+	return workStopped || runStopped, nil
+}
+
 // Block marks a work item blocked by a credential or quota failure and
 // pauses its grant's other work items. started is false when the grant was
 // already blocked, so the block is announced once. A credential failure
@@ -808,19 +823,22 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	return a, err
 }
 
-// SetAttemptEvents records that the attempt's task changed to count at at.
-func (s *Store) SetAttemptEvents(ctx context.Context, id int64, count int, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE delivery_attempt SET event_count = $2, event_at = $3 WHERE id = $1`, id, count, at)
+// SetAttemptEvents records that the attempt's task changed to count at at,
+// and whether a tool call in it has no result yet.
+func (s *Store) SetAttemptEvents(ctx context.Context, id int64, count int, toolRunning bool, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE delivery_attempt SET event_count = $2, tool_running = $3, event_at = $4 WHERE id = $1`,
+		id, count, toolRunning, at)
 	return err
 }
 
 // QuietAttempts lists the running turns whose task has not changed since
 // before: the latest attempt of a dispatched run without a stop, accepted,
-// not held, and without a pending cancellation. A task the connector has not
-// read yet counts from its send.
+// not held, without a running tool call and without a pending
+// cancellation. A task the connector has not read yet counts from its send.
 func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
 		WHERE a.state = 'accepted' AND a.error IS NULL AND coalesce(a.event_at, a.sent_at) < $1
+			AND NOT a.tool_running
 			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = a.run_id)
 			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched' AND r.stopped_reason IS NULL)
 			AND NOT EXISTS (SELECT 1 FROM cancellation c WHERE c.delivery_attempt_id = a.id AND c.state = 'pending')
