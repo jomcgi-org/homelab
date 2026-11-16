@@ -858,8 +858,8 @@ async def start_session_for_thread(
         # approves the device code. The watcher starts this exact pending turn
         # once the broker reports granted.
         async def resume() -> None:
-            await asyncio.to_thread(_set_session_status, row.id, "running")
-            _schedule_next_message(row.id)
+            if await asyncio.to_thread(store.resume_session_after_login_sync, row.id):
+                _schedule_next_message(row.id)
 
         watch_for_login(login.get("grant", "codex-cluster"), resume)
         return login
@@ -925,8 +925,10 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            await asyncio.to_thread(_set_session_status, session_id, "running")
-            _schedule_next_message(session_id)
+            if await asyncio.to_thread(
+                store.resume_session_after_login_sync, session_id
+            ):
+                _schedule_next_message(session_id)
 
         watch_for_login(login.get("grant", "codex-cluster"), resume)
         return login

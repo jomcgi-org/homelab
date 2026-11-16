@@ -94,7 +94,8 @@ def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> No
     establish whether credentials are retained, even on the very first poll.
     Only a successful response confirming no flow after the local timeout, or
     an explicit failure, ends the watch without resuming the session.
-    Keep the task strongly referenced until it finishes.
+    Keep the task strongly referenced until it finishes. The pending-message
+    sweep independently reconciles durable login waits after a process restart.
     """
 
     async def wait() -> None:

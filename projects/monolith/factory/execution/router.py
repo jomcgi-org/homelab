@@ -1263,8 +1263,10 @@ async def _start_session(
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            await asyncio.to_thread(_set_session_status, session_id, "running")
-            _schedule_next_message(session_id)
+            if await asyncio.to_thread(
+                store.resume_session_after_login_sync, session_id
+            ):
+                _schedule_next_message(session_id)
 
         watch_for_login(login.get("grant", "codex-cluster"), resume)
         return {"accepted": False, **login, "session_id": session_id, "turn": turn}
@@ -1440,8 +1442,10 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            await asyncio.to_thread(_set_session_status, session_id, "running")
-            _schedule_next_message(session_id)
+            if await asyncio.to_thread(
+                store.resume_session_after_login_sync, session_id
+            ):
+                _schedule_next_message(session_id)
 
         watch_for_login(login.get("grant", "codex-cluster"), resume)
         return {
