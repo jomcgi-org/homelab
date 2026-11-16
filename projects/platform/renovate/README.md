@@ -79,27 +79,28 @@ See [coverage and holds](COVERAGE.md) for exclusions and generated files.
 OpenTelemetry and Pydantic/core family PRs can be created on any scan,
 including ordinary updates. Renovate 44.14.10 takes a grouped branch's
 schedule from its first dependency, so an unaffected peer must also be
-eligible outside Monday. Ordinary family updates use the normal creation
-limits and release-age status checks. Security alert members contribute
+eligible outside Monday. Ordinary family updates keep the normal creation
+limits, the three-day release age and `strict` internal checks: Renovate
+proposes only releases at least three days old and creates no branch while
+every member is pending. Each family publishes its members to PyPI within
+minutes, so the members age together. Security alert members contribute
 explicit unlimited PR, branch and hourly commit limits; Renovate's grouped
 limit calculation honors an unlimited member even when it sorts after an
 unaffected dependency.
 
 ## Review and auto-merge
 
-`renovate.json` normally enables native platform auto-merge for minor, patch,
-digest, pin (including digest pins) and lock-file maintenance updates. Major updates
+`renovate.json` enables native platform auto-merge for minor, patch, digest,
+pin (including digest pins) and lock-file maintenance updates. Major updates
 stay manual and carry `major-upgrade`. Replacement, bump and rollback updates
 also keep the default manual merge policy. Existing compatibility holds
 still disable auto-merge and require dashboard approval.
 
-OpenTelemetry and Pydantic/core use Renovate's own merge checks
-(`platformAutomerge: false`). Their PRs can open while a release is pending,
-but Renovate waits for `renovate/stability-days` to pass before requesting a
-merge. GitHub platform auto-merge would not enforce that status because it
-is not a required repository check. A security alert exempts the vulnerable
-package from the cooldown; unaffected peers still wait three days. The
-security group's immediate creation schedule and unlimited quotas remain.
+The OpenTelemetry and Pydantic/core groups use the same auto-merge path
+through the merge queue. A security alert exempts only the vulnerable
+package from the release age. A peer released less than three days earlier
+keeps its current version; Renovate adds it to the group on the first scan
+after it ages.
 
 GitHub must require both `pr-checks` and the reviewer App's `factory review`
 before a PR can enter the merge queue. Renovate requests auto-merge and never

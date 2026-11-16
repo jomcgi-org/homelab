@@ -134,6 +134,16 @@ def test_lockstep_python_packages_share_a_group(group_name, package_names):
     assert rule["groupSlug"] == group_name.lower().replace(" ", "-")
     assert rule["separateMajorMinor"] is False
     assert rule["separateMinorPatch"] is False
+    # Family PRs inherit the repository release-age filter and the non-major
+    # native auto-merge rule, which GitHub routes through the merge queue.
+    for inherited in (
+        "automerge",
+        "platformAutomerge",
+        "internalChecksFilter",
+        "minimumReleaseAge",
+        "prCreation",
+    ):
+        assert inherited not in rule, inherited
     for name in package_names:
         # Renovate's pip_requirements extractor normalizes packageName, including
         # the pydantic_core spelling pinned in the verifier requirements.
@@ -246,13 +256,13 @@ def _selected_python_release(config, name, current, releases, *, first_fixed=Non
             candidates = candidates[:1]
         else:
             assert effective["vulnerabilityFixStrategy"] == "highest"
-    if effective["internalChecksFilter"] == "strict":
-        minimum_age = effective["minimumReleaseAge"]
-        if minimum_age:
-            assert minimum_age == "3 days"
-            candidates = [(version, age) for version, age in candidates if age >= 3]
-    else:
-        assert effective["internalChecksFilter"] == "none"
+    assert effective["internalChecksFilter"] == "strict"
+    minimum_age = effective["minimumReleaseAge"]
+    if minimum_age:
+        assert minimum_age == "3 days"
+        candidates = [(version, age) for version, age in candidates if age >= 3]
+    # None means only pending releases remain: Renovate marks the update
+    # pendingChecks and does not propose it (see the branch test below).
     return str(candidates[-1][0]) if candidates else None
 
 
@@ -289,9 +299,7 @@ def test_next_opentelemetry_beta_minor_is_selected_with_stable_sdk(name):
 
 @pytest.mark.parametrize("family", ["opentelemetry", "pydantic"])
 @pytest.mark.parametrize("peer_age", [1, 7])
-def test_security_updates_select_a_matched_family_including_pending_peers(
-    family, peer_age
-):
+def test_security_updates_exempt_only_the_vulnerable_member(family, peer_age):
     config = json.loads((ROOT / "renovate.json").read_text())
     # Synthetic publisher-matched release sets: the first patch fixes the
     # advisory, but a newer release requires a newer exact peer version.
@@ -306,26 +314,25 @@ def test_security_updates_select_a_matched_family_including_pending_peers(
             "pydantic": ("2.13.4", "2.13.5", "2.14.0"),
             "pydantic_core": ("2.46.4", "2.46.5", "2.47.0"),
         }
-    # An advisory on any member must select the same newest release set.
     for vulnerable in releases:
-        selected = {
-            name: _selected_python_release(
+        for name, (current, fixed, latest) in releases.items():
+            selected = _selected_python_release(
                 config,
                 name,
                 current,
                 [(fixed, 7), (latest, peer_age)],
                 first_fixed=fixed if name == vulnerable else None,
             )
-            for name, (current, fixed, latest) in releases.items()
-        }
-        assert selected == {name: versions[2] for name, versions in releases.items()}
-        for name in releases:
             effective = _python_update_config(config, name, security=name == vulnerable)
-            # internalChecksFilter=none includes pending peers in lookup;
-            # update/branch/index.ts still checks each peer's release age.
-            assert effective["minimumReleaseAge"] == (
-                None if name == vulnerable else "3 days"
-            )
+            if name == vulnerable:
+                # The highest fix is exempt from the release age.
+                assert effective["minimumReleaseAge"] is None
+                assert selected == latest
+            else:
+                # Aged peers match that fix. A pending peer keeps its newest
+                # aged release until the first scan after the cooldown.
+                assert effective["minimumReleaseAge"] == "3 days"
+                assert selected == (latest if peer_age >= 3 else fixed)
 
 
 def _group_limit(upgrades, name):
@@ -380,10 +387,9 @@ def test_lockstep_branch_schedule_and_limits_with_unaffected_first_member(
     assert branch["depName"] != vulnerable
     assert branch["isVulnerabilityAlert"] is False
     # This schedule also admits a Tuesday scan; an ordinary first member must
-    # not put the group's security fix back behind Monday or pending checks.
+    # not put the group's security fix back behind Monday.
     assert branch["schedule"] == ["at any time"]
-    assert branch["prCreation"] == "immediate"
-    assert branch["internalChecksFilter"] == "none"
+    assert branch["internalChecksFilter"] == "strict"
     assert branch["minimumReleaseAge"] == "3 days"
 
     saturated_counts = {
@@ -409,72 +415,51 @@ def test_lockstep_branch_schedule_and_limits_with_unaffected_first_member(
     ],
 )
 @pytest.mark.parametrize(
-    ("ages", "vulnerable_index", "age_ready"),
+    ("ages", "vulnerable_index", "proposed"),
     [
-        ((1, 7), None, False),
-        ((7, 1), None, False),
-        ((None, 7), None, False),
-        ((7, None), None, False),
-        ((3, 3), None, True),
-        ((1, 7), 0, True),
-        ((7, 1), 1, True),
-        ((1, 1), 0, False),
-        ((1, 1), 1, False),
+        ((1, 7), None, (False, True)),
+        ((7, 1), None, (True, False)),
+        ((None, 7), None, (False, True)),
+        ((7, None), None, (True, False)),
+        ((3, 3), None, (True, True)),
+        ((1, 1), None, (False, False)),
+        ((1, 7), 0, (True, True)),
+        ((7, 1), 1, (True, True)),
+        ((1, 1), 0, (True, False)),
+        ((1, 1), 1, (False, True)),
     ],
 )
-@pytest.mark.parametrize("required_checks_green", [False, True])
-def test_lockstep_automerge_enforces_age_and_preserves_security_exception(
-    members, ages, vulnerable_index, age_ready, required_checks_green
+def test_lockstep_prs_exclude_pending_releases_and_use_the_merge_queue(
+    members, ages, vulnerable_index, proposed
 ):
     config = json.loads((ROOT / "renovate.json").read_text())
     upgrades = [
-        {
-            **_python_update_config(config, name, security=index == vulnerable_index),
-            "depName": name,
-            "age": ages[index],
-        }
+        _python_update_config(config, name, security=index == vulnerable_index)
         for index, name in enumerate(members)
     ]
-    upgrades.sort(key=lambda upgrade: upgrade["depName"])
-    branch = upgrades[0]  # Renovate 44.14.10 updates/generate.ts
-    assert branch["automerge"] is True  # Minor updates still use automerge.
-    assert branch["automergeType"] == "pr"
-    assert branch["platformAutomerge"] is False
-    assert branch.get("ignoreTests", False) is False
-    assert (
-        branch.get("statusCheckNames", {}).get(
-            "minimumReleaseAge", "renovate/stability-days"
-        )
-        == "renovate/stability-days"
-    )
-    assert (
-        branch.get("statusCheckWhen", {}).get("minimumReleaseAge", "always") == "always"
-    )
-    for index, upgrade in enumerate(upgrades):
-        assert upgrade["minimumReleaseAge"] == (
-            None if index == vulnerable_index else "3 days"
-        )
+    for upgrade in upgrades:
+        # Same path as every other non-major update: native auto-merge, which
+        # GitHub sends through the required checks and merge queue.
+        assert upgrade["automerge"] is True
+        assert upgrade["automergeType"] == "pr"
+        assert upgrade["platformAutomerge"] is True
+        assert upgrade.get("ignoreTests", False) is False
         assert upgrade.get("minimumReleaseAgeBehaviour", "timestamp-required") == (
             "timestamp-required"
         )
 
-    # update/branch/index.ts checks EVERY member, including a pending peer
-    # after a security alert. Missing release timestamps also remain pending.
-    stability_pending = any(
-        upgrade["minimumReleaseAge"] and (upgrade["age"] is None or upgrade["age"] < 3)
-        for upgrade in upgrades
-    )
-    # update/pr/index.ts delegates without checking stabilityStatus. In contrast,
-    # update/pr/automerge.ts requires a green combined status, and GitHub's
-    # getBranchStatus retains pending Renovate checks even when not required.
-    # Assume other merge prerequisites pass, so age and CI decide eligibility.
-    delegated = branch["automerge"] and branch["platformAutomerge"]
-    merge_eligible = (
-        branch["automerge"]
-        and required_checks_green
-        and (delegated or not stability_pending)
-    )
-    assert merge_eligible is (age_ready and required_checks_green)
+    # Renovate 44.14.10 lookup/filter-checks.ts: with strict filtering, a member
+    # whose new releases are all younger than minimumReleaseAge, or lack a
+    # timestamp, gets pendingChecks. updates/generate.ts drops pending members
+    # from a branch with other updates; update/branch/index.ts creates no
+    # branch when every member is pending. No PR carries a pending release.
+    pending = [
+        upgrade["internalChecksFilter"] == "strict"
+        and upgrade["minimumReleaseAge"] is not None
+        and (age is None or age < 3)
+        for upgrade, age in zip(upgrades, ages)
+    ]
+    assert tuple(not p and not all(pending) for p in pending) == proposed
 
 
 def test_unrelated_updates_keep_strict_age_and_stability_filtering():

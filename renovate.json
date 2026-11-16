@@ -247,10 +247,7 @@
       "matchPackageNames": ["opentelemetry-*"],
       "groupName": "OpenTelemetry Python packages",
       "groupSlug": "opentelemetry-python-packages",
-      "platformAutomerge": false,
       "schedule": ["at any time"],
-      "prCreation": "immediate",
-      "internalChecksFilter": "none",
       "separateMajorMinor": false,
       "separateMinorPatch": false
     },
@@ -271,10 +268,7 @@
       "matchPackageNames": ["pydantic", "pydantic-core"],
       "groupName": "Pydantic Python packages",
       "groupSlug": "pydantic-python-packages",
-      "platformAutomerge": false,
       "schedule": ["at any time"],
-      "prCreation": "immediate",
-      "internalChecksFilter": "none",
       "separateMajorMinor": false,
       "separateMinorPatch": false
     },
