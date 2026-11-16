@@ -152,8 +152,8 @@ importers:
         specifier: 4.68.0
         version: 4.68.0
       '@sveltejs/adapter-node':
-        specifier: 5.5.7
-        version: 5.5.7(@sveltejs/kit@2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@6.0.2)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))
+        specifier: 5.5.8
+        version: 5.5.8(@sveltejs/kit@2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@6.0.2)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))
       '@sveltejs/kit':
         specifier: '>=2.70.3 <3'
         version: 2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@6.0.2)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
@@ -905,8 +905,8 @@ packages:
     peerDependencies:
       acorn: ^8.9.0
 
-  '@sveltejs/adapter-node@5.5.7':
-    resolution: {integrity: sha512-uOfc9eVlI3A37RRSaKcgrheBYPrfJwC9VMqDp8x/O6tlKdcLLvHThSWD0KNIbjQ/d+7bwLGx3vx6aowAcRfd2g==}
+  '@sveltejs/adapter-node@5.5.8':
+    resolution: {integrity: sha512-gGY4BekBbQsxLPEWEenB42pl3rEUT/2iY7lVu8U++UZSDKk5ml5fN62YG4M5h9qLwswM4lE4V/8GvZy3J2gxzQ==}
     peerDependencies:
       '@sveltejs/kit': '>=2.70.3 <3'
 
@@ -2856,7 +2856,7 @@ snapshots:
     dependencies:
       acorn: 8.18.0
 
-  '@sveltejs/adapter-node@5.5.7(@sveltejs/kit@2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@6.0.2)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))':
+  '@sveltejs/adapter-node@5.5.8(@sveltejs/kit@2.70.3(patch_hash=f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4)(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@4.0.4(svelte@5.56.9(@typescript-eslint/types@8.53.1))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))(svelte@5.56.9(@typescript-eslint/types@8.53.1))(typescript@6.0.2)(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)))':
     dependencies:
       '@rollup/plugin-commonjs': 29.0.2(rollup@4.68.0(patch_hash=7167173a2dcac0d8e76b0de67de8e66d27ad65e833cc4268e1de7ae49759c1fd))
       '@rollup/plugin-json': 6.1.0(rollup@4.68.0(patch_hash=7167173a2dcac0d8e76b0de67de8e66d27ad65e833cc4268e1de7ae49759c1fd))
