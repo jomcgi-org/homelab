@@ -65,10 +65,13 @@ func TestQuotaFailuresSpendNoAttempt(t *testing.T) {
 	}
 	for n, status := range []string{
 		"Codex execution failed: exceeded retry limit, last status: 429 Too Many Requests",
-		"usage_limit_reached", "insufficient_quota", "rate_limit_exceeded",
+		"usage_limit_reached for account 1234", "insufficient_quota", "rate_limit_exceeded",
 	} {
 		h.k.finish(task, kagent.StateFailed, status)
 		rec := waitForQuotaCheck(t, h)
+		if summary := h.gh.check(shaA).Summary; strings.Contains(summary, status) || strings.Contains(summary, "account 1234") {
+			t.Fatal("provider status text reached the public quota check")
+		}
 		if rec.Attempt != MaxAttempts || rec.QuotaRetry != n+1 {
 			t.Fatalf("refusal spent an attempt or lost its identity: %+v", rec)
 		}
