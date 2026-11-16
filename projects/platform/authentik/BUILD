@@ -30,6 +30,20 @@ helm_chart(
 )
 
 py_test(
+    name = "factory_resources_test",
+    srcs = ["factory_resources_test.py"],
+    data = [
+        ":chart",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "cnpg_backup_test",
     srcs = ["cnpg_backup_test.py"],
     data = [
