@@ -146,6 +146,9 @@ filegroup(
         ],
         allow_empty = True,
         exclude = ["**/node_modules/**"],
-    ) + ["//projects/factory-landing:repo_docs"],
+    ) + [
+        "//projects/factory-landing:repo_docs",
+        "//projects/shared/helm/factory-library:repo_docs",
+    ],
     visibility = ["//projects/monolith:__pkg__"],
 )
