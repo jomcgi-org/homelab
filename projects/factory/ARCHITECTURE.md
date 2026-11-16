@@ -451,9 +451,11 @@ flowchart LR
 **Why.** Joe chose delegated fixes for the three pilots
 ([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789),
 HOME-45). A planner can copy an instruction from a CI log or a PR into its
-proposal. The template on `main` supplies every instruction, so copied text
-stays quoted evidence. The rule is `REVIEW.md` "Planner exception". It lands
-before HOME-40, because the reviewer loads its rules from `main`.
+proposal. The template on `main` supplies every instruction, and the
+connector quotes and sanitizes planner text so it cannot close its evidence
+block. Copied text stays quoted evidence. The rule is `REVIEW.md` "Planner
+exception". It lands before HOME-40, because the reviewer loads its rules
+from `main`.
 
 **Run transcripts.** Native Codex text arrives in task artifacts, which can
 grow without an assistant history message. The connector journals events
