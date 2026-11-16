@@ -1422,6 +1422,9 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	commits := e.commitMessages(ctx, b, pr, in.priorHead, l)
 	plan := sessionPlan{rules: rulesDigest(rules)}
 	plan.resume, plan.reason = e.resumable(ctx, b, pr, in, attempt, refused, l)
+	if plan.reason == reasonUnsettled {
+		return nil, errUnsettledTurn
+	}
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,

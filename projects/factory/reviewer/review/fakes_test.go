@@ -893,7 +893,9 @@ type fakeKagent struct {
 	sends      []kagent.Message
 	executions int
 	cancels    []string
-	rejected   int
+	// cancelErr fails cancellations, leaving the task running.
+	cancelErr error
+	rejected  int
 	// sendErr fails the next sends before anything is dispatched.
 	sendErr []error
 	// loseResponse accepts the next send but loses its answer.
@@ -1005,6 +1007,9 @@ func (k *fakeKagent) CancelTask(_ context.Context, agent kagent.AgentRef, id str
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.cancels = append(k.cancels, id)
+	if k.cancelErr != nil {
+		return nil, k.cancelErr
+	}
 	t, ok := k.tasks[id]
 	if !ok || t.agent != agent {
 		return nil, fmt.Errorf("%w: task", kagent.ErrTaskNotFound)
