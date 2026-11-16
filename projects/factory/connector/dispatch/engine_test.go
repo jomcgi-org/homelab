@@ -2264,6 +2264,47 @@ func TestQuietTurnOnExhaustedQuotaIsCanceledAndWaits(t *testing.T) {
 	}
 }
 
+// A stop that arrives while a quota_stall cancellation is pending wins. The
+// confirmation neither pauses the grant nor overwrites the stopped work
+// item, and the run reports the stop (HOME-127).
+func TestQuotaStallConfirmationKeepsAStop(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-stall-stop")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	for i := 0; i < 15 && len(v.pendingCancellations()) == 0; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall {
+		t.Fatalf("cancellations = %+v", cs)
+	}
+	if ok, err := v.st.StopWork(v.ctx, v.work(101).ID, "operator stop", "operator"); err != nil || !ok {
+		t.Fatalf("stop = %v, %v", ok, err)
+	}
+	for i := 0; i < 4; i++ {
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+	}
+	if w := v.work(101); w.State != store.WorkStopped {
+		t.Fatalf("work item = %+v, want stopped", w)
+	}
+	if blocked, _, err := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || blocked {
+		t.Fatalf("grant blocked = %v, %v", blocked, err)
+	}
+	res := v.its.Run(1).results
+	if len(res) != 1 || res[0].Status != "failed" || !strings.Contains(res[0].Error, "delivery stopped: operator stop") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(v.kg.Sends()) != 1 {
+		t.Fatalf("sends = %d, want no resend", len(v.kg.Sends()))
+	}
+}
+
 // A turn can go quiet for longer than 10 minutes in a long tool call, such
 // as a 30-minute ci run. While the broker reads the quota usable, it runs on.
 func TestQuietTurnOnUsableQuotaKeepsRunning(t *testing.T) {
