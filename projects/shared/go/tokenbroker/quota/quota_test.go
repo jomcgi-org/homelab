@@ -304,8 +304,9 @@ func TestWriteFailureDoesNotPublishHealthyMemory(t *testing.T) {
 	if err == nil {
 		t.Fatal("write failure was accepted")
 	}
-	if view := store.Get("codex"); view.Observed {
-		t.Fatalf("failed write fabricated healthy memory: %#v", view)
+	// The failed candidate is not published; the committed reading stays.
+	if view := store.Get("codex"); !view.Observed || view.Status != "warning" || view.Windows[0].UsedPercent != 50 {
+		t.Fatalf("failed write did not keep the committed reading: %#v", view)
 	}
 	persistence.mu.Lock()
 	persistence.writeErr = nil

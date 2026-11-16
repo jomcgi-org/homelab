@@ -230,7 +230,9 @@ func (s *Store) put(grant, provider string, obs Observation, receivedAt time.Tim
 			return nil
 		}
 		if !errors.Is(err, ErrPersistenceConflict) {
-			s.markUnavailableLocked()
+			// The last committed state stays readable; the candidate is not
+			// published. If the write did land, the next compare-and-swap
+			// conflicts and reloads it.
 			return fmt.Errorf("persist quota state: %w", err)
 		}
 		data, revision, loadErr := s.persistence.Load()

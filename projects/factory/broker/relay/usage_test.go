@@ -499,23 +499,33 @@ func (p *flakyPersistence) CompareAndSwap(rev string, data []byte) (string, erro
 	return fmt.Sprint(p.rev), nil
 }
 
-// A failed state write makes the store unreadable until a write succeeds, so
-// the refresher retries on the next tick rather than after its backoff.
-func TestUsageRefreshRetriesFailedStoreWriteNextTick(t *testing.T) {
+// A failed state write keeps the committed rejection, which still blocks the
+// relay, and the refresher retries on the next tick rather than after its
+// backoff.
+func TestUsageRefreshFailedStoreWriteKeepsRejection(t *testing.T) {
 	f := newUsageFixture(t)
-	persistence := &flakyPersistence{fail: true}
+	persistence := &flakyPersistence{}
 	st, err := quota.NewPersistentStore(persistence)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.quota, f.refresher.Quota = st, st
+	reset := usageT0.Add(48 * time.Hour)
+	f.seed(t, usageT0.Add(-UsageMaxAge), reset) // A committed rejection, now expired.
+	persistence.mu.Lock()
+	persistence.fail = true
+	persistence.mu.Unlock()
 	f.backend.set(func(b *usageBackend) { b.body = usageBody(true, 10, usageT0.Add(5*time.Hour)) })
 	ctx := context.Background()
 	if got := f.refresher.check(ctx); got != "store_error" {
 		t.Fatalf("first outcome = %q", got)
 	}
-	if f.view().Observed {
-		t.Fatalf("a failed write published a reading: %+v", f.view())
+	if view := f.view(); !view.Observed || view.Status != "rejected" {
+		t.Fatalf("a failed write lost the committed rejection: %+v", view)
+	}
+	rl := &Relay{Quota: st, Tokens: &grantOnly{"codex-primary"}, Now: f.clock.Now, QuotaProbeInterval: time.Hour}
+	if until, blocked := rl.quotaBlock(f.clock.Now()); !blocked || !until.Equal(reset) {
+		t.Fatalf("relay block after a failed write = %v until %v, want blocked until %v", blocked, until, reset)
 	}
 	persistence.mu.Lock()
 	persistence.fail = false
@@ -530,4 +540,17 @@ func TestUsageRefreshRetriesFailedStoreWriteNextTick(t *testing.T) {
 	if got := f.backend.count(); got != 2 {
 		t.Fatalf("usage reads = %d, want 2", got)
 	}
+}
+
+// grantOnly is a TokenSource for quota checks that never fetch a token.
+type grantOnly struct{ name string }
+
+func (g *grantOnly) Grant() string { return g.name }
+
+func (g *grantOnly) AccessToken(context.Context) (grant.Token, error) {
+	return grant.Token{}, errors.New("not used")
+}
+
+func (g *grantOnly) RefreshRejected(context.Context, string) (grant.Token, error) {
+	return grant.Token{}, errors.New("not used")
 }
