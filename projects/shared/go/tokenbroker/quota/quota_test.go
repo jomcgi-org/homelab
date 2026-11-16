@@ -304,9 +304,8 @@ func TestWriteFailureDoesNotPublishHealthyMemory(t *testing.T) {
 	if err == nil {
 		t.Fatal("write failure was accepted")
 	}
-	// The failed candidate is not published; the committed reading stays.
-	if view := store.Get("codex"); !view.Observed || view.Status != "warning" || view.Windows[0].UsedPercent != 50 {
-		t.Fatalf("failed write did not keep the committed reading: %#v", view)
+	if view := store.Get("codex"); view.Observed {
+		t.Fatalf("failed write fabricated healthy memory: %#v", view)
 	}
 	persistence.mu.Lock()
 	persistence.writeErr = nil
@@ -580,5 +579,40 @@ func TestPacingBoundsAndResetTimestampRounding(t *testing.T) {
 	encoded, err := json.Marshal(pacing)
 	if err != nil {
 		t.Fatalf("bounded guidance is not JSON-safe: %s, %v", encoded, err)
+	}
+}
+
+func TestKeepCommittedOnWriteFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(*memoryPersistence)
+	}{
+		{name: "write error", fail: func(p *memoryPersistence) { p.writeErr = errors.New("api unavailable") }},
+		{name: "reload error after conflict", fail: func(p *memoryPersistence) {
+			p.conflicts = 1 // The next compare-and-swap conflicts.
+			p.loadErr = errors.New("api unavailable")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			persistence := &memoryPersistence{}
+			store, err := NewPersistentStore(persistence, KeepCommittedOnWriteFailure())
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			committed := Observation{ObservedAt: now.Add(-time.Minute).Format(time.RFC3339), Status: "rejected", Windows: []Window{{Name: "5h", UsedPercent: 100}}}
+			if err := store.Put("codex", committed, now.Add(-time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			persistence.mu.Lock()
+			tc.fail(persistence)
+			persistence.mu.Unlock()
+			if err := store.Put("codex", Observation{ObservedAt: now.Format(time.RFC3339), Status: "allowed", Windows: []Window{{Name: "5h", UsedPercent: 1}}}, now); err == nil {
+				t.Fatal("failed write was accepted")
+			}
+			if view := store.Get("codex"); !view.Observed || view.Status != "rejected" || view.Windows[0].UsedPercent != 100 {
+				t.Fatalf("committed reading not kept, or failed candidate published: %#v", view)
+			}
+		})
 	}
 }

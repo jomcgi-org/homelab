@@ -142,6 +142,20 @@ type Store struct {
 	// readable is false after a detected storage failure. state is retained
 	// privately so recovery cannot roll durable ordering backward.
 	readable bool
+	// keepCommitted keeps state readable after a failed write or reload.
+	keepCommitted bool
+}
+
+// StoreOption configures a persistent store.
+type StoreOption func(*Store)
+
+// KeepCommittedOnWriteFailure keeps the last committed state readable when a
+// write, or the reload after a write conflict, fails; the failed candidate is
+// never published. By default every view reads as unobserved until a write
+// succeeds. Use it only where an older reading is safe to act on, such as a
+// relay whose backend enforces the limit itself.
+func KeepCommittedOnWriteFailure() StoreOption {
+	return func(s *Store) { s.keepCommitted = true }
 }
 
 func emptyState() persistedState {
@@ -161,8 +175,11 @@ func NewStore() *Store {
 // validation failure it returns an empty store plus the error, so callers can
 // keep serving explicit unobserved views and later recover through a fresh
 // supported observation.
-func NewPersistentStore(persistence Persistence) (*Store, error) {
+func NewPersistentStore(persistence Persistence, opts ...StoreOption) (*Store, error) {
 	store := &Store{state: emptyState(), persistence: persistence}
+	for _, opt := range opts {
+		opt(store)
+	}
 	data, revision, err := persistence.Load()
 	if err != nil {
 		return store, fmt.Errorf("load quota state: %w", err)
@@ -230,14 +247,14 @@ func (s *Store) put(grant, provider string, obs Observation, receivedAt time.Tim
 			return nil
 		}
 		if !errors.Is(err, ErrPersistenceConflict) {
-			// The last committed state stays readable; the candidate is not
-			// published. If the write did land, the next compare-and-swap
-			// conflicts and reloads it.
+			// If the write did land, the next compare-and-swap conflicts and
+			// reloads it.
+			s.writeFailedLocked()
 			return fmt.Errorf("persist quota state: %w", err)
 		}
 		data, revision, loadErr := s.persistence.Load()
 		if loadErr != nil {
-			s.markUnavailableLocked()
+			s.writeFailedLocked()
 			return fmt.Errorf("reload quota state after conflict: %w", loadErr)
 		}
 		reloaded := emptyState()
@@ -259,6 +276,15 @@ func (s *Store) put(grant, provider string, obs Observation, receivedAt time.Tim
 
 func (s *Store) markUnavailableLocked() {
 	s.readable = false
+}
+
+// writeFailedLocked records a failed write or reload: the candidate is not
+// published, and the committed state stays readable only when the store
+// keeps it.
+func (s *Store) writeFailedLocked() {
+	if !s.keepCommitted {
+		s.markUnavailableLocked()
+	}
 }
 
 func replaceIfNewer(records map[string]storedObservation, key string, candidate storedObservation) bool {
