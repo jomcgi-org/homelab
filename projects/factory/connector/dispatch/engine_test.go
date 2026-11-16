@@ -14,6 +14,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -1471,12 +1472,13 @@ func TestInflightGrantFailuresRecoverAfterUnblock(t *testing.T) {
 	if len(v.kg.Sends()) != 4 {
 		t.Fatalf("sends = %d", len(v.kg.Sends()))
 	}
-	if s := v.kg.Sends()[3]; s.msg.MessageID != "itsaplan-run/2/retry-1" || s.msg.ContextID != second.ContextID {
-		t.Fatalf("sibling retry = %+v", s)
+	// The quota failure resumes without spending an engineering retry.
+	if s := v.kg.Sends()[3]; s.msg.MessageID != "itsaplan-run/2/quota-resume-1" || s.msg.ContextID != second.ContextID {
+		t.Fatalf("sibling resume = %+v", s)
 	}
-	for _, id := range []int64{1, 2} {
-		if w := v.work(100 + id); w.EngineeringRetries != 1 {
-			t.Fatalf("retries = %+v", w)
+	for id, want := range map[int64]int{1: 1, 2: 0} {
+		if w := v.work(100 + id); w.EngineeringRetries != want {
+			t.Fatalf("retries = %+v, want %d", w, want)
 		}
 	}
 }
@@ -1907,6 +1909,118 @@ func TestOperatorUnblockLetsRunsThrough(t *testing.T) {
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 3 {
 		t.Fatalf("sends = %d after unblock, want the retry and new run", n)
+	}
+}
+
+// Codex's text after the broker's quota refusals (HOME-127).
+const codexQuotaFailure = "exceeded retry limit, last status: 429 Too Many Requests"
+
+// A quota block clears once the broker reads the grant usable after the
+// block began, and the stopped turn resumes without an operator (HOME-127).
+func TestQuotaBlockClearsWhenTheBrokerReadsUsable(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	first := v.latest(1)
+	if q.count() != 0 {
+		t.Fatal("read the quota with no block")
+	}
+	v.kg.finish(first.TaskID, kagent.StateFailed, codexQuotaFailure, nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if w := v.work(101); w.State != store.WorkBlocked || w.BlockedClass != dispatch.ClassQuota {
+		t.Fatalf("work item = %+v, want quota-blocked", w)
+	}
+	c := v.its.Comments()
+	if len(c) != 1 || !strings.Contains(c[0].body, "resume when the broker reports the quota usable again") {
+		t.Fatalf("block comment = %+v", c)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		reading github.QuotaReading
+	}{
+		{"exhausted", github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()}},
+		// The failed turn's own reading predates the block.
+		{"older than the block", github.QuotaReading{ReceivedAt: time.Now().Add(-time.Hour)}},
+		{"no reading", github.QuotaReading{}},
+	} {
+		q.set(tc.reading)
+		reads := q.count()
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+		if q.count() != reads+1 || len(v.kg.Sends()) != 1 || v.work(101).State != store.WorkBlocked {
+			t.Fatalf("%s: reads %d -> %d, sends %d, work %s", tc.name, reads, q.count(), len(v.kg.Sends()), v.work(101).State)
+		}
+		// Reads are spaced by the poll interval.
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+		if q.count() != reads+1 {
+			t.Fatalf("%s: read again within the poll interval", tc.name)
+		}
+	}
+
+	q.set(github.QuotaReading{ReceivedAt: time.Now()})
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if blocked, _, err := v.st.GrantBlocked(v.ctx, store.GrantScope("factory-homelab", "coder")); err != nil || blocked {
+		t.Fatalf("grant blocked = %v, %v", blocked, err)
+	}
+	s := v.kg.Sends()
+	if len(s) != 2 || s[1].msg.MessageID != "itsaplan-run/1/quota-resume-1" || s[1].msg.ContextID != first.ContextID {
+		t.Fatalf("resume = %+v", s)
+	}
+	if w := v.work(101); w.State == store.WorkBlocked || w.EngineeringRetries != 0 {
+		t.Fatalf("work item = %+v", w)
+	}
+	// With no block left, the broker is not read.
+	reads := q.count()
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if q.count() != reads {
+		t.Fatal("read the quota with no block")
+	}
+}
+
+// A quota failure after the engineering budget is spent still resumes once
+// the quota is usable, and leaves the budget as it was (HOME-127).
+func TestQuotaResumeKeepsTheEngineeringBudget(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-budget")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	for i := 0; i < 2; i++ {
+		v.kg.finish(v.kg.lastTask(), kagent.StateFailed, "test failed", nil)
+		v.tick(v.e)
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, codexQuotaFailure, nil)
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 3 || v.run(1).State != store.RunWaiting || v.work(101).EngineeringRetries != 2 {
+		t.Fatal("quota failure did not wait")
+	}
+	q.set(github.QuotaReading{ReceivedAt: time.Now()})
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if res := v.its.Run(1).results; len(res) != 0 {
+		t.Fatalf("result = %+v, want the turn resumed", res)
+	}
+	if s := v.kg.Sends(); len(s) != 4 || s[3].msg.MessageID != "itsaplan-run/1/quota-resume-3" {
+		t.Fatalf("resume = %+v", s)
+	}
+	if w := v.work(101); w.EngineeringRetries != 2 {
+		t.Fatalf("retries = %d, want 2", w.EngineeringRetries)
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.tick(v.e)
+	if res := v.its.Run(1).results; len(res) != 1 || res[0].Status != "success" {
+		t.Fatalf("result = %+v", res)
 	}
 }
 

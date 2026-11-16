@@ -638,6 +638,53 @@ func (s *Store) ClearGrantBlock(ctx context.Context, scope string) (bool, error)
 	return n > 0, err
 }
 
+// QuotaBlocked reports whether a quota failure pauses any grant.
+func (s *Store) QuotaBlocked(ctx context.Context) (bool, error) {
+	var blocked bool
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM grant_block WHERE class = 'quota' AND cleared_at IS NULL)`).Scan(&blocked)
+	return blocked, err
+}
+
+// ClearQuotaBlocks clears the quota blocks that began before a usable quota
+// reading was received, and the work items they blocked, as ClearGrantBlock
+// does. It returns the cleared scopes.
+func (s *Store) ClearQuotaBlocks(ctx context.Context, before time.Time) ([]string, error) {
+	var scopes []string
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		scopes = nil
+		rows, err := tx.QueryContext(ctx, `
+			UPDATE grant_block SET cleared_at = now()
+			WHERE class = 'quota' AND cleared_at IS NULL AND created_at < $1 RETURNING scope`, before)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var scope string
+			if err := rows.Scan(&scope); err != nil {
+				rows.Close()
+				return err
+			}
+			scopes = append(scopes, scope)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, scope := range scopes {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE work_item SET state = 'active', blocked_class = NULL, blocked_reason = NULL, updated_at = now()
+				WHERE state = 'blocked' AND 'kagent:' || kagent_namespace || '/' || kagent_agent = $1`, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return scopes, err
+}
+
 // SetWorkState moves a work item to state.
 func (s *Store) SetWorkState(ctx context.Context, q Querier, workID int64, state string) error {
 	_, err := q.ExecContext(ctx, `UPDATE work_item SET state = $2, updated_at = now() WHERE id = $1`, workID, state)

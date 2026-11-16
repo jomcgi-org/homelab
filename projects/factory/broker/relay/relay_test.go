@@ -754,6 +754,62 @@ func TestRelayQuotaProbe(t *testing.T) {
 	}
 }
 
+// The connector's quota read follows the pre-check, ends at the window's
+// reset and never spends the relay's probe.
+func TestRelayQuotaStatus(t *testing.T) {
+	h := newHarness(t, true)
+	var offset atomic.Int64
+	h.handler.Now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	h.handler.QuotaProbeInterval = 30 * time.Minute
+	read := func() QuotaStatus {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.handler.QuotaHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/codex/quota", nil))
+		var out QuotaStatus
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("quota read = %d %s", rec.Code, rec.Body)
+		}
+		return out
+	}
+	if got := read(); got != (QuotaStatus{}) {
+		t.Fatalf("before any reading = %+v", got)
+	}
+	reset := time.Now().Add(48 * time.Hour).Truncate(time.Second)
+	h.backend.set(func(b *backend) {
+		b.respond = func(w http.ResponseWriter, r *http.Request) {
+			quotaHeaders(w, 100, reset)
+			w.Header().Set("x-codex-rate-limit-reached-type", "primary")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached"}}`))
+		}
+	})
+	resp := h.post("/v1/responses", h.actorJWT())
+	_, _ = io.ReadAll(resp.Body)
+	view := h.waitQuota(func(v quota.View) bool { return v.Exhausted })
+	got := read()
+	if !got.Exhausted || got.ResetsAt != reset.UTC().Format(time.RFC3339) || got.ReceivedAt != view.ReceivedAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("exhausted read = %+v", got)
+	}
+
+	// Past the probe interval the read still reports the block, and the
+	// next relayed request is still the probe.
+	offset.Store(int64(31 * time.Minute))
+	if got := read(); !got.Exhausted {
+		t.Fatalf("read past the probe interval = %+v", got)
+	}
+	resp = h.post("/v1/responses", h.actorJWT())
+	_, _ = io.ReadAll(resp.Body)
+	if h.backend.count() != 2 {
+		t.Fatalf("backend calls = %d, want the probe to reach it", h.backend.count())
+	}
+
+	// After the window resets, the same reading refuses nothing.
+	offset.Store(int64(49 * time.Hour))
+	if got := read(); got.Exhausted || got.ResetsAt != "" || got.ReceivedAt == "" {
+		t.Fatalf("read after reset = %+v", got)
+	}
+}
+
 func TestRelayPassesThroughTransient429(t *testing.T) {
 	h := newHarness(t, true)
 	h.backend.set(func(b *backend) {

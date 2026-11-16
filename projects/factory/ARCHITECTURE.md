@@ -625,20 +625,28 @@ work needs a new issue. A run result means
 the turn finished; the issue becomes Done only from the observed merge. Engineering retries are
 connector decisions bounded per work item; the retry and the attempt it
 sends commit together. Credential and quota failures finish the external
-attempt with persisted failure evidence and keep the run waiting until an
-operator unblocks its grant. The class comes from whole identifiers in the
+attempt with persisted failure evidence and keep the run waiting until its
+grant is unblocked. The class comes from whole identifiers in the
 status text (`codex_login_required`, `unauthorized`, `usage_limit_reached`, an HTTP
 401 or 429 status). A block covers every work item on the same kagent
 Agent, the scope of its grant, and is announced once on the issue that hit
 it. Issue comments name only the failure class: the status text is model
 or provider output, so it stays in the logs, the attempt and the itsaplan
-result. Only an operator clears it, with `connector unblock
-kagent:<namespace>/<agent>` after fixing the grant: itsaplan v1.10.0 runs
-carry no requester identity, and a mention can come from an agent. Failed
+result. An operator clears a block with `connector unblock
+kagent:<namespace>/<agent>` after fixing the grant. A mention never clears
+one: itsaplan v1.10.0 runs carry no requester identity, and a mention can
+come from an agent. The connector also clears quota blocks itself
+(HOME-127). While one stands, it reads the broker's `GET /codex/quota` at
+most once a minute. It clears each quota block that began before a reading
+that refuses nothing. The failed turn's own readings predate its block, so
+a grant that still fails pauses again only after the broker's next reading,
+about every 30 minutes. Failed
 runs and runs claimed meanwhile wait without holding a concurrency slot,
-keeping their itsaplan leases alive. After unblock, failed runs consume
-an engineering retry and send a fresh deterministic retry message in the same
-session within the agent key's concurrency. If a newer run has an accepted task
+keeping their itsaplan leases alive. After unblock, a credential failure
+consumes an engineering retry and sends a fresh deterministic retry message
+in the same session within the agent key's concurrency. A quota failure
+resends as `quota-resume-<seq>` and spends no retry: the limit failed, not
+the work. If a newer run has an accepted task
 on the same work item, the waiting failure closes as superseded under the writer
 transaction, preserving newer work and spending no retry. An unattached failed
 or canceled send does not supersede the failure or prevent its retry. Such a
@@ -1030,7 +1038,8 @@ and retries once, so a brief overlap during a rollout is safe.
   backend is called). It sends no `Retry-After`: Codex sleeps until that
   deadline, so on 2026-11-16 three turns held coding slots for 12 hours.
   Codex instead retries on its own short backoff and fails the turn, and the
-  connector pauses the grant (HOME-127); `codex_grant_unavailable` (503, transient: a failed
+  connector pauses the grant until `GET /codex/quota` reads usable
+  (HOME-127); `codex_grant_unavailable` (503, transient: a failed
   refresh, a missing grant Secret, or the backend refusing a freshly
   refreshed token); `relay_busy` (503). A backend 401 replaces the token
   once, and concurrent 401s for the same token wait on that one refresh.
@@ -1091,7 +1100,10 @@ and retries once, so a brief overlap during a rollout is safe.
   exactly the repository and exactly the requested permissions (GitHub adds
   `metadata: read`); any other token is revoked and the mint fails. The
   broker only updates a `github-git` Secret labelled
-  `app.kubernetes.io/managed-by=factory-broker`.
+  `app.kubernetes.io/managed-by=factory-broker`. `GET /codex/quota` serves
+  `connectorSubjects` the stored quota reading: `exhausted` (the relay's
+  pre-check without its probe), `resets_at` and `received_at`. It never
+  calls the backend.
 - **Reviewer App.** `githubReview` configures the reviewer App
   (`jomcgi-factory-review`, "Merge authority") the same way, kept apart from
   the author's: it mints a read-only (`contents: read`) `github-git` Secret
@@ -1122,7 +1134,8 @@ and retries once, so a brief overlap during a rollout is safe.
   comment token writing anything but issues, and a
   subject that is also a connector or admin subject.
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
-  second port serves the admin endpoints, connector tokens and metrics, and
+  second port serves the admin endpoints, connector tokens, the connector's
+  quota read and metrics, and
   admits the connector and, when enabled, the reviewer, so no actor can reach
   them. Operators use a port-forward. Cilium L7 rules could split one port instead, but Hubble
   would then record each relayed request's actor JWT.

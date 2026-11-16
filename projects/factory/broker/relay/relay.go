@@ -482,12 +482,22 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response) outcome {
 // unreadable store, as after a failed restore, blocks nothing: a refused call
 // costs nothing.
 func (rl *Relay) quotaBlock(now time.Time) (time.Time, bool) {
-	if rl.Quota == nil {
+	until, view := rl.quotaRefusal(now)
+	if until.IsZero() || rl.claimProbe(now, view.ReceivedAt) {
 		return time.Time{}, false
+	}
+	return until, true
+}
+
+// quotaRefusal is quotaBlock without the probe: the reset of the latest full
+// window in a rejected reading, zero when the reading refuses nothing.
+func (rl *Relay) quotaRefusal(now time.Time) (time.Time, quota.View) {
+	if rl.Quota == nil {
+		return time.Time{}, quota.View{}
 	}
 	view := rl.Quota.GetGrantAt(rl.Tokens.Grant(), now.UTC())
 	if !view.Observed || view.Status != "rejected" {
-		return time.Time{}, false
+		return time.Time{}, view
 	}
 	var until time.Time
 	for _, w := range view.Windows {
@@ -498,10 +508,36 @@ func (rl *Relay) quotaBlock(now time.Time) (time.Time, bool) {
 			until = reset
 		}
 	}
-	if until.IsZero() || rl.claimProbe(now, view.ReceivedAt) {
-		return time.Time{}, false
-	}
-	return until, true
+	return until, view
+}
+
+// QuotaStatus is the connector's quota read (HOME-127). A quota failure
+// pauses the grant's work in the connector, and the connector resumes it
+// once a reading received after the pause no longer refuses calls.
+type QuotaStatus struct {
+	// Exhausted is the relay's pre-check without its probe.
+	Exhausted bool   `json:"exhausted"`
+	ResetsAt  string `json:"resets_at,omitempty"`
+	// ReceivedAt is when the broker received the reading, empty before
+	// the first one.
+	ReceivedAt string `json:"received_at,omitempty"`
+}
+
+// QuotaHandler serves QuotaStatus. It reads the stored reading only: it
+// never calls the backend or claims the relay's probe.
+func (rl *Relay) QuotaHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		until, view := rl.quotaRefusal(rl.now())
+		var out QuotaStatus
+		if !until.IsZero() {
+			out.Exhausted, out.ResetsAt = true, until.UTC().Format(time.RFC3339)
+		}
+		if view.Observed && !view.ReceivedAt.IsZero() {
+			out.ReceivedAt = view.ReceivedAt.UTC().Format(time.RFC3339Nano)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	})
 }
 
 // claimProbe reports whether this request is the one probe allowed through a

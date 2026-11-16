@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
@@ -96,8 +97,18 @@ type Config struct {
 	ReviewPoll time.Duration
 	// SessionCheck spaces checks of a running turn's session for a crash.
 	SessionCheck time.Duration
-	Links        Links
-	Now          func() time.Time
+	// Quota reads the broker's quota while a quota failure pauses a grant,
+	// at most once per QuotaPoll (60 s). Nil leaves quota blocks to the
+	// operator's unblock.
+	Quota     QuotaSource
+	QuotaPoll time.Duration
+	Links     Links
+	Now       func() time.Time
+}
+
+// QuotaSource reads the broker's quota reading for its Codex grant.
+type QuotaSource interface {
+	Quota(ctx context.Context) (github.QuotaReading, error)
 }
 
 // MinDispatchWindow is the smallest uncertainty window that covers a send's
@@ -126,6 +137,8 @@ type Engine struct {
 	refusals   map[refusalKey]refusal
 	// swept is when the tick last swept finished sessions.
 	swept time.Time
+	// quotaRead is when the tick last read the broker's quota.
+	quotaRead time.Time
 }
 
 // New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
@@ -153,6 +166,9 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.SessionCheck == 0 {
 		cfg.SessionCheck = cfg.Heartbeat
+	}
+	if cfg.QuotaPoll == 0 {
+		cfg.QuotaPoll = 60 * time.Second
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -296,6 +312,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	}{
 		{"heartbeats", e.Heartbeats},
 		{"claims", e.claim},
+		{"quota", e.resumeQuota},
 		{"runs", e.stepRuns},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
@@ -312,6 +329,40 @@ func (e *Engine) Tick(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// resumeQuota clears quota blocks once the broker reports its grant usable
+// (HOME-127). Only a reading received after a block began clears it: the
+// failed turn's own readings predate the block, so a grant that keeps
+// failing pauses again until the broker's next reading, about every
+// 30 minutes, instead of on every poll.
+func (e *Engine) resumeQuota(ctx context.Context) error {
+	if e.cfg.Quota == nil || e.cfg.Now().Sub(e.quotaRead) < e.cfg.QuotaPoll {
+		return nil
+	}
+	blocked, err := e.st.QuotaBlocked(ctx)
+	if err != nil || !blocked {
+		return err
+	}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	e.quotaRead = e.cfg.Now()
+	q, err := e.cfg.Quota.Quota(ctx)
+	if err != nil {
+		return err
+	}
+	if q.Exhausted || q.ReceivedAt.IsZero() {
+		return nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	scopes, err := e.st.ClearQuotaBlocks(ctx, q.ReceivedAt)
+	for _, scope := range scopes {
+		e.log.InfoContext(ctx, "quota block cleared", "scope", scope, "reading_received_at", q.ReceivedAt)
+	}
+	return err
 }
 
 // RunHeartbeats keeps leases alive independently of the tick, so a slow
@@ -753,7 +804,7 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 // ready reports whether a run may send now: its work item and grant are not
 // blocked, no other run's attempt or cancellation is open on the work item,
 // and kagent shows no running task in the session. A blocked run waits for
-// the operator's unblock without holding a concurrency slot.
+// its unblock without holding a concurrency slot.
 func (e *Engine) ready(ctx context.Context, r *store.Run, wi *store.WorkItem) (bool, error) {
 	if wi.State == store.WorkBlocked {
 		return false, nil
@@ -876,6 +927,9 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	if err != nil || busy >= e.concurrency(r.AgentKey) {
 		return err
 	}
+	if grantFailure(a) && a.ErrorClass == ClassQuota {
+		return e.resumeQuotaFailure(ctx, r, wi, b, a)
+	}
 	if grantFailure(a) {
 		return e.engineeringFailure(ctx, r, wi, a, a.Error)
 	}
@@ -901,8 +955,38 @@ func (e *Engine) finishSupersededGrantFailure(ctx context.Context, r *store.Run,
 	return superseded && err == nil, err
 }
 
+// resumeQuotaFailure resends a turn the quota stopped once its grant is
+// unblocked. The limit failed, not the work, so it spends no engineering
+// retry (HOME-127). The decision names the failed attempt, so each resend
+// has its own message ID.
+func (e *Engine) resumeQuotaFailure(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	brief, err := e.issueBrief(ctx, r, wi)
+	if err != nil {
+		return err
+	}
+	kind := "initial"
+	if wi.SessionID != "" {
+		kind, brief = "continuation", ""
+	}
+	var next *store.Attempt
+	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		next, err = e.record(ctx, tx, r, wi, kind, "quota-resume-"+strconv.Itoa(a.Seq), brief)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	e.log.InfoContext(ctx, "resuming a turn the quota stopped", "run", r.ID, "attempt", a.Seq, "work_item", wi.ID)
+	return e.issue(ctx, r, wi, b, next)
+}
+
 // grantFailure is durable evidence that a terminal external task needs a
-// fresh engineering retry once its grant is explicitly unblocked.
+// resend once its grant is unblocked: an engineering retry after a
+// credential failure, a quota resume after a quota failure.
 func grantFailure(a *store.Attempt) bool {
 	return a != nil && a.State == store.AttemptFailed &&
 		(a.ErrorClass == ClassCredential || a.ErrorClass == ClassQuota)
@@ -1482,14 +1566,21 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 			if !started {
 				return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
 			}
+			scope := store.GrantScope(wi.KagentNamespace, wi.KagentAgent)
+			body := fmt.Sprintf(
+				"The factory stopped %s: a %s failure needs a person before it can continue (%s). "+
+					"Work items using kagent agent %s/%s wait until an operator fixes the grant "+
+					"and runs `connector unblock %s`.",
+				wi.IssueKey, class, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent, scope)
+			if class == ClassQuota && e.cfg.Quota != nil {
+				body = fmt.Sprintf(
+					"The factory paused %s: %s. Work items using kagent agent %s/%s resume when the "+
+						"broker reports the quota usable again, or when an operator runs `connector unblock %s`.",
+					wi.IssueKey, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent, scope)
+			}
+			body += fmt.Sprintf(" The full error is in the connector's logs and on run %d attempt %d.", r.ID, a.Seq)
 			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/blocked/%d/%d", r.ID, a.Seq), r.ID, "",
-				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-					"The factory stopped %s: a %s failure needs a person before it can continue (%s). "+
-						"Work items using kagent agent %s/%s wait until an operator fixes the grant "+
-						"and runs `connector unblock %s`. The full error is in the connector's logs and on "+
-						"run %d attempt %d.",
-					wi.IssueKey, class, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent,
-					store.GrantScope(wi.KagentNamespace, wi.KagentAgent), r.ID, a.Seq)}); err != nil {
+				commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
 				return err
 			}
 			return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
