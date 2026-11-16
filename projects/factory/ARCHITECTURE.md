@@ -1025,9 +1025,12 @@ and retries once, so a brief overlap during a rollout is safe.
 - **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
   (401); `codex_login_required` (401, only for an empty grant or a refresh
   token the provider answered `invalid_grant`); `codex_quota_exhausted`
-  (429 with `resets_at` and `Retry-After`, from the `x-codex-*` headers or a
+  (429 with `resets_at`, from the `x-codex-*` headers or a
   `usage_limit_reached` body; a current exhausted window blocks before the
-  backend is called); `codex_grant_unavailable` (503, transient: a failed
+  backend is called). It sends no `Retry-After`: Codex sleeps until that
+  deadline, so on 2026-11-16 three turns held coding slots for 12 hours.
+  Codex instead retries on its own short backoff and fails the turn, and the
+  connector pauses the grant (HOME-127); `codex_grant_unavailable` (503, transient: a failed
   refresh, a missing grant Secret, or the backend refusing a freshly
   refreshed token); `relay_busy` (503). A backend 401 replaces the token
   once, and concurrent 401s for the same token wait on that one refresh.
