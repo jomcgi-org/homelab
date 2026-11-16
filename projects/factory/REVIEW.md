@@ -33,8 +33,9 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   session, no itsaplan tools and a fresh session per run. Its output reaches
   itsaplan only through the connector's proposal path. The connector takes
   each issue's title and instructions from a reviewed schedule template on
-  `main`. Planner text goes only into a delimited evidence block, and the
-  coder treats that block as data on every send, recovery included. A
+  `main`. Planner text goes only into a delimited evidence block, quoted
+  and sanitized so no text closes the block or starts a line of its own.
+  The coder treats that block as data on every send, recovery included. A
   schedule's config sets the highest disposition: delegated fix, Joe task or
   Backlog. The planner can only lower it. Digests and alerts leave the
   cluster only through the notify sink (HOME-51), with titles, links and
