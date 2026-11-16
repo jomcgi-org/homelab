@@ -8,7 +8,9 @@ import { headers } from "../../server.mjs";
 it("allows only same-origin status reads and renders without blocked styles", async () => {
   expect(headers["Content-Security-Policy"]).toContain("connect-src 'self';");
   expect(headers["Content-Security-Policy"]).toContain("style-src 'self';");
-  expect(headers["Content-Security-Policy"]).not.toMatch(/unsafe-inline|unsafe-eval/);
+  expect(headers["Content-Security-Policy"]).not.toMatch(
+    /unsafe-inline|unsafe-eval/,
+  );
   // Astryx 0.7.11 Theme.tsx skips useThemeStyleInjection for __built themes.
   // main.tsx imports theme-neutral/theme.css into the external Vite bundle.
   expect(neutralTheme.__built).toBe(true);

@@ -1129,7 +1129,7 @@ separate from metrics. Its coordinator resolves Joe's member ID from each
 bound project's scaffold and filters the assigned issues for no delegate and
 an open column. The connector's store supplies active, blocked, review and
 merging work items plus its ten latest recorded merges. Titles come from
-itsaplan; one small GitHub query per live PR reads checks, the configured
+itsaplan; batched GitHub queries read checks, the configured
 reviewer check (or human review decision) and queue state. No issue bodies,
 check output, transcripts, tokens or session contents enter the response.
 
@@ -1146,12 +1146,41 @@ Joe's user ID is resolved from the bound project's current members on every
 refresh; a missing member fails the refresh. The HOME-24 task identifies the
 owner as `@joe`; live membership and HOME-20 to HOME-23 remain rollout checks.
 
-Status polling starts after writer acquisition. Its HTTP transport checks the
-same epoch on the lock's connection before each itsaplan, broker and GitHub
-request, including retries. Writer loss cancels status and dispatch together;
-shutdown waits for both before releasing the lock. These reads send no kagent
-messages or work-item mutations, so they create no delivery attempts or message
-IDs. The delivery protocol remains on dispatch side effects.
+Status polling starts after writer acquisition. Every request, including each
+retry, follows this sequence:
+
+```mermaid
+sequenceDiagram
+    participant P as Status poller
+    participant T as Status transport
+    participant W as Connector store
+    participant U as itsaplan, broker or GitHub
+    P->>T: Read current state
+    T->>W: Check epoch and commit status_read attempt
+    W-->>T: Commit succeeds
+    T->>W: Check epoch again
+    W-->>T: Writer is current
+    T->>U: Read with X-Request-ID
+    U-->>T: Response
+    T-->>P: Response
+```
+
+If either epoch check or the journal write fails, the transport sends no request.
+The message ID hashes the method, URL and query. Retries and writer takeover
+preserve that ID and increment its attempt count. The journal stores only the
+digest, count, epoch and timestamp. Repeated reads fetch current state.
+HTTP/1 without connection reuse prevents retries outside the journal.
+Writer loss cancels status and dispatch together. Shutdown waits for both
+before releasing the lock.
+
+Each GraphQL query reads at most 25 PRs, with three connections per PR and
+`last: 1` on each. Under GitHub's [point calculation](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#predicting-the-point-value-of-a-query),
+75 connections cost one primary point. A refresh checks its total across all
+bindings before sending and permits at most four queries, each with one auth
+retry. Thus 42 live PRs in one repository use two queries per refresh, about
+240 points/hour instead of 5,040. At the maximum, status uses about 480
+points/hour, or 960 with every auth retry, leaving most of the installation's
+5,000-point hourly quota for delivery. An over-budget refresh fails closed.
 
 The connector refreshes its cached snapshot every 30 seconds with a 20-second
 read deadline and at most eight concurrent work-item reads. Reads are capped

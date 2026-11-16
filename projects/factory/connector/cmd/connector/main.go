@@ -270,32 +270,42 @@ func run(log *slog.Logger) error {
 	// writer, and loss of it cancels every loop and in-progress read. Wait for
 	// the status loop as well as heartbeats before releasing the lock.
 	statusHTTP := &http.Client{Timeout: status.ReadTimeout, Transport: &status.WriterTransport{
-		Check: func(ctx context.Context) error {
-			err := eng.CheckWriter(ctx)
+		Begin: func(ctx context.Context, messageID string) error {
+			err := eng.BeginStatusRead(ctx, messageID)
 			if errors.Is(err, store.ErrNotWriter) {
 				cancel(err)
 			}
 			return err
 		},
 	}}
-	statusPlan := &itsaplan.Client{BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key,
-		Coordinator: cfg.File.Coordinator.Key, HTTP: statusHTTP}
+	statusPlan := &itsaplan.Client{
+		BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key,
+		Coordinator: cfg.File.Coordinator.Key, HTTP: statusHTTP,
+	}
 	var statusGitHub status.GitHub
 	if cfg.BrokerURL != "" {
-		statusGitHub = &github.Client{BaseURL: cfg.GitHubURL, HTTP: statusHTTP,
-			Tokens: &github.BrokerTokens{URL: cfg.BrokerURL, HTTP: statusHTTP,
-				Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile}}}
+		statusGitHub = &github.Client{
+			BaseURL: cfg.GitHubURL, HTTP: statusHTTP,
+			Tokens: &github.BrokerTokens{
+				URL: cfg.BrokerURL, HTTP: statusHTTP,
+				Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
+			},
+		}
 	}
-	statusSource := &status.Source{Store: st, Plan: statusPlan, GitHub: statusGitHub,
-		Bindings: cfg.File.Bindings, IssueURL: cfg.File.Links.Issue}
+	statusSource := &status.Source{
+		Store: st, Plan: statusPlan, GitHub: statusGitHub,
+		Bindings: cfg.File.Bindings, IssueURL: cfg.File.Links.Issue,
+	}
 	statusHandler := &status.Handler{Load: statusSource.Load}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		statusHandler.Run(ctx)
 	}()
-	statusServer := &http.Server{Addr: cfg.StatusAddr, Handler: statusHandler,
-		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	statusServer := &http.Server{
+		Addr: cfg.StatusAddr, Handler: statusHandler,
+		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
+	}
 	go func() {
 		if err := statusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("status server", "error", err)

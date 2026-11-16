@@ -4,6 +4,7 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -18,28 +19,10 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
-const RefreshInterval = 30 * time.Second
-const ReadTimeout = 20 * time.Second
-
-// WriterTransport checks the writer immediately before each status HTTP call,
-// including token fetches, redirects and retries. These reads send no kagent
-// messages and therefore create no delivery attempts or message IDs.
-type WriterTransport struct {
-	Check func(context.Context) error
-}
-
-func (t *WriterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if err := r.Context().Err(); err != nil {
-		return nil, err
-	}
-	if t.Check == nil {
-		return nil, store.ErrNotWriter
-	}
-	if err := t.Check(r.Context()); err != nil {
-		return nil, err
-	}
-	return http.DefaultTransport.RoundTrip(r)
-}
+const (
+	RefreshInterval = 30 * time.Second
+	ReadTimeout     = 20 * time.Second
+)
 
 type NeedsYou struct {
 	Key       string  `json:"key"`
@@ -86,7 +69,7 @@ type Plan interface {
 }
 
 type GitHub interface {
-	Status(context.Context, string, int, github.CheckRunFilter) (*github.PRStatus, error)
+	StatusesForLanding(context.Context, string, []int, github.CheckRunFilter) (map[int]*github.PRStatus, error)
 }
 
 type Source struct {
@@ -111,16 +94,50 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 		for _, issue := range issues {
 			link := strings.NewReplacer("{issueId}", strconv.FormatInt(issue.ID, 10),
 				"{issue}", url.PathEscape(issue.Identifier)).Replace(s.IssueURL)
-			out.NeedsYou = append(out.NeedsYou, NeedsYou{Key: issue.Identifier, Title: issue.Title,
-				Priority: issue.Priority, URL: link, CreatedAt: issue.CreatedAt})
+			out.NeedsYou = append(out.NeedsYou, NeedsYou{
+				Key: issue.Identifier, Title: issue.Title,
+				Priority: issue.Priority, URL: link, CreatedAt: issue.CreatedAt,
+			})
 		}
 	}
 	items, err := s.Store.StatusItems(ctx, names)
 	if err != nil {
 		return nil, err
 	}
-	// Eight workers bound parallel reads. The store caps the input at 110
-	// items, and each needs one title read and at most one GitHub query.
+	// Bound the total across bindings before making any GitHub requests.
+	// Four batches per 30-second refresh cost 480 primary points/hour, or
+	// at most 960 with one auth retry each, leaving delivery most of its quota.
+	prNumbers := map[string][]int{}
+	for _, item := range items {
+		if item.PRNumber != 0 && item.MergedAt == nil {
+			prNumbers[item.BindingName] = append(prNumbers[item.BindingName], item.PRNumber)
+		}
+	}
+	batches := 0
+	for _, numbers := range prNumbers {
+		batches += (len(numbers) + github.StatusBatchSize - 1) / github.StatusBatchSize
+	}
+	if batches > 4 {
+		return nil, fmt.Errorf("status: GitHub query budget exceeded")
+	}
+	prs := map[string]map[int]*github.PRStatus{}
+	if s.GitHub != nil {
+		for _, b := range s.Bindings {
+			numbers := prNumbers[b.Name]
+			if len(numbers) == 0 {
+				continue
+			}
+			var reviewer github.CheckRunFilter
+			if b.ReviewerCheck != nil {
+				reviewer = github.CheckRunFilter{Name: b.ReviewerCheck.Name, AppID: b.ReviewerCheck.AppID}
+			}
+			prs[b.Name], err = s.GitHub.StatusesForLanding(ctx, b.Owner+"/"+b.Repo, numbers, reviewer)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Eight workers bound title reads. The store caps the input at 110 items.
 	var mu sync.Mutex
 	var firstErr error
 	var wg sync.WaitGroup
@@ -130,33 +147,30 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				b, ok := bindings[item.BindingName]
+				_, ok := bindings[item.BindingName]
 				if !ok {
 					continue
 				}
 				issue, err := s.Plan.GetIssueSummary(ctx, item.IssueID)
-				var pr *github.PRStatus
-				if err == nil && item.PRNumber != 0 && item.MergedAt == nil && s.GitHub != nil {
-					var reviewer github.CheckRunFilter
-					if b.ReviewerCheck != nil {
-						reviewer = github.CheckRunFilter{Name: b.ReviewerCheck.Name, AppID: b.ReviewerCheck.AppID}
-					}
-					pr, err = s.GitHub.Status(ctx, b.Owner+"/"+b.Repo, item.PRNumber, reviewer)
-				}
+				pr := prs[item.BindingName][item.PRNumber]
 				mu.Lock()
 				if err != nil {
 					if firstErr == nil {
 						firstErr = err
 					}
 				} else if item.MergedAt != nil {
-					out.Shipped = append(out.Shipped, Shipped{Key: item.Key, Title: issue.Title,
-						PR: PRLink{Number: item.PRNumber, URL: item.PRURL}, MergedAt: *item.MergedAt})
+					out.Shipped = append(out.Shipped, Shipped{
+						Key: item.Key, Title: issue.Title,
+						PR: PRLink{Number: item.PRNumber, URL: item.PRURL}, MergedAt: *item.MergedAt,
+					})
 				} else {
 					if item.PRNumber != 0 && pr == nil {
 						pr = &github.PRStatus{Number: item.PRNumber, URL: item.PRURL, CI: "unknown", Review: "unknown", Queue: "unknown"}
 					}
-					out.InFlight = append(out.InFlight, InFlight{Key: item.Key, Title: issue.Title,
-						State: item.State, ReviewRounds: item.ReviewRounds, PR: pr})
+					out.InFlight = append(out.InFlight, InFlight{
+						Key: item.Key, Title: issue.Title,
+						State: item.State, ReviewRounds: item.ReviewRounds, PR: pr,
+					})
 				}
 				mu.Unlock()
 			}

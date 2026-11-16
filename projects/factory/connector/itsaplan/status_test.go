@@ -51,14 +51,19 @@ func TestNeedsYouUsesCoordinatorAndFiltersJoeWithoutDelegate(t *testing.T) {
 	data, _ := json.Marshal(issues[0])
 	var fields map[string]any
 	_ = json.Unmarshal(data, &fields)
-	if _, ok := fields["description"]; ok { t.Fatal("description retained") }
+	if _, ok := fields["description"]; ok {
+		t.Fatal("description retained")
+	}
 }
 
 func TestNeedsYouRejectsMissingMemberAndFullListing(t *testing.T) {
 	for _, full := range []bool{false, true} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/projects/HOME" {
-				if !full { _, _ = w.Write([]byte(`{"assignees":[]}`)); return }
+				if !full {
+					_, _ = w.Write([]byte(`{"assignees":[]}`))
+					return
+				}
 				_, _ = w.Write([]byte(`{"assignees":[{"userId":"joe-id","username":"joe","kind":"member"}]}`))
 				return
 			}
@@ -67,6 +72,8 @@ func TestNeedsYouRejectsMissingMemberAndFullListing(t *testing.T) {
 		c := &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "key"}}
 		_, err := c.NeedsYou(context.Background(), "HOME", "joe")
 		srv.Close()
-		if err == nil { t.Fatalf("full=%v: expected an error", full) }
+		if err == nil {
+			t.Fatalf("full=%v: expected an error", full)
+		}
 	}
 }

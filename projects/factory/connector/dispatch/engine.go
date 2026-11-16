@@ -206,9 +206,12 @@ func (e *Engine) guard(ctx context.Context) error {
 	return e.w.Check(ctx)
 }
 
-// CheckWriter fences background status reads with the dispatch writer's epoch
-// and lock session. Callers must stop before Release closes that session.
-func (e *Engine) CheckWriter(ctx context.Context) error {
+// BeginStatusRead commits an attempt on the writer's lock connection before
+// the transport sends it. The final check fences a takeover after the commit.
+func (e *Engine) BeginStatusRead(ctx context.Context, messageID string) error {
+	if err := e.w.RecordStatusRead(ctx, messageID); err != nil {
+		return err
+	}
 	return e.guard(ctx)
 }
 
