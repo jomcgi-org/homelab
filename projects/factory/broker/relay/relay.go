@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
@@ -43,6 +44,9 @@ const (
 	DefaultMaxRequestBytes   = 32 << 20
 	DefaultStreamIdleTimeout = 5 * time.Minute
 	DefaultMaxConcurrent     = 64
+	// DefaultQuotaProbeInterval is how long a usage-limit refusal blocks
+	// before one request goes upstream to see whether the limit has lifted.
+	DefaultQuotaProbeInterval = 30 * time.Minute
 )
 
 // QuotaProvider is the quota store's provider key for Codex observations.
@@ -78,11 +82,15 @@ type Relay struct {
 	// ReasoningEffort, when set, replaces reasoning.effort in every
 	// /responses request (withEffort).
 	ReasoningEffort string
-	Now             func() time.Time
+	// QuotaProbeInterval lets one request through a usage-limit block this
+	// often, so a reset redeemed before the window's own reset is noticed.
+	QuotaProbeInterval time.Duration
+	Now                func() time.Time
 
-	initOnce sync.Once
-	slots    chan struct{}
-	quotaRec *quotaRecorder
+	initOnce  sync.Once
+	slots     chan struct{}
+	quotaRec  *quotaRecorder
+	lastProbe atomic.Int64 // unix nanoseconds of the last probe let through
 }
 
 func (rl *Relay) init() {
@@ -465,15 +473,19 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response) outcome {
 	return outcome{name, resp.StatusCode}
 }
 
-// quotaBlock reports whether a current observation shows an exhausted window
-// with a known future reset. A rejection without one is left to the backend
-// so a stale reading cannot block forever.
+// quotaBlock reports whether the backend's latest answer refused the grant
+// for its usage limit, with a full window and a known future reset. A reading
+// that shows a full window while the backend still allows requests does not
+// block: the backend decides, and a redeemed reset can lift the limit before
+// the window resets. A rejection without a reset is left to the backend so a
+// stale reading cannot block forever. While blocked, one request per
+// QuotaProbeInterval goes upstream, and its answer replaces the reading.
 func (rl *Relay) quotaBlock(now time.Time) (time.Time, bool) {
 	if rl.Quota == nil {
 		return time.Time{}, false
 	}
 	view := rl.Quota.GetGrantAt(rl.Tokens.Grant(), now.UTC())
-	if !view.Observed {
+	if !view.Observed || view.Status != "rejected" {
 		return time.Time{}, false
 	}
 	var until time.Time
@@ -485,7 +497,28 @@ func (rl *Relay) quotaBlock(now time.Time) (time.Time, bool) {
 			until = reset
 		}
 	}
-	return until, !until.IsZero()
+	if until.IsZero() || rl.claimProbe(now, view.ReceivedAt) {
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+// claimProbe reports whether this request is the one probe allowed through a
+// block whose reading, or last probe, is at least QuotaProbeInterval old.
+func (rl *Relay) claimProbe(now, observed time.Time) bool {
+	interval := rl.QuotaProbeInterval
+	if interval <= 0 {
+		interval = DefaultQuotaProbeInterval
+	}
+	last := rl.lastProbe.Load()
+	since := observed
+	if last != 0 && time.Unix(0, last).After(since) {
+		since = time.Unix(0, last)
+	}
+	if now.Sub(since) < interval {
+		return false
+	}
+	return rl.lastProbe.CompareAndSwap(last, now.UnixNano())
 }
 
 func isUsageLimit(obs quota.Observation, body []byte) bool {
