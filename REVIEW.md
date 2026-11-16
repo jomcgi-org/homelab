@@ -83,29 +83,41 @@ download host.
 ## Severity
 
 Rate each finding on its own. Never raise or lower one to change the outcome.
+A finding blocks when someone would notice the failure or something is
+exposed. A rare failure that is loud and recoverable is fixed when it
+happens ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-107#comment-734)).
 Apply these tests in order and stop at the first that fits.
 
 1. **Would CI fail on it?** Report nothing.
 2. **Can you name the input or state, what fails, where, and what resolves
    it?** If any is missing, the finding is low.
-3. **Does the harm survive a revert, or does the change weaken a boundary or
-   a gate?** Critical.
-4. **After merge, does something a user or operator relies on fail on a
-   default path?** High. A default path runs without unusual input or
+3. **Does the failure need unusual timing or scale?** That is a race, a
+   restart, crash or outage at a particular moment, clock skew, two writers
+   at once, or volume far beyond today's use. Timing an attacker can force
+   is not unusual. A loud and recoverable failure is low with `defer`;
+   any other is medium. Loud means it shows as an error, a failed check, a
+   log or work that stops moving. Recoverable means a retry, a restart or a
+   revert restores it with nothing lost.
+4. **Does the harm survive a revert, or does the change remove, skip or
+   loosen a check, a gate or a boundary?** Critical.
+5. **After merge, would someone notice?** Something a user or operator
+   relies on fails on a default path, or stops working where it works on
+   `main`. High. A default path runs without unusual input or
    configuration: the rollout, a service's main requests, a scheduled job,
    the factory's delivery loop.
-5. **Otherwise** the finding is medium: the failure is real and its reach is
+6. **Otherwise** the finding is medium: the failure is real and its reach is
    limited, or evidence this contract requires is missing.
 
 | Severity | Examples | Effect |
 | --- | --- | --- |
 | Critical | A committed secret. A route outside sign-in. A token wider than its use. Data loss, or a destructive change the issue does not authorize. A check removed, skipped or made non-failing. | Blocks. Joe is notified. |
-| High | A rollout that fails: a private image with no pull secret (#7914), values the pinned chart does not render (#7852). A crash or wrong result on a normal input. A test with no build target (#7914). An untested change to authorization, credentials, the merge gate, deletion or a migration. | Blocks until fixed. |
-| Medium | A failure on an edge input or a non-default path. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that the reviewer cannot verify. | Blocks until fixed or justified. |
-| Low | Naming, wording, prose style, an optional refactor, a test for trivial code. | Never blocks. |
+| High | A rollout that fails: a private image with no pull secret (#7914), values the pinned chart does not render (#7852). A crash or wrong result on a normal input. Something that works on `main` stops working. A test with no build target (#7914). An untested change to authorization, credentials, the merge gate, deletion or a migration. | Blocks until fixed. |
+| Medium | A failure on an edge input or a non-default path. A rare failure that passes silently or loses data. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that the reviewer cannot verify. | Blocks until fixed or justified. |
+| Low | Naming, wording, prose style, an optional refactor, a test for trivial code. A rare failure that is loud and recoverable (`defer`). | Never blocks. |
 
-A scoped rule that names a severity sets it; a violated scoped rule with
-none is high. A defect the PR neither introduces nor worsens is low with
+Test 3 applies before any severity a scoped rule names. Otherwise a scoped
+rule that names a severity sets it, and a violated scoped rule with none is
+high. A defect the PR neither introduces nor worsens is low with
 `defer`; name an active exposure in the first line of the summary.
 
 Report at most five low findings, each one a change you would make yourself.
@@ -128,7 +140,10 @@ PR's text. Reject once and say what evidence would be enough.
 
 A finding the author shows to be wrong is withdrawn at any severity: check
 the evidence, then report it `justified` with a note that starts
-`withdrawn`. A high or critical finding clears no other way.
+`withdrawn`. So is a finding that the Severity tests on `main` now rate
+lower than when it was raised: withdraw it with a note naming the test,
+and report it again under the same ID at its new severity. A high or
+critical finding clears no other way.
 
 ## Later heads
 
