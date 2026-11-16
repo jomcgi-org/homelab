@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -251,6 +252,63 @@ func TestCommentProxyStopsAtTheFirstMatchAndTheBound(t *testing.T) {
 	got, complete = findComment(t, p, 4)
 	if got != nil || complete || f.listCalls() != 2+FindPages {
 		t.Fatalf("find at the bound = %+v, %v after %d pages", got, complete, f.listCalls())
+	}
+}
+
+func TestCommentProxyDiscardsUnmatchedBodies(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%v", existing), func(t *testing.T) {
+			// Retaining these pages would keep roughly 180 MiB of bodies.
+			// Streaming them must keep the heap increase below 64 MiB.
+			const pages = 30
+			h, _, p := newCommentHarness(t)
+			body := strings.Repeat("x", 60<<10)
+			heap := make(chan uint64, 1)
+			mint := h.gh.Config.Handler
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/repos/") {
+					mint.ServeHTTP(w, r)
+					return
+				}
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				if page == pages {
+					runtime.GC()
+					var stats runtime.MemStats
+					runtime.ReadMemStats(&stats)
+					heap <- stats.HeapAlloc
+				} else {
+					w.Header().Set("Link", fmt.Sprintf(`</comments?page=%d>; rel="next"`, page+1))
+				}
+				_, _ = fmt.Fprint(w, "[")
+				for i := range 100 {
+					if i > 0 {
+						_, _ = fmt.Fprint(w, ",")
+					}
+					login, text := "someone", body
+					if existing && page == pages && i == 99 {
+						login, text = bot, marker+"\nmatch"
+					}
+					_, _ = fmt.Fprintf(w, `{"id":%d,"body":%q,"user":{"login":%q}}`, (page-1)*100+i+1, text, login)
+				}
+				_, _ = fmt.Fprint(w, "]")
+			}))
+			t.Cleanup(srv.Close)
+			h.minter.App.APIURL = srv.URL
+			h.minter.App.Client = srv.Client()
+			runtime.GC()
+			var before runtime.MemStats
+			runtime.ReadMemStats(&before)
+			comment, complete := findComment(t, p, 7)
+			if !complete || (comment != nil) != existing {
+				t.Fatalf("found %v, complete %v", comment != nil, complete)
+			}
+			if existing && (comment.ID != pages*100 || comment.Body != marker+"\nmatch") {
+				t.Fatal("lost the matching comment after discarding earlier pages")
+			}
+			if live := <-heap; live > before.HeapAlloc+(64<<20) {
+				t.Fatalf("lookup retained %d bytes above baseline, want at most 64 MiB", live-before.HeapAlloc)
+			}
+		})
 	}
 }
 

@@ -236,7 +236,7 @@ func TestCommentUncertainCreateRediscoversBeforeRetry(t *testing.T) {
 				withComments(h)
 				addPR7(h)
 				h.cfg.Comments = &lostCommentCreateResponse{
-					Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+					Comments: h.comments(),
 					err:      failure,
 				}
 				e, ctx := h.engine(), context.Background()
@@ -287,11 +287,11 @@ type blockedCommentLookup struct {
 	release chan struct{}
 }
 
-func (c *blockedCommentLookup) FindIssueComment(ctx context.Context, repo string, number, maxPages int, match func(github.Comment) bool) (*github.Comment, bool, error) {
+func (c *blockedCommentLookup) IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error) {
 	close(c.started)
 	select {
 	case <-c.release:
-		return c.Comments.FindIssueComment(ctx, repo, number, maxPages, match)
+		return c.Comments.IssueComments(ctx, repo, number)
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
 	}
@@ -305,7 +305,7 @@ func TestGateRevocationDoesNotWaitForCommentWork(t *testing.T) {
 				withComments(h)
 				addPR7(h)
 				comments := &blockedCommentLookup{
-					Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+					Comments: h.comments(),
 					started:  make(chan struct{}), release: make(chan struct{}),
 				}
 				h.cfg.Comments = comments
@@ -402,7 +402,7 @@ func TestQueuedGroupRevocationDoesNotWaitForCommentWork(t *testing.T) {
 				withComments(h)
 				addPR7(h)
 				comments := &blockedCommentLookup{
-					Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+					Comments: h.comments(),
 					started:  make(chan struct{}), release: make(chan struct{}),
 				}
 				h.cfg.Comments = comments
@@ -485,7 +485,7 @@ func TestCommentLimitNoticeUsesTheCurrentCheckOutput(t *testing.T) {
 	addPR7(h)
 	h.gh.prs[7].Comments = conversationComments(10001)
 	comments := &blockedCommentLookup{
-		Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+		Comments: h.comments(),
 		started:  make(chan struct{}), release: make(chan struct{}),
 	}
 	h.cfg.Comments = comments
@@ -545,7 +545,7 @@ func TestReviewAndQueuedHoldProceedDuringCommentLookup(t *testing.T) {
 	withComments(h)
 	addPR7(h)
 	comments := &blockedCommentLookup{
-		Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+		Comments: h.comments(),
 		started:  make(chan struct{}), release: make(chan struct{}),
 	}
 	h.cfg.Comments = comments
@@ -582,7 +582,7 @@ func TestQueuedCommentSkipsAHeadSupersededDuringLookup(t *testing.T) {
 	withComments(h)
 	addPR7(h)
 	comments := &blockedCommentLookup{
-		Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+		Comments: h.comments(),
 		started:  make(chan struct{}), release: make(chan struct{}),
 	}
 	h.cfg.Comments = comments
@@ -758,7 +758,7 @@ func TestCommentWaitsForTheHumanGateThenApproves(t *testing.T) {
 func TestCommentFailureLeavesTheCheckRun(t *testing.T) {
 	h := newHarness(t)
 	withComments(h)
-	h.cfg.Comments = &github.Client{BaseURL: h.srv.URL, Tokens: reviewerTokens{}}
+	h.gh.failWith("POST /repos/"+testRepo+"/issues/7/comments", 403)
 	addPR7(h)
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
@@ -873,3 +873,6 @@ func TestFindingsSectionFitsTheCommentLimit(t *testing.T) {
 
 // The shared GitHub client is the comment client.
 var _ Comments = (*github.Client)(nil)
+
+// The deployed reviewer uses the broker client for its comments.
+var _ Comments = (*github.BrokerComments)(nil)
