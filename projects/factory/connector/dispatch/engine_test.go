@@ -2024,6 +2024,39 @@ func TestQuotaResumeKeepsTheEngineeringBudget(t *testing.T) {
 	}
 }
 
+// A quota resume that must open a new session sends the failed attempt's
+// recorded brief, as an engineering retry does, without reading the issue.
+func TestQuotaResumeWithoutSessionKeepsTheRecordedBrief(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-brief")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, codexQuotaFailure, nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if _, err := v.st.DB.Exec(`UPDATE work_item SET session_id = NULL WHERE id = $1`, v.work(101).ID); err != nil {
+		t.Fatal(err)
+	}
+	reads := v.its.issueCalls
+	v.setIssueErr(&itsaplan.HTTPError{Status: 503, Body: "unavailable"})
+	q.set(github.QuotaReading{ReceivedAt: time.Now()})
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	s := v.kg.Sends()
+	if len(s) != 2 || s[1].msg.MessageID != "itsaplan-run/1/quota-resume-1" || s[1].msg.ContextID != "" {
+		t.Fatalf("resume = %+v", s)
+	}
+	if v.its.issueCalls != reads || !strings.Contains(s[1].msg.Parts[0].Text, "### Issue HL-1: Issue 101 title") {
+		t.Fatalf("issue reads %d -> %d; resume text %q", reads, v.its.issueCalls, s[1].msg.Parts[0].Text)
+	}
+	if w := v.work(101); w.EngineeringRetries != 0 {
+		t.Fatalf("retries = %d, want 0", w.EngineeringRetries)
+	}
+}
+
 // A turn with no task event for 10 minutes while the broker reads the quota
 // exhausted is canceled. It then waits without a slot as a quota failure and
 // resumes in its session without spending a retry (HOME-127).
