@@ -2238,6 +2238,11 @@ func TestQuietTurnOnExhaustedQuotaIsCanceledAndWaits(t *testing.T) {
 		fmt.Sprintf("quota/stall/%d", first.ID)).Scan(&reads); err != nil || reads != 1 {
 		t.Fatalf("quiet turn's recorded read: attempts = %d, %v", reads, err)
 	}
+	// The task was read again, recorded first, before the cancellation.
+	if err := v.st.DB.QueryRow(`SELECT attempts FROM status_read WHERE message_id = $1`,
+		"kagent/GetTask/factory-homelab/coder/"+first.TaskID).Scan(&reads); err != nil || reads != 1 {
+		t.Fatalf("quiet turn's recorded task read: attempts = %d, %v", reads, err)
+	}
 	// The cancellation stays pending until kagent confirms it.
 	if v.run(1).State != store.RunDispatched || v.latest(1).State != store.AttemptAccepted {
 		t.Fatalf("run %s, attempt %s before kagent confirmed", v.run(1).State, v.latest(1).State)
@@ -2379,6 +2384,90 @@ func TestRunningToolOnExhaustedQuotaIsNotCanceled(t *testing.T) {
 	v.tick(v.e)
 	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall {
 		t.Fatalf("cancellations = %+v, want the quiet turn canceled", cs)
+	}
+}
+
+// At rollout the migration leaves event_at unset and tool_running false on
+// a turn already running, so the stored activity misses a tool call that
+// started before the upgrade. The turn is not quiet until a read records
+// its activity, and that read sees the open call (HOME-127,
+// engine.go:correctness:cancelQuiet).
+func TestRunningToolAtRolloutIsNotCanceled(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-rollout")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
+	if _, err := v.st.DB.Exec(`UPDATE delivery_attempt SET event_count = 0, event_at = NULL, tool_running = false
+		WHERE id = $1`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The upgraded connector's first tick, 11 minutes after the send.
+	v.clk.Advance(11 * time.Minute)
+	v.tick(v.e)
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("cancellations = %+v for a turn running a tool at rollout", cs)
+	}
+	var running, read bool
+	if err := v.st.DB.QueryRow(`SELECT tool_running, event_at IS NOT NULL FROM delivery_attempt WHERE id = $1`, a.ID).
+		Scan(&running, &read); err != nil || !running || !read {
+		t.Fatalf("tool_running = %v, event_at set = %v, %v; want the open call recorded", running, read, err)
+	}
+	for i := 0; i < 30; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if len(v.pendingCancellations()) != 0 || v.kg.state(a.TaskID) != kagent.StateWorking || v.run(1).State != store.RunDispatched {
+		t.Fatalf("cancellations = %+v, task %s, run %s during the tool call",
+			v.pendingCancellations(), v.kg.state(a.TaskID), v.run(1).State)
+	}
+}
+
+// A tool call that starts after the last progress read is missing from the
+// stored activity when the quota phase finds the turn quiet. The fresh read
+// before the cancellation sees it and leaves the turn running (HOME-127,
+// engine.go:correctness:cancelQuiet).
+func TestToolStartedAfterTheLastReadIsNotCanceled(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-fresh")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	task := v.latest(1).TaskID
+	// progress records the last event in the tick that reads it.
+	v.kg.say(task, "running ci next")
+	for i := 0; i < 10; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if q.count() != 0 {
+		t.Fatalf("reads = %d within 10 minutes of the last event", q.count())
+	}
+	// The stored activity is now over 10 minutes old. The call starts after
+	// the last progress read, and the next quota phase runs before progress.
+	v.clk.Advance(61 * time.Second)
+	v.kg.tool(task, "ci-1", kagent.PartToolCall)
+	v.tick(v.e)
+	if q.count() != 1 {
+		t.Fatalf("reads = %d, want the quiet turn's quota read", q.count())
+	}
+	if cs := v.pendingCancellations(); len(cs) != 0 {
+		t.Fatalf("cancellations = %+v for a turn whose tool started after the last read", cs)
+	}
+	for i := 0; i < 30; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if len(v.pendingCancellations()) != 0 || v.kg.state(task) != kagent.StateWorking {
+		t.Fatalf("cancellations = %+v, task %s during the tool call", v.pendingCancellations(), v.kg.state(task))
 	}
 }
 

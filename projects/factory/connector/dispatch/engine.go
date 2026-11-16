@@ -338,10 +338,11 @@ func (e *Engine) Tick(ctx context.Context) error {
 
 // checkQuota reads the broker's quota while a quota block stands or a
 // running turn has had no task event for QuotaStall (HOME-127). An
-// exhausted reading cancels each such quiet turn; kagent's confirmation
-// pauses it as a quota failure. A quiet turn with a tool call that has no
-// result yet, such as a 30-minute ci run, is busy and never quiet. A
-// usable reading cancels nothing.
+// exhausted reading cancels each such quiet turn that a fresh read of its
+// task still shows quiet; kagent's confirmation pauses it as a quota
+// failure. A quiet turn with a tool call that has no result yet, such as a
+// 30-minute ci run, is busy and never quiet. A usable reading cancels
+// nothing.
 //
 // A usable reading clears quota blocks. Only a reading received after a
 // block began clears it: the failed turn's own readings predate the block,
@@ -401,38 +402,78 @@ func quotaReadIDs(blocks []store.QuotaBlock, quiet []*store.Attempt) []string {
 	return ids
 }
 
-// cancelQuiet requests the cancellation of each quiet turn under the
-// writer's epoch. It stays pending until kagent confirms it, as every
-// cancellation does; stepCancellation sends CancelTask.
+// cancelQuiet cancels each quiet turn that is still quiet when its task is
+// read again. The stored activity can predate a tool call or event since
+// the last progress read. A turn whose read fails keeps running this tick.
 func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error {
-	if len(quiet) == 0 {
+	var errs []error
+	for _, a := range quiet {
+		if err := e.cancelIfQuiet(ctx, a); err != nil {
+			if fatal(err) {
+				return err
+			}
+			errs = append(errs, fmt.Errorf("attempt %d: %w", a.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// cancelIfQuiet reads the turn's task as progress does, with the read
+// recorded first (BeginStatusRead). A changed task records its activity
+// and restarts the quiet period. The turn is canceled only when its task is
+// unchanged, has no tool call without a result and has not finished. The
+// cancellation stays pending until kagent confirms it, as every
+// cancellation does; stepCancellation sends CancelTask.
+func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt) error {
+	defer e.lockRun(a.RunID)()
+	r, err := e.st.GetRun(ctx, a.RunID)
+	if err != nil || r.State != store.RunDispatched {
+		return err
+	}
+	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	ctx, err = e.guardCaller(ctx, wi, a)
+	if err != nil {
+		return err
+	}
+	if err := e.guardAttempt(ctx, a, wi); err != nil {
+		return err
+	}
+	if err := e.BeginStatusRead(ctx, taskReadID(a)); err != nil {
+		return err
+	}
+	t, err := e.tasks.GetTask(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
+	if errors.Is(err, kagent.ErrTaskNotFound) {
+		// progress handles a missing task.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	n, running := taskSize(t), t.ToolRunning()
+	if n != a.EventCount || a.EventAt.IsZero() {
+		return e.st.SetAttemptEvents(ctx, a.ID, n, running, e.cfg.Now())
+	}
+	if running || kagent.Quiescent(t.Status.State) {
 		return nil
 	}
 	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
-		for _, a := range quiet {
-			if err := e.st.RequestCancellation(ctx, tx, a.ID, a.RunID, store.CancelQuotaStall); err != nil {
-				return err
-			}
-		}
-		return nil
+		return e.st.RequestCancellation(ctx, tx, a.ID, a.RunID, store.CancelQuotaStall)
 	}); err != nil {
 		return err
 	}
-	for _, a := range quiet {
-		e.m.Cancellations.WithLabelValues(store.CancelQuotaStall, "requested").Inc()
-		e.log.WarnContext(ctx, "canceling a quiet turn: the broker reads the quota exhausted", "run", a.RunID,
-			"attempt", a.Seq, "task", a.TaskID, "quiet_for", e.cfg.Now().Sub(lastEvent(a)))
-	}
+	e.m.Cancellations.WithLabelValues(store.CancelQuotaStall, "requested").Inc()
+	e.log.WarnContext(ctx, "canceling a quiet turn: the broker reads the quota exhausted", "run", a.RunID,
+		"attempt", a.Seq, "task", a.TaskID, "quiet_for", e.cfg.Now().Sub(a.EventAt))
 	return nil
 }
 
-// lastEvent is when the connector last saw the attempt's task change, or
-// its send before the first read.
-func lastEvent(a *store.Attempt) time.Time {
-	if a.EventAt.After(a.SentAt) {
-		return a.EventAt
-	}
-	return a.SentAt
+// taskReadID is the read journal's message ID of a quiet turn's task read.
+// Each poll and a new writer after a takeover reuse it.
+func taskReadID(a *store.Attempt) string {
+	return "kagent/GetTask/" + a.KagentNamespace + "/" + a.KagentAgent + "/" + a.TaskID
 }
 
 // RunHeartbeats keeps leases alive independently of the tick, so a slow
@@ -1528,7 +1569,9 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	if gone, err := e.postEvents(ctx, r, t); err != nil || gone {
 		return err
 	}
-	if n := taskSize(t); n != a.EventCount {
+	// The first read records the task even when it is empty: a turn is
+	// quiet only after a read (QuietAttempts).
+	if n := taskSize(t); n != a.EventCount || a.EventAt.IsZero() {
 		if err := e.st.SetAttemptEvents(ctx, a.ID, n, t.ToolRunning(), e.cfg.Now()); err != nil {
 			return err
 		}

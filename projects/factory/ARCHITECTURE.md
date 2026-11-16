@@ -648,11 +648,18 @@ about every 30 minutes. The same reading stops a turn that never fails:
 while the broker reads the quota exhausted, the connector cancels a running
 turn that has had no task event for `intervals.quotaStall` (10 minutes). A
 task event is a new history message, artifact or artifact text in the
-connector's `GetTask` read, recorded on the attempt (`event_at`); a turn not
-yet read counts from its send. kagent records each tool or command as a
-`function_call` artifact when it starts and a `function_response` with the
-same ID when it ends. A turn with a call and no response is busy, such as
-during a 30-minute `ci` run, and is never canceled for quiet. The
+connector's `GetTask` read, recorded on the attempt (`event_at`). A turn
+is quiet only after a read has recorded its activity, so a turn sent before
+the connector recorded activity waits for a read at rollout. kagent records
+each tool or command as a `function_call` artifact when it starts and a
+`function_response` with the same ID when it ends. A turn with a call and
+no response is busy, such as during a 30-minute `ci` run, and is never
+canceled for quiet. On an exhausted reading the connector reads each quiet
+turn's task again before it cancels it, recorded in `status_read` first
+(`kagent/GetTask/<namespace>/<agent>/<task>`). A task that changed since
+the last read, or has an open tool call, is not canceled; the change is
+recorded and the quiet period starts again. A failed read cancels nothing
+for that turn. The
 connector reads the broker while a quota block stands or a turn is that
 quiet. Each read is recorded in `quota_read`
 before the call, under the writer's epoch, with one message ID for each
