@@ -224,11 +224,61 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
-	ID          int64  `json:"id"`
-	Identifier  string `json:"identifier"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ColumnID    int64  `json:"columnId"`
+	ID          int64             `json:"id"`
+	Identifier  string            `json:"identifier"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	ColumnID    int64             `json:"columnId"`
+	Checklists  []Checklist       `json:"checklists"`
+	Subtasks    []IssueRef        `json:"subtasks"`
+	Parent      *IssueRef         `json:"parent"`
+	Links       []IssueLink       `json:"links"`
+	Development []DevelopmentLink `json:"development"`
+}
+
+// Checklist and its items arrive in display order from GET /issues/<id>.
+type Checklist struct {
+	ID    int64           `json:"id"`
+	Title string          `json:"title"`
+	Items []ChecklistItem `json:"items"`
+}
+
+type ChecklistItem struct {
+	ID       int64   `json:"id"`
+	Content  string  `json:"content"`
+	Done     bool    `json:"done"`
+	Position float64 `json:"position"`
+}
+
+// IssueRef names a parent, sub-task or linked issue with its current column.
+type IssueRef struct {
+	ID         int64  `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
+	ColumnID   int64  `json:"columnId"`
+	Archived   bool   `json:"archived"`
+}
+
+type IssueLink struct {
+	Kind      string   `json:"kind"`
+	Direction string   `json:"direction"`
+	Issue     IssueRef `json:"issue"`
+}
+
+// DevelopmentLink is a linked branch or pull request, without its check logs.
+type DevelopmentLink struct {
+	Kind       string `json:"kind"`
+	Repository string `json:"repository"`
+	Number     int    `json:"number"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	State      string `json:"state"`
+	Draft      bool   `json:"draft"`
+}
+
+// Attachment retains only the name. The connector never fetches its content.
+type Attachment struct {
+	Filename string `json:"filename"`
 }
 
 // GetIssue reads an issue with the coordinator's key.
@@ -238,6 +288,15 @@ func (c *Client) GetIssue(ctx context.Context, issueID int64) (*Issue, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// GetAttachments lists attachment names with the coordinator's key.
+func (c *Client) GetAttachments(ctx context.Context, issueID int64) ([]Attachment, error) {
+	var out []Attachment
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, "/issues/"+strconv.FormatInt(issueID, 10)+"/attachments", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Column is a project's workflow state.

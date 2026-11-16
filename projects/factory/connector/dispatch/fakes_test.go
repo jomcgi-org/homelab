@@ -77,10 +77,13 @@ type fakeItsaplan struct {
 	commentErr error
 	// resultGone fails the run in itsaplan as its result arrives, as
 	// expireExhaustedRuns can.
-	resultGone bool
-	columns    []itsaplan.Column
-	moves      []fakeMove
-	issues     map[int64]*itsaplan.Issue
+	resultGone      bool
+	columns         []itsaplan.Column
+	moves           []fakeMove
+	issues          map[int64]*itsaplan.Issue
+	attachments     map[int64][]itsaplan.Attachment
+	attachmentErr   error
+	attachmentCalls int
 	// moveErr fails the next MoveIssue calls.
 	moveErr []error
 	// resultErr fails the next Result calls.
@@ -369,6 +372,14 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	}
 	c := *is
 	return &c, nil
+}
+
+func (f *fakeItsaplan) GetAttachments(_ context.Context, issueID int64) ([]itsaplan.Attachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.attachmentCalls++
+	return f.attachments[issueID], f.attachmentErr
 }
 
 // moveTo puts an issue in a column, or in another project's.

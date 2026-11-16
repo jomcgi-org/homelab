@@ -3105,6 +3105,11 @@ func TestRefusedReplacementIssueWaitsForAuthoritativeText(t *testing.T) {
 func TestIssueIsQuotedOnlyWhenASessionOpens(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.its.issues[101].Checklists = []itsaplan.Checklist{{Title: "Done when", Items: []itsaplan.ChecklistItem{{Content: "Verify the brief", Done: true}}}}
+	v.its.issues[101].Subtasks = []itsaplan.IssueRef{{Identifier: "HL-2", Title: "Add tests", ColumnID: 2}}
+	v.its.issues[101].Parent = &itsaplan.IssueRef{Identifier: "HL-3", Title: "Improve tickets", ColumnID: 3}
+	v.its.issues[101].Links = []itsaplan.IssueLink{{Kind: "blocks", Direction: "inward", Issue: itsaplan.IssueRef{Identifier: "HL-4", Title: "Define the API", ColumnID: 4}}}
+	v.its.attachments = map[int64][]itsaplan.Attachment{101: {{Filename: "failure.log"}}}
 	v.tick(v.e)
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
 	v.clk.Advance(5 * time.Second)
@@ -3116,8 +3121,47 @@ func TestIssueIsQuotedOnlyWhenASessionOpens(t *testing.T) {
 	if len(sends) != 2 {
 		t.Fatalf("sends = %d, want 2", len(sends))
 	}
+	for _, want := range []string{"- [x] Verify the brief", "HL-2: Add tests", "HL-3: Improve tickets", "blocked_by (inward): HL-4", "- failure.log"} {
+		if !strings.Contains(sends[0].msg.Parts[0].Text, want) {
+			t.Errorf("first send lacks %q", want)
+		}
+	}
+	if v.its.attachmentCalls != 1 {
+		t.Fatalf("attachment reads = %d, want one for the first session", v.its.attachmentCalls)
+	}
 	if text := sends[1].msg.Parts[0].Text; strings.Contains(text, "## Issue") || strings.Contains(text, "Issue 101 description.") {
 		t.Fatalf("a send in the existing session quotes the issue again:\n%s", text)
+	}
+}
+
+func TestInitialSessionWaitsForAttachmentNames(t *testing.T) {
+	for _, status := range []int{403, 404, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.its.attachmentErr = &itsaplan.HTTPError{Status: status, Body: "untrusted response body"}
+			v.tick(v.e)
+			v.tick(v.e)
+			if len(v.kg.Sends()) != 0 || v.work(101).EngineeringRetries != 0 {
+				t.Fatal("missing attachment names started an agent or spent a retry")
+			}
+			comments := v.its.Comments()
+			if len(comments) != 1 || !strings.Contains(comments[0].body, "attachment names") || strings.Contains(comments[0].body, "untrusted response body") {
+				t.Fatalf("hold comments = %+v, want one sanitized notice", comments)
+			}
+			if status == 403 && v.refusals("coordinator", "brief") == 0 {
+				t.Fatal("the refused attachment lookup was not counted")
+			}
+			v.its.mu.Lock()
+			v.its.attachmentErr = nil
+			v.its.attachments = map[int64][]itsaplan.Attachment{101: {{Filename: "failure.log"}}}
+			v.its.mu.Unlock()
+			v.tick(v.e)
+			sends := v.kg.Sends()
+			if len(sends) != 1 || !strings.Contains(sends[0].msg.Parts[0].Text, "- failure.log") {
+				t.Fatal("recovered attachment lookup did not send the full brief")
+			}
+		})
 	}
 }
 
@@ -3375,25 +3419,31 @@ func TestReassignmentSupersedesBriefHeldRun(t *testing.T) {
 
 func TestInitialIssueDescriptionClipping(t *testing.T) {
 	for _, tc := range []struct {
-		name, description, quoted string
+		name, description string
+		clipped           bool
 	}{
-		{"short", "Short description.", "Short description."},
-		{"quoted placeholder", "Handle (unavailable: upstream failed).", "Handle (unavailable: upstream failed)."},
-		{"limit", strings.Repeat("x", 8000), strings.Repeat("x", 8000)},
-		{"over limit", strings.Repeat("x", 8001), strings.Repeat("x", 8000) + "\n\n(description clipped at 8000 of 8001 bytes)"},
-		{"multibyte", strings.Repeat("界", 2667), strings.Repeat("界", 2666) + "\n\n(description clipped at 7998 of 8001 bytes)"},
+		{"short", "Short description.", false},
+		{"quoted placeholder", "Handle (unavailable: upstream failed).", false},
+		{"below limit", strings.Repeat("x", 7600), false},
+		{"heading exceeds limit", strings.Repeat("x", 8000), true},
+		{"over limit", strings.Repeat("x", 8001), true},
+		{"multibyte", strings.Repeat("界", 2667), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := newEnv(t)
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.its.issues[101].Description = tc.description
 			v.tick(v.e)
-			text := v.kg.Sends()[0].msg.Parts[0].Text
-			if !utf8.ValidString(text) || !strings.Contains(text, "### Issue HL-1: Issue 101 title\n\n"+tc.quoted+"\n") {
-				t.Fatal("description or its byte-count marker was not quoted correctly")
+			brief := v.latest(1).Context
+			if len(brief) > 8000 || !utf8.ValidString(brief) || !strings.Contains(brief, "### Issue HL-1: Issue 101 title\n\n") {
+				t.Fatal("brief exceeds the bound or its heading or UTF-8 changed")
 			}
-			if len(tc.description) <= 8000 && strings.Contains(text, "description clipped") {
-				t.Fatal("unclipped description was marked as clipped")
+			if tc.clipped {
+				if !strings.Contains(brief, "(description clipped at ") || !strings.Contains(brief, fmt.Sprintf("of %d bytes)", len(tc.description))) {
+					t.Fatal("missing description clipping notice")
+				}
+			} else if !strings.Contains(brief, tc.description) || strings.Contains(brief, "description clipped") {
+				t.Fatal("unclipped description changed")
 			}
 		})
 	}

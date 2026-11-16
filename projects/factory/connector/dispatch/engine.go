@@ -35,6 +35,7 @@ type Itsaplan interface {
 	GetRun(ctx context.Context, runID int64) (*itsaplan.RunStatus, error)
 	Comment(ctx context.Context, issueID int64, body string) error
 	GetIssue(ctx context.Context, issueID int64) (*itsaplan.Issue, error)
+	GetAttachments(ctx context.Context, issueID int64) ([]itsaplan.Attachment, error)
 	ProjectColumns(ctx context.Context, projectKey string) ([]itsaplan.Column, error)
 	MoveIssue(ctx context.Context, issueID, columnID int64) error
 }
@@ -1182,31 +1183,26 @@ func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkIte
 	if err == nil && (issue == nil || issue.ID != wi.IssueID || strings.TrimSpace(issue.Title+issue.Description) == "") {
 		err = errors.New("missing authoritative issue text")
 	}
+	var attachments []itsaplan.Attachment
+	if err == nil {
+		if err = e.guard(ctx); err != nil {
+			return "", err
+		}
+		attachments, err = e.its.GetAttachments(ctx, wi.IssueID)
+		e.countRefusal(roleCoordinator, lookupBrief, err)
+	}
 	if err != nil {
 		// Required input never expires into permission to start without it.
 		// Announce the hold once per run attempt, without exposing response bodies.
 		noticeErr := e.w.Tx(ctx, func(tx *sql.Tx) error {
 			return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/brief-held/%d/%d", r.ID, r.Attempt), r.ID, "",
 				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-					"The factory is holding %s run %d until its issue title and description can be read. No new agent session will start without the issue text. Check the issue and the coordinator's itsaplan access; the lookup will retry automatically.",
+					"The factory is holding %s run %d until its issue and attachment names can be read. No new agent session will start without the issue text. Check the issue and the coordinator's itsaplan access; the lookup will retry automatically.",
 					wi.IssueKey, r.ID)})
 		})
 		return "", errors.Join(fmt.Errorf("issue brief required before opening a session: %w", err), noticeErr)
 	}
-	var s strings.Builder
-	s.WriteString("## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
-		"reports your final message on the issue and opens the pull request from the work branch once you " +
-		"push commits to it.\n")
-	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clipDescription(issue.Description))
-	return s.String(), nil
-}
-
-func clipDescription(description string) string {
-	clipped := clip(description, 8000)
-	if len(clipped) == len(description) {
-		return description
-	}
-	return fmt.Sprintf("%s\n\n(description clipped at %d of %d bytes)", clipped, len(clipped), len(description))
+	return renderIssueBrief(issueBriefIntro, wi.IssueKey, issue, attachments), nil
 }
 
 // hasIssueBrief distinguishes recorded issue text from legacy unavailable
