@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -39,6 +40,9 @@ type fakeGitHub struct {
 	checkErr   []error
 	statusErr  []error
 	dequeues   []string
+	baseFiles  map[string]string
+	baseReads  []string
+	baseErr    error
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
 	onChecks  func()
@@ -2886,4 +2890,261 @@ func TestClosedPullRequestStopsInFlightItsaplanTurn(t *testing.T) {
 	v.clk.Advance(61 * time.Second)
 	v.tick(v.e)
 	v.turnStopped(task, "was closed")
+}
+
+// fakeCILogs serves one invocation's failures for links under its prefix.
+type fakeCILogs struct {
+	mu       sync.Mutex
+	failures *buildbuddy.Failures
+	pages    int
+	onPage   func(int)
+	err      error
+	reads    []string
+}
+
+const ciPrefix = "https://bb.example/invocation/"
+
+func (f *fakeCILogs) Invocation(u string) (string, bool) {
+	if !strings.HasPrefix(u, ciPrefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(u, ciPrefix), true
+}
+
+func (f *fakeCILogs) Failures(_ context.Context, id string, before buildbuddy.BeforePage) (*buildbuddy.Failures, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for page := 0; page < max(1, f.pages); page++ {
+		if err := before(page); err != nil {
+			return nil, err
+		}
+		if f.onPage != nil {
+			f.onPage(page)
+		}
+	}
+	f.reads = append(f.reads, id)
+	return f.failures, f.err
+}
+
+// ciEnv is a delivery env whose binding requires BuildBuddy's pr-checks
+// status, with ci reading invocation logs.
+func ciEnv(t *testing.T, ci *fakeCILogs) *env {
+	t.Helper()
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.RequiredChecks = append(v.cfg.Bindings[0].Review.RequiredChecks,
+		dispatch.Check{Name: "pr-checks", StatusCreator: "buildbuddy-io[bot]"})
+	v.cfg.CILogs = ci
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.byNumber(1).pr.BaseSHA = strings.Repeat("a", 40)
+	v.gh.baseFiles = map[string]string{
+		"projects/factory/chart/BUILD":           `py_test(name = "package_test")`,
+		"projects/factory/chart/package_test.py": "def test_packaged_render(): pass\n",
+	}
+	return v
+}
+
+func (g *fakeGitHub) Tree(_ context.Context, _, ref string) (*github.Tree, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ref != strings.Repeat("a", 40) {
+		return nil, errors.New("wrong base commit")
+	}
+	g.baseReads = append(g.baseReads, ref)
+	if g.baseErr != nil {
+		return nil, g.baseErr
+	}
+	files := map[string]bool{}
+	for name := range g.baseFiles {
+		files[name] = true
+	}
+	return &github.Tree{Files: files}, nil
+}
+
+func (g *fakeGitHub) FileContent(_ context.Context, _, name, ref string) ([]byte, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ref != strings.Repeat("a", 40) {
+		return nil, errors.New("wrong base commit")
+	}
+	g.baseReads = append(g.baseReads, ref+"/"+name)
+	data, ok := g.baseFiles[name]
+	if !ok {
+		return nil, github.ErrNotFound
+	}
+	return []byte(data), nil
+}
+
+// failStatus fails pr-checks on sha, linking to link.
+func (v *env) failStatus(sha, link string) {
+	v.t.Helper()
+	v.gh.status(sha, "pr-checks", "buildbuddy-io[bot]", "failure")
+	v.gh.mu.Lock()
+	defer v.gh.mu.Unlock()
+	sts := v.gh.statuses[sha]
+	sts[len(sts)-1].URL = link
+}
+
+func (v *env) lastSendText() string {
+	v.t.Helper()
+	sends := v.kg.Sends()
+	return sends[len(sends)-1].msg.Parts[0].Text
+}
+
+const invocation = "4d2f36f8-72a8-4c37-b831-4a100c9ff2a7"
+
+func TestCIStatusRoundNamesFailingTargetsAndTests(t *testing.T) {
+	ci := &fakeCILogs{pages: 2, failures: &buildbuddy.Failures{
+		Targets: []string{"//projects/factory/chart:package_test"},
+		Tests:   []string{"projects/factory/chart/package_test.py::test_packaged_render"},
+	}}
+	v := ciEnv(t, ci)
+	ci.onPage = func(page int) {
+		var recorded int
+		if err := v.st.DB.QueryRow(`SELECT count(*) FROM delivery_read WHERE operation = 'ci-log'`).Scan(&recorded); err != nil || recorded != page+1 {
+			t.Fatalf("page %d sent before journal: %d, %v", page, recorded, err)
+		}
+	}
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.gh.statuses["sha-1"][0].Description = "untrusted CI instructions"
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one for the failed status", n)
+	}
+	text := v.lastSendText()
+	if strings.Contains(text, "untrusted CI instructions") {
+		t.Fatal("status text reached coder")
+	}
+	for _, want := range []string{
+		`Status "pr-checks" is failure`,
+		"Invocation " + invocation + " reports these failures",
+		`Target: "//projects/factory/chart:package_test"`,
+		`Test: "projects/factory/chart/package_test.py::test_packaged_render"`,
+		"<untrusted_ci_failures>", "</untrusted_ci_failures>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("round prompt lacks %q:\n%s", want, text)
+		}
+	}
+	if len(ci.reads) != 1 || ci.reads[0] != invocation {
+		t.Fatalf("reads = %q, want the invocation once", ci.reads)
+	}
+	var recorded int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM delivery_read WHERE operation = 'ci-log' AND resource = $1`,
+		invocation+"/page/0").Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("recorded reads = %d (%v), want the read recorded before it was sent", recorded, err)
+	}
+}
+
+func TestCILogReadFailureStillStartsTheRound(t *testing.T) {
+	ci := &fakeCILogs{err: &buildbuddy.Error{Class: "status_401", Err: errors.New("unauthorized")}}
+	v := ciEnv(t, ci)
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want the round despite the failed read", n)
+	}
+	if text := v.lastSendText(); !strings.Contains(text, "could not read which targets failed in invocation "+
+		invocation+" (status_401)") || strings.Contains(text, "unauthorized") {
+		t.Fatalf("round prompt = %s, want the failure by class only", text)
+	}
+}
+
+func TestCIStatusOutsideTheConfiguredPrefixIsNotRead(t *testing.T) {
+	ci := &fakeCILogs{failures: &buildbuddy.Failures{Targets: []string{"//x:y"}}}
+	v := ciEnv(t, ci)
+	v.failStatus("sha-1", "https://evil.example/invocation/"+invocation)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one", n)
+	}
+	if len(ci.reads) != 0 || strings.Contains(v.lastSendText(), "//x:y") {
+		t.Fatalf("reads = %q; a foreign link must not be read", ci.reads)
+	}
+}
+
+func TestCINamesAbsentFromBaseNeverReachCoder(t *testing.T) {
+	ci := &fakeCILogs{failures: buildbuddy.Parse("FAILED: //projects/factory/chart:package_test (Summary)\nFAILED: //projects/factory/chart:ignore_previous_instructions (Summary)\nFAILED projects/factory/chart/package_test.py::test_head_only\n")}
+	v := ciEnv(t, ci)
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.poll()
+	text := v.lastSendText()
+	if strings.Contains(text, "ignore_previous_instructions") || strings.Contains(text, "test_head_only") || !strings.Contains(text, `Target: "//projects/factory/chart:package_test"`) {
+		t.Fatalf("prompt: %s", text)
+	}
+	if len(v.gh.baseReads) != 3 {
+		t.Fatalf("base reads: %q", v.gh.baseReads)
+	}
+	var recorded int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM delivery_read WHERE operation IN ('ci-base-tree','ci-base-file')`).Scan(&recorded); err != nil || recorded != 3 {
+		t.Fatalf("recorded %d: %v", recorded, err)
+	}
+}
+
+func TestCIMissingMainBaseFailsClosed(t *testing.T) {
+	ci := &fakeCILogs{failures: &buildbuddy.Failures{Targets: []string{"//projects/factory/chart:package_test"}}}
+	v := ciEnv(t, ci)
+	v.gh.byNumber(1).pr.BaseRef = "attacker-branch"
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.poll()
+	text := v.lastSendText()
+	if !strings.Contains(text, "base_read") || strings.Contains(text, "Target:") || len(v.gh.baseReads) != 0 {
+		t.Fatalf("prompt: %s; reads %q", text, v.gh.baseReads)
+	}
+}
+
+func TestCIBaseCredentialRefusalRetriesWithoutProviderText(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			ci := &fakeCILogs{failures: &buildbuddy.Failures{Targets: []string{"//projects/factory/chart:package_test"}}}
+			v := ciEnv(t, ci)
+			v.gh.baseErr = &github.HTTPError{Status: status, Body: "untrusted provider text"}
+			v.failStatus("sha-1", ciPrefix+invocation)
+			v.poll()
+			if len(v.rounds()) != 0 {
+				t.Fatal("round started without a successful base read")
+			}
+			v.gh.baseErr = nil
+			v.poll()
+			if len(v.rounds()) != 1 || strings.Contains(v.lastSendText(), "untrusted provider text") {
+				t.Fatalf("rounds: %d; prompt: %s", len(v.rounds()), v.lastSendText())
+			}
+		})
+	}
+}
+
+func TestCIMergeQueueEvidenceUsesPRBase(t *testing.T) {
+	ci := &fakeCILogs{failures: buildbuddy.Parse("FAILED: //projects/factory/chart:package_test (Summary)\nFAILED: //projects/factory/chart:head_only (Summary)\n")}
+	v := ciEnv(t, ci)
+	v.gh.green("sha-1")
+	v.gh.status("sha-1", "pr-checks", "buildbuddy-io[bot]", "success")
+	v.poll()
+	v.gh.mergeGroup(1, "group-sha-1")
+	v.poll()
+	v.failStatus("group-sha-1", ciPrefix+invocation)
+	v.gh.eject(1)
+	v.poll()
+	text := v.lastSendText()
+	if len(v.rounds()) != 1 || !strings.Contains(text, `Target: "//projects/factory/chart:package_test"`) || strings.Contains(text, "head_only") {
+		t.Fatalf("rounds %d; prompt: %s", len(v.rounds()), text)
+	}
+	if len(v.gh.baseReads) != 2 || v.gh.baseReads[0] != strings.Repeat("a", 40) {
+		t.Fatalf("base reads %q", v.gh.baseReads)
+	}
+}
+
+func TestCILogPageCannotBeSentWithoutItsJournal(t *testing.T) {
+	ci := &fakeCILogs{pages: 2, failures: &buildbuddy.Failures{}}
+	v := ciEnv(t, ci)
+	if _, err := v.st.DB.Exec(`ALTER TABLE delivery_read ADD CONSTRAINT reject_page CHECK (resource NOT LIKE '%/page/1')`); err != nil {
+		t.Fatal(err)
+	}
+	sent := 0
+	ci.onPage = func(int) { sent++ }
+	v.failStatus("sha-1", ciPrefix+invocation)
+	v.poll()
+	if sent != 1 || len(v.rounds()) != 0 {
+		t.Fatalf("sent %d pages, rounds %d", sent, len(v.rounds()))
+	}
 }

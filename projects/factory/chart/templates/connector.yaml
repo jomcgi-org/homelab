@@ -100,7 +100,33 @@ GitHub tokens the broker mints for that ServiceAccount.
   "bindings" $bindings
   "links" $links
 }}
+{{- $bb := $c.buildbuddy | default dict }}
+{{- if $bb.enabled }}
+{{- if or (not $bb.host) (not $bb.itemPath) }}
+{{- fail "connector.buildbuddy.enabled needs host and itemPath: the BuildBuddy host and the 1Password item holding its read-only API key" }}
+{{- end }}
+{{- $_ := set $config "buildbuddy" (dict
+  "apiURL" (printf "https://%s" $bb.host)
+  "invocationPrefix" (printf "https://%s/invocation/" $bb.host)
+  "apiKeyFile" "/var/run/secrets/factory-buildbuddy/api-key"
+) }}
+{{- end }}
 {{- $configYAML := toYaml $config }}
+{{- if $bb.enabled }}
+# BuildBuddy's read-only API key; only the connector mounts it.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: {{ $name }}-buildbuddy
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $bb.itemPath | quote }}
+---
+{{- end }}
 # The connector's identity to kagent and the broker. Kept: a kagent principal
 # includes the ServiceAccount's UID, so a recreated account loses its sessions
 # (ARCHITECTURE.md finding 6).
@@ -255,6 +281,11 @@ spec:
               mountPath: /var/run/secrets/factory-broker
               readOnly: true
             {{- end }}
+            {{- if $bb.enabled }}
+            - name: buildbuddy
+              mountPath: /var/run/secrets/factory-buildbuddy
+              readOnly: true
+            {{- end }}
       volumes:
         {{- if $c.notify.enabled }}
         - name: notify-password
@@ -293,6 +324,17 @@ spec:
                   audience: kagent-invocation
                   expirationSeconds: 3600
                   path: token
+        {{- if $bb.enabled }}
+        # Optional so the connector starts before the operator syncs the
+        # item; until then a CI log read fails with class "key".
+        - name: buildbuddy
+          secret:
+            secretName: {{ $name }}-buildbuddy
+            optional: true
+            items:
+              - key: {{ $bb.key }}
+                path: api-key
+        {{- end }}
         {{- if $delivers }}
         # The broker reviews this token (tokenReview.audience) and checks its
         # subject against connectorSubjects.

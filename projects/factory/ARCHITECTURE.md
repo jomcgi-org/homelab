@@ -929,6 +929,35 @@ the agent's reply showed the read was idempotent. Commit messages are already
 public, so this channel publishes nothing new
 ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)).
 
+**CI failures by name.** With `connector.buildbuddy`, a failed required
+status whose link is exactly `https://<host>/invocation/<uuid>` makes the
+connector page BuildBuddy's GetLog API. Each page is untrusted code output.
+Before each page and base-source read, the connector checks the writer epoch
+and records the attempt in `delivery_read`. Failed reads report a fixed class;
+raw logs, provider errors and status descriptions never enter the prompt.
+
+Only names verified at the PR's immutable `baseRefOid` on `main` pass: a
+Bazel target's literal `name` in its package's `BUILD.bazel` or `BUILD`,
+a pytest declaration in a test file, a Go test declaration, or a JavaScript
+test file. Paths must be canonical. Comments, strings, dynamic target names
+and names introduced by the PR cannot authorize a name. Go names have no
+path in the log, so verification searches test files in verified failing
+packages, or the base tree when no package is known. Verification reads at
+most 128 files and 8 MiB. Unsupported or unverified names are omitted.
+
+The prompt quotes verified names inside an untrusted evidence block, with
+at most 20 targets and 30 tests. A merge-queue ejection uses the same path
+and PR base, never the synthetic commit. Missing base evidence adds only
+`base_read`; GitHub credential refusals use the dispatch retry path.
+`factory_connector_ci_log_reads_total` counts invocation outcomes.
+
+**Why.** HOME-15 and HOME-18 could see only a link and "Failed in 43s".
+PR #8038 added names, but code under test could print a forged label.
+[HOME-49](https://factory-plan.jomcgi.dev/factory/issue/HOME-49) requires
+base-tree membership as well as syntax checks. The feature is off by default.
+The connector alone mounts the read-only `API_KEY` from the 1Password item
+`k8s-homelab/buildbuddy`. HOME-125 enables it after the chart publishes.
+
 A review round is a connector-initiated continuation, not an itsaplan
 mention-run: itsaplan v1.10.0 starts no run for an agent's comment
 (finding 13). The round is a connector run (negative id, message IDs

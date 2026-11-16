@@ -27,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -212,6 +213,13 @@ func run(log *slog.Logger) error {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
 	}
 
+	var ciLogs dispatch.CILogs
+	if bb := cfg.File.BuildBuddy; bb != nil {
+		ciLogs = &buildbuddy.Client{
+			APIURL: bb.APIURL, InvocationPrefix: bb.InvocationPrefix, KeyFile: bb.APIKeyFile,
+			HTTP: &http.Client{Timeout: 30 * time.Second},
+		}
+	}
 	eng := dispatch.New(dispatch.Config{
 		// Native Codex artifact text reaches itsaplan run events (#8017). The
 		// rollback target is chart 0.29.10, which resumes admitted journals
@@ -235,6 +243,7 @@ func run(log *slog.Logger) error {
 		ProgressLease:   time.Duration(cfg.File.Intervals.ProgressLease),
 		ForceDelete:     time.Duration(cfg.File.Intervals.ForceDelete),
 		Links:           dispatch.Links(cfg.File.Links),
+		CILogs:          ciLogs,
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{
 		URL: cfg.NotifyURL, TokenURL: cfg.NotifyTokenURL, AppPasswordFile: cfg.NotifyPasswordFile,

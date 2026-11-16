@@ -112,6 +112,8 @@ type Config struct {
 	Quota      QuotaSource
 	QuotaPoll  time.Duration
 	QuotaStall time.Duration
+	// CILogs is optional; its candidates must pass base-tree validation.
+	CILogs CILogs
 	// The liveness lease (HOME-141, liveness.go): a send must show a task
 	// within TaskLease (5 min), and a running turn a task event or an open
 	// tool call every ProgressLease (20 min). A cancellation kagent has not

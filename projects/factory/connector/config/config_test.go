@@ -196,3 +196,34 @@ func TestWaitForKeysStopsWithContext(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestParseBuildBuddy(t *testing.T) {
+	const good = `
+buildbuddy:
+  apiURL: https://example.buildbuddy.io
+  invocationPrefix: https://example.buildbuddy.io/invocation/
+  apiKeyFile: /secrets/buildbuddy/api-key
+`
+	f, err := Parse([]byte(sample + good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.BuildBuddy == nil || f.BuildBuddy.APIKeyFile != "/secrets/buildbuddy/api-key" {
+		t.Fatalf("buildbuddy = %+v", f.BuildBuddy)
+	}
+	if f, err := Parse([]byte(sample)); err != nil || f.BuildBuddy != nil {
+		t.Fatalf("without buildbuddy: %+v, %v", f, err)
+	}
+	for _, bad := range []string{
+		strings.Replace(good, "https://example.buildbuddy.io\n", "http://example.buildbuddy.io\n", 1),
+		strings.Replace(good, "https://example.buildbuddy.io\n", "https://example.buildbuddy.io/api\n", 1),
+		strings.Replace(good, "https://example.buildbuddy.io\n", "https://user:pw@example.buildbuddy.io\n", 1),
+		strings.Replace(good, "/invocation/\n", "/invocation\n", 1),
+		strings.Replace(good, "  apiKeyFile: /secrets/buildbuddy/api-key\n", "", 1),
+		good + "  extra: true\n",
+	} {
+		if _, err := Parse([]byte(sample + bad)); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}

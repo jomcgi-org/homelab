@@ -5,6 +5,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -44,6 +45,9 @@ type File struct {
 	Agents      []Agent     `yaml:"agents"`
 	Bindings    []Binding   `yaml:"bindings"`
 	Links       Links       `yaml:"links"`
+	// BuildBuddy, when set, names a failed CI status's targets and tests in
+	// revision prompts.
+	BuildBuddy *BuildBuddy `yaml:"buildbuddy"`
 }
 
 // Links are URL templates for PR bodies and Done comments; see dispatch.Links.
@@ -115,6 +119,36 @@ type Binding struct {
 	// HOME routes human-gate issues to joe by default. Other projects opt in;
 	// an explicit empty string disables the integration for a binding.
 	HumanGateAssignee *string `yaml:"humanGateAssignee"`
+}
+
+// BuildBuddy is the CI whose invocation logs revision rounds read.
+type BuildBuddy struct {
+	// APIURL is the organisation's base URL: https://<org>.buildbuddy.io.
+	APIURL string `yaml:"apiURL"`
+	// InvocationPrefix is what a status link holds before the invocation
+	// ID: https://<org>.buildbuddy.io/invocation/.
+	InvocationPrefix string `yaml:"invocationPrefix"`
+	// APIKeyFile holds a read-only API key.
+	APIKeyFile string `yaml:"apiKeyFile"`
+}
+
+func (b *BuildBuddy) validate() error {
+	for name, raw := range map[string]string{"apiURL": b.APIURL, "invocationPrefix": b.InvocationPrefix} {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("config: buildbuddy.%s must be a plain https URL", name)
+		}
+	}
+	if u, _ := url.Parse(b.APIURL); u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("config: buildbuddy.apiURL must have no path")
+	}
+	if !strings.HasSuffix(b.InvocationPrefix, "/") {
+		return fmt.Errorf("config: buildbuddy.invocationPrefix must end with /")
+	}
+	if b.APIKeyFile == "" {
+		return fmt.Errorf("config: buildbuddy.apiKeyFile is required")
+	}
+	return nil
 }
 
 // Check is a trusted check: a check run from the GitHub App appId, or a
@@ -245,6 +279,11 @@ func Parse(b []byte) (*File, error) {
 	}
 	if f.Intervals.ForceDelete == 0 {
 		f.Intervals.ForceDelete = Duration(10 * time.Minute)
+	}
+	if f.BuildBuddy != nil {
+		if err := f.BuildBuddy.validate(); err != nil {
+			return nil, err
+		}
 	}
 	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {
 		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")

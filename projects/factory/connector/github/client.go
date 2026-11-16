@@ -65,6 +65,7 @@ type PullRequest struct {
 	// HeadRepo is the REST head repository's full name; empty is unknown.
 	HeadRepo string
 	BaseRef  string
+	BaseSHA  string
 	Title    string
 	// Body, CreatedAt and UpdatedAt come from REST reads only; Author and
 	// Labels from REST reads and PullRequestDetail.
@@ -306,13 +307,14 @@ type restPull struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 }
 
 func (p restPull) pr() *PullRequest {
 	pr := &PullRequest{
 		Number: p.Number, NodeID: p.NodeID, URL: p.HTMLURL, State: p.State, Draft: p.Draft, Title: p.Title,
-		Merged: p.Merged || p.MergedAt != nil, HeadSHA: p.Head.SHA, HeadRef: p.Head.Ref, BaseRef: p.Base.Ref,
+		Merged: p.Merged || p.MergedAt != nil, HeadSHA: p.Head.SHA, HeadRef: p.Head.Ref, BaseRef: p.Base.Ref, BaseSHA: p.Base.SHA,
 		Author: p.User.Login, CreatedAt: p.CreatedAt,
 	}
 	if p.Body != nil {
@@ -472,7 +474,7 @@ func (c *Client) graphql(ctx context.Context, repo, query string, vars map[strin
 const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName mergeable
+      id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName baseRefOid mergeable
       author { login }
       mergeCommit { oid }
       mergeQueueEntry { state headCommit { oid } }
@@ -516,6 +518,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 				HeadRefOid      string     `json:"headRefOid"`
 				HeadRefName     string     `json:"headRefName"`
 				BaseRefName     string     `json:"baseRefName"`
+				BaseRefOid      string     `json:"baseRefOid"`
 				Mergeable       string     `json:"mergeable"`
 				Author          *login     `json:"author"`
 				MergeCommit     *oid       `json:"mergeCommit"`
@@ -568,7 +571,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	}
 	d := &PullRequestDetail{PullRequest: PullRequest{
 		Number: p.Number, NodeID: p.ID, URL: p.URL, State: strings.ToLower(p.State), Merged: p.Merged,
-		Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName,
+		Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName, BaseSHA: p.BaseRefOid,
 	}}
 	d.Mergeable = p.Mergeable
 	if p.Author != nil {

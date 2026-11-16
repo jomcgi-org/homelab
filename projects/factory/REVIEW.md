@@ -27,6 +27,13 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   them is its job, and only inside a delimited untrusted block, quoted and
   sanitized so no text closes the block or starts a line of its own.
   Critical.
+- **CI failure names.** BuildBuddy pages are untrusted code output. Each
+  page read checks the writer epoch and records its attempt before sending.
+  Only target and test names verified in the PR's immutable base tree on
+  `main` may reach the coder, quoted inside a delimited untrusted block.
+  A matching log pattern alone is not verification. Never use PR-head or
+  merge-group source for this allowlist. Raw pages and provider errors never
+  reach a prompt or comment. Critical.
 - **Planner exception.** `homelab-planner` may also receive text from any
   author, in the same delimited, quoted and sanitized block as the reviewer.
   It has a read-only repository token, no push, no coding-agent key or

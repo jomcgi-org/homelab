@@ -759,6 +759,23 @@
             "session": { "type": "string" }
           }
         },
+        "buildbuddy": {
+          "description": "Name a failed BuildBuddy status's targets and tests in revision prompts.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "host": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$"
+            },
+            "itemPath": {
+              "type": "string",
+              "pattern": "^$|^vaults/[^/]+/items/[^/]+$"
+            },
+            "key": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" }
+          }
+        },
         "database": {
           "type": "object",
           "additionalProperties": false,

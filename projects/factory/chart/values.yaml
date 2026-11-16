@@ -476,6 +476,18 @@ connector:
     issue: ""
     run: ""
     session: ""
+  # Optional CI evidence for revision rounds. When a trusted BuildBuddy
+  # status fails, the connector reads its invocation's log through
+  # BuildBuddy's GetLog API at https://<host> and names only the failing
+  # targets and tests in the round's prompt (connector/buildbuddy). The
+  # 1Password item at itemPath holds a read-only API key in field `key`; only
+  # the connector mounts it, and only its pod may reach the host. Set this in
+  # deploy values only after CI publishes a chart with this field.
+  buildbuddy:
+    enabled: false
+    host: ""
+    itemPath: vaults/k8s-homelab/items/buildbuddy
+    key: API_KEY
   # PostgreSQL, provided outside the chart: a Secret in the broker's namespace
   # whose key DATABASE_URL owns the connector's database (it migrates it at
   # startup). `endpoints` are Cilium selectors for the connector's egress.
