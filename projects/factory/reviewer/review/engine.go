@@ -1498,7 +1498,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			// review reads the interdiff before outcome; never assess without it.
 			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		r = LaterScope(in.priorHead, since).Lower(r, prior)
+		r = LaterScope(in.priorHead, since).Lower(r, prior, in.prior.Cleared)
 		a := Assess(r, prior)
 		a.Earlier = in.prior.Cleared
 		for _, f := range a.Deferred {

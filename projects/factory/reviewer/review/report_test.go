@@ -643,10 +643,10 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 		at("u.go:naming", SeverityLow, "u.go", false),
 	}}
 	prior := []Finding{finding("u.go:prior", SeverityHigh)}
-	if got := LaterScope("", d).Lower(r, prior); got != r {
+	if got := LaterScope("", d).Lower(r, prior, nil); got != r {
 		t.Fatal("a nil scope changed the report")
 	}
-	got := LaterScope("prev", d).Lower(r, prior)
+	got := LaterScope("prev", d).Lower(r, prior, nil)
 	var lowered []string
 	for _, f := range got.Findings {
 		if f.Lowered != "" {
@@ -680,7 +680,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 		many = append(many, finding(fmt.Sprintf("l%d", i), SeverityLow))
 	}
 	many = append(many, at("u.go:correctness:late", SeverityMedium, "u.go", true))
-	a = Assess(LaterScope("prev", d).Lower(&Report{Findings: many}, nil), nil)
+	a = Assess(LaterScope("prev", d).Lower(&Report{Findings: many}, nil, nil), nil)
 	if a.Conclusion != ConclusionSuccess || a.DroppedLow != 1 || len(a.Deferred) != 1 || a.Deferred[0].Lowered != SeverityMedium {
 		t.Fatalf("assessment = %+v", a)
 	}
@@ -690,6 +690,27 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	}
 	if body := *reviewComment(a, &Report{Summary: "s"}, &Binding{}, nil).Findings; !strings.Contains(body, "Reported medium; lowered because") {
 		t.Fatalf("comment:\n%s", body)
+	}
+}
+
+// A medium finding fixed on an earlier head, reintroduced and missed on a
+// later one, and reported again after an unrelated change keeps its severity.
+func TestLowerKeepsAFixedFindingsRegression(t *testing.T) {
+	d := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "other.go"}}}
+	r := &Report{Findings: []Finding{
+		{ID: "u.go:validation", Severity: SeverityMedium, Path: "u.go", Title: "t", Earlier: true},
+		{ID: "u.go:correctness", Severity: SeverityMedium, Path: "u.go", Title: "t", Earlier: true},
+	}}
+	cleared := []Cleared{
+		{ID: "u.go:validation", Status: StatusFixed},
+		{ID: "u.go:correctness", Status: StatusWithdrawn},
+	}
+	got := LaterScope("prev", d).Lower(r, nil, cleared)
+	if f := got.Findings[0]; f.Severity != SeverityMedium || f.Lowered != "" {
+		t.Fatalf("a fixed finding's regression was lowered: %+v", f)
+	}
+	if f := got.Findings[1]; f.Severity != SeverityLow || f.Lowered != SeverityMedium {
+		t.Fatalf("a withdrawn finding reported late was not lowered: %+v", f)
 	}
 }
 
@@ -727,7 +748,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
 	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead})
 	for _, line := range []string{
-		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again only when a change since prev, in any file, affects it:",
+		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since prev, in any file, affects it, and always when it is present on this head at high or critical severity:",
 		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
 		"- `old.go:correctness` fixed: Old. Note: Earlier fix.\n",
 	} {

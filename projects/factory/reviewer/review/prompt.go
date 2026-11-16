@@ -214,8 +214,8 @@ func Prompt(in PromptInput) string {
 		if len(in.Cleared) > 0 {
 			if LaterScope(in.PreviousHead, in.Interdiff) != nil {
 				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. A fixed one present again on this head is a "+
-					"regression: raise it at its own severity. Raise a justified or withdrawn one again only when a change since %s, "+
-					"in any file, affects it:\n\n", in.PreviousHead)
+					"regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since %s, "+
+					"in any file, affects it, and always when it is present on this head at high or critical severity:\n\n", in.PreviousHead)
 			} else {
 				b.WriteString("Reviews of earlier heads cleared these findings. The interdiff below cannot show that they stay " +
 					"cleared, so check each again as part of the full review:\n\n")
