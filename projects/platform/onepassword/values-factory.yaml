@@ -1,0 +1,24 @@
+# The factory cluster's Connect sizes, from its 14-16 Nov working-set peaks:
+# connect-api 33Mi, connect-sync 23Mi and the operator 24Mi, against the
+# hub-sized 256Mi, 128Mi and 128Mi in values.yaml. Request still equals
+# limit, at about three times each peak.
+connect:
+  connect:
+    api:
+      resources:
+        requests:
+          memory: 96Mi
+        limits:
+          memory: 96Mi
+    sync:
+      resources:
+        requests:
+          memory: 64Mi
+        limits:
+          memory: 64Mi
+  operator:
+    resources:
+      requests:
+        memory: 64Mi
+      limits:
+        memory: 64Mi

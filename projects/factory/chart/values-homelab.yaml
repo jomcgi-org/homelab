@@ -75,13 +75,22 @@ kagent:
 agents:
   codex:
     model: gpt-6-astra
-    # Substrate workers (requests 1 CPU, 2Gi), one actor each. The nodes idle
-    # at ~4% CPU, so the queue and merge contention bound throughput, not
+    # Substrate workers (requests 1 CPU, 1536Mi), one actor each. The nodes
+    # idle at ~4% CPU, so the queue and merge contention bound throughput, not
     # compute. Two more than connector.agents below allows runs: an idle
     # session's actor keeps its worker after its turn, and a resume with no
     # free worker fails ("no worker has room"), which the connector records
     # as an ambiguous send (HOME-131, 2026-11-16).
     concurrency: 6
+    # The request sizes the pool, not one turn: the six workers peaked at
+    # 8.8Gi together (14-16 Nov), about 1.5Gi each, while one turn reached
+    # 7.4Gi. A turn above its request uses free node memory, then zram swap:
+    # the nodes' kubelets give each container swap in proportion to its
+    # request (LimitedSwap), about 1.6Gi here.
+    worker:
+      resources:
+        requests:
+          memory: 1536Mi
   # The reviewer reads and never edits, so it needs no apply_patch and runs on
   # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14:
   # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
@@ -93,12 +102,13 @@ agents:
     # One worker per concurrent review (reviewer.concurrency).
     concurrency: 3
     # The review binding has no toolchain and runs no PR code, so its
-    # workers stay small: 1.2Gi at most over two days (2026-11-16), against
-    # the coder's 7.2Gi. The limit stays at the actor booking plus gVisor.
+    # workers stay small: 1.2Gi at most for one worker and 2.7Gi for all
+    # three together (14-16 Nov), sized per worker like the coder pool. The
+    # limit stays at the actor booking plus gVisor.
     worker:
       resources:
         requests:
-          memory: 1536Mi
+          memory: 1Gi
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
@@ -121,11 +131,18 @@ repositories:
 # factory/factory-itsaplan-oidc, both from factory-buckets.
 itsaplan:
   enabled: true
-  # The worker peaked at 43Mi over two days (2026-11-16) against 192Mi.
+  # Requests at the 99th-percentile working set plus 10% (14-16 Nov): api
+  # 265Mi, web 146Mi, worker 86Mi.
   resources:
+    api:
+      requests:
+        memory: 320Mi
+    web:
+      requests:
+        memory: 176Mi
     worker:
       requests:
-        memory: 64Mi
+        memory: 96Mi
   database:
     endpoints:
       - matchLabels:

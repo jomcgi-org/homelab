@@ -21,3 +21,20 @@ argocd_app(
         "values.yaml",
     ],
 )
+
+argocd_app(
+    name = "onepassword-factory",
+    chart = "projects/platform/onepassword",
+    chart_files = ":chart",
+    namespace = "default",
+    release_name = "connect",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_factory",
+    values_files = [
+        "values.yaml",
+        "values-factory.yaml",
+    ],
+)

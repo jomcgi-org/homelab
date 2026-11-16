@@ -50,11 +50,12 @@ argo-cd:
         memory: 96Mi
       limits:
         memory: 192Mi
+  # The applicationset controller peaked at 131Mi (14-16 Nov).
   applicationSet:
     resources:
       requests:
         cpu: 10m
-        memory: 64Mi
+        memory: 144Mi
   dex:
     resources:
       requests:

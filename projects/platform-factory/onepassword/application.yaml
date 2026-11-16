@@ -21,6 +21,7 @@ spec:
       releaseName: connect
       valueFiles:
         - values.yaml
+        - values-factory.yaml
   destination:
     server: https://kubernetes.default.svc
     # bootstrap-gitops.sh installs this release here first, with the

@@ -23,7 +23,8 @@ workloads:
     resources:
       requests:
         cpu: 10m
-        memory: 32Mi
+        # Each replica holds 63Mi (14-16 Nov).
+        memory: 80Mi
       limits:
         memory: 128Mi
     readinessProbe:
