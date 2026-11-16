@@ -79,6 +79,7 @@ func run(logger *slog.Logger) error {
 	}
 	go d.verifier.Run(ctx)
 	go d.grants.Run(ctx)
+	go d.usage.Run(ctx)
 	if d.reviewMinter != nil {
 		go d.reviewMinter.Run(ctx)
 	}
@@ -133,7 +134,9 @@ type deps struct {
 	verifier *actorjwt.Verifier
 	grants   *grant.Manager
 	relay    *relay.Relay
-	minter   *github.Minter
+	// usage keeps the grant's quota reading current between relayed calls.
+	usage  *relay.UsageRefresher
+	minter *github.Minter
 	// reviewMinter mints the reviewer App's tokens; commentMinter its PR
 	// comment tokens, apart so a permission the App lacks fails only those.
 	reviewMinter  *github.Minter
@@ -168,6 +171,9 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 			Quota:  quotaStore, Metrics: m, Logger: logger, MaxRequestBytes: cfg.Codex.MaxRequestBytes,
 			StreamIdleTimeout: cfg.Codex.StreamIdleTimeout.Duration, MaxConcurrent: cfg.Codex.MaxConcurrentRequests,
 			ReasoningEffort: cfg.Codex.ReasoningEffort,
+		},
+		usage: &relay.UsageRefresher{
+			Tokens: grants, Upstream: cfg.Codex.UpstreamURL, Quota: quotaStore, Metrics: m, Logger: logger,
 		},
 		reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger},
 	}

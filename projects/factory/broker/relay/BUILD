@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "relay",
-    srcs = ["relay.go"],
+    srcs = [
+        "relay.go",
+        "usage.go",
+    ],
     importpath = "github.com/jomcgi/homelab/projects/factory/broker/relay",
     visibility = ["//visibility:public"],
     deps = [
@@ -17,7 +20,10 @@ go_library(
 
 go_test(
     name = "relay_test",
-    srcs = ["relay_test.go"],
+    srcs = [
+        "relay_test.go",
+        "usage_test.go",
+    ],
     embed = [":relay"],
     deps = [
         "//projects/factory/broker/actorjwt",

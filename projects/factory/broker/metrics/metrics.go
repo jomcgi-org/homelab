@@ -14,6 +14,12 @@ const Prefix = "factory_broker"
 // GrantStates are the values of the grant state gauge's state label.
 var GrantStates = []string{"ready", "login_required", "missing", "error"}
 
+// UsageRefreshOutcomes are the values of the usage refresh counter's outcome
+// label.
+var UsageRefreshOutcomes = []string{
+	"refreshed", "login_required", "token_error", "http_error", "authorization_error", "decode_error", "store_error",
+}
+
 type Metrics struct {
 	// Shared refresh counters from the token broker library.
 	Refresh *shared.Metrics
@@ -30,10 +36,12 @@ type Metrics struct {
 	// GitHubMints counts installation token mints by kind, binding and
 	// outcome.
 	GitHubMints *prometheus.CounterVec
+	// UsageRefresh counts reads of the Codex usage endpoint by outcome.
+	UsageRefresh *prometheus.CounterVec
 }
 
 func New() *Metrics {
-	return &Metrics{
+	m := &Metrics{
 		Refresh: shared.NewWithPrefix(Prefix),
 		GrantState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: Prefix + "_codex_grant_state", Help: "Codex grant state: 1 for the current state.",
@@ -53,12 +61,20 @@ func New() *Metrics {
 		GitHubMints: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: Prefix + "_github_mints_total", Help: "GitHub installation token mints by kind, binding and outcome.",
 		}, []string{"kind", "binding", "outcome"}),
+		UsageRefresh: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: Prefix + "_codex_usage_refresh_total", Help: "Codex usage endpoint reads by outcome.",
+		}, []string{"outcome"}),
 	}
+	// Every outcome starts at zero, so the first failure shows as an increase.
+	for _, outcome := range UsageRefreshOutcomes {
+		m.UsageRefresh.WithLabelValues(outcome)
+	}
+	return m
 }
 
 func (m *Metrics) Register(r prometheus.Registerer) {
 	m.Refresh.Register(r)
-	r.MustRegister(m.GrantState, m.GrantExpiry, m.RefreshOutcomes, m.RelayRequests, m.ActorRejections, m.GitHubMints)
+	r.MustRegister(m.GrantState, m.GrantExpiry, m.RefreshOutcomes, m.RelayRequests, m.ActorRejections, m.GitHubMints, m.UsageRefresh)
 }
 
 // SetGrantState marks state as the grant's only current state.
