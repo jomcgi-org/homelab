@@ -543,6 +543,8 @@ type State struct {
 	// IssuesPending revokes that report until a fresh review can run.
 	IssueDigest   string `json:"issueDigest,omitempty"`
 	IssuesPending bool   `json:"issuesPending,omitempty"`
+	// Goal caches the goal check for this head and IssueDigest's evidence.
+	Goal *GoalCheck `json:"goal,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -942,7 +944,7 @@ func encodeState(st State) string {
 		// Without the cleared record, so it says the record is partial.
 		small := State{
 			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session,
-			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending,
+			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal,
 		}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.

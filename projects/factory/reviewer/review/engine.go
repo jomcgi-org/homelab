@@ -1141,6 +1141,7 @@ func (e *Engine) waitForQuota(ctx context.Context, b *Binding, run *github.Check
 // inputs are what a review is judged with, read before its task is sent.
 type inputs struct {
 	issues    *IssueContext
+	goal      *GoalCheck // the head's goal check, or nil
 	files     []github.PullRequestFile
 	size      DiffSize
 	gate      *Gate
@@ -1221,6 +1222,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				in = got
 				sameSnapshot := false
 				if st, ok := LoadState(run.Text); ok {
+					in.goal = st.Goal // goalCheck reuses it for the same evidence.
 					if st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
 						// previousState skips the same head; retain its report too.
 						in.prior, in.priorHead, in.priorUnknown = st, pr.HeadSHA, ""
@@ -1436,6 +1438,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 			res := e.outcome(ctx, b, currentPR, t, in, l)
+			if ctx.Err() != nil {
+				continue // stop ends the review.
+			}
 			if res.reason != "" {
 				if next(res.reason) {
 					return
@@ -1452,7 +1457,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					return
 				}
 				st, _ := LoadState(res.o.Output.Text)
-				st.IssueDigest = rec.Issues
+				st.IssueDigest, st.Goal = rec.Issues, in.goal
 				res.o.Output.Text = encodeState(st)
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
@@ -1731,6 +1736,12 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		// Only a usable code review starts the goal check, which costs a
+		// second model call.
+		key := goalKey(in.issues)
+		if key != "" {
+			in.goal = e.goalCheck(ctx, b, pr, in, l)
+		}
 		prior := in.prior.Previous()
 		since, err := e.interdiff(ctx, b, pr, in, l)
 		if err != nil {
@@ -1745,6 +1756,9 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// The service's own evidence findings are added after lowering, so
 		// none of them is ever lowered.
 		applyIssueFindings(r, in.issues)
+		if key != "" {
+			applyGoal(r, prior, b.ItsaplanProject, goalFindings(key, in.goal))
+		}
 		a := Assess(r, prior)
 		a.Earlier, a.EarlierPartial = in.prior.Cleared, !in.prior.ClearedComplete()
 		for _, f := range a.Deferred {
