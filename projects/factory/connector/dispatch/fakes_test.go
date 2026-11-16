@@ -446,6 +446,9 @@ type fakeKagent struct {
 	sends           []fakeSend
 	executions      int
 	calls           int
+	// getTaskHooks run in order, one at the start of each GetTask; a nil
+	// entry skips that call.
+	getTaskHooks []func()
 	// loseResponse accepts the next send but loses its response.
 	loseResponse bool
 	// dropSend loses the next send before kagent accepts it.
@@ -520,6 +523,7 @@ func (k *fakeKagent) Pin(ctx context.Context) (context.Context, kagent.CallerIde
 func copyTask(t *kagent.Task) *kagent.Task {
 	c := *t
 	c.History = append([]*kagent.Message(nil), t.History...)
+	c.Artifacts = append([]*kagent.Artifact(nil), t.Artifacts...)
 	return &c
 }
 
@@ -650,6 +654,15 @@ func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.
 }
 
 func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Task, error) {
+	k.mu.Lock()
+	var hook func()
+	if len(k.getTaskHooks) > 0 {
+		hook, k.getTaskHooks = k.getTaskHooks[0], k.getTaskHooks[1:]
+	}
+	k.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
@@ -863,6 +876,21 @@ func (k *fakeKagent) finish(id, state, text string, usage map[string]any) {
 	}
 	t.task.History = append(t.task.History, reply)
 	t.task.Status = kagent.TaskStatus{State: state, Message: reply}
+}
+
+// tool adds a tool call or result as kagent's Codex harness records it:
+// an artifact with one data part marked with its part type.
+func (k *fakeKagent) tool(id, callID, partType string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	t := k.tasks[id]
+	t.task.Artifacts = append(t.task.Artifacts, &kagent.Artifact{
+		ArtifactID: fmt.Sprintf("%s-a%d", id, len(t.task.Artifacts)),
+		Parts: []kagent.Part{{
+			Data:     map[string]any{"id": callID, "name": "command_execution"},
+			Metadata: map[string]any{kagent.PartTypeKey: partType},
+		}},
+	})
 }
 
 func (k *fakeKagent) say(id, text string) {

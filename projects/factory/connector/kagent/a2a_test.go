@@ -134,6 +134,33 @@ func TestListGetCancel(t *testing.T) {
 	}
 }
 
+// The artifacts are in the shape kagent v1.0.1 stores for a Codex command
+// (a2a-go v2.7.0 Part JSON: one data part with its part-type metadata).
+func TestToolRunningPairsCallsWithResults(t *testing.T) {
+	const call = `{"artifactId":"a1","parts":[{"data":{"id":"exec-1","name":"command_execution","args":{"command":"ci"}},"metadata":{"kagent.dev/a2a/part-type":"function_call"}}]}`
+	const text = `{"artifactId":"a2","parts":[{"text":"running ci"}]}`
+	const result = `{"artifactId":"a3","parts":[{"data":{"id":"exec-1","name":"command_execution","response":{"result":{"status":"completed"}}},"metadata":{"kagent.dev/a2a/part-type":"function_response"}}]}`
+	for _, c := range []struct {
+		artifacts string
+		running   bool
+	}{
+		{"", false},
+		{call, true},
+		{call + "," + text, true},
+		{call + "," + text + "," + result, false},
+	} {
+		var got rpcSeen
+		reply := `{"jsonrpc":"2.0","id":"1","result":{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_WORKING"},"artifacts":[` + c.artifacts + `]}}`
+		task, err := a2aServer(t, reply, &got).GetTask(context.Background(), ref, "t1")
+		if err != nil {
+			t.Fatalf("artifacts [%s]: %v", c.artifacts, err)
+		}
+		if task.ToolRunning() != c.running {
+			t.Errorf("artifacts [%s]: running = %v, want %v", c.artifacts, task.ToolRunning(), c.running)
+		}
+	}
+}
+
 func TestListTasksRejectsIncompleteResponses(t *testing.T) {
 	for name, result := range map[string]string{
 		"null result":       `null`,

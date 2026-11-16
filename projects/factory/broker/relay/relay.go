@@ -591,8 +591,10 @@ func latestReset(obs quota.Observation) time.Time {
 // writeQuota refuses a call while the grant is exhausted. It sends no
 // Retry-After: Codex sleeps until that deadline, and a window reset is days
 // away, so a turn would hold its slot until then. Without the header, Codex
-// retries on its short backoff and ends the turn with "exceeded retry limit,
-// last status: 429", which the connector classes as quota and pauses.
+// 0.161.0 does not retry the 429 and ends the turn with "exceeded retry
+// limit, last status: 429 Too Many Requests", which the connector classes as
+// quota and pauses. The connector's classify.go cites the Codex and kagent
+// source.
 func writeQuota(w http.ResponseWriter, until time.Time) outcome {
 	extra := map[string]string{}
 	if !until.IsZero() {

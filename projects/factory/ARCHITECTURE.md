@@ -647,10 +647,14 @@ a grant that still fails pauses again only after the broker's next reading,
 about every 30 minutes. The same reading stops a turn that never fails:
 while the broker reads the quota exhausted, the connector cancels a running
 turn that has had no task event for `intervals.quotaStall` (10 minutes). A
-task event is a new history message or artifact text in the connector's
-`GetTask` read, recorded on the attempt (`event_at`); a turn not yet read
-counts from its send. The connector reads the broker while a quota block
-stands or a turn is that quiet. Each read is recorded in `quota_read`
+task event is a new history message, artifact or artifact text in the
+connector's `GetTask` read, recorded on the attempt (`event_at`); a turn not
+yet read counts from its send. kagent records each tool or command as a
+`function_call` artifact when it starts and a `function_response` with the
+same ID when it ends. A turn with a call and no response is busy, such as
+during a 30-minute `ci` run, and is never canceled for quiet. The
+connector reads the broker while a quota block stands or a turn is that
+quiet. Each read is recorded in `quota_read`
 before the call, under the writer's epoch, with one message ID for each
 quota block (`quota/block/<scope>/<began>`) and quiet turn
 (`quota/stall/<attempt>`) it serves. The next poll and a new writer after
@@ -658,8 +662,8 @@ a takeover reuse those IDs and count the attempt; the read always fetches
 the current reading. kagent's confirmation finishes the turn as a
 quota failure, so it waits and resumes like one. A turn that ended on its
 own meanwhile keeps its outcome, and a stop of its run or work item before
-the confirmation still reports the stop. A turn can stay quiet longer during a long
-tool call, such as a 30-minute `ci` run, so a usable reading cancels
+the confirmation still reports the stop: blocking a turn locks its work
+item and run and checks for a stop first. A usable reading cancels
 nothing. Failed
 runs and runs claimed meanwhile wait without holding a concurrency slot,
 keeping their itsaplan leases alive. After unblock, a credential failure
@@ -1059,8 +1063,8 @@ and retries once, so a brief overlap during a rollout is safe.
   `usage_limit_reached` body; a current exhausted window blocks before the
   backend is called). It sends no `Retry-After`: Codex sleeps until that
   deadline, so on 2026-11-16 three turns held coding slots for 12 hours.
-  Codex instead retries on its own short backoff and fails the turn, and the
-  connector pauses the grant until `GET /codex/quota` reads usable
+  Without it, Codex 0.161.0 fails the turn at once, and the connector pauses
+  the grant until `GET /codex/quota` reads usable
   (HOME-127); `codex_grant_unavailable` (503, transient: a failed
   refresh, a missing grant Secret, or the backend refusing a freshly
   refreshed token); `relay_busy` (503). A backend 401 replaces the token
