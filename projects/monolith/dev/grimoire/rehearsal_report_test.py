@@ -106,9 +106,7 @@ def refused_poll_report(seat, polled, refused_for_seat):
     """One session poll answered 404, as the reassignment journey observes it."""
     report = new_report("session", 1280)
     report["checks"].append("Character reassignment starts")
-    declared = declare_refused_poll(
-        report, seat, "GET", polled, 404, refused_for_seat
-    )
+    declared = declare_refused_poll(report, seat, "GET", polled, 404, refused_for_seat)
     report["responses"].append(
         {"seat": seat, "method": "GET", "url": polled, "status": 404}
     )
