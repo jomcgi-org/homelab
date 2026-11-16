@@ -1808,10 +1808,12 @@ previews).
   `cited` block. A number that names an issue or nothing reads as "not a
   pull request" (`pullRequest(number:)` needs no issues permission), and a
   failed read marks that PR unread instead of holding the review.
-- **Issue evidence (HOME-58).** The service resolves the connector's branch
-  for `jomcgi-factory[bot]` PRs; PR text cannot override it. Other PRs use
-  the first `Refs HOME-N` in the body, then commit messages in PR order,
-  read once per head.
+- **Issue evidence (HOME-58).** The service reads issue and decision
+  evidence only for PRs by `jomcgi-factory[bot]` or a `humanApprovers`
+  login; any other PR gets none, and its description stands in. For the
+  factory App it resolves the connector's branch; PR text cannot override
+  it. Other PRs use the first `Refs HOME-N` in the body, then commit
+  messages in PR order, read once per head.
   The service supplies title, description and workflow status and asks both
   whether the change is safe and whether it meets the issue's goal and
   criteria. Live acceptance remains with the delivery owner. No resolvable
@@ -1860,7 +1862,15 @@ previews).
   human-gate reconciliation; a legacy pass without a digest needs review.
   A merge group's pass lasts until the first poll after an evidence change
   (30 seconds by default). GitHub can merge the group in that gap, as it
-  can after a hold label lands on the PR.
+  can after a hold label lands on the PR. Joe accepted this window.
+  **Why.** The `factory review` check is public and itsaplan is private.
+  Joe chose trusted authors and no quotes on 2026-11-16
+  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469),
+  [record](https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1047)).
+  The report names only the issue key and criterion number. Before it
+  posts the report, the service removes each run of eight or more words
+  that also occurs in the issue or decision text, so the prompt is not the
+  only barrier.
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
   and narrowed it the same day to what could weaken the gate itself

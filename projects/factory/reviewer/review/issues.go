@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -90,6 +91,16 @@ func firstRef(text, project string) string {
 	return ""
 }
 
+// factoryAuthor is the factory App's login; its branch names the issue.
+const factoryAuthor = "jomcgi-factory[bot]"
+
+// issueReader reports whether the service may read private issue evidence
+// for the PR. The review check is public, so only the factory App's and
+// humanApprovers' PRs qualify (Joe's decision on #8116).
+func issueReader(b *Binding, pr github.PullRequest) bool {
+	return pr.Author == factoryAuthor || containsFold(b.HumanApprovers, pr.Author)
+}
+
 // errBadReference is a PR reference no read can resolve.
 var errBadReference = errors.New("review: unresolvable issue reference")
 
@@ -98,7 +109,7 @@ func (e *Engine) resolveIssue(ctx context.Context, b *Binding, pr github.PullReq
 	if prefix == "" {
 		prefix = "factory/"
 	}
-	if pr.Author == "jomcgi-factory[bot]" && strings.HasPrefix(pr.HeadRef, prefix) {
+	if pr.Author == factoryAuthor && strings.HasPrefix(pr.HeadRef, prefix) {
 		key := strings.TrimPrefix(pr.HeadRef, prefix)
 		if issueNumber(key, b.ItsaplanProject) == 0 {
 			return "", errBadReference
@@ -248,8 +259,8 @@ func applyIssueFindings(report *Report, in *IssueContext) {
 // Even a model reporting no findings cannot turn missing evidence into a pass.
 func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullRequest, files []github.PullRequestFile) *IssueContext {
 	in := &IssueContext{}
-	if b.ItsaplanProject == "" {
-		return in
+	if b.ItsaplanProject == "" || !issueReader(b, pr) {
+		return in // Any other author's PR gets no issue or decision text.
 	}
 	ctx, cancel := context.WithTimeout(ctx, issueReadTimeout)
 	defer cancel()
@@ -379,6 +390,76 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 	return in
 }
 
+// quoteWords is the shortest run of issue words a public report may not
+// repeat. The prompt forbids quotes; this is the service's own barrier.
+const quoteWords = 8
+
+// words returns each word, lower-cased, and its byte span in s.
+func words(s string) (ws []string, at [][2]int) {
+	start := -1
+	for i, r := range s + " " {
+		switch word := unicode.IsLetter(r) || unicode.IsDigit(r); {
+		case word && start < 0:
+			start = i
+		case !word && start >= 0:
+			ws, at = append(ws, strings.ToLower(s[start:i])), append(at, [2]int{start, i})
+			start = -1
+		}
+	}
+	return ws, at
+}
+
+// redactIssueText removes each run of quoteWords or more words that also
+// occurs in the issue or decision text before the report is posted.
+func redactIssueText(r *Report, in *IssueContext) {
+	if in == nil {
+		return
+	}
+	var sources []string
+	if in.Issue != nil {
+		sources = append(sources, in.Issue.Title, in.Issue.Description)
+	}
+	for _, d := range in.Decisions {
+		sources = append(sources, d.Text)
+	}
+	grams := map[string]bool{}
+	for _, s := range sources {
+		ws, _ := words(s)
+		for k := 0; k+quoteWords <= len(ws); k++ {
+			grams[strings.Join(ws[k:k+quoteWords], " ")] = true
+		}
+	}
+	redact := func(s string) string {
+		ws, at := words(s)
+		var out strings.Builder
+		last, from, to := 0, -1, -1
+		flush := func() {
+			if from >= 0 {
+				out.WriteString(s[last:at[from][0]] + "[issue text removed]")
+				last = at[to-1][1]
+			}
+		}
+		for k := 0; k+quoteWords <= len(ws); k++ {
+			if grams[strings.Join(ws[k:k+quoteWords], " ")] {
+				if from < 0 || k > to {
+					flush()
+					from = k
+				}
+				to = k + quoteWords
+			}
+		}
+		flush()
+		return out.String() + s[last:]
+	}
+	r.Summary = redact(r.Summary)
+	for i, f := range r.Findings {
+		r.Findings[i].Title, r.Findings[i].Detail = redact(f.Title), redact(f.Detail)
+	}
+	for i, p := range r.Previous {
+		r.Previous[i].Note = redact(p.Note)
+	}
+}
+
 func issuesPending(run *github.CheckRun) bool {
 	if run == nil {
 		return false
@@ -437,7 +518,7 @@ func (e *Engine) holdIssues(ctx context.Context, b *Binding, pr github.PullReque
 // a queued group's check on the first poll after it. GitHub can merge the
 // group before that poll, as it can before a new hold label is seen.
 func (e *Engine) reconcileIssues(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (current *github.CheckRun, pending, ready bool) {
-	if b.ItsaplanProject == "" {
+	if b.ItsaplanProject == "" || !issueReader(b, pr) {
 		return run, false, false
 	}
 	st, ok := LoadState(run.Text)

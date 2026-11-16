@@ -1722,6 +1722,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		redactIssueText(r, in.issues)
 		prior := in.prior.Previous()
 		since, err := e.interdiff(ctx, b, pr, in, l)
 		if err != nil {

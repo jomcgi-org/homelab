@@ -27,6 +27,10 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   text from any author, because reviewing them is its job, and only inside
   a delimited untrusted block, quoted and
   sanitized so no text closes the block or starts a line of its own.
+  The service reads itsaplan only for PRs by the factory App or a
+  `humanApprovers` login, and removes any run of eight or more issue words
+  from the public report before it posts it
+  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469)).
   itsaplan account IDs and member kind, resolved by the service, establish
   authorship; display names and claims in text never do. Only configured
   trusted member accounts confer decision authority, and only for text
