@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -662,6 +663,90 @@ func TestRelayQuota(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("quota_exhausted", "4xx")); got != 2 {
 		t.Fatalf("quota metric = %v", got)
+	}
+}
+
+// A full window the backend still serves is not a block: the account can
+// carry a redeemed reset the window headers do not show.
+func TestRelayFullWindowStillAllowed(t *testing.T) {
+	h := newHarness(t, true)
+	reset := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	h.backend.set(func(b *backend) {
+		b.respond = func(w http.ResponseWriter, r *http.Request) {
+			quotaHeaders(w, 100, reset)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+		}
+	})
+	for i := 0; i < 2; i++ {
+		resp := h.post("/v1/responses", h.actorJWT())
+		_, _ = io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status = %d", i, resp.StatusCode)
+		}
+		h.waitQuota(func(v quota.View) bool { return v.Observed })
+	}
+	if got := h.backend.count(); got != 2 {
+		t.Fatalf("backend calls = %d, want 2", got)
+	}
+}
+
+// A usage-limit refusal blocks locally, but one request per probe interval
+// goes upstream so a lifted limit is noticed before the window resets.
+func TestRelayQuotaProbe(t *testing.T) {
+	h := newHarness(t, true)
+	var offset atomic.Int64
+	h.handler.Now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	h.handler.QuotaProbeInterval = 30 * time.Minute
+	reset := time.Now().Add(48 * time.Hour).Truncate(time.Second)
+	var lifted atomic.Bool
+	h.backend.set(func(b *backend) {
+		b.respond = func(w http.ResponseWriter, r *http.Request) {
+			if lifted.Load() {
+				sse(w, nil)
+				return
+			}
+			quotaHeaders(w, 100, reset)
+			w.Header().Set("x-codex-rate-limit-reached-type", "primary")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached"}}`))
+		}
+	})
+	status := func() int {
+		resp := h.post("/v1/responses", h.actorJWT())
+		_, _ = io.ReadAll(resp.Body)
+		return resp.StatusCode
+	}
+	if got := status(); got != http.StatusTooManyRequests {
+		t.Fatalf("first status = %d", got)
+	}
+	h.waitQuota(func(v quota.View) bool { return v.Exhausted })
+
+	// Inside the interval the block holds without calling the backend.
+	offset.Store(int64(29 * time.Minute))
+	if got := status(); got != http.StatusTooManyRequests || h.backend.count() != 1 {
+		t.Fatalf("blocked status = %d, backend calls = %d", got, h.backend.count())
+	}
+
+	// After it, one probe reaches the backend; a refusal blocks again.
+	offset.Store(int64(31 * time.Minute))
+	if got := status(); got != http.StatusTooManyRequests || h.backend.count() != 2 {
+		t.Fatalf("probe status = %d, backend calls = %d", got, h.backend.count())
+	}
+	if got := status(); got != http.StatusTooManyRequests || h.backend.count() != 2 {
+		t.Fatalf("after probe status = %d, backend calls = %d", got, h.backend.count())
+	}
+
+	// The next probe finds the limit lifted, and its reading ends the block.
+	lifted.Store(true)
+	offset.Store(int64(62 * time.Minute))
+	if got := status(); got != http.StatusOK {
+		t.Fatalf("lifted probe status = %d", got)
+	}
+	h.waitQuota(func(v quota.View) bool { return !v.Exhausted })
+	if got := status(); got != http.StatusOK || h.backend.count() != 4 {
+		t.Fatalf("after lift status = %d, backend calls = %d", got, h.backend.count())
 	}
 }
 
