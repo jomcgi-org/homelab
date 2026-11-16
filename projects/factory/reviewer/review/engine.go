@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
@@ -61,6 +62,11 @@ type Tasks interface {
 	// ListTasks lists one session's tasks, without history, before the
 	// session is resumed.
 	ListTasks(ctx context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error)
+}
+
+// Quota reads the shared Codex grant before the reviewer sends work.
+type Quota interface {
+	Quota(context.Context) (github.QuotaReading, error)
 }
 
 // Check must succeed on a head before it is enqueued: a check run named
@@ -149,6 +155,8 @@ type Config struct {
 	// sessions no review will resume (see sweep); nil keeps every session
 	// until kagent's idle TTL.
 	Cleaner SessionCleaner
+	// Quota pauses dispatch while the shared Codex grant is exhausted.
+	Quota Quota
 }
 
 // Engine runs the reviewer.
@@ -860,6 +868,13 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 // when the head has none. It reports true, starting nothing, when every
 // slot is taken; a head already under review starts nothing either.
 func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
+	// A waiting check needs only a quota read, without a review worker.
+	if run != nil {
+		rec := RecordedTask(run.Summary)
+		if !rec.QuotaSince.IsZero() && e.waitForQuota(ctx, b, run, rec, e.prLog(b, pr)) {
+			return false
+		}
+	}
 	key := headKey{b.Name, pr.HeadSHA}
 	e.mu.Lock()
 	if _, ok := e.inflight[key]; ok {
@@ -957,11 +972,17 @@ type recorded struct {
 	Attempt int
 	ID      string
 	Sent    time.Time
+	// QuotaRetry gives a resumed send a new identity without spending an
+	// attempt. QuotaSince persists the wait across service restarts.
+	QuotaRetry int
+	QuotaSince time.Time
 }
 
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
 var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*) -->`)
+
+var quotaMarker = regexp.MustCompile(`<!-- factory-review:quota retry=([0-9]+) since=([0-9]+) -->`)
 
 // RecordedTask is the attempt and kagent task an in-progress review check
 // run records.
@@ -976,6 +997,13 @@ func RecordedTask(summary string) recorded {
 	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
 		rec.Sent = time.Unix(sec, 0)
 	}
+	if all := quotaMarker.FindAllStringSubmatch(summary, -1); len(all) > 0 {
+		m := all[len(all)-1]
+		rec.QuotaRetry, _ = strconv.Atoi(m[1])
+		if ns, err := strconv.ParseInt(m[2], 10, 64); err == nil && ns > 0 {
+			rec.QuotaSince = time.Unix(0, ns)
+		}
+	}
 	return rec
 }
 
@@ -983,6 +1011,9 @@ func RecordedTask(summary string) recorded {
 // an earlier attempt ended, the head's human gate, and the attempt marker.
 func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 	s := fmt.Sprintf("The kagent agent `%s/%s` is reviewing this commit.", b.Agent.Namespace, b.Agent.Name)
+	if !rec.QuotaSince.IsZero() {
+		s = "Waiting for the shared Codex grant to reset. This review holds no worker and spends no attempt while waiting."
+	}
 	if note != "" {
 		s += "\n\n" + note
 	}
@@ -1000,7 +1031,41 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 		}
 		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d -->", rec.Attempt, rec.ID, sent)
 	}
+	if rec.QuotaRetry > 0 || !rec.QuotaSince.IsZero() {
+		var since int64
+		if !rec.QuotaSince.IsZero() {
+			since = rec.QuotaSince.UnixNano()
+		}
+		s += fmt.Sprintf("\n\n<!-- factory-review:quota retry=%d since=%d -->", rec.QuotaRetry, since)
+	}
 	return s
+}
+
+// waitForQuota leaves the check in progress and returns the worker to the
+// pool. A failed read never dispatches work; after a quota refusal, only a
+// newer usable reading can resume it, as in the connector.
+func (e *Engine) waitForQuota(ctx context.Context, b *Binding, run *github.CheckRun, rec recorded, l *slog.Logger) bool {
+	if e.cfg.Quota == nil && rec.QuotaSince.IsZero() {
+		return false
+	}
+	note := "Waiting for a usable reading from the broker."
+	if e.cfg.Quota != nil {
+		q, err := e.cfg.Quota.Quota(ctx)
+		if err == nil && !q.Exhausted && (rec.QuotaSince.IsZero() || q.ReceivedAt.After(rec.QuotaSince)) {
+			return false
+		}
+		if err != nil {
+			l.WarnContext(ctx, "could not read Codex quota", "error", err)
+		} else if q.Exhausted && !q.ResetsAt.IsZero() {
+			note = "The broker reports a reset at " + q.ResetsAt.UTC().Format(time.RFC3339) + "."
+		}
+	}
+	rec.Attempt = max(rec.Attempt, 1)
+	if rec.QuotaSince.IsZero() {
+		rec.QuotaSince = e.cfg.Now()
+	}
+	e.recordProgress(ctx, b, run, nil, rec, note, l)
+	return true
 }
 
 // inputs are what a review is judged with, read before its task is sent.
@@ -1029,7 +1094,8 @@ type inputs struct {
 // that ends without a report (a failed, rejected or timed-out task, an
 // unusable reply, or reads that kept failing) is followed by the next one
 // after RetryBackoff; the last one fails the check. A restart finds the task the check run records, else
-// sends the recorded attempt's message again.
+// sends the recorded attempt's message again. A quota refusal instead leaves
+// the check in progress, spends no attempt and releases the worker.
 func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, l *slog.Logger) {
 	local := *run
 	run = &local
@@ -1047,7 +1113,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		msg      *kagent.Message
 		sends    int
 		lastSend time.Time
-		refused  bool
+		refused  = rec.QuotaRetry > 0
 	)
 	// next ends the attempt without a report. It reports true when that was
 	// the last attempt and the check is complete.
@@ -1075,6 +1141,12 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		if ctx.Err() != nil {
 			e.stop(ctx, b, pr, run, rec.ID, l)
 			return
+		}
+		if rec.ID == "" {
+			if e.waitForQuota(ctx, b, run, rec, l) {
+				return
+			}
+			rec.QuotaSince = time.Time{}
 		}
 		late := !e.cfg.Now().Before(began.Add(e.cfg.Timeout))
 		if in == nil {
@@ -1138,6 +1210,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				switch {
 				case err == nil:
 					msg, sends = m, 0
+					if rec.QuotaRetry > 0 {
+						msg.MessageID += fmt.Sprintf("/quota-%d", rec.QuotaRetry)
+					}
 				case late:
 					if next("the reviewer could not read the rules or the PR from GitHub.") {
 						return
@@ -1160,12 +1235,16 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				e.sleep(ctx, wait)
 				continue
 			}
+			// Rules and session reads can take time. Check again at dispatch.
+			if e.waitForQuota(ctx, b, run, rec, l) {
+				return
+			}
 			t, err := e.tasks.Send(ctx, b.Agent, *msg)
 			sends++
 			lastSend = e.cfg.Now()
 			switch {
 			case err == nil:
-				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend}
+				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, QuotaRetry: rec.QuotaRetry}
 				e.m.ReviewSessions.WithLabelValues(b.Name, in.plan.path(), in.plan.reason).Inc()
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends,
 					"path", in.plan.path(), "reason", in.plan.reason, "context_id", t.ContextID)
@@ -1189,6 +1268,13 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		}
 		t, err := e.tasks.GetTask(ctx, b.Agent, rec.ID)
 		switch {
+		case err == nil && t.Status.State == kagent.StateFailed &&
+			dispatch.Classify(t.Status.State, dispatch.StatusText(t)) == dispatch.ClassQuota:
+			// The provider refused this task. Keep the attempt and give its
+			// eventual replacement a new message ID, persisted before sending.
+			rec = recorded{Attempt: attempt, QuotaRetry: rec.QuotaRetry + 1, QuotaSince: e.cfg.Now()}
+			e.recordProgress(ctx, b, run, in.gate, rec, "The review task reached the provider usage limit. It will resume after a newer usable broker reading.", l)
+			return
 		case err == nil && kagent.Quiescent(t.Status.State):
 			current, err := e.gh.PullRequestQueue(ctx, b.repo(), pr.Number)
 			if err != nil {
@@ -1276,7 +1362,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			// Expired or never seen: the attempt's message finds or opens it.
 			l.WarnContext(ctx, "review task not found; sending its message again", "task", rec.ID)
 			e.m.KagentErrors.WithLabelValues(b.Name, "get_task").Inc()
-			rec = recorded{Attempt: attempt}
+			rec = recorded{Attempt: attempt, QuotaRetry: rec.QuotaRetry}
 			e.sleep(ctx, e.cfg.TaskPoll)
 			continue
 		case err != nil:
@@ -1499,9 +1585,13 @@ func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.Che
 		st.Gate = &observed
 	}
 	run.Text = encodeState(st)
+	title := "Review in progress"
+	if !rec.QuotaSince.IsZero() {
+		title = "Waiting for Codex quota"
+	}
 	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
 		ExternalID: run.ExternalID,
-		Output:     &github.CheckRunOutput{Title: "Review in progress", Summary: keepEnqueueHistory(progressSummary(b, gate, rec, note), run), Text: run.Text},
+		Output:     &github.CheckRunOutput{Title: title, Summary: keepEnqueueHistory(progressSummary(b, gate, rec, note), run), Text: run.Text},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)

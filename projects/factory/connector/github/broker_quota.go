@@ -11,7 +11,7 @@ import (
 )
 
 // DefaultQuotaPath is the broker endpoint that reports the Codex grant's
-// quota to the connector.
+// quota to the connector and reviewer.
 const DefaultQuotaPath = "/codex/quota"
 
 // QuotaReading is the broker's latest quota reading for its Codex grant.
@@ -24,8 +24,8 @@ type QuotaReading struct {
 	ReceivedAt time.Time
 }
 
-// BrokerQuota reads the broker's quota reading, so the connector can resume
-// work a quota failure paused (HOME-127).
+// BrokerQuota reads the broker's quota reading, so dispatchers can resume
+// work a quota failure paused (HOME-127, HOME-110).
 type BrokerQuota struct {
 	// URL is the broker's base URL.
 	URL    string
