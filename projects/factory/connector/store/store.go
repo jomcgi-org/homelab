@@ -589,7 +589,9 @@ func GrantScope(namespace, agent string) string { return "kagent:" + namespace +
 
 // Block marks a work item blocked by a credential or quota failure and
 // pauses its grant's other work items. started is false when the grant was
-// already blocked, so the block is announced once.
+// already blocked, so the block is announced once. A credential failure
+// turns a standing quota block into a credential block and starts it: the
+// grant then needs a person, and a usable quota reading must not clear it.
 func (s *Store) Block(ctx context.Context, q Querier, w *WorkItem, class, reason string) (started bool, err error) {
 	if _, err := q.ExecContext(ctx, `
 		UPDATE work_item SET state = 'blocked', blocked_class = $2, blocked_reason = $3, updated_at = now()
@@ -599,7 +601,8 @@ func (s *Store) Block(ctx context.Context, q Querier, w *WorkItem, class, reason
 	res, err := q.ExecContext(ctx, `
 		INSERT INTO grant_block (scope, class, reason) VALUES ($1, $2, $3)
 		ON CONFLICT (scope) DO UPDATE SET class = $2, reason = $3, created_at = now(), cleared_at = NULL
-		WHERE grant_block.cleared_at IS NOT NULL`,
+		WHERE grant_block.cleared_at IS NOT NULL
+			OR (grant_block.class = 'quota' AND EXCLUDED.class = 'credential')`,
 		GrantScope(w.KagentNamespace, w.KagentAgent), class, reason)
 	if err != nil {
 		return false, err
@@ -682,15 +685,21 @@ func (s *Store) RecordQuotaReads(ctx context.Context, w *Writer, messageIDs []st
 }
 
 // ClearQuotaBlocks clears the quota blocks that began before a usable quota
-// reading was received, and the work items they blocked, as ClearGrantBlock
-// does. It returns the cleared scopes.
+// reading was received, and the work items quota failures blocked. It
+// returns the cleared scopes. A credential failure needs a person: a grant
+// with a credential-blocked work item keeps its block, and that work item
+// stays blocked, until the operator's unblock (ClearGrantBlock).
 func (s *Store) ClearQuotaBlocks(ctx context.Context, before time.Time) ([]string, error) {
 	var scopes []string
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		scopes = nil
 		rows, err := tx.QueryContext(ctx, `
-			UPDATE grant_block SET cleared_at = now()
-			WHERE class = 'quota' AND cleared_at IS NULL AND created_at < $1 RETURNING scope`, before)
+			UPDATE grant_block g SET cleared_at = now()
+			WHERE g.class = 'quota' AND g.cleared_at IS NULL AND g.created_at < $1
+				AND NOT EXISTS (SELECT 1 FROM work_item w
+					WHERE w.state = 'blocked' AND w.blocked_class = 'credential'
+						AND 'kagent:' || w.kagent_namespace || '/' || w.kagent_agent = g.scope)
+			RETURNING g.scope`, before)
 		if err != nil {
 			return err
 		}
@@ -711,7 +720,8 @@ func (s *Store) ClearQuotaBlocks(ctx context.Context, before time.Time) ([]strin
 		for _, scope := range scopes {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE work_item SET state = 'active', blocked_class = NULL, blocked_reason = NULL, updated_at = now()
-				WHERE state = 'blocked' AND 'kagent:' || kagent_namespace || '/' || kagent_agent = $1`, scope); err != nil {
+				WHERE state = 'blocked' AND blocked_class = 'quota'
+					AND 'kagent:' || kagent_namespace || '/' || kagent_agent = $1`, scope); err != nil {
 				return err
 			}
 		}
