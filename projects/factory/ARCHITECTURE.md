@@ -1140,6 +1140,35 @@ without requiring replacement-context reads. Send admission separately checks
 current stop, cancellation, run attempt and work epoch under the writer fence.
 Attestations and their consumed/invalidated states remain in the audit trail.
 
+**Coordinator permissions.** The itsaplan bootstrap verifies the configured
+coordinator's identity with `/me` using its stored key. It reads that identity's
+effective permissions from `/projects/{teamId}.HOME` (the bootstrap project):
+`work_items read/create/edit` and `ai_agents read`. If rights are missing, the
+existing bootstrap admin creates or repairs a dedicated team role. It assigns
+that role to the coordinator's project membership, then verifies effective
+permissions again using the coordinator key. Missing rights fail bootstrap.
+Sufficient grants stay unchanged; shared roles and other members stay unchanged.
+Logs name the verified project and rights without keys. The pinned
+[roles](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/roles/index.ts)
+and [membership](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/members/index.ts)
+APIs support these grants.
+
+The render lock includes this change in the `factory-itsaplan-scripts` ConfigMap.
+Its `config.json` names the enabled connector's coordinator, and `bootstrap.py`
+grants and verifies those rights during PostSync. CI chart publication and the
+normal deployment pin advance roll it out. Source checks do not prove live access.
+
+This is the first part of [HOME-106](https://factory-plan.jomcgi.dev/factory/issue/HOME-106).
+The activation completion policy remains pending after the size split of PR #8091.
+Later parts add the coding agent's `Activation:` trailer and pre-enqueue check,
+the trusted reviewer's activation assessment, and the durable follow-up lifecycle.
+A pending step must create a linked, delegated activation issue; completing it
+must conditionally complete its parent while preserving stops and cancellation.
+The coordinator grant must be deployed before that lifecycle is enabled.
+The removed implementation and regression tests remain available at
+[e3261528e](https://github.com/jomcgi-org/homelab/commit/e3261528e3830c2cabc939ec8ad3c15ec7558c3a)
+for those follow-up PRs. This permission prerequisite does not complete HOME-106.
+
 **Merge.** When the required checks and the trusted reviewer succeed on the
 current head, enqueue with GraphQL `enqueuePullRequest` and
 `expectedHeadOid` set to that head. The reviewer is the binding's reviewer

@@ -13,6 +13,8 @@ Idempotent; every step reads before it writes:
    an agent's API key once, at creation or rotation, and this writes it to
    Secret AGENT_SECRET_PREFIX<username>. An agent whose Secret holds no
    working key gets a new key; an agent is never created twice.
+   Verify the coordinator's identity and effective project permissions with
+   its own key, granting missing rights through a dedicated team role.
 5. Joe's sessions account, invited as a regular member of that project. Its
    password is saved in SESSIONS_SECRET before sign-up and never rotated.
 
@@ -468,7 +470,78 @@ def ensure_reviewer_access(session, team_id, project_id, agent, role_id):
             session.call("PATCH", f"{base}/{user}", want)
 
 
+COORDINATOR_PERMISSIONS = {
+    "work_items": {"read": True, "create": True, "edit": True},
+    "ai_agents": {"read": True},
+}
+
+
+def has_coordinator_permissions(permissions):
+    return all(
+        permissions.get(resource, {}).get(action) is True
+        for resource, actions in COORDINATOR_PERMISSIONS.items()
+        for action in actions
+    )
+
+
+def ensure_coordinator_permissions(session, team_id, agent, key):
+    """Use admin only to grant rights; verify effective access as the agent.
+
+    Never edit the shared default role. Existing sufficient grants stay as-is;
+    missing rights get a dedicated role on this one project membership.
+    """
+    headers = {"x-api-key": key}
+    _, _, me = request("GET", API + "/me", headers=headers)
+    if (
+        not me.get("authenticated")
+        or (me.get("user") or {}).get("id") != agent["userId"]
+    ):
+        raise SystemExit("coordinator key does not identify the configured agent")
+    project = f"/projects/{team_id}.{CONFIG['project']['key']}"
+    _, _, access = request("GET", API + project, headers=headers)
+    if not has_coordinator_permissions(access["permissions"]):
+        base = f"/teams/{team_id}/roles"
+        name = f"Factory coordinator ({agent['username']})"
+        roles = [r for r in session.call("GET", base + "/options") if r["name"] == name]
+        if len(roles) > 1 or (roles and roles[0]["system"]):
+            raise SystemExit("coordinator role name must identify one team-owned role")
+        if not roles:
+            role = session.call(
+                "POST", base, {"name": name, "permissions": COORDINATOR_PERMISSIONS}
+            )
+        else:
+            role = roles[0]
+            if not has_coordinator_permissions(role["permissions"]):
+                # This dedicated role may carry other deliberate grants. Keep
+                # those, and repair only the rights the connector requires.
+                permissions = {
+                    r: dict(actions) for r, actions in role["permissions"].items()
+                }
+                for resource, actions in COORDINATOR_PERMISSIONS.items():
+                    permissions.setdefault(resource, {}).update(actions)
+                session.call(
+                    "PATCH", f"{base}/{role['id']}", {"permissions": permissions}
+                )
+        session.call(
+            "PATCH",
+            project + "/members/" + urllib.parse.quote(agent["userId"], safe=""),
+            {"role": "member", "roleId": role["id"]},
+        )
+        _, _, access = request("GET", API + project, headers=headers)
+    if not has_coordinator_permissions(access["permissions"]):
+        raise SystemExit(
+            "coordinator still lacks required effective project permissions"
+        )
+    print(
+        f"verified {agent['username']} on {CONFIG['project']['key']}: "
+        "work_items read/create/edit, ai_agents read"
+    )
+
+
 def ensure_agents(session, team_id, project_id):
+    coordinator = CONFIG.get("coordinator", "")
+    if coordinator and coordinator not in [a["username"] for a in CONFIG["agents"]]:
+        raise SystemExit("coordinator is not a configured bootstrap agent")
     base = f"/teams/{team_id}/ai-agents"
     existing = {a["username"].lower(): a for a in session.call("GET", base)}
     for want in CONFIG["agents"]:
@@ -537,6 +610,8 @@ def ensure_agents(session, team_id, project_id):
                 "url": API,
             },
         )
+        if username == coordinator:
+            ensure_coordinator_permissions(session, team_id, agent, key)
 
 
 def main():
