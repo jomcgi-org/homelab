@@ -155,7 +155,7 @@ async def monolith_agent_notify(
     Defaults to the homelab channel from settings. The ``channel`` arg, if
     specified, must be a channel in a server the bot has been added to.
     The factory caller may use only the default channel. A ``dedupe_key``
-    suppresses repeat enqueueing for that channel; include the occurrence or
+    suppresses repeat enqueueing for that channel. Include the occurrence or
     UTC date in the key when a later occurrence should post again.
     """
     from core.notify_policy import check_notify_arguments
