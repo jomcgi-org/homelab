@@ -581,8 +581,10 @@ func TestRestartReattachesWithoutASecondTask(t *testing.T) {
 	eventually(t, "the re-attached review", func() bool { return testutil.ToFloat64(h.m.ReviewsStarted.WithLabelValues("homelab", "reattach")) == 1 })
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	if executions, _ := h.k.state(); executions != 1 || len(h.k.sent()) != 1 || h.gh.checkCount() != 1 {
-		t.Fatalf("executions = %d, sends = %d, checks = %d; want the one task and check", executions, len(h.k.sent()), h.gh.checkCount())
+	// The new process adopts the same task under a fresh check ID, fencing
+	// any GitHub request still outstanding from its predecessor.
+	if executions, _ := h.k.state(); executions != 1 || len(h.k.sent()) != 1 || h.gh.checkCount() != 2 {
+		t.Fatalf("executions = %d, sends = %d, checks = %d; want one task and two fenced checks", executions, len(h.k.sent()), h.gh.checkCount())
 	}
 }
 

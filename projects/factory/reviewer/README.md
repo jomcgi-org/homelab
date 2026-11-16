@@ -22,18 +22,36 @@ listing observations from a restored gate; failed reads leave restoration
 pending across restarts. Returning to an earlier head restores that head's gate
 before its cached check can authorize a pass or enqueue.
 
-Import cannot recover observations that the old process lost from memory
-without ever projecting them to GitHub. Joe's accepted [issue #8048, "One-time import"](https://github.com/jomcgi-org/homelab/issues/8048)
-requires clearing restart-only holds, so the migration does not introduce a
-blanket transition hold for that unknown history. The new writer commits
-observations before projection, closing that loss window for subsequent restarts.
+First import still has a blocking migration gap: if a legacy shared-head hold
+never reached GitHub and the duplicate closes before import, the check, current
+listing and label history cannot distinguish that lost hold from an unheld PR.
+Recovering this case needs an additional migration witness or an explicit
+one-time migration policy. Joe's accepted [issue #8048, "One-time import"](https://github.com/jomcgi-org/homelab/issues/8048)
+requires clearing restart-only holds, so this implementation does not add a
+blanket transition hold. Write-ahead persistence protects subsequent restarts;
+it does not resolve this legacy cutover gap.
 
 Labels, shared heads, gated paths and human-gate findings retain the existing
 exact-head approval rules and authenticated `factory-review-ack:<nonce>`
 acknowledgements. Every observation commits before a GitHub write. Failed
 hold projections retry on the next poll; success always requires current
 evidence and a fenced commit. Check publication is serialized with gate
-observation so an older success cannot overtake a newly committed hold.
+observation within a process. Across writer takeover, each process updates
+only check-run IDs it created. A new success first creates an in-progress
+run, commits its ID and checks the writer fence again before completing it.
+A delayed predecessor PATCH can only complete an older run; a delayed POST
+can only create a nonpassing run. The successor's hold never shares an ID
+with an outstanding predecessor success. Reattached tasks get a fresh check
+ID before they resume, preserving their task's original idempotency key even
+when its send response was lost, as well as their approval baseline.
+
+Duplicate projections preserve a legacy head's recorded paths and human
+findings until restoration completes. They cannot replace that evidence with
+the provisional observations from an incomplete listing.
+
+The deploy render lock adds the reviewer Secret's `DATABASE_URL` reference
+and its TCP 5432 egress to `factory-db`. Deploy values and image pins stay as
+published; the database credentials are never rendered into a ConfigMap.
 
 `review` tests use a real Postgres instance through `factory/internal/pgtest`,
 including lost GitHub writes across engine restarts, legacy import, database

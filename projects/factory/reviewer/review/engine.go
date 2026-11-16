@@ -151,9 +151,12 @@ type Engine struct {
 	pendingHolds map[headKey]*github.CheckRun
 	contexts     map[string]*heldContext
 	projections  map[string]projection
-	loaded       bool
-	storeErr     error
-	wg           sync.WaitGroup
+	// Only this process may update these check IDs. A successor creates new
+	// runs so a delayed request from its predecessor cannot replace its hold.
+	ownedChecks map[string]bool
+	loaded      bool
+	storeErr    error
+	wg          sync.WaitGroup
 
 	// heads (under mu) is each listed PR's head. commentMu serializes
 	// comment writes and guards comments, the reviewer's comment on each PR
@@ -320,6 +323,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
 		heads: map[prKey]string{}, comments: map[prKey]github.Comment{},
 		projections: map[string]projection{},
+		ownedChecks: map[string]bool{},
 	}
 }
 
@@ -404,17 +408,25 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 		if !complete || counts[pr.HeadSHA] > 1 || e.pendingHold(headKey{b.repo(), pr.HeadSHA}) != nil {
 			cur, held := heldHeads[pr.HeadSHA]
+			alreadyHeld := false
 			if !held {
 				// Await the worker so it cannot overwrite the hold.
 				if !e.stopSharedHead(ctx, b, pr.HeadSHA) {
 					return
 				}
 				if run, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
+					alreadyHeld = sharedHeadHeld(run)
 					cur = e.holdSharedHead(ctx, b, pr, run, labels[pr.HeadSHA])
 				}
 				heldHeads[pr.HeadSHA] = cur
 			}
 			reviews[pr.Number] = cur
+			// Once only a pending write remains, a successful retry has
+			// durably installed the hold. Review the now-unambiguous head
+			// in this poll, preserving the hold and its fresh baseline.
+			if alreadyHeld && complete && counts[pr.HeadSHA] == 1 && cur != nil && !b.skipped(&pr) {
+				start = append(start, candidate{pr, cur})
+			}
 			continue
 		}
 		if b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
@@ -744,11 +756,11 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	} else {
 		st := e.stateFor(b, pr, run)
 		gate, retained := e.retainGate(ctx, b, pr, st.Gate, false)
-		changed := encodeState(st) != run.Text || retained
+		changed := encodeState(st) != run.Text || retained || !e.ownsCheck(b.repo(), run.ID)
 		if changed {
 			st.Gate = gate
 			updated, err := e.updateCheck(ctx, b, run, github.CheckRunWrite{Output: &github.CheckRunOutput{
-				Title: "Recovering review context", Summary: keepEnqueueHistory(progressSummary(b, gate, RecordedTask(run.Summary), ""), run), Text: encodeState(st),
+				Title: "Recovering review context", Summary: keepTaskIdentity(keepEnqueueHistory(progressSummary(b, gate, RecordedTask(run.Summary), ""), run), run), Text: encodeState(st),
 			}})
 			if err != nil {
 				e.ghError(ctx, l, b, "update_check", err)
@@ -787,6 +799,24 @@ type recorded struct {
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
 var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*) -->`)
+
+var taskCheckMarker = regexp.MustCompile(`<!-- factory-review:task-check id=([0-9]+) -->`)
+
+// Check rotation fences GitHub writes without changing the idempotency key
+// of a task whose send may already have reached kagent.
+func taskCheckID(run *github.CheckRun) int64 {
+	all := taskCheckMarker.FindAllStringSubmatch(run.Summary, -1)
+	if len(all) > 0 {
+		if id, err := strconv.ParseInt(all[len(all)-1][1], 10, 64); err == nil && id > 0 {
+			return id
+		}
+	}
+	return run.ID
+}
+
+func keepTaskIdentity(summary string, run *github.CheckRun) string {
+	return summary + fmt.Sprintf("\n\n<!-- factory-review:task-check id=%d -->", taskCheckID(run))
+}
 
 // RecordedTask is the attempt and kagent task an in-progress review check
 // run records.
@@ -1228,7 +1258,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Gate: in.gate, Attempt: attempt, CheckName: e.cfg.CheckName,
 	})
 	msg := &kagent.Message{
-		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt),
+		MessageID: AttemptMessageID(repo, pr.Number, pr.HeadSHA, taskCheckID(run), attempt),
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/repository":   repo,
@@ -1261,7 +1291,7 @@ func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.Che
 	run.Text = encodeState(st)
 	_, err := e.updateCheck(ctx, b, run, github.CheckRunWrite{
 		ExternalID: run.ExternalID,
-		Output:     &github.CheckRunOutput{Title: "Review in progress", Summary: keepEnqueueHistory(progressSummary(b, gate, rec, note), run), Text: run.Text},
+		Output:     &github.CheckRunOutput{Title: "Review in progress", Summary: keepTaskIdentity(keepEnqueueHistory(progressSummary(b, gate, rec, note), run), run), Text: run.Text},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)
@@ -1803,13 +1833,15 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 			// With no current PR evidence, revocation is safe even if the
 			// old group check cannot be read. Persist and attempt the failure.
 			if existing != nil {
-				posted = ConclusionFailure
-				if existing.Status == "completed" && existing.Conclusion == ConclusionSuccess {
-					posted = ConclusionSuccess
+				if existing.Status == "completed" {
+					posted = existing.Conclusion
 				}
-				e.setGroup(ctx, key, posted)
 				if posted == ConclusionFailure {
+					e.setGroup(ctx, key, posted)
 					continue
+				}
+				if posted != ConclusionSuccess {
+					posted = "" // A predecessor may still complete this run.
 				}
 			}
 		}

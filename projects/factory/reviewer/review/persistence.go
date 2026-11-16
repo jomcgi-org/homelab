@@ -217,6 +217,9 @@ func (e *Engine) stateFor(b *Binding, pr github.PullRequest, run *github.CheckRu
 	defer e.mu.Unlock()
 	if m := e.contexts[contextKey(b, pr.Number)]; m != nil && m.Head == pr.HeadSHA && m.Restored {
 		st.Gate = cloneGate(m.Gate)
+		if !st.Gate.Needed() {
+			st.Gate = nil // Empty observation baselines live only in Postgres.
+		}
 	}
 	return st
 }
@@ -338,6 +341,14 @@ func (e *Engine) createCheck(ctx context.Context, b *Binding, w github.CheckRunW
 
 func (e *Engine) updateCheck(ctx context.Context, b *Binding, run *github.CheckRun, w github.CheckRunWrite) (*github.CheckRun, error) {
 	w.HeadSHA, w.ExternalID = run.HeadSHA, run.ExternalID
+	// An update may become a new run after takeover; retain its effective
+	// status instead of accidentally turning a completed check into queued.
+	if w.Status == "" {
+		w.Status = run.Status
+		if w.Conclusion == "" {
+			w.Conclusion = run.Conclusion
+		}
+	}
 	return e.project(ctx, projection{Repo: b.repo(), ID: run.ID, Write: w})
 }
 
@@ -384,7 +395,7 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 							return nil, errors.New("gate context changed before success projection")
 						}
 						g.inherit(m.Gate)
-						if strings.Contains(p.Write.Output.Summary, duplicateHeadMarker) {
+						if strings.Contains(p.Write.Output.Summary, duplicateHeadMarker) && m.Restored {
 							g.Paths = append([]string(nil), m.Gate.Paths...)
 							g.Findings = append([]Finding(nil), m.Gate.Findings...)
 							g.ObservedLabels = append([]string{}, m.Gate.ObservedLabels...)
@@ -393,6 +404,9 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 					}
 					m.Gate, m.Token, m.Shared, m.Labels = g, g.ContextToken, g.SharedHead, append([]string(nil), g.Labels...)
 					st.Gate = cloneGate(g)
+					if !g.Needed() {
+						st.Gate = nil
+					}
 					p.Write.Output.Text = encodeState(st)
 				}
 			}
@@ -407,14 +421,7 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 		e.failStoreLocked(err)
 		return nil, err
 	}
-	var run *github.CheckRun
-	if p.ID == 0 {
-		run, err = e.gh.CreateCheckRun(ctx, p.Repo, p.Write)
-	} else {
-		w := p.Write
-		w.HeadSHA = ""
-		run, err = e.gh.UpdateCheckRun(ctx, p.Repo, p.ID, w)
-	}
+	run, err := e.publishLocked(ctx, key, p)
 	if err != nil {
 		return nil, err
 	}
@@ -427,6 +434,52 @@ func (e *Engine) project(ctx context.Context, p projection) (*github.CheckRun, e
 		return nil, err
 	}
 	return run, nil
+}
+
+func checkKey(repo string, id int64) string { return fmt.Sprintf("%s/%d", repo, id) }
+
+func (e *Engine) ownsCheck(repo string, id int64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.ownedChecks[checkKey(repo, id)]
+}
+
+// GitHub selects the latest run of each check name. Never reuse a previous
+// process's run ID: a delayed PATCH can then affect only an older run. A
+// success must first allocate a nonpassing run, commit its ID and refence
+// before PATCHing it. A delayed POST from a deposed writer can create only
+// an in-progress check, even if it arrives after the successor's failure.
+func (e *Engine) publishLocked(ctx context.Context, key string, p projection) (*github.CheckRun, error) {
+	if !e.ownedChecks[checkKey(p.Repo, p.ID)] {
+		p.ID = 0
+	}
+	if p.ID == 0 {
+		w := p.Write
+		w.Name = e.cfg.CheckName
+		if w.Conclusion == ConclusionSuccess {
+			w.Status, w.Conclusion, w.CompletedAt = "in_progress", "", nil
+		}
+		run, err := e.gh.CreateCheckRun(ctx, p.Repo, w)
+		if err != nil {
+			return nil, err
+		}
+		e.ownedChecks[checkKey(p.Repo, run.ID)] = true
+		if p.Write.Conclusion != ConclusionSuccess {
+			return run, nil
+		}
+		p.ID = run.ID
+		e.projections[key] = p
+		if err := e.saveLocked(ctx); err != nil {
+			return nil, err
+		}
+		if err := e.cfg.Store.Check(ctx); err != nil {
+			e.failStoreLocked(err)
+			return nil, err
+		}
+	}
+	w := p.Write
+	w.HeadSHA = ""
+	return e.gh.UpdateCheckRun(ctx, p.Repo, p.ID, w)
 }
 
 // A worker may finish while a poll records a later hold. Its evaluated

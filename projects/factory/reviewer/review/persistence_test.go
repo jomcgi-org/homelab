@@ -15,7 +15,7 @@ import (
 
 func TestPreexistingPRKeepsAutonomousPathAcrossRestarts(t *testing.T) {
 	h := newPR7Harness(t)
-	h.gh.withLock(func() { h.gh.prs[7].Created = time.Now().Add(-24*time.Hour) })
+	h.gh.withLock(func() { h.gh.prs[7].Created = time.Now().Add(-24 * time.Hour) })
 	_, _, stop := startPassedReview(t, h)
 	stop()
 	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
@@ -265,7 +265,7 @@ func TestImportIsAtomicAndRequiresCompleteHistory(t *testing.T) {
 					h.gh.fail["GET /repos/"+testRepo+"/issues/7/events"] = 502
 				case "incomplete labels":
 					for i := range github.MaxIssueEventPages * github.MaxListed {
-						h.gh.prs[7].LabelEvents = append(h.gh.prs[7].LabelEvents, github.LabelEvent{ID: int64(i+1), Label: "human", CreatedAt: time.Now()})
+						h.gh.prs[7].LabelEvents = append(h.gh.prs[7].LabelEvents, github.LabelEvent{ID: int64(i + 1), Label: "human", CreatedAt: time.Now()})
 					}
 				case "listing":
 					h.gh.fail["GET /repos/"+testRepo+"/pulls"] = 502
@@ -439,10 +439,11 @@ type checkBarrierStore struct {
 	StateStore
 	reached chan struct{}
 	resume  chan struct{}
+	once    sync.Once
 }
 
-func (s checkBarrierStore) Check(ctx context.Context) error {
-	close(s.reached)
+func (s *checkBarrierStore) Check(ctx context.Context) error {
+	s.once.Do(func() { close(s.reached) })
 	select {
 	case <-s.resume:
 		return s.StateStore.Check(ctx)
@@ -459,7 +460,7 @@ func TestSuccessPublicationSerializesWithHoldObservation(t *testing.T) {
 	defer cancel()
 	st, _ := LoadState(h.gh.check(shaA).Text)
 	b := &e.cfg.Bindings[0]
-	barrier := checkBarrierStore{StateStore: h.writer, reached: make(chan struct{}), resume: make(chan struct{})}
+	barrier := &checkBarrierStore{StateStore: h.writer, reached: make(chan struct{}), resume: make(chan struct{})}
 	e.cfg.Store = barrier
 	release := sync.OnceFunc(func() { close(barrier.resume) })
 	var workers sync.WaitGroup
@@ -474,7 +475,7 @@ func TestSuccessPublicationSerializesWithHoldObservation(t *testing.T) {
 		_, err := e.createCheck(ctx, b, github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: shaA, ExternalID: MessageID(testRepo, 7, shaA),
 			Status: "completed", Conclusion: ConclusionSuccess,
-			Output: &github.CheckRunOutput{Text: encodeState(st)},
+			Output: &github.CheckRunOutput{Title: "pass", Summary: "pass", Text: encodeState(st)},
 		})
 		posted <- err
 	}()
@@ -526,4 +527,155 @@ func TestDuplicateObservationCommitsEverySiblingBeforeProjection(t *testing.T) {
 	e, ctx, _ = h.start()
 	completeReview(t, h, runReview(t, h, e, ctx, 8, head), head, "surviving sibling review")
 	failIf(t, h.gh.check(head).Conclusion != ConclusionFailure, "a sibling lost the shared-head observation")
+}
+
+// Pause before the fake remote accepts a request, independent of database
+// ownership. Cancelling a local writer cannot retract that remote request.
+type delayedCheckGitHub struct {
+	GitHub
+	create  bool
+	reached chan struct{}
+	resume  chan struct{}
+}
+
+func (g *delayedCheckGitHub) CreateCheckRun(ctx context.Context, repo string, w github.CheckRunWrite) (*github.CheckRun, error) {
+	if g.create {
+		close(g.reached)
+		<-g.resume
+	}
+	return g.GitHub.CreateCheckRun(ctx, repo, w)
+}
+
+func (g *delayedCheckGitHub) UpdateCheckRun(ctx context.Context, repo string, id int64, w github.CheckRunWrite) (*github.CheckRun, error) {
+	if !g.create && w.Conclusion == ConclusionSuccess {
+		close(g.reached)
+		<-g.resume
+	}
+	return g.GitHub.UpdateCheckRun(ctx, repo, id, w)
+}
+
+func TestWriterTakeoverFencesDelayedChecks(t *testing.T) {
+	for _, group := range []bool{false, true} {
+		for _, create := range []bool{false, true} {
+			name := "PR"
+			if group {
+				name = "merge group"
+			}
+			if create {
+				name += "/POST"
+			} else {
+				name += "/PATCH"
+			}
+			t.Run(name, func(t *testing.T) {
+				h := newPR7Harness(t)
+				e, ctx, _ := startPassedReview(t, h)
+				e.Wait()
+				head, externalID := shaA, MessageID(testRepo, 7, shaA)
+				if group {
+					head, externalID = "mg-7", ""
+					h.gh.withLock(func() {
+						h.gh.queue = []github.MergeQueueEntry{{HeadCommit: head, Number: 7, PRHeadSHA: shaA}}
+					})
+				}
+				barrier := &delayedCheckGitHub{GitHub: e.gh, create: create, reached: make(chan struct{}), resume: make(chan struct{})}
+				e.gh = barrier
+				result := make(chan error, 1)
+				var workers sync.WaitGroup
+				release := sync.OnceFunc(func() { close(barrier.resume) })
+				defer func() { release(); workers.Wait() }()
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					_, err := e.createCheck(ctx, &e.cfg.Bindings[0], github.CheckRunWrite{
+						Name: e.cfg.CheckName, HeadSHA: head, ExternalID: externalID,
+						Status: "completed", Conclusion: ConclusionSuccess,
+						Output: &github.CheckRunOutput{Title: "pass", Summary: "pass", Text: h.gh.check(shaA).Text},
+					})
+					result <- err
+				}()
+				select {
+				case <-barrier.reached:
+				case <-time.After(5 * time.Second):
+					t.Fatal("old writer did not reach the remote request")
+				}
+				h.writer.Release()
+				writer, err := h.db.TryAcquireWriter(ctx, "successor")
+				if err != nil || writer == nil {
+					t.Fatalf("successor writer: %v", err)
+				}
+				t.Cleanup(writer.Release)
+				h.cfg.Store = writer
+				next := h.engine()
+				h.gh.label(7, "human")
+				next.Tick(ctx)
+				failIf(t, h.gh.check(head).Conclusion == ConclusionSuccess, "successor did not revoke the pass")
+				release()
+				failIf(t, <-result == nil || e.storageError() == nil, "deposed writer did not stop")
+				failIf(t, h.gh.check(head).Conclusion == ConclusionSuccess, "delayed predecessor request replaced the successor hold")
+			})
+		}
+	}
+}
+
+type incompleteListingGitHub struct{ GitHub }
+
+func (g incompleteListingGitHub) ListPullRequests(ctx context.Context, repo, base string) ([]github.PullRequest, bool, error) {
+	prs, _, err := g.GitHub.ListPullRequests(ctx, repo, base)
+	return prs, false, err
+}
+
+func TestDuplicateHoldPreservesUnrestoredLegacyGate(t *testing.T) {
+	for _, incomplete := range []bool{false, true} {
+		name := "duplicate"
+		if incomplete {
+			name = "incomplete listing"
+		}
+		t.Run(name, func(t *testing.T) {
+			gate := &Gate{Paths: []string{"REVIEW.md"}, Findings: []Finding{{ID: "app.go:human-gate", Severity: SeverityHigh, Title: "Human decision"}}}
+			h := closedLegacyGate(t, gate, false)
+			if !incomplete {
+				h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+			}
+			e, ctx, stop := h.start()
+			if incomplete {
+				e.gh = incompleteListingGitHub{GitHub: e.gh}
+			}
+			e.Tick(ctx)
+			st, ok := LoadState(h.gh.check(shaA).Text)
+			failIf(t, !ok || st.Gate == nil || len(st.Gate.Paths) != 1 || len(st.Gate.Findings) != 1, "duplicate projection erased the unrestored gate")
+			stop()
+			h.gh.withLock(func() {
+				for n, pr := range h.gh.prs {
+					if n != 7 {
+						pr.Closed = true
+					}
+				}
+			})
+			e, ctx, _ = h.start()
+			completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "restored review")
+			st, _ = LoadState(h.gh.check(shaA).Text)
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || len(st.Gate.Findings) != 1, "restart lost the legacy human finding")
+		})
+	}
+}
+
+func TestCheckRotationKeepsAnUnrecordedTasksMessageID(t *testing.T) {
+	h := newPR7Harness(t)
+	h.cfg.Reissue = time.Hour // Stop after the lost response, before a retry.
+	h.k.loseResponse = true
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	messageID := h.msgID(7, shaA, 1)
+	failIf(t, RecordedTask(h.gh.check(shaA).Summary).ID != "", "task response was not lost")
+	stop()
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	eventually(t, "reattached unrecorded task", func() bool {
+		return RecordedTask(h.gh.check(shaA).Summary).ID == task
+	})
+	executions, _ := h.k.state()
+	failIf(t, executions != 1 || h.gh.checkCount() != 2, "rotation started another task or reused the predecessor check")
+	for _, msg := range h.k.sent() {
+		failIf(t, msg.MessageID != messageID, "rotation changed the uncertain send idempotency key")
+	}
 }

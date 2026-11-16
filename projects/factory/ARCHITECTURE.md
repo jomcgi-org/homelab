@@ -1202,7 +1202,12 @@ process. Pending failures are retried; a pending pass requires current evidence
 again. Approval remains revalidated on every poll. Check runs expose the gate
 and carry review reports and task IDs; their text cannot replace durable gate
 observations after startup. Gate observation and check publication share a
-critical section, so a success cannot be sent after a newer hold commits.
+critical section within the process. Across writer takeover, a process updates
+only check-run IDs it created. A new success allocates an in-progress run,
+commits its ID and rechecks the writer fence before completing it. Delayed
+predecessor updates can only reach older runs; delayed creates cannot pass.
+Reattached tasks rotate to a fresh check ID before resuming, so a predecessor
+cannot overwrite the successor's hold on the same ID.
 
 The first start imports all open PRs, including drafts, from the reviewer's
 check runs and complete label history before passing or enqueueing. The snapshot
@@ -1216,15 +1221,18 @@ label history on its first later encounter, before any pass or enqueue. The
 per-head restoration marker commits with that state. Until then, listing
 observations remain durable but cannot replace the legacy gate. Returning to an
 earlier head also restores the gate on that head's existing check.
+Duplicate projections retain unrestored paths and human-gate findings even
+when the listing is incomplete or another PR shares the head.
 
-The migration can recover only evidence the old process wrote to GitHub or
-that complete label history and the current PR listing reveal. An observation
-lost from the old process's memory after every GitHub write failed cannot be
-reconstructed. Joe's accepted [issue #8048, "One-time import"](https://github.com/jomcgi-org/homelab/issues/8048)
+First import still has a blocking migration gap. A legacy shared-head hold
+lost from memory after every GitHub write failed leaves no evidence in the
+import inputs if the duplicate has closed. Resolving this needs an additional
+migration witness or an explicit one-time migration policy. Joe's accepted
+[issue #8048, "One-time import"](https://github.com/jomcgi-org/homelab/issues/8048)
 requires a PR held only by the retired restart hold to "import as not held".
-This migration therefore does not impose a blanket transition hold to cover
-that unknown history. Write-ahead persistence protects observations made by
-the new version.
+This implementation does not impose a blanket transition hold. Write-ahead
+persistence protects observations made by the new version, but does not
+resolve the legacy cutover gap.
 
 **Why.** [Joe's decision on 2026-11-15](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891505565)
 requires a person only where a hold actually applies. Durable observations

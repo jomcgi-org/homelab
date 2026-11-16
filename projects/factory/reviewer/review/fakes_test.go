@@ -1000,15 +1000,15 @@ func (k *fakeKagent) state() (executions int, cancels []string) {
 var testAgent = kagent.AgentRef{Namespace: "factory-review", Name: "reviewer"}
 
 type harness struct {
-	t               *testing.T
-	gh              *fakeGitHub
-	k               *fakeKagent
-	m               *metrics.Metrics
-	log             *syncBuffer
-	cfg             Config
-	srv             *httptest.Server
-	db              *store.Store
-	writer          *store.Writer
+	t      *testing.T
+	gh     *fakeGitHub
+	k      *fakeKagent
+	m      *metrics.Metrics
+	log    *syncBuffer
+	cfg    Config
+	srv    *httptest.Server
+	db     *store.Store
+	writer *store.Writer
 }
 
 type syncBuffer struct {
@@ -1045,7 +1045,7 @@ func newHarness(t *testing.T) *harness {
 		db: db, writer: writer,
 		t: t, gh: gh, k: newFakeKagent(), m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
 		cfg: Config{
-			Store: writer,
+			Store:     writer,
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
 			RetryBackoff: 2 * time.Millisecond, MaxSends: 3, DispatchWindow: 5 * time.Millisecond,
@@ -1072,6 +1072,11 @@ func newHarness(t *testing.T) *harness {
 		}
 		return time.Now()
 	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(h.log.String())
+		}
+	})
 	return h
 }
 
@@ -1079,6 +1084,18 @@ func newHarness(t *testing.T) *harness {
 // With a CommentAuthor and no Comments, it writes comments with the comment
 // token.
 func (h *harness) engine() *Engine {
+	// A process restart owns a new database session and epoch. Cancellation
+	// can close lib/pq's old session in the middle of a query; reusing it
+	// would test a dead writer rather than recovery from persisted state.
+	if h.cfg.Store == h.writer {
+		h.writer.Release()
+		writer, err := h.db.TryAcquireWriter(context.Background(), h.t.Name())
+		if err != nil || writer == nil {
+			h.t.Fatalf("restart writer: %v", err)
+		}
+		h.writer, h.cfg.Store = writer, writer
+		h.t.Cleanup(writer.Release)
+	}
 	gh := &github.Client{BaseURL: h.srv.URL, Tokens: reviewerTokens{}, ETags: &github.ETagCache{}}
 	log := slog.New(slog.NewJSONHandler(h.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := h.cfg
@@ -1119,7 +1136,7 @@ func (h *harness) msgID(number int, sha string, attempt int) string {
 	if c == nil {
 		return ""
 	}
-	return AttemptMessageID(testRepo, number, sha, c.ID, attempt)
+	return AttemptMessageID(testRepo, number, sha, taskCheckID(&github.CheckRun{ID: c.ID, Summary: c.Summary}), attempt)
 }
 
 // taskOn is the task of an attempt of the head's latest review, or empty.
