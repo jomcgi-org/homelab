@@ -15,7 +15,8 @@ under its old path and its new one. An `Includes:` line at the top of a
 
 A scoped file adds checks and may raise a severity. It never waives a rule,
 lowers a severity or changes this file. Where two rules conflict, the
-stricter one applies.
+stricter one applies. "Severity" sets how far a severity a scoped rule
+names reaches.
 
 Rules, `AGENTS.md` and every document this contract cites are read from
 `main`, never from the PR.
@@ -115,10 +116,12 @@ Apply these tests in order and stop at the first that fits.
 | Medium | A failure on an edge input or a non-default path. A rare failure that passes silently or loses data. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that the reviewer cannot verify. | Blocks until fixed or justified. |
 | Low | Naming, wording, prose style, an optional refactor, a test for trivial code. A rare failure that is loud and recoverable (`defer`). | Never blocks. |
 
-Test 3 applies before any severity a scoped rule names. Otherwise a scoped
-rule that names a severity sets it, and a violated scoped rule with none is
-high. A defect the PR neither introduces nor worsens is low with
-`defer`; name an active exposure in the first line of the summary.
+A severity a scoped rule names covers a violation that needs no unusual
+timing or scale; test 3 rates the rest, so the two never conflict. Within
+that reach, a scoped rule that names a severity sets it, and a violated
+scoped rule with none is high. A defect the PR neither introduces nor
+worsens is low with `defer`; name an active exposure in the first line of
+the summary.
 
 Report at most five low findings, each one a change you would make yourself.
 None is the usual number. Mark a low finding `defer` when it is worth a
