@@ -1113,92 +1113,49 @@ issuer and monolith permission check confine this sender even if it guesses
 another tool or channel. Durable dedupe handles the response-loss case that
 a connector memory cache cannot.
 
-### Tasks for Joe
-
-An open itsaplan issue in a bound project, assigned to the member `@joe`
-with no delegate, is a task for Joe. HOME-20 to HOME-23 are the first examples.
-Agents leave these tasks with Joe and never pick them up. Delegating an issue
-to an agent is an explicit handoff; the landing page's reads start no runs.
-Open means a backlog, unstarted or started column, excluding archived issues.
-
 ### Factory front page
 
 `factory.jomcgi.dev` shows Needs you, In flight, Shipped recently, then the
-tool links (#7959). The connector serves `GET /status` on port 8082,
-separate from metrics. Its coordinator resolves Joe's member ID from each
-bound project's scaffold and filters the assigned issues for no delegate and
-an open column. The connector's store supplies active, blocked, review and
-merging work items plus its ten latest recorded merges. Titles come from
-itsaplan; batched GitHub queries read checks, the configured
-reviewer check (or human review decision) and queue state. No issue bodies,
-check output, transcripts, tokens or session contents enter the response.
+tool links (#7959). The connector serves `GET /status` on port 8082, separate
+from metrics. Needs you lists Joe's tasks: open (backlog, unstarted or started,
+not archived) issues assigned to `@joe` with no delegate, such as HOME-20 to
+HOME-23. Agents never pick these up; delegating one is an explicit handoff, and
+the page's reads start no runs. Joe's member ID comes from each bound project's
+scaffold on every refresh. In flight is the store's active, blocked, review and
+merging work items, and Shipped recently its ten latest merges. Titles come
+from itsaplan; batched GitHub queries read checks, the reviewer check (or review
+decision) and queue state. No issue bodies, check output, transcripts or tokens
+enter the response.
 
-The API contract is verified against itsaplan v1.10.0 commit
-`6c7c2fe2cb9d810d29c68e054de25876b47434f8`:
-the [project route](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/index.ts#L143)
-returns columns and assignees, whose [schema](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/model.ts#L203)
-includes `userId`, nullable `username` and `kind` (`member` or `agent`).
-The [issue listing](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/index.ts#L462)
-accepts `assigneeUserId`, `limit` (at most 500) and `includeArchived`, and returns
-an array of [summary fields](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/model.ts#L318).
-It cannot filter a null delegate, so the connector checks that locally.
-Joe's user ID is resolved from the bound project's current members on every
-refresh. If a bound project has no member `joe`, the snapshot sets `needsYou`
-to null and the page shows Needs you as unavailable; In flight and Shipped
-recently still render. On 2026-11-16 HOME's live `assignees` included
-`username: joe` with `kind: member`. HOME-20 to HOME-23 remain rollout checks.
+The itsaplan contract is pinned to v1.10.0 commit `6c7c2fe2`: the
+[project route](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/index.ts#L143)
+returns assignees with `userId`, nullable `username` and `kind`, and the
+[issue listing](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/index.ts#L462)
+filters by `assigneeUserId` (at most 500) but not by a null delegate, which the
+connector checks. Without a member `joe`, `needsYou` is null and only Needs you
+shows as unavailable. On 2026-11-16 HOME's assignees included `joe` (`member`).
 
-Status polling starts after writer acquisition. Every request, including each
-retry, follows this sequence:
+Status polling starts after writer acquisition. Every request, retries
+included, checks the writer epoch, commits a `status_read` attempt, checks the
+epoch again and only then reads with `X-Request-ID`. If an epoch check or the
+journal write fails, nothing is sent. The message ID hashes method, URL and
+query; retries and takeover keep it and count attempts. HTTP/1 without
+connection reuse prevents unjournaled retries. Writer loss cancels status and
+dispatch together.
 
-```mermaid
-sequenceDiagram
-    participant P as Status poller
-    participant T as Status transport
-    participant W as Connector store
-    participant U as itsaplan, broker or GitHub
-    P->>T: Read current state
-    T->>W: Check epoch and commit status_read attempt
-    W-->>T: Commit succeeds
-    T->>W: Check epoch again
-    W-->>T: Writer is current
-    T->>U: Read with X-Request-ID
-    U-->>T: Response
-    T-->>P: Response
-```
+A GraphQL query reads at most 25 PRs (75 connections, one
+[point](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#predicting-the-point-value-of-a-query)),
+at most four per refresh with one auth retry each: at most 960 of the
+5,000 points per hour. An over-budget refresh fails closed. The snapshot
+refreshes every 30 seconds (20-second deadline, eight concurrent reads, at
+most 100 live items and ten merges) and expires after 30 seconds. A truncated
+listing, excess live work, a failed refresh or a stopped poller clears it, and
+`/status` returns 503. Visitors trigger no upstream reads; the credential-free
+landing server proxies only this snapshot, with a two-second timeout.
 
-If either epoch check or the journal write fails, the transport sends no request.
-The message ID hashes the method, URL and query. Retries and writer takeover
-preserve that ID and increment its attempt count. The journal stores only the
-digest, count, epoch and timestamp. Repeated reads fetch current state.
-HTTP/1 without connection reuse prevents retries outside the journal.
-Writer loss cancels status and dispatch together. Shutdown waits for both
-before releasing the lock.
-
-Each GraphQL query reads at most 25 PRs, with three connections per PR and
-`last: 1` on each. Under GitHub's [point calculation](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#predicting-the-point-value-of-a-query),
-75 connections cost one primary point. A refresh checks its total across all
-bindings before sending and permits at most four queries, each with one auth
-retry. Thus 42 live PRs in one repository use two queries per refresh, about
-240 points/hour instead of 5,040. At the maximum, status uses about 480
-points/hour, or 960 with every auth retry, leaving most of the installation's
-5,000-point hourly quota for delivery. An over-budget refresh fails closed.
-
-The connector refreshes its cached snapshot every 30 seconds with a 20-second
-read deadline and at most eight concurrent work-item reads. Reads are capped
-at 500 assigned issues per project, 100 live work items and ten merges; a full
-issue listing or excess live work fails the refresh instead of showing an
-incomplete count. Each snapshot expires after 30 seconds; a refresh already
-in progress keeps it available through that read's deadline. A failed refresh
-or stopped polling loop clears it and `/status` returns 503. Visitors trigger no
-upstream reads. The landing server has no credentials and proxies only this
-snapshot with a two-second timeout. Its CSP permits only same-origin fetches.
-
-**Why.** The connector already has the store and coordinator read access.
-The landing chart owns a status-only Service and Cilium ingress grant in the
-connector namespace, so removing the page also removes its access. The
-landing pods can reach only this application port, with DNS from the cluster
-baseline. The edge's Authentik sign-in and route stay unchanged.
+**Why.** The connector already has the store and coordinator read access. The
+landing chart owns the status-only Service and Cilium grant, so removing the
+page removes its access. The edge's sign-in and route stay unchanged.
 
 ### Authentication
 
