@@ -22,8 +22,8 @@ import (
 // Comments writes the reviewer's PR comment through the broker, which holds
 // the reviewer App's comment token (issues and pull requests write) and
 // finds, creates and edits only conversation comments with it. Its
-// IssueComments returns only the oldest comment the bot login wrote, which
-// the broker finds in one request. An App without those permissions loses
+// IssueComments returns only the oldest comment the bot login wrote that
+// starts with CommentMarker, which the broker finds in one request. An App without those permissions loses
 // only the comment.
 type Comments interface {
 	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
@@ -73,6 +73,10 @@ type CommentUpdate struct {
 	// comment keeps its section, labelled with the head it came from.
 	Findings *string
 }
+
+// CommentMarker starts the reviewer's PR comment. The broker finds the
+// comment by it and the bot login.
+const CommentMarker = commentMarker
 
 // Comment markers. Every one starts with markerStart, which is stripped
 // from anything the agent or the PR wrote, so only the service writes them.

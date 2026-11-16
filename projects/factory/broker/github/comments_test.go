@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +33,10 @@ type ghCommentFixture struct {
 	body   string
 }
 
-const bot = "jomcgi-factory-review[bot]"
+const (
+	bot    = "jomcgi-factory-review[bot]"
+	marker = "<!-- factory-review -->"
+)
 
 func newCommentHarness(t *testing.T) (*harness, *fakeComments, *CommentProxy) {
 	t.Helper()
@@ -100,6 +104,9 @@ func (f *fakeComments) serve(t *testing.T, w http.ResponseWriter, r *http.Reques
 		c.body = in.Body
 		f.comments[id] = c
 		_ = json.NewEncoder(w).Encode(render(id, c))
+	case r.Method == http.MethodGet && path == "/issues/2/comments":
+		// A page cut off after a whole comment, before its closing bracket.
+		_, _ = w.Write([]byte(`[{"id":170,"body":"x","html_url":"https://github.com/example-org/homelab/pull/2","user":{"login":"someone"}}`))
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/comments"):
 		number, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
 		var all []map[string]any
@@ -159,7 +166,7 @@ func doProxy(p *CommentProxy, method, target, body string) *httptest.ResponseRec
 
 func findComment(t *testing.T, p *CommentProxy, number int) (*ProxiedComment, bool) {
 	t.Helper()
-	rec := doProxy(p, http.MethodGet, "/github/reviewer-comments?repository=example-org/homelab&number="+strconv.Itoa(number), "")
+	rec := doProxy(p, http.MethodGet, "/github/reviewer-comments?repository=example-org/homelab&prefix="+url.QueryEscape(marker)+"&number="+strconv.Itoa(number), "")
 	var out struct {
 		Comment  *ProxiedComment `json:"comment"`
 		Complete bool            `json:"complete"`
@@ -206,14 +213,16 @@ func TestCommentProxyFindsTheBotsOldestComment(t *testing.T) {
 		t.Fatalf("no bot comment = %+v, %v", got, complete)
 	}
 	for _, target := range []string{
-		"/github/reviewer-comments?repository=example-org/homelab&number=0",
-		"/github/reviewer-comments?repository=example-org/homelab&number=x",
+		"/github/reviewer-comments?repository=example-org/homelab&prefix=m&number=0",
+		"/github/reviewer-comments?repository=example-org/homelab&prefix=m&number=x",
+		"/github/reviewer-comments?repository=example-org/homelab&number=7",
+		"/github/reviewer-comments?repository=example-org/homelab&number=7&prefix=" + strings.Repeat("m", 257),
 	} {
 		if rec := doProxy(p, http.MethodGet, target, ""); rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s = %d", target, rec.Code)
 		}
 	}
-	if rec := doProxy(p, http.MethodGet, "/github/reviewer-comments?repository=example-org/other&number=7", ""); rec.Code != http.StatusNotFound ||
+	if rec := doProxy(p, http.MethodGet, "/github/reviewer-comments?repository=example-org/other&prefix=m&number=7", ""); rec.Code != http.StatusNotFound ||
 		!strings.Contains(rec.Body.String(), "repository_not_bound") {
 		t.Fatalf("unbound find = %d %s", rec.Code, rec.Body)
 	}
@@ -338,11 +347,29 @@ func TestCommentProxyHandlesEscapedNearLimitComments(t *testing.T) {
 	for i := range 30 {
 		f.comments[int64(300+i)] = ghCommentFixture{number: 8, pr: true, login: "someone", body: strings.Repeat("&", MaxCommentBody)}
 	}
-	f.comments[330] = ghCommentFixture{number: 8, pr: true, login: bot, body: strings.Repeat("&", MaxCommentBody)}
+	f.comments[330] = ghCommentFixture{number: 8, pr: true, login: bot, body: marker + "\n" + strings.Repeat("&", MaxCommentBody-len(marker)-1)}
 	f.next = 331
 	f.mu.Unlock()
 	got, complete := findComment(t, p, 8)
 	if got == nil || got.ID != 330 || !complete || len(got.Body) != MaxCommentBody {
 		t.Fatalf("find on a large page = %v, %v", got != nil, complete)
+	}
+}
+
+// The search matches the bot login and the marker: an older bot comment
+// without the marker is passed over, and a page cut off before its closing
+// bracket is an error, never a complete search.
+func TestCommentProxyMatchesTheMarkerAndRejectsTruncatedPages(t *testing.T) {
+	_, f, p := newCommentHarness(t)
+	f.mu.Lock()
+	f.comments[160] = ghCommentFixture{number: 3, pr: true, login: bot, body: "a note without the marker"}
+	f.comments[161] = ghCommentFixture{number: 3, pr: true, login: bot, body: marker + "\nthe review"}
+	f.mu.Unlock()
+	if got, complete := findComment(t, p, 3); got == nil || got.ID != 161 || !complete {
+		t.Fatalf("find past an unmarked bot comment = %+v, %v", got, complete)
+	}
+	rec := doProxy(p, http.MethodGet, "/github/reviewer-comments?repository=example-org/homelab&prefix="+url.QueryEscape(marker)+"&number=2", "")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "github_comment_failed") {
+		t.Fatalf("truncated page = %d %s", rec.Code, rec.Body)
 	}
 }

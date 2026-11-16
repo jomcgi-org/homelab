@@ -105,7 +105,9 @@ func run(log *slog.Logger) error {
 	// which could approve, so it never reaches the reviewer.
 	var comments review.Comments
 	if cfg.CommentAuthor != "" {
-		comments = &github.BrokerComments{URL: cfg.BrokerURL, Path: commentsPath, Bearer: fileToken(cfg.BrokerTokenFile)}
+		comments = &github.BrokerComments{
+			URL: cfg.BrokerURL, Path: commentsPath, Prefix: review.CommentMarker, Bearer: fileToken(cfg.BrokerTokenFile),
+		}
 	}
 
 	var bindings []review.Binding
