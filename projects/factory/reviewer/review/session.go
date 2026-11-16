@@ -181,9 +181,26 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 		}
 		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
 			"recorded_tasks", len(ref.Tasks), "session_tasks", listed)
+		e.cancelUnrecorded(ctx, b, page, ref, l)
 		return nil, reasonUnaccounted
 	}
 	return ref, reasonResumed
+}
+
+// cancelUnrecorded cancels the session's listed turns that no review
+// recorded and that still run, such as a continuation kagent accepted before
+// a restart lost its task ID, so the fresh review does not run beside it.
+func (e *Engine) cancelUnrecorded(ctx context.Context, b *Binding, page *kagent.TaskPage, ref *SessionRef, l *slog.Logger) {
+	if page == nil {
+		return
+	}
+	for _, t := range page.Tasks {
+		if t == nil || slices.Contains(ref.Tasks, t.ID) || kagent.Terminal(t.Status.State) {
+			continue
+		}
+		l.InfoContext(ctx, "cancelling a session turn no review recorded", "context_id", ref.ContextID, "task", t.ID)
+		e.cancelTask(ctx, b, t.ID, l)
+	}
 }
 
 // accounted reports whether a complete listing of the session's tasks holds
