@@ -4,6 +4,7 @@ go_library(
     name = "review",
     srcs = [
         "cited.go",
+        "cleanup.go",
         "comment.go",
         "commits.go",
         "engine.go",
@@ -26,6 +27,7 @@ go_test(
     name = "review_test",
     srcs = [
         "cited_test.go",
+        "cleanup_test.go",
         "comment_test.go",
         "commits_test.go",
         "engine_test.go",

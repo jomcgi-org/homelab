@@ -27,6 +27,7 @@ type Metrics struct {
 	ReviewTaskBytes *prometheus.HistogramVec // binding, path
 	ReviewTokens    *prometheus.CounterVec   // binding, path, kind
 	ReviewUsage     *prometheus.CounterVec   // binding, path, usage
+	SessionsDeleted *prometheus.CounterVec   // binding, reason
 }
 
 // New registers the metrics with reg; a nil reg leaves them unregistered.
@@ -82,7 +83,8 @@ func New(reg prometheus.Registerer) *Metrics {
 		}, []string{"binding", "call"}),
 		KagentErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_kagent_errors_total",
-			Help: "Failed or unresolved kagent calls by binding and call (send, get_task, cancel, get_session).",
+			Help: "Failed or unresolved kagent calls by binding and call (send, get_task, cancel, get_session, list_tasks, " +
+				"list_sessions, name_session, delete_session).",
 		}, []string{"binding", "call"}),
 		Conditional: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_github_conditional_reads_total",
@@ -115,10 +117,17 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help: "Completed reviews by binding, path (fresh, resumed) and usage: reported when kagent stamped the " +
 				"task's token usage, else unreported (kagent v1.0.1's Codex harness reports none on the task).",
 		}, []string{"binding", "path", "usage"}),
+		SessionsDeleted: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_reviewer_sessions_deleted_total",
+			Help: "Review sessions the reviewer deleted in kagent, with their Substrate snapshots, by binding and reason " +
+				"(closed: the PR is no longer open; superseded: a newer session of the PR exists; idle: unnamed and idle " +
+				"for 12 hours). Each is also logged as \"deleted a review session\".",
+		}, []string{"binding", "reason"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.ReviewsStarted, m.ReviewsCompleted, m.Findings, m.Withdrawals, m.HumanGates, m.Retries, m.SplitRequests, m.InFlight, m.Enqueues, m.MergeGroupChecks,
-			m.GitHubErrors, m.KagentErrors, m.Conditional, m.CommentWrites, m.ReviewSessions, m.ReviewTaskBytes, m.ReviewTokens, m.ReviewUsage)
+			m.GitHubErrors, m.KagentErrors, m.Conditional, m.CommentWrites, m.ReviewSessions, m.ReviewTaskBytes, m.ReviewTokens, m.ReviewUsage,
+			m.SessionsDeleted)
 	}
 	return m
 }

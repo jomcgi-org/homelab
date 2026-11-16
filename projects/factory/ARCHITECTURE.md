@@ -1420,6 +1420,34 @@ previews).
   share that window. Resumed reviews withdrawing or missing findings more
   often than fresh ones is the regression signal, and lowering the
   reviewer's image pin reverts it.
+- **Session cleanup.** Each kagent session keeps a Substrate snapshot
+  (about 340 MB) until the session is deleted. After each send, the service
+  names the task's session `factory-review/<owner>/<repo>/<pr>`
+  (`UpdateSessionName`). Every 10 minutes, after a complete listing of open
+  PRs, it lists its own sessions of the binding's agent (`ListSessions`)
+  and deletes (`DeleteSession`, without force) the sessions no review will
+  resume:
+  - every session of a PR that is no longer open;
+  - every session of an open PR except its newest. A later head resumes
+    only the session the last review recorded, and that session is the
+    newest unless every later attempt ended without a report.
+  - an unnamed session (opened before this change, or whose name write
+    failed) with no task change for 12 hours.
+
+  The service keeps a session that is younger than 15 minutes, is named for
+  another repository, has a task that still executes, or whose tasks it
+  cannot list. kagent also refuses to delete a session during a turn. A
+  partial session listing deletes nothing, because an unlisted session may
+  be its PR's newest. Deletes run beside the poll loop and are counted in
+  `factory_reviewer_sessions_deleted_total` by reason (closed, superseded,
+  idle). A deleted session that a later head would have resumed only costs
+  a fresh review (`missing` or `deleted` above).
+
+  **Why.** On 2026-11-16, 398 reviewer snapshots (117 GiB) filled node-2's
+  root disk. The kubelet then evicted Substrate's Postgres and every agent
+  stopped (HOME-136). kagent deletes a session only at its idle TTL (7
+  days), and a shorter TTL would also expire coder sessions the connector
+  holds for fencing.
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
   status, and enqueues the factory's PRs once the required checks pass; the
   reviewer's failing check becomes the revision round's feedback
