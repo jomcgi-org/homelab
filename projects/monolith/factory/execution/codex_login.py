@@ -115,11 +115,7 @@ def watch_for_login(
     """
 
     async def wait() -> None:
-        deadline = (
-            None
-            if refresh_blocked
-            else monotonic() + _LOGIN_TIMEOUT
-        )
+        deadline = None if refresh_blocked else monotonic() + _LOGIN_TIMEOUT
         while True:
             try:
                 status = await mcp._broker_request(

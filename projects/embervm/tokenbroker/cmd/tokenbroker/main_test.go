@@ -921,42 +921,58 @@ func TestLoginPersistsAfterConcurrentRefresh(t *testing.T) {
 }
 
 func TestLoginPersistenceRecoveryDoesNotExchangeAgain(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		// Keep an older durable grant so status must distinguish it from the
-		// exchanged login whose writes have failed.
-		st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
-			Name: "codex-cluster", LastRefresh: time.Now().Add(-time.Hour), TokenBundle: store.TokenBundle{RefreshToken: "old-refresh"},
-		}}, saveFailures: 5}
-		s := newTestServer(st, &fakeAdapter{})
-		a := &successfulLoginAdapter{fakeAdapter: &fakeAdapter{}}
-		s.adapters["test"] = a
-		requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
-		time.Sleep(4 * time.Second)
-		synctest.Wait()
-		response := requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status")
-		body := decodeBody(t, response)
-		if body["state"] != "persistence_pending" || st.saveAttempts != 5 {
-			t.Fatal("login status concealed its recoverable persistence failure")
-		}
-		if strings.Contains(response.Body.String(), "login-refresh") {
-			t.Fatal("login status exposed credential contents")
-		}
-		response = requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
-		if response.Code != http.StatusAccepted {
-			t.Fatal("login start did not accept a persistence retry")
-		}
-		body = decodeBody(t, response)
-		if body["state"] != "pending" || body["persistence_retry"] != true {
-			t.Fatal("persistence retry response cannot be recognized by login clients")
-		}
-		synctest.Wait()
-		g, _ := st.LoadGrant("codex-cluster")
-		if a.starts != 1 || a.exchanges != 1 || st.saveAttempts != 6 || g.TokenBundle.RefreshToken != "login-refresh" {
-			t.Fatal("persistence retry did not save the original exchange")
-		}
-		body = decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
-		if body["state"] != "granted" {
-			t.Fatal("recovered login was not reported as granted")
-		}
-	})
+	for _, consumed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("consumed-%t", consumed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// Keep an older durable grant so status must distinguish it from the
+				// exchanged login whose writes have failed.
+				st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
+					Name: "codex-cluster", LastRefresh: time.Now().Add(-time.Hour), TokenBundle: store.TokenBundle{RefreshToken: "old-refresh"},
+				}}, saveFailures: 5}
+				adapter := &fakeAdapter{}
+				if consumed {
+					adapter.refreshErr = provider.ErrRefreshTokenReused
+				}
+				s := newTestServer(st, adapter)
+				if consumed {
+					if _, _, err := s.broker.RefreshAccessToken("codex-cluster", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
+						t.Fatal("expected a consumed-token block before login")
+					}
+				}
+				a := &successfulLoginAdapter{fakeAdapter: &fakeAdapter{}}
+				s.adapters["test"] = a
+				requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
+				time.Sleep(4 * time.Second)
+				synctest.Wait()
+				response := requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status")
+				body := decodeBody(t, response)
+				if body["state"] != "persistence_pending" || st.saveAttempts != 5 {
+					t.Fatal("login status concealed its recoverable persistence failure")
+				}
+				if s.broker.RefreshBlocked("codex-cluster") != consumed {
+					t.Fatal("an unsaved login changed the consumed-token marker")
+				}
+				if strings.Contains(response.Body.String(), "login-refresh") {
+					t.Fatal("login status exposed credential contents")
+				}
+				response = requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
+				if response.Code != http.StatusAccepted {
+					t.Fatal("login start did not accept a persistence retry")
+				}
+				body = decodeBody(t, response)
+				if body["state"] != "pending" || body["persistence_retry"] != true {
+					t.Fatal("persistence retry response cannot be recognized by login clients")
+				}
+				synctest.Wait()
+				g, _ := st.LoadGrant("codex-cluster")
+				if a.starts != 1 || a.exchanges != 1 || st.saveAttempts != 6 || g.TokenBundle.RefreshToken != "login-refresh" {
+					t.Fatal("persistence retry did not save the original exchange")
+				}
+				body = decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+				if body["state"] != "granted" || s.broker.RefreshBlocked("codex-cluster") {
+					t.Fatal("recovered login was not reported as granted")
+				}
+			})
+		})
+	}
 }

@@ -176,24 +176,64 @@ func TestGetAccessTokenSingleFlightPerGrant(t *testing.T) {
 }
 
 func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
-	now := time.Now().UTC()
-	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
-	adapter := &testAdapter{firstReused: true, onFirst: func() {
-		st.mu.Lock()
-		grant := st.grants["one"]
-		grant.TokenBundle.RefreshToken = "durable"
-		grant.LastRefresh = now.Add(time.Nanosecond)
-		st.grants["one"] = grant
-		st.mu.Unlock()
-	}}
-	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
-	if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
-		t.Fatal(err)
+	for _, newLogin := range []bool{false, true} {
+		t.Run(fmt.Sprintf("new-login-%t", newLogin), func(t *testing.T) {
+			now := time.Now().UTC()
+			st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
+			adapter := &testAdapter{firstReused: true, onFirst: func() {
+				st.mu.Lock()
+				grant := st.grants["one"]
+				grant.TokenBundle.RefreshToken = "durable"
+				grant.LastRefresh = now.Add(time.Nanosecond)
+				if newLogin {
+					// A new login wins even when its replica's clock is behind.
+					grant.LoginGeneration++
+					grant.LoginID = "new-login"
+					grant.LastRefresh = now.Add(-time.Hour)
+				}
+				st.grants["one"] = grant
+				st.mu.Unlock()
+			}}
+			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+			if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			adapter.mu.Lock()
+			defer adapter.mu.Unlock()
+			if adapter.calls != 2 || len(adapter.refreshInput) != 2 || adapter.refreshInput[0] != "old" || adapter.refreshInput[1] != "durable" {
+				t.Fatalf("refresh calls = %d, inputs = %v, want exactly one retry with durable token", adapter.calls, adapter.refreshInput)
+			}
+		})
 	}
-	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if adapter.calls != 2 || len(adapter.refreshInput) != 2 || adapter.refreshInput[0] != "old" || adapter.refreshInput[1] != "durable" {
-		t.Fatalf("refresh calls = %d, inputs = %v, want exactly one retry with durable token", adapter.calls, adapter.refreshInput)
+}
+
+func TestConsumedGrantReplacementUsesLoginGeneration(t *testing.T) {
+	for _, newer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("newer-login-%t", newer), func(t *testing.T) {
+			now := time.Now().UTC()
+			original := store.Grant{Name: "one", ProviderName: "test", LoginGeneration: 2, LoginID: "consumed-login", LastRefresh: now,
+				TokenBundle: store.TokenBundle{RefreshToken: "consumed"}}
+			st := &testStore{grants: map[string]store.Grant{"one": original}}
+			adapter := &testAdapter{refreshErr: provider.ErrRefreshTokenReused}
+			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+			if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
+				t.Fatal("expected a consumed-token block")
+			}
+			replacement := original
+			replacement.LoginGeneration, replacement.LoginID = 1, "older-login"
+			replacement.LastRefresh = now.Add(time.Hour)
+			replacement.TokenBundle.RefreshToken = "replacement"
+			if newer {
+				replacement.LoginGeneration, replacement.LoginID = 3, "newer-login"
+				replacement.LastRefresh = now.Add(-time.Hour)
+			}
+			if err := st.SaveGrant(replacement); err != nil {
+				t.Fatal(err)
+			}
+			if b.RefreshBlocked("one") == newer || b.NeedsLogin("one") || adapter.calls != 2 {
+				t.Fatal("replacement detection ignored login generation or retried the provider")
+			}
+		})
 	}
 }
 
@@ -287,11 +327,11 @@ func TestReuseRecoveryTransientFailurePreservesGrant(t *testing.T) {
 
 func TestReuseRecoveryDoesNotRetryOlderDurableGrant(t *testing.T) {
 	now := time.Now().UTC()
-	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now.Add(-time.Hour), TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
+	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LoginGeneration: 1, LastRefresh: now.Add(time.Hour), TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
 	adapter := &testAdapter{refreshErr: provider.ErrRefreshTokenReused}
 	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
 	s, _ := b.state("one")
-	s.authoritative = &store.Grant{Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "rotated"}}
+	s.authoritative = &store.Grant{Name: "one", ProviderName: "test", LoginGeneration: 2, LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "rotated"}}
 	for i := 0; i < 3; i++ {
 		if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
 			t.Fatalf("refresh error = %v", err)
@@ -329,6 +369,38 @@ func (s *delayedStore) allowWrites() {
 	s.mu.Lock()
 	s.writable = true
 	s.mu.Unlock()
+}
+
+func TestLoginClearsConsumedBlockOnlyAfterPersistence(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now().UTC()
+		st := &testStore{grants: map[string]store.Grant{"one": {
+			Name: "one", ProviderName: "test", LastRefresh: now,
+			TokenBundle: store.TokenBundle{RefreshToken: "consumed"},
+		}}}
+		delayed := &delayedStore{testStore: st}
+		adapter := &testAdapter{refreshErr: provider.ErrRefreshTokenReused}
+		b := New(delayed, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+		if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrRefreshTokenReused) {
+			t.Fatal("expected a consumed-token block")
+		}
+		login := store.Grant{Name: "one", ProviderName: "test", TokenBundle: store.TokenBundle{
+			AccessToken: "login-access", RefreshToken: "login-refresh", ExpiresAt: now.Add(time.Hour),
+		}}
+		if err := b.SaveGrant(login); !errors.Is(err, ErrGrantPersistencePending) || !b.RefreshBlocked("one") {
+			t.Fatal("an unsaved login must leave the consumed-token block intact")
+		}
+		delayed.allowWrites()
+		if err := b.RetryPendingGrant("one"); err != nil {
+			t.Fatal(err)
+		}
+		// Successful persistence must clear the marker itself, without needing
+		// a later status read to rediscover the saved login.
+		st.loadErr = errors.New("storage reads unavailable")
+		if b.RefreshBlocked("one") || b.NeedsLogin("one") || adapter.calls != 2 {
+			t.Fatal("saving a new login did not clear the block or retried the provider")
+		}
+	})
 }
 
 type rotatingAdapter struct {

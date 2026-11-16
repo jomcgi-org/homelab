@@ -2221,7 +2221,7 @@ def test_send_message_login_required_persists_and_watches(client, session, monke
         lambda grant, callback, **options: watched.append((grant, callback, options)),
     )
     monkeypatch.setattr(
-        "factory.execution.router._resume_session_after_login",
+        "factory.execution.store.resume_session_after_login_sync",
         lambda session_id: store.resume_session_after_login(session, session_id),
     )
     monkeypatch.setattr(
@@ -3179,8 +3179,8 @@ def test_send_to_thread_session_login_required_persists_and_watches(
         lambda grant, callback, **options: watched.append((grant, callback, options)),
     )
     monkeypatch.setattr(
-        api,
-        "_resume_session_after_login",
+        store,
+        "resume_session_after_login_sync",
         lambda session_id: store.resume_session_after_login(session, session_id),
     )
     monkeypatch.setattr(api, "_schedule_next_message", scheduled.append)
@@ -3879,7 +3879,7 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
         ),
     )
     monkeypatch.setattr(
-        "factory.execution.router._resume_session_after_login",
+        "factory.execution.store.resume_session_after_login_sync",
         lambda session_id: store.resume_session_after_login(session, session_id),
     )
     monkeypatch.setattr(
@@ -3963,7 +3963,6 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
     assert scheduled == [body["session_id"]]
 
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["none", "failed"])
 async def test_login_watcher_keeps_device_flow_timeout(monkeypatch, state):
@@ -3988,7 +3987,6 @@ async def test_login_watcher_keeps_device_flow_timeout(monkeypatch, state):
     assert resumed == []
 
 
-
 @pytest.mark.asyncio
 async def test_login_watcher_resumes_with_usable_cache_while_refresh_blocked(
     monkeypatch,
@@ -4011,4 +4009,3 @@ async def test_login_watcher_resumes_with_usable_cache_while_refresh_blocked(
     )
     assert calls == [("GET", "/grants/codex-cluster/login/status")]
     assert resumed == [True]
-

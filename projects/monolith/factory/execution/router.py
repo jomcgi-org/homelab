@@ -44,7 +44,6 @@ from factory.execution.mcp import (
     _mark_ui_originated,
     _persist_pending_message,
     _persist_session,
-    _resume_session_after_login,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -1264,7 +1263,9 @@ async def _start_session(
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            if await asyncio.to_thread(_resume_session_after_login, session_id):
+            if await asyncio.to_thread(
+                store.resume_session_after_login_sync, session_id
+            ):
                 _schedule_next_message(session_id)
 
         watch_for_login(
@@ -1445,7 +1446,9 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            if await asyncio.to_thread(_resume_session_after_login, session_id):
+            if await asyncio.to_thread(
+                store.resume_session_after_login_sync, session_id
+            ):
                 _schedule_next_message(session_id)
 
         watch_for_login(

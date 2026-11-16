@@ -235,11 +235,6 @@ def _activate_session_after_enqueue(session_id: int) -> bool:
         return store.activate_session_after_enqueue(db_session, session_id)
 
 
-def _resume_session_after_login(session_id: int) -> bool:
-    with Session(get_engine()) as db_session:
-        return store.resume_session_after_login(db_session, session_id)
-
-
 def _ember_session(row: AgentSession) -> EmberSession | None:
     if row.ember_session_id and row.ember_session_token:
         return EmberSession(
@@ -1871,20 +1866,20 @@ async def _reconcile_credential_waits() -> None:
     All session preflights use the production default grant. Read it once for
     the waiting sessions; no device login or token rotation is started here.
     """
-    waiting = await asyncio.to_thread(store.get_sessions_awaiting_login_sync)
-    if not waiting or rollout_shutdown_in_progress():
-        return
     try:
+        waiting = await asyncio.to_thread(store.get_sessions_awaiting_login_sync)
+        if not waiting or rollout_shutdown_in_progress():
+            return
         status = await _broker_request("GET", f"/grants/{_DEFAULT_GRANT}/login/status")
         if not _broker_status_allows_execution(status):
             return
+        for session_id in waiting:
+            if rollout_shutdown_in_progress():
+                return
+            await asyncio.to_thread(store.resume_session_after_login_sync, session_id)
     except Exception:
+        # Keep the durable waits for the next sweep and omit private diagnostics.
         logger.warning("Could not reconcile Codex credential waits")
-        return
-    for session_id in waiting:
-        if rollout_shutdown_in_progress():
-            return
-        await asyncio.to_thread(_resume_session_after_login, session_id)
 
 
 async def _sweep_orphaned_pending_messages() -> None:
