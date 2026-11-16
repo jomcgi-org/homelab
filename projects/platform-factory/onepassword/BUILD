@@ -10,5 +10,8 @@ argocd_app(
         "helm",
         "template",
     ],
-    values_files = ["//projects/platform/onepassword:values.yaml"],
+    values_files = [
+        "//projects/platform/onepassword:values.yaml",
+        "//projects/platform/onepassword:values-factory.yaml",
+    ],
 )
