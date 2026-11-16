@@ -60,6 +60,14 @@ kagent:
       auth:
         serviceAccount:
           authority: factory-home
+    # A session's Substrate snapshot (about 340 MB) lives until the session
+    # is deleted, and nothing deletes finished sessions yet (HOME-136). At
+    # kagent's 7-day default, reviewer snapshots reached 117 GiB and put
+    # node-2 under disk pressure on 2026-11-16. 24 hours keeps about a day of
+    # snapshots and keeps coder sessions through an overnight wait; the
+    # connector replaces a session that expired.
+    sessions:
+      idleTtl: 86400s
 
 # The Codex agent's model: gpt-6-astra, the frontier model, at the broker's
 # xhigh reasoning effort (Joe, 2026-11-14). kagent v1.0.1 pins Codex 0.161.0,
