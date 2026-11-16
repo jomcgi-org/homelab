@@ -1,5 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { findToast, openApp } from "../../test/app";
 import { characters, ids, lobby, members } from "../../test/fixtures";
 import { keys } from "../../api/lobby";
@@ -77,6 +77,12 @@ function open(routes: Routes = {}) {
 }
 
 describe("kept private replies", () => {
+  beforeAll(async () => {
+    // Load the lazy route before timing composer interactions. Cold module
+    // transforms can outlast the DOM query timeout on a busy test runner.
+    await import("./Session");
+  });
+
   it("does not save transient draft text when a viewer change removes the loading session", async () => {
     const reload = vi.fn();
     vi.stubGlobal("location", {
