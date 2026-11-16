@@ -1,0 +1,26 @@
+diff --git a/lib/animation/Animation.js b/lib/animation/Animation.js
+index bbfe3f4e32b215c356b3dbeceac0e726855c3163..f3f404043df9594b305e1f5a04f0d2fd7a1ac29d 100644
+--- a/lib/animation/Animation.js
++++ b/lib/animation/Animation.js
+@@ -158,6 +158,8 @@ export default class Animation extends EventTarget {
+         this.#playState = 'idle';
+         this.#currentTime = null;
+         this.startTime = null;
++        // The cancel algorithm marks the rejected finished promise handled.
++        this.finished.catch(() => {});
+         this.#rejectFinished?.(new this[PropertySymbol.window].DOMException('The animation was canceled.', DOMExceptionNameEnum.abortError));
+         this.dispatchEvent(new this[PropertySymbol.window].Event('cancel'));
+     }
+diff --git a/src/animation/Animation.ts b/src/animation/Animation.ts
+index 594d0610a2448043da900c2c8b8a1d070338f6be..145fe48b94f46d82af5c4a55d0c8ae59c7ea6661 100644
+--- a/src/animation/Animation.ts
++++ b/src/animation/Animation.ts
+@@ -192,6 +192,8 @@ export default class Animation extends EventTarget {
+ 		this.#playState = 'idle';
+ 		this.#currentTime = null;
+ 		this.startTime = null;
++		// The cancel algorithm marks the rejected finished promise handled.
++		this.finished.catch(() => {});
+ 		this.#rejectFinished?.(
+ 			new this[PropertySymbol.window].DOMException(
+ 				'The animation was canceled.',
