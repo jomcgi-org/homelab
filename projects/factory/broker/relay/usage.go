@@ -109,9 +109,8 @@ func (u *UsageRefresher) check(ctx context.Context) string {
 	u.mu.Lock()
 	u.inFlight = false
 	u.retryAt = time.Time{}
-	// A failed state write leaves the store unreadable until a write
-	// succeeds, so it is retried on the next tick instead of backing off.
-	// Meanwhile the relay blocks nothing and the backend decides.
+	// A failed state write keeps the previous reading, now past its expiry,
+	// so it is retried on the next tick instead of backing off.
 	if outcome != "refreshed" && outcome != "store_error" {
 		u.retryAt = u.now().Add(UsageRetryBackoff)
 	}
