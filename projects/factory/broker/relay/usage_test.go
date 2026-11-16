@@ -434,3 +434,100 @@ func TestUsageRefreshDeferredByRelayedReading(t *testing.T) {
 		t.Fatalf("expired outcome = %q, usage reads = %d", got, usageReads.Load())
 	}
 }
+
+// A relayed reading recorded while a usage read is in flight is newer than
+// the usage answer, which describes the account from when it was sent.
+func TestUsageReadingYieldsToNewerRelayedReading(t *testing.T) {
+	f := newUsageFixture(t)
+	gate, started := make(chan struct{}), make(chan struct{}, 1)
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	f.backend.set(func(b *usageBackend) {
+		b.gate, b.started, b.body = gate, started, usageBody(false, 100, usageT0.Add(5*time.Hour))
+	})
+	done := make(chan string, 1)
+	go func() { done <- f.refresher.check(context.Background()) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("usage read never started")
+	}
+	relayedAt := usageT0.Add(5 * time.Second)
+	f.clock.Set(relayedAt)
+	relayed := quota.Observation{ObservedAt: relayedAt.Format(time.RFC3339), Status: "allowed", Windows: []quota.Window{{
+		Name: "primary", UsedPercent: 40, WindowMinutes: 300, ResetsAt: usageT0.Add(5 * time.Hour).Format(time.RFC3339),
+	}}}
+	if err := f.quota.PutGrant("codex-primary", QuotaProvider, relayed, relayedAt); err != nil {
+		t.Fatal(err)
+	}
+	f.clock.Set(usageT0.Add(10 * time.Second)) // The usage answer arrives later still.
+	release()
+	if got := <-done; got != "refreshed" {
+		t.Fatalf("outcome = %q", got)
+	}
+	view := f.view()
+	if view.Status != "allowed" || len(view.Windows) != 1 || view.Windows[0].UsedPercent != 40 {
+		t.Fatalf("an older usage answer replaced the relayed reading: %+v", view)
+	}
+}
+
+// flakyPersistence is a quota state ConfigMap whose writes can fail.
+type flakyPersistence struct {
+	mu   sync.Mutex
+	data []byte
+	rev  int
+	fail bool
+}
+
+func (p *flakyPersistence) Load() ([]byte, string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.data, fmt.Sprint(p.rev), nil
+}
+
+func (p *flakyPersistence) CompareAndSwap(rev string, data []byte) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.fail:
+		return "", errors.New("api unavailable")
+	case rev != fmt.Sprint(p.rev):
+		return "", quota.ErrPersistenceConflict
+	}
+	p.rev++
+	p.data = append([]byte(nil), data...)
+	return fmt.Sprint(p.rev), nil
+}
+
+// A failed state write makes the store unreadable until a write succeeds, so
+// the refresher retries on the next tick rather than after its backoff.
+func TestUsageRefreshRetriesFailedStoreWriteNextTick(t *testing.T) {
+	f := newUsageFixture(t)
+	persistence := &flakyPersistence{fail: true}
+	st, err := quota.NewPersistentStore(persistence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.quota, f.refresher.Quota = st, st
+	f.backend.set(func(b *usageBackend) { b.body = usageBody(true, 10, usageT0.Add(5*time.Hour)) })
+	ctx := context.Background()
+	if got := f.refresher.check(ctx); got != "store_error" {
+		t.Fatalf("first outcome = %q", got)
+	}
+	if f.view().Observed {
+		t.Fatalf("a failed write published a reading: %+v", f.view())
+	}
+	persistence.mu.Lock()
+	persistence.fail = false
+	persistence.mu.Unlock()
+	f.clock.Set(usageT0.Add(UsageTick))
+	if got := f.refresher.check(ctx); got != "refreshed" {
+		t.Fatalf("next tick outcome = %q, want a retry", got)
+	}
+	if view := f.view(); !view.Observed || view.Windows[0].UsedPercent != 10 {
+		t.Fatalf("retry did not restore the reading: %+v", view)
+	}
+	if got := f.backend.count(); got != 2 {
+		t.Fatalf("usage reads = %d, want 2", got)
+	}
+}
