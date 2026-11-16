@@ -211,8 +211,10 @@ func TestConsumedGrantReplacementUsesLoginGeneration(t *testing.T) {
 	for _, newer := range []bool{false, true} {
 		t.Run(fmt.Sprintf("newer-login-%t", newer), func(t *testing.T) {
 			now := time.Now().UTC()
-			original := store.Grant{Name: "one", ProviderName: "test", LoginGeneration: 2, LoginID: "consumed-login", LastRefresh: now,
-				TokenBundle: store.TokenBundle{RefreshToken: "consumed"}}
+			original := store.Grant{
+				Name: "one", ProviderName: "test", LoginGeneration: 2, LoginID: "consumed-login", LastRefresh: now,
+				TokenBundle: store.TokenBundle{RefreshToken: "consumed"},
+			}
 			st := &testStore{grants: map[string]store.Grant{"one": original}}
 			adapter := &testAdapter{refreshErr: provider.ErrRefreshTokenReused}
 			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
