@@ -208,6 +208,7 @@ func TestTaskOutcomeRejectsChangedGenerations(t *testing.T) {
 		"retry":            `UPDATE work_item SET engineering_retries = engineering_retries + 1`,
 		"completed turn":   `UPDATE work_item SET turn_attempt_id = (SELECT id FROM delivery_attempt LIMIT 1)`,
 		"stop":             `UPDATE work_item SET state = 'stopped'`,
+		"stopped run":      `UPDATE run SET stopped_reason = 'operator stop'`,
 		"block":            `UPDATE work_item SET state = 'blocked'`,
 		"finished attempt": `UPDATE delivery_attempt SET state = 'completed'`,
 		"different task":   `UPDATE delivery_attempt SET task_id = 'new-task'`,
@@ -217,6 +218,12 @@ func TestTaskOutcomeRejectsChangedGenerations(t *testing.T) {
 			decision_id, kind, message_id, kagent_namespace, kagent_agent, state, writer_epoch)
 			SELECT run_id, seq + 1, run_attempt, work_item_epoch, 'retry', kind, 'new-message',
 				kagent_namespace, kagent_agent, 'sending', writer_epoch FROM delivery_attempt`,
+		"newer rejected run": `INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+			SELECT 2, agent_key, work_item_id, trigger, prompt, system_prompt, 1, 'closed' FROM run WHERE id = 1;
+			INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch,
+				decision_id, kind, message_id, kagent_namespace, kagent_agent, state, writer_epoch)
+			SELECT 2, 1, 1, work_item_epoch, 'initial', kind, 'rejected-message',
+				kagent_namespace, kagent_agent, 'failed', writer_epoch FROM delivery_attempt`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, r := terminalFixture(t)
@@ -238,18 +245,24 @@ func TestSupersededGrantFailureRequiresCurrentWaitingFailure(t *testing.T) {
 		name       string
 		query      string
 		superseded bool
+		retry      bool
 	}{
-		{"newer run working", "", true},
-		{"quota failure", `UPDATE delivery_attempt SET error_class = 'quota' WHERE run_id = 1`, true},
+		{"newer run working", "", true, false},
+		{"quota failure", `UPDATE delivery_attempt SET error_class = 'quota' WHERE run_id = 1`, true, false},
 		{"newer run finished", `UPDATE run SET state = 'closed' WHERE id = 2;
-			UPDATE delivery_attempt SET state = 'completed' WHERE run_id = 2`, true},
-		{"no newer attempt", `DELETE FROM delivery_attempt WHERE run_id = 2`, false},
-		{"closed run", `UPDATE run SET state = 'closed' WHERE id = 1`, false},
-		{"redelivered run", `UPDATE run SET attempt = attempt + 1 WHERE id = 1`, false},
-		{"accepted attempt", `UPDATE delivery_attempt SET state = 'accepted' WHERE run_id = 1`, false},
-		{"engineering failure", `UPDATE delivery_attempt SET error_class = 'engineering' WHERE run_id = 1`, false},
-		{"different work", `UPDATE run SET work_item_id = NULL WHERE id = 2`, false},
-		{"own retry", `UPDATE delivery_attempt SET run_id = 1, seq = 2 WHERE run_id = 2`, false},
+			UPDATE delivery_attempt SET state = 'completed' WHERE run_id = 2`, true, false},
+		{"newer unsent", `UPDATE delivery_attempt SET state = 'sending', task_id = NULL WHERE run_id = 2`, false, false},
+		{"newer refused", `UPDATE delivery_attempt SET state = 'sending', task_id = NULL, issues = 1 WHERE run_id = 2`, false, false},
+		{"newer ambiguous", `UPDATE delivery_attempt SET state = 'ambiguous', task_id = NULL, issues = 1 WHERE run_id = 2`, false, false},
+		{"newer rejected", `UPDATE delivery_attempt SET state = 'failed', task_id = NULL WHERE run_id = 2`, false, true},
+		{"no newer attempt", `DELETE FROM delivery_attempt WHERE run_id = 2`, false, true},
+		{"closed run", `UPDATE run SET state = 'closed' WHERE id = 1`, false, false},
+		{"stopped run", `UPDATE run SET stopped_reason = 'operator stop' WHERE id = 1`, false, false},
+		{"redelivered run", `UPDATE run SET attempt = attempt + 1 WHERE id = 1`, false, false},
+		{"accepted attempt", `UPDATE delivery_attempt SET state = 'accepted' WHERE run_id = 1`, false, false},
+		{"engineering failure", `UPDATE delivery_attempt SET error_class = 'engineering' WHERE run_id = 1`, false, false},
+		{"different work", `UPDATE run SET work_item_id = NULL WHERE id = 2`, false, true},
+		{"own retry", `UPDATE delivery_attempt SET run_id = 1, seq = 2 WHERE run_id = 2`, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, r := terminalFixture(t)
@@ -263,11 +276,12 @@ func TestSupersededGrantFailureRequiresCurrentWaitingFailure(t *testing.T) {
 			_, err = f.st.DB.Exec(`INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
 				SELECT 2, agent_key, work_item_id, trigger, prompt, system_prompt, 1, 'dispatched' FROM run WHERE id = 1`)
 			f.must(err)
-			_, err = f.st.RecordAttempt(f.ctx, f.st.DB, store.Attempt{
+			newer, err := f.st.RecordAttempt(f.ctx, f.st.DB, store.Attempt{
 				RunID: 2, RunAttempt: 1, WorkItemEpoch: f.work.Epoch, DecisionID: "initial", Kind: "initial",
 				MessageID: "itsaplan-run/2/initial", KagentNamespace: "ns", KagentAgent: "coder", WriterEpoch: f.w.Epoch,
 			})
 			f.must(err)
+			f.must(f.st.MarkAccepted(f.ctx, f.st.DB, newer.ID, "session", "new-task"))
 			if tc.query != "" {
 				_, err = f.st.DB.Exec(tc.query)
 				f.must(err)
@@ -279,6 +293,14 @@ func TestSupersededGrantFailureRequiresCurrentWaitingFailure(t *testing.T) {
 				}
 				return err
 			}))
+			admitted := false
+			err = f.st.AttemptTx(f.ctx, f.w, r, f.work, f.target, func(*sql.Tx) error {
+				admitted = true
+				return nil
+			})
+			if admitted != tc.retry || (tc.retry && err != nil) || (!tc.retry && !errors.Is(err, store.ErrAttemptChanged)) {
+				t.Fatalf("retry admitted = %v, err = %v; want %v", admitted, err, tc.retry)
+			}
 		})
 	}
 }

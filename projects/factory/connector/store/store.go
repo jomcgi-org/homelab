@@ -755,10 +755,12 @@ func (s *Store) SupersededGrantFailure(ctx context.Context, tx *sql.Tx, r *Run, 
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM run r JOIN delivery_attempt a ON a.run_id = r.id
 		WHERE r.id = $1 AND r.work_item_id = $2 AND r.attempt = $3 AND r.state = 'waiting'
+			AND r.stopped_reason IS NULL
 			AND a.id = $4 AND a.state = 'failed' AND a.error_class IN ('credential', 'quota')
 			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = r.id)
 			AND EXISTS (SELECT 1 FROM delivery_attempt newer JOIN run nr ON nr.id = newer.run_id
-				WHERE nr.work_item_id = r.work_item_id AND nr.id <> r.id AND newer.id > a.id))`,
+				WHERE nr.work_item_id = r.work_item_id AND nr.id <> r.id AND newer.id > a.id
+					AND coalesce(newer.task_id, '') <> ''))`,
 		r.ID, r.WorkItemID, r.Attempt, a.ID).Scan(&superseded)
 	return superseded, err
 }
@@ -771,6 +773,8 @@ func (s *Store) SupersededGrantFailure(ctx context.Context, tx *sql.Tx, r *Run, 
 // a separate check would let a stop, redelivery or newer turn race the writes.
 // The attempt's WriterEpoch is its original sender, not the executing writer;
 // a successor must be able to finish an inherited task.
+// A waiting grant failure may retry past another run's failed, unattached send.
+// Accepted tasks and open sends (including ambiguous ones) still fence it.
 func (s *Store) AttemptTx(ctx context.Context, writer *Writer, r *Run, wi *WorkItem, a *Attempt, fn func(*sql.Tx) error) error {
 	return writer.Tx(ctx, func(tx *sql.Tx) error {
 		if err := lockAttempt(ctx, tx, wi.ID, a.ID); err != nil {
@@ -782,14 +786,20 @@ func (s *Store) AttemptTx(ctx context.Context, writer *Writer, r *Run, wi *WorkI
 			JOIN run r ON r.id = a.run_id JOIN work_item w ON w.id = r.work_item_id
 			WHERE a.id = $1 AND r.id = $2 AND w.id = $3
 				AND r.attempt = $4 AND r.state = $5 AND r.state IN ('dispatched', 'waiting')
+				AND r.stopped_reason IS NULL
 				AND w.epoch = $6 AND a.work_item_epoch = w.epoch
 				AND w.session_generation = $7 AND coalesce(w.session_id, '') = $8
 				AND w.state = $9 AND w.state NOT IN ('stopped', 'blocked')
 				AND w.review_rounds = $10 AND w.engineering_retries = $11
 				AND coalesce(w.turn_attempt_id, 0) = $12
 				AND a.state = $13 AND coalesce(a.task_id, '') = $14 AND coalesce(a.context_id, '') = $15
-				AND a.id = (SELECT max(other.id) FROM delivery_attempt other
-					JOIN run other_run ON other_run.id = other.run_id WHERE other_run.work_item_id = w.id)
+				AND NOT EXISTS (SELECT 1 FROM delivery_attempt other
+					JOIN run other_run ON other_run.id = other.run_id
+					WHERE other_run.work_item_id = w.id AND other.id > a.id
+						AND NOT (r.state = 'waiting' AND a.state = 'failed'
+							AND coalesce(a.error_class, '') IN ('credential', 'quota')
+							AND other.run_id <> a.run_id AND other.state = 'failed'
+							AND coalesce(other.task_id, '') = ''))
 				AND NOT EXISTS (SELECT 1 FROM cancellation c JOIN run cr ON cr.id = c.run_id
 					WHERE cr.work_item_id = w.id AND c.state = 'pending'))`,
 			a.ID, r.ID, wi.ID, r.Attempt, r.State, wi.Epoch, wi.SessionGeneration, wi.SessionID,
