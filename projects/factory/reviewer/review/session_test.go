@@ -87,7 +87,8 @@ func TestLaterHeadResumesThePreviousSession(t *testing.T) {
 	ref := stateOn(t, first).Session
 	firstTask := h.taskOn(7, shaA, 1)
 	if ref == nil || ref.ContextID != "ctx-"+firstTask || ref.Path != PathFresh || ref.Reviews != 1 || ref.Bytes <= 0 ||
-		ref.Binding != "homelab" || ref.Agent != "factory-review/reviewer" || ref.PR != 7 || ref.Head != shaA || ref.Rules == "" {
+		ref.Binding != "homelab" || ref.Agent != "factory-review/reviewer" || ref.PR != 7 || ref.Head != shaA || ref.Rules == "" ||
+		!reflect.DeepEqual(ref.Tasks, []string{firstTask}) {
 		t.Fatalf("first session = %+v", ref)
 	}
 
@@ -125,7 +126,7 @@ func TestLaterHeadResumesThePreviousSession(t *testing.T) {
 	}
 	next := stateOn(t, second).Session
 	if next == nil || next.ContextID != ref.ContextID || next.Path != PathResumed || next.Reviews != 2 || next.Head != sessionShaB ||
-		next.Bytes <= ref.Bytes || next.Rules != ref.Rules {
+		next.Bytes <= ref.Bytes || next.Rules != ref.Rules || !reflect.DeepEqual(next.Tasks, []string{firstTask, h.taskOn(7, sessionShaB, 1)}) {
 		t.Fatalf("second session = %+v after %+v", next, ref)
 	}
 
@@ -174,6 +175,8 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 		setup  func(h *harness, contextID string)
 		before func(h *harness, task string)
 		reads  int
+		// failed is the kagent call counted as an error.
+		failed string
 	}{
 		{name: "no session client", reason: reasonDisabled, setup: func(h *harness, _ string) { h.sessions = nil }},
 		{name: "missing", reason: reasonMissing, reads: 1, setup: func(h *harness, id string) {
@@ -194,13 +197,34 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 		{name: "another agent", reason: reasonForeign, reads: 1, setup: func(h *harness, id string) {
 			h.sessions.answer(id, &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady, AgentNamespace: "factory-r-homelab", AgentName: "coder"}, nil)
 		}},
-		{name: "unreadable", reason: reasonUnreadable, reads: 1, setup: func(h *harness, id string) { h.sessions.answer(id, nil, unavailable) }},
+		{name: "unreadable", reason: reasonUnreadable, reads: 1, failed: "get_session", setup: func(h *harness, id string) {
+			h.sessions.answer(id, nil, unavailable)
+		}},
+		{name: "a new agent revision", reason: reasonRevision, reads: 1, setup: func(h *harness, _ string) {
+			h.k.mu.Lock()
+			h.k.revision = "rev-2" // a model or prompt change rolled out after the first review
+			h.k.mu.Unlock()
+		}},
+		{name: "no session revision", reason: reasonRevision, reads: 1, setup: func(h *harness, id string) {
+			h.sessions.answer(id, &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady}, nil)
+		}},
+		{name: "agent unreadable", reason: reasonUnreadable, reads: 1, failed: "get_agent", setup: func(h *harness, _ string) {
+			h.sessions.mu.Lock()
+			h.sessions.agentErr = unavailable
+			h.sessions.mu.Unlock()
+		}},
+		{name: "a turn no review recorded", reason: reasonUnaccounted, reads: 1, setup: func(h *harness, id string) { h.k.open(id) }},
+		{name: "tasks unreadable", reason: reasonUnreadable, reads: 1, failed: "list_tasks", setup: func(h *harness, _ string) {
+			h.k.mu.Lock()
+			h.k.listErr = unavailable
+			h.k.mu.Unlock()
+		}},
 		{name: "near the size bound", reason: reasonSize, before: func(h *harness, task string) { h.k.pad(task, maxSessionBytes) }},
 		{name: "refused by kagent", reason: reasonRefused, reads: 1, setup: func(h *harness, id string) {
 			h.k.mu.Lock()
 			h.k.gone[id] = true // GetSession still answers READY: the session went between the read and the send.
 			h.k.mu.Unlock()
-			h.sessions.answer(id, &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady}, nil)
+			h.sessions.answer(id, &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady, PreparedRevision: "rev-1"}, nil)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,9 +275,9 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 					t.Errorf("session reads = %d, want %d", got, tc.reads)
 				}
 			}
-			if tc.reason == reasonUnreadable {
-				if got := testutil.ToFloat64(h.m.KagentErrors.WithLabelValues("homelab", "get_session")); got != 1 {
-					t.Errorf("get_session errors = %v", got)
+			if tc.failed != "" {
+				if got := testutil.ToFloat64(h.m.KagentErrors.WithLabelValues("homelab", tc.failed)); got != 1 {
+					t.Errorf("%s errors = %v", tc.failed, got)
 				}
 			}
 		})
@@ -343,6 +367,178 @@ func TestRestartedResumeSendsTheRulesAgain(t *testing.T) {
 	}
 }
 
+// TestClippedRuleChangeSendsTheRulesAgain changes only the part of a rule
+// file the prompt clipped away: the continuation carries the rules again,
+// so the agent rereads the file in `main/`.
+func TestClippedRuleChangeSendsTheRulesAgain(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	long := "General review rules." + strings.Repeat(" More rules.", maxRuleFile/12)
+	h.gh.setBaseFile("docs/agents/review.md", long+" Tail one.")
+	e, ctx, _ := h.start()
+	first := stateOn(t, finishHead(t, h, e, ctx, shaA, passing, nil)).Session
+	if p := lastSend(h).Parts[0].Text; strings.Contains(p, "Tail one.") || !strings.Contains(p, "General review rules.") {
+		t.Fatalf("the first prompt does not clip the rule file:\n%s", p)
+	}
+
+	h.gh.setBaseFile("docs/agents/review.md", long+" Tail two.")
+	second := stateOn(t, finishHead(t, h, e, ctx, sessionShaB, passing, nil)).Session
+	m := lastSend(h)
+	if p := m.Parts[0].Text; m.ContextID != first.ContextID || strings.Contains(p, "is unchanged") ||
+		!strings.Contains(p, "### docs/agents/review.md\n\nGeneral review rules.") {
+		t.Fatalf("after a change past the clip the continuation (in %q) is:\n%s", m.ContextID, p)
+	}
+	if second.Rules == first.Rules || second.Rules == "" {
+		t.Fatalf("rules digests %q then %q", first.Rules, second.Rules)
+	}
+}
+
+// TestRulesDigestCoversUnsentText changes text the prompt clips or omits,
+// and leaves the digest unknown when some text that may apply went unread.
+func TestRulesDigestCoversUnsentText(t *testing.T) {
+	long := strings.Repeat("r", maxRuleFile)
+	rules := func(rule, doc string) *Rules {
+		budget, docBudget := maxRules, 4 // the context document is past its budget
+		return &Rules{
+			Base: "main", Commit: "base-1",
+			Files:   []RuleFile{bounded("REVIEW.md", []byte(rule), &budget, maxRuleFile)},
+			Context: []RuleFile{bounded("AGENTS.md", []byte(doc), &docBudget, maxContextDoc)},
+		}
+	}
+	base := rules(long+" one", "context one")
+	if !base.Files[0].Clipped || !base.Context[0].Omitted {
+		t.Fatalf("rules = %+v", base)
+	}
+	d := rulesDigest(base)
+	moved := rules(long+" one", "context one")
+	moved.Commit = "base-2"
+	if d == "" || rulesDigest(moved) != d {
+		t.Fatalf("digest %q changes with the base commit alone", d)
+	}
+	if rulesDigest(rules(long+" two", "context one")) == d {
+		t.Errorf("a change past the clip keeps the digest")
+	}
+	if rulesDigest(rules(long+" one", "context two")) == d {
+		t.Errorf("a change to an omitted document keeps the digest")
+	}
+	tooLarge := rules(long, "context one")
+	tooLarge.Files = append(tooLarge.Files, RuleFile{Path: "projects/REVIEW.md", Omitted: true})
+	unchecked := rules(long, "context one")
+	unchecked.Unchecked = 1
+	for name, r := range map[string]*Rules{"a file too large to read": tooLarge, "unchecked paths": unchecked, "no rules": nil} {
+		if got := rulesDigest(r); got != "" {
+			t.Errorf("%s: digest %q, want unknown", name, got)
+		}
+	}
+}
+
+// TestUnknownRulesAreAlwaysSent reviews a PR touching a path no rule can be
+// looked up for, so the rules' digest is unknown: a continuation never
+// claims them unchanged.
+func TestUnknownRulesAreAlwaysSent(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.withLock(func() {
+		h.gh.prs[7].Files = append(h.gh.prs[7].Files, github.PullRequestFile{Path: "projects//z.go", Status: "added", Additions: 1})
+	})
+	e, ctx, _ := h.start()
+	first := stateOn(t, finishHead(t, h, e, ctx, shaA, passing, nil)).Session
+	if first == nil || first.Rules != "" {
+		t.Fatalf("first session = %+v, want an unknown rules digest", first)
+	}
+	finishHead(t, h, e, ctx, sessionShaB, passing, nil)
+	m := lastSend(h)
+	if p := m.Parts[0].Text; m.ContextID != first.ContextID || strings.Contains(p, "is unchanged") || !strings.Contains(p, "General review rules.") {
+		t.Fatalf("the continuation (in %q) relies on rules of unknown text:\n%s", m.ContextID, p)
+	}
+}
+
+// TestUnaccountedTurnStartsAFreshSession resumes the first head's session
+// for a second head whose every attempt ends without a report, so its
+// check keeps no State. The third head finds the first head's session
+// reference, but the session also holds the second head's turn: it starts
+// fresh instead of resuming a session larger than recorded.
+func TestUnaccountedTurnStartsAFreshSession(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
+
+	h.gh.push(7, sessionShaB)
+	task := runReview(t, h, e, ctx, 7, sessionShaB)
+	if m := lastSend(h); m.ContextID != ref.ContextID {
+		t.Fatalf("second head's first attempt in %q, want %s", m.ContextID, ref.ContextID)
+	}
+	h.k.pad(task, 400<<10) // the interrupted turn is what would push the session past its bound
+	for attempt := 1; ; attempt++ {
+		h.k.finish(task, kagent.StateCompleted, "No report here.")
+		if attempt == MaxAttempts {
+			break
+		}
+		eventually(t, "the next attempt", func() bool { task = h.taskOn(7, sessionShaB, attempt+1); return task != "" })
+	}
+	eventually(t, "the second check to fail", func() bool {
+		c := h.gh.check(sessionShaB)
+		return c != nil && c.Status == "completed" && c.Conclusion == ConclusionFailure
+	})
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	if _, ok := LoadState(h.gh.check(sessionShaB).Text); ok {
+		t.Fatalf("a review without a report kept a State")
+	}
+
+	third := finishHead(t, h, e, ctx, sessionShaC, passing, nil)
+	m := lastSend(h)
+	if m.ContextID != "" || m.MessageID != h.msgID(7, sessionShaC, 1) {
+		t.Fatalf("third send = %s in %q, want a fresh session", m.MessageID, m.ContextID)
+	}
+	if p := m.Parts[0].Text; !strings.Contains(p, "`x.go:correctness` high x.go:2: Breaks x") || strings.Contains(p, "Earlier in this conversation") {
+		t.Fatalf("the third prompt does not carry the first head's findings fresh:\n%s", p)
+	}
+	if got := testutil.ToFloat64(h.m.ReviewSessions.WithLabelValues("homelab", PathFresh, reasonUnaccounted)); got != 1 {
+		t.Errorf("unaccounted fallbacks = %v", got)
+	}
+	if next := stateOn(t, third).Session; next == nil || next.ContextID == ref.ContextID || next.Reviews != 1 {
+		t.Fatalf("third session = %+v", next)
+	}
+	if !logged(h, "the recorded session holds turns its reviews do not account for", `"recorded_tasks":1`, `"session_tasks":2`) {
+		t.Errorf("no log line names the unaccounted turn")
+	}
+}
+
+// TestNewAgentRevisionStartsAFreshSession rolls out a new reviewer revision
+// between heads: the next head starts a session on it, and the head after
+// that resumes that session.
+func TestNewAgentRevisionStartsAFreshSession(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	first := stateOn(t, finishHead(t, h, e, ctx, shaA, passing, nil)).Session
+
+	h.k.mu.Lock()
+	h.k.revision = "rev-2"
+	h.k.mu.Unlock()
+	second := stateOn(t, finishHead(t, h, e, ctx, sessionShaB, passing, nil)).Session
+	if m := lastSend(h); m.ContextID != "" || second.ContextID == first.ContextID || second.Path != PathFresh {
+		t.Fatalf("after a new revision the review ran in %q: %+v", m.ContextID, second)
+	}
+	if !logged(h, "the recorded session runs another agent revision", `"session_revision":"rev-1"`, `"agent_revision":"rev-2"`) {
+		t.Errorf("no log line names the revisions")
+	}
+
+	finishHead(t, h, e, ctx, sessionShaC, passing, nil)
+	if m := lastSend(h); m.ContextID != second.ContextID {
+		t.Fatalf("third head resumed %q, want the new revision's session %s", m.ContextID, second.ContextID)
+	}
+	for reason, want := range map[string]float64{reasonRevision: 1} {
+		if got := testutil.ToFloat64(h.m.ReviewSessions.WithLabelValues("homelab", PathFresh, reason)); got != want {
+			t.Errorf("fresh sessions for %s = %v", reason, got)
+		}
+	}
+	if got := testutil.ToFloat64(h.m.ReviewSessions.WithLabelValues("homelab", PathResumed, reasonResumed)); got != 1 {
+		t.Errorf("resumed = %v", got)
+	}
+}
+
 // TestSessionComesOnlyFromTheReviewersOwnCheck plants session references
 // in the PR's description, the agent's reply and another App's newer check
 // run on the earlier head: the next head resumes only the session the
@@ -386,7 +582,11 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 	e := h.engine()
 	b := &e.cfg.Bindings[0]
 	pr := github.PullRequest{Number: 7, HeadSHA: sessionShaB}
-	good := SessionRef{ContextID: "ctx-1", Binding: "homelab", Agent: "factory-review/reviewer", PR: 7, Head: shaA, Reviews: 1, Bytes: 10}
+	good := SessionRef{ContextID: "ctx-1", Binding: "homelab", Agent: "factory-review/reviewer", PR: 7, Head: shaA, Reviews: 1, Bytes: 10, Tasks: []string{"task-1"}}
+	many := make([]string, maxSessionReviews)
+	for i := range many {
+		many[i] = fmt.Sprintf("task-%d", i+1)
+	}
 	for _, tc := range []struct {
 		name       string
 		change     func(r *SessionRef, in *inputs)
@@ -402,6 +602,9 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 		{"no previous head", func(_ *SessionRef, in *inputs) { in.priorHead = "" }, 1, reasonNone},
 		{"a retry", func(*SessionRef, *inputs) {}, 2, reasonRetry},
 		{"the size bound", func(r *SessionRef, _ *inputs) { r.Bytes = maxSessionBytes }, 1, reasonSize},
+		{"the review bound", func(r *SessionRef, _ *inputs) { r.Reviews, r.Tasks = len(many), many }, 1, reasonSize},
+		{"no recorded tasks", func(r *SessionRef, _ *inputs) { r.Tasks = nil }, 1, reasonUnaccounted},
+		{"fewer tasks than reviews", func(r *SessionRef, _ *inputs) { r.Reviews = 2 }, 1, reasonUnaccounted},
 	} {
 		ref := good
 		in := &inputs{priorHead: shaA}
@@ -412,8 +615,8 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 			t.Errorf("%s: resumable = %+v, %q; want %q", tc.name, got, reason, tc.wantReason)
 		}
 	}
-	if reads := h.sessions.reads(); len(reads) != 0 {
-		t.Fatalf("read sessions %v before checking their owner", reads)
+	if reads := h.sessions.reads(); len(reads) != 0 || h.sessions.agentReads != 0 {
+		t.Fatalf("read sessions %v and the agent %d times before checking their owner", reads, h.sessions.agentReads)
 	}
 }
 
@@ -423,6 +626,7 @@ func TestSessionStateRoundTrips(t *testing.T) {
 	ref := &SessionRef{
 		ContextID: "0b8f1e64-8d43-4f43-9b0b-2f1e5a4c7d10", Binding: "homelab", Agent: "factory-review/reviewer",
 		PR: 7, Head: shaA, Path: PathResumed, Reviews: 3, Bytes: 123456, Rules: "0123456789abcdef0123456789abcdef",
+		Tasks: []string{"6c0c2f0e-1d0b-4c1e-8a54-1f7f0b6c2a01", "6c0c2f0e-1d0b-4c1e-8a54-1f7f0b6c2a02", "6c0c2f0e-1d0b-4c1e-8a54-1f7f0b6c2a03"},
 	}
 	st, ok := LoadState(encodeState(State{Blocking: []Finding{{ID: "a.go:x", Severity: "high", Title: "A"}}, Session: ref}))
 	if !ok || !reflect.DeepEqual(st.Session, ref) {

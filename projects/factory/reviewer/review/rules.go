@@ -2,6 +2,8 @@ package review
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"path"
@@ -86,6 +88,9 @@ type RuleFile struct {
 	// prompt's budget; the agent reads it in its checkout of the base.
 	Omitted bool
 	Clipped bool
+	// Digest identifies the whole file as read, before any clipping or
+	// omission; it is empty when the file was too large to read.
+	Digest string
 }
 
 // RulesReader is the part of the GitHub client rules are read with.
@@ -239,7 +244,8 @@ func LoadRules(ctx context.Context, gh RulesReader, repo, base string, paths, co
 // bounded clips a file to limit bytes and charges it to budget; past the
 // budget it is omitted.
 func bounded(p string, b []byte, budget *int, limit int) RuleFile {
-	f := RuleFile{Path: p, Content: string(b)}
+	sum := sha256.Sum256(b)
+	f := RuleFile{Path: p, Content: string(b), Digest: hex.EncodeToString(sum[:])}
 	if len(f.Content) > limit {
 		f.Content, f.Clipped = clip(f.Content, limit), true
 	}

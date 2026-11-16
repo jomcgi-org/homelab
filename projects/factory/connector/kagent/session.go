@@ -41,17 +41,19 @@ var ErrSessionUnrecoverable = errors.New("kagent: session unrecoverable")
 
 // Session is the subset of kagent.api.v1.Session the connector and the
 // reviewer read. AgentNamespace and AgentName are the Agent the session was
-// created for (its AgentProvenance reference).
+// created for (its AgentProvenance reference); PreparedRevision is the
+// Agent revision kagent pinned the session to.
 type Session struct {
-	ID             string
-	Creator        string
-	AgentNamespace string
-	AgentName      string
-	State          int
-	Operation      int
-	FailureReason  string
-	FailureMsg     string
-	ContextID      string
+	ID               string
+	Creator          string
+	AgentNamespace   string
+	AgentName        string
+	PreparedRevision string
+	State            int
+	Operation        int
+	FailureReason    string
+	FailureMsg       string
+	ContextID        string
 }
 
 // Crashed reports whether the session needs RevertSession.
@@ -134,6 +136,120 @@ func (s *Sessions) RevertSession(ctx context.Context, id string) (*Session, erro
 	return s.invoke(ctx, "/kagent.api.v1.SessionService/RevertSession", id)
 }
 
+// AgentRevision reads the Agent's status.latestSuccessfulRevision through
+// AgentService.GetAgent: the revision kagent pins a new session to, and the
+// one its Agent Card describes. It is empty when the Agent has none.
+func (s *Sessions) AgentRevision(ctx context.Context, agent AgentRef) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
+	defer cancel()
+	// GetAgentRequest: ResourceReference ref = 1.
+	req := rawMessage(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), encodeRef(agent)))
+	var resp rawMessage
+	if err := s.conn.Invoke(ctx, "/kagent.api.v1.AgentService/GetAgent", &req, &resp, grpc.ForceCodecV2(rawCodec{})); err != nil {
+		return "", err
+	}
+	// GetAgentResponse { Agent agent = 1 { StructuredObject resource = 2 {
+	// google.protobuf.Struct value = 3 } } }, the Agent CR as JSON.
+	a, err := field(resp, 1)
+	if err != nil {
+		return "", err
+	}
+	res, err := field(a, 2)
+	if err != nil {
+		return "", err
+	}
+	cr, err := field(res, 3)
+	if err != nil {
+		return "", err
+	}
+	status, err := structField(cr, "status", structValue)
+	if err != nil {
+		return "", err
+	}
+	return structString(status, "latestSuccessfulRevision")
+}
+
+// google.protobuf.Value kinds the reviewer reads.
+const (
+	stringValue protowire.Number = 3
+	structValue protowire.Number = 5
+)
+
+// structField is the given kind of the value under key in an encoded
+// google.protobuf.Struct (map<string, Value> fields = 1), or nil when the
+// key is missing or holds another kind.
+func structField(b []byte, key string, kind protowire.Number) ([]byte, error) {
+	var out []byte
+	err := walk(b, func(num protowire.Number, typ protowire.Type, entry []byte, _ uint64) {
+		if num != 1 || typ != protowire.BytesType {
+			return
+		}
+		k, err := field(entry, 1)
+		if err != nil || string(k) != key {
+			return
+		}
+		v, err := field(entry, 2)
+		if err != nil {
+			return
+		}
+		out = nil
+		_ = walk(v, func(vn protowire.Number, vt protowire.Type, vv []byte, _ uint64) {
+			if vn == kind && vt == protowire.BytesType {
+				out = vv
+			}
+		})
+	})
+	return out, err
+}
+
+func structString(b []byte, key string) (string, error) {
+	v, err := structField(b, key, stringValue)
+	return string(v), err
+}
+
+func encodeRef(agent AgentRef) []byte {
+	// ResourceReference { namespace = 1; name = 2 }
+	var ref []byte
+	ref = protowire.AppendTag(ref, 1, protowire.BytesType)
+	ref = protowire.AppendString(ref, agent.Namespace)
+	ref = protowire.AppendTag(ref, 2, protowire.BytesType)
+	return protowire.AppendString(ref, agent.Name)
+}
+
+// EncodeAgent encodes a GetAgentResponse whose Agent CR has the given
+// status.latestSuccessfulRevision, or no status when it is empty, for test
+// servers.
+func EncodeAgent(agent AgentRef, revision string) []byte {
+	entry := func(key string, kind protowire.Number, value []byte) []byte {
+		var v []byte
+		v = protowire.AppendTag(v, kind, protowire.BytesType)
+		v = protowire.AppendBytes(v, value)
+		var e []byte
+		e = protowire.AppendTag(e, 1, protowire.BytesType)
+		e = protowire.AppendString(e, key)
+		e = protowire.AppendTag(e, 2, protowire.BytesType)
+		e = protowire.AppendBytes(e, v)
+		return protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), e)
+	}
+	cr := entry("kind", stringValue, []byte("Agent"))
+	if revision != "" {
+		status := entry("desiredRevision", stringValue, []byte(revision+"-next"))
+		status = append(status, entry("latestSuccessfulRevision", stringValue, []byte(revision))...)
+		cr = append(cr, entry("status", structValue, status)...)
+	}
+	var res []byte
+	res = protowire.AppendTag(res, 2, protowire.BytesType)
+	res = protowire.AppendString(res, "Agent")
+	res = protowire.AppendTag(res, 3, protowire.BytesType)
+	res = protowire.AppendBytes(res, cr)
+	var a []byte
+	a = protowire.AppendTag(a, 1, protowire.BytesType)
+	a = protowire.AppendBytes(a, encodeRef(agent))
+	a = protowire.AppendTag(a, 2, protowire.BytesType)
+	a = protowire.AppendBytes(a, res)
+	return protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), a)
+}
+
 func (s *Sessions) invoke(ctx context.Context, method, id string) (*Session, error) {
 	// GetSessionRequest and RevertSessionRequest: string session_id = 1.
 	req := rawMessage(protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), id))
@@ -164,6 +280,10 @@ func EncodeSession(sess Session) []byte {
 		b = protowire.AppendTag(b, 2, protowire.BytesType)
 		b = protowire.AppendString(b, sess.Creator)
 	}
+	if sess.PreparedRevision != "" {
+		b = protowire.AppendTag(b, 5, protowire.BytesType)
+		b = protowire.AppendString(b, sess.PreparedRevision)
+	}
 	b = protowire.AppendTag(b, 7, protowire.VarintType)
 	b = protowire.AppendVarint(b, uint64(sess.State))
 	b = protowire.AppendTag(b, 8, protowire.VarintType)
@@ -180,15 +300,10 @@ func EncodeSession(sess Session) []byte {
 	b = protowire.AppendTag(b, 14, protowire.BytesType)
 	b = protowire.AppendString(b, sess.ContextID)
 	if sess.AgentNamespace != "" || sess.AgentName != "" {
-		// AgentProvenance agent = 15 { ResourceReference ref = 1 { namespace = 1; name = 2 } }
-		var ref []byte
-		ref = protowire.AppendTag(ref, 1, protowire.BytesType)
-		ref = protowire.AppendString(ref, sess.AgentNamespace)
-		ref = protowire.AppendTag(ref, 2, protowire.BytesType)
-		ref = protowire.AppendString(ref, sess.AgentName)
+		// AgentProvenance agent = 15 { ResourceReference ref = 1 }
 		var agent []byte
 		agent = protowire.AppendTag(agent, 1, protowire.BytesType)
-		agent = protowire.AppendBytes(agent, ref)
+		agent = protowire.AppendBytes(agent, encodeRef(AgentRef{Namespace: sess.AgentNamespace, Name: sess.AgentName}))
 		b = protowire.AppendTag(b, 15, protowire.BytesType)
 		b = protowire.AppendBytes(b, agent)
 	}
@@ -204,6 +319,8 @@ func decodeSession(b []byte) (*Session, error) {
 			s.ID = string(v)
 		case num == 2 && typ == protowire.BytesType:
 			s.Creator = string(v)
+		case num == 5 && typ == protowire.BytesType:
+			s.PreparedRevision = string(v)
 		case num == 7 && typ == protowire.VarintType:
 			s.State = int(n)
 		case num == 8 && typ == protowire.VarintType:

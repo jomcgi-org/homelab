@@ -58,6 +58,9 @@ type Tasks interface {
 	Send(ctx context.Context, agent kagent.AgentRef, msg kagent.Message) (*kagent.Task, error)
 	GetTask(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
 	CancelTask(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
+	// ListTasks lists one session's tasks, without history, before the
+	// session is resumed.
+	ListTasks(ctx context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error)
 }
 
 // Check must succeed on a head before it is enqueued: a check run named
@@ -1423,7 +1426,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
-		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.resume.Rules == plan.rules,
+		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		CheckName: e.cfg.CheckName,
 	})
