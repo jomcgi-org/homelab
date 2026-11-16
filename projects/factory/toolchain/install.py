@@ -86,6 +86,9 @@ def install(repo: Path, root: Path) -> None:
         f"{name}@{dependencies[name]}"
         for name in ("prettier", "prettier-plugin-svelte", "svelte")
     ]
+    # npm rejects one path used for both configuration scopes.
+    for scope in ("user", "global"):
+        (root / f"{scope}.npmrc").write_text("")
     subprocess.run(
         [
             str(root / "bin/node"),
@@ -96,8 +99,8 @@ def install(repo: Path, root: Path) -> None:
             "--ignore-scripts",
             "--no-audit",
             "--no-fund",
-            "--userconfig=/dev/null",
-            "--globalconfig=/dev/null",
+            f"--userconfig={root / 'user.npmrc'}",
+            f"--globalconfig={root / 'global.npmrc'}",
             "--registry=https://registry.npmjs.org",
             *packages,
         ],

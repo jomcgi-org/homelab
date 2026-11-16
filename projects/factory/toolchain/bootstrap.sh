@@ -52,6 +52,11 @@ if [[ ! -f "$TOOLS_ROOT/.complete" ]] || ! smoke "$TOOLS_ROOT"; then
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 export LD_LIBRARY_PATH="$root/runtime/usr/lib:$root/runtime/lib"
+for icu_dir in "$root"/runtime/usr/share/icu/*; do
+	if [[ -d "$icu_dir" ]]; then
+		export ICU_DATA="$icu_dir"
+	fi
+done
 binary="$root/runtime/usr/bin/$(basename "$0")"
 if [[ ! -x "$binary" ]]; then
 	# Alpine packages GNU grep under /bin.
