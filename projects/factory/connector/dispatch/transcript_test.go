@@ -20,6 +20,7 @@ func TestClassify(t *testing.T) {
 		{kagent.StateFailed, "quota.go:12: undefined: x", dispatch.ClassEngineering},
 		{kagent.StateFailed, "processed 1429 files then crashed", dispatch.ClassEngineering},
 		{kagent.StateFailed, "upstream returned status 429", dispatch.ClassQuota},
+		{kagent.StateFailed, "exceeded retry limit, last status: 429 Too Many Requests", dispatch.ClassQuota},
 		// kagent v1.0.1's status for Codex 0.161.0's RetryLimit, with and
 		// without a request ID (classify.go).
 		{kagent.StateFailed, "Codex execution failed: exceeded retry limit, last status: 429 Too Many Requests", dispatch.ClassQuota},

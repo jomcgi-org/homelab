@@ -2021,6 +2021,64 @@ func TestQuotaBlockClearsWhenTheBrokerReadsUsable(t *testing.T) {
 	}
 }
 
+// Quota waits survive connector restarts and repeat beyond the engineering
+// retry budget. Every recovery continues the same session exactly once.
+func TestQuotaResumeSurvivesRestartsAndRepeatedExhaustion(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-repeat")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	first := v.latest(1)
+	scope := store.GrantScope("factory-homelab", "coder")
+	for i := 1; i <= v.cfg.Bindings[0].MaxEngineeringRetries+1; i++ {
+		q.set(github.QuotaReading{Exhausted: true, ReceivedAt: time.Now()})
+		v.kg.finish(v.latest(1).TaskID, kagent.StateFailed,
+			"exceeded retry limit, last status: 429 Too Many Requests", nil)
+		v.tick(v.e)
+		v.e.Release()
+		v.e = v.engine(fmt.Sprintf("connector-quota-restart-%d", i))
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+		if blocked, _, err := v.st.GrantBlocked(v.ctx, scope); err != nil || !blocked {
+			t.Fatalf("cycle %d: grant blocked = %v, %v", i, blocked, err)
+		}
+		if a := v.latest(1); a.State != store.AttemptFailed || a.ErrorClass != dispatch.ClassQuota {
+			t.Fatalf("cycle %d: attempt = %+v, want quota failure", i, a)
+		}
+		if busy, err := v.st.CountBusyRuns(v.ctx, "coder"); err != nil || busy != 0 || v.run(1).State != store.RunWaiting {
+			t.Fatalf("cycle %d: busy = %d, %v; run %s", i, busy, err, v.run(1).State)
+		}
+		if len(v.kg.Sends()) != i {
+			t.Fatalf("cycle %d: exhausted grant sent a turn", i)
+		}
+
+		q.set(github.QuotaReading{ReceivedAt: time.Now()})
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+		// Another poll must not send the same resume twice.
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+		s := v.kg.Sends()
+		if len(s) != i+1 || s[i].msg.MessageID != fmt.Sprintf("itsaplan-run/1/quota-resume-%d", i) || s[i].msg.ContextID != first.ContextID {
+			t.Fatalf("cycle %d: resume = %+v", i, s)
+		}
+		if w := v.work(101); w.EngineeringRetries != 0 || w.SessionID != first.ContextID || w.State == store.WorkBlocked {
+			t.Fatalf("cycle %d: work item = %+v", i, w)
+		}
+		if res := v.its.Run(1).results; len(res) != 0 {
+			t.Fatalf("cycle %d: result = %+v, want the same run to continue", i, res)
+		}
+	}
+	v.kg.finish(v.latest(1).TaskID, kagent.StateCompleted, "done", nil)
+	v.tick(v.e)
+	if res := v.its.Run(1).results; len(res) != 1 || res[0].Status != "success" {
+		t.Fatalf("result = %+v, want success after quota recovery", res)
+	}
+}
+
 // Each broker quota read is recorded under the writer's epoch before the
 // call. The next poll and a new writer after a takeover reuse its message
 // ID, and a read whose attempt cannot be recorded is not made (HOME-127).
