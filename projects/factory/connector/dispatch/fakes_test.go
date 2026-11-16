@@ -36,9 +36,14 @@ type fakeQuota struct {
 	mu      sync.Mutex
 	reading github.QuotaReading
 	reads   int
+	// onRead runs at the start of each read, before the reading returns.
+	onRead func()
 }
 
 func (f *fakeQuota) Quota(context.Context) (github.QuotaReading, error) {
+	if f.onRead != nil {
+		f.onRead()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++

@@ -638,12 +638,47 @@ func (s *Store) ClearGrantBlock(ctx context.Context, scope string) (bool, error)
 	return n > 0, err
 }
 
-// QuotaBlocked reports whether a quota failure pauses any grant.
-func (s *Store) QuotaBlocked(ctx context.Context) (bool, error) {
-	var blocked bool
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM grant_block WHERE class = 'quota' AND cleared_at IS NULL)`).Scan(&blocked)
-	return blocked, err
+// QuotaBlock is a quota failure's pause of a grant, from CreatedAt.
+type QuotaBlock struct {
+	Scope     string
+	CreatedAt time.Time
+}
+
+// QuotaBlocks lists the grants a quota failure pauses.
+func (s *Store) QuotaBlocks(ctx context.Context) ([]QuotaBlock, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT scope, created_at FROM grant_block WHERE class = 'quota' AND cleared_at IS NULL ORDER BY scope`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QuotaBlock
+	for rows.Next() {
+		var b QuotaBlock
+		if err := rows.Scan(&b.Scope, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// RecordQuotaReads records a broker quota read under each of its message
+// IDs before the call, in one transaction under the writer's epoch.
+// Repeating a read keeps its message ID and counts the attempt, including
+// after a writer takeover.
+func (s *Store) RecordQuotaReads(ctx context.Context, w *Writer, messageIDs []string) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		for _, id := range messageIDs {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO quota_read (message_id, writer_epoch) VALUES ($1, $2)
+				ON CONFLICT (message_id) DO UPDATE SET attempts = quota_read.attempts + 1,
+					writer_epoch = EXCLUDED.writer_epoch, attempted_at = now()`, id, w.Epoch); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ClearQuotaBlocks clears the quota blocks that began before a usable quota
