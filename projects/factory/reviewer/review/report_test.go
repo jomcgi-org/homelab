@@ -633,7 +633,8 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 		at(":correctness", SeverityHigh, "", true),
 		at("u.go:unreviewed", SeverityHigh, "u.go", true),
 		at("u.go:review-injection:prompt", SeverityMedium, "u.go", true),
-		at("u.go:boundary", SeverityHigh, "u.go", false), // a caller this head broke: unmarked
+		at("u.go:boundary", SeverityHigh, "u.go", false),       // a caller this head broke: unmarked
+		at("u.go:connector-state", SeverityHigh, "u.go", true), // a scoped rule sets its severity
 		at("changed.go:correctness", SeverityMedium, "./changed.go", true),
 		at("old/name.go:goal", SeverityMedium, "old/name.go", true),
 		at("u.go:security", SeverityCritical, "u.go", true),
@@ -666,7 +667,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	for _, b := range a.Blocking {
 		blocking = append(blocking, b.ID)
 	}
-	if want := "u.go:security,:correctness,u.go:unreviewed,u.go:boundary,u.go:prior,:unverified,u.go:review-injection:prompt,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
+	if want := "u.go:security,:correctness,u.go:unreviewed,u.go:boundary,u.go:connector-state,u.go:prior,:unverified,u.go:review-injection:prompt,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
 		t.Fatalf("blocking = %v, want %s", blocking, want)
 	}
 	if len(a.Gated) != 1 || len(a.Deferred) != 2 || len(a.Optional) != 1 {
@@ -678,7 +679,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	for i := range MaxLow + 1 {
 		many = append(many, finding(fmt.Sprintf("l%d", i), SeverityLow))
 	}
-	many = append(many, at("u.go:late", SeverityHigh, "u.go", true))
+	many = append(many, at("u.go:correctness:late", SeverityHigh, "u.go", true))
 	a = Assess(LaterScope("prev", d).Lower(&Report{Findings: many}, nil), nil)
 	if a.Conclusion != ConclusionSuccess || a.DroppedLow != 1 || len(a.Deferred) != 1 || a.Deferred[0].Lowered != SeverityHigh {
 		t.Fatalf("assessment = %+v", a)
@@ -726,7 +727,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
 	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead})
 	for _, line := range []string{
-		"Reviews of earlier heads cleared these findings. Raise one again only when a change since prev, in any file, affects it:",
+		"Reviews of earlier heads cleared these findings. Raise one again when a change since prev, in any file, affects it, or when it is critical and present on this head:",
 		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
 		"- `old.go:correctness` fixed: Old. Note: Earlier fix.\n",
 	} {
@@ -738,7 +739,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	// Without an interdiff the service trusts, nothing shows they stay cleared.
 	for _, d := range []*github.CommitComparison{nil, {Status: "diverged"}, {Status: "ahead", Truncated: true}} {
 		text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: d})
-		if !strings.Contains(text, "cannot show that they stay cleared, so check each again") || strings.Contains(text, "Raise one again only") {
+		if !strings.Contains(text, "cannot show that they stay cleared, so check each again") || strings.Contains(text, "Raise one again when") {
 			t.Errorf("interdiff %+v: prompt does not ask to recheck cleared findings", d)
 		}
 	}
