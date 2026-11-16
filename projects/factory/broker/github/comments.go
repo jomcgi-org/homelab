@@ -43,8 +43,8 @@ const maxFindPage = 48 << 20
 // reviewer App's comment token, which GitHub requires to hold
 // pull_requests write and which could therefore approve a PR. The token
 // never leaves the broker. The proxy does three things with it: find the
-// oldest comment Author wrote on a PR, create one on a pull request, and
-// edit one that Author wrote. Callers wrap it with TokenReview
+// oldest comment Author wrote on a PR with a given marker, create one on a
+// pull request, and edit one that Author wrote. Callers wrap it with TokenReview
 // authorization.
 type CommentProxy struct {
 	// Minter mints the comment token for a bound repository.
@@ -94,21 +94,25 @@ func (p *CommentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// find serves GET ?repository=owner/name&number=N: the oldest comment
-// Author wrote on the PR, or null, searching at most FindPages pages and
-// stopping at the first match. complete is false when it stopped at the
+// maxFindPrefix bounds the marker a search matches on.
+const maxFindPrefix = 256
+
+// find serves GET ?repository=owner/name&number=N&prefix=P: the oldest
+// comment on the PR that Author wrote and whose body starts with P (the
+// reviewer's comment marker), or null. It searches at most FindPages pages
+// and stops at the first match. complete is false when it stopped at the
 // bound with more comments left, so a missing comment is not proven absent.
 func (p *CommentProxy) find(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	repo := q.Get("repository")
+	repo, prefix := q.Get("repository"), q.Get("prefix")
 	number, err := strconv.Atoi(q.Get("number"))
-	if err != nil || number <= 0 {
+	if err != nil || number <= 0 || prefix == "" || len(prefix) > maxFindPrefix {
 		p.fail(w, "find", repo, http.StatusBadRequest, "bad_request", nil)
 		return
 	}
 	for page := 1; page <= FindPages; page++ {
 		v := url.Values{"per_page": {"100"}, "page": {strconv.Itoa(page)}}
-		found, next, err := p.findOnPage(r.Context(), repo, "/issues/"+strconv.Itoa(number)+"/comments?"+v.Encode())
+		found, next, err := p.findOnPage(r.Context(), repo, "/issues/"+strconv.Itoa(number)+"/comments?"+v.Encode(), prefix)
 		if err != nil {
 			p.failCall(w, "find", repo, err)
 			return
@@ -126,8 +130,10 @@ func (p *CommentProxy) find(w http.ResponseWriter, r *http.Request) {
 }
 
 // findOnPage reads one listing page a comment at a time and keeps only the
-// first Author wrote.
-func (p *CommentProxy) findOnPage(ctx context.Context, repo, path string) (found *ghComment, next bool, err error) {
+// first Author wrote that starts with prefix. A page that does not end in
+// its closing bracket is an error, so a truncated page never passes for a
+// complete one.
+func (p *CommentProxy) findOnPage(ctx context.Context, repo, path, prefix string) (found *ghComment, next bool, err error) {
 	resp, err := p.send(ctx, repo, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, false, err
@@ -145,9 +151,12 @@ func (p *CommentProxy) findOnPage(ctx context.Context, repo, path string) (found
 		if err := dec.Decode(&c); err != nil {
 			return nil, false, fmt.Errorf("decode GitHub comment page: %w", err)
 		}
-		if found == nil && strings.EqualFold(c.User.Login, p.Author) {
+		if found == nil && strings.EqualFold(c.User.Login, p.Author) && strings.HasPrefix(c.Body, prefix) {
 			found = &c
 		}
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim(']') {
+		return nil, false, fmt.Errorf("GitHub comment page is incomplete: %v", err)
 	}
 	return found, strings.Contains(resp.Header.Get("Link"), `rel="next"`), nil
 }

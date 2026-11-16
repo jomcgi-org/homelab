@@ -44,7 +44,7 @@ func TestBrokerCommentsUsesTheBrokerProxy(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	b := &BrokerComments{URL: srv.URL, Bearer: staticBearer("sa-token"), HTTP: srv.Client()}
+	b := &BrokerComments{URL: srv.URL, Prefix: "<!-- m -->", Bearer: staticBearer("sa-token"), HTTP: srv.Client()}
 	ctx := context.Background()
 
 	// Finding the reviewer's comment is one request, however long the PR.
@@ -70,8 +70,8 @@ func TestBrokerCommentsUsesTheBrokerProxy(t *testing.T) {
 		t.Fatalf("refused edit = %v", err)
 	}
 	want := []string{
-		"GET number=7&repository=o%2Fr ",
-		"GET number=8&repository=o%2Fr ",
+		"GET number=7&prefix=%3C%21--+m+--%3E&repository=o%2Fr ",
+		"GET number=8&prefix=%3C%21--+m+--%3E&repository=o%2Fr ",
 		`POST  {"body":"new","number":7,"repository":"o/r"}`,
 		`PATCH  {"body":"edited","id":9,"repository":"o/r"}`,
 		`PATCH  {"body":"x","id":404,"repository":"o/r"}`,
@@ -98,9 +98,14 @@ func TestBrokerCommentsReadsTheLargestEscapedComment(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(answer) }))
 	defer srv.Close()
-	b := &BrokerComments{URL: srv.URL, Bearer: staticBearer("t"), HTTP: srv.Client()}
+	b := &BrokerComments{URL: srv.URL, Prefix: "m", Bearer: staticBearer("t"), HTTP: srv.Client()}
 	found, complete, err := b.IssueComments(context.Background(), "o/r", 1)
 	if err != nil || !complete || len(found) != 1 || len(found[0].Body) != 65536 {
 		t.Fatalf("largest comment = %d comments, %v, %v", len(found), complete, err)
+	}
+	// Without a marker there is nothing to find by, so no request is made.
+	b.Prefix = ""
+	if _, _, err := b.IssueComments(context.Background(), "o/r", 1); err == nil {
+		t.Fatal("a find without a marker was sent")
 	}
 }

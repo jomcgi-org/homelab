@@ -29,7 +29,11 @@ type BrokerComments struct {
 	// URL is the broker's base URL.
 	URL string
 	// Path is the endpoint, DefaultCommentsPath when empty.
-	Path   string
+	Path string
+	// Prefix is the marker the reviewer's comment starts with. The broker
+	// matches it and the bot login, so an older bot comment without it is
+	// passed over.
+	Prefix string
 	Bearer Bearer
 	HTTP   *http.Client
 }
@@ -45,7 +49,8 @@ func (c brokerComment) comment() Comment {
 }
 
 // IssueComments returns the reviewer's own comment on a PR, the oldest the
-// broker's configured bot login wrote, as the only element, or none. The
+// broker's configured bot login wrote that starts with Prefix, as the only
+// element, or none. The
 // broker searches the PR's comments and stops at the first match, so this
 // is one request. complete is false when the broker stopped at its bound
 // with comments left unread.
@@ -54,7 +59,10 @@ func (b *BrokerComments) IssueComments(ctx context.Context, repo string, number 
 		Comment  *brokerComment `json:"comment"`
 		Complete bool           `json:"complete"`
 	}
-	q := url.Values{"repository": {repo}, "number": {strconv.Itoa(number)}}
+	if b.Prefix == "" {
+		return nil, false, fmt.Errorf("broker comments: no comment marker to find")
+	}
+	q := url.Values{"repository": {repo}, "number": {strconv.Itoa(number)}, "prefix": {b.Prefix}}
 	if err := b.do(ctx, http.MethodGet, "?"+q.Encode(), nil, &out); err != nil {
 		return nil, false, err
 	}
