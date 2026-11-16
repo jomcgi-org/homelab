@@ -1011,12 +1011,33 @@ previews).
   48,000 characters, for the next head. Duplicate ready PRs stop model work;
   duplicate or foreign checks require a fresh review and human approval.
   Holds survive new commits; complete label history recovers failed writes.
-  Each restart uses GitHub's latest all-state PR creation time to hold existing
-  and reopened PRs for exact-head approval until merge. Newer PRs stay autonomous
-  unless their check is foreign. Recovery records up to 64 review IDs; a new ID
-  or verified nonce clears its hold despite clock skew. Nonces also resolve
-  ambiguous timestamps and overflow; author, editor, state, commit and PR must
-  match. Read/write failures block recovery; revocation requires a GitHub write.
+- **Restarts.** A restart loses only the shared-head observations whose
+  check writes all failed: GitHub keeps label history, and every other hold
+  is in a check run's state. The first poll to see a PR opened before
+  startup (by GitHub's latest all-state PR creation time, so reopened PRs
+  count) looks for that loss. Every head in the PR's timeline is matched
+  against the open PRs into the base and every PR updated since the PR
+  opened, in any state and base; GitHub's commit lookup adds the open PRs
+  that contain its current head. A match holds the PR as a shared head. A
+  truncated timeline, an earlier review the search cannot find, or a
+  listing past its bound holds it as an unconfirmed context until merge. A
+  failed read gives the PR no pass, enqueue or merge group authorization,
+  and the next poll reads again. Newer PRs skip recovery unless their check
+  is foreign. A hold an earlier process placed for its restart alone clears
+  once recovery confirms the context; a hold with any other reason stays as
+  it is. Recovery holds record up to 64 review IDs; a new ID or verified
+  nonce clears them despite clock skew. Nonces also resolve ambiguous
+  timestamps and overflow; author, editor, state, commit and PR must match.
+  Revoking a pass requires a GitHub write.
+
+  **Why.** Holding every existing PR on each restart made each reviewer
+  deploy into work for Joe: after about eight deploys on 2026-11-15, 18 of
+  the 23 open factory PRs carried the hold and 5 waited on it alone
+  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)). The
+  hold guarded a loss that GitHub's PR records can show. A duplicate leaves
+  no record to match when it moved off one of the PR's heads, other than by
+  adding commits to the current head and staying open, before any hold
+  write succeeded and the reviewer restarted.
 - **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
   one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
   and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
