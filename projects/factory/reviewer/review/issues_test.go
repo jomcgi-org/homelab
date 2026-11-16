@@ -58,7 +58,7 @@ func TestIssueResolution(t *testing.T) {
 	// name the issue. Any other read error is retried.
 	for _, err := range []error{github.ErrTooMany, context.DeadlineExceeded} {
 		e := &Engine{gh: &issueCommits{err: err}}
-		in := e.issueContext(context.Background(), &Binding{ItsaplanProject: "HOME"}, github.PullRequest{Author: "jomcgi", HeadSHA: shaA}, nil)
+		in := e.issueContext(context.Background(), &Binding{ItsaplanProject: "HOME", HumanApprovers: []string{"jomcgi"}}, github.PullRequest{Author: "jomcgi", HeadSHA: shaA}, nil)
 		permanent := errors.Is(err, github.ErrTooMany)
 		if (len(in.Findings) == 1) != permanent || (len(in.Pending) == 1) == permanent {
 			t.Fatalf("commit read %v classified as %+v", err, in)
@@ -146,7 +146,7 @@ func issueSetup() (*Engine, *Binding, *issueAPI, github.PullRequest) {
 		comments: map[int64]*itsaplan.FeedItem{},
 	}
 	e := &Engine{cfg: Config{Itsaplan: a}, gh: &issueCommits{}}
-	b := &Binding{ItsaplanProject: "HOME", TrustedItsaplanAuthors: []string{"joe", "joesessions", "factoryadmin"}}
+	b := &Binding{ItsaplanProject: "HOME", HumanApprovers: []string{"jomcgi"}, TrustedItsaplanAuthors: []string{"joe", "joesessions", "factoryadmin"}}
 	pr := github.PullRequest{Author: "jomcgi-factory[bot]", HeadRef: "factory/HOME-58", HeadSHA: shaA}
 	return e, b, a, pr
 }
@@ -180,7 +180,7 @@ func TestIssueAuthorityAndPromptPlacement(t *testing.T) {
 					t.Fatal("untrusted authority claim was promoted")
 				}
 			}
-			for _, want := range []string{"Safe to merge", "Does what its issue asks", "high `goal`", "medium `goal`", "HOME issue for the remainder", "live rollout remains with the delivery owner"} {
+			for _, want := range []string{"Safe to merge", "Does what its issue asks", "high `goal`", "medium `goal`", "HOME issue for the remainder", "live rollout remains with the delivery owner", "never quote or paraphrase issue"} {
 				if !strings.Contains(p, want) {
 					t.Errorf("prompt lacks %q", want)
 				}
@@ -699,5 +699,51 @@ func TestIssueEvidenceHoldAndRecoveryUpdateTheExistingComment(t *testing.T) {
 				t.Fatal("recovery posted another comment")
 			}
 		})
+	}
+}
+
+// The check is public and issues are private (Joe's decision on #8116): only
+// the factory App's and humanApprovers' PRs get issue or decision reads.
+func TestIssueEvidenceOnlyForTrustedAuthors(t *testing.T) {
+	for author, reads := range map[string]bool{"outsider": false, "jomcgi": true, "jomcgi-factory[bot]": true} {
+		t.Run(author, func(t *testing.T) {
+			h, api := issueHarness(t)
+			api.comments[1] = &itsaplan.FeedItem{ID: 1, IssueID: 95, Kind: "comment", ActorUserID: "human", Body: "Decision", EditedAt: []byte("null")}
+			h.gh.withLock(func() {
+				h.gh.prs[7].Author = author
+				h.gh.prs[7].Files = linkedFiles("https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1")
+			})
+			e, ctx, _ := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			e.Tick(ctx)
+			prompt := h.k.sent()[0].Parts[0].Text
+			if (api.issueReads > 0) != reads || (api.commentReads > 0) != reads || strings.Contains(prompt, api.issue.Description) != reads {
+				t.Fatalf("%d issue and %d comment reads", api.issueReads, api.commentReads)
+			}
+			if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+				t.Fatal("the review did not continue without evidence")
+			}
+		})
+	}
+}
+
+func TestPostedReportCannotQuoteIssueText(t *testing.T) {
+	h, api := issueHarness(t)
+	withComments(h)
+	api.issue.Description = "1. The private goal names a secret launch date for the new product line."
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	quote := "The PRIVATE goal names a `secret launch date` for the new product"
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "HOME-58 asks: " + quote + ".", "findings": []any{
+		map[string]any{"id": "x.go:goal", "severity": "medium", "title": "HOME-58 criterion 1 not met", "detail": "It says " + quote + "."},
+	}}))
+	e.Wait()
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	posted := c.Summary + st.Blocking[0].Detail + onlyComment(t, h, 7).Body
+	if strings.Contains(posted, "launch date") || !strings.Contains(c.Summary, "HOME-58 criterion 1 not met") || !strings.Contains(c.Summary, "HOME-58 asks: [issue text removed].") {
+		t.Fatalf("issue text was posted: %q", posted)
 	}
 }
