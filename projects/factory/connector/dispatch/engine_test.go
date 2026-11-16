@@ -607,7 +607,9 @@ func TestDelayedTerminalResponseCannotOverwriteSuccessor(t *testing.T) {
 				v.kg.finish(taskID, outcome.state, outcome.text, nil)
 				// Native output can be artifact-only, with no new history events
 				// to cause a writer check in postEvents. Review rounds skip it entirely.
-				v.kg.tasks[taskID].task.History = nil
+				// Keep the opening input used to deduplicate later sends.
+				// User messages produce no transcript events.
+				v.kg.tasks[taskID].task.History = v.kg.tasks[taskID].task.History[:1]
 				if outcome.state == kagent.StateCompleted {
 					v.kg.tasks[taskID].task.Status.Message = nil
 					v.kg.tasks[taskID].task.Artifacts = []*kagent.Artifact{{
@@ -628,7 +630,7 @@ func TestDelayedTerminalResponseCannotOverwriteSuccessor(t *testing.T) {
 					t.Fatal("old writer did not reach GetTask")
 				}
 				var terminated bool
-				if err := v.st.DB.QueryRow(`SELECT pg_terminate_backend(pid) FROM pg_locks
+				if err := v.st.DB.QueryRow(`SELECT pg_terminate_backend(pid, 5000) FROM pg_locks
 					WHERE locktype = 'advisory' AND granted
 					AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&terminated); err != nil || !terminated {
 					t.Fatalf("terminate writer: %t, %v", terminated, err)
@@ -1542,6 +1544,90 @@ func TestNewerRunResolvesWaitingGrantFailure(t *testing.T) {
 					t.Fatalf("newer run could not complete: %+v", res)
 				}
 			})
+		}
+	}
+}
+
+type failedTaskSend struct {
+	dispatch.Tasks
+	messageID string
+	err       error
+}
+
+func (s *failedTaskSend) Send(ctx context.Context, ref kagent.AgentRef, msg kagent.Message) (*kagent.Task, error) {
+	if msg.MessageID == s.messageID {
+		return nil, s.err
+	}
+	return s.Tasks.Send(ctx, ref, msg)
+}
+
+func TestUnacceptedNewerRunPreservesGrantFailureRetry(t *testing.T) {
+	for _, reviewRound := range []bool{false, true} {
+		for _, failure := range []string{"codex_login_required", "usage_limit_reached"} {
+			for _, sendErr := range []error{kagent.ErrRejected, kagent.ErrNotAccepted, kagent.ErrAmbiguous} {
+				t.Run(fmt.Sprintf("round=%t/%s/%v", reviewRound, failure, sendErr), func(t *testing.T) {
+					v := newDeliveryEnv(t)
+					var runID int64 = 1
+					if reviewRound {
+						round, _ := v.startRound()
+						runID = round.ID
+					} else {
+						v.its.add(1, "coder", 101, "HL-7", "Do it.")
+						v.tick(v.e)
+					}
+					v.kg.finish(v.kg.lastTask(), kagent.StateFailed, failure, nil)
+					v.tick(v.e)
+					failed := v.latest(runID)
+					beforeExecutions := v.kg.Executions()
+					w := v.work(101)
+					if ok, err := v.st.ClearGrantBlock(v.ctx, store.GrantScope(w.KagentNamespace, w.KagentAgent)); err != nil || !ok {
+						t.Fatalf("unblock = %v, %v", ok, err)
+					}
+					v.e.Release()
+					sender := &failedTaskSend{Tasks: v.kg, messageID: "itsaplan-run/2/revision", err: sendErr}
+					v.e = v.engineWithTasks("connector-unblocked", sender)
+					v.its.add(2, "coder", 101, "HL-7", "Continue working.")
+					v.tick(v.e)
+					if sendErr != kagent.ErrRejected {
+						if v.run(runID).State != store.RunWaiting || v.work(101).EngineeringRetries != 0 || v.kg.Executions() != beforeExecutions {
+							t.Fatal("open newer send superseded or retried the waiting failure")
+						}
+						v.e.Release()
+						v.e = v.engineWithTasks("connector-restarted", sender)
+						if sendErr == kagent.ErrAmbiguous {
+							v.clk.Advance(v.cfg.DispatchWindow + time.Second)
+							v.tick(v.e)
+							if v.run(runID).State != store.RunWaiting || !reflect.DeepEqual(v.latest(runID), failed) ||
+								v.latest(2).State != store.AttemptAmbiguous || v.work(101).EngineeringRetries != 0 || v.kg.Executions() != beforeExecutions {
+								t.Fatal("ambiguous send stopped fencing the older retry after restart and timeout")
+							}
+							return
+						}
+						// A definitive refusal can later become a permanent rejection.
+						sender.err = kagent.ErrRejected
+						v.clk.Advance(20 * time.Second)
+						v.tick(v.e)
+						v.tick(v.e)
+					}
+					if a := v.latest(2); a.State != store.AttemptFailed || a.TaskID != "" || v.run(2).State != store.RunClosed {
+						t.Fatalf("newer run did not record a definitive rejection: %+v", a)
+					}
+					retry := v.latest(runID)
+					if retry.ID == failed.ID || retry.State != store.AttemptAccepted || v.run(runID).State != store.RunDispatched ||
+						v.work(101).EngineeringRetries != 1 || v.kg.Executions() != beforeExecutions+1 {
+						t.Fatalf("older failure could not retry after rejection: %+v", retry)
+					}
+					preserved, err := v.st.GetAttempt(v.ctx, failed.ID)
+					if err != nil || !reflect.DeepEqual(preserved, failed) {
+						t.Fatalf("retry changed original failure evidence: %+v, %v", preserved, err)
+					}
+					v.kg.finish(retry.TaskID, kagent.StateCompleted, "retry done", nil)
+					v.tick(v.e)
+					if v.run(runID).State != store.RunClosed || v.latest(runID).State != store.AttemptCompleted {
+						t.Fatal("readmitted retry could not finish")
+					}
+				})
+			}
 		}
 	}
 }
