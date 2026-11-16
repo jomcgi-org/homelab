@@ -189,6 +189,45 @@ func TestSupersededUnsentRunCannotBorrowCurrentEpoch(t *testing.T) {
 	}
 }
 
+// `connector cancel` of a held first delegation stops its run, which has
+// no work item. Resolution then creates none, and a later delegation of the
+// same issue is not fenced by the earlier stop (HOME-55).
+func TestStopIssueFencesAHeldFirstDelegation(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	claim := store.ClaimedRun{ID: 7, AgentKey: "coder", IssueID: 707, IssueKey: "HL-707", Attempt: 1}
+	if _, _, err := st.RecordClaim(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.StopIssue(ctx, "HL-708", "no such issue", "operator:test"); err == nil {
+		t.Fatal("stop of an unknown issue reported success")
+	}
+	if stopped, err := st.StopIssue(ctx, "HL-707", "operator canceled", "operator:test"); err != nil || stopped != (store.IssueStop{HeldRuns: 1}) {
+		t.Fatalf("stop = %+v, %v; want only the held run stopped", stopped, err)
+	}
+	b := store.Binding{Name: "repo", Owner: "org", Repo: "repo", BaseBranch: "main", ItsaplanProject: "HL", KagentNamespace: "ns", KagentAgent: "coder", BranchPrefix: "factory/"}
+	if err := st.UpsertBinding(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	n := store.NewWorkItem{Binding: b, IssueID: 707, IssueKey: "HL-707", AgentKey: "coder"}
+	if _, _, err := st.ResolveWorkItem(ctx, 7, n); !errors.Is(err, store.ErrAdmissionStopped) {
+		t.Fatalf("resolve = %v, want the stop to fence it", err)
+	}
+	if _, err := st.WorkItemByIssue(ctx, 707); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stopped resolution created a work item: %v", err)
+	}
+	if r, err := st.GetRun(ctx, 7); err != nil || !r.StopRequested || r.StoppedReason != "operator canceled" {
+		t.Fatalf("run = %+v, %v; want the stop on the run", r, err)
+	}
+	claim.ID = 8
+	if _, _, err := st.RecordClaim(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	if w, _, err := st.ResolveWorkItem(ctx, 8, n); err != nil || w.State != store.WorkActive {
+		t.Fatalf("later delegation = %+v, %v; want it admitted", w, err)
+	}
+}
+
 func TestRecordingAMessageIDTwiceReturnsTheAttempt(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()

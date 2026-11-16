@@ -2529,7 +2529,7 @@ func TestOperatorCancelStopsRunningRound(t *testing.T) {
 	v := newDeliveryEnv(t)
 	round, task := v.startRound()
 	// What `connector cancel HL-7` does.
-	if ok, err := v.st.StopIssue(v.ctx, "HL-7", "an operator canceled it", "operator:test"); err != nil || !ok {
+	if ok, err := v.st.StopIssue(v.ctx, "HL-7", "an operator canceled it", "operator:test"); err != nil || !ok.Any() {
 		t.Fatalf("stop = %v, %v", ok, err)
 	}
 	v.clk.Advance(5 * time.Second)

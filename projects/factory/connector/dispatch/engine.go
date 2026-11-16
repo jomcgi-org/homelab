@@ -120,6 +120,11 @@ type Config struct {
 	ForceDelete   time.Duration
 	Links         Links
 	Now           func() time.Time
+	// AdmissionBudget bounds how long a tick waits for the admission worker.
+	// Reads continue independently when it expires. Zero selects two seconds.
+	AdmissionBudget time.Duration
+	// AdmissionReadTimeout bounds one request, not a whole dependency graph.
+	AdmissionReadTimeout time.Duration
 }
 
 // QuotaSource reads the broker's quota reading for its Codex grant.
@@ -144,9 +149,14 @@ type Engine struct {
 	m        *metrics.Metrics
 	log      *slog.Logger
 	w        *store.Writer
-	locks    sync.Map // run ID -> *sync.Mutex
+	locks    sync.Map   // run ID -> *sync.Mutex
+	starts   sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
-	checked sync.Map // attempt ID -> sessionCheck
+	checked         sync.Map // attempt ID -> sessionCheck
+	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
+	admissionCtx    context.Context
+	admissionCancel context.CancelFunc
+	admissionDone   chan error // one worker, owned by Tick and joined by Release
 	// refusals holds when itsaplan began refusing the coordinator key for
 	// each bounded lookup. The heartbeat goroutine and the tick share it.
 	refusalsMu sync.Mutex
@@ -201,6 +211,12 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.AdmissionBudget <= 0 {
+		cfg.AdmissionBudget = 2 * time.Second
+	}
+	if cfg.AdmissionReadTimeout <= 0 {
+		cfg.AdmissionReadTimeout = 30 * time.Second
+	}
 	if m == nil {
 		m = metrics.New(nil)
 	}
@@ -225,6 +241,7 @@ func (e *Engine) Acquire(ctx context.Context) (bool, error) {
 		}
 	}
 	e.w = w
+	e.admissionCtx, e.admissionCancel = context.WithCancel(ctx)
 	e.m.WriterEpoch.Set(float64(w.Epoch))
 	return true, nil
 }
@@ -245,6 +262,13 @@ func (e *Engine) Epoch() int64 {
 
 // Release drops the writer lock.
 func (e *Engine) Release() {
+	if e.admissionCancel != nil {
+		e.admissionCancel()
+	}
+	if e.admissionDone != nil {
+		<-e.admissionDone
+		e.admissionDone = nil
+	}
 	e.w.Release()
 	e.m.WriterEpoch.Set(0)
 }
@@ -315,6 +339,12 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 		}
 		return true
 	})
+	e.admissionPolled.Range(func(k, v any) bool {
+		if !open[k.(int64)] {
+			e.admissionPolled.Delete(k)
+		}
+		return true
+	})
 	now := e.cfg.Now()
 	e.refusalsMu.Lock()
 	for k, rf := range e.refusals {
@@ -335,6 +365,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	ctx = context.WithValue(ctx, deferAdmissionKey{}, true)
 	phases := []struct {
 		name string
 		fn   func(context.Context) error
@@ -342,6 +373,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"heartbeats", e.Heartbeats},
 		{"claims", e.claim},
 		{"quota", e.checkQuota},
+		{"admissions", e.stepAdmissions},
 		{"runs", e.stepRuns},
 		{"leases", e.checkLeases},
 		{"cancellations", e.stepCancellations},
@@ -349,6 +381,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"human_gates", e.stepHumanGates},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},
+		{"admission_metrics", e.admissionMetrics},
 	}
 	for _, p := range phases {
 		if err := p.fn(ctx); err != nil {
@@ -730,7 +763,7 @@ func (e *Engine) stepRuns(ctx context.Context) error {
 	defer e.pruneLocks(open)
 	var errs []error
 	for _, r := range runs {
-		if err := e.stepLocked(ctx, r.ID); err != nil {
+		if err := e.tryStep(ctx, r.ID); err != nil {
 			if fatal(err) {
 				return err
 			}
@@ -738,6 +771,21 @@ func (e *Engine) stepRuns(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// A slow admission owns only its run's lock. The ordinary delivery loop must
+// never wait for that lock; the worker will advance the run itself.
+func (e *Engine) tryStep(ctx context.Context, id int64) error {
+	unlock, ok := e.tryLockRun(id)
+	if !ok {
+		return nil
+	}
+	defer unlock()
+	r, err := e.st.GetRun(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.step(ctx, r)
 }
 
 func (e *Engine) stepLocked(ctx context.Context, id int64) error {
@@ -752,8 +800,9 @@ func (e *Engine) stepLocked(ctx context.Context, id int64) error {
 // step advances one open run. The caller holds the run's lock.
 func (e *Engine) step(ctx context.Context, r *store.Run) error {
 	// Only an unlinked itsaplan run is new work that may resume delivery.
-	// A claimed run waiting for its brief has already been admitted and must
-	// honor any later stop, just like a waiting or dispatched run.
+	// A linked run, held for admission or waiting for its brief, has already
+	// been admitted and must honor any later stop. A stop of an unlinked run
+	// (`connector cancel` with no live work item) is on the run itself.
 	live := r.State == store.RunWaiting || r.State == store.RunDispatched || r.State == store.RunClaimed
 	if live && r.StopRequested {
 		return e.stopRun(ctx, r, r.StoppedReason)
@@ -778,6 +827,37 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 					return err
 				}
 				return e.stopRun(ctx, r, r.StoppedReason)
+			}
+		}
+	}
+	if !r.Connector() && (r.State == store.RunClaimed || r.State == store.RunWaiting || r.State == store.RunDispatched) {
+		a, err := e.st.LatestAttempt(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+		if a == nil {
+			if deferred, _ := ctx.Value(deferAdmissionKey{}).(bool); deferred {
+				return nil
+			}
+			// A linked run's stop is on the run itself (StopWork); the stop
+			// counter fences only a delegation not yet linked to its work item.
+			if r.WorkItemID == 0 {
+				if stopped, err := e.st.AdmissionStopped(ctx, r); err != nil {
+					return err
+				} else if stopped {
+					return e.failRun(ctx, e.st.DB, r, store.ErrAdmissionStopped.Error())
+				}
+				if superseded, err := e.st.Superseded(ctx, e.st.DB, r.ID); err != nil {
+					return err
+				} else if superseded {
+					return e.failRun(ctx, e.st.DB, r, store.ErrSuperseded.Error())
+				}
+			}
+			if ready, err := e.admit(ctx, r); err != nil || !ready {
+				return err
+			}
+			if r.WorkItemID == 0 {
+				return e.dispatch(ctx, r)
 			}
 		}
 	}
@@ -913,6 +993,16 @@ func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, r
 // the work item's previous task or its grant. It is idempotent: a run that
 // already recorded an attempt resumes that attempt.
 func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
+	if !e.starts.TryLock() {
+		return nil
+	}
+	defer e.starts.Unlock()
+	if r.State == store.RunWaiting {
+		busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
+		if err != nil || busy >= e.concurrency(r.AgentKey) {
+			return err
+		}
+	}
 	if r.IssueID == 0 {
 		return e.failRun(ctx, e.st.DB, r, "factory runs must belong to an issue")
 	}
@@ -930,6 +1020,17 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		wi, reassigned, err = e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
 			Binding: b.Binding, IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
 		})
+	}
+	if errors.Is(err, store.ErrAdmissionStopped) {
+		if current, readErr := e.st.GetRun(ctx, r.ID); readErr != nil {
+			return readErr
+		} else if current.StopRequested {
+			return e.stopRun(ctx, current, current.StoppedReason)
+		}
+		return e.failRun(ctx, e.st.DB, r, err.Error())
+	}
+	if errors.Is(err, store.ErrSuperseded) {
+		return e.failRun(ctx, e.st.DB, r, err.Error())
 	}
 	if err != nil {
 		return err
@@ -1059,6 +1160,10 @@ func (e *Engine) sessionBusy(ctx context.Context, r *store.Run, wi *store.WorkIt
 
 // resumeWaiting sends a waiting run once its work item is ready.
 func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
+	if !e.starts.TryLock() {
+		return nil
+	}
+	defer e.starts.Unlock()
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
 		return err
@@ -1224,17 +1329,23 @@ func (e *Engine) issueBrief(ctx context.Context, r *store.Run, wi *store.WorkIte
 	if wi.SessionID != "" || wi.IssueID == 0 {
 		return "", nil
 	}
-	if err := e.guard(ctx); err != nil {
-		return "", err
+	// Admission's last issue read supplies this poll's first attempt. Only
+	// attachment names are read here then, as for any new session.
+	issue := r.AdmissionIssue
+	var err error
+	if issue == nil {
+		if err := e.beginAdmissionRead(ctx, r, "brief", strconv.FormatInt(wi.IssueID, 10)); err != nil {
+			return "", err
+		}
+		issue, err = e.its.GetIssue(ctx, wi.IssueID)
+		e.countRefusal(roleCoordinator, lookupBrief, err)
 	}
-	issue, err := e.its.GetIssue(ctx, wi.IssueID)
-	e.countRefusal(roleCoordinator, lookupBrief, err)
 	if err == nil && (issue == nil || issue.ID != wi.IssueID || strings.TrimSpace(issue.Title+issue.Description) == "") {
 		err = errors.New("missing authoritative issue text")
 	}
 	var attachments []itsaplan.Attachment
 	if err == nil {
-		if err = e.guard(ctx); err != nil {
+		if err = e.beginAdmissionRead(ctx, r, "attachments", strconv.FormatInt(wi.IssueID, 10)); err != nil {
 			return "", err
 		}
 		attachments, err = e.its.GetAttachments(ctx, wi.IssueID)
@@ -1299,15 +1410,30 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	}
 	brief, err := e.issueBrief(ctx, r, wi)
 	if err != nil {
+		if !r.Connector() {
+			a, lookupErr := e.st.LatestAttempt(ctx, r.ID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if a == nil {
+				return e.admissionFailure(ctx, r, "Waiting for the issue brief to be readable.", err)
+			}
+		}
 		return err
 	}
 	var a *store.Attempt
+	var stopped bool
 	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+		// Stops stand: a stop that committed during admission or the brief
+		// read leaves no attempt. The next step stops the run with its reason.
 		var err error
+		if stopped, err = e.st.LockStop(ctx, tx, wi.ID, r.ID); err != nil || stopped {
+			return err
+		}
 		a, err = e.recordNext(ctx, tx, r, wi, retry, brief)
 		return err
 	})
-	if err != nil {
+	if err != nil || stopped {
 		return err
 	}
 	return e.issue(ctx, r, wi, b, a)
@@ -1684,6 +1810,16 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 	if err != nil {
 		return false, err
 	}
+	return e.sendEvents(ctx, r, t.ID, events, base)
+}
+
+// sendEvents posts a persisted journal with itsaplan's attempt and offset.
+// Admission and task journals share one transcript without sharing boundaries.
+func (e *Engine) sendEvents(ctx context.Context, r *store.Run, taskID string, events []itsaplan.Event, base int) (bool, error) {
+	offset := r.EventOffset
+	if r.EventAttempt != r.Attempt {
+		offset = 0
+	}
 	if offset < base || offset > base+len(events) {
 		return false, fmt.Errorf("transcript offset %d outside persisted range [%d, %d]", offset, base, base+len(events))
 	}
@@ -1704,6 +1840,9 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 		next, err := e.its.Events(ctx, r.AgentKey, r.ID, r.Attempt, offset, batch)
 		if errors.Is(err, itsaplan.ErrConflict) {
 			e.m.Events.WithLabelValues("conflict").Inc()
+			if err := e.guard(ctx); err != nil {
+				return false, err
+			}
 			next, err = e.its.Events(ctx, r.AgentKey, r.ID, r.Attempt, offset, batch[:1])
 		}
 		switch {
@@ -1720,10 +1859,10 @@ func (e *Engine) postEvents(ctx context.Context, r *store.Run, t *kagent.Task) (
 			return false, fmt.Errorf("itsaplan acknowledged offset %d at %d", next, offset)
 		}
 		offset = next
-		if err := e.st.SetEventOffset(ctx, r.ID, r.Attempt, offset, t.ID, base); err != nil {
+		if err := e.st.SetEventOffset(ctx, r.ID, r.Attempt, offset, taskID, base); err != nil {
 			return false, err
 		}
-		r.EventAttempt, r.EventOffset, r.EventTaskID, r.EventTaskBase = r.Attempt, offset, t.ID, base
+		r.EventAttempt, r.EventOffset, r.EventTaskID, r.EventTaskBase = r.Attempt, offset, taskID, base
 	}
 	return false, nil
 }
@@ -2212,6 +2351,15 @@ func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Ru
 			e.log.WarnContext(ctx, "claimed run not visible to the coordinator", "run", r.ID, "error", err)
 		}
 	}
+	if deferred, _ := ctx.Value(deferAdmissionKey{}).(bool); deferred {
+		// Claims join the same queue as existing holds, without spending
+		// their read time first or taking an execution slot while queued.
+		e.admissionPolled.LoadOrStore(r.ID, time.Now())
+		if r.WorkItemID == 0 && r.HoldReason == "" {
+			return e.st.SetAdmissionHold(ctx, e.st.DB, r.ID, "Waiting for admission.", e.cfg.Now())
+		}
+		return nil
+	}
 	return e.step(ctx, r)
 }
 
@@ -2295,7 +2443,8 @@ func (e *Engine) countRefusal(role, kind string, err error) bool {
 // slot retries an itsaplan 401 or 403. Like outboxAuthMaxTries, it outlasts
 // a key rotation and the kubelet's refresh of the projected file. Past it
 // a dispatched run whose attempt itsaplan stopped accepting is closed.
-// New sessions and fenced recovery require issue text regardless of this bound.
+// Admission, new sessions and fenced recovery require issue text regardless
+// of this bound and retry without consuming a new delivery attempt.
 // Lookups that hold no slot (the issue check, a stale run) retry without a
 // bound. The clock lives in memory, as the session check's does; a restart
 // starts it again.

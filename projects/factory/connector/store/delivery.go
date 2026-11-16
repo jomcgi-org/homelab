@@ -278,53 +278,105 @@ var ErrNotReview = errors.New("store: work item is no longer in review")
 // false when it was already stopped or is done.
 func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (stopped bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
-		var issueID int64
-		var key string
-		var n int
-		err := tx.QueryRowContext(ctx, `
-			UPDATE work_item SET state = 'stopped', stopped_reason = $2, stopped_by = $3, stops = stops + 1,
-				updated_at = now()
-			WHERE id = $1 AND state NOT IN ('stopped', 'done')
-			RETURNING issue_id, issue_key, stops`, workID, reason, by).Scan(&issueID, &key, &n)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		stopped = true
-		// ResolveWorkItem and MarkIssued also lock the work item, so a new
-		// admission cannot erase this stop and an old run cannot send past it.
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE run SET stopped_reason = $2, updated_at = now()
-			WHERE work_item_id = $1 AND stopped_reason IS NULL
-				AND state IN ('claimed', 'waiting', 'dispatched', 'stale')`, workID, reason); err != nil {
-			return err
-		}
-		// Poll the PR at once, so a queued PR is dequeued without waiting.
-		if _, err := tx.ExecContext(ctx, `UPDATE pull_request SET polled_at = NULL WHERE work_item_id = $1`, workID); err != nil {
-			return err
-		}
-		return s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
-			map[string]any{"issueId": issueID, "body": fmt.Sprintf(
-				"The factory stopped delivering %s: %s. Its running turn is canceled, its PR leaves the merge "+
-					"queue, and no PR updates follow. A new run on the issue resumes delivery.", key, reason)})
+		stopped, err = s.stopWork(ctx, tx, workID, reason, by)
+		return err
 	})
 	return stopped, err
 }
 
-// StopIssue is the operator's `connector cancel <issue>`: it stops the
-// work item of the issue key.
-func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (bool, error) {
-	var id int64
-	err := s.DB.QueryRowContext(ctx, `SELECT id FROM work_item WHERE issue_key = $1`, issueKey).Scan(&id)
+func (s *Store) stopWork(ctx context.Context, tx *sql.Tx, workID int64, reason, by string) (bool, error) {
+	var issueID int64
+	var key string
+	var n int
+	err := tx.QueryRowContext(ctx, `
+		UPDATE work_item SET state = 'stopped', stopped_reason = $2, stopped_by = $3, stops = stops + 1,
+			updated_at = now()
+		WHERE id = $1 AND state NOT IN ('stopped', 'done')
+		RETURNING issue_id, issue_key, stops`, workID, reason, by).Scan(&issueID, &key, &n)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("no work item for %s", issueKey)
+		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return s.StopWork(ctx, id, reason, by)
+	// ResolveWorkItem and MarkIssued also lock the work item, so a new
+	// admission cannot erase this stop and an old run cannot send past it.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE run SET stopped_reason = $2, updated_at = now()
+		WHERE work_item_id = $1 AND stopped_reason IS NULL
+			AND state IN ('claimed', 'waiting', 'dispatched', 'stale')`, workID, reason); err != nil {
+		return false, err
+	}
+	// Poll the PR at once, so a queued PR is dequeued without waiting.
+	if _, err := tx.ExecContext(ctx, `UPDATE pull_request SET polled_at = NULL WHERE work_item_id = $1`, workID); err != nil {
+		return false, err
+	}
+	return true, s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
+		map[string]any{"issueId": issueID, "body": fmt.Sprintf(
+			"The factory stopped delivering %s: %s. Its running turn is canceled, its PR leaves the merge "+
+				"queue, and no PR updates follow. A new run on the issue resumes delivery.", key, reason)})
+}
+
+// IssueStop is what `connector cancel` stopped.
+type IssueStop struct {
+	WorkItem bool  // the issue's work item was live and is now stopped
+	HeldRuns int64 // delegations not linked to a work item, stopped on their runs
+}
+
+// Any reports that the cancel stopped something.
+func (s IssueStop) Any() bool { return s.WorkItem || s.HeldRuns > 0 }
+
+// StopIssue is the operator's `connector cancel <issue>`. A live work item
+// stops, and its stop counter fences each later delegation that admission
+// has not linked yet. With no work item, or one already stopped or done, no
+// counter moves, so the stop goes on each unlinked delegation's run, which
+// ResolveWorkItem checks under the run's row lock (HOME-55).
+func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (IssueStop, error) {
+	var out IssueStop
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		// Lock the work item before runs, in ResolveWorkItem's order.
+		lookup := func() (int64, error) {
+			var id int64
+			err := tx.QueryRowContext(ctx, `SELECT id FROM work_item WHERE issue_key = $1 FOR UPDATE`, issueKey).Scan(&id)
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, nil
+			}
+			return id, err
+		}
+		id, err := lookup()
+		if err != nil {
+			return err
+		}
+		if id != 0 {
+			if out.WorkItem, err = s.stopWork(ctx, tx, id, reason, by); err != nil || out.WorkItem {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx, `
+			UPDATE run SET stopped_reason = $2, updated_at = now()
+			WHERE issue_key = $1 AND work_item_id IS NULL AND origin = 'itsaplan'
+				AND stopped_reason IS NULL AND state IN ('claimed', 'waiting', 'dispatched', 'stale')`, issueKey, reason)
+		if err != nil {
+			return err
+		}
+		if out.HeldRuns, err = res.RowsAffected(); err != nil || id != 0 {
+			return err
+		}
+		// A run that resolved while this update waited for its row lock
+		// committed a new work item. Stop that too.
+		if id, err = lookup(); err != nil {
+			return err
+		}
+		if id == 0 {
+			if out.HeldRuns == 0 {
+				return fmt.Errorf("no work item or held run for %s", issueKey)
+			}
+			return nil
+		}
+		out.WorkItem, err = s.stopWork(ctx, tx, id, reason, by)
+		return err
+	})
+	return out, err
 }
 
 // StartRound records a review round: a connector run in the work item's

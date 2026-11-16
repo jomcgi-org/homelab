@@ -73,7 +73,7 @@ func operatorStore() (*store.Store, error) {
 }
 
 // cancelIssue is the operator's cancel: it stops delivery for the issue's
-// work item. The running connector then cancels its review round through
+// work item and its held runs. The running connector then cancels its review round through
 // kagent and keeps it pending until kagent confirms.
 func cancelIssue(issueKey, by string) error {
 	if by == "" {
@@ -88,10 +88,10 @@ func cancelIssue(issueKey, by string) error {
 	if err != nil {
 		return err
 	}
-	if !stopped {
-		return fmt.Errorf("%s is already stopped or done", issueKey)
+	if !stopped.Any() {
+		return fmt.Errorf("%s is already stopped or done and has no held run", issueKey)
 	}
-	fmt.Println("stopped", issueKey)
+	fmt.Printf("stopped %s: work item %t, held runs %d\n", issueKey, stopped.WorkItem, stopped.HeldRuns)
 	return nil
 }
 

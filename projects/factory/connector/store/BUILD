@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "store",
     srcs = [
+        "admission.go",
         "delivery.go",
         "human_gate.go",
         "notify.go",
@@ -14,7 +15,10 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/store",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_lib_pq//:pq"],
+    deps = [
+        "//projects/factory/connector/itsaplan",
+        "@com_github_lib_pq//:pq",
+    ],
 )
 
 go_test(

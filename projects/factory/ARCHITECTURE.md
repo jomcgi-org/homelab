@@ -555,6 +555,89 @@ the bounded retry path, so corrected text gets a new message ID. Ambiguous
 sends still require reconciliation. Exhausted retries finish without reading
 the issue.
 
+Before the first delivery attempt, admission reads the issue and its
+`blocked_by` dependencies. itsaplan v1.10.0 returns these as `blocks` links
+with `direction: inward`; other relations do not gate dispatch. Only a
+`completed` column releases a blocker. An unreadable issue, missing relation
+data, empty brief or unresolved dependency uses the same durable waiting
+hold, without resolving the work item, creating a delivery attempt or
+occupying an agent slot. Heartbeats keep itsaplan's lease alive. Each poll
+reads fresh evidence, including after a restart or transport redelivery;
+when the final blocker completes, the next poll can dispatch within the
+agent's concurrency (HOME-55).
+
+The first claim also snapshots the existing work item's stop counter. A later
+stop fences that delegation across holds, restart and transport redelivery,
+even if a newer delegation has already resumed the work item. Resolution
+checks the counter under the same work-item lock as operator stop, before
+changing ownership or state. When the issue has no work item, or its work
+item is already stopped or done, no counter moves. `connector cancel` then
+puts the stop on each run not linked to a work item, and reports how many
+it stopped. Each admission read and the
+locked resolution check that stop. Dispatch takes `LockStop` before it
+records an attempt and records none after a stop. A newer delegation of the
+issue to another agent supersedes an older run that admission has not linked
+yet, as reassignment supersedes a linked run. Admission checks the root
+issue's workflow column on every poll. If the issue has no work item, a
+completed or canceled root ends the run without creating one. With a work
+item, the factory moved the issue itself, and a later delegation runs:
+`followUp` asks for a new issue after a merge.
+
+Claims and existing holds join one admission queue, ordered by last poll;
+new claims enter at their arrival time. One worker processes a snapshot of
+that queue, with a thirty-second timeout per request. Each tick waits at most
+two seconds for the worker before cancellation, delivery and outbox phases
+proceed. The worker continues its current poll across ticks, so a successful
+graph can take longer than either timeout without restarting successful
+reads. During each read the worker releases the run lock, letting heartbeats,
+cancellation and redelivery proceed. It reacquires the lock and checks the
+run's state and attempt before using each response; a changed run discards
+the poll. Before release it refreshes the workflow and root issue. The root's
+links include every direct blocker's column from one SQL query, so this final
+snapshot must show every blocker completed, including blockers read earlier
+in the traversal that have since reopened. Admission dispatches directly,
+without caching permission for a later tick. Admission and waiting retries
+serialize their slot checks and starts without making the delivery loop wait
+for that lock. Shutdown cancels and joins the worker before releasing writer
+authority; a restart reads the graph again. The latest issue read supplies
+the first attempt's brief; the send path reads only the attachment names.
+
+Admission traverses unfinished dependencies to detect cycles. Canceled
+dependencies hold the run and queue one explanatory comment per run and
+blocker; a cyclic component queues one comment on its lowest-ID issue,
+deduplicated across all its runs. People resolve these by completing blockers
+or changing the relations. Reads are journaled in `admission_read` with the
+run attempt and writer epoch before the call. Comments use the durable
+at-most-once outbox protocol: an ambiguous send is never reposted. Hold
+events are journaled before posting at the current itsaplan attempt and
+offset, and drain before task events. `factory_connector_held_runs` and
+`factory_connector_oldest_hold_seconds` reflect persisted active holds.
+
+**Admission rollback.** A held run that is not linked to a work item is
+`waiting` with no `work_item_id`. A connector without admission resumes a
+waiting run through its work item, so it errors on such a run each tick,
+counts it against the agent's concurrency, and its `connector cancel` cannot
+find it. To lower the pin below the HOME-55 release:
+
+1. Run the statement below. The running connector stops each such run and
+   reports it failed on its issue.
+2. Lower the connector pin.
+3. When the older connector runs, run the statement again. It stops a run
+   held between steps 1 and 2, and otherwise updates 0 rows.
+
+```sql
+UPDATE run SET stopped_reason = 'the connector was rolled back while this run was held for admission', updated_at = now()
+WHERE work_item_id IS NULL AND state = 'waiting' AND stopped_reason IS NULL
+```
+
+Run it with `psql -d factory_connector` on the primary, as in
+`docs/agents/reference.md` "Human handoff". The older connector checks
+`stopped_reason` before it reads a work item, reports the run failed and
+frees its slot. It sets `waiting` only on a linked run, so the statement
+selects only admission holds. A run linked before its hold resumes on the
+older connector without the dependency check. Delegate a stopped issue again
+when its blockers are done.
+
 After any ambiguous response, the connector only reads every task state and
 page looking for the original message ID. A positive match attaches the
 original task, including a task that finished or is waiting for input. It
@@ -1206,8 +1289,8 @@ The chart passes this same authority to the connector in
   itsaplan keeps refusing its key. The Done move reads the issue first and
   waits while it cannot. A run-state lookup has a 30-minute auth-refusal
   bound, kept in memory per attempt; past it, a dispatched run whose attempt
-  itsaplan no longer accepts closes. Required issue lookups for initial
-  sessions, new-session review rounds and fenced recovery wait until
+  itsaplan no longer accepts closes. Admission, required issue lookups for
+  initial sessions, new-session review rounds and fenced recovery wait until
   authoritative issue text is available, beyond this bound. Lookups that hold
   no slot, the issue check before PR updates, rounds and the merge queue and
   a stale run's lookup, retry

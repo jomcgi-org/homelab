@@ -17,6 +17,8 @@ type Metrics struct {
 	Reassignments prometheus.Counter
 	WriterEpoch   prometheus.Gauge
 	TickErrors    *prometheus.CounterVec // phase
+	HeldRuns      prometheus.Gauge
+	OldestHold    prometheus.Gauge
 
 	PullRequests      *prometheus.CounterVec // outcome
 	ReviewEvents      *prometheus.CounterVec // kind, disposition
@@ -35,6 +37,14 @@ type Metrics struct {
 // New registers the metrics with reg; a nil reg leaves them unregistered.
 func New(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
+		HeldRuns: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "factory_connector_held_runs",
+			Help: "Runs waiting for admission (issue brief or dependencies).",
+		}),
+		OldestHold: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "factory_connector_oldest_hold_seconds",
+			Help: "Age of the oldest current admission hold, zero when none are held.",
+		}),
 		Claims: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_claims_total",
 			Help: "itsaplan claims by agent key and outcome (new, redelivery, duplicate, empty, error).",
@@ -77,7 +87,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}),
 		TickErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_tick_errors_total",
-			Help: "Errors by dispatch phase (heartbeats, claims, runs, cancellations, delivery, outbox, sessions).",
+			Help: "Errors by dispatch phase (heartbeats, claims, quota, admissions, runs, cancellations, delivery, outbox, sessions, admission_metrics).",
 		}, []string{"phase"}),
 		PullRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_pull_requests_total",
@@ -123,14 +133,15 @@ func New(reg prometheus.Registerer) *Metrics {
 		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_credential_refusals_total",
 			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
-				"(result, comment, issue_done), a lookup (replacement, brief, issue_check, run_check) or a runner call " +
+				"(result, comment, issue_done), a lookup (admission, replacement, brief, issue_check, run_check) or a runner call " +
 				"(claim, heartbeat, events).",
 		}, []string{"role", "kind"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals)
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals,
+			m.HeldRuns, m.OldestHold)
 	}
 	return m
 }
