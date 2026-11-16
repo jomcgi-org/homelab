@@ -40,10 +40,19 @@ the forced refresh route returns 503 with `refresh_blocked: true` and
 for storage, so this state never becomes login-required based on elapsed time.
 A newer stored grant with a different refresh token restores serving
 automatically. If the replacement was lost, complete a new device login to
-clear the block. The stored access token is preserved.
+clear the block. The stored access token is preserved. Blocked login status
+includes `access_token_usable`, a read-only indication that the token endpoint
+can serve the cached token without refreshing. It uses the same expiry and
+grant-age thresholds as token serving and returns no credential material.
+Sessions can proceed while this flag is true; the refresh state stays blocked.
 Login status reports a recovered stored grant even if a device approval
 started for that consumed token is still pending. An operator's login started
 with a healthy stored grant continues to report pending until it completes.
+
+The consumed-token marker is process-local. After a broker restart, login
+status can report the old stored grant as `granted` before a delayed replacement
+arrives. A waiting session can then fail if its access token has expired;
+status does not validate the stored refresh token with the provider.
 
 ## Quota observation durability
 

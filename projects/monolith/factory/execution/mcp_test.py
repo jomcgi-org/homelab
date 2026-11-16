@@ -3533,7 +3533,13 @@ def test_capture_retention_reaches_only_first_model_turn(monkeypatch, session):
     assert "capture_evidence_ttl_seconds" not in calls[1]
 
 
-def test_pending_sweep_recovers_credential_wait_after_restart(monkeypatch, session):
+@pytest.mark.parametrize(
+    "available_status",
+    [{"state": "granted"}, {"state": "blocked", "access_token_usable": True}],
+)
+def test_pending_sweep_recovers_credential_wait_after_restart(
+    monkeypatch, session, available_status
+):
     row = store.create_session(
         session, "waiting-for-rotation", "/workspace", "main", model="luna"
     )
@@ -3548,6 +3554,8 @@ def test_pending_sweep_recovers_credential_wait_after_restart(monkeypatch, sessi
         assert method == "GET", "restart recovery must not start device login"
         if broker_state == "unreachable":
             raise httpx.ConnectError("broker temporarily unavailable")
+        if broker_state == "available":
+            return available_status
         return {"state": broker_state}
 
     async def no_recovery():
@@ -3561,7 +3569,7 @@ def test_pending_sweep_recovers_credential_wait_after_restart(monkeypatch, sessi
 
     # No in-memory watcher survives. Run the real leader sweep in a fresh
     # event loop each time, recovering only from the persisted wait and prompt.
-    for broker_state in ("unreachable", "blocked", "pending", "granted"):
+    for broker_state in ("unreachable", "blocked", "pending", "available"):
         sleeps = 0
 
         async def one_sweep(_seconds):
@@ -3574,9 +3582,9 @@ def test_pending_sweep_recovers_credential_wait_after_restart(monkeypatch, sessi
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(mcp._sweep_orphaned_pending_messages())
         session.expire_all()
-        expected = "running" if broker_state == "granted" else "awaiting_login"
+        expected = "running" if broker_state == "available" else "awaiting_login"
         assert store.get_session(session, row.id).status == expected
-        assert scheduled == ([row.id] if broker_state == "granted" else [])
+        assert scheduled == ([row.id] if broker_state == "available" else [])
         assert store.get_pending_message(session, row.id, pending.seq).message_text == (
             "preserve this prompt"
         )

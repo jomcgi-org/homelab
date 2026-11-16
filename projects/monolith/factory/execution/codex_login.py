@@ -41,7 +41,7 @@ async def codex_login_gate(
         reason = str(exc) or exc.__class__.__name__
         logger.warning("Could not check Codex login status: %s", reason)
         return None
-    if status.get("state") == "granted":
+    if mcp._broker_status_allows_execution(status):
         return None
     if status.get("state") == "blocked":
         return {
@@ -129,7 +129,7 @@ def watch_for_login(
             except Exception:
                 logger.warning("Could not poll Codex login status")
             else:
-                if state == "granted":
+                if mcp._broker_status_allows_execution(status):
                     await on_granted()
                     return
                 if state == "blocked":

@@ -1876,7 +1876,7 @@ async def _reconcile_credential_waits() -> None:
         return
     try:
         status = await _broker_request("GET", f"/grants/{_DEFAULT_GRANT}/login/status")
-        if status.get("state") != "granted":
+        if not _broker_status_allows_execution(status):
             return
     except Exception:
         logger.warning("Could not reconcile Codex credential waits")
@@ -2359,6 +2359,14 @@ def _grant_or_raise(grant: str) -> str:
     if not _GRANT_NAME_RE.fullmatch(grant):
         raise ValueError(f"invalid grant name {grant!r}")
     return grant
+
+
+def _broker_status_allows_execution(status: dict) -> bool:
+    # A consumed refresh token can coexist with a usable cached access token.
+    # Allow execution without treating the refresh block itself as recovered.
+    return status.get("state") == "granted" or (
+        status.get("state") == "blocked" and status.get("access_token_usable") is True
+    )
 
 
 async def _broker_request(method: str, path: str) -> dict:
