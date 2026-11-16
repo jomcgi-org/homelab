@@ -7,6 +7,7 @@ the same /api/grimoire routes the app calls.
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -2003,7 +2004,27 @@ def main():
                 ]
             )
             (args.output / "report.md").write_text("\n".join(lines))
-            print(json.dumps(report, indent=2))
+            # The full report can exceed a megabyte and is in report.json.
+            # Playwright's Node driver inherits this pipe through stderr
+            # (ci.sh joins both into tee) and can leave it non-blocking, so a
+            # large write fails with EAGAIN when tee lags. Print only the
+            # verdict, with blocking writes.
+            os.set_blocking(sys.stdout.fileno(), True)
+            summary = {"report": str(args.output / "report.json")}
+            for key in (
+                "mode",
+                "width",
+                "passed",
+                "failed_checks",
+                "errors",
+                "console_errors",
+                "slow_requests",
+                "capture_errors",
+                "failure",
+            ):
+                if key in report:
+                    summary[key] = report[key]
+            print(json.dumps(summary, indent=2), flush=True)
             if report["capture_errors"]:
                 raise RuntimeError(
                     "Rehearsal evidence capture failed; inspect report.json"
