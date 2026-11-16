@@ -124,7 +124,11 @@ func run(log *slog.Logger) error {
 		}
 	}
 	var issues review.Itsaplan
+	var evidenceSecret func() (string, error)
 	if cfg.ItsaplanURL != "" {
+		// The evidence MAC key derives from the same mounted key. The reviewer
+		// has no store of its own, and this key never leaves the Pod.
+		evidenceSecret = fileToken(cfg.ItsaplanKeyFile).Token
 		issues = &itsaplan.Client{
 			BaseURL: cfg.ItsaplanURL, Coordinator: "factory-reviewer",
 			HTTP: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -171,6 +175,7 @@ func run(log *slog.Logger) error {
 		Cleaner:       sessions,
 		Quota:         &github.BrokerQuota{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)},
 		Itsaplan:      issues,
+		MACSecret:     evidenceSecret,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

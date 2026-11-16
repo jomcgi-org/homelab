@@ -121,6 +121,7 @@ func containsFold(list []string, s string) bool {
 // Config holds the reviewer's settings.
 type Config struct {
 	Itsaplan    Itsaplan
+	MACSecret   func() (string, error) // The evidence MAC key's input; never log or publish it.
 	CheckName   string
 	AppID       int64
 	Concurrency int
