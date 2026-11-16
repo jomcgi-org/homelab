@@ -227,7 +227,7 @@ type Run struct {
 	SeenVisible     bool
 	ClosedReason    string
 	Origin          string // OriginItsaplan or OriginConnector
-	StopRequested   bool   // survives a new run reactivating the work item
+	StopRequested   bool   // stop or supersession survives a new admission
 	StoppedReason   string
 }
 
@@ -515,7 +515,8 @@ type NewWorkItem struct {
 // ResolveWorkItem finds or creates the run's work item and links the run to
 // it. When the work item was last delivered by another agent key, its epoch
 // is bumped, reassigned is true, and in the same transaction any open
-// attempt of another run gets a pending cancellation; the session stays. A
+// attempt of another run gets a pending cancellation; runs without an attempt
+// are durably stopped as superseded. The session stays. A
 // new run makes the work item active again, except a blocked one: only an
 // operator's unblock clears a block.
 func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem) (w *WorkItem, reassigned bool, err error) {
@@ -545,6 +546,17 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 				return err
 			}
 			if reassigned {
+				// A brief-held run has no attempt to cancel. Persist its loss of
+				// authority before another admission can return to the same agent.
+				// MarkIssued also checks this fence if dispatch is already underway.
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE run r SET stopped_reason = 'superseded: the work item was reassigned to another agent',
+						updated_at = now()
+					WHERE r.work_item_id = $1 AND r.id <> $2 AND r.stopped_reason IS NULL
+						AND r.state IN ('claimed', 'waiting', 'dispatched', 'stale')
+						AND NOT EXISTS (SELECT 1 FROM delivery_attempt a WHERE a.run_id = r.id)`, w.ID, runID); err != nil {
+					return err
+				}
 				if _, err := tx.ExecContext(ctx, `
 					INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
 					SELECT a.id, a.run_id, 'reassignment', 'pending' FROM delivery_attempt a

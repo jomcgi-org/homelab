@@ -439,6 +439,9 @@ work item. The stop and its reason are persisted on already-admitted runs
 in the stop transaction. Resuming the work item cannot revive those runs,
 even before their next dispatch step or after transport redelivery. Send
 admission checks each run's stop as well as the work item's state.
+A reassignment also persists supersession on admitted runs without a delivery
+attempt. They cannot borrow the new owner's epoch to send a held prompt, even
+if ownership returns to the original agent before those runs are stepped.
 HOME-1, the first live run, ended "blocked" without this. A new send uses message
 ID `itsaplan-run/<runId>/<decisionId>`, where the decision ID is the
 connector's record of why it sends (initial, revision or engineering retry).

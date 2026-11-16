@@ -564,10 +564,10 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 	return nil
 }
 
-// stopRun stops a run whose work item stopped delivery. Cancellation reaches
-// execution: an open kagent task gets a pending cancellation, and the run
-// reports its failure, with the reason, only when kagent confirms. A run
-// with nothing in kagent reports at once.
+// stopRun stops a run whose delivery stopped or admission was superseded.
+// An open kagent task gets a pending cancellation, and the run reports its
+// failure, with the reason, only when kagent confirms. A run with nothing
+// in kagent reports at once.
 func (e *Engine) stopRun(ctx context.Context, r *store.Run, reason string) error {
 	a, err := e.st.LatestAttempt(ctx, r.ID)
 	if err != nil {
