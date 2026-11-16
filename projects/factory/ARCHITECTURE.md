@@ -657,7 +657,8 @@ quota block (`quota/block/<scope>/<began>`) and quiet turn
 a takeover reuse those IDs and count the attempt; the read always fetches
 the current reading. kagent's confirmation finishes the turn as a
 quota failure, so it waits and resumes like one. A turn that ended on its
-own meanwhile keeps its outcome. A turn can stay quiet longer during a long
+own meanwhile keeps its outcome, and a stop of its run or work item before
+the confirmation still reports the stop. A turn can stay quiet longer during a long
 tool call, such as a 30-minute `ci` run, so a usable reading cancels
 nothing. Failed
 runs and runs claimed meanwhile wait without holding a concurrency slot,

@@ -1914,7 +1914,9 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 // confirmQuotaStall pauses a turn canceled for going quiet on an exhausted
 // quota as a quota failure: the run waits without a slot and resumes in the
 // same session when the quota is usable. A turn that ended on its own
-// meanwhile keeps its attempt open, and progress reads its outcome.
+// meanwhile keeps its attempt open, and progress reads its outcome. So does
+// a turn whose run or work item was stopped meanwhile: step's stopRun
+// reports the stop, and the block would overwrite the stopped work item.
 func (e *Engine) confirmQuotaStall(ctx context.Context, tx *sql.Tx, r *store.Run, a *store.Attempt, outcome string) error {
 	switch {
 	case r.State != store.RunDispatched || !a.Open():
@@ -1925,6 +1927,13 @@ func (e *Engine) confirmQuotaStall(ctx context.Context, tx *sql.Tx, r *store.Run
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
 		return err
+	}
+	var stopped bool
+	if err := tx.QueryRowContext(ctx, `SELECT stopped_reason IS NOT NULL FROM run WHERE id = $1`, r.ID).Scan(&stopped); err != nil {
+		return err
+	}
+	if stopped || wi.State == store.WorkStopped {
+		return nil
 	}
 	return e.blockTurn(ctx, tx, r, wi, a, ClassQuota, fmt.Sprintf(
 		"canceled after %s without a task event while the broker read the quota exhausted (kagent: %s)", e.cfg.QuotaStall, outcome))

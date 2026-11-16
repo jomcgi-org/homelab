@@ -815,14 +815,14 @@ func (s *Store) SetAttemptEvents(ctx context.Context, id int64, count int, at ti
 }
 
 // QuietAttempts lists the running turns whose task has not changed since
-// before: the latest attempt of a dispatched run, accepted, not held, and
-// without a pending cancellation. A task the connector has not read yet
-// counts from its send.
+// before: the latest attempt of a dispatched run without a stop, accepted,
+// not held, and without a pending cancellation. A task the connector has not
+// read yet counts from its send.
 func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
 		WHERE a.state = 'accepted' AND a.error IS NULL AND coalesce(a.event_at, a.sent_at) < $1
 			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = a.run_id)
-			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched')
+			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched' AND r.stopped_reason IS NULL)
 			AND NOT EXISTS (SELECT 1 FROM cancellation c WHERE c.delivery_attempt_id = a.id AND c.state = 'pending')
 		ORDER BY a.id`, before)
 	if err != nil {
