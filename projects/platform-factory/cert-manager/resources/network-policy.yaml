@@ -1,0 +1,37 @@
+# cert-manager's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). Every Issuer here is
+# self-signed, so nothing needs ACME or other internet egress.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  annotations:
+    # Before the controller, webhook and cainjector start.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: cert-manager
+  egress:
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: webhook
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: cert-manager
+      app.kubernetes.io/component: webhook
+  ingress:
+    # The validating and mutating webhooks (failurePolicy Fail).
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP

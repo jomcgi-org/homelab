@@ -1,0 +1,50 @@
+# Kargo on the factory cluster (HOME-116): the hub's chart with
+# values-factory.yaml, plus this cluster's network policy. Kargo will deploy
+# everything here except what it runs on (Cilium, 1Password Connect, ArgoCD,
+# cert-manager and Kargo itself). This install promotes nothing yet.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kargo
+  namespace: argocd
+  annotations:
+    # After cert-manager (wave 1), which issues the webhook certificate.
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform/kargo
+      helm:
+        releaseName: kargo
+        valueFiles:
+          - values.yaml
+          - values-factory.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/kargo/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kargo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Kargo's CRDs exceed client-side apply's annotation limit.
+      - ServerSideApply=true
+    # Waves order the applies but do not wait for cert-manager to be ready,
+    # because this ArgoCD has no Application health check. The webhook
+    # Certificate fails until cert-manager's CRDs and webhook serve, so the
+    # retries cover about 17 minutes rather than the usual 2.5.
+    retry:
+      limit: 10
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

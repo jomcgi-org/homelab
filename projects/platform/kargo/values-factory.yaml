@@ -1,0 +1,24 @@
+# The factory cluster's Kargo, layered on values.yaml
+# (projects/platform-factory/kargo/application.yaml).
+#
+# On the factory cluster Kargo deploys everything except what it runs on
+# (HOME-116). This first install promotes nothing: the hub's pipelines and its
+# private.jomcgi.dev route stay off, and the factory's own pipelines arrive
+# with their first Warehouse.
+kargo:
+  api:
+    # No UI or API server yet. A Promotion is created as a resource, and the
+    # UI needs an edge route and an Authentik client first
+    # (projects/platform-factory/REVIEW.md).
+    enabled: false
+  externalWebhooksServer:
+    # Receives GitHub webhooks for event-driven promotion; nothing sends any.
+    enabled: false
+
+# The hub's monolith, EmberVM and Scotland connector pipelines.
+promotion:
+  enabled: false
+
+# The hub's private.jomcgi.dev/app/kargo route.
+cfIngress:
+  enabled: false
