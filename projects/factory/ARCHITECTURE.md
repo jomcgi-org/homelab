@@ -910,10 +910,15 @@ item, or an attempt that finished within 15 minutes. It also keeps the
 recorded session of a work item with an open run, including a claimed run
 for its issue. Before deleting a session its work item still records, the
 connector clears it from the work item, as operator recovery does. A run that
-resumes the work item then opens a new session with the issue brief. A
-failed delete is retried on the next sweep, and so is a session left
-DELETING. Deletes are counted in `factory_connector_sessions_deleted_total`
-by reason (done, stopped, replaced). After a delete, the session link in the
+resumes the work item then opens a new session with the issue brief.
+
+Each delete is recorded in `session_deletion` under the writer epoch before
+it is sent, in the same transaction as any release. The session ID is the
+call's idempotency key. A delete is confirmed when kagent answers NOT_FOUND
+or a complete listing no longer shows the session. Until then each sweep
+sends it again, which covers a lost response and a session left DELETING.
+Deletes are counted in `factory_connector_sessions_deleted_total` by reason
+(done, stopped, replaced). After a delete, the session link in the
 issue's Done comment no longer resolves; the run's transcript stays in
 itsaplan.
 
