@@ -1,5 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 
+exports_files(
+    ["values-factory.yaml"],
+    visibility = ["//projects/platform-factory/onepassword:__pkg__"],
+)
+
 helm_chart(
     name = "chart",
     # The vendored upstream subchart is linted by its own repo, not ours.
@@ -19,22 +24,5 @@ argocd_app(
     ],
     values_files = [
         "values.yaml",
-    ],
-)
-
-argocd_app(
-    name = "onepassword-factory",
-    chart = "projects/platform/onepassword",
-    chart_files = ":chart",
-    namespace = "default",
-    release_name = "connect",
-    tags = [
-        "helm",
-        "template",
-    ],
-    target_suffix = "_factory",
-    values_files = [
-        "values.yaml",
-        "values-factory.yaml",
     ],
 )
