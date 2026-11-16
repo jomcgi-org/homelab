@@ -1344,6 +1344,9 @@ func TestRestartRecoveryHoldsForLostDuplicatesAndLabels(t *testing.T) {
 		{name: "duplicate moved on", change: func(h *harness) {
 			h.gh.addPR(&fakePR{Number: 8, Head: headC, Heads: []string{shaA, headC}})
 		}, held: true},
+		{name: "retargeted duplicate moved on", change: func(h *harness) {
+			h.gh.addPR(&fakePR{Number: 8, Head: headC, Heads: []string{shaA, headC}, Base: "release"})
+		}, held: true},
 		{name: "duplicate of an earlier head", change: func(h *harness) {
 			h.gh.addPR(&fakePR{Number: 8, Head: shaA, Closed: true})
 			h.gh.push(7, headB)
@@ -1368,6 +1371,28 @@ func TestRestartRecoveryHoldsForLostDuplicatesAndLabels(t *testing.T) {
 			failIf(t, (check.Conclusion == ConclusionFailure) != tc.held, "held = %v, want %v: %s", check.Conclusion == ConclusionFailure, tc.held, check.Summary)
 			st, _ := LoadState(check.Text)
 			failIf(t, tc.held && st.Gate.RecoveryEpoch != "", "recovered evidence became an unconfirmed-context hold")
+		})
+	}
+}
+
+func TestRecentPRScanCoverage(t *testing.T) {
+	at := time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		truncated bool
+		created   time.Time
+		want      bool
+	}{
+		{name: "complete at since", created: at, want: true},
+		{name: "complete before since", created: at.Add(-time.Second), want: false},
+		{name: "truncated after boundary", truncated: true, created: at.Add(time.Second), want: true},
+		// Unlisted PRs can share the last listed PR's update time.
+		{name: "truncated tie at boundary", truncated: true, created: at, want: false},
+		{name: "truncated before boundary", truncated: true, created: at.Add(-time.Second), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scan := &recentPRs{covered: at, truncated: tc.truncated}
+			failIf(t, scan.covers(tc.created) != tc.want, "covers(%v) = %v, want %v", tc.created, !tc.want, tc.want)
 		})
 	}
 }
