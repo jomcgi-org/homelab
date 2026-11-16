@@ -183,10 +183,10 @@ stopped), and GitHub shows the PR closed or merged
 poll and can be stale. When the query shows no PR, look on GitHub for one
 from the issue's branch, which the connector may have opened after its last
 write: `gh pr list --head factory/HOME-N --state all`. Close any open one.
-With no open PR and no open runs, none follows: a stopped work item gets no
-PR updates. If `factory-db-1` is not the primary, take the name
-from `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get cluster
-factory-db`.
+A PR creation already in flight at the stop can still open one, so check
+again after the connector's next poll. If `factory-db-1` is not the primary,
+take the name from `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get
+cluster factory-db`.
 
 Then file a new HOME issue, assigned to Joe with no delegate, that links the
 canceled one and names what remains. To hand the work back, delegate that
