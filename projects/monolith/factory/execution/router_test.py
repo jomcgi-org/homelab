@@ -2041,6 +2041,7 @@ def test_router_start_non_codex_models_enqueue_without_broker(
 def test_router_start_codex_login_required_preserves_session_and_watches(
     client, session, monkeypatch, caplog, terminal, first_poll
 ):
+    monkeypatch.setattr(store, "get_engine", lambda: session.bind)
     calls = []
     watched = []
     scheduled = []
@@ -2148,6 +2149,7 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
         assert not tasks.intersection(codex_login._login_watch_tasks)
 
     asyncio.run(finish_watch())
+    session.expire_all()
     assert polls == [("GET", "/grants/codex-cluster/login/status")] * 7
     expected_status = "running" if terminal == "granted" else "awaiting_login"
     assert store.get_session(session, body["session_id"]).status == expected_status
@@ -2158,6 +2160,7 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
 
 
 def test_send_message_login_required_persists_and_watches(client, session, monkeypatch):
+    monkeypatch.setattr(store, "get_engine", lambda: session.bind)
     row = _session(session, "send-login", model="luna", status="completed")
     watched = []
     scheduled = []
@@ -2213,7 +2216,16 @@ def test_send_message_login_required_persists_and_watches(client, session, monke
     assert scheduled == []
 
     asyncio.run(watched[0][1]())
+    session.expire_all()
     assert store.get_session(session, row.id).status == "running"
+    assert scheduled == [row.id]
+
+    # A stale watcher cannot undo a stopped session after the durable sweep
+    # has already released the login wait.
+    store.update_session_status(session, row.id, "failed")
+    asyncio.run(watched[0][1]())
+    session.expire_all()
+    assert store.get_session(session, row.id).status == "failed"
     assert scheduled == [row.id]
 
 
@@ -3101,6 +3113,7 @@ def test_send_to_thread_session_queues_without_broker_for_non_codex(
 def test_send_to_thread_session_login_required_persists_and_watches(
     session, monkeypatch
 ):
+    monkeypatch.setattr(store, "get_engine", lambda: session.bind)
     row = _session(session, "thread-login", model="luna", status="completed")
     watched = []
     scheduled = []
@@ -3150,6 +3163,7 @@ def test_send_to_thread_session_login_required_persists_and_watches(
     assert scheduled == []
 
     asyncio.run(watched[0][1]())
+    session.expire_all()
     assert store.get_session(session, row.id).status == "running"
     assert scheduled == [row.id]
 

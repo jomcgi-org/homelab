@@ -25,6 +25,11 @@ Polling failures from startup also keep the watch alive: an outage cannot confir
 that the broker has lost its retained login.
 When a later persistence retry reaches `granted`, the watcher resumes the
 original queued turn. A failed login or a lost pending flow does not resume it.
+After an execution-service restart, the pending-message sweep rediscovers durable
+`awaiting_login` sessions and checks the grant on each pass. Once connected, it
+releases their original queued turns through normal admission and claim handling.
+The sweep and any surviving watcher share a conditional transition, so a late
+callback cannot reactivate a session that has already resumed or been stopped.
 
 ## Quota observation durability
 

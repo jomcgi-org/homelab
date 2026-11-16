@@ -2025,6 +2025,136 @@ def test_startup_sweep_skips_paused_and_recovering_sessions(session):
     assert orphaned[0].session_id == running.id
 
 
+@pytest.mark.parametrize("initial_state", ["pending", "persistence_pending"])
+def test_restarted_sweep_resumes_login_wait_after_persistence_retry(
+    monkeypatch, session, caplog, initial_state
+):
+    from factory.execution import codex_login
+
+    row = store.create_session(
+        session, "restart-login", "/workspace", "main", model="luna"
+    )
+    session_id = row.id
+    store.create_pending_message(session, session_id, "original queued turn", "luna")
+    store.update_session_status(session, session_id, "awaiting_login")
+
+    async def lose_original_watcher():
+        polled = asyncio.Event()
+
+        async def broker_request(*_args):
+            polled.set()
+            return {"state": initial_state}
+
+        async def unexpected_resume():
+            pytest.fail("login has not been persisted")
+
+        monkeypatch.setattr(mcp, "_broker_request", broker_request)
+        before = codex_login._login_watch_tasks.copy()
+        codex_login.watch_for_login("codex-cluster", unexpected_resume)
+        await asyncio.wait_for(polled.wait(), timeout=5)
+        tasks = codex_login._login_watch_tasks - before
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert not tasks.intersection(codex_login._login_watch_tasks)
+
+    asyncio.run(lose_original_watcher())
+    # A fresh event loop has only durable rows: no login callback or task.
+    responses = iter(
+        [
+            RuntimeError("sensitive diagnostic"),
+            {"state": "persistence_pending"},
+            {"state": "granted"},
+        ]
+    )
+    polls = []
+    dispatched = []
+    sweeps = 0
+
+    async def broker_request(method, path):
+        polls.append((method, path))
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    async def no_recovery():
+        return 0
+
+    async def sweep_tick(_seconds):
+        nonlocal sweeps
+        sweeps += 1
+        if sweeps > 4:
+            raise asyncio.CancelledError
+
+    async def claim(session_id):
+        seq = await asyncio.to_thread(
+            store.claim_pending_message_for_session_sync, session_id, "restarted"
+        )
+        if seq is not None:
+            dispatched.append((session_id, seq))
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(mcp, "_sweep_task", None)
+    monkeypatch.setattr(mcp, "_rollout_shutdown_started", False)
+    monkeypatch.setattr(mcp, "_reconcile_zombie_sessions", no_recovery)
+    monkeypatch.setattr(mcp, "_reclaim_stale_claims_sync", lambda: 0)
+    monkeypatch.setattr(mcp, "_adopt_response_lost_results", lambda: [])
+    monkeypatch.setattr(mcp, "_execute_pending_message", claim)
+    monkeypatch.setattr(mcp.asyncio, "sleep", sweep_tick)
+
+    async def restart():
+        tasks = mcp.start_pending_message_sweep()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.gather(*tasks)
+        await asyncio.gather(*mcp._inflight_tasks)
+
+    asyncio.run(restart())
+    assert polls == [("GET", "/grants/codex-cluster/login/status")] * 3
+    assert dispatched == [(session_id, 1)]
+    session.expire_all()
+    assert store.get_session(session, session_id).status == "running"
+    pending = store.get_pending_message(session, session_id, 1)
+    assert pending.message_text == "original queued turn"
+    assert pending.claimed_by_replica == "restarted"
+    assert pending.dispatch_count == 1
+    assert "sensitive diagnostic" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "state", ["none", "failed", "pending", "persistence_pending", None]
+)
+def test_login_reconciliation_requires_connected_grant(monkeypatch, session, state):
+    row = store.create_session(session, "waiting-login", "/workspace", "main")
+    store.create_pending_message(session, row.id, "original queued turn", "luna")
+    store.update_session_status(session, row.id, "awaiting_login")
+
+    async def broker_request(*_args):
+        return {"state": state}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    asyncio.run(mcp._reconcile_login_sessions())
+    session.expire_all()
+    assert store.get_session(session, row.id).status == "awaiting_login"
+    assert store.claim_pending_message_for_session_sync(row.id, "worker") is None
+
+
+def test_login_reconciliation_preserves_stop_during_broker_poll(monkeypatch, session):
+    row = store.create_session(session, "stopped-login", "/workspace", "main")
+    store.create_pending_message(session, row.id, "original queued turn", "luna")
+    store.update_session_status(session, row.id, "awaiting_login")
+
+    async def broker_request(*_args):
+        store.update_session_status(session, row.id, "failed")
+        return {"state": "granted"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    asyncio.run(mcp._reconcile_login_sessions())
+    session.expire_all()
+    assert store.get_session(session, row.id).status == "failed"
+    assert store.claim_pending_message_for_session_sync(row.id, "worker") is None
+
+
 def test_two_sends_are_serialized(monkeypatch, session):
     row = store.create_session(session, "sid-123", "/workspace", "main")
     execution_order = []

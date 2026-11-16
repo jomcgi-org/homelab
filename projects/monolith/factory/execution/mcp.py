@@ -1860,14 +1860,38 @@ async def drain_inflight_executors() -> int:
     return len(done)
 
 
+async def _reconcile_login_sessions() -> None:
+    """Recover durable waits without relying on the original in-memory watcher.
+
+    Execution login gates all use the default Codex grant. Check it once for
+    the waiting sessions observed before the request; a later sweep picks up
+    new waits. Only a positive grant response releases them, and the normal
+    pending-message claimer retains ownership of dispatch and admission.
+    """
+    try:
+        session_ids = await asyncio.to_thread(store.get_sessions_awaiting_login_sync)
+        if not session_ids:
+            return
+        status = await _broker_request("GET", f"/grants/{_DEFAULT_GRANT}/login/status")
+        if status.get("state") != "granted":
+            return
+        for session_id in session_ids:
+            await asyncio.to_thread(store.resume_session_after_login_sync, session_id)
+    except Exception:
+        # The durable rows remain eligible for the next sweep. Broker errors
+        # can contain credentials, so do not include their diagnostic text.
+        logger.warning("Could not reconcile sessions waiting for Codex login")
+
+
 async def _sweep_orphaned_pending_messages() -> None:
     """Pick up pending messages left behind by a crash or restart.
 
-    The sweep does three things:
+    The sweep does four things:
     1. Record expired attempts as unknown outcomes, except for exact
        preemption retries and attempts held for a lost response.
     2. Finish held attempts whose committed native result has arrived.
-    3. Execute untouched pending messages and permitted preemption retries.
+    3. Resume durable login waits when the broker reports the grant connected.
+    4. Execute untouched pending messages and permitted preemption retries.
     """
     while True:
         if rollout_shutdown_in_progress():
@@ -1884,9 +1908,9 @@ async def _sweep_orphaned_pending_messages() -> None:
             logger.info("Reclaimed %d stale claims from crashed replicas", reclaimed)
         for session_id in await asyncio.to_thread(_adopt_response_lost_results):
             _schedule_next_message(session_id)
-        # Skip sessions paused for device login; a persisted prompt must not
-        # execute until the grant is live, else the turn fails with opaque 422
-        # within 5 seconds.
+        # A restart loses login watchers, but not their sessions and prompts.
+        # Leave disconnected sessions paused and retry on subsequent sweeps.
+        await _reconcile_login_sessions()
         rows = await asyncio.to_thread(_get_all_pending_messages_sync)
         for row in rows:
             if row.claimed_by_replica is None:

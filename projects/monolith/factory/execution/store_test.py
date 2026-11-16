@@ -56,6 +56,32 @@ def _restore_schemas(schemas):
             table.schema = schemas[table.name]
 
 
+def test_login_resume_serializes_watchers_and_recovery(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(session, "login-race", "/workspace", "main")
+            session_id = row.id
+            store.create_pending_message(session, session_id, "original turn", "luna")
+            store.update_session_status(session, session_id, "awaiting_login")
+        assert store.get_sessions_awaiting_login_sync() == [session_id]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            resumed = list(
+                pool.map(store.resume_session_after_login_sync, [session_id] * 2)
+            )
+        assert sorted(resumed) == [False, True]
+        assert store.get_sessions_awaiting_login_sync() == []
+        with Session(engine) as session:
+            assert store.get_session(session, session_id).status == "running"
+            pending = store.get_pending_message(session, session_id, 1)
+            assert pending.message_text == "original turn"
+            assert pending.dispatch_count == 0
+            assert pending.claimed_by_replica is None
+    finally:
+        engine.dispose()
+        _restore_schemas(schemas)
+
+
 def test_exact_turn_hold_distinguishes_other_turns_sessions_and_settlement(
     monkeypatch, tmp_path
 ):

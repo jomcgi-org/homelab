@@ -3171,6 +3171,46 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
         return result.rowcount == 1
 
 
+def get_sessions_awaiting_login_sync() -> list[int]:
+    """Find durable login waits, including those whose process has restarted."""
+    with Session(get_engine()) as session:
+        return list(
+            session.exec(
+                select(AgentSession.id).where(
+                    AgentSession.status == "awaiting_login",
+                    exists().where(PendingMessage.session_id == AgentSession.id),
+                )
+            ).all()
+        )
+
+
+def resume_session_after_login_sync(session_id: int) -> bool:
+    """Release only a live login wait; watchers and restart recovery may race."""
+    with Session(get_engine()) as session:
+        row = _lock_session(session, session_id)
+        if (
+            row is None
+            or row.status != "awaiting_login"
+            or admission.cleanup_pending(session, row)
+            or session.exec(
+                select(PendingMessage.seq).where(
+                    PendingMessage.session_id == session_id
+                )
+            ).first()
+            is None
+        ):
+            return False
+        try:
+            _assert_sendable(session, session_id)
+        except (SessionOutcomeUnknown, PendingClaimLost):
+            return False
+        row.status = "running"
+        row.last_turn_at = datetime.now(timezone.utc)
+        session.add(row)
+        session.commit()
+        return True
+
+
 def get_all_pending_messages_sync() -> list[PendingMessage]:
     """Fetch all pending messages using a fresh synchronous database session."""
     with Session(get_engine()) as session:
