@@ -93,10 +93,11 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
+          # 2-day peak 986Mi (2026-11-16) while sandboxes snapshot.
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 1Gi
             limits:
               memory: 2Gi
           volumeMounts:

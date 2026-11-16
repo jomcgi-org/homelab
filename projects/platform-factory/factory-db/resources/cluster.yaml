@@ -36,10 +36,11 @@ spec:
     size: 5Gi
     storageClass: local-path
   # The nodes have 16 GiB; three of these sit beside kagent-pg's three.
+  # 2-day peak 245Mi (2026-11-16); requested at about peak plus 15%.
   resources:
     requests:
       cpu: 50m
-      memory: 256Mi
+      memory: 320Mi
     limits:
       memory: 1Gi
   bootstrap:

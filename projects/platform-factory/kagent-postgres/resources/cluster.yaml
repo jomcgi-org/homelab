@@ -33,10 +33,11 @@ spec:
   storage:
     size: 5Gi
     storageClass: local-path
+  # 2-day peak 561Mi (2026-11-16); requested at about peak plus 15%.
   resources:
     requests:
       cpu: 50m
-      memory: 256Mi
+      memory: 640Mi
     limits:
       memory: 1Gi
   bootstrap:

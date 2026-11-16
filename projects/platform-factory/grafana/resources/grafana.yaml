@@ -107,9 +107,10 @@ spec:
             periodSeconds: 30
             failureThreshold: 6
           resources:
+            # 2-day peak 352Mi (2026-11-16).
             requests:
               cpu: 50m
-              memory: 192Mi
+              memory: 384Mi
             limits:
               memory: 768Mi
           securityContext:
