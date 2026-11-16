@@ -7,3 +7,13 @@ ALTER TABLE cancellation ADD CONSTRAINT cancellation_reason_check
 ALTER TABLE delivery_attempt
     ADD COLUMN event_count integer NOT NULL DEFAULT 0,
     ADD COLUMN event_at timestamptz;
+
+-- A stable message identifies each broker quota read across polls and
+-- writer takeovers: one per quota block or quiet turn the read serves. The
+-- read is idempotent and always fetches the broker's current reading.
+CREATE TABLE quota_read (
+    message_id text PRIMARY KEY,
+    writer_epoch bigint NOT NULL,
+    attempts integer NOT NULL DEFAULT 1,
+    attempted_at timestamptz NOT NULL DEFAULT now()
+);

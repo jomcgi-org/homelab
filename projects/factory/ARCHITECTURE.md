@@ -646,7 +646,12 @@ turn that has had no task event for `intervals.quotaStall` (10 minutes). A
 task event is a new history message or artifact text in the connector's
 `GetTask` read, recorded on the attempt (`event_at`); a turn not yet read
 counts from its send. The connector reads the broker while a quota block
-stands or a turn is that quiet. kagent's confirmation finishes the turn as a
+stands or a turn is that quiet. Each read is recorded in `quota_read`
+before the call, under the writer's epoch, with one message ID for each
+quota block (`quota/block/<scope>/<began>`) and quiet turn
+(`quota/stall/<attempt>`) it serves. The next poll and a new writer after
+a takeover reuse those IDs and count the attempt; the read always fetches
+the current reading. kagent's confirmation finishes the turn as a
 quota failure, so it waits and resumes like one. A turn that ended on its
 own meanwhile keeps its outcome. A turn can stay quiet longer during a long
 tool call, such as a 30-minute `ci` run, so a usable reading cancels

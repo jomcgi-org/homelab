@@ -46,6 +46,37 @@ func TestNotifyAttemptsRequireCurrentWriterAndContainNoPayload(t *testing.T) {
 	}
 }
 
+// A broker quota read is recorded only by the current writer. Repeating it
+// keeps its message ID and counts the attempt.
+func TestQuotaReadsRequireTheCurrentWriter(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	w, err := st.TryAcquireWriter(ctx, "quota")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Release()
+	ids := []string{"quota/block/kagent:factory-homelab/coder/1", "quota/stall/7"}
+	for i := 0; i < 2; i++ {
+		if err := st.RecordQuotaReads(ctx, w, ids); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range ids {
+		var attempts, epoch int64
+		if err := st.DB.QueryRow(`SELECT attempts, writer_epoch FROM quota_read WHERE message_id = $1`, id).Scan(&attempts, &epoch); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != 2 || epoch != w.Epoch {
+			t.Fatalf("%s: attempts=%d epoch=%d, want 2 and %d", id, attempts, epoch, w.Epoch)
+		}
+	}
+	w.Release()
+	if err := st.RecordQuotaReads(ctx, w, ids); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("released writer: %v", err)
+	}
+}
+
 func open(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.Open(pgtest.NewDB(t))
@@ -64,7 +95,7 @@ func TestMigrationsAreIdempotentAndCreateTables(t *testing.T) {
 	}
 	for _, table := range []string{
 		"repo_binding", "work_item", "run", "delivery_attempt", "pull_request",
-		"review_event", "delivery_read", "status_read", "cancellation", "outbox", "writer", "session_deletion",
+		"review_event", "delivery_read", "status_read", "quota_read", "cancellation", "outbox", "writer", "session_deletion",
 	} {
 		var ok bool
 		if err := st.DB.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil || !ok {

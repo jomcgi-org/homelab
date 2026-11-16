@@ -1986,6 +1986,63 @@ func TestQuotaBlockClearsWhenTheBrokerReadsUsable(t *testing.T) {
 	}
 }
 
+// Each broker quota read is recorded under the writer's epoch before the
+// call. The next poll and a new writer after a takeover reuse its message
+// ID, and a read whose attempt cannot be recorded is not made (HOME-127).
+func TestQuotaReadIsRecordedBeforeTheCall(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-read")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.kg.finish(v.kg.lastTask(), kagent.StateFailed, codexQuotaFailure, nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	var began time.Time
+	if err := v.st.DB.QueryRow(`SELECT created_at FROM grant_block WHERE class = 'quota' AND cleared_at IS NULL`).Scan(&began); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("quota/block/%s/%d", store.GrantScope("factory-homelab", "coder"), began.UnixMicro())
+	q.onRead = func() {
+		var rows, attempts int
+		var epoch int64
+		if err := v.st.DB.QueryRow(`SELECT count(*) FROM quota_read`).Scan(&rows); err != nil || rows != 1 {
+			t.Errorf("quota_read rows = %d, %v; want one", rows, err)
+		}
+		if err := v.st.DB.QueryRow(`SELECT attempts, writer_epoch FROM quota_read WHERE message_id = $1`, want).Scan(&attempts, &epoch); err != nil {
+			t.Errorf("read began without its recorded attempt %s: %v", want, err)
+		} else if attempts != q.count()+1 || epoch != v.e.Epoch() {
+			t.Errorf("read %d: attempts=%d epoch=%d, want epoch %d", q.count()+1, attempts, epoch, v.e.Epoch())
+		}
+	}
+	first := v.e.Epoch()
+	for i := 0; i < 2; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	v.e.Release()
+	v.e = v.engine("connector-quota-read-takeover")
+	if v.e.Epoch() == first {
+		t.Fatal("takeover kept the writer epoch")
+	}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if q.count() != 3 {
+		t.Fatalf("reads = %d, want 3", q.count())
+	}
+	if _, err := v.st.DB.Exec(`ALTER TABLE quota_read ADD CONSTRAINT reject_read CHECK (attempts < 4)`); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if q.count() != 3 {
+		t.Fatalf("reads = %d without a recorded attempt", q.count())
+	}
+}
+
 // A quota failure after the engineering budget is spent still resumes once
 // the quota is usable, and leaves the budget as it was (HOME-127).
 func TestQuotaResumeKeepsTheEngineeringBudget(t *testing.T) {
@@ -2088,6 +2145,11 @@ func TestQuietTurnOnExhaustedQuotaIsCanceledAndWaits(t *testing.T) {
 	cs := v.pendingCancellations()
 	if q.count() != 1 || len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall || cs[0].Requests != 1 {
 		t.Fatalf("reads = %d, cancellations = %+v", q.count(), cs)
+	}
+	var reads int
+	if err := v.st.DB.QueryRow(`SELECT attempts FROM quota_read WHERE message_id = $1`,
+		fmt.Sprintf("quota/stall/%d", first.ID)).Scan(&reads); err != nil || reads != 1 {
+		t.Fatalf("quiet turn's recorded read: attempts = %d, %v", reads, err)
 	}
 	// The cancellation stays pending until kagent confirms it.
 	if v.run(1).State != store.RunDispatched || v.latest(1).State != store.AttemptAccepted {

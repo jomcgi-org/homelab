@@ -346,19 +346,22 @@ func (e *Engine) Tick(ctx context.Context) error {
 // block began clears it: the failed turn's own readings predate the block,
 // so a grant that keeps failing pauses again until the broker's next
 // reading, about every 30 minutes, instead of on every poll.
+//
+// The read is recorded under the writer's epoch before the call, as
+// quotaReadIDs names it.
 func (e *Engine) checkQuota(ctx context.Context) error {
 	if e.cfg.Quota == nil || e.cfg.Now().Sub(e.quotaRead) < e.cfg.QuotaPoll {
 		return nil
 	}
-	blocked, err := e.st.QuotaBlocked(ctx)
+	blocks, err := e.st.QuotaBlocks(ctx)
 	if err != nil {
 		return err
 	}
 	quiet, err := e.st.QuietAttempts(ctx, e.cfg.Now().Add(-e.cfg.QuotaStall))
-	if err != nil || (!blocked && len(quiet) == 0) {
+	if err != nil || (len(blocks) == 0 && len(quiet) == 0) {
 		return err
 	}
-	if err := e.guard(ctx); err != nil {
+	if err := e.st.RecordQuotaReads(ctx, e.w, quotaReadIDs(blocks, quiet)); err != nil {
 		return err
 	}
 	e.quotaRead = e.cfg.Now()
@@ -369,7 +372,7 @@ func (e *Engine) checkQuota(ctx context.Context) error {
 	if q.Exhausted {
 		return e.cancelQuiet(ctx, quiet)
 	}
-	if !blocked || q.ReceivedAt.IsZero() {
+	if len(blocks) == 0 || q.ReceivedAt.IsZero() {
 		return nil
 	}
 	if err := e.guard(ctx); err != nil {
@@ -382,13 +385,39 @@ func (e *Engine) checkQuota(ctx context.Context) error {
 	return err
 }
 
-// cancelQuiet requests the cancellation of each quiet turn. It stays
-// pending until kagent confirms it, as every cancellation does.
-func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error {
+// quotaReadIDs names a broker quota read once for each quota block and
+// quiet turn it serves. The next poll, or a new writer after a takeover,
+// finds the same block or turn and reuses its ID. A block's ID includes
+// when it began, so a later block on the grant gets a new one.
+func quotaReadIDs(blocks []store.QuotaBlock, quiet []*store.Attempt) []string {
+	ids := make([]string, 0, len(blocks)+len(quiet))
+	for _, b := range blocks {
+		ids = append(ids, fmt.Sprintf("quota/block/%s/%d", b.Scope, b.CreatedAt.UnixMicro()))
+	}
 	for _, a := range quiet {
-		if err := e.st.RequestCancellation(ctx, e.st.DB, a.ID, a.RunID, store.CancelQuotaStall); err != nil {
-			return err
+		ids = append(ids, fmt.Sprintf("quota/stall/%d", a.ID))
+	}
+	return ids
+}
+
+// cancelQuiet requests the cancellation of each quiet turn under the
+// writer's epoch. It stays pending until kagent confirms it, as every
+// cancellation does; stepCancellation sends CancelTask.
+func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error {
+	if len(quiet) == 0 {
+		return nil
+	}
+	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		for _, a := range quiet {
+			if err := e.st.RequestCancellation(ctx, tx, a.ID, a.RunID, store.CancelQuotaStall); err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, a := range quiet {
 		e.m.Cancellations.WithLabelValues(store.CancelQuotaStall, "requested").Inc()
 		e.log.WarnContext(ctx, "canceling a quiet turn: the broker reads the quota exhausted", "run", a.RunID,
 			"attempt", a.Seq, "task", a.TaskID, "quiet_for", e.cfg.Now().Sub(lastEvent(a)))
