@@ -24,7 +24,7 @@
   let persistenceState = $state(null);
   const savingLogin = $derived(persistenceState === "pending");
   const userCode = $derived(
-    persistenceState ? null : requestedUserCode ?? initialUserCode,
+    persistenceState ? null : (requestedUserCode ?? initialUserCode),
   );
   const verificationUrl = $derived(
     requestedVerificationUrl ?? initialVerificationUrl,
@@ -49,7 +49,10 @@
     authorizing = true;
     onError(null);
     try {
-      const query = new URLSearchParams({ grant: "codex-cluster", environment });
+      const query = new URLSearchParams({
+        grant: "codex-cluster",
+        environment,
+      });
       const response = await fetch(
         `/private/factory/execution/codex-login/status?${query}`,
         { signal: AbortSignal.timeout(10000), cache: "no-store" },
@@ -58,9 +61,13 @@
       if (disposed) return;
       if (
         !response.ok ||
-        !["none", "pending", "persistence_pending", "granted", "failed"].includes(
-          body.state,
-        ) ||
+        ![
+          "none",
+          "pending",
+          "persistence_pending",
+          "granted",
+          "failed",
+        ].includes(body.state) ||
         (environment === "dev" &&
           (body.environment !== "dev" || body.grant !== "codex-cluster"))
       ) {
