@@ -997,11 +997,8 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		return nil
 	}
 	defer e.starts.Unlock()
-	if r.State == store.RunWaiting {
-		busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
-		if err != nil || busy >= e.concurrency(r.AgentKey) {
-			return err
-		}
+	if full, err := e.slotsFull(ctx, r); err != nil || full {
+		return err
 	}
 	if r.IssueID == 0 {
 		return e.failRun(ctx, e.st.DB, r, "factory runs must belong to an issue")
@@ -1063,6 +1060,33 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, "")
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
+}
+
+// slotsFull reports that a first admission finds no free slot for its agent
+// key. It checks a waiting run and every itsaplan run with no delivery
+// attempt, whatever its state: a held run whose lease lapsed returns
+// dispatched with no attempt. The run is not counted as an occupant. A full
+// run waits, as other runs over the limit do, and keeps its admission result.
+func (e *Engine) slotsFull(ctx context.Context, r *store.Run) (bool, error) {
+	if r.State != store.RunWaiting {
+		if r.Connector() {
+			return false, nil
+		}
+		if a, err := e.st.LatestAttempt(ctx, r.ID); err != nil || a != nil {
+			return false, err
+		}
+	}
+	busy, err := e.st.CountBusyRuns(ctx, r.AgentKey, r.ID)
+	if err != nil || busy < e.concurrency(r.AgentKey) {
+		return false, err
+	}
+	if r.State != store.RunWaiting {
+		if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
+			return true, err
+		}
+		r.State = store.RunWaiting
+	}
+	return true, nil
 }
 
 // ready reports whether a run may send now: its work item and grant are not
@@ -1191,7 +1215,7 @@ func (e *Engine) resumeWaiting(ctx context.Context, r *store.Run) error {
 	}
 	// Runs a block held were claimed without taking a slot; they resume
 	// within the agent key's concurrency.
-	busy, err := e.st.CountBusyRuns(ctx, r.AgentKey)
+	busy, err := e.st.CountBusyRuns(ctx, r.AgentKey, r.ID)
 	if err != nil || busy >= e.concurrency(r.AgentKey) {
 		return err
 	}

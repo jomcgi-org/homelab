@@ -1036,6 +1036,54 @@ func TestAdmissionAndGrantRetryShareConcurrency(t *testing.T) {
 	}
 }
 
+// A held run whose lease lapsed returns dispatched with no delivery attempt.
+// When its admission passes while another run holds the agent's last slot,
+// it waits with its admission kept and starts only once the slot frees.
+func TestReclaimedHeldRunWaitsForAFreeSlot(t *testing.T) {
+	v := newEnv(t)
+	v.e.Release()
+	v.cfg.Agents[0].Concurrency = 1
+	v.e = v.engine("reclaimed-held-run")
+	v.its.add(1, "coder", 101, "HL-1", "Dependent work.")
+	v.dependency(101, 102, "HL-2", 2)
+	v.tick(v.e)
+	v.held(1)
+	v.its.add(2, "coder", 103, "HL-3", "Independent work.")
+	v.tick(v.e)
+	if v.kg.Executions() != 1 || v.run(2).State != store.RunDispatched {
+		t.Fatal("the independent run did not take the only slot")
+	}
+	task := v.kg.lastTask()
+
+	v.its.reclaimElsewhere(1)
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if v.run(1).State != store.RunStale {
+		t.Fatalf("state = %s, want stale", v.run(1).State)
+	}
+	v.its.moveTo(102, 3, "")
+	fr := v.its.Run(1)
+	redelivery := fr.run
+	redelivery.Attempts = fr.attempts
+	if err := v.e.HandleClaim(v.ctx, "coder", &redelivery); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if r := v.run(1); r.State != store.RunWaiting || r.HoldReason != "" || r.WorkItemID != 0 || v.latest(1) != nil {
+			t.Fatalf("admitted run with no free slot = %+v", r)
+		}
+		if v.kg.Executions() != 1 {
+			t.Fatal("the reclaimed run started past the agent's concurrency")
+		}
+		v.tick(v.e)
+	}
+	v.kg.finish(task, kagent.StateCompleted, "Done.", nil)
+	v.tickUntil(time.Second, 10, func() bool { return v.kg.Executions() == 2 })
+	if v.run(1).State != store.RunDispatched || v.latest(1) == nil {
+		t.Fatal("the reclaimed run did not start when the slot freed")
+	}
+}
+
 func TestCrashAfterHoldCommentAcceptanceDoesNotDuplicate(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")

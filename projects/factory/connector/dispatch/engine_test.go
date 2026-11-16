@@ -2076,7 +2076,7 @@ func TestQuotaResumeSurvivesRestartsAndRepeatedExhaustion(t *testing.T) {
 		if a := v.latest(1); a.State != store.AttemptFailed || a.ErrorClass != dispatch.ClassQuota {
 			t.Fatalf("cycle %d: attempt = %+v, want quota failure", i, a)
 		}
-		if busy, err := v.st.CountBusyRuns(v.ctx, "coder"); err != nil || busy != 0 || v.run(1).State != store.RunWaiting {
+		if busy, err := v.st.CountBusyRuns(v.ctx, "coder", 0); err != nil || busy != 0 || v.run(1).State != store.RunWaiting {
 			t.Fatalf("cycle %d: busy = %d, %v; run %s", i, busy, err, v.run(1).State)
 		}
 		if len(v.kg.Sends()) != i {
@@ -2365,7 +2365,7 @@ func TestQuietTurnOnExhaustedQuotaIsCanceledAndWaits(t *testing.T) {
 	if a := v.latest(1); a.State != store.AttemptFailed || a.ErrorClass != dispatch.ClassQuota {
 		t.Fatalf("attempt = %+v, want a quota failure", a)
 	}
-	if busy, err := v.st.CountBusyRuns(v.ctx, "coder"); err != nil || busy != 0 || v.run(1).State != store.RunWaiting {
+	if busy, err := v.st.CountBusyRuns(v.ctx, "coder", 0); err != nil || busy != 0 || v.run(1).State != store.RunWaiting {
 		t.Fatalf("busy = %d, %v; run %s", busy, err, v.run(1).State)
 	}
 	if w := v.work(101); w.State != store.WorkBlocked || w.BlockedClass != dispatch.ClassQuota {
