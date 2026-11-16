@@ -4,13 +4,16 @@ export interface PRLink {
 }
 
 export interface Status {
-  needsYou: {
-    key: string;
-    title: string;
-    priority: string | null;
-    url: string;
-    createdAt: string;
-  }[];
+  // null: a bound itsaplan project has no member `joe`.
+  needsYou:
+    | {
+        key: string;
+        title: string;
+        priority: string | null;
+        url: string;
+        createdAt: string;
+      }[]
+    | null;
   inFlight: {
     key: string;
     title: string;
@@ -39,14 +42,15 @@ export function parseStatus(value: unknown): Status {
   if (
     !record(value) ||
     typeof value.generatedAt !== "string" ||
-    !Array.isArray(value.needsYou) ||
-    !value.needsYou.every(
-      (v) =>
-        item(v) &&
-        link(v.url) &&
-        typeof v.createdAt === "string" &&
-        (v.priority === null || typeof v.priority === "string"),
-    ) ||
+    (value.needsYou !== null &&
+      (!Array.isArray(value.needsYou) ||
+        !value.needsYou.every(
+          (v) =>
+            item(v) &&
+            link(v.url) &&
+            typeof v.createdAt === "string" &&
+            (v.priority === null || typeof v.priority === "string"),
+        ))) ||
     !Array.isArray(value.inFlight) ||
     !value.inFlight.every(
       (v) =>

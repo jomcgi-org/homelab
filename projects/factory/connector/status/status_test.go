@@ -131,6 +131,38 @@ func TestHandlerFieldsContainOnlySummaries(t *testing.T) {
 	}
 }
 
+type missingOwnerPlan struct {
+	fakePlan
+	err error
+}
+
+func (p missingOwnerPlan) NeedsYou(context.Context, string, string) ([]itsaplan.IssueSummary, error) {
+	return nil, p.err
+}
+
+func TestMissingOwnerMarksOnlyNeedsYouUnavailable(t *testing.T) {
+	source := &Source{
+		Store:    fakeStore{items: []store.StatusItem{{BindingName: "homelab", IssueID: 25, Key: "HOME-25", State: "active"}}},
+		Plan:     missingOwnerPlan{err: itsaplan.ErrNotMember},
+		Bindings: []config.Binding{{Name: "homelab", ItsaplanProject: "HOME"}},
+	}
+	h := &Handler{Load: source.Load}
+	h.refresh(context.Background())
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest("GET", "/status", nil))
+	var body map[string]any
+	if err := json.Unmarshal(r.Body.Bytes(), &body); r.Code != 200 || err != nil {
+		t.Fatalf("response = %d %s", r.Code, r.Body)
+	}
+	if v, ok := body["needsYou"]; !ok || v != nil || len(body["inFlight"].([]any)) != 1 {
+		t.Fatalf("body = %v", body)
+	}
+	source.Plan = missingOwnerPlan{err: errors.New("itsaplan unavailable")}
+	if _, err := source.Load(context.Background()); err == nil {
+		t.Fatal("other task read errors must still fail the refresh")
+	}
+}
+
 func assertFields(t *testing.T, fields map[string]any, want ...string) {
 	t.Helper()
 	var got []string

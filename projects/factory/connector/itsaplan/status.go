@@ -2,6 +2,7 @@ package itsaplan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -20,6 +21,10 @@ type IssueSummary struct {
 	DelegateUserID *string `json:"delegateUserId"`
 	Archived       bool    `json:"archived"`
 }
+
+// ErrNotMember means the bound project has no member with the task owner's
+// username. The status snapshot then marks only Needs you unavailable.
+var ErrNotMember = errors.New("itsaplan: task owner is not a project member")
 
 // NeedsYou reads the bound project's scaffold and at most 500 assigned issues
 // as the coordinator. v1.10.0 has no null-delegate or open-state list filter,
@@ -47,7 +52,7 @@ func (c *Client) NeedsYou(ctx context.Context, project, username string) ([]Issu
 		}
 	}
 	if userID == "" {
-		return nil, fmt.Errorf("itsaplan: task owner is not a project member")
+		return nil, ErrNotMember
 	}
 	open := map[int64]bool{}
 	for _, col := range scaffold.Columns {

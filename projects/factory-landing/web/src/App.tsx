@@ -75,10 +75,16 @@ export function App() {
           <Card>
             <VStack gap={3}>
               <Heading level={2} id="needs-you">
-                Needs you{status ? ` (${status.needsYou.length})` : ""}
+                Needs you
+                {status?.needsYou ? ` (${status.needsYou.length})` : ""}
               </Heading>
               {status &&
-                (status.needsYou.length ? (
+                (status.needsYou === null ? (
+                  <Text type="body">
+                    Unavailable: no itsaplan member @joe in the factory's
+                    project.
+                  </Text>
+                ) : status.needsYou.length ? (
                   <ul className="factory-list">
                     {status.needsYou.map((item) => (
                       <li key={item.key}>
