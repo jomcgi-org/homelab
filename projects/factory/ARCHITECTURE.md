@@ -640,7 +640,17 @@ come from an agent. The connector also clears quota blocks itself
 most once a minute. It clears each quota block that began before a reading
 that refuses nothing. The failed turn's own readings predate its block, so
 a grant that still fails pauses again only after the broker's next reading,
-about every 30 minutes. Failed
+about every 30 minutes. The same reading stops a turn that never fails:
+while the broker reads the quota exhausted, the connector cancels a running
+turn that has had no task event for `intervals.quotaStall` (10 minutes). A
+task event is a new history message or artifact text in the connector's
+`GetTask` read, recorded on the attempt (`event_at`); a turn not yet read
+counts from its send. The connector reads the broker while a quota block
+stands or a turn is that quiet. kagent's confirmation finishes the turn as a
+quota failure, so it waits and resumes like one. A turn that ended on its
+own meanwhile keeps its outcome. A turn can stay quiet longer during a long
+tool call, such as a 30-minute `ci` run, so a usable reading cancels
+nothing. Failed
 runs and runs claimed meanwhile wait without holding a concurrency slot,
 keeping their itsaplan leases alive. After unblock, a credential failure
 consumes an engineering retry and sends a fresh deterministic retry message
@@ -902,7 +912,9 @@ no match keeps cancellation pending and records the recovery hold described
 above. A never-sent or definitively unaccepted attempt with no prior-session
 uncertainty can confirm cancellation without a task. Otherwise the explicit
 operator fencing attestation above is required. A run that itsaplan ended closes once its
-cancellation is confirmed, whatever started that cancellation.
+cancellation is confirmed, whatever started that cancellation. A
+quiescent task with a pending cancellation waits for the confirmation
+before its run reports anything.
 
 **Finished sessions.** Every 10 minutes the connector deletes the coder
 sessions no run will send to again (`DeleteSession`, without force), at most

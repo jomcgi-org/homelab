@@ -61,6 +61,9 @@ type Intervals struct {
 	DispatchWindow  Duration `yaml:"dispatchWindow"`
 	AcquireRetry    Duration `yaml:"acquireRetry"`
 	ReviewPoll      Duration `yaml:"reviewPoll"`
+	// QuotaStall is how long a running turn may go without a task event
+	// while the broker reads the Codex quota exhausted.
+	QuotaStall Duration `yaml:"quotaStall"`
 }
 
 // MinDispatchWindow covers the 60 s A2A call timeout (kagent.DefaultTimeout),
@@ -219,6 +222,9 @@ func Parse(b []byte) (*File, error) {
 	}
 	if f.Intervals.ReviewPoll == 0 {
 		f.Intervals.ReviewPoll = Duration(60 * time.Second)
+	}
+	if f.Intervals.QuotaStall == 0 {
+		f.Intervals.QuotaStall = Duration(10 * time.Minute)
 	}
 	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {
 		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")
