@@ -1,6 +1,6 @@
 {
-  "head": "79e9082fe16cc4948fb9b0d373b496f358d5d9dc",
-  "baseline": "23d897e2c4e1725c5d1f78a4fc35881df60c3ac5",
+  "head": "3598d376f4c273bad6523bd7820926ac61f4e95e",
+  "baseline": "d295046f569223f9fb8b80cee0b81a3bea40077c",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -657,7 +657,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -999,7 +999,7 @@
       "after": "captures/review/after-gaps-audit-390-light.png",
       "before": "captures/review/before-gaps-audit-390-light.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1227,7 +1227,7 @@
       "after": "captures/review/after-notes-pending-390-light.png",
       "before": "captures/review/before-notes-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
