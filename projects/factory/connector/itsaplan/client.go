@@ -237,6 +237,7 @@ type Issue struct {
 	AssigneeUserID string            `json:"assigneeUserId"`
 	DelegateUserID *string           `json:"delegateUserId"`
 	CreatedAt      string            `json:"createdAt"`
+	ArchivedAt     *time.Time        `json:"archivedAt"`
 }
 
 // Checklist and its items arrive in display order from GET /issues/<id>.
