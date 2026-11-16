@@ -1,7 +1,8 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
 # Hand-maintained snapshot contract, fixtures and their conformance test.
 # gazelle:ignore
-load("//bazel/tools/pytest:defs.bzl", "py_test")
-load("@aspect_rules_js//js:defs.bzl", "js_test")
 
 filegroup(
     name = "schema",
@@ -32,4 +33,14 @@ js_test(
     name = "rehash_test",
     data = ["fixtures/rehash.mjs"],
     entry_point = "fixtures/rehash.test.mjs",
+)
+
+# Indexed through //:repo_docs so the factory does not modify the monolith.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        ["**/*.md"],
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//:__pkg__"],
 )
