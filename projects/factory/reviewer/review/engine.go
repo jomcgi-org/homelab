@@ -713,8 +713,9 @@ func (e *Engine) recoveryGate(b *Binding, pr github.PullRequest, gate *Gate) (*G
 type recentPRs struct {
 	open           []github.PullRequest
 	since, covered time.Time
-	// truncated marks covered as the oldest timestamp of a listing that hit
-	// its bound, so more PRs can share that timestamp unlisted.
+	// truncated marks a listing that hit its bound. It skipped the final
+	// reread of its first page, so a PR updated during the read can be
+	// missing anywhere, and unlisted PRs can share its oldest timestamp.
 	truncated bool
 	read      bool
 	prs       []github.UpdatedPullRequest
@@ -722,12 +723,9 @@ type recentPRs struct {
 }
 
 // covers reports whether the listing includes every PR updated at or after
-// t. A truncated listing's oldest timestamp is not a complete boundary.
+// t. A truncated listing covers nothing.
 func (s *recentPRs) covers(t time.Time) bool {
-	if s.truncated {
-		return t.After(s.covered)
-	}
-	return !t.Before(s.covered)
+	return !s.truncated && !t.Before(s.covered)
 }
 
 // recoveryScan bounds the poll's listing of recently updated PRs by the
@@ -768,8 +766,8 @@ func (e *Engine) recoverPR(ctx context.Context, b *Binding, pr github.PullReques
 // base and of every PR updated since the PR opened, in any state and into
 // any base; a PR that closed before this one opened never shared with it.
 // The open PRs GitHub associates with the current head, into any base,
-// show a duplicate that moved on from it or retargeted. A bounded or truncated read leaves the context
-// unknown.
+// show a duplicate that moved on from it or retargeted. A bounded or
+// truncated read leaves the context unknown.
 func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullRequest, scan *recentPRs) (recovery, error) {
 	l := e.prLog(b, pr)
 	if pr.CreatedAt.IsZero() {
