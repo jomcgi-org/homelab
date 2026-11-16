@@ -794,7 +794,7 @@ func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	text := last.msg.Parts[0].Text
 	for _, want := range []string{
 		"Handle the timeout.", "## Replacement session", old, "Issue 101 title", "Issue 101 description.",
-		"(description clipped at 8000 of 8022 bytes)",
+		"(description clipped at 8000 of 8023 bytes)",
 		"#1 https://github.com/example-org/homelab/pull/1", "is at sha-1", "Review thread (file path omitted)", "Timeout is ignored here.",
 	} {
 		if !strings.Contains(text, want) {

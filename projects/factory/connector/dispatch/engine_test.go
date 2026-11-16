@@ -2059,6 +2059,77 @@ func TestNewAdmissionDoesNotResumeStoppedBriefHold(t *testing.T) {
 	}
 }
 
+func TestReassignmentSupersedesBriefHeldRun(t *testing.T) {
+	for _, mode := range []string{"next tick", "restart", "redelivery", "returned owner", "new owner already running"} {
+		t.Run(mode, func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Old instructions.")
+			v.setIssueErr(itsaplan.ErrNotFound)
+			v.tick(v.e)
+			if v.run(1).State != store.RunClaimed {
+				t.Fatal("original run was not held for its brief")
+			}
+			epoch := v.work(101).Epoch
+			if mode == "new owner already running" {
+				v.setIssueErr(nil)
+			}
+			// Admit the new owner before the old run gets another step.
+			admit := func(id int64, agent string) {
+				t.Helper()
+				v.its.add(id, agent, 101, "HL-1", "New instructions.")
+				claim, err := v.its.Claim(v.ctx, agent)
+				v.requireReconciliationSetup(err)
+				if claim == nil || claim.ID != id {
+					t.Fatalf("claim = %+v, want run %d", claim, id)
+				}
+				err = v.e.HandleClaim(v.ctx, agent, claim)
+				if mode == "new owner already running" {
+					v.requireReconciliationSetup(err)
+				} else if !errors.Is(err, itsaplan.ErrNotFound) {
+					t.Fatalf("new admission = %v, want an unavailable brief", err)
+				}
+			}
+			admit(2, "coder-b")
+			if wi := v.work(101); wi.AgentKey != "coder-b" || wi.Epoch != epoch+1 {
+				t.Fatalf("work item was not reassigned: %+v", wi)
+			}
+			current := int64(2)
+			switch mode {
+			case "restart":
+				v.e.Release()
+				v.e = v.engine("connector-restarted")
+			case "redelivery":
+				v.its.reclaimElsewhere(1)
+				fr := v.its.Run(1)
+				claim := fr.run
+				claim.Attempts = fr.attempts
+				v.requireReconciliationSetup(v.e.HandleClaim(v.ctx, "coder", &claim))
+			case "returned owner":
+				admit(3, "coder")
+				current = 3
+			}
+			v.setIssueErr(nil)
+			v.tick(v.e)
+			sends := v.kg.Sends()
+			if len(sends) != 1 || sends[0].msg.MessageID != v.latest(current).MessageID {
+				t.Fatalf("sends = %+v, want only the current owner's run", sends)
+			}
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+			v.tickReconciliation(3, 5*time.Second)
+			if v.run(1).State != store.RunClosed || len(v.kg.Sends()) != 1 || v.work(101).EngineeringRetries != 0 {
+				t.Fatal("superseded run resumed after the new owner's turn finished")
+			}
+			if n, err := v.st.CountSends(v.ctx, 1); err != nil || n != 0 {
+				t.Fatalf("old run recorded %d attempts, %v; want none", n, err)
+			}
+			results := v.its.Run(1).results
+			if len(results) != 1 || results[0].Status != "failed" || !strings.Contains(results[0].Error, "superseded") {
+				t.Fatalf("old run results = %+v, want supersession reported", results)
+			}
+		})
+	}
+}
+
 func TestInitialIssueDescriptionClipping(t *testing.T) {
 	for _, tc := range []struct {
 		name, description, quoted string

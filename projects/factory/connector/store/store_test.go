@@ -72,18 +72,56 @@ func TestSingleWriterAndEpoch(t *testing.T) {
 }
 
 func TestRunStopMigrationPreservesExistingStops(t *testing.T) {
+	for _, tc := range []struct {
+		name, setup, reason string
+	}{
+		{"stopped", `UPDATE work_item SET state = 'stopped', stopped_reason = 'stopped before upgrade'`, "stopped before upgrade"},
+		{"reassigned", `DELETE FROM delivery_attempt; UPDATE work_item SET agent_key = 'coder-b', epoch = epoch + 1`, "superseded: the work item was reassigned to another agent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRecoveryFixture(t)
+			_, err := f.st.DB.Exec(tc.setup)
+			f.must(err)
+			_, err = f.st.DB.Exec(`
+				ALTER TABLE run DROP COLUMN stopped_reason;
+				DELETE FROM schema_migrations WHERE version = '20261116120000_run_stops'`)
+			f.must(err)
+			f.must(migrations.Apply(f.ctx, f.st.DB))
+			f.must(migrations.Apply(f.ctx, f.st.DB))
+			r, err := f.st.GetRun(f.ctx, 1)
+			f.must(err)
+			if !r.StopRequested || r.StoppedReason != tc.reason {
+				t.Fatalf("run lost its existing stop during upgrade: %+v", r)
+			}
+		})
+	}
+}
+
+func TestSupersededUnsentRunCannotBorrowCurrentEpoch(t *testing.T) {
 	f := newRecoveryFixture(t)
-	_, err := f.st.DB.Exec(`
-		UPDATE work_item SET state = 'stopped', stopped_reason = 'stopped before upgrade';
-		ALTER TABLE run DROP COLUMN stopped_reason;
-		DELETE FROM schema_migrations WHERE version = '20261115210000_run_stops'`)
+	// Start from an admitted run that has never recorded a delivery attempt.
+	_, err := f.st.DB.Exec(`DELETE FROM delivery_attempt`)
 	f.must(err)
-	f.must(migrations.Apply(f.ctx, f.st.DB))
-	f.must(migrations.Apply(f.ctx, f.st.DB))
-	r, err := f.st.GetRun(f.ctx, 1)
+	work := f.work
+	for i, agent := range []string{"coder-b", "coder"} {
+		id := int64(i + 2)
+		_, _, err := f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: id, AgentKey: agent, Attempt: 1})
+		f.must(err)
+		work, _, err = f.st.ResolveWorkItem(f.ctx, id, store.NewWorkItem{IssueID: 101, IssueKey: "HL-101", AgentKey: agent})
+		f.must(err)
+	}
+	// Simulate a dispatcher that already loaded the resumed work item. Its
+	// fresh epoch and matching agent key cannot restore the old admission.
+	a, err := f.st.RecordAttempt(f.ctx, f.st.DB, store.Attempt{
+		RunID: 1, RunAttempt: 1, WorkItemEpoch: work.Epoch, DecisionID: "initial", Kind: "initial",
+		MessageID: "late-initial", KagentNamespace: "ns", KagentAgent: "coder", WriterEpoch: f.w.Epoch,
+	})
 	f.must(err)
-	if !r.StopRequested || r.StoppedReason != "stopped before upgrade" {
-		t.Fatalf("run lost its existing stop during upgrade: %+v", r)
+	f.must(f.st.SetRunState(f.ctx, f.st.DB, 1, store.RunDispatched, ""))
+	_, _, err = f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: 1, AgentKey: "coder", Attempt: 2})
+	f.must(err)
+	if issued, err := f.st.MarkIssued(f.ctx, f.w, a, 2, f.now); err != nil || issued {
+		t.Fatalf("superseded run send admitted: %t, %v", issued, err)
 	}
 }
 
