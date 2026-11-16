@@ -88,10 +88,11 @@ Apply these tests in order and stop at the first that fits.
 1. **Would CI fail on it?** Report nothing.
 2. **Can you name the input or state, what fails, where, and what resolves
    it?** If any is missing, the finding is low.
-3. **Does the harm survive a revert, or does the change weaken a boundary or
-   a gate on a default path or for an outside attacker?** Critical. A race
-   that needs one user's own concurrent actions, or another unusual
-   interleaving, goes on to tests 4 and 5.
+3. **Does the harm survive a revert, or does the change weaken a gate (a
+   check, review or merge requirement) or a boundary?** Critical, however
+   unusual the interleaving. One exception: a boundary race that only one
+   user's own concurrent actions in their own client can trigger goes on to
+   tests 4 and 5.
 4. **After merge, does something a user or operator relies on fail on a
    default path?** High. A default path runs without unusual input or
    configuration: the rollout, a service's main requests, a scheduled job,
@@ -144,9 +145,10 @@ PR:
 - Review what changed since the last reviewed head and what that affects.
 - A new finding on code the earlier review covered and the new head left
   alone keeps its severity when it is critical, such as a route outside
-  sign-in the earlier review missed. Otherwise it is low with `defer`. The
-  reviewer marks such a finding `earlier`, and the service lowers a marked
-  high or medium finding on a file outside the changed files.
+  sign-in the earlier review missed, or when a scoped rule sets it.
+  Otherwise it is low with `defer`. The reviewer marks such a finding
+  `earlier`, and the service lowers a marked high or medium finding under a
+  root rule on a file outside the changed files.
 
 ## Joe decides
 

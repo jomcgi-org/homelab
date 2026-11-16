@@ -213,8 +213,8 @@ func Prompt(in PromptInput) string {
 		b.WriteString("\n")
 		if len(in.Cleared) > 0 {
 			if LaterScope(in.PreviousHead, in.Interdiff) != nil {
-				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. Raise one again only when a change since %s, "+
-					"in any file, affects it:\n\n", in.PreviousHead)
+				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. Raise one again when a change since %s, "+
+					"in any file, affects it, or when it is critical and present on this head:\n\n", in.PreviousHead)
 			} else {
 				b.WriteString("Reviews of earlier heads cleared these findings. The interdiff below cannot show that they stay " +
 					"cleared, so check each again as part of the full review:\n\n")
@@ -242,11 +242,12 @@ func Prompt(in PromptInput) string {
 					github.MaxCompareFiles, in.PreviousHead, in.SHA)
 			}
 			b.WriteString(" Block only on what changed since then and what that change affects: a new finding on code the earlier " +
-				"review covered and this head left alone stays critical when it is critical, and is low with defer otherwise.")
+				"review covered and this head left alone stays critical when it is critical, keeps the severity a scoped rule sets, " +
+				"and is low with defer otherwise.")
 			if LaterScope(in.PreviousHead, d) != nil {
 				b.WriteString(" Mark such a finding \"earlier\": true; the reviewer service lowers a marked high or medium finding " +
-					"outside the listed files to a deferred low one. Never mark a finding this head's changes cause or affect, " +
-					"such as a caller broken by a changed function: unmarked findings keep their severity.")
+					"under a root rule outside the listed files to a deferred low one. Never mark a finding this head's changes " +
+					"cause or affect, such as a caller broken by a changed function: unmarked findings keep their severity.")
 			}
 			b.WriteString("\n\n")
 		}

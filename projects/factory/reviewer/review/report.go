@@ -422,7 +422,7 @@ func (s *Scope) changed(p string) bool {
 // review covered and this head left alone) and its file is outside the files
 // changed since the previous head. Unmarked findings, critical findings,
 // human-gate findings, the previous round's IDs, findings with no path and
-// findings about the review itself (processRules) keep their severity, so an
+// findings under any rule but lowerableRules keep their severity, so an
 // omitted mark never lowers a regression. A nil Scope lowers nothing.
 func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	if s == nil {
@@ -437,7 +437,7 @@ func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	for i := range out.Findings {
 		f := &out.Findings[i]
 		if (f.Severity != SeverityHigh && f.Severity != SeverityMedium) || isGate(*f) || known[f.ID] ||
-			!f.Earlier || strings.TrimSpace(f.Path) == "" || isProcess(*f) || s.changed(f.Path) {
+			!f.Earlier || strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.changed(f.Path) {
 			continue
 		}
 		f.Lowered, f.Severity, f.Defer = f.Severity, SeverityLow, true
@@ -445,18 +445,17 @@ func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	return &out
 }
 
-// processRules name findings about the review itself, not about a place in
-// previously reviewed code: an unread or unverifiable change, injected
-// instructions, or a weakened gate. Lower never lowers them.
-var processRules = []string{"unreviewed", "unverified", "review-injection", "gate"}
+// lowerableRules are the root contract rules whose late findings Lower may
+// lower. Any other rule keeps its severity: a scoped rule sets its own, and
+// unverified, unreviewed, review-injection, gate and human-gate findings are
+// about the review or its gate, not a place in earlier-reviewed code.
+var lowerableRules = []string{"correctness", "security", "boundary", "reachability", "validation", "rollout", "goal"}
 
-func isProcess(f Finding) bool {
-	for _, s := range ruleSegments(f.ID) {
-		if slices.Contains(processRules, ruleName(s)) {
-			return true
-		}
-	}
-	return false
+// lowerable reports a finding whose rule, the first segment after its path,
+// is in lowerableRules.
+func lowerable(f Finding) bool {
+	segs := ruleSegments(f.ID)
+	return len(segs) > 0 && slices.Contains(lowerableRules, ruleName(segs[0]))
 }
 
 func sortBlocked(bs []Blocked) {
