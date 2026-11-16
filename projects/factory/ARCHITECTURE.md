@@ -1810,14 +1810,13 @@ previews).
   failed read marks that PR unread instead of holding the review.
 - **Issue evidence (HOME-58).** The service reads issue and decision
   evidence only for PRs by `jomcgi-factory[bot]` or a `humanApprovers`
-  login; any other PR gets none, and its description stands in. For the
+  login; any other PR gets none. For the
   factory App it resolves the connector's branch; PR text cannot override
   it. Other PRs use the first `Refs HOME-N` in the body, then commit
   messages in PR order, read once per head.
-  The service supplies title, description and workflow status and asks both
-  whether the change is safe and whether it meets the issue's goal and
-  criteria. Live acceptance remains with the delivery owner. No resolvable
-  issue leaves the PR description as the goal.
+  The code-review prompt gets no issue or decision text. It reviews the
+  diff, title and description as on a PR with no issue, and the
+  description stands in for the goal.
   v1.10.0 exposes creators through the creation activity's user ID, matched
   to the project's account metadata. Only member accounts in
   `trustedItsaplanAuthors` (default `joe`, `joesessions`) carry authority;
@@ -1827,11 +1826,11 @@ previews).
   both match their latest immutable text-change snapshots, also written by
   trusted members. History reads stop at ten pages; absent or mismatched
   snapshots leave the text untrusted. This includes newly created issues
-  with no text-change snapshots: their goals still guide the review, but
-  authority requires verified text or an unedited trusted decision comment.
+  with no text-change snapshots: authority then requires an unedited
+  trusted decision comment.
   Comments must have an explicit null `editedAt`: edits retain the original
   author and do not identify the editor. Workflow status remains untrusted
-  metadata. Untrusted text is quoted in the same delimited blocks as PR data.
+  metadata.
   These defaults implement
   [HOME-58](https://factory-plan.jomcgi.dev/factory/issue/HOME-58); Joe's
   sessions account is provisioned by HOME-59 as `joesessions` (itsaplan's
@@ -1842,13 +1841,11 @@ previews).
   metadata without importing another description. Bare issue authorship
   never proves an unseen decision. Comment reads search at most
   ten feed pages because upstream has no individual comment GET. The whole
-  evidence read has a 30-second deadline. Reference checks supply existence
-  and provenance, not automatic findings: the agent distinguishes decision
-  claims from ordinary tracking, follow-up and contextual links. A decision
-  claim needs verified quoted evidence or an `unverified` finding. A
+  evidence read has a 30-second deadline. A
   failure that no read can fix (an issue over its text bound, a reference
   to no issue, a diff past the link or patch bound) is a medium `unverified`
-  finding in the completed review, which the author or Joe resolves. A read
+  finding in the completed review, which the author or Joe resolves. Its
+  text is the service's own, with the issue key at most. A read
   error holds the check with the failed reads named and the gate-only
   marker, so the connector starts no revision round for it. No failed read
   supplies a pass. The agent receives no itsaplan key.
@@ -1864,13 +1861,16 @@ previews).
   (30 seconds by default). GitHub can merge the group in that gap, as it
   can after a hold label lands on the PR. Joe accepted this window.
   **Why.** The `factory review` check is public and itsaplan is private.
-  Joe chose trusted authors and no quotes on 2026-11-16
+  Joe chose trusted authors on 2026-11-16
   ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469),
   [record](https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1047)).
-  The report names only the issue key and criterion number. Before it
-  posts the report, the service removes each run of eight or more words
-  that also occurs in the issue or decision text, so the prompt is not the
-  only barrier.
+  He then chose that no model output that has seen private issue text may
+  reach public output
+  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)):
+  the code review sees none, and a separate goal check that returns only
+  fixed values, in the PR that follows this one, is the evidence's one
+  consumer.
+
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
   and narrowed it the same day to what could weaken the gate itself

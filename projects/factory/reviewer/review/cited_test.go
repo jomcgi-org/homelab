@@ -24,9 +24,10 @@ func TestCitedPullRequestsReachThePromptAsFixedClassEvidence(t *testing.T) {
 		shaC = "cccccccccccccccccccccccccccccccccccccccc"
 		shaM = "dddddddddddddddddddddddddddddddddddddddd"
 	)
-	h, _ := issueHarness(t)
+	h := newHarness(t)
+	addPR7(h)
 	h.gh.withLock(func() {
-		h.gh.prs[7].Body = "Refs HOME-58\nEvidence: #75 merged; tracking issue #76; unreadable #77."
+		h.gh.prs[7].Body = "Evidence: #75 merged; tracking issue #76; unreadable #77."
 		h.gh.cited[75] = map[string]any{
 			"number": 75, "state": "MERGED", "merged": true,
 			"mergedAt": "2026-11-15T15:35:36Z", "baseRefName": "main", "headRefOid": shaC,
@@ -55,9 +56,6 @@ func TestCitedPullRequestsReachThePromptAsFixedClassEvidence(t *testing.T) {
 	runReview(t, h, e, ctx, 7, shaA)
 
 	prompt := h.k.sent()[0].Parts[0].Text
-	if !strings.Contains(prompt, "Report unmet criteria") || !strings.Contains(prompt, "It is the accepted issue") {
-		t.Fatal("cited PR evidence displaced the HOME issue")
-	}
 	if !strings.Contains(prompt, "## Pull requests the description cites") || !strings.Contains(prompt, "`git -C main fetch origin main`") {
 		t.Errorf("prompt lacks the cited section:\n%s", prompt)
 	}

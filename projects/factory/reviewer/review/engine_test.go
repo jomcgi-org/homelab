@@ -455,7 +455,7 @@ func TestBlockingFindingsFailWithAnnotationsAndNoEnqueue(t *testing.T) {
 func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 	for name, tc := range map[string]struct{ state, reply, why string }{
 		"no report":     {kagent.StateCompleted, "LGTM, ship it.", "no fenced JSON block"},
-		"unknown level": {kagent.StateCompleted, "```json\n{\"summary\":\"s\",\"findings\":[{\"severity\":\"nit\",\"title\":\"x\"}]}\n```", `severity "nit"`},
+		"unknown level": {kagent.StateCompleted, "```json\n{\"summary\":\"s\",\"findings\":[{\"severity\":\"nit\",\"title\":\"x\"}]}\n```", "finding 1 has a severity that is not one of"},
 		"task failed":   {kagent.StateFailed, "execution failed for account 1234", "ended failed without a report"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -472,8 +472,8 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 				!strings.Contains(c.Summary, "Attempt 3 of 3") {
 				t.Fatalf("check = %+v", c)
 			}
-			if strings.Contains(c.Summary, "account 1234") {
-				t.Fatal("provider status text reached the public check")
+			if strings.Contains(c.Summary, "account 1234") || strings.Contains(c.Summary, `"nit"`) {
+				t.Fatal("provider status or reply text reached the public check")
 			}
 			if _, ok := LoadState(c.Text); ok {
 				t.Fatal("a review without a report stored findings")

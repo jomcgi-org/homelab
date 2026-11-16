@@ -54,11 +54,20 @@ func TestParseReportRejectsAnythingElse(t *testing.T) {
 	}
 	// Each fixture fails for its own reason, not an earlier one.
 	for reply, want := range map[string]string{
-		"```json\n{\"summary\": \"s\", \"findings\": [{\"severity\": \"nit\", \"title\": \"x\"}]}\n```": `severity "nit"`,
+		"```json\n{\"summary\": \"s\", \"findings\": [{\"severity\": \"nit\", \"title\": \"x\"}]}\n```": "finding 1 has a severity that is not one of",
 		"```json\n{\"summary\": \"s\", \"findings\": [{\"severity\": \"low\"}]}\n```":                   "no title or detail",
 	} {
 		if _, err := ParseReport(reply); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("ParseReport(%q) = %v, want %q", reply, err, want)
+		}
+	}
+	// The check publishes the error, so it names no value from the reply.
+	for _, reply := range []string{
+		"```PRIVATE\n{}\n```", "```json\n{\"summary\": PRIVATE}\n```",
+		"```json\n{\"summary\": \"s\", \"findings\": [{\"severity\": \"PRIVATE\", \"title\": \"x\"}]}\n```",
+	} {
+		if _, err := ParseReport(reply); err == nil || strings.Contains(err.Error(), "PRIVATE") {
+			t.Errorf("ParseReport(%q) = %v, want a fixed-class error", reply, err)
 		}
 	}
 }

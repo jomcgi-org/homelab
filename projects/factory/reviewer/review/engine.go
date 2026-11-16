@@ -1268,9 +1268,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			return // Release the slot; every poll retries without another push.
 		}
 		if rec.ID != "" && b.ItsaplanProject != "" && rec.Issues != issueDigest(in.issues) {
-			// An old task may predate issue-aware review, or its issue may
-			// have changed while the service was down. It cannot certify
-			// evidence that was never in its prompt.
+			// The task was sent for other evidence: it predates issue reads,
+			// or the issue changed while the service was down. Its check
+			// binds to the evidence the task was sent with, so start again.
 			_, _ = e.tasks.CancelTask(ctx, b.Agent, rec.ID)
 			if next("the recorded task did not review the current issue evidence.") {
 				return
@@ -1622,7 +1622,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
-		CheckName: e.cfg.CheckName, Issues: in.issues,
+		CheckName: e.cfg.CheckName,
 	})
 	id, contextID := AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt), ""
 	if plan.resume != nil {
@@ -1722,7 +1722,6 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		redactIssueText(r, in.issues)
 		prior := in.prior.Previous()
 		since, err := e.interdiff(ctx, b, pr, in, l)
 		if err != nil {
