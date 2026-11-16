@@ -1,7 +1,8 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+
 # gazelle:ignore
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
-load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 
 # rules_js copies sources in their owning package; consumers use JsInfo deps.
 js_library(
@@ -13,8 +14,8 @@ js_library(
 
 js_test(
     name = "server_test",
-    entry_point = "server.test.mjs",
     data = [":server"],
+    entry_point = "server.test.mjs",
 )
 
 exec_filegroup(

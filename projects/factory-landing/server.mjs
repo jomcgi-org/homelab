@@ -64,15 +64,19 @@ export function createLandingServer({
           }
           const body = Buffer.concat(chunks).toString("utf8");
           JSON.parse(body);
-          response.writeHead(200, {
-            ...headers,
-            "Content-Type": "application/json; charset=utf-8",
-          }).end(body);
+          response
+            .writeHead(200, {
+              ...headers,
+              "Content-Type": "application/json; charset=utf-8",
+            })
+            .end(body);
         } catch {
-          response.writeHead(503, {
-            ...headers,
-            "Content-Type": "application/json; charset=utf-8",
-          }).end(JSON.stringify({ error: "Status unavailable" }));
+          response
+            .writeHead(503, {
+              ...headers,
+              "Content-Type": "application/json; charset=utf-8",
+            })
+            .end(JSON.stringify({ error: "Status unavailable" }));
         }
         return;
       }

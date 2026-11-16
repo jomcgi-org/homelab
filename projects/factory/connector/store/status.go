@@ -2,11 +2,25 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/lib/pq"
 )
+
+// RecordStatusRead checks the epoch and commits the attempt on the writer's
+// advisory-lock connection. A retry updates one identity instead of creating
+// another operation. Read results are never deduplicated or stored here.
+func (w *Writer) RecordStatusRead(ctx context.Context, messageID string) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO status_read (message_id, writer_epoch) VALUES ($1, $2)
+			ON CONFLICT (message_id) DO UPDATE SET attempts = status_read.attempts + 1,
+				writer_epoch = EXCLUDED.writer_epoch, attempted_at = now()`, messageID, w.Epoch)
+		return err
+	})
+}
 
 // StatusItem is the store's body-free projection for the landing page.
 type StatusItem struct {
