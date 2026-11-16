@@ -982,7 +982,8 @@ stopped or replaced (HOME-136). A stopped work item keeps its session for an
 hour, so a run started again soon after a stop keeps the agent's context.
 A later run opens a new session with the issue brief, the work branch and the
 PR. Joe chose an hour over a day on 2026-11-16
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-136#comment-1045)): a suspended
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-136#comment-1045),
+[on #8117](https://github.com/jomcgi-org/homelab/pull/8117#issuecomment-6930761660)): a suspended
 session holds no worker or Codex slot, only disk, and the old context is
 rarely worth a day of it.
 
