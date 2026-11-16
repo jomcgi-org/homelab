@@ -713,9 +713,21 @@ func (e *Engine) recoveryGate(b *Binding, pr github.PullRequest, gate *Gate) (*G
 type recentPRs struct {
 	open           []github.PullRequest
 	since, covered time.Time
-	read           bool
-	prs            []github.UpdatedPullRequest
-	err            error
+	// truncated marks covered as the oldest timestamp of a listing that hit
+	// its bound, so more PRs can share that timestamp unlisted.
+	truncated bool
+	read      bool
+	prs       []github.UpdatedPullRequest
+	err       error
+}
+
+// covers reports whether the listing includes every PR updated at or after
+// t. A truncated listing's oldest timestamp is not a complete boundary.
+func (s *recentPRs) covers(t time.Time) bool {
+	if s.truncated {
+		return t.After(s.covered)
+	}
+	return !t.Before(s.covered)
 }
 
 // recoveryScan bounds the poll's listing of recently updated PRs by the
@@ -755,8 +767,8 @@ func (e *Engine) recoverPR(ctx context.Context, b *Binding, pr github.PullReques
 // PR's timeline lists is matched against the heads of the open PRs into the
 // base and of every PR updated since the PR opened, in any state and into
 // any base; a PR that closed before this one opened never shared with it.
-// The open PRs GitHub associates with the current head show a duplicate
-// that moved on from it. A bounded or truncated read leaves the context
+// The open PRs GitHub associates with the current head, into any base,
+// show a duplicate that moved on from it or retargeted. A bounded or truncated read leaves the context
 // unknown.
 func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullRequest, scan *recentPRs) (recovery, error) {
 	l := e.prLog(b, pr)
@@ -786,15 +798,15 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 		case complete:
 			scan.covered = scan.since
 		case n > 0:
-			scan.covered = scan.prs[n-1].UpdatedAt
+			scan.covered, scan.truncated = scan.prs[n-1].UpdatedAt, true
 		default:
-			scan.covered = time.Unix(1<<40, 0) // Nothing is covered.
+			scan.covered, scan.truncated = time.Unix(1<<40, 0), true // Nothing is covered.
 		}
 	}
 	if scan.err != nil {
 		return recoveryPending, scan.err
 	}
-	if pr.CreatedAt.Before(scan.covered) {
+	if !scan.covers(pr.CreatedAt) {
 		return recoveryUnknown, nil
 	}
 	heads := map[string]bool{pr.HeadSHA: true}
@@ -819,8 +831,10 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 	if !complete {
 		return recoveryUnknown, nil
 	}
+	// Any other open PR containing the head may have shared it, whatever its
+	// base or current head: a duplicate can add commits and retarget.
 	for _, q := range assoc {
-		if q.Number != pr.Number && (q.HeadSHA == pr.HeadSHA || q.BaseRef == b.BaseBranch) {
+		if q.Number != pr.Number {
 			return recoveryShared, nil
 		}
 	}
