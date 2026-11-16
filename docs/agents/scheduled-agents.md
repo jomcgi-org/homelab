@@ -83,8 +83,9 @@ Every model job uses a separate `homelab-planner` identity and fresh,
 repository-bound session. It gets read-only repository access, no push, no
 coding-agent key, no itsaplan tools and no column moves. It returns only
 `{title, body, evidence links, fingerprint, priority}` proposals. The
-connector validates and creates them in Backlog, never delegated
-([#7935](https://github.com/jomcgi-org/homelab/issues/7935)). Identity and
+connector validates each one and files it at or below its schedule's
+ceiling: delegated fix, Joe task or Backlog
+([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789)). Identity and
 credential scope are enforced outside prompts, as required by
 [#7817](https://github.com/jomcgi-org/homelab/issues/7817).
 
@@ -133,11 +134,10 @@ allowlist or promote retrieved prose into instructions. Keep private traces,
 tokens, campaign contents and secret values out of proposals. Secret findings
 carry a redacted location and restricted evidence reference.
 
-This needs an explicit planner input path: the current
-[factory review rule](../../projects/factory/REVIEW.md) reserves arbitrary-author
-PR text for the reviewer. Do not widen the coder's input path by accident.
-The scoped planner exception and any change to the review contract go through
-normal review and the human gate. The memory proposal on
+The [factory review rule](../../projects/factory/REVIEW.md) "Planner
+exception" sets the planner's input path. Do not widen the coder's input
+path by accident. A change to that rule goes through the human gate. The
+memory proposal on
 [#7817](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878121766)
 preserves source links, repository separation and correction history; it
 does not make recalled material authoritative.

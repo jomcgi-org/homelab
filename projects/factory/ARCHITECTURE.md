@@ -385,6 +385,26 @@ the monolith's, embedded in the binary and applied at startup under an
 advisory lock. Database tests start PostgreSQL 16 from `@postgres_test`, as
 the monolith's pytest plugin does.
 
+**Planner proposals.** The planner (HOME-40) reads untrusted text, so its
+output never becomes instructions:
+
+```mermaid
+flowchart LR
+  U["CI logs, PRs, issues (untrusted)"] --> P["homelab-planner (read-only)"]
+  P -- "proposal: title, body, links" --> C[connector]
+  T["schedule template on main"] -- "title, instructions, scope" --> C
+  C -- "template text + quoted evidence" --> I[itsaplan issue]
+  I --> K[coder]
+  C -- "titles, links, fixed fields" --> N["notify sink (HOME-51)"]
+```
+
+**Why.** Joe chose delegated fixes for the three pilots
+([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789),
+HOME-45). A planner can copy an instruction from a CI log or a PR into its
+proposal. The template on `main` supplies every instruction, so copied text
+stays quoted evidence. The rule is `REVIEW.md` "Planner exception". It lands
+before HOME-40, because the reviewer loads its rules from `main`.
+
 **Run transcripts.** Native Codex text arrives in task artifacts, which can
 grow without an assistant history message. The connector journals events
 and per-artifact byte cursors in `task_transcript` before posting to itsaplan.
@@ -1343,8 +1363,9 @@ previews).
   factory App and whose head branch is the bound repository's
   `<branchPrefix><issue key>`; a fork or other author is refused and
   reported. Today adoption matches the bound repository's own head
-  (`<owner>:<branch>`), which excludes forks; the author check is #7920. Only `trustedReviewers` and the reviewer App reach an agent's
-  prompt.
+  (`<owner>:<branch>`), which excludes forks; the author check is #7920.
+  Review feedback reaches a coder's prompt only from `trustedReviewers` or
+  the reviewer App. The reviewer and planner exceptions are in `REVIEW.md`.
 - **No third-party writers in the trust path.** No other App holds
   `administration` (it can edit the ruleset) or bypass, and the required
   checks come from identities the factory runs. Build and artifact
