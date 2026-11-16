@@ -190,10 +190,14 @@ stopped), and GitHub shows the PR closed or merged
 poll and can be stale. When the query shows no PR, look on GitHub for one
 from the issue's branch, which the connector may have opened after its last
 write: `gh pr list --head factory/HOME-N --state all`. Close any open one.
-These checks do not prove that a PR creation already sent to GitHub has
-finished: one can still open a PR later, until HOME-138 fences creation
-against the stop. Say so in the new HOME issue below. Its owner closes any
-PR that later appears from `factory/HOME-N`. If
+A PR sync that began before the stop can still create a PR, even after the
+connector timed out. The sync checks the stop only at its start, then makes
+up to three GitHub calls, each with a 30-second client timeout
+(`projects/factory/connector/github/client.go`). GitHub ends any request it
+has not finished within 10 seconds
+([Timeouts](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#timeouts)).
+So wait five minutes after the stop settles, run the search again and close
+any open PR it finds. Only then is the handoff settled. If
 `factory-db-1` is not the primary, take the name from
 `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get cluster
 factory-db`.
