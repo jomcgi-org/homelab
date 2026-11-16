@@ -4,6 +4,7 @@ go_library(
     name = "store",
     srcs = [
         "delivery.go",
+        "human_gate.go",
         "notify.go",
         "recovery.go",
         "sessions.go",

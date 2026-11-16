@@ -224,16 +224,19 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
-	ID          int64             `json:"id"`
-	Identifier  string            `json:"identifier"`
-	Title       string            `json:"title"`
-	Description string            `json:"description"`
-	ColumnID    int64             `json:"columnId"`
-	Checklists  []Checklist       `json:"checklists"`
-	Subtasks    []IssueRef        `json:"subtasks"`
-	Parent      *IssueRef         `json:"parent"`
-	Links       []IssueLink       `json:"links"`
-	Development []DevelopmentLink `json:"development"`
+	ID             int64             `json:"id"`
+	Identifier     string            `json:"identifier"`
+	Title          string            `json:"title"`
+	Description    string            `json:"description"`
+	ColumnID       int64             `json:"columnId"`
+	Checklists     []Checklist       `json:"checklists"`
+	Subtasks       []IssueRef        `json:"subtasks"`
+	Parent         *IssueRef         `json:"parent"`
+	Links          []IssueLink       `json:"links"`
+	Development    []DevelopmentLink `json:"development"`
+	AssigneeUserID string            `json:"assigneeUserId"`
+	DelegateUserID *string           `json:"delegateUserId"`
+	CreatedAt      string            `json:"createdAt"`
 }
 
 // Checklist and its items arrive in display order from GET /issues/<id>.

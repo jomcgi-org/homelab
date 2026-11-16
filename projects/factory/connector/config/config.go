@@ -104,6 +104,10 @@ type Binding struct {
 	MaxRebaseRounds  *int     `yaml:"maxRebaseRounds"`
 	MaxSplitRounds   *int     `yaml:"maxSplitRounds"`
 	DoneColumn       string   `yaml:"doneColumn"`
+
+	// HOME routes human-gate issues to joe by default. Other projects opt in;
+	// an explicit empty string disables the integration for a binding.
+	HumanGateAssignee *string `yaml:"humanGateAssignee"`
 }
 
 // Check is a trusted check: a check run from the GitHub App appId, or a
@@ -282,6 +286,13 @@ func Parse(b []byte) (*File, error) {
 		}
 		if *b.MaxSplitRounds < 0 {
 			return nil, fmt.Errorf("config: binding %s: maxSplitRounds must be non-negative", b.Name)
+		}
+		if b.HumanGateAssignee == nil {
+			assignee := ""
+			if b.ItsaplanProject == "HOME" && b.Owner == "jomcgi-org" && b.Repo == "homelab" {
+				assignee = "joe"
+			}
+			b.HumanGateAssignee = &assignee
 		}
 		checks := append([]Check(nil), b.RequiredChecks...)
 		if b.ReviewerCheck != nil {

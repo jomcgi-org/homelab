@@ -66,8 +66,8 @@ type PullRequest struct {
 	HeadRepo string
 	BaseRef  string
 	Title    string
-	// Body, Author, CreatedAt and UpdatedAt come from REST reads only; Labels
-	// from REST reads and PullRequestDetail.
+	// Body, CreatedAt and UpdatedAt come from REST reads only; Author and
+	// Labels from REST reads and PullRequestDetail.
 	Body      string
 	Author    string
 	Labels    []string
@@ -473,6 +473,7 @@ const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) 
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName mergeable
+      author { login }
       mergeCommit { oid }
       mergeQueueEntry { state headCommit { oid } }
       labels(first: 100) { nodes { name } }
@@ -516,6 +517,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 				HeadRefName     string     `json:"headRefName"`
 				BaseRefName     string     `json:"baseRefName"`
 				Mergeable       string     `json:"mergeable"`
+				Author          *login     `json:"author"`
 				MergeCommit     *oid       `json:"mergeCommit"`
 				MergeQueueEntry *struct {
 					State      string `json:"state"`
@@ -569,6 +571,9 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 		Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName,
 	}}
 	d.Mergeable = p.Mergeable
+	if p.Author != nil {
+		d.Author = p.Author.Login // an App's login has no [bot] suffix here
+	}
 	if d.State == "merged" {
 		d.State, d.Merged = "closed", true
 	}
