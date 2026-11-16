@@ -191,10 +191,18 @@ func TestCredentialAdmission(t *testing.T) {
 		BinaryAssetsDirectory:    assets,
 		CRDDirectoryPaths:        []string{crdDir},
 		CRDInstallOptions:        envtest.CRDInstallOptions{MaxTime: time.Minute},
-		ErrorIfCRDPathMissing:     true,
+		ErrorIfCRDPathMissing:    true,
 		ControlPlaneStartTimeout: time.Minute,
 		ControlPlaneStopTimeout:  30 * time.Second,
 	}
+	// Bazel runs this test without network access, so the sandbox has only
+	// loopback and no default route. Without an explicit advertise address,
+	// kube-apiserver derives one from the default route and exits at startup.
+	// A loopback address is valid only with no endpoint reconciler. The test
+	// calls the API server directly and never uses the kubernetes Service.
+	environment.ControlPlane.GetAPIServer().Configure().
+		Set("advertise-address", "127.0.0.1").
+		Set("endpoint-reconciler-type", "none")
 	t.Cleanup(func() {
 		if err := environment.Stop(); err != nil {
 			t.Errorf("stop private API server: %v", err)
