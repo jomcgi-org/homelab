@@ -336,7 +336,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The check token reads comments but cannot write them; the comment
 	// token reaches comments and verifies the PR exists before creating one.
 	comments := strings.HasPrefix(path, "/issues/") && strings.Contains(path, "comments")
-	_, pullNumberErr := strconv.Atoi(strings.TrimPrefix(path, "/pulls/"))
+	pullNumber, pullNumberErr := strconv.Atoi(strings.TrimPrefix(path, "/pulls/"))
 	switch auth := r.Header.Get("Authorization"); {
 	case auth == "Bearer ghs_comment" && (comments || (r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && pullNumberErr == nil)):
 	case auth == "Bearer ghs_reviewer" && comments && r.Method != http.MethodGet:
@@ -355,6 +355,12 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 		f.graphql(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && pullNumberErr == nil:
+		if pr := f.prs[pullNumber]; pr != nil {
+			f.get(w, r, f.pullJSON(pr))
+			return
+		}
+		http.NotFound(w, r)
 	case r.Method == http.MethodGet && path == "/activity":
 		for _, pr := range f.prs {
 			if "refs/heads/"+pr.HeadRef == q.Get("ref") {
