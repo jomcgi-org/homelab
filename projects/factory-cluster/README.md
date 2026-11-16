@@ -93,6 +93,20 @@ Cilium, Connect and ArgoCD installs.
 To upgrade k3s or gVisor, change the pins in `nodes/install-node.sh` and rerun
 step 2. It restarts one node at a time.
 
+To turn off zram swap and pod swap, remove them from `nodes/` first. Then, on
+each node, delete the files that `install-node.sh` installed, because a rerun
+does not remove them, and release the device:
+
+```bash
+ssh node-2 'sudo rm -f /etc/systemd/zram-generator.conf \
+  /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-swap.conf \
+  /etc/systemd/system/k3s.service.d/10-gogc.conf &&
+  sudo systemctl daemon-reload && sudo swapoff /dev/zram0'
+```
+
+Rerun step 2 to restart k3s without them. Without the generator configuration,
+no zram swap starts at the next boot.
+
 A lost cluster is rebuilt with steps 2 to 4. That recreates everything in
 Git and new Substrate keys, but not Substrate's state: its PostgreSQL (actors,
 templates, atespaces) and its actor snapshots have no backup yet, so they are
