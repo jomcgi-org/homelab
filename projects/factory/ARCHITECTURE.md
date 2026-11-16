@@ -1869,9 +1869,40 @@ previews).
   He then chose that no model output that has seen private issue text may
   reach public output
   ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)):
-  the code review sees none, and a separate goal check that returns only
-  fixed values, in the PR that follows this one, is the evidence's one
-  consumer.
+  the code review sees none, and the goal check below is the evidence's
+  one consumer.
+- **Goal check (HOME-58).** A second model call checks the PR against its
+  issue, apart from the code review. It runs after the code review gives a
+  usable report, and only when a trusted author's PR names an issue that
+  resolves with its full text. Its task opens a fresh session of the
+  review agent with message ID `<check external ID>/goal/<prompt digest>`,
+  so a restart finds the same task. No review resumes that session, so the
+  service deletes it once it reads the answer. The prompt holds the issue
+  and its status, the linked decisions with their provenance, and the PR's
+  title, description, file list and patches (at most 60,000 bytes).
+  Trusted text is quoted; other text sits in delimited untrusted blocks.
+  The answer is one JSON block: per acceptance criterion, its number (1 to
+  50) and a verdict `met`, `not_met` or `unclear`, and an optional overall
+  verdict. Any other field or value, a repeated or out-of-range number, or
+  a second value voids the answer. The service reads no other text of the
+  reply, and posts only its own:
+
+  | Answer                    | Finding ID                | Title                                | Severity |
+  | ------------------------- | ------------------------- | ------------------------------------ | -------- |
+  | overall `not_met`         | `HOME-N:goal`             | HOME-N: stated problem not addressed | high     |
+  | criterion K `not_met`     | `HOME-N:goal:criterion-K` | HOME-N criterion K: not met          | medium   |
+  | criterion K `unclear`     | `HOME-N:goal:criterion-K` | HOME-N criterion K: unclear          | low      |
+  | void, failed or timed out | `HOME-N:goal:unavailable` | HOME-N: goal check unavailable       | medium   |
+
+  The goal check owns these IDs. The service drops the code review's
+  findings and accounts under them, and marks fixed an earlier goal
+  finding that the check no longer reports as blocking. The check's State
+  keeps the answer for its head and evidence digest, so a fresh review of
+  the same evidence makes no second call; an unavailable answer is not
+  kept. **Why.** Joe chose structured verdicts on 2026-11-16
+  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)): fixed wording from enum values cannot carry
+  issue text, whatever the model writes, and the call costs Codex quota
+  only once per head and evidence.
 
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))

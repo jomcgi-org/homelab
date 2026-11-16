@@ -948,6 +948,9 @@ type fakeKagent struct {
 	revisions map[string]string
 	// listErr fails ListTasks.
 	listErr error
+	// goal is the reply a goal check's task finishes with as it opens;
+	// empty leaves it working.
+	goal string
 }
 
 type fakeTask struct {
@@ -960,8 +963,12 @@ func newFakeKagent() *fakeKagent {
 	return &fakeKagent{
 		tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}, gone: map[string]bool{},
 		revision: "rev-1", revisions: map[string]string{},
+		goal: goalReply(`{"criteria": [], "overall": "met"}`),
 	}
 }
+
+// goalReply is a goal check's reply ending in a fenced answer.
+func goalReply(answer string) string { return "I read the issue.\n\n```json\n" + answer + "\n```\n" }
 
 // session reports the agent whose task opened a context, and whether one did.
 func (k *fakeKagent) session(contextID string) (kagent.AgentRef, bool) {
@@ -1023,6 +1030,11 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	}}
 	k.initial[msg.MessageID] = id
 	k.executions++
+	if k.goal != "" && strings.Contains(msg.MessageID, "/goal/") {
+		t := &k.tasks[id].task
+		reply := &kagent.Message{MessageID: id + "-reply", TaskID: id, Role: "ROLE_AGENT", Parts: []kagent.Part{{Text: k.goal}}}
+		t.History, t.Status = append(t.History, reply), kagent.TaskStatus{State: kagent.StateCompleted, Message: reply}
+	}
 	if k.loseResponse {
 		k.loseResponse = false
 		return nil, fmt.Errorf("%w: response lost", kagent.ErrAmbiguous)

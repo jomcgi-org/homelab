@@ -429,7 +429,10 @@ func TestMarkersCannotFormFromWhitespaceOrPaths(t *testing.T) {
 
 func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	huge := strings.Repeat("<\"\x01é", 20000)
-	st := State{IssueDigest: strings.Repeat("a", 64), IssuesPending: true}
+	st := State{IssueDigest: strings.Repeat("a", 64), IssuesPending: true, Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("a", 64)}}
+	for n := range maxCriteria {
+		st.Goal.Criteria = append(st.Goal.Criteria, GoalVerdict{n + 1, goalNotMet})
+	}
 	for i := range maxStored {
 		st.Blocking = append(st.Blocking, storable(Finding{
 			ID: fmt.Sprintf("%d:%s", i, huge), Severity: SeverityHigh, Path: huge, Line: 3, Title: huge, Detail: huge,
@@ -453,8 +456,8 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	if !ok || len(got.Blocking) != maxStored || len(got.Gate.Findings) != maxGatePaths || len(got.Gate.Paths) != maxGatePaths {
 		t.Fatalf("state lost findings: %v, %d blocking", ok, len(got.Blocking))
 	}
-	if got.IssueDigest != st.IssueDigest || !got.IssuesPending {
-		t.Fatal("state trimming lost the evidence binding or pending hold")
+	if got.IssueDigest != st.IssueDigest || !got.IssuesPending || got.Goal == nil || len(got.Goal.Criteria) != maxCriteria {
+		t.Fatal("state trimming lost the evidence binding, pending hold or goal check")
 	}
 	storedGate, expectedGate := *got.Gate, *g
 	storedGate.Paths, storedGate.Findings = nil, nil
