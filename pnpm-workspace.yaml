@@ -28,11 +28,7 @@ packages:
 # lockfile install skips resolution, so it does not re-evaluate the age, trust
 # metadata, or source type of packages already recorded in pnpm-lock.yaml.
 minimumReleaseAge: 4320
-minimumReleaseAgeExclude:
-  [
-    # Renovate security update: @sveltejs/adapter-node@5.5.8
-    "@sveltejs/adapter-node@5.5.8"
-  ]
+minimumReleaseAgeExclude: []
 trustPolicy: no-downgrade
 trustPolicyExclude:
   - semver@6.3.1
