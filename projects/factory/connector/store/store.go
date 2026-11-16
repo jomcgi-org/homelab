@@ -773,7 +773,9 @@ func (s *Store) SupersededGrantFailure(ctx context.Context, tx *sql.Tx, r *Run, 
 // a separate check would let a stop, redelivery or newer turn race the writes.
 // The attempt's WriterEpoch is its original sender, not the executing writer;
 // a successor must be able to finish an inherited task.
-// A waiting grant failure may retry past another run's failed, unattached send.
+// A waiting grant failure may retry past another run's failed or canceled,
+// unattached send. Cancellation reaches that state only after non-acceptance
+// or operator-attested fencing; an uncertain cancellation keeps its send open.
 // Accepted tasks and open sends (including ambiguous ones) still fence it.
 func (s *Store) AttemptTx(ctx context.Context, writer *Writer, r *Run, wi *WorkItem, a *Attempt, fn func(*sql.Tx) error) error {
 	return writer.Tx(ctx, func(tx *sql.Tx) error {
@@ -798,7 +800,7 @@ func (s *Store) AttemptTx(ctx context.Context, writer *Writer, r *Run, wi *WorkI
 					WHERE other_run.work_item_id = w.id AND other.id > a.id
 						AND NOT (r.state = 'waiting' AND a.state = 'failed'
 							AND coalesce(a.error_class, '') IN ('credential', 'quota')
-							AND other.run_id <> a.run_id AND other.state = 'failed'
+							AND other.run_id <> a.run_id AND other.state IN ('failed', 'canceled')
 							AND coalesce(other.task_id, '') = ''))
 				AND NOT EXISTS (SELECT 1 FROM cancellation c JOIN run cr ON cr.id = c.run_id
 					WHERE cr.work_item_id = w.id AND c.state = 'pending'))`,

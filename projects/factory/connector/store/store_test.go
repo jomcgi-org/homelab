@@ -224,6 +224,12 @@ func TestTaskOutcomeRejectsChangedGenerations(t *testing.T) {
 				decision_id, kind, message_id, kagent_namespace, kagent_agent, state, writer_epoch)
 			SELECT 2, 1, 1, work_item_epoch, 'initial', kind, 'rejected-message',
 				kagent_namespace, kagent_agent, 'failed', writer_epoch FROM delivery_attempt`,
+		"newer canceled run": `INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+			SELECT 2, agent_key, work_item_id, trigger, prompt, system_prompt, 1, 'closed' FROM run WHERE id = 1;
+			INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch,
+				decision_id, kind, message_id, kagent_namespace, kagent_agent, state, writer_epoch)
+			SELECT 2, 1, 1, work_item_epoch, 'initial', kind, 'canceled-message',
+				kagent_namespace, kagent_agent, 'canceled', writer_epoch FROM delivery_attempt`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, r := terminalFixture(t)
@@ -255,6 +261,14 @@ func TestSupersededGrantFailureRequiresCurrentWaitingFailure(t *testing.T) {
 		{"newer refused", `UPDATE delivery_attempt SET state = 'sending', task_id = NULL, issues = 1 WHERE run_id = 2`, false, false},
 		{"newer ambiguous", `UPDATE delivery_attempt SET state = 'ambiguous', task_id = NULL, issues = 1 WHERE run_id = 2`, false, false},
 		{"newer rejected", `UPDATE delivery_attempt SET state = 'failed', task_id = NULL WHERE run_id = 2`, false, true},
+		{"newer canceled without acceptance", `UPDATE run SET state = 'closed' WHERE id = 2;
+			UPDATE delivery_attempt SET state = 'canceled', task_id = NULL, issues = 1 WHERE run_id = 2`, false, true},
+		{"newer canceled after acceptance", `UPDATE run SET state = 'closed' WHERE id = 2;
+			UPDATE delivery_attempt SET state = 'canceled' WHERE run_id = 2`, true, false},
+		{"newer cancellation pending", `UPDATE run SET state = 'canceling' WHERE id = 2;
+			UPDATE delivery_attempt SET state = 'ambiguous', task_id = NULL, issues = 1 WHERE run_id = 2;
+			INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
+				SELECT id, run_id, 'run_canceled', 'pending' FROM delivery_attempt WHERE run_id = 2`, false, false},
 		{"no newer attempt", `DELETE FROM delivery_attempt WHERE run_id = 2`, false, true},
 		{"closed run", `UPDATE run SET state = 'closed' WHERE id = 1`, false, false},
 		{"stopped run", `UPDATE run SET stopped_reason = 'operator stop' WHERE id = 1`, false, false},
