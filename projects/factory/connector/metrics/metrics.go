@@ -26,6 +26,7 @@ type Metrics struct {
 	IdleRounds        prometheus.Counter
 	MergeQueue        *prometheus.CounterVec // outcome
 	SessionRecoveries *prometheus.CounterVec // kind
+	SessionsDeleted   *prometheus.CounterVec // reason
 
 	CredentialRefusals *prometheus.CounterVec // role, kind
 }
@@ -75,7 +76,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}),
 		TickErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_tick_errors_total",
-			Help: "Errors by dispatch phase (heartbeats, claims, runs, cancellations, delivery, outbox).",
+			Help: "Errors by dispatch phase (heartbeats, claims, runs, cancellations, delivery, outbox, sessions).",
 		}, []string{"phase"}),
 		PullRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_pull_requests_total",
@@ -109,6 +110,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_session_recoveries_total",
 			Help: "kagent session recoveries by kind (revert, replace).",
 		}, []string{"kind"}),
+		SessionsDeleted: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_sessions_deleted_total",
+			Help: "kagent sessions the connector deleted by reason: its work item is done or stopped, or it was replaced.",
+		}, []string{"reason"}),
 		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_credential_refusals_total",
 			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
@@ -119,7 +124,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.CredentialRefusals)
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.SessionsDeleted, m.CredentialRefusals)
 	}
 	return m
 }

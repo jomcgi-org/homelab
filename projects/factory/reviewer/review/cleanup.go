@@ -44,6 +44,7 @@ const (
 	cleanupClosed     = "closed"     // its PR is no longer open into the base branch
 	cleanupSuperseded = "superseded" // a newer session of the same PR exists
 	cleanupIdle       = "idle"       // unnamed, and idle for unnamedIdle
+	cleanupRetry      = "retry"      // an admitted delete left it DELETING
 )
 
 // SessionName is the display name of the sessions that review PR number of
@@ -111,7 +112,9 @@ func (e *Engine) sweepSessions(ctx context.Context, b *Binding, prs []github.Pul
 //   - every session of an open PR but its newest (superseded), since a
 //     later head resumes only the session the last review recorded, and
 //     that is the PR's newest unless every later attempt failed;
-//   - an unnamed session idle for unnamedIdle (idle).
+//   - an unnamed session idle for unnamedIdle (idle);
+//   - a session left DELETING by a delete kagent admitted but did not
+//     finish (retry). kagent keeps such a delete retryable without force.
 //
 // It never deletes a session younger than cleanupGrace, one named for
 // another repository, or one with a task that still executes; kagent also
@@ -143,7 +146,7 @@ func (e *Engine) sweep(ctx context.Context, b *Binding, open map[int]bool, l *sl
 	var live []entry
 	newest := map[int]*kagent.Session{}
 	for _, s := range all {
-		if s == nil || s.Gone() || !contextIDPattern.MatchString(s.ID) ||
+		if s == nil || s.State == kagent.RuntimeDeleted || !contextIDPattern.MatchString(s.ID) ||
 			(s.AgentNamespace != "" && (s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name)) {
 			continue
 		}
@@ -154,9 +157,11 @@ func (e *Engine) sweep(ctx context.Context, b *Binding, open map[int]bool, l *sl
 				continue // Named by someone else, or for another binding's repository.
 			}
 			pr = n
-			if cur := newest[n]; cur == nil || s.CreatedAt.After(cur.CreatedAt) ||
+		}
+		if pr != 0 && s.State != kagent.RuntimeDeleting {
+			if cur := newest[pr]; cur == nil || s.CreatedAt.After(cur.CreatedAt) ||
 				(s.CreatedAt.Equal(cur.CreatedAt) && s.ID > cur.ID) {
-				newest[n] = s
+				newest[pr] = s
 			}
 		}
 		live = append(live, entry{s, pr})
@@ -173,6 +178,14 @@ func (e *Engine) sweep(ctx context.Context, b *Binding, open map[int]bool, l *sl
 		}
 		var reason string
 		switch {
+		case s.State == kagent.RuntimeDeleting:
+			// No turn runs in a deleting session, so its tasks are not read.
+			if e.deleteSession(ctx, b, s, cleanupRetry, en.pr, l) {
+				deleted[cleanupRetry]++
+			} else {
+				failed++
+			}
+			continue
 		case en.pr == 0:
 			reason = cleanupIdle
 		case !open[en.pr]:
@@ -193,17 +206,27 @@ func (e *Engine) sweep(ctx context.Context, b *Binding, open map[int]bool, l *sl
 		case reason == cleanupIdle && now.Sub(last) < unnamedIdle:
 			continue
 		}
-		if _, err := e.cfg.Cleaner.DeleteSession(ctx, s.ID); err != nil && !errors.Is(err, kagent.ErrSessionNotFound) {
-			e.kagentError(ctx, l, b, "delete_session", err)
+		if !e.deleteSession(ctx, b, s, reason, en.pr, l) {
 			failed++
 			continue
 		}
 		deleted[reason]++
-		e.m.SessionsDeleted.WithLabelValues(b.Name, reason).Inc()
-		l.InfoContext(ctx, "deleted a review session", "context_id", s.ID, "reason", reason, "pr", en.pr)
 	}
 	l.InfoContext(ctx, "review sessions swept", "listed", len(all), "closed", deleted[cleanupClosed],
-		"superseded", deleted[cleanupSuperseded], "idle", deleted[cleanupIdle], "busy", busy, "failed", failed)
+		"superseded", deleted[cleanupSuperseded], "idle", deleted[cleanupIdle], "retried", deleted[cleanupRetry],
+		"busy", busy, "failed", failed)
+}
+
+// deleteSession deletes one session without force and reports whether it is
+// gone or going.
+func (e *Engine) deleteSession(ctx context.Context, b *Binding, s *kagent.Session, reason string, pr int, l *slog.Logger) bool {
+	if _, err := e.cfg.Cleaner.DeleteSession(ctx, s.ID); err != nil && !errors.Is(err, kagent.ErrSessionNotFound) {
+		e.kagentError(ctx, l, b, "delete_session", err)
+		return false
+	}
+	e.m.SessionsDeleted.WithLabelValues(b.Name, reason).Inc()
+	l.InfoContext(ctx, "deleted a review session", "context_id", s.ID, "reason", reason, "pr", pr)
+	return true
 }
 
 // sessionActivity reads a session's tasks: when one last changed (the

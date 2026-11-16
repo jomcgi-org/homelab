@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -441,6 +442,10 @@ type fakeKagent struct {
 	// revertErr fails the next RevertSession calls.
 	revertErr []error
 	nctx      int
+	// deleteErr fails the next DeleteSession calls; deleted lists the
+	// sessions deleted.
+	deleteErr []error
+	deleted   []string
 }
 
 type fakeTask struct {
@@ -730,6 +735,69 @@ func (k *fakeKagent) RevertSession(_ context.Context, id string) (*kagent.Sessio
 	s.State, s.Operation, s.FailureReason = kagent.RuntimeReady, 5, ""
 	c := *s
 	return &c, nil
+}
+
+// ListSessions lists the sessions of agent two per page, in ID order.
+func (k *fakeKagent) ListSessions(_ context.Context, agent kagent.AgentRef, pageToken string) ([]*kagent.Session, string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.calls++
+	var ids []string
+	for id := range k.sessions {
+		if k.contexts[id] == agent {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	start := 0
+	if pageToken != "" {
+		start, _ = strconv.Atoi(pageToken)
+	}
+	var out []*kagent.Session
+	for _, id := range ids[min(start, len(ids)):min(start+2, len(ids))] {
+		c := *k.sessions[id]
+		out = append(out, &c)
+	}
+	next := ""
+	if start+2 < len(ids) {
+		next = strconv.Itoa(start + 2)
+	}
+	return out, next, nil
+}
+
+// DeleteSession deletes a session without force: kagent refuses during a
+// turn.
+func (k *fakeKagent) DeleteSession(_ context.Context, id string) (*kagent.Session, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.calls++
+	if len(k.deleteErr) > 0 {
+		err := k.deleteErr[0]
+		k.deleteErr = k.deleteErr[1:]
+		return nil, err
+	}
+	s, ok := k.sessions[id]
+	if !ok {
+		return nil, kagent.ErrSessionNotFound
+	}
+	for _, t := range k.tasks {
+		if t.task.ContextID == id && !kagent.Quiescent(t.task.Status.State) {
+			return nil, errors.New("rpc error: code = FailedPrecondition desc = session has an active turn")
+		}
+	}
+	delete(k.sessions, id)
+	delete(k.contexts, id)
+	k.deleted = append(k.deleted, id)
+	c := *s
+	c.State = kagent.RuntimeDeleting
+	return &c, nil
+}
+
+// Deleted lists the sessions DeleteSession deleted.
+func (k *fakeKagent) Deleted() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]string(nil), k.deleted...)
 }
 
 // crash marks a session's runtime crashed; its running task keeps reporting

@@ -890,6 +890,34 @@ uncertainty can confirm cancellation without a task. Otherwise the explicit
 operator fencing attestation above is required. A run that itsaplan ended closes once its
 cancellation is confirmed, whatever started that cancellation.
 
+**Finished sessions.** Every 10 minutes the connector deletes the coder
+sessions no run will send to again (`DeleteSession`, without force), at most
+10 a sweep:
+- the session of a done work item;
+- the session of a work item stopped for 24 hours;
+- a session the work item no longer records, such as a replaced one.
+
+It deletes only sessions its pinned caller lists (`ListSessions` lists the
+caller's own) that its database records for a work item. It keeps a session
+with an open attempt, a pending cancellation, a recovery hold on its work
+item, or an attempt that finished within 15 minutes. It also keeps the
+recorded session of a work item with an open run, including a claimed run
+for its issue. Before deleting a session its work item still records, the
+connector clears it from the work item, as operator recovery does. A run that
+resumes the work item then opens a new session with the issue brief. A
+failed delete is retried on the next sweep, and so is a session left
+DELETING. Deletes are counted in `factory_connector_sessions_deleted_total`
+by reason (done, stopped, replaced). After a delete, the session link in the
+issue's Done comment no longer resolves; the run's transcript stays in
+itsaplan.
+
+**Why.** Each session keeps a Substrate snapshot (about 340 MB) until it is
+deleted, and kagent's idle TTL is 7 days. On 2026-11-16 the connector's 47
+sessions held 25 GiB on node-2, 26 of them for work that was done,
+stopped or replaced (HOME-136). A stopped work item keeps its session for a day
+because a new itsaplan run resumes it, and a resumed session keeps the
+agent's context.
+
 **Deployment.** `templates/connector*.yaml` render with `connector.enabled`,
 which needs `itsaplan.enabled`, `broker.enabled` and kagent's
 `config.server.auth.serviceAccount.authority`. That authority is part of the
@@ -1494,7 +1522,8 @@ previews).
     only the session the last review recorded, and that session is the
     newest unless every later attempt ended without a report.
   - an unnamed session (opened before this change, or whose name write
-    failed) with no task change for 12 hours.
+    failed) with no task change for 12 hours;
+  - a session left DELETING by a delete kagent admitted but did not finish.
 
   The service keeps a session that is younger than 15 minutes, is named for
   another repository, has a task that still executes, or whose tasks it
@@ -1502,14 +1531,15 @@ previews).
   partial session listing deletes nothing, because an unlisted session may
   be its PR's newest. Deletes run beside the poll loop and are counted in
   `factory_reviewer_sessions_deleted_total` by reason (closed, superseded,
-  idle). A deleted session that a later head would have resumed only costs
+  idle, retry). A deleted session that a later head would have resumed only costs
   a fresh review (`missing` or `deleted` above).
 
   **Why.** On 2026-11-16, 398 reviewer snapshots (117 GiB) filled node-2's
   root disk. The kubelet then evicted Substrate's Postgres and every agent
   stopped (HOME-136). kagent deletes a session only at its idle TTL (7
   days), and a shorter TTL would also expire coder sessions the connector
-  holds for fencing.
+  holds for fencing. The connector deletes its own finished sessions
+  ("Finished sessions" under Connector).
 - **Connector.** It coordinates sessions, revision rounds and itsaplan
   status, and enqueues the factory's PRs once the required checks pass; the
   reviewer's failing check becomes the revision round's feedback
