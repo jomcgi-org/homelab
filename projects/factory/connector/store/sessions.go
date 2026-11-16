@@ -15,8 +15,8 @@ const (
 // FinishedSession is a kagent session of a work item that no open attempt,
 // pending cancellation or recovery hold uses. Current is true when the work
 // item still records it: ReleaseSession must clear that before the session
-// is deleted. Requested is true when a delete was recorded and not yet
-// confirmed.
+// is deleted. RequestedBy is the caller boundary that recorded a delete not
+// yet confirmed, empty when none was recorded.
 type FinishedSession struct {
 	ContextID       string
 	WorkItemID      int64
@@ -25,7 +25,7 @@ type FinishedSession struct {
 	KagentAgent     string
 	Reason          string
 	Current         bool
-	Requested       bool
+	RequestedBy     string
 }
 
 // FinishedSessions lists the binding's finished sessions:
@@ -44,7 +44,7 @@ func (s *Store) FinishedSessions(ctx context.Context, binding string, stoppedKee
 			CASE WHEN a.context_id = w.session_id OR (w.session_id IS NULL AND w.state IN ('done', 'stopped'))
 				THEN w.state ELSE 'replaced' END,
 			(a.context_id = w.session_id) IS TRUE,
-			EXISTS (SELECT 1 FROM session_deletion d WHERE d.context_id = a.context_id)
+			coalesce((SELECT d.caller_identity FROM session_deletion d WHERE d.context_id = a.context_id), '')
 		FROM delivery_attempt a
 		JOIN run r ON r.id = a.run_id
 		JOIN work_item w ON w.id = r.work_item_id
@@ -70,7 +70,7 @@ func (s *Store) FinishedSessions(ctx context.Context, binding string, stoppedKee
 	var out []FinishedSession
 	for rows.Next() {
 		var f FinishedSession
-		if err := rows.Scan(&f.ContextID, &f.WorkItemID, &f.IssueKey, &f.KagentNamespace, &f.KagentAgent, &f.Reason, &f.Current, &f.Requested); err != nil {
+		if err := rows.Scan(&f.ContextID, &f.WorkItemID, &f.IssueKey, &f.KagentNamespace, &f.KagentAgent, &f.Reason, &f.Current, &f.RequestedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
@@ -103,18 +103,22 @@ func (s *Store) ReleaseSession(ctx context.Context, q Querier, workID int64, con
 
 // RecordSessionDeletion records a DeleteSession call before it is sent, in
 // q's transaction, which Writer.Tx fences on the epoch. The session ID keys
-// the record; a retry counts another request.
-func (s *Store) RecordSessionDeletion(ctx context.Context, q Querier, f FinishedSession, epoch int64) error {
+// the record; a retry counts another request. caller is the pinned caller
+// boundary (kagent.CallerIdentity.Key) whose listing showed the session.
+func (s *Store) RecordSessionDeletion(ctx context.Context, q Querier, f FinishedSession, epoch int64, caller string) error {
 	_, err := q.ExecContext(ctx, `
-		INSERT INTO session_deletion (context_id, work_item_id, reason, writer_epoch) VALUES ($1, $2, $3, $4)
+		INSERT INTO session_deletion (context_id, work_item_id, reason, writer_epoch, caller_identity)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (context_id) DO UPDATE SET writer_epoch = EXCLUDED.writer_epoch,
+			caller_identity = EXCLUDED.caller_identity,
 			requests = session_deletion.requests + 1, last_requested_at = now()`,
-		f.ContextID, f.WorkItemID, f.Reason, epoch)
+		f.ContextID, f.WorkItemID, f.Reason, epoch, caller)
 	return err
 }
 
 // ConfirmSessionDeletion records that kagent no longer has the session: it
-// answered NOT_FOUND, or a complete listing no longer shows it.
+// answered NOT_FOUND, or a complete listing by the recording caller no
+// longer shows it.
 func (s *Store) ConfirmSessionDeletion(ctx context.Context, q Querier, contextID string) error {
 	_, err := q.ExecContext(ctx, `
 		UPDATE session_deletion SET confirmed_at = now() WHERE context_id = $1 AND confirmed_at IS NULL`, contextID)

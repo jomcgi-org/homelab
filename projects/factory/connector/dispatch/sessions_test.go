@@ -133,6 +133,20 @@ func TestSweepDeletesOnlyTheCallersReplacedSessionsAndRetries(t *testing.T) {
 		t.Fatalf("deletion record = %d requests, confirmed %v; want 1 recorded before the call", n, confirmed)
 	}
 
+	// Another caller's listing does not show the session, which proves
+	// nothing about it: the recorded delete stays unconfirmed.
+	v.kg.mu.Lock()
+	uid := v.kg.identity.ServiceAccountUID
+	v.kg.identity.ServiceAccountUID = "recreated-uid"
+	v.kg.mu.Unlock()
+	v.sweep()
+	if n, _, confirmed := v.deletion(old); n != 1 || confirmed {
+		t.Fatalf("deletion record = %d requests, confirmed %v after another caller's listing", n, confirmed)
+	}
+	v.kg.mu.Lock()
+	v.kg.identity.ServiceAccountUID = uid
+	v.kg.mu.Unlock()
+
 	// kagent admitted an earlier delete that did not finish.
 	v.kg.mu.Lock()
 	v.kg.sessions[old].State = kagent.RuntimeDeleting
@@ -160,6 +174,15 @@ func TestSweepDeletesOnlyTheCallersReplacedSessionsAndRetries(t *testing.T) {
 	v.sweep()
 	if v.kg.Calls() != calls {
 		t.Fatal("a sweep listed sessions for a confirmed delete")
+	}
+	// Each listing request was journaled before it was sent.
+	var journaled int
+	if err := v.st.DB.QueryRow(`SELECT coalesce(sum(attempts), 0) FROM status_read
+		WHERE message_id LIKE 'kagent/ListSessions/factory-homelab/coder/%'`).Scan(&journaled); err != nil {
+		t.Fatal(err)
+	}
+	if journaled != 5 {
+		t.Fatalf("journaled listings = %d, want one per listing sweep (5)", journaled)
 	}
 }
 

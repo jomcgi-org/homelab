@@ -914,9 +914,14 @@ resumes the work item then opens a new session with the issue brief.
 
 Each delete is recorded in `session_deletion` under the writer epoch before
 it is sent, in the same transaction as any release. The session ID is the
-call's idempotency key. A delete is confirmed when kagent answers NOT_FOUND
-or a complete listing no longer shows the session. Until then each sweep
-sends it again, which covers a lost response and a session left DELETING.
+call's idempotency key, and the record keeps the caller boundary whose
+listing showed the session. A delete is confirmed when kagent answers
+NOT_FOUND, or when a complete listing by that same caller no longer shows
+the session: kagent scopes listings to the caller, so another caller's
+listing proves nothing. Until then each sweep sends it again, which covers a
+lost response and a session left DELETING. Each `ListSessions` page request
+is journaled in `status_read` before it is sent, under a message ID made
+from the agent and a digest of the page token, which a retry shares.
 Deletes are counted in `factory_connector_sessions_deleted_total` by reason
 (done, stopped, replaced). After a delete, the session link in the
 issue's Done comment no longer resolves; the run's transcript stays in
