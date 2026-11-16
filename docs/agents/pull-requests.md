@@ -106,18 +106,12 @@ repository.
 
 Draw one when the change moves a request flow, a trust boundary, a state
 machine or ownership between components. Skip it for a one-component fix, a
-docs change or a version bump. GitHub renders Mermaid in PR bodies.
+docs change or a version bump. GitHub renders Mermaid in PR bodies. Follow
+[writing.md](../writing.md) "Diagrams", and also:
 
-- Show only the path the change touches, in about 12 nodes or fewer.
-- Label edges with the verb, protocol or condition.
 - Mark what the PR adds with `(new)` in the label. Draw the old path too
   only when its removal matters.
-- `sequenceDiagram` for calls between services, `stateDiagram-v2` for
-  states and transitions, `flowchart LR` for data flow and ownership.
-- Use basic syntax. GitHub's Mermaid version decides what renders, and the
-  source should read well as text.
-- The diagram is a claim like any sentence. A mismatch with the diff is a
-  finding.
+- A mismatch between the diagram and the diff is a finding.
 
 #8095's quota block, drawn for its Change section:
 
@@ -133,31 +127,8 @@ stateDiagram-v2
 
 ## Language
 
-Descriptions follow most of
-[ASD-STE100 Simplified Technical English](https://asd-ste100.org/about_STE.html)
-(STE), the controlled language of aircraft maintenance manuals. STE text
-reads the same way for every reader, including a program. Keep its writing
-rules. Skip its approved dictionary, because PR text is mostly technical
-names and technical verbs.
-
-- A sentence has 25 words or fewer. An instruction, such as a rollback
-  step, has 20 or fewer.
-- One topic in each sentence, and one action in each instruction. Put a
-  condition first: "If the probe fails, lower the pin to 0.29.10."
-- Active voice, with the actor named: "the connector rewrites the body".
-- Simple tenses. Use the present for what the code does and the simple past
-  for what happened or ran. Do not use the present perfect ("has fixed").
-- Noun clusters of three words or fewer. A code identifier counts as one
-  word.
-- One word for one thing. Use the repository's names (`connector`,
-  `coder`, `reviewer`, `HOME-N`) and keep each one through the description.
-- Specific words: a count, a time or a name, over "some", "several" or
-  "quickly".
-- Prose keeps its articles and verbs. A bullet keyed by a path can be a
-  fragment.
-
-Code, commands, identifiers, quoted log lines and links are outside these
-rules.
+Descriptions follow [writing.md](../writing.md) "Simplified Technical
+English".
 
 ## Leave out
 

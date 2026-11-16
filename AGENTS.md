@@ -101,6 +101,13 @@ durable lessons. Factory prompts choose the work and its sequence.
   resume an admitted receipt.
 - Use Conventional Commits and concise prose per `docs/writing.md`.
 
+## Writing
+
+Docs, PRs, commits, comments, tickets and chat replies follow about 80% of
+ASD-STE100 Simplified Technical English (`docs/writing.md`). Draw a flow,
+state machine or boundary as a diagram instead of paragraphs. Change a doc
+by replacing text, and add text only for a new fact.
+
 ## Commands and gotchas
 
 Use scoped `AGENTS.md` files and the [task-specific reference](docs/agents/reference.md)
