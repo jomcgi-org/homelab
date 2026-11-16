@@ -1780,7 +1780,9 @@ previews).
   error holds the check with the failed reads named and the gate-only
   marker, so the connector starts no revision round for it. No failed read
   supplies a pass. The agent receives no itsaplan key.
-  Running and completed checks record the evidence digest. The service
+  Running and completed checks record the evidence digest, an HMAC-SHA256
+  under a key derived (HKDF) from the reviewer's itsaplan key. The check is
+  public, so an unkeyed hash would confirm a guess at private text. The service
   re-reads evidence before accepting a report and on every completed-check
   poll before enqueue or merge-group authorization. Changes or read failures
   revoke the old review, retain its findings and human holds, and schedule a

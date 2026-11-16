@@ -2,7 +2,10 @@ package review
 
 import (
 	"context"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,11 +56,46 @@ type IssueContext struct {
 	Findings []Finding
 	// Pending are failed reads. The head waits and every poll reads again.
 	Pending []Finding
+
+	digest string // The evidence MAC (sealIssues); never marshaled.
 }
 
+// issueDigest is the evidence MAC, or "" for a PR that gets no evidence.
 func issueDigest(in *IssueContext) string {
+	if in == nil {
+		return ""
+	}
+	return in.digest
+}
+
+// evidenceKey derives the MAC key from MACSecret. Rotating the secret changes
+// every digest, so each bound pass gets one fresh review.
+func (e *Engine) evidenceKey() ([]byte, error) {
+	if e.cfg.MACSecret == nil {
+		return nil, errors.New("review: no evidence secret")
+	}
+	secret, err := e.cfg.MACSecret()
+	if err != nil || len(secret) < 16 {
+		return nil, errors.New("review: no usable evidence secret")
+	}
+	return hkdf.Key(sha256.New, []byte(secret), nil, "factory-reviewer issue evidence v1", sha256.Size)
+}
+
+// sealIssues binds a report to the evidence it reviewed. The check publishes
+// the digest and the evidence holds private issue and decision text, so the
+// digest is an HMAC: an unkeyed hash would confirm a guess at that text. A
+// key that cannot be read is a failed read, and the head waits.
+func (e *Engine) sealIssues(in *IssueContext) {
+	key, err := e.evidenceKey()
+	if err != nil {
+		in.Issue, in.Decisions = nil, nil
+		in.unread("key", "The evidence key could not be read. The service will retry; no issue evidence was supplied.")
+		return
+	}
 	data, _ := json.Marshal(in) // Only strings, booleans and slices.
-	return fmt.Sprintf("%x", sha256.Sum256(data))
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	in.digest = hex.EncodeToString(mac.Sum(nil))
 }
 
 // Include the truncation marker in the byte budget (clip alone adds it).
@@ -261,6 +299,7 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 	if b.ItsaplanProject == "" || !issueReader(b, pr) {
 		return in // Any other author's PR gets no issue or decision text.
 	}
+	defer e.sealIssues(in) // Runs after every return below.
 	ctx, cancel := context.WithTimeout(ctx, issueReadTimeout)
 	defer cancel()
 	key, err := e.resolveIssue(ctx, b, pr)

@@ -2,6 +2,12 @@ package review
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,7 +63,7 @@ func TestIssueResolution(t *testing.T) {
 	// Over GitHub's 250-commit list nothing can be read: the author must
 	// name the issue. Any other read error is retried.
 	for _, err := range []error{github.ErrTooMany, context.DeadlineExceeded} {
-		e := &Engine{gh: &issueCommits{err: err}}
+		e := &Engine{cfg: Config{MACSecret: testMACSecret}, gh: &issueCommits{err: err}}
 		in := e.issueContext(context.Background(), &Binding{ItsaplanProject: "HOME", HumanApprovers: []string{"jomcgi"}}, github.PullRequest{Author: "jomcgi", HeadSHA: shaA}, nil)
 		permanent := errors.Is(err, github.ErrTooMany)
 		if (len(in.Findings) == 1) != permanent || (len(in.Pending) == 1) == permanent {
@@ -129,6 +135,9 @@ func (a *issueAPI) LinkedComment(ctx context.Context, _ int64, id int64) (*itsap
 	return a.comments[id], nil
 }
 
+// testMACSecret stands in for the mounted itsaplan key the MAC key derives from.
+func testMACSecret() (string, error) { return "test-itsaplan-key-0123456789", nil }
+
 func issueSetup() (*Engine, *Binding, *issueAPI, github.PullRequest) {
 	p := &itsaplan.Project{
 		Columns: []itsaplan.Column{{ID: 2, Name: "In progress"}},
@@ -145,7 +154,7 @@ func issueSetup() (*Engine, *Binding, *issueAPI, github.PullRequest) {
 		issue:    &itsaplan.Issue{ID: 95, ProjectID: 3, Identifier: "HOME-58", Title: "Read the issue", Description: "Report unmet criteria", ColumnID: 2},
 		comments: map[int64]*itsaplan.FeedItem{},
 	}
-	e := &Engine{cfg: Config{Itsaplan: a}, gh: &issueCommits{}}
+	e := &Engine{cfg: Config{Itsaplan: a, MACSecret: testMACSecret}, gh: &issueCommits{}}
 	b := &Binding{ItsaplanProject: "HOME", HumanApprovers: []string{"jomcgi"}, TrustedItsaplanAuthors: []string{"joe", "joesessions", "factoryadmin"}}
 	pr := github.PullRequest{Author: "jomcgi-factory[bot]", HeadRef: "factory/HOME-58", HeadSHA: shaA}
 	return e, b, a, pr
@@ -242,13 +251,16 @@ func TestIssueEvidenceBounds(t *testing.T) {
 }
 
 func TestReadErrorSuppliesNoEvidenceAndCannotPass(t *testing.T) {
-	for _, fail := range []string{"project", "issue", "missing", "author", "history", "commits"} {
+	for _, fail := range []string{"project", "issue", "missing", "author", "history", "commits", "key"} {
 		t.Run(fail, func(t *testing.T) {
 			e, b, api, pr := issueSetup()
 			api.fail = fail
-			if fail == "commits" {
+			switch fail {
+			case "commits":
 				pr.Author = "jomcgi"
 				e.gh = &issueCommits{err: context.DeadlineExceeded}
+			case "key":
+				e.cfg.MACSecret = func() (string, error) { return "", errors.New("private API failure body") }
 			}
 			in := e.issueContext(context.Background(), b, pr, nil)
 			all := append(in.Findings, in.Pending...)
@@ -295,7 +307,7 @@ func TestEngineRetriesFailedIssueReadOnTheSameHead(t *testing.T) {
 	addPR7(h)
 	_, binding, api, _ := issueSetup()
 	api.fail = "issue"
-	h.cfg.Itsaplan = api
+	h.cfg.Itsaplan, h.cfg.MACSecret = api, testMACSecret
 	h.cfg.Bindings[0].ItsaplanProject = binding.ItsaplanProject
 	h.cfg.Bindings[0].TrustedItsaplanAuthors = binding.TrustedItsaplanAuthors
 	h.gh.withLock(func() {
@@ -336,7 +348,7 @@ func TestResumedTaskMustHaveReviewedItsIssueEvidence(t *testing.T) {
 			addPR7(h)
 			_, binding, api, _ := issueSetup()
 			enable := func() {
-				h.cfg.Itsaplan = api
+				h.cfg.Itsaplan, h.cfg.MACSecret = api, testMACSecret
 				h.cfg.Bindings[0].ItsaplanProject = binding.ItsaplanProject
 				h.cfg.Bindings[0].TrustedItsaplanAuthors = binding.TrustedItsaplanAuthors
 			}
@@ -411,7 +423,7 @@ func issueHarness(t *testing.T) (*harness, *issueAPI) {
 	h := newHarness(t)
 	addPR7(h)
 	_, binding, api, _ := issueSetup()
-	h.cfg.Itsaplan = api
+	h.cfg.Itsaplan, h.cfg.MACSecret = api, testMACSecret
 	h.cfg.Bindings[0].ItsaplanProject = binding.ItsaplanProject
 	h.cfg.Bindings[0].TrustedItsaplanAuthors = binding.TrustedItsaplanAuthors
 	h.cfg.Bindings[0].EnqueueAuthors = nil
@@ -714,5 +726,134 @@ func TestCodeReviewPromptHasNoIssueText(t *testing.T) {
 				t.Fatal("issue text reached the code-review prompt")
 			}
 		})
+	}
+}
+
+// The check publishes the evidence digest, and the evidence holds private
+// issue and decision text, so the digest is an HMAC under a derived key.
+func TestEvidenceDigestIsNotPlainSHA256(t *testing.T) {
+	e, b, api, pr := issueSetup()
+	api.comments[1] = &itsaplan.FeedItem{ID: 1, IssueID: 95, Kind: "comment", ActorUserID: "human", Body: "Private decision", EditedAt: []byte("null")}
+	in := e.issueContext(context.Background(), b, pr, linkedFiles("https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1"))
+	key, err := e.evidenceKey()
+	secret, _ := testMACSecret()
+	if in.Issue == nil || len(in.Decisions) != 1 || err != nil || string(key) == secret {
+		t.Fatalf("evidence = %+v, key error %v", in, err)
+	}
+	data, _ := json.Marshal(in)
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	if plain := sha256.Sum256(data); issueDigest(in) != hex.EncodeToString(mac.Sum(nil)) || issueDigest(in) == hex.EncodeToString(plain[:]) {
+		t.Fatalf("digest %q is not the evidence MAC", issueDigest(in))
+	}
+}
+
+func TestEvidenceDigestDiffersByKey(t *testing.T) {
+	read := func(secret string) *IssueContext {
+		e, b, _, pr := issueSetup()
+		e.cfg.MACSecret = func() (string, error) { return secret, nil }
+		return e.issueContext(context.Background(), b, pr, nil)
+	}
+	a, again, other := read("first-itsaplan-key-0123456789"), read("first-itsaplan-key-0123456789"), read("other-itsaplan-key-0123456789")
+	if issueDigest(a) == "" || issueDigest(a) != issueDigest(again) || issueDigest(a) == issueDigest(other) {
+		t.Fatalf("digests %q, %q, %q", issueDigest(a), issueDigest(again), issueDigest(other))
+	}
+	// A secret too short to key the MAC is a failed read: no evidence, no digest.
+	if in := read("short"); in.Issue != nil || issueDigest(in) != "" || len(in.Pending) != 1 || in.Pending[0].ID != "itsaplan:unverified:key" {
+		t.Fatalf("short secret = %+v", in)
+	}
+}
+
+// A restart reads the same mounted secret, so the MAC and the pass stand.
+func TestEvidenceDigestSurvivesRestartWithTheSameKey(t *testing.T) {
+	h, _ := issueHarness(t)
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	before, _ := LoadState(h.gh.check(shaA).Text)
+	stop()
+	e, ctx, _ = h.start()
+	for range 2 {
+		e.Tick(ctx)
+		e.Wait()
+	}
+	after, _ := LoadState(h.gh.check(shaA).Text)
+	if before.IssueDigest == "" || after.IssueDigest != before.IssueDigest || h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.k.sent()) != 1 {
+		t.Fatal("a restart with the same key changed the evidence binding")
+	}
+}
+
+// unkeyedHashes are plain SHA-2 hashes of each value, as hex and base64.
+func unkeyedHashes(values []string) []string {
+	var out []string
+	for _, v := range values {
+		a, b, c := sha256.Sum224([]byte(v)), sha256.Sum256([]byte(v)), sha512.Sum512([]byte(v))
+		for _, sum := range [][]byte{a[:], b[:], c[:]} {
+			out = append(out, hex.EncodeToString(sum), base64.StdEncoding.EncodeToString(sum), base64.RawURLEncoding.EncodeToString(sum))
+		}
+	}
+	return out
+}
+
+// Every published field: check titles, summaries (the task marker), texts
+// and their decoded state, and the PR comment. None carries private issue or
+// decision text, or an unkeyed hash of it or of the whole evidence.
+func TestPublishedOutputCarriesNoUnkeyedEvidenceHash(t *testing.T) {
+	h, api := issueHarness(t)
+	withComments(h)
+	api.issue.Title, api.issue.Description = "PRIVATE-TITLE", "PRIVATE-GOAL"
+	api.comments[1] = &itsaplan.FeedItem{ID: 1, IssueID: 95, Kind: "comment", ActorUserID: "human", Body: "PRIVATE-DECISION", EditedAt: []byte("null")}
+	files := linkedFiles("https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1")
+	h.gh.withLock(func() { h.gh.prs[7].Author, h.gh.prs[7].Files = "jomcgi", files })
+	pr := github.PullRequest{Number: 7, Author: "jomcgi", Body: "Refs HOME-58", HeadSHA: shaA}
+	var published, private, digests []string
+	snapshot := func() {
+		h.gh.withLock(func() {
+			for _, c := range h.gh.checks {
+				st, _ := LoadState(c.Text)
+				data, _ := json.Marshal(st)
+				published = append(published, c.Title, c.Summary, c.Text, c.ExternalID, string(data))
+			}
+		})
+		for _, c := range h.gh.ownComments(7) {
+			published = append(published, c.Body)
+		}
+		in := h.engine().issueContext(context.Background(), &h.cfg.Bindings[0], pr, files)
+		if in.Issue == nil || len(in.Decisions) != 1 {
+			t.Fatalf("evidence = %+v", in)
+		}
+		data, _ := json.Marshal(in)
+		private = append(private, string(data), in.Issue.Title, in.Issue.Description, in.Decisions[0].Text)
+		digests = append(digests, issueDigest(in))
+	}
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "task marker", func() bool { return RecordedTask(h.gh.check(shaA).Summary).Issues != "" })
+	snapshot()
+	marker := RecordedTask(h.gh.check(shaA).Summary).Issues
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	snapshot()
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	api.issue.Description = "PRIVATE-GOAL-CHANGED" // The hold and the fresh review publish too.
+	e.Tick(ctx)
+	var fresh string
+	eventually(t, "fresh task marker", func() bool { fresh = RecordedTask(h.gh.check(shaA).Summary).ID; return fresh != "" && fresh != task })
+	snapshot()
+	h.k.finish(fresh, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	snapshot()
+	// The fields hold the MAC of the evidence this test hashes.
+	if marker != digests[0] || st.IssueDigest != digests[1] || digests[0] != digests[1] || digests[2] == digests[0] {
+		t.Fatalf("published %q and %q, evidence MACs %q", marker, st.IssueDigest, digests)
+	}
+	forbidden := append(private, unkeyedHashes(private)...)
+	for _, field := range published {
+		for _, bad := range forbidden {
+			if strings.Contains(field, bad) || strings.Contains(strings.ToLower(field), bad) {
+				t.Fatalf("a published field carries private text or its unkeyed hash %q", bad)
+			}
+		}
 	}
 }
