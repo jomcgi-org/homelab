@@ -148,6 +148,12 @@ func TestSweepDeletesSessionsNoReviewResumes(t *testing.T) {
 	gone.State = kagent.RuntimeDeleted
 	otherAgent := sess("other-agent", name(8), 3*time.Hour)
 	otherAgent.AgentName = "coder"
+	// A delete kagent admitted but did not finish; newer than pr7-new, yet
+	// not the session PR 7 resumes.
+	stuck := sess("pr7-stuck", name(7), 30*time.Minute)
+	stuck.State = kagent.RuntimeDeleting
+	stuckYoung := sess("pr9-stuck-young", name(9), 5*time.Minute)
+	stuckYoung.State = kagent.RuntimeDeleting
 	c := &fakeCleaner{
 		pages: [][]*kagent.Session{
 			{
@@ -161,7 +167,7 @@ func TestSweepDeletesSessionsNoReviewResumes(t *testing.T) {
 				sess("unnamed-recent", "", 20*time.Hour),
 				sess("pr10-busy", name(10), 2*time.Hour),
 				sess("other-repo", "factory-review/example-org/other/8", 2*time.Hour),
-				gone, otherAgent,
+				gone, otherAgent, stuck, stuckYoung,
 				sess("pr11-refused", name(11), 2*time.Hour),
 				sess("pr12-unreadable", name(12), 2*time.Hour),
 				sess("pr13-only", name(13), 2*time.Hour),
@@ -183,11 +189,11 @@ func TestSweepDeletesSessionsNoReviewResumes(t *testing.T) {
 
 	// pr11-refused is attempted and refused; every other kept session is
 	// never sent a delete.
-	want := []string{"pr11-refused", "pr7-old", "pr8", "unnamed-idle"}
+	want := []string{"pr11-refused", "pr7-old", "pr7-stuck", "pr8", "unnamed-idle"}
 	if got := c.deletions(); !slices.Equal(got, want) {
 		t.Fatalf("deleted %v, want %v", got, want)
 	}
-	for reason, n := range map[string]float64{cleanupClosed: 1, cleanupSuperseded: 1, cleanupIdle: 1} {
+	for reason, n := range map[string]float64{cleanupClosed: 1, cleanupSuperseded: 1, cleanupIdle: 1, cleanupRetry: 1} {
 		if got := testutil.ToFloat64(m.SessionsDeleted.WithLabelValues("homelab", reason)); got != n {
 			t.Errorf("deleted %s = %v, want %v", reason, got, n)
 		}

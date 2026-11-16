@@ -6,6 +6,7 @@ go_library(
         "delivery.go",
         "notify.go",
         "recovery.go",
+        "sessions.go",
         "status.go",
         "store.go",
         "transcript.go",

@@ -50,6 +50,8 @@ type Tasks interface {
 type Sessions interface {
 	GetSession(ctx context.Context, id string) (*kagent.Session, error)
 	RevertSession(ctx context.Context, id string) (*kagent.Session, error)
+	ListSessions(ctx context.Context, agent kagent.AgentRef, pageToken string) ([]*kagent.Session, string, error)
+	DeleteSession(ctx context.Context, id string) (*kagent.Session, error)
 }
 
 // Agent is an itsaplan agent key the connector claims runs for.
@@ -122,6 +124,8 @@ type Engine struct {
 	// each bounded lookup. The heartbeat goroutine and the tick share it.
 	refusalsMu sync.Mutex
 	refusals   map[refusalKey]refusal
+	// swept is when the tick last swept finished sessions.
+	swept time.Time
 }
 
 // New builds an engine. A nil gh leaves delivery (PRs, review and merge) off.
@@ -296,6 +300,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
 		{"outbox", e.flushOutbox},
+		{"sessions", e.sweepSessions},
 	}
 	for _, p := range phases {
 		if err := p.fn(ctx); err != nil {

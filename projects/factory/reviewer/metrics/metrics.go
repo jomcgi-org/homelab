@@ -121,7 +121,7 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_reviewer_sessions_deleted_total",
 			Help: "Review sessions the reviewer deleted in kagent, with their Substrate snapshots, by binding and reason " +
 				"(closed: the PR is no longer open; superseded: a newer session of the PR exists; idle: unnamed and idle " +
-				"for 12 hours). Each is also logged as \"deleted a review session\".",
+				"for 12 hours; retry: an earlier delete left it DELETING). Each is also logged as \"deleted a review session\".",
 		}, []string{"binding", "reason"}),
 	}
 	if reg != nil {
