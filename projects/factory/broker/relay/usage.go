@@ -109,7 +109,10 @@ func (u *UsageRefresher) check(ctx context.Context) string {
 	u.mu.Lock()
 	u.inFlight = false
 	u.retryAt = time.Time{}
-	if outcome != "refreshed" {
+	// A failed state write leaves the store unreadable until a write
+	// succeeds, so it is retried on the next tick instead of backing off.
+	// Meanwhile the relay blocks nothing and the backend decides.
+	if outcome != "refreshed" && outcome != "store_error" {
 		u.retryAt = u.now().Add(UsageRetryBackoff)
 	}
 	u.mu.Unlock()
@@ -147,6 +150,10 @@ func (u *UsageRefresher) read(ctx context.Context) string {
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	req.Header.Set("ChatGPT-Account-Id", tok.AccountID)
 	req.Header.Set("User-Agent", "codex-cli")
+	// The answer describes the account somewhere between sending and
+	// receiving, so it is stamped at sending: a relayed reading recorded
+	// while the request was in flight is newer and keeps its place.
+	sent := u.now().UTC()
 	resp, err := u.client().Do(req)
 	if err != nil {
 		return "http_error"
@@ -158,12 +165,11 @@ func (u *UsageRefresher) read(ctx context.Context) string {
 	case resp.StatusCode != http.StatusOK:
 		return "http_error"
 	}
-	receivedAt := u.now().UTC()
-	obs, err := codexchatgpt.DecodeUsage(resp.Body, receivedAt)
+	obs, err := codexchatgpt.DecodeUsage(resp.Body, sent)
 	if err != nil {
 		return "decode_error"
 	}
-	if err := u.Quota.PutGrant(u.Tokens.Grant(), QuotaProvider, obs, receivedAt); err != nil {
+	if err := u.Quota.PutGrant(u.Tokens.Grant(), QuotaProvider, obs, sent); err != nil {
 		return "store_error"
 	}
 	return "refreshed"

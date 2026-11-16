@@ -479,7 +479,9 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response) outcome {
 // block: the backend decides, and a redeemed reset can lift the limit before
 // the window resets. A rejection without a reset is left to the backend so a
 // stale reading cannot block forever. While blocked, one request per
-// QuotaProbeInterval goes upstream, and its answer replaces the reading.
+// QuotaProbeInterval goes upstream, and its answer replaces the reading. An
+// unreadable store, as after a failed state write, blocks nothing: a refused
+// call costs nothing.
 func (rl *Relay) quotaBlock(now time.Time) (time.Time, bool) {
 	if rl.Quota == nil {
 		return time.Time{}, false
