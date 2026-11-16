@@ -30,11 +30,17 @@ set -euo pipefail
 echo install >>"$TEST_INSTALL_LOG"
 [[ "${TEST_FAIL_INSTALL:-}" != 1 ]] || exit 17
 [[ "$1" == --root ]]
-mkdir -p "$2/usr/bin" "$2/bin"
-for executable in "$2/usr/bin/node" "$2/bin/grep"; do
-	printf '#!/bin/bash\nexit 0\n' >"$executable"
-	chmod 0755 "$executable"
-done
+mkdir -p "$2/usr/bin" "$2/bin" "$2/usr/share/icu/76.1"
+echo 'fixture data' >"$2/usr/share/icu/76.1/icudt76l.dat"
+cat >"$2/usr/bin/node" <<'NODE'
+#!/bin/bash
+set -euo pipefail
+# ICU data must resolve inside the private runtime, including after relocation.
+[[ "$ICU_DATA" == "${0%/usr/bin/node}/usr/share/icu/76.1" ]]
+test -s "$ICU_DATA/icudt76l.dat"
+NODE
+printf '#!/bin/bash\nexit 0\n' >"$2/bin/grep"
+chmod 0755 "$2/usr/bin/node" "$2/bin/grep"
 cat >"$2/usr/bin/python3" <<'PYTHON'
 #!/bin/bash
 set -euo pipefail
@@ -74,6 +80,7 @@ test "${temp_file%/*}" = "$TMPDIR"
 rm "$temp_file"
 test -x "$(command -v helm)"
 helm version --short
+node --version
 
 # Missing executables must cause a repair even when the inputs match.
 rm "$(command -v helm)"
