@@ -60,6 +60,8 @@ type fakePR struct {
 	// TimelineTruncated reports older timeline events than GitHub lists.
 	TimelineTruncated bool
 	Closed            bool
+	// ClosedAt is when a closed PR closed; zero serves the current time.
+	ClosedAt time.Time
 }
 
 type fakeCheck struct {
@@ -351,6 +353,24 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
+	case r.Method == http.MethodGet && path == "/pulls" && q.Get("state") == "all" && q.Get("sort") == "updated":
+		out := []map[string]any{}
+		for _, pr := range f.sortedPRs() {
+			out = append(out, f.pullJSON(pr))
+		}
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i]["updated_at"].(time.Time).After(out[j]["updated_at"].(time.Time))
+		})
+		f.get(w, r, page(out, q))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/commits/") && strings.HasSuffix(path, "/pulls"):
+		sha := strings.TrimSuffix(strings.TrimPrefix(path, "/commits/"), "/pulls")
+		out := []map[string]any{}
+		for _, pr := range f.sortedPRs() {
+			if !pr.Closed && slices.Contains(pr.Heads, sha) {
+				out = append(out, f.pullJSON(pr))
+			}
+		}
+		f.get(w, r, page(out, q))
 	case r.Method == http.MethodGet && path == "/pulls":
 		if q.Get("state") == "all" {
 			latest := time.Time{}
@@ -631,6 +651,30 @@ func checkJSON(c *fakeCheck) map[string]any {
 		m["started_at"] = c.StartedAt.UTC().Format(time.RFC3339Nano)
 	}
 	return m
+}
+
+// pullJSON is a PR as an all-state or commit listing shows it. A PR is
+// updated when it opens, changes or closes.
+func (f *fakeGitHub) pullJSON(pr *fakePR) map[string]any {
+	updated := pr.Created
+	if pr.Updated.After(updated) {
+		updated = pr.Updated
+	}
+	state, closed := "open", any(nil)
+	if pr.Closed {
+		at := pr.ClosedAt
+		if at.IsZero() {
+			at = f.now().UTC()
+		}
+		if at.After(updated) {
+			updated = at
+		}
+		state, closed = "closed", at
+	}
+	return map[string]any{
+		"number": pr.Number, "state": state, "draft": pr.Draft, "created_at": pr.Created, "updated_at": updated, "closed_at": closed,
+		"head": map[string]any{"sha": pr.Head}, "base": map[string]string{"ref": pr.Base},
+	}
 }
 
 func (f *fakeGitHub) sortedPRs() []*fakePR {

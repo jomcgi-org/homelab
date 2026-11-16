@@ -259,6 +259,12 @@ func approvalByPushes(b *Binding, pr github.PullRequest, events []github.RefActi
 	return ""
 }
 
+// recoveryOnly reports a gate held only because a restart left its PR's
+// context unconfirmed.
+func (g *Gate) recoveryOnly() bool {
+	return g != nil && g.RecoveryEpoch != "" && !g.SharedHead && len(g.Paths)+len(g.Labels)+len(g.Findings) == 0
+}
+
 // held reports whether the service itself holds the head, by path or label.
 func (g *Gate) held() bool {
 	return g != nil && (g.SharedHead || g.RecoveryEpoch != "" || len(g.Paths)+len(g.Labels) > 0)

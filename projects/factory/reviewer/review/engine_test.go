@@ -1183,6 +1183,7 @@ func TestStartupRecoveryUsesCausalApprovalDespiteClockSkew(t *testing.T) {
 			h.gh.mu.Unlock()
 			_, _, stop := startPassedReview(t, h)
 			stop()
+			h.gh.withLock(func() { h.gh.prs[7].TimelineTruncated = true }) // Recovery cannot list every head.
 			h.startupRecovery = true
 			reads := "GET /repos/" + testRepo + "/pulls/7/reviews"
 			if count == 0 {
@@ -1210,11 +1211,14 @@ func TestStartupBoundaryIncludesClosedPRsAndAllowsLaterPRs(t *testing.T) {
 	h.startupRecovery = true
 	boundary := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
 	h.gh.addPR(&fakePR{Number: 8, Head: strings.Repeat("b", 40), Created: boundary, Closed: true})
+	// Closed duplicates no process observed: only recovery can find them.
+	h.gh.addPR(&fakePR{Number: 10, Head: strings.Repeat("b", 40), Created: boundary.Add(-time.Minute), Closed: true, ClosedAt: boundary.Add(2 * time.Second)})
+	h.gh.addPR(&fakePR{Number: 11, Head: strings.Repeat("c", 40), Created: boundary.Add(-time.Minute), Closed: true, ClosedAt: boundary.Add(2 * time.Second)})
 	e, ctx, _ := h.start()
 	e.Tick(ctx)
 	eventually(t, "the startup task", func() bool { return h.taskOn(7, shaA, 1) != "" })
 	h.k.finishOpen(kagent.StateCompleted, report(t, passing))
-	eventually(t, "the startup hold", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the recovered startup pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
 	eventually(t, "the completed worker", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.withLock(func() { h.gh.prs[8].Closed = false })
 	h.gh.addPR(&fakePR{Number: 9, Head: strings.Repeat("c", 40), Created: boundary.Add(time.Second)})
@@ -1225,6 +1229,218 @@ func TestStartupBoundaryIncludesClosedPRsAndAllowsLaterPRs(t *testing.T) {
 		h.k.finish(h.taskOn(n, head, 1), kagent.StateCompleted, report(t, passing))
 		eventually(t, "the later check", func() bool { return h.gh.check(head).Status == "completed" })
 		failIf(t, (h.gh.check(head).Conclusion == ConclusionSuccess) != (n == 9), "reopened PR borrowed the new PR exemption")
+	}
+}
+
+// restartAfterPass passes PR 7's head in one process, stops it, applies
+// change while no process runs, and starts the next process with startup
+// recovery.
+func restartAfterPass(t *testing.T, h *harness, change func()) (*Engine, context.Context, func()) {
+	t.Helper()
+	_, _, stop := startPassedReview(t, h)
+	stop()
+	if change != nil {
+		change()
+	}
+	h.startupRecovery = true
+	return h.start()
+}
+
+func TestRestartRecoversContextWithoutAHold(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprint("running ", running), func(t *testing.T) {
+			h := newPR7Harness(t)
+			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+			e, ctx, stop := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			if !running {
+				completeReview(t, h, task, shaA, "the pass before the restart")
+				eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			}
+			stop()
+			n := h.gh.checkCount()
+			h.startupRecovery = true
+			e, ctx, _ = h.start()
+			if running {
+				h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			}
+			e.Tick(ctx)
+			eventually(t, "the recovered review", func() bool { return h.gh.check(shaA).Status == "completed" })
+			failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess || h.gh.checkCount() != n, "a recoverable restart held the PR")
+			failIf(t, h.gh.countCalls("GET /repos/"+testRepo+"/commits/"+shaA+"/pulls") != 1, "the restart did not recover the PR's context exactly once")
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			e.Tick(ctx)
+			failIf(t, len(h.gh.enqueues()) != 1, "the recovered pass was not enqueued: %v", h.gh.enqueues())
+			tasks, _ := h.k.state()
+			failIf(t, tasks != 1, "recovery started %d model tasks, want 1", tasks)
+		})
+	}
+}
+
+func TestUnreadableRecoveryBlocksUntilItsReadSucceeds(t *testing.T) {
+	h := newPR7Harness(t)
+	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+	lookup := "GET /repos/" + testRepo + "/commits/" + shaA + "/pulls"
+	e, ctx, _ := restartAfterPass(t, h, func() {
+		h.gh.withLock(func() {
+			h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+		})
+		h.gh.failWith(lookup, 502)
+	})
+	passed := h.gh.check(shaA).ID
+	e.Tick(ctx)
+	group := h.gh.check("mg-7")
+	failIf(t, group == nil || group.Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0, "an unconfirmed context authorized its head")
+	failIf(t, h.gh.check(shaA).ID != passed, "a failed recovery read wrote a hold")
+	h.gh.failWith(lookup, 0)
+	h.gh.withLock(func() { h.gh.queue = nil })
+	e.Tick(ctx)
+	failIf(t, h.gh.check(shaA).ID != passed || len(h.gh.enqueues()) != 1, "the confirmed context was not enqueued on its pass")
+}
+
+func TestForeignPassIsRevokedBeforeRecoveryCanBeRead(t *testing.T) {
+	h := newPR7Harness(t)
+	e, ctx, _ := restartAfterPass(t, h, func() {
+		h.gh.withLock(func() { h.gh.prs[7].Closed = true })
+		h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+		h.gh.failGraphQL("heads", true)
+	})
+	e.Tick(ctx)
+	check := h.gh.check(shaA)
+	failIf(t, check.Conclusion != ConclusionFailure || !strings.Contains(check.Summary, duplicateHeadMarker), "a failed recovery read kept PR 7's pass for PR 8")
+	failIf(t, h.taskOn(8, shaA, 1) != "", "PR 8's review started before its context was recovered")
+	h.gh.failGraphQL("heads", false)
+	e.Tick(ctx)
+	eventually(t, "PR 8's own review", func() bool { return h.taskOn(8, shaA, 1) != "" })
+}
+
+func TestUnrecoverableContextHoldsOnceAcrossRestarts(t *testing.T) {
+	h := newPR7Harness(t)
+	e, ctx, stop := restartAfterPass(t, h, func() { h.gh.withLock(func() { h.gh.prs[7].TimelineTruncated = true }) })
+	e.Tick(ctx)
+	check := h.gh.check(shaA)
+	failIf(t, check.Conclusion != ConclusionFailure || !strings.Contains(check.Summary, "after reviewer recovery"), "a truncated head history did not hold: %s", check.Summary)
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "after the recovery hold")
+	e.Tick(ctx)
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess, "approval did not clear the recovery hold")
+	stop()
+	n := h.gh.checkCount()
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	failIf(t, h.gh.check(shaA).Conclusion != ConclusionSuccess || h.gh.checkCount() != n, "a later restart reset an approved recovery hold")
+}
+
+func TestRestartRecoveryHoldsForLostDuplicatesAndLabels(t *testing.T) {
+	headB, headC := strings.Repeat("b", 40), strings.Repeat("c", 40)
+	for _, tc := range []struct {
+		name   string
+		change func(*harness)
+		head   string
+		held   bool
+	}{
+		{name: "closed duplicate", change: func(h *harness) { h.gh.addPR(&fakePR{Number: 8, Head: shaA, Closed: true}) }, held: true},
+		{name: "draft duplicate", change: func(h *harness) { h.gh.addPR(&fakePR{Number: 8, Head: shaA, Draft: true}) }, held: true},
+		{name: "retargeted duplicate", change: func(h *harness) { h.gh.addPR(&fakePR{Number: 8, Head: shaA, Base: "release"}) }, held: true},
+		{name: "duplicate moved on", change: func(h *harness) {
+			h.gh.addPR(&fakePR{Number: 8, Head: headC, Heads: []string{shaA, headC}})
+		}, held: true},
+		{name: "duplicate of an earlier head", change: func(h *harness) {
+			h.gh.addPR(&fakePR{Number: 8, Head: shaA, Closed: true})
+			h.gh.push(7, headB)
+		}, head: headB, held: true},
+		{name: "removed hold label", change: func(h *harness) { h.gh.label(7, "human"); h.gh.label(7) }, held: true},
+		{name: "closed before this PR opened", change: func(h *harness) {
+			created := h.gh.prs[7].Created
+			h.gh.addPR(&fakePR{Number: 6, Head: shaA, Created: created.Add(-2 * time.Hour), Closed: true, ClosedAt: created.Add(-time.Hour)})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPR7Harness(t)
+			e, ctx, _ := restartAfterPass(t, h, func() { tc.change(h) })
+			head := shaA
+			if tc.head != "" {
+				head = tc.head
+				completeReview(t, h, runReview(t, h, e, ctx, 7, head), head, "the new head's review")
+			} else {
+				e.Tick(ctx)
+			}
+			check := h.gh.check(head)
+			failIf(t, (check.Conclusion == ConclusionFailure) != tc.held, "held = %v, want %v: %s", check.Conclusion == ConclusionFailure, tc.held, check.Summary)
+			st, _ := LoadState(check.Text)
+			failIf(t, tc.held && st.Gate.RecoveryEpoch != "", "recovered evidence became an unconfirmed-context hold")
+		})
+	}
+}
+
+func TestOldRecoveryOnlyHoldsAreReevaluated(t *testing.T) {
+	blocking := map[string]any{"summary": "Adds x.", "findings": []any{
+		map[string]any{"id": "x.go#validation", "severity": "medium", "path": "x.go", "line": 3, "title": "No test"},
+	}}
+	for _, tc := range []struct {
+		name        string
+		setup       func(*harness)
+		result      map[string]any
+		recoverable bool
+		newHead     bool
+		cleared     bool
+	}{
+		{name: "recovery only", recoverable: true, cleared: true},
+		{name: "recovery only on an earlier head", recoverable: true, newHead: true, cleared: true},
+		{name: "recovery only, still unrecoverable"},
+		{name: "recovery and blocking findings", result: blocking, recoverable: true, cleared: true},
+		{name: "recovery and a label", setup: func(h *harness) { h.gh.label(7, "human") }, recoverable: true},
+		{name: "recovery and a gated path", setup: func(h *harness) {
+			h.gh.prs[7].Files = []github.PullRequestFile{{Path: "REVIEW.md", Status: "modified", Additions: 1}}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "before the old hold")
+		}, recoverable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPR7Harness(t)
+			if tc.setup != nil {
+				tc.setup(h)
+			}
+			result := passing
+			if tc.result != nil {
+				result = tc.result
+			}
+			e, ctx, stop := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, result))
+			eventually(t, "the first review", func() bool { return h.gh.check(shaA).Status == "completed" })
+			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			stop()
+			// An earlier process holds the head for its restart alone.
+			h.gh.withLock(func() { h.gh.prs[7].TimelineTruncated = true })
+			h.startupRecovery = true
+			e, ctx, stop = h.start()
+			e.Tick(ctx)
+			old := h.gh.check(shaA)
+			before, _ := LoadState(old.Text)
+			failIf(t, old.Conclusion != ConclusionFailure || before.Gate.RecoveryEpoch == "", "the earlier process did not hold the head: %s", old.Summary)
+			stop()
+			h.gh.withLock(func() { h.gh.prs[7].TimelineTruncated = !tc.recoverable })
+			head := shaA
+			if tc.newHead {
+				head = strings.Repeat("b", 40)
+				h.gh.push(7, head)
+			}
+			n := h.gh.checkCount()
+			e, ctx, _ = h.start()
+			if tc.newHead {
+				completeReview(t, h, runReview(t, h, e, ctx, 7, head), head, "the new head's review")
+			} else {
+				e.Tick(ctx)
+			}
+			check := h.gh.check(head)
+			st, _ := LoadState(check.Text)
+			if !tc.cleared {
+				failIf(t, h.gh.checkCount() != n || check.Conclusion != ConclusionFailure, "a hold with another reason or an unconfirmed context changed")
+				failIf(t, st.Gate.RecoveryEpoch != before.Gate.RecoveryEpoch || st.Gate.ApprovalNonce != before.Gate.ApprovalNonce, "the kept hold was rebound to the new process")
+				return
+			}
+			failIf(t, st.Gate != nil && st.Gate.RecoveryEpoch != "", "the old recovery-only hold was kept")
+			failIf(t, strings.Contains(check.Summary, "after reviewer recovery"), "the check still asks for recovery approval: %s", check.Summary)
+			failIf(t, (check.Conclusion == ConclusionSuccess) != (tc.result == nil), "conclusion %s after the hold cleared", check.Conclusion)
+		})
 	}
 }
 
@@ -1695,6 +1911,7 @@ func TestDuplicateHoldSurvivesNewHeadsAndLostWritesAcrossRestart(t *testing.T) {
 
 func TestInheritedRecoveryCannotBorrowAnotherPRsReviewSnapshot(t *testing.T) {
 	h := newPR7Harness(t)
+	h.gh.prs[7].TimelineTruncated = true // PR 7's context cannot be confirmed.
 	h.startupRecovery = true
 	e, ctx, _ := h.start()
 	e.Tick(ctx)

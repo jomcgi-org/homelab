@@ -40,6 +40,8 @@ type GitHub interface {
 	PullRequestCommits(ctx context.Context, repo string, number int, head string) ([]github.PullRequestCommit, error)
 	PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]github.LabelEvent, error)
 	PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error)
+	PullRequestsUpdatedSince(ctx context.Context, repo string, since time.Time) ([]github.UpdatedPullRequest, bool, error)
+	CommitPullRequests(ctx context.Context, repo, sha string) ([]github.PullRequest, bool, error)
 	PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*github.ReviewAcknowledgement, error)
 	PullRequestComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
 	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
@@ -152,6 +154,7 @@ type Engine struct {
 	inflight     map[headKey]*running
 	pendingHolds map[headKey]*github.CheckRun
 	contexts     map[string]*heldContext
+	recoveries   map[prKey]recovery
 	wg           sync.WaitGroup
 
 	// heads (under mu) is each listed PR's head. commentMu serializes
@@ -293,7 +296,8 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
-		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
+		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
+		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
 		heads: map[prKey]string{}, comments: map[prKey]github.Comment{},
 	}
 }
@@ -359,6 +363,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	e.noteHeads(b, prs, complete)
 	prioritize(b, prs)
 	counts, labels := readyHeads(b, prs)
+	scan := e.recoveryScan(b, prs)
 
 	var attach, start []candidate
 	reviews := map[int]*github.CheckRun{}
@@ -392,17 +397,21 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		reviews[pr.Number] = run
+		foreign := run != nil && run.ExternalID != MessageID(repo, pr.Number, pr.HeadSHA)
+		recovered := e.recoverPR(ctx, b, pr, scan)
 		switch {
+		case !recovered && (sharedHeadHeld(run) || !foreign):
+			reviews[pr.Number] = nil // An unconfirmed context must also fail a queued group.
 		case sharedHeadHeld(run):
 			// A resolved duplicate needs its remaining PR reviewed afresh.
 			start = append(start, candidate{pr, run})
-		case run != nil && run.ExternalID != MessageID(repo, pr.Number, pr.HeadSHA):
+		case foreign:
 			// A replacement PR cannot inherit an earlier PR's unknown holds.
 			if run.Status != "completed" {
 				e.cancelTask(ctx, b, RecordedTask(run.Summary).ID, e.prLog(b, pr))
 			}
 			reviews[pr.Number] = e.holdSharedHead(ctx, b, pr, run, labels[pr.HeadSHA])
-			if reviews[pr.Number] != nil {
+			if reviews[pr.Number] != nil && recovered {
 				start = append(start, candidate{pr, reviews[pr.Number]})
 			}
 		case run == nil || (run.Status == "completed" && run.Conclusion == ConclusionCancelled):
@@ -630,20 +639,192 @@ func (e *Engine) reviewCheck(ctx context.Context, b *Binding, sha string) (*gith
 	return latest, nil
 }
 
-// recoveryGate covers lost observations, including PRs reopened after startup.
-func (e *Engine) recoveryGate(b *Binding, pr github.PullRequest, gate *Gate) (*Gate, bool) {
-	if b.startupBefore != nil && !pr.CreatedAt.IsZero() && pr.CreatedAt.After(*b.startupBefore) && (gate == nil || gate.RecoveryEpoch == "") {
-		return gate, false
+// recovery is what this process established about a PR whose observations
+// an earlier process may have held only in memory. A restart loses only the
+// shared-head observations whose check writes all failed: labels have
+// GitHub's label history, and every other hold is in a check run's state.
+type recovery int
+
+const (
+	recoveryPending recovery = iota // not read yet
+	recoveryClear                   // durable reads show nothing lost
+	recoveryShared                  // another PR is or was at one of its heads
+	recoveryUnknown                 // a read was bounded; its context stays unconfirmed
+)
+
+func (r recovery) String() string {
+	return [...]string{"pending", "clear", "shared", "unknown"}[r]
+}
+
+// recoveryOf is the PR's recovery. A PR created after startup lost nothing.
+func (e *Engine) recoveryOf(b *Binding, pr github.PullRequest) recovery {
+	if b.startupBefore != nil && !pr.CreatedAt.IsZero() && pr.CreatedAt.After(*b.startupBefore) {
+		return recoveryClear
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.recoveries[prKey{b.Name, pr.Number}]
+}
+
+// recoveryGate applies the PR's recovery to its gate. A gate an earlier
+// process held only for recovery clears once this process confirms the PR's
+// context; a recovery hold with any other reason stays as it is.
+func (e *Engine) recoveryGate(b *Binding, pr github.PullRequest, gate *Gate) (*Gate, bool) {
+	r := e.recoveryOf(b, pr)
 	if gate == nil {
+		if r == recoveryClear {
+			return nil, false
+		}
 		gate = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
 	}
-	if gate.RecoveryEpoch == e.epoch && gate.RecoveryPR == pr.Number {
-		return gate, false
+	hold := func() bool {
+		gate.RecoveryEpoch, gate.RecoveryPR = e.epoch, pr.Number
+		gate.resetApproval(e.cfg.Now())
+		return true
 	}
-	gate.RecoveryEpoch, gate.RecoveryPR = e.epoch, pr.Number
-	gate.resetApproval(e.cfg.Now())
-	return gate, true
+	changed := false
+	if gate.RecoveryEpoch != "" && gate.RecoveryPR != pr.Number {
+		changed = hold() // Another PR's recovery baseline cannot approve this PR.
+	}
+	switch r {
+	case recoveryClear:
+		if gate.recoveryOnly() && gate.RecoveryEpoch != e.epoch {
+			gate.RecoveryEpoch, gate.RecoveryPR = "", 0
+			gate.ApprovalAfter, gate.ApprovalSnapshot, gate.ApprovalNonce, gate.Approver = time.Time{}, nil, "", ""
+			changed = true
+		}
+	case recoveryShared:
+		if !gate.SharedHead {
+			gate.SharedHead = true
+			gate.resetApproval(e.cfg.Now())
+			changed = true
+		}
+	default:
+		if gate.RecoveryEpoch == "" {
+			changed = hold()
+		}
+	}
+	return gate, changed
+}
+
+// recentPRs is what one poll's recoveries compare heads with: its open PR
+// listing, and the PRs updated since the oldest PR it recovers, back to
+// covered.
+type recentPRs struct {
+	open           []github.PullRequest
+	since, covered time.Time
+	read           bool
+	prs            []github.UpdatedPullRequest
+	err            error
+}
+
+// recoveryScan bounds the poll's listing of recently updated PRs by the
+// oldest ready PR whose recovery is pending.
+func (e *Engine) recoveryScan(b *Binding, prs []github.PullRequest) *recentPRs {
+	scan := &recentPRs{open: prs}
+	for _, pr := range prs {
+		if pr.Draft || pr.HeadSHA == "" || pr.CreatedAt.IsZero() || b.skipped(&pr) {
+			continue // Never recovered, so never compared.
+		}
+		if e.recoveryOf(b, pr) == recoveryPending && (scan.since.IsZero() || pr.CreatedAt.Before(scan.since)) {
+			scan.since = pr.CreatedAt
+		}
+	}
+	return scan
+}
+
+// recoverPR reads, once per process, whether a restart could have lost a
+// hold on the PR. It reports false after a failed read: the PR then gets
+// no review, pass or enqueue this poll, and the next poll reads again.
+func (e *Engine) recoverPR(ctx context.Context, b *Binding, pr github.PullRequest, scan *recentPRs) bool {
+	if e.recoveryOf(b, pr) != recoveryPending {
+		return true
+	}
+	r, err := e.readRecovery(ctx, b, pr, scan)
+	if err != nil {
+		return false
+	}
+	e.mu.Lock()
+	e.recoveries[prKey{b.Name, pr.Number}] = r
+	e.mu.Unlock()
+	e.prLog(b, pr).InfoContext(ctx, "review context recovered", "recovery", r.String())
+	return true
+}
+
+// readRecovery looks for a lost shared-head observation. Every head the
+// PR's timeline lists is matched against the heads of the open PRs into the
+// base and of every PR updated since the PR opened, in any state and into
+// any base; a PR that closed before this one opened never shared with it.
+// The open PRs GitHub associates with the current head show a duplicate
+// that moved on from it. A bounded or truncated read leaves the context
+// unknown.
+func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullRequest, scan *recentPRs) (recovery, error) {
+	l := e.prLog(b, pr)
+	if pr.CreatedAt.IsZero() {
+		return recoveryUnknown, nil
+	}
+	hist, err := e.gh.PullRequestHeads(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID})
+	if err != nil {
+		e.ghError(ctx, l, b, "pull_request_heads", err)
+		return recoveryPending, err
+	}
+	if hist.Truncated {
+		return recoveryUnknown, nil
+	}
+	if _, _, unknown, err := e.previousStateFrom(ctx, b, pr, hist); err != nil {
+		return recoveryPending, err
+	} else if unknown != "" {
+		return recoveryUnknown, nil // An earlier head's gate may not have carried forward.
+	}
+	if !scan.read {
+		scan.read = true
+		var complete bool
+		scan.prs, complete, scan.err = e.gh.PullRequestsUpdatedSince(ctx, b.repo(), scan.since)
+		switch n := len(scan.prs); {
+		case scan.err != nil:
+			e.ghError(ctx, l, b, "recent_pulls", scan.err)
+		case complete:
+			scan.covered = scan.since
+		case n > 0:
+			scan.covered = scan.prs[n-1].UpdatedAt
+		default:
+			scan.covered = time.Unix(1<<40, 0) // Nothing is covered.
+		}
+	}
+	if scan.err != nil {
+		return recoveryPending, scan.err
+	}
+	if pr.CreatedAt.Before(scan.covered) {
+		return recoveryUnknown, nil
+	}
+	heads := map[string]bool{pr.HeadSHA: true}
+	for _, h := range hist.Heads {
+		heads[h.SHA] = true
+	}
+	for _, q := range scan.prs {
+		if q.Number != pr.Number && heads[q.HeadSHA] && (q.ClosedAt.IsZero() || !q.ClosedAt.Before(pr.CreatedAt)) {
+			return recoveryShared, nil
+		}
+	}
+	for _, q := range scan.open {
+		if q.Number != pr.Number && heads[q.HeadSHA] {
+			return recoveryShared, nil
+		}
+	}
+	assoc, complete, err := e.gh.CommitPullRequests(ctx, b.repo(), pr.HeadSHA)
+	if err != nil {
+		e.ghError(ctx, l, b, "commit_pulls", err)
+		return recoveryPending, err
+	}
+	if !complete {
+		return recoveryUnknown, nil
+	}
+	for _, q := range assoc {
+		if q.Number != pr.Number && (q.HeadSHA == pr.HeadSHA || q.BaseRef == b.BaseBranch) {
+			return recoveryShared, nil
+		}
+	}
+	return recoveryClear, nil
 }
 
 // begin starts a review in the background, creating its check run first
@@ -1099,6 +1280,10 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 		e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
 		return State{}, "", "", err
 	}
+	return e.previousStateFrom(ctx, b, pr, hist)
+}
+
+func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) (st State, head, unknown string, err error) {
 	seen := map[string]bool{pr.HeadSHA: true}
 	looked := 0
 	for i := len(hist.Heads) - 1; i >= 0; i-- {
@@ -1443,16 +1628,24 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	gate, retained := e.retainGate(b, pr, gate, priorNonce != gate.ApprovalNonce)
 	changed = changed || retained
 	if !gate.Needed() {
-		if strings.Contains(run.Summary, labelHistoryMarker) {
-			if len(st.Blocking) > 0 {
-				return e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Blocking findings remain",
-					"The complete label history contains no human hold. The review's other blocking findings still need to be resolved.",
-					&CommentUpdate{Verdict: VerdictChanges, Headline: "Blocking findings remain"}, e.prLog(b, pr)), true
-			}
-			return e.gateCheck(ctx, b, pr, run, st, ConclusionSuccess, "Hold history checked", "The complete label history contains no human hold.",
-				&CommentUpdate{Verdict: VerdictApproved, Headline: "No blocking findings"}, e.prLog(b, pr)), true
+		// Complete label history ends a wait for it; a confirmed context
+		// ends a hold an earlier process placed only for its restart.
+		history := strings.Contains(run.Summary, labelHistoryMarker)
+		if !history && (!recovery || run.Conclusion == ConclusionSuccess) {
+			return run, false
 		}
-		return run, false
+		title, why := "Hold history checked", "The complete label history contains no human hold."
+		if !history {
+			title, why = "Review context recovered", "The reviewer confirmed this PR's context from GitHub after its restart, so no human hold remains."
+		}
+		st.Gate = gate
+		if len(st.Blocking) > 0 {
+			return e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, "Blocking findings remain",
+				why+" The review's other blocking findings still need to be resolved.",
+				&CommentUpdate{Verdict: VerdictChanges, Headline: "Blocking findings remain"}, e.prLog(b, pr)), true
+		}
+		return e.gateCheck(ctx, b, pr, run, st, ConclusionSuccess, title, why,
+			&CommentUpdate{Verdict: VerdictApproved, Headline: "No blocking findings"}, e.prLog(b, pr)), true
 	}
 	// Unreadable approval closes a pass, but creates no new sticky hold.
 	before := gate.ApprovalSnapshot
