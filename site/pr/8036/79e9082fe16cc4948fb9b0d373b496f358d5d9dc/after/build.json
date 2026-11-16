@@ -1,0 +1,12 @@
+{
+  "commit": "79e9082fe16cc4948fb9b0d373b496f358d5d9dc",
+  "suites": [
+    "blog",
+    "factory",
+    "review",
+    "trips",
+    "stars",
+    "agents"
+  ],
+  "scope": "synthetic fixtures only"
+}
