@@ -262,11 +262,16 @@ type IssueRef struct {
 	Archived   bool   `json:"archived"`
 }
 
+// IssueLink is the relation as read from this issue. In v1.10.0,
+// blocked_by is stored as blocks and returned with an inward direction.
 type IssueLink struct {
 	Kind      string   `json:"kind"`
 	Direction string   `json:"direction"`
 	Issue     IssueRef `json:"issue"`
 }
+
+// BlockedBy excludes outward, unrelated and undirected links.
+func (l IssueLink) BlockedBy() bool { return l.Kind == "blocks" && l.Direction == "inward" }
 
 // DevelopmentLink retains only fields that prompts can reduce to fixed classes
 // and numbers. Provider text has no trusted reviewer provenance in itsaplan.

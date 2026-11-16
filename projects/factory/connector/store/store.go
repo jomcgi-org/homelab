@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	_ "github.com/lib/pq" // registers the postgres driver
 )
 
@@ -229,6 +230,9 @@ type Run struct {
 	Origin          string // OriginItsaplan or OriginConnector
 	StopRequested   bool   // stop or supersession survives a new admission
 	StoppedReason   string
+	HoldReason      string
+	AdmissionStops  int             // stop counter observed on the first claim, never redelivery
+	AdmissionIssue  *itsaplan.Issue // poll-local issue read; its brief persists only with a delivery attempt
 }
 
 // Run origins. A connector run is a review round the connector started; it
@@ -244,14 +248,14 @@ func (r *Run) Connector() bool { return r.Origin == OriginConnector }
 const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0), coalesce(issue_key, ''),
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
 	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, ''),
-	origin, stopped_reason IS NOT NULL, coalesce(stopped_reason, '')`
+	origin, stopped_reason IS NOT NULL, coalesce(stopped_reason, ''), hold_reason, admission_stops`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
 	err := row.Scan(&r.ID, &r.AgentKey, &r.WorkItemID, &r.IssueID, &r.IssueKey, &r.Trigger,
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
 		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin,
-		&r.StopRequested, &r.StoppedReason)
+		&r.StopRequested, &r.StoppedReason, &r.HoldReason, &r.AdmissionStops)
 	return r, err
 }
 
@@ -286,8 +290,9 @@ func (s *Store) RecordClaim(ctx context.Context, c ClaimedRun) (*Run, ClaimOutco
 		existing, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runCols+` FROM run WHERE id = $1 FOR UPDATE`, c.ID))
 		if errors.Is(err, sql.ErrNoRows) {
 			run, err = scanRun(tx.QueryRowContext(ctx, `
-				INSERT INTO run (id, agent_key, issue_id, issue_key, trigger, prompt, system_prompt, attempt, state)
-				VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5, $6, $7, $8, 'claimed')
+				INSERT INTO run (id, agent_key, issue_id, issue_key, trigger, prompt, system_prompt, attempt, state, admission_stops)
+				VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5, $6, $7, $8, 'claimed',
+					coalesce((SELECT stops FROM work_item WHERE issue_id = $3), 0))
 				RETURNING `+runCols,
 				c.ID, c.AgentKey, c.IssueID, c.IssueKey, c.Trigger, c.Prompt, c.SystemPrompt, c.Attempt))
 			outcome = ClaimNew
@@ -344,6 +349,7 @@ func (s *Store) CountActiveRuns(ctx context.Context, agentKey string) (int, erro
 	var n int
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT count(*) FROM run r WHERE r.agent_key = $1 AND r.state NOT IN ('closed', 'stale')
+			AND r.hold_reason = ''
 			AND NOT (r.state = 'waiting' AND EXISTS (
 				SELECT 1 FROM work_item w
 				LEFT JOIN grant_block g ON g.scope = 'kagent:' || w.kagent_namespace || '/' || w.kagent_agent
@@ -522,6 +528,26 @@ type NewWorkItem struct {
 func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem) (w *WorkItem, reassigned bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		w, err = scanWork(tx.QueryRowContext(ctx, `SELECT `+workCols+` FROM work_item WHERE issue_id = $1 FOR UPDATE`, n.IssueID))
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		// Lock the run after the work item, in StopIssue's order. An
+		// operator stop of a held run, linked or not, stands.
+		var runStopped bool
+		if err := tx.QueryRowContext(ctx, `SELECT stopped_reason IS NOT NULL FROM run WHERE id = $1 FOR UPDATE`,
+			runID).Scan(&runStopped); err != nil {
+			return err
+		}
+		if runStopped {
+			return ErrAdmissionStopped
+		}
+		// Admission links a held run only when it is released, so a newer
+		// delegation to another agent may already exist. It owns the issue.
+		if superseded, err := s.Superseded(ctx, tx, runID); err != nil {
+			return err
+		} else if superseded {
+			return ErrSuperseded
+		}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			w, err = scanWork(tx.QueryRowContext(ctx, `
@@ -535,6 +561,17 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 		case err != nil:
 			return err
 		default:
+			// Keep the stop boundary stable under the same row lock as
+			// StopWork. Admission may have spent time reading dependencies.
+			var stopped bool
+			if err := tx.QueryRowContext(ctx, `SELECT w.stops > r.admission_stops
+				FROM work_item w JOIN run r ON r.id = $2
+				WHERE w.id = $1`, w.ID, runID).Scan(&stopped); err != nil {
+				return err
+			}
+			if stopped {
+				return ErrAdmissionStopped
+			}
 			reassigned = w.AgentKey != n.AgentKey
 			w, err = scanWork(tx.QueryRowContext(ctx, `
 				UPDATE work_item SET agent_key = $2,

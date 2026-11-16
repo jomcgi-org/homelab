@@ -260,6 +260,33 @@ func TestGetAttachmentsReadsOnlyNames(t *testing.T) {
 	}
 }
 
+// Wire shape verified against croffasia/itsaplan v1.10.0 issues/links.ts:
+// GET /issues/:id includes all relations, including archived other ends.
+func TestIssueDependencyDirections(t *testing.T) {
+	var got seen
+	c := server(t, 200, `{"id":41,"identifier":"HL-3","description":"Brief","links":[
+		{"id":1,"kind":"blocks","direction":"inward","issue":{"id":42,"identifier":"HL-4","columnId":9,"archived":true}},
+		{"id":2,"kind":"blocks","direction":"outward","issue":{"id":43}},
+		{"id":3,"kind":"blocks","issue":{"id":44}},
+		{"id":4,"kind":"relates","direction":"inward","issue":{"id":45}}
+	]}`, &got)
+	is, err := c.GetIssue(context.Background(), 41)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "GET" || got.path != "/issues/41" || got.key != "k-coord" {
+		t.Fatalf("request = %+v", got)
+	}
+	if len(is.Links) != 4 || is.Links[0].Issue.ID != 42 || is.Links[0].Issue.Identifier != "HL-4" || is.Links[0].Issue.ColumnID != 9 {
+		t.Fatalf("links = %+v", is.Links)
+	}
+	for i, link := range is.Links {
+		if link.BlockedBy() != (i == 0) {
+			t.Fatalf("wrong dependency direction: %+v", link)
+		}
+	}
+}
+
 func TestProjectColumnsAndMoveIssueUseTheCoordinator(t *testing.T) {
 	var got seen
 	c := server(t, 200, `{"id":1,"key":"HL","columns":[{"id":4,"name":"Doing","stateType":"started"},{"id":9,"name":"Done","stateType":"completed"}]}`, &got)

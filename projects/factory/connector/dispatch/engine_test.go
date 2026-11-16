@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -1177,12 +1178,16 @@ func TestDispatchResumesRecordedAttempt(t *testing.T) {
 	// A failed run-state write used to leave the run claimed beside its
 	// recorded attempt; the run state now commits with the attempt.
 	v.failOnce("run", "TG_OP = 'UPDATE' AND NEW.state = 'dispatched'")
-	// The claim's send fails with its run-state write; the same pass's run
-	// step records and sends again without a duplicate message ID.
+	// The failed transaction leaves neither an attempt nor a send. Admission
+	// runs once per poll, so the next poll retries the rolled-back decision.
 	v.tick(v.e)
 	if !v.injected("run") {
 		t.Fatal("the failure was not injected")
 	}
+	if a, err := v.st.LatestAttempt(v.ctx, 1); err != nil || a != nil || len(v.kg.Sends()) != 0 {
+		t.Fatalf("failed run-state write escaped rollback: attempt=%+v, err=%v", a, err)
+	}
+	v.tick(v.e)
 	if n, _ := v.st.CountSends(v.ctx, 1); n != 1 {
 		t.Fatalf("attempts = %d, want 1", n)
 	}
@@ -1229,13 +1234,17 @@ func TestReassignmentCancellationCommitsWithEpoch(t *testing.T) {
 	epoch := v.work(101).Epoch
 	v.failOnce("cancellation", "TG_OP = 'INSERT'")
 	v.its.add(2, "coder-b", 101, "HL-1", "Take over.")
-	// The claim's reassignment fails with its cancellation and rolls back;
-	// the same pass's run step bumps the epoch once.
+	// Reassignment and cancellation roll back together. The next admission
+	// poll retries and bumps the epoch exactly once.
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if !v.injected("cancellation") {
 		t.Fatal("the failure was not injected")
 	}
+	if w := v.work(101); w.Epoch != epoch || w.AgentKey != "coder" || len(v.pendingCancellations()) != 0 {
+		t.Fatalf("failed cancellation escaped rollback: work=%+v", w)
+	}
+	v.tick(v.e)
 	if w := v.work(101); w.Epoch != epoch+1 {
 		t.Fatalf("epoch = %d, want %d", w.Epoch, epoch+1)
 	}
@@ -3155,12 +3164,10 @@ func TestRefusedReplacementIssueWaitsForAuthoritativeText(t *testing.T) {
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	v.kg.expire(v.work(101).SessionID)
-	v.its.mu.Lock()
-	v.its.issueErr = &itsaplan.HTTPError{Status: 401, Body: "invalid api key"}
-	v.its.mu.Unlock()
 	v.its.add(2, "coder", 101, "HL-1", "Address review.")
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+	v.setIssueErr(&itsaplan.HTTPError{Status: 401, Body: "invalid api key"})
 	v.attestLifecycleRecovery(1)
 	if sends := v.kg.Sends(); len(sends) != 1 {
 		t.Fatalf("sends = %d, want the replacement to wait", len(sends))
@@ -3190,7 +3197,9 @@ func TestIssueIsQuotedOnlyWhenASessionOpens(t *testing.T) {
 	v.its.issues[101].Checklists = []itsaplan.Checklist{{Title: "Done when", Items: []itsaplan.ChecklistItem{{Content: "Verify the brief", Done: true}}}}
 	v.its.issues[101].Subtasks = []itsaplan.IssueRef{{Identifier: "HL-2", Title: "Add tests", ColumnID: 2}}
 	v.its.issues[101].Parent = &itsaplan.IssueRef{Identifier: "HL-3", Title: "Improve tickets", ColumnID: 3}
-	v.its.issues[101].Links = []itsaplan.IssueLink{{Kind: "blocks", Direction: "inward", Issue: itsaplan.IssueRef{Identifier: "HL-4", Title: "Define the API", ColumnID: 4}}}
+	// Admission reads the blocker and admits the run only once it is Done.
+	v.its.issues[104] = &itsaplan.Issue{ID: 104, Identifier: "HL-4", Title: "Define the API", Description: "Done.", ColumnID: 3, Links: []itsaplan.IssueLink{}}
+	v.its.issues[101].Links = []itsaplan.IssueLink{{Kind: "blocks", Direction: "inward", Issue: itsaplan.IssueRef{ID: 104, Identifier: "HL-4", Title: "Define the API", ColumnID: 3}}}
 	v.its.attachments = map[int64][]itsaplan.Attachment{101: {{Filename: "failure.log"}}}
 	v.tick(v.e)
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
@@ -3255,16 +3264,18 @@ func TestInitialSessionWaitsForRequiredBrief(t *testing.T) {
 			v.setIssueErr(&itsaplan.HTTPError{Status: status, Body: "untrusted response body"})
 			v.tick(v.e)
 			v.tickReconciliation(40, time.Minute)
-			if len(v.kg.Sends()) != 0 || v.work(101).EngineeringRetries != 0 {
-				t.Fatal("unavailable issue text started an agent or spent a retry")
+			// Admission holds the run before it resolves a work item.
+			v.held(1)
+			if len(v.kg.Sends()) != 0 {
+				t.Fatal("unavailable issue text started an agent")
 			}
 			if n, err := v.st.CountSends(v.ctx, 1); err != nil || n != 0 {
 				t.Fatalf("attempts = %d, %v; want none without a brief", n, err)
 			}
-			if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
-				t.Fatalf("active slots = %d, %v; want the run held", n, err)
+			if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 0 {
+				t.Fatalf("active slots = %d, %v; an admission hold takes no slot", n, err)
 			}
-			if (status == 401 || status == 403) && v.refusals("coordinator", "brief") == 0 {
+			if (status == 401 || status == 403) && v.refusals("coordinator", "admission") == 0 {
 				t.Fatal("the refused brief lookup was not counted")
 			}
 			comments := v.its.Comments()
@@ -3322,20 +3333,20 @@ func TestInitialSessionCanBeCanceledWhileBriefUnavailable(t *testing.T) {
 	}
 }
 
-func TestInitialBriefHoldHonorsWorkItemStop(t *testing.T) {
+// A held first delegation has no work item. `connector cancel` still stops
+// it, and the stop stands across restart and transport redelivery (HOME-55).
+func TestInitialBriefHoldHonorsOperatorStop(t *testing.T) {
 	for _, mode := range []string{"next tick", "restart", "redelivery"} {
 		t.Run(mode, func(t *testing.T) {
 			v := newEnv(t)
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.setIssueErr(itsaplan.ErrNotFound)
 			v.tick(v.e)
-			if r := v.run(1); r.State != store.RunClaimed || r.WorkItemID == 0 {
-				t.Fatalf("run = %+v, want an admitted run waiting for its brief", r)
-			}
+			v.held(1)
 			stopped, err := v.st.StopIssue(v.ctx, "HL-1", "operator stopped the held run", "operator:test")
 			v.requireReconciliationSetup(err)
-			if !stopped {
-				t.Fatal("held work item was not stopped")
+			if !stopped.Any() {
+				t.Fatal("held first delegation was not stopped")
 			}
 			reads := v.its.issueCalls
 			switch mode {
@@ -3352,8 +3363,11 @@ func TestInitialBriefHoldHonorsWorkItemStop(t *testing.T) {
 			v.tick(v.e)
 			v.setIssueErr(nil)
 			v.tick(v.e)
-			if v.run(1).State != store.RunClosed || v.work(101).State != store.WorkStopped || len(v.kg.Sends()) != 0 || v.its.issueCalls != reads {
-				t.Fatal("held run reopened a stopped work item or waited for another issue lookup")
+			if _, err := v.st.WorkItemByIssue(v.ctx, 101); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("stopped held run resolved a work item: %v", err)
+			}
+			if v.run(1).State != store.RunClosed || len(v.kg.Sends()) != 0 || v.its.issueCalls != reads {
+				t.Fatal("stopped held run started or waited for another issue lookup")
 			}
 			results := v.its.Run(1).results
 			if len(results) != 1 || results[0].Status != "failed" || !strings.Contains(results[0].Error, "operator stopped the held run") {
@@ -3378,7 +3392,7 @@ func TestNewAdmissionDoesNotResumeStoppedBriefHold(t *testing.T) {
 			v.tick(v.e)
 			stopped, err := v.st.StopIssue(v.ctx, "HL-1", "operator stopped the held run", "operator:test")
 			v.requireReconciliationSetup(err)
-			if !stopped {
+			if !stopped.Any() {
 				t.Fatal("held work item was not stopped")
 			}
 			// Claims precede stepRuns. Admit the new run while the old run
@@ -3392,9 +3406,8 @@ func TestNewAdmissionDoesNotResumeStoppedBriefHold(t *testing.T) {
 			if err := v.e.HandleClaim(v.ctx, "coder", claim); !errors.Is(err, itsaplan.ErrNotFound) {
 				t.Fatalf("new admission = %v, want the unavailable brief hold", err)
 			}
-			if v.work(101).State != store.WorkActive || v.run(1).State != store.RunClaimed || v.run(2).State != store.RunClaimed {
-				t.Fatal("new admission did not reactivate the work item before the old run was stepped")
-			}
+			v.held(1)
+			v.held(2)
 			switch mode {
 			case "restart":
 				v.e.Release()
@@ -3435,10 +3448,7 @@ func TestReassignmentSupersedesBriefHeldRun(t *testing.T) {
 			v.its.add(1, "coder", 101, "HL-1", "Old instructions.")
 			v.setIssueErr(itsaplan.ErrNotFound)
 			v.tick(v.e)
-			if v.run(1).State != store.RunClaimed {
-				t.Fatal("original run was not held for its brief")
-			}
-			epoch := v.work(101).Epoch
+			v.held(1)
 			if mode == "new owner already running" {
 				v.setIssueErr(nil)
 			}
@@ -3459,8 +3469,14 @@ func TestReassignmentSupersedesBriefHeldRun(t *testing.T) {
 				}
 			}
 			admit(2, "coder-b")
-			if wi := v.work(101); wi.AgentKey != "coder-b" || wi.Epoch != epoch+1 {
-				t.Fatalf("work item was not reassigned: %+v", wi)
+			// Admission links only the released run, so only the new owner
+			// can have created the work item.
+			if mode == "new owner already running" {
+				if wi := v.work(101); wi.AgentKey != "coder-b" {
+					t.Fatalf("work item = %+v, want the new owner's", wi)
+				}
+			} else {
+				v.held(2)
 			}
 			current := int64(2)
 			switch mode {

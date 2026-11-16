@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "dispatch",
     srcs = [
+        "admission.go",
         "classify.go",
         "delivery.go",
         "engine.go",
@@ -28,6 +29,7 @@ go_library(
 go_test(
     name = "dispatch_test",
     srcs = [
+        "admission_test.go",
         "artifact_transcript_test.go",
         "delivery_test.go",
         "engine_test.go",

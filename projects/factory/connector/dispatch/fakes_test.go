@@ -102,8 +102,11 @@ type fakeItsaplan struct {
 	// columnsErr fails every ProjectColumns while set.
 	columnsErr error
 	// Event failures exercise journal replay before and after server acceptance.
-	eventErr     error
-	loseEventAck bool
+	eventErr          error
+	loseEventAck      bool
+	beforeIssueRead   func(int64)
+	beforeColumnsRead func()
+	waitIssueRead     func(context.Context, int64) error
 
 	gateCreates     []itsaplan.GateIssueWrite
 	gateUpdates     []itsaplan.GateIssueWrite
@@ -183,6 +186,7 @@ func (f *fakeItsaplan) add(id int64, agent string, issueID int64, key, prompt st
 	if f.issues[issueID] == nil {
 		f.issues[issueID] = &itsaplan.Issue{
 			ID: issueID, Identifier: key, ColumnID: 2,
+			Links: []itsaplan.IssueLink{},
 			Title: fmt.Sprintf("Issue %d title", issueID), Description: fmt.Sprintf("Issue %d description.", issueID),
 		}
 	}
@@ -367,7 +371,15 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 	return nil
 }
 
-func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Issue, error) {
+func (f *fakeItsaplan) GetIssue(ctx context.Context, issueID int64) (*itsaplan.Issue, error) {
+	f.mu.Lock()
+	wait := f.waitIssueRead
+	f.mu.Unlock()
+	if wait != nil {
+		if err := wait(ctx, issueID); err != nil {
+			return nil, err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.beforeGateRead != nil && issueID >= 200 {
@@ -375,6 +387,9 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 	}
 	f.calls++
 	f.issueCalls++
+	if f.beforeIssueRead != nil {
+		f.beforeIssueRead(issueID)
+	}
 	if f.issueErr != nil {
 		return nil, f.issueErr
 	}
@@ -383,6 +398,18 @@ func (f *fakeItsaplan) GetIssue(_ context.Context, issueID int64) (*itsaplan.Iss
 		return nil, itsaplan.ErrNotFound
 	}
 	c := *is
+	if is.Links != nil {
+		// listIssueLinks joins all related issues in one SQL statement. Each
+		// response carries a fresh snapshot, including archived blockers.
+		c.Links = make([]itsaplan.IssueLink, len(is.Links))
+		copy(c.Links, is.Links)
+		for i := range c.Links {
+			if other := f.issues[c.Links[i].Issue.ID]; other != nil {
+				c.Links[i].Issue.Identifier = other.Identifier
+				c.Links[i].Issue.ColumnID = other.ColumnID
+			}
+		}
+	}
 	return &c, nil
 }
 
@@ -409,6 +436,9 @@ func (f *fakeItsaplan) ProjectColumns(_ context.Context, _ string) ([]itsaplan.C
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.beforeColumnsRead != nil {
+		f.beforeColumnsRead()
+	}
 	if f.columnsErr != nil {
 		return nil, f.columnsErr
 	}

@@ -380,10 +380,12 @@ func TestSendAdmissionAfterTransportRedelivery(t *testing.T) {
 				// a new admission both commit. Even an empty stop reason fences it.
 				stopped, err := f.st.StopIssue(f.ctx, "HL-101", "", "operator:test")
 				f.must(err)
-				if !stopped {
+				if !stopped.Any() {
 					t.Fatal("work item was not stopped")
 				}
-				_, _, err = f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: 2, AgentKey: "coder", Attempt: 1})
+				// A real claim names its issue; the stop counter it snapshots
+				// is the work item's, so this later delegation may resume it.
+				_, _, err = f.st.RecordClaim(f.ctx, store.ClaimedRun{ID: 2, AgentKey: "coder", IssueID: 101, IssueKey: "HL-101", Attempt: 1})
 				f.must(err)
 				work, _, err := f.st.ResolveWorkItem(f.ctx, 2, store.NewWorkItem{IssueID: 101, IssueKey: "HL-101", AgentKey: "coder"})
 				f.must(err)
