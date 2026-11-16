@@ -84,6 +84,7 @@ const (
 	reasonForeign     = "foreign"     // another binding, agent, PR or head
 	reasonSize        = "size"        // the session holds maxSessionBytes or more, or maxSessionReviews reviews
 	reasonUnaccounted = "unaccounted" // the session's tasks are not exactly the recorded reviews' tasks
+	reasonUnsettled   = "unsettled"   // an unrecorded turn in the session may still run
 	reasonMissing     = "missing"     // kagent has no such session for this caller, or cannot recover it
 	reasonDeleted     = "deleted"     // the session is being or was deleted
 	reasonCrashed     = "crashed"     // the session's runtime crashed
@@ -181,26 +182,47 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 		}
 		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
 			"recorded_tasks", len(ref.Tasks), "session_tasks", listed)
-		e.cancelUnrecorded(ctx, b, page, ref, l)
+		if !e.stopUnrecorded(ctx, b, page, ref, l) {
+			return nil, reasonUnsettled
+		}
 		return nil, reasonUnaccounted
 	}
 	return ref, reasonResumed
 }
 
-// cancelUnrecorded cancels the session's listed turns that no review
-// recorded and that still run, such as a continuation kagent accepted before
-// a restart lost its task ID, so the fresh review does not run beside it.
-func (e *Engine) cancelUnrecorded(ctx context.Context, b *Binding, page *kagent.TaskPage, ref *SessionRef, l *slog.Logger) {
+// errUnsettledTurn holds a review back while a session turn no review
+// recorded may still run; the attempt builds its message again after
+// Reissue, which retries the cancellation.
+var errUnsettledTurn = errors.New("a session turn no review recorded is still running")
+
+// stopUnrecorded cancels the session's listed turns that no review recorded
+// and that still execute, such as a continuation kagent accepted before a
+// restart lost its task ID. It reports whether each is confirmed stopped, so
+// a fresh review never runs beside one.
+func (e *Engine) stopUnrecorded(ctx context.Context, b *Binding, page *kagent.TaskPage, ref *SessionRef, l *slog.Logger) bool {
 	if page == nil {
-		return
+		return true
 	}
+	stopped := true
 	for _, t := range page.Tasks {
-		if t == nil || slices.Contains(ref.Tasks, t.ID) || kagent.Terminal(t.Status.State) {
+		if t == nil || slices.Contains(ref.Tasks, t.ID) || kagent.Quiescent(t.Status.State) {
 			continue
 		}
 		l.InfoContext(ctx, "cancelling a session turn no review recorded", "context_id", ref.ContextID, "task", t.ID)
-		e.cancelTask(ctx, b, t.ID, l)
+		if _, err := e.tasks.CancelTask(ctx, b.Agent, t.ID); err != nil && !errors.Is(err, kagent.ErrTaskNotFound) {
+			e.kagentError(ctx, l, b, "cancel", err) // Possibly finished meanwhile: confirm below.
+		}
+		got, err := e.tasks.GetTask(ctx, b.Agent, t.ID)
+		switch {
+		case errors.Is(err, kagent.ErrTaskNotFound):
+		case err != nil:
+			e.kagentError(ctx, l, b, "get_task", err)
+			stopped = false
+		case got == nil || !kagent.Quiescent(got.Status.State):
+			stopped = false
+		}
 	}
+	return stopped
 }
 
 // accounted reports whether a complete listing of the session's tasks holds

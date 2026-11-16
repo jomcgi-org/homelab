@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -519,13 +518,35 @@ func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
 	h.k.mu.Lock()
 	h.k.tasks[stray].task.Status = kagent.TaskStatus{State: kagent.StateWorking}
 	h.k.mu.Unlock()
-	finishHead(t, h, e, ctx, sessionShaB, passing, nil)
+	// While the cancellation fails, no fresh review starts beside the turn.
+	h.k.mu.Lock()
+	h.k.cancelErr = errors.New("connection refused")
+	h.k.mu.Unlock()
+	h.gh.push(7, sessionShaB)
+	e.Tick(ctx)
+	eventually(t, "a retried cancellation", func() bool {
+		_, cancels := h.k.state()
+		n := 0
+		for _, id := range cancels {
+			if id == stray {
+				n++
+			}
+		}
+		return n >= 3
+	})
+	if task := h.taskOn(7, sessionShaB, 1); task != "" {
+		t.Fatalf("a fresh review %s started while the unrecorded turn still ran", task)
+	}
+	h.k.mu.Lock()
+	h.k.cancelErr = nil
+	h.k.mu.Unlock()
+	var task string
+	eventually(t, "the review task once the turn stopped", func() bool { task = h.taskOn(7, sessionShaB, 1); return task != "" })
 	if m := lastSend(h); m.ContextID == ref.ContextID {
 		t.Fatalf("resumed a session holding an unrecorded running turn")
 	}
-	if _, cancels := h.k.state(); !slices.Contains(cancels, stray) {
-		t.Fatalf("cancels = %v, want the unrecorded turn %s", cancels, stray)
-	}
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "the check on the second head", func() bool { c := h.gh.check(sessionShaB); return c != nil && c.Status == "completed" })
 }
 
 // TestNewAgentRevisionStartsAFreshSession rolls out a new reviewer revision
