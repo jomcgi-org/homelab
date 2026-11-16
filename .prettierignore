@@ -59,3 +59,7 @@ projects/monolith/web/grimoire/src/theme/sheet.*
 # Vendored upstream release manifests are kept byte-for-byte so their
 # recorded sha256 still matches.
 **/upstream/*-install.yaml
+
+# Copies of public-app performance workflow artifact files are kept
+# byte-for-byte so the SHA-256 in the evidence manifest still matches.
+projects/monolith/frontend/docs/performance/*-run/*.json
