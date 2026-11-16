@@ -1122,16 +1122,18 @@ previews).
   `human-gate` finding not fixed or withdrawn holds the later head too.
   The check's State also keeps up to 20 findings earlier reviews cleared
   (fixed, justified or withdrawn, with notes). The prompt lets the agent
-  raise one again when a change since the previous head affects it or when
-  it is critical and present, and asks it to check each again when the
-  interdiff is unusable. When the
+  raise a fixed one again whenever it is present (a regression) and a
+  justified or withdrawn one only when a change since the previous head
+  affects it, and asks it to check each again when the interdiff is
+  unusable. When the
   head descends from the previous one and GitHub lists the whole interdiff,
-  the service lowers a new high or medium finding the agent marks
+  the service lowers a new medium finding the agent marks
   `earlier` (on code an earlier review covered and the head left alone) to
   a deferred low one when its file is outside the interdiff
   ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)). An
   unmarked finding keeps its severity, so an omitted mark never lowers a
-  regression. So does a critical finding, a finding with no path, and a
+  regression. So does a high or critical finding (REVIEW.md lets those
+  block on earlier-reviewed lines), a finding with no path, and a
   finding under any rule but the root rules `correctness`, `security`,
   `boundary`, `reachability`, `validation`, `rollout` and `goal`: scoped
   rules set their own severity, and the review-process rules are not about

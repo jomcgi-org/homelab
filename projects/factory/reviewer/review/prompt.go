@@ -213,8 +213,9 @@ func Prompt(in PromptInput) string {
 		b.WriteString("\n")
 		if len(in.Cleared) > 0 {
 			if LaterScope(in.PreviousHead, in.Interdiff) != nil {
-				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. Raise one again when a change since %s, "+
-					"in any file, affects it, or when it is critical and present on this head:\n\n", in.PreviousHead)
+				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. A fixed one present again on this head is a "+
+					"regression: raise it at its own severity. Raise a justified or withdrawn one again only when a change since %s, "+
+					"in any file, affects it:\n\n", in.PreviousHead)
 			} else {
 				b.WriteString("Reviews of earlier heads cleared these findings. The interdiff below cannot show that they stay " +
 					"cleared, so check each again as part of the full review:\n\n")
@@ -241,13 +242,13 @@ func Prompt(in PromptInput) string {
 				fmt.Fprintf(&b, " GitHub lists only the first %d; `git -C pr diff --stat %s %s` lists them all.",
 					github.MaxCompareFiles, in.PreviousHead, in.SHA)
 			}
-			b.WriteString(" Block only on what changed since then and what that change affects: a new finding on code the earlier " +
-				"review covered and this head left alone stays critical when it is critical, keeps the severity a scoped rule sets, " +
-				"and is low with defer otherwise.")
 			if LaterScope(in.PreviousHead, d) != nil {
-				b.WriteString(" Mark such a finding \"earlier\": true; the reviewer service lowers a marked high or medium finding " +
-					"under a root rule outside the listed files to a deferred low one. Never mark a finding this head's changes " +
-					"cause or affect, such as a caller broken by a changed function: unmarked findings keep their severity.")
+				b.WriteString(" On lines the earlier review covered and this head left alone, a new finding is high or critical, " +
+					"or it is low with defer. Mark such a finding \"earlier\": true; the reviewer service lowers a marked medium " +
+					"finding under a root rule outside the listed files to a deferred low one. Never mark a finding this head's " +
+					"changes cause or affect, such as a caller broken by a changed function: unmarked findings keep their severity.")
+			} else {
+				b.WriteString(" The list is incomplete, so review the whole change and rate every finding at its full severity.")
 			}
 			b.WriteString("\n\n")
 		}

@@ -387,9 +387,9 @@ func Assess(r *Report, prior []Finding) Assessment {
 }
 
 // Scope is what a later head changed since the previous reviewed head. A new
-// finding on code that review covered and this head left alone is low with
-// defer unless it is critical (REVIEW.md "Later heads"); Scope enforces that
-// for the high and medium findings it can place.
+// finding on code that review covered and this head left alone is high,
+// critical or low with defer (REVIEW.md "Later heads"); Scope enforces that
+// for the medium findings it can place.
 type Scope struct {
 	paths map[string]bool
 }
@@ -417,11 +417,11 @@ func (s *Scope) changed(p string) bool {
 	return p != "" && (s.paths[p] || s.paths[cleanPath(p)])
 }
 
-// Lower returns r with each new high or medium finding lowered to a
-// deferred low one when the agent marks it earlier (on code an earlier
+// Lower returns r with each new medium finding lowered to a deferred low
+// one when the agent marks it earlier (on code an earlier
 // review covered and this head left alone) and its file is outside the files
-// changed since the previous head. Unmarked findings, critical findings,
-// human-gate findings, the previous round's IDs, findings with no path and
+// changed since the previous head. Unmarked findings, high and critical
+// findings, human-gate findings, the previous round's IDs, findings with no path and
 // findings under any rule but lowerableRules keep their severity, so an
 // omitted mark never lowers a regression. A nil Scope lowers nothing.
 func (s *Scope) Lower(r *Report, prior []Finding) *Report {
@@ -436,7 +436,7 @@ func (s *Scope) Lower(r *Report, prior []Finding) *Report {
 	out.Findings = slices.Clone(r.Findings)
 	for i := range out.Findings {
 		f := &out.Findings[i]
-		if (f.Severity != SeverityHigh && f.Severity != SeverityMedium) || isGate(*f) || known[f.ID] ||
+		if f.Severity != SeverityMedium || isGate(*f) || known[f.ID] ||
 			!f.Earlier || strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.changed(f.Path) {
 			continue
 		}

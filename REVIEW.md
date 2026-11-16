@@ -88,11 +88,8 @@ Apply these tests in order and stop at the first that fits.
 1. **Would CI fail on it?** Report nothing.
 2. **Can you name the input or state, what fails, where, and what resolves
    it?** If any is missing, the finding is low.
-3. **Does the harm survive a revert, or does the change weaken a gate (a
-   check, review or merge requirement) or a boundary?** Critical, however
-   unusual the interleaving. One exception: a boundary race that only one
-   user's own concurrent actions in their own client can trigger goes on to
-   tests 4 and 5.
+3. **Does the harm survive a revert, or does the change weaken a boundary or
+   a gate?** Critical.
 4. **After merge, does something a user or operator relies on fail on a
    default path?** High. A default path runs without unusual input or
    configuration: the rollout, a service's main requests, a scheduled job,
@@ -104,7 +101,7 @@ Apply these tests in order and stop at the first that fits.
 | --- | --- | --- |
 | Critical | A committed secret. A route outside sign-in. A token wider than its use. Data loss, or a destructive change the issue does not authorize. A check removed, skipped or made non-failing. | Blocks. Joe is notified. |
 | High | A rollout that fails: a private image with no pull secret (#7914), values the pinned chart does not render (#7852). A crash or wrong result on a normal input. A test with no build target (#7914). An untested change to authorization, credentials, the merge gate, deletion or a migration. | Blocks until fixed. |
-| Medium | A failure on an edge input or a non-default path. A race between one user's own tabs or requests. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that the reviewer cannot verify. | Blocks until fixed or justified. |
+| Medium | A failure on an edge input or a non-default path. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that the reviewer cannot verify. | Blocks until fixed or justified. |
 | Low | Naming, wording, prose style, an optional refactor, a test for trivial code. | Never blocks. |
 
 A scoped rule that names a severity sets it; a violated scoped rule with
@@ -143,12 +140,10 @@ PR:
   described no longer occurs, whichever fix the reviewer would have chosen.
   A further variant is a new finding, rated on its own under the next rule.
 - Review what changed since the last reviewed head and what that affects.
-- A new finding on code the earlier review covered and the new head left
-  alone keeps its severity when it is critical, such as a route outside
-  sign-in the earlier review missed, or when a scoped rule sets it.
-  Otherwise it is low with `defer`. The reviewer marks such a finding
-  `earlier`, and the service lowers a marked high or medium finding under a
-  root rule on a file outside the changed files.
+- On lines the earlier review covered and the new head left alone, a new
+  finding is high or critical, or it is low with `defer`. The reviewer
+  marks such a finding `earlier`, and the service lowers a marked medium
+  finding under a root rule on a file outside the changed files.
 
 ## Joe decides
 

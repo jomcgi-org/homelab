@@ -956,7 +956,7 @@ func TestPreviousFindingsCarryToTheNextHead(t *testing.T) {
 }
 
 // TestLaterHeadsBlockOnlyOnTheirChanges reviews a second head whose
-// interdiff is interdiff-bbbb.go. A new high finding elsewhere that names no
+// interdiff is interdiff-bbbb.go. A new medium finding elsewhere that names no
 // marked earlier is lowered to a deferred low one; an unmarked one, one in
 // the interdiff and a critical one still block. The third
 // head's prompt lists the finding the second review fixed as cleared.
@@ -980,7 +980,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 
 	shaB := strings.Repeat("b", 40)
 	second := round(shaB, map[string]any{"summary": "s", "findings": []any{
-		map[string]any{"id": "a.go:correctness:tabs", "severity": "high", "path": "a.go", "line": 9, "title": "Two tabs race", "earlier": true},
+		map[string]any{"id": "a.go:correctness:tabs", "severity": "medium", "path": "a.go", "line": 9, "title": "Two tabs race", "earlier": true},
 		map[string]any{"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error"},
 		map[string]any{"id": "interdiff-bbbb.go:validation", "severity": "medium", "path": "interdiff-bbbb.go", "title": "No regression test"},
 		map[string]any{"id": "c.go:security", "severity": "critical", "path": "c.go", "title": "Token logged"},
@@ -988,7 +988,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 		map[string]any{"id": "a.go:correctness", "status": "fixed", "note": "The newest draft now wins."},
 	}})
 	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
-	for _, want := range []string{"Block only on what changed since then", "Mark such a finding \"earlier\": true", "unmarked findings keep their severity", "- earlier: true only"} {
+	for _, want := range []string{"On lines the earlier review covered and this head left alone", "Mark such a finding \"earlier\": true", "unmarked findings keep their severity", "- earlier: true only"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the second prompt lacks %q", want)
 		}
@@ -997,7 +997,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 		t.Fatalf("second = %s: %s\n%s", second.Conclusion, second.Title, second.Summary)
 	}
 	_, deferred, _ := strings.Cut(second.Summary, "### Deferred")
-	if !strings.Contains(deferred, "Two tabs race (`a.go:correctness:tabs`)") || !strings.Contains(deferred, "Reported high; lowered") {
+	if !strings.Contains(deferred, "Two tabs race (`a.go:correctness:tabs`)") || !strings.Contains(deferred, "Reported medium; lowered") {
 		t.Fatalf("the lowered finding is not deferred:\n%s", second.Summary)
 	}
 	eventually(t, "the lowered log line", func() bool {
@@ -1028,7 +1028,7 @@ func TestRestartedReviewerStillLowersLateFindings(t *testing.T) {
 	eventually(t, "the task recorded on the check", func() bool { return RecordedTask(h.gh.check(shaB).Summary).ID == task })
 	stop1()
 	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
-		map[string]any{"id": "x.go:correctness", "severity": "high", "path": "x.go", "title": "Late race", "earlier": true},
+		map[string]any{"id": "x.go:correctness", "severity": "medium", "path": "x.go", "title": "Late race", "earlier": true},
 	}}))
 	// The prompt told the agent to treat late findings as low, so an
 	// unreadable interdiff must not complete the check: it waits.
@@ -1044,7 +1044,7 @@ func TestRestartedReviewerStillLowersLateFindings(t *testing.T) {
 	}
 	h.gh.failWith(compare, 0)
 	eventually(t, "the check on "+shaB, func() bool { e2.Tick(ctx2); return h.gh.check(shaB).Status == "completed" })
-	if c := h.gh.check(shaB); c.Conclusion != ConclusionSuccess || !strings.Contains(c.Summary, "Reported high; lowered") {
+	if c := h.gh.check(shaB); c.Conclusion != ConclusionSuccess || !strings.Contains(c.Summary, "Reported medium; lowered") {
 		t.Fatalf("check = %s:\n%s", c.Conclusion, c.Summary)
 	}
 	if n := len(h.k.sent()); n != 2 {
@@ -1069,7 +1069,7 @@ func TestRestartedReviewerRereviewsWhenTheEarlierHeadIsGone(t *testing.T) {
 	eventually(t, "the task recorded on the check", func() bool { return RecordedTask(h.gh.check(shaB).Summary).ID == task })
 	stop1()
 	late := report(t, map[string]any{"summary": "s", "findings": []any{
-		map[string]any{"id": "x.go:correctness", "severity": "high", "path": "x.go", "title": "Late race", "earlier": true},
+		map[string]any{"id": "x.go:correctness", "severity": "medium", "path": "x.go", "title": "Late race", "earlier": true},
 	}})
 	h.k.finish(task, kagent.StateCompleted, late)
 	h.gh.failWith("GET /repos/"+testRepo+"/compare/"+shaA+"..."+shaB, 404)
