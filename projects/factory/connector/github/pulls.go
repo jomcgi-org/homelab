@@ -773,11 +773,11 @@ func (c *Client) IssueComments(ctx context.Context, repo string, number int) (co
 	return comments, false, nil
 }
 
-// IssueCommentsWithLimit lists conversation comments for the reviewer's
-// one-time lookup. Unlike IssueComments, it uses GitHub's Link header to
-// decide completeness, including a full final page. It reads at most
-// maxPages pages and never returns partial results after a failed read.
-func (c *Client) IssueCommentsWithLimit(ctx context.Context, repo string, number, maxPages int) (comments []Comment, complete bool, err error) {
+// FindIssueComment finds the oldest matching conversation comment, retaining
+// only that comment as it reads and discards each page. Unlike IssueComments,
+// it uses GitHub's Link header to decide completeness, including a full final
+// page. It reads at most maxPages pages and discards the match on a failed read.
+func (c *Client) FindIssueComment(ctx context.Context, repo string, number, maxPages int, match func(Comment) bool) (found *Comment, complete bool, err error) {
 	for page := 1; page <= maxPages; page++ {
 		var out []restComment
 		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
@@ -789,14 +789,20 @@ func (c *Client) IssueCommentsWithLimit(ctx context.Context, repo string, number
 		if out == nil {
 			return nil, false, errors.New("github: missing comment listing")
 		}
-		for _, cm := range out {
-			comments = append(comments, cm.comment())
+		if found == nil {
+			for _, cm := range out {
+				comment := cm.comment()
+				if match(comment) {
+					found = &comment
+					break
+				}
+			}
 		}
 		if !hasNextPage(headers) {
-			return comments, true, nil
+			return found, true, nil
 		}
 	}
-	return comments, false, nil
+	return found, false, nil
 }
 
 func hasNextPage(headers http.Header) bool {

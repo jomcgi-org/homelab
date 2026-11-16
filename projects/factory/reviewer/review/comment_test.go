@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -214,17 +215,83 @@ func TestCommentFailedListingRetriesWithoutDuplicates(t *testing.T) {
 	}
 }
 
+type lostCommentCreateResponse struct {
+	Comments
+	err error
+}
+
+func (c *lostCommentCreateResponse) CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error) {
+	if _, err := c.Comments.CreateIssueComment(ctx, repo, number, body); err != nil {
+		return nil, err
+	}
+	// GitHub committed the write, but the caller never received its result.
+	return nil, c.err
+}
+
+func TestCommentUncertainCreateRediscoversBeforeRetry(t *testing.T) {
+	for _, failure := range []error{context.DeadlineExceeded, io.ErrUnexpectedEOF} {
+		for _, deleted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("error=%s/deleted=%v", failure, deleted), func(t *testing.T) {
+				h := newHarness(t)
+				withComments(h)
+				addPR7(h)
+				h.cfg.Comments = &lostCommentCreateResponse{
+					Comments: &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}},
+					err:      failure,
+				}
+				e, ctx := h.engine(), context.Background()
+				b := &e.cfg.Bindings[0]
+				pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+				if deleted {
+					h.gh.prs[7].Comments = []github.Comment{{ID: 9, Author: botLogin, Body: commentMarker + "\nPrevious verdict"}}
+				}
+				// Cache the initial lookup, then lose a create response either
+				// for the first comment or while replacing a deleted one.
+				e.mirror(ctx, b, pr, nil, &CommentUpdate{Verdict: VerdictReviewing})
+				if deleted {
+					h.gh.withLock(func() { h.gh.prs[7].Comments = nil })
+				}
+				e.mirror(ctx, b, pr, nil, &CommentUpdate{Verdict: VerdictApproved})
+				first := onlyComment(t, h, 7)
+				reads := h.gh.countCalls("GET /repos/" + testRepo + "/issues/7/comments")
+				if reads != 1 {
+					t.Fatalf("initial lookup read %d pages, want 1", reads)
+				}
+				// Rediscovery must still fail closed if its read fails.
+				h.gh.withLock(func() { h.gh.failCommentPage = 1 })
+				e.mirror(ctx, b, pr, nil, &CommentUpdate{Verdict: VerdictChanges})
+				if c := onlyComment(t, h, 7); c != first {
+					t.Fatal("failed rediscovery changed the existing comment")
+				}
+				h.gh.withLock(func() { h.gh.failCommentPage = 0 })
+				pr.HeadSHA = strings.Repeat("b", 40)
+				e.mirror(ctx, b, pr, nil, &CommentUpdate{Verdict: VerdictChanges})
+				if c := onlyComment(t, h, 7); c.ID != first.ID || !strings.Contains(c.Body, "Changes requested") || !strings.Contains(c.Body, short(pr.HeadSHA)) {
+					t.Fatalf("retry did not update the committed comment in place: %+v", c)
+				}
+				e.mirror(ctx, b, pr, nil, &CommentUpdate{Verdict: VerdictApproved})
+				if got := h.gh.countCalls("GET /repos/" + testRepo + "/issues/7/comments"); got != reads+2 {
+					t.Fatalf("rediscovery read %d pages, want one failed and one successful retry", got-reads)
+				}
+				if got := h.gh.countCalls("POST /repos/" + testRepo + "/issues/7/comments"); got != 1 {
+					t.Fatalf("made %d create attempts, want 1", got)
+				}
+			})
+		}
+	}
+}
+
 type blockedCommentLookup struct {
 	Comments
 	started chan struct{}
 	release chan struct{}
 }
 
-func (c *blockedCommentLookup) IssueCommentsWithLimit(ctx context.Context, repo string, number, maxPages int) ([]github.Comment, bool, error) {
+func (c *blockedCommentLookup) FindIssueComment(ctx context.Context, repo string, number, maxPages int, match func(github.Comment) bool) (*github.Comment, bool, error) {
 	close(c.started)
 	select {
 	case <-c.release:
-		return c.Comments.IssueCommentsWithLimit(ctx, repo, number, maxPages)
+		return c.Comments.FindIssueComment(ctx, repo, number, maxPages, match)
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
 	}

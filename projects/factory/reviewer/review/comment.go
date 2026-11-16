@@ -26,7 +26,7 @@ import (
 // starts with CommentMarker, which the broker finds in one request. An App without those permissions loses
 // only the comment.
 type Comments interface {
-	IssueCommentsWithLimit(ctx context.Context, repo string, number, maxPages int) ([]github.Comment, bool, error)
+	FindIssueComment(ctx context.Context, repo string, number, maxPages int, match func(github.Comment) bool) (*github.Comment, bool, error)
 	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
 	UpdateIssueComment(ctx context.Context, repo string, id int64, body string) (*github.Comment, error)
 }
@@ -630,6 +630,9 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 	}
 	created, err := e.cfg.Comments.CreateIssueComment(ctx, b.repo(), pr.Number, body)
 	if err != nil {
+		// GitHub may have created it even though its response was lost.
+		// Rediscover it before another write can try to create a duplicate.
+		delete(e.comments, key)
 		e.commentFailed(ctx, l, b, "create", err)
 		return
 	}
@@ -642,16 +645,7 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 // that starts with the comment marker, or nil. complete is false when the
 // listing stopped before the PR's last comment.
 func (e *Engine) findComment(ctx context.Context, b *Binding, number int) (*github.Comment, bool, error) {
-	all, complete, err := e.cfg.Comments.IssueCommentsWithLimit(ctx, b.repo(), number, maxCommentPages)
-	if err != nil {
-		return nil, false, err
-	}
-	for _, c := range all {
-		if strings.EqualFold(c.Author, e.cfg.CommentAuthor) && strings.HasPrefix(c.Body, commentMarker) {
-			return &c, complete, nil
-		}
-	}
-	return nil, complete, nil
+	return e.cfg.Comments.FindIssueComment(ctx, b.repo(), number, maxCommentPages, e.ownComment)
 }
 
 func (e *Engine) commentFailed(ctx context.Context, l *slog.Logger, b *Binding, call string, err error) {
