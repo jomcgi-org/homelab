@@ -998,21 +998,24 @@ func (e *Engine) finishSupersededGrantFailure(ctx context.Context, r *store.Run,
 // resumeQuotaFailure resends a turn the quota stopped once its grant is
 // unblocked. The limit failed, not the work, so it spends no engineering
 // retry (HOME-127). The decision names the failed attempt, so each resend
-// has its own message ID.
+// has its own message ID. Like an engineering retry, a resume without a
+// session keeps the failed attempt's context when it holds the issue brief.
 func (e *Engine) resumeQuotaFailure(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	brief, err := e.issueBrief(ctx, r, wi)
-	if err != nil {
-		return err
-	}
-	kind := "initial"
-	if wi.SessionID != "" {
-		kind, brief = "continuation", ""
+	kind, brief := "continuation", ""
+	if wi.SessionID == "" {
+		kind, brief = "initial", a.Context
+		if !hasIssueBrief(brief, wi.IssueKey) {
+			var err error
+			if brief, err = e.issueBrief(ctx, r, wi); err != nil {
+				return err
+			}
+		}
 	}
 	var next *store.Attempt
-	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
 		var err error
 		next, err = e.record(ctx, tx, r, wi, kind, "quota-resume-"+strconv.Itoa(a.Seq), brief)
 		return err
