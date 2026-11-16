@@ -50,8 +50,8 @@ async function snapshot(root) {
   );
 }
 
-function run(root) {
-  return spawnSync(process.execPath, [join(root, "rehash.mjs")], {
+function run(root, options = []) {
+  return spawnSync(process.execPath, [...options, join(root, "rehash.mjs")], {
     encoding: "utf8",
     timeout: 10_000,
   });
@@ -120,3 +120,44 @@ test("rehashes exact bytes, updates references and is repeatable", async (t) => 
   assert.equal(repeated.status, 0, repeated.stderr);
   assert.deepEqual(await snapshot(root), after);
 });
+
+for (const operation of ["writeFile", "rename"]) {
+  test(`preserves edited inputs when manifest ${operation} fails`, async (t) => {
+    const { root, manifest } = await fixture(t, {
+      [original[0].name]: '{"uncommitted":"object edit"}\n',
+    });
+    const edited = manifest.replace(
+      '"goals"',
+      '"generatedAt": "2030-05-22T12:00:00Z",\n  "goals"',
+    );
+    await writeFile(join(root, "manifest.json"), edited);
+    const before = await snapshot(root);
+    const hook = join(root, "fault.mjs");
+    await writeFile(
+      hook,
+      `import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+const operation = ${JSON.stringify(operation)};
+const original = fs[operation];
+fs[operation] = async (...args) => {
+  const target = operation === "rename" ? args[1] : args[0];
+  if (String(target).includes("manifest.json")) {
+    if (operation === "writeFile") await original(args[0], "partial", args[2]);
+    throw new Error("injected " + operation + " failure");
+  }
+  return original(...args);
+};
+syncBuiltinESMExports();
+`,
+    );
+    const entries = (await readdir(root)).sort();
+    const result = run(root, ["--import", hook]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`injected ${operation} failure`));
+    const after = await snapshot(root);
+    for (const [path, bytes] of Object.entries(before)) {
+      assert.deepEqual(after[path], bytes, path);
+    }
+    assert.deepEqual((await readdir(root)).sort(), entries);
+  });
+}

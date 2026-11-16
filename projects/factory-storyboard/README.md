@@ -78,6 +78,9 @@ destinations, then creates the new objects and updates the manifest paths
 before removing the old files. A conflict found before writing leaves every
 file unchanged; resolve it before rerunning. New objects use exclusive creation
 so existing files cannot be overwritten.
+The script writes the manifest to a temporary file before replacing the original
+by rename. Failed writes or renames preserve the original manifest and objects.
+The rehash tests inject both failures and check that edited inputs remain intact.
 The repository formatter excludes immutable fixture objects to preserve
 their addresses.
 
