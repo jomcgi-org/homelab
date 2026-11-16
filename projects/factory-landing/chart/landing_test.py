@@ -78,19 +78,21 @@ def test_private_status_app():
         "app.kubernetes.io/instance": "factory",
     }
     ports = [{"ports": [{"port": "8082", "protocol": "TCP"}]}]
-    assert policy["egress"] == [
+    # The library's catalogued `connector` peer selects on name only.
+    egress = [
         {
             "toEndpoints": [
                 {
                     "matchLabels": {
                         "k8s:io.kubernetes.pod.namespace": "factory",
-                        **connector_labels,
+                        "app.kubernetes.io/name": "factory-connector",
                     }
                 }
             ],
             "toPorts": ports,
         }
     ]
+    assert policy["egress"] == egress
     status_service = next(
         doc for doc in rendered if doc["metadata"]["name"] == "factory-connector-status"
     )
@@ -125,8 +127,13 @@ def test_private_status_app():
 
     # HOME-69: the pre-library objects at e68a9f09b7da, with a fixed test digest. Only
     # annotations change; pin selectors, probes, resources, routes and policies
-    # as well as the security assertions above.
+    # as well as the security assertions above. HOME-24 adds only the status
+    # URL and the connector egress checked above.
     before = json.loads((chart / "testdata/before.json").read_text())
+    before["Deployment"]["spec"]["template"]["spec"]["containers"][0]["env"] = (
+        container["env"]
+    )
+    before["CiliumNetworkPolicy"]["spec"]["egress"] = egress
 
     def without_annotations(value):
         if isinstance(value, dict):
