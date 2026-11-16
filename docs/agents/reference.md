@@ -199,6 +199,26 @@ On a PR, `human` means a person owns it and `needs-human` asks for a decision.
 Both hold the PR at the connector and the reviewer, and agents must not add or
 remove them without an explicit handoff instruction.
 
+A PR at its round bound (`maxReviewRounds` or `maxRebaseRounds`, 6 each)
+waits for a person. The connector records the refused event as `round_limit`
+and never reads it again, so raising the bound restarts nothing until HOME-109
+lands. To restart one PR:
+
+1. Check that its head is unchanged and no run is open (the query above).
+2. Post a `jomcgi` changes-requested review on that exact head. Give it the
+   reviewer's blocking findings and the failing CI targets, because the coding
+   agent can't read BuildBuddy. The round prompt keeps 4000 characters. On a
+   conflicting PR, the round also tells the agent to rebase, so this also
+   restarts a PR at its rebase bound.
+3. Once `review_event` shows the review as `acted`, dismiss it, because
+   a trusted changes-requested decision keeps the PR out of the queue.
+
+On a PR whose only blocker is the reviewer's hold
+(`factory-review:human-gate-only`), a changes-requested review reinstates the
+hold, and the connector ignores every event while it stands. There, approve
+after the changes-requested review instead of dismissing it, and only when
+Joe has cleared that hold.
+
 The retiring hub factory reads the same labels on GitHub issues:
 
 Label an issue `human` when Joe or another person takes ownership, including
