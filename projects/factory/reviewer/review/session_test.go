@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -502,6 +503,28 @@ func TestUnaccountedTurnStartsAFreshSession(t *testing.T) {
 	}
 	if !logged(h, "the recorded session holds turns its reviews do not account for", `"recorded_tasks":1`, `"session_tasks":2`) {
 		t.Errorf("no log line names the unaccounted turn")
+	}
+}
+
+// TestUnrecordedRunningTurnIsCancelled finds a session turn still running
+// that no review recorded, as when kagent accepts a continuation and the
+// reviewer stops before recording its task: the next review cancels it and
+// starts fresh rather than running beside it.
+func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
+	stray := h.k.open(ref.ContextID)
+	h.k.mu.Lock()
+	h.k.tasks[stray].task.Status = kagent.TaskStatus{State: kagent.StateWorking}
+	h.k.mu.Unlock()
+	finishHead(t, h, e, ctx, sessionShaB, passing, nil)
+	if m := lastSend(h); m.ContextID == ref.ContextID {
+		t.Fatalf("resumed a session holding an unrecorded running turn")
+	}
+	if _, cancels := h.k.state(); !slices.Contains(cancels, stray) {
+		t.Fatalf("cancels = %v, want the unrecorded turn %s", cancels, stray)
 	}
 }
 
