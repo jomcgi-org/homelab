@@ -1338,7 +1338,8 @@ class ChatBot(discord.Client):
                 model=model,
             )
             if isinstance(start_result, dict) and (
-                start_result.get("login_required") or start_result.get("refresh_blocked")
+                start_result.get("login_required")
+                or start_result.get("refresh_blocked")
             ):
                 await thread.send(_format_codex_login_message(start_result))
                 return AgentFlowOutcome(thread=thread)
