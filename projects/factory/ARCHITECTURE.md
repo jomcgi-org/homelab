@@ -641,8 +641,10 @@ an engineering retry and send a fresh deterministic retry message in the same
 session within the agent key's concurrency. If a newer run has an accepted task
 on the same work item, the waiting failure closes as superseded under the writer
 transaction, preserving newer work and spending no retry. An unattached failed
-send does not supersede the failure or prevent its retry. Unsent or ambiguous
-sends keep the older run waiting until their outcome is known.
+or canceled send does not supersede the failure or prevent its retry. Such a
+cancellation requires known non-acceptance or operator-attested fencing.
+Unsent or ambiguous sends, including pending cancellations, keep the older run
+waiting until their outcome is known.
 Polling while blocked spends no retries. An exhausted run reports the existing
 engineering-retries-exhausted failure only after unblock. Running or ambiguous tasks keep their existing
 reconciliation path. The reported
