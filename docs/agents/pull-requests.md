@@ -162,8 +162,9 @@ rules.
 ## Leave out
 
 - A change the diff does not contain. In a study of 23,247 agent PRs,
-  descriptions that claimed missing work merged 28% of the time, against
-  80% for the rest ([arXiv 2601.04886](https://arxiv.org/abs/2601.04886)).
+  descriptions that did not match their code merged 28% of the time,
+  against 80% for the rest. Claims of missing work were the largest kind of
+  mismatch ([arXiv 2601.04886](https://arxiv.org/abs/2601.04886)).
 - File-by-file narration of the diff, or the order the work happened in.
 - Self-rated risk ("Low", "High") and adjectives about the change.
 - Template text left in place: an empty heading, a placeholder or a bare
