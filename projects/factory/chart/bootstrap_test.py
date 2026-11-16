@@ -209,6 +209,9 @@ class CoordinatorAPI:
             "ai_agents": {"read": True},
         }
         self.roles = []
+        self.role_usage = {}
+        self.usage_reads = []
+        self.assigned_role = None
         self.writes = []
         self.effective_reads = 0
         self.fail = None
@@ -250,22 +253,39 @@ class CoordinatorAPI:
             data = [self.agent]
         elif path == "/teams/7/roles/options":
             assert method == "GET"
+            if self.fail == "role changed" and self.roles:
+                self.roles[-1]["permissions"]["ai_agents"]["edit"] = True
             data = self.roles
         elif path == "/teams/7/roles":
             assert method == "POST"
-            role = {"id": 20, "system": False, **copy.deepcopy(body)}
+            role_id = max([19, *(r["id"] for r in self.roles)]) + 1
+            role = {"id": role_id, "system": False, **copy.deepcopy(body)}
             self.roles.append(role)
             if self.fail == "create response":
                 raise OSError("lost role create response")
             data = role
-        elif path == "/teams/7/roles/20":
-            assert method == "PATCH"
-            self.roles[0].update(copy.deepcopy(body))
-            data = self.roles[0]
+        elif path.startswith("/teams/7/roles/"):
+            # A role mutation would change grants for every user of that role.
+            assert method == "GET" and path.endswith("/usage")
+            role_id = int(path.split("/")[4])
+            self.usage_reads.append(role_id)
+            if self.fail == "usage read":
+                raise self.script.HTTPError(method, url, 403, self.key)
+            data = self.role_usage.get(
+                role_id, {"members": 0, "agents": 0, "invites": 0, "groups": 0}
+            )
         elif path == _PROJECT + "/members/coordinator-user":
-            assert method == "PATCH" and body == {"role": "member", "roleId": 20}
+            assert method == "PATCH" and body["role"] == "member"
+            role = next(r for r in self.roles if r["id"] == body["roleId"])
             if self.fail != "grant ignored":
-                self.permissions = copy.deepcopy(self.roles[0]["permissions"])
+                self.permissions = copy.deepcopy(role["permissions"])
+                self.assigned_role = role["id"]
+                self.role_usage[role["id"]] = {
+                    "members": 0,
+                    "agents": 1,
+                    "invites": 0,
+                    "groups": 0,
+                }
             if self.fail == "grant response":
                 raise OSError("lost membership update response")
         else:
@@ -310,34 +330,131 @@ def test_coordinator_bootstrap_grants_and_verifies_effective_permissions(
 
 
 @pytest.mark.parametrize("failure", ["create response", "grant response"])
+@pytest.mark.parametrize("collision", [False, True])
 def test_coordinator_bootstrap_recovers_partial_grant_without_duplicate_role(
-    coordinator, failure
+    coordinator, failure, collision
 ):
-    _, api, run = coordinator
+    script, api, run = coordinator
+    if collision:
+        permissions = copy.deepcopy(script.COORDINATOR_PERMISSIONS)
+        permissions["ai_agents"]["edit"] = True
+        api.roles = [
+            {
+                "id": 20,
+                "system": False,
+                "name": "Factory coordinator (factory-coordinator)",
+                "permissions": permissions,
+            }
+        ]
     api.fail = failure
     with pytest.raises(OSError, match="lost"):
         run()
     api.fail = None
     run()
-    assert len(api.roles) == 1 and api.permissions["work_items"]["create"] is True
+    assert len(api.roles) == 1 + int(collision)
+    assert api.permissions == script.COORDINATOR_PERMISSIONS
 
 
-def test_coordinator_bootstrap_repairs_dedicated_role_without_editing_default(
+def test_coordinator_bootstrap_replaces_drifted_role_without_editing_it(
     coordinator,
 ):
     script, api, run = coordinator
     run()
     api.roles[0]["permissions"]["work_items"]["create"] = False
     api.permissions = copy.deepcopy(api.roles[0]["permissions"])
+    drifted = copy.deepcopy(api.roles[0])
     api.writes.clear()
     run()
     assert script.has_coordinator_permissions(api.permissions)
-    role_writes = [p for m, p, _ in api.writes if p.startswith("/teams/7/roles")]
-    assert role_writes == ["/teams/7/roles/20"]
+    assert api.roles[0] == drifted and api.assigned_role == 21
+    assert api.roles[1]["permissions"] == script.COORDINATOR_PERMISSIONS
+    role_writes = [(m, p) for m, p, _ in api.writes if p.startswith("/teams/7/roles")]
+    assert role_writes == [("POST", "/teams/7/roles")]
+
+
+@pytest.mark.parametrize("user", ["members", "agents", "invites", "groups"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_coordinator_bootstrap_leaves_shared_roles_unchanged(
+    coordinator, user, missing
+):
+    script, api, run = coordinator
+    permissions = copy.deepcopy(script.COORDINATOR_PERMISSIONS)
+    if missing:
+        permissions["work_items"]["create"] = False
+    shared = {
+        "id": 20,
+        "system": False,
+        "name": "Factory coordinator (factory-coordinator)",
+        "permissions": permissions,
+    }
+    api.roles = [copy.deepcopy(shared)]
+    usage = {"members": 0, "agents": 0, "invites": 0, "groups": 0}
+    usage[user] = 1
+    api.role_usage[20] = copy.deepcopy(usage)
+    run()
+    assert api.roles[0] == shared and api.role_usage[20] == usage
+    assert api.assigned_role == 21
+    assert api.roles[1]["permissions"] == script.COORDINATOR_PERMISSIONS
+    if not missing:
+        assert 20 in api.usage_reads
+    writes = copy.deepcopy(api.writes)
+    run()
+    assert api.writes == writes and len(api.roles) == 2
 
 
 @pytest.mark.parametrize(
-    "failure", ["wrong identity", "read", "grant ignored", "system role"]
+    "extra", [("ai_agents", "edit"), ("work_items", "delete"), ("unknown", "manage")]
+)
+def test_coordinator_bootstrap_never_adopts_extra_permissions(coordinator, extra):
+    script, api, run = coordinator
+    permissions = copy.deepcopy(script.COORDINATOR_PERMISSIONS)
+    permissions.setdefault(extra[0], {})[extra[1]] = True
+    broad = {
+        "id": 20,
+        "system": False,
+        "name": "Factory coordinator (factory-coordinator)",
+        "permissions": permissions,
+    }
+    api.roles = [copy.deepcopy(broad)]
+    run()
+    assert api.roles[0] == broad and api.assigned_role == 21
+    assert api.permissions == script.COORDINATOR_PERMISSIONS
+
+
+def test_coordinator_bootstrap_accepts_only_unused_exact_role(coordinator):
+    script, api, run = coordinator
+    permissions = copy.deepcopy(script.COORDINATOR_PERMISSIONS)
+    permissions["ai_agents"]["edit"] = False
+    permissions["unrelated"] = {"read": False}
+    api.roles = [
+        {
+            "id": 20,
+            "system": False,
+            "name": "Factory coordinator (factory-coordinator)",
+            "permissions": permissions,
+        }
+    ]
+    run()
+    assert api.assigned_role == 20 and api.usage_reads == [20]
+    assert not any(p.startswith("/teams/7/roles") for _, p, _ in api.writes)
+
+
+def test_coordinator_bootstrap_does_not_adopt_system_name_collision(coordinator):
+    script, api, run = coordinator
+    system = {
+        "id": 1,
+        "name": "Factory coordinator (factory-coordinator)",
+        "system": True,
+        "permissions": copy.deepcopy(script.COORDINATOR_PERMISSIONS),
+    }
+    api.roles = [copy.deepcopy(system)]
+    run()
+    assert api.roles[0] == system and api.assigned_role == 20
+    assert api.usage_reads == [20]
+
+
+@pytest.mark.parametrize(
+    "failure", ["wrong identity", "read", "grant ignored", "usage read", "role changed"]
 )
 def test_coordinator_bootstrap_fails_closed_without_effective_grant(
     coordinator, failure, capsys
@@ -345,14 +462,6 @@ def test_coordinator_bootstrap_fails_closed_without_effective_grant(
     script, api, run = coordinator
     if failure == "wrong identity":
         api.wrong_identity = True
-    elif failure == "system role":
-        api.roles = [
-            {
-                "id": 1,
-                "name": "Factory coordinator (factory-coordinator)",
-                "system": True,
-            }
-        ]
     else:
         api.fail = failure
     with pytest.raises((SystemExit, script.HTTPError)):
@@ -360,7 +469,7 @@ def test_coordinator_bootstrap_fails_closed_without_effective_grant(
     output = capsys.readouterr().out
     assert "verified factory-coordinator" not in output and api.key not in output
     if failure != "grant ignored":
-        assert not any("/roles" in p or "/members/" in p for _, p, _ in api.writes)
+        assert not any("/members/" in p for _, p, _ in api.writes)
 
 
 def test_second_run_preserves_member_password_and_secret(bootstrap, capsys):
