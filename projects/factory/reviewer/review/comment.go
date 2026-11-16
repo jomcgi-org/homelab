@@ -26,7 +26,7 @@ import (
 // starts with CommentMarker, which the broker finds in one request. An App without those permissions loses
 // only the comment.
 type Comments interface {
-	FindIssueComment(ctx context.Context, repo string, number, maxPages int, match func(github.Comment) bool) (*github.Comment, bool, error)
+	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
 	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
 	UpdateIssueComment(ctx context.Context, repo string, id int64, body string) (*github.Comment, error)
 }
@@ -96,7 +96,6 @@ const (
 	maxSince        = 10000
 	maxSummaryChars = maxAgentSummary
 	commentTimeout  = 30 * time.Second
-	maxCommentPages = 100 // 10,000 conversation comments, for the reviewer only.
 )
 
 const commentLimitNote = "This PR has more than 10,000 comments, so its findings are only in this check."
@@ -645,7 +644,16 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 // that starts with the comment marker, or nil. complete is false when the
 // listing stopped before the PR's last comment.
 func (e *Engine) findComment(ctx context.Context, b *Binding, number int) (*github.Comment, bool, error) {
-	return e.cfg.Comments.FindIssueComment(ctx, b.repo(), number, maxCommentPages, e.ownComment)
+	all, complete, err := e.cfg.Comments.IssueComments(ctx, b.repo(), number)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, c := range all {
+		if strings.EqualFold(c.Author, e.cfg.CommentAuthor) && strings.HasPrefix(c.Body, commentMarker) {
+			return &c, complete, nil
+		}
+	}
+	return nil, complete, nil
 }
 
 func (e *Engine) commentFailed(ctx context.Context, l *slog.Logger, b *Binding, call string, err error) {

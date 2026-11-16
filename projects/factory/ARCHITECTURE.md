@@ -1443,7 +1443,7 @@ reuse state, even after a prolonged persistence failure.
   broker. `/github/reviewer-comments` (`github.CommentProxy`), for the same
   subjects only, does three things with it: finds the oldest comment
   `githubReview.commentAuthor`, the reviewer's bot login, wrote on a PR
-  (reading up to 1,000 comments a page at a time and stopping at the first
+  (reading up to 10,000 comments a page at a time and stopping at the first
   match, so the reviewer makes one request), creates a comment on a pull
   request (an issue number is refused), and edits a comment on a pull
   request that the bot login wrote. It serves

@@ -773,57 +773,6 @@ func (c *Client) IssueComments(ctx context.Context, repo string, number int) (co
 	return comments, false, nil
 }
 
-// FindIssueComment finds the oldest matching conversation comment, retaining
-// only that comment as it reads and discards each page. Unlike IssueComments,
-// it uses GitHub's Link header to decide completeness, including a full final
-// page. It reads at most maxPages pages and discards the match on a failed read.
-func (c *Client) FindIssueComment(ctx context.Context, repo string, number, maxPages int, match func(Comment) bool) (found *Comment, complete bool, err error) {
-	for page := 1; page <= maxPages; page++ {
-		var out []restComment
-		q := url.Values{"per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
-		path := repoPath(repo) + "/issues/" + strconv.Itoa(number) + "/comments?" + q.Encode()
-		headers, err := c.doWithHeaders(ctx, repo, http.MethodGet, path, nil, &out)
-		if err != nil {
-			return nil, false, err
-		}
-		if out == nil {
-			return nil, false, errors.New("github: missing comment listing")
-		}
-		if found == nil {
-			for _, cm := range out {
-				comment := cm.comment()
-				if match(comment) {
-					found = &comment
-					break
-				}
-			}
-		}
-		if !hasNextPage(headers) {
-			return found, true, nil
-		}
-	}
-	return found, false, nil
-}
-
-func hasNextPage(headers http.Header) bool {
-	for _, value := range headers.Values("Link") {
-		for _, link := range strings.Split(value, ",") {
-			for _, param := range strings.Split(link, ";")[1:] {
-				key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
-				if !ok || key != "rel" {
-					continue
-				}
-				for _, rel := range strings.Fields(strings.Trim(value, "\"")) {
-					if rel == "next" {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
-}
-
 // CreateIssueComment posts a conversation comment on a PR or issue.
 func (c *Client) CreateIssueComment(ctx context.Context, repo string, number int, body string) (*Comment, error) {
 	var out restComment

@@ -3,6 +3,8 @@ package review
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -20,6 +22,9 @@ import (
 	"testing"
 	"time"
 
+	brokerconfig "github.com/jomcgi/homelab/projects/factory/broker/config"
+	brokergithub "github.com/jomcgi/homelab/projects/factory/broker/github"
+	brokermetrics "github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
@@ -316,14 +321,24 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+	if r.Method == http.MethodPost && r.URL.Path == "/app/installations/1/access_tokens" {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token": "ghs_comment", "expires_at": time.Now().Add(time.Hour),
+			"permissions":  map[string]string{"issues": "write", "pull_requests": "write"},
+			"repositories": []map[string]string{{"full_name": testRepo}},
+		})
+		return
+	}
 	prefix := "/repos/" + testRepo
 	path := strings.TrimPrefix(r.URL.Path, prefix)
 	q := r.URL.Query()
 	// The check token reads comments but cannot write them; the comment
-	// token reaches comments only.
+	// token reaches comments and verifies the PR exists before creating one.
 	comments := strings.HasPrefix(path, "/issues/") && strings.Contains(path, "comments")
+	_, pullNumberErr := strconv.Atoi(strings.TrimPrefix(path, "/pulls/"))
 	switch auth := r.Header.Get("Authorization"); {
-	case auth == "Bearer ghs_comment" && comments:
+	case auth == "Bearer ghs_comment" && (comments || (r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && pullNumberErr == nil)):
 	case auth == "Bearer ghs_reviewer" && comments && r.Method != http.MethodGet:
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
@@ -506,6 +521,20 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, map[string]any{"id": event.ID, "event": "labeled", "label": map[string]string{"name": event.Label}, "created_at": event.CreatedAt})
 		}
 		f.get(w, r, page(out, q))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/comments/"):
+		id, _ := strconv.ParseInt(strings.TrimPrefix(path, "/issues/comments/"), 10, 64)
+		for _, pr := range f.prs {
+			for _, c := range pr.Comments {
+				if c.ID == id {
+					f.get(w, r, map[string]any{
+						"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body,
+						"html_url": fmt.Sprintf("https://github.com/%s/pull/%d#issuecomment-%d", testRepo, pr.Number, c.ID),
+					})
+					return
+				}
+			}
+		}
+		http.NotFound(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/") && strings.HasSuffix(path, "/comments"):
 		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/issues/"), "/comments"))
 		p, _ := strconv.Atoi(q.Get("page"))
@@ -872,12 +901,6 @@ type reviewerTokens struct{}
 func (reviewerTokens) Token(context.Context, string) (string, error) { return "ghs_reviewer", nil }
 func (reviewerTokens) Invalidate(string)                             {}
 
-// commentTokens is the broker's comment token.
-type commentTokens struct{}
-
-func (commentTokens) Token(context.Context, string) (string, error) { return "ghs_comment", nil }
-func (commentTokens) Invalidate(string)                             {}
-
 // ownComments are the comments the reviewer wrote on a PR.
 func (f *fakeGitHub) ownComments(number int) []github.Comment {
 	f.mu.Lock()
@@ -1210,6 +1233,7 @@ type harness struct {
 	log             *syncBuffer
 	cfg             Config
 	srv             *httptest.Server
+	commentsClient  *github.BrokerComments
 	startupRecovery bool
 }
 
@@ -1266,9 +1290,42 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
+type commentProxyBearer struct{}
+
+func (commentProxyBearer) Token() (string, error) { return "test-service-account", nil }
+
+// comments exercises the deployed broker client and proxy against fake GitHub.
+func (h *harness) comments() *github.BrokerComments {
+	if h.commentsClient != nil {
+		return h.commentsClient
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	proxy := &brokergithub.CommentProxy{
+		Author: botLogin,
+		Minter: &brokergithub.Minter{
+			App:                  &brokergithub.App{APIURL: h.srv.URL, AppID: "1", InstallationID: "1", Key: key, Client: h.srv.Client()},
+			Bindings:             []brokerconfig.Binding{{Name: "homelab", Repository: testRepo}},
+			ConnectorPermissions: map[string]string{"issues": "write", "pull_requests": "write"},
+			Metrics:              brokermetrics.New(),
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != github.DefaultCommentsPath || r.Header.Get("Authorization") != "Bearer test-service-account" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	h.t.Cleanup(srv.Close)
+	h.commentsClient = &github.BrokerComments{URL: srv.URL, Prefix: CommentMarker, Bearer: commentProxyBearer{}, HTTP: srv.Client()}
+	return h.commentsClient
+}
+
 // engine builds a fresh engine, as a new process would, sharing the fakes.
-// With a CommentAuthor and no Comments, it writes comments with the comment
-// token.
+// With a CommentAuthor and no Comments, it writes comments through the broker.
 func (h *harness) engine() *Engine {
 	gh := &github.Client{BaseURL: h.srv.URL, Tokens: reviewerTokens{}, ETags: &github.ETagCache{}}
 	log := slog.New(slog.NewJSONHandler(h.log, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -1277,7 +1334,7 @@ func (h *harness) engine() *Engine {
 		cfg.Sessions = h.sessions
 	}
 	if cfg.CommentAuthor != "" && cfg.Comments == nil {
-		cfg.Comments = &github.Client{BaseURL: h.srv.URL, Tokens: commentTokens{}}
+		cfg.Comments = h.comments()
 	}
 	e := New(cfg, gh, h.k, h.m, log)
 	if !h.startupRecovery { // Most cases isolate steady-state behavior; recovery cases exercise the startup scan.

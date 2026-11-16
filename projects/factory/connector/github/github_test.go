@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -752,127 +751,6 @@ func TestReviewsCommentsAndCompare(t *testing.T) {
 	}
 }
 
-func TestFindIssueCommentUsesPaginationHeaders(t *testing.T) {
-	for _, n := range []int{0, 1000, 2500, 10000, 10001} {
-		for _, id := range []int{0, 1, max(1, n)} {
-			t.Run(fmt.Sprintf("comments=%d/match=%d", n, id), func(t *testing.T) {
-				srv, seen := pagedServer(t, "/repos/example-org/homelab/issues/7/comments", n, func(i int) string {
-					return fmt.Sprintf(`{"id":%d,"user":{"login":"u"},"body":"b"}`, i)
-				})
-				c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
-				cm, complete, err := c.FindIssueComment(context.Background(), "example-org/homelab", 7, 100, func(cm Comment) bool { return cm.ID == int64(id) })
-				if err != nil || complete != (n <= 10000) {
-					t.Fatalf("comment = %+v, complete %v, err %v", cm, complete, err)
-				}
-				if id > 0 && id <= min(n, 10000) {
-					if cm == nil || cm.ID != int64(id) {
-						t.Fatalf("comment = %+v, want ID %d", cm, id)
-					}
-				} else if cm != nil {
-					t.Fatalf("unexpected match: %+v", cm)
-				}
-				if want := max(1, min(100, (n+99)/100)); len(*seen) != want {
-					t.Fatalf("pages read = %d, want %d", len(*seen), want)
-				}
-			})
-		}
-	}
-}
-
-func TestFindIssueCommentFollowsShortPagesAndBypassesBodyCache(t *testing.T) {
-	reads := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reads++
-		if r.Header.Get("If-None-Match") != "" {
-			t.Error("pagination used the body-only ETag cache")
-		}
-		w.Header().Set("ETag", `"same"`)
-		if r.URL.Query().Get("page") == "1" {
-			w.Header().Set("Link", `</comments?page=2>; rel="next", </comments?page=2>; rel="last"`)
-		} else {
-			w.Header().Set("Link", `</comments?page=1>; rel="prev"`)
-		}
-		_, _ = fmt.Fprintf(w, `[{"id":%s,"body":"b","user":{"login":"u"}}]`, r.URL.Query().Get("page"))
-	}))
-	t.Cleanup(srv.Close)
-	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
-	path := "/repos/example-org/homelab/issues/7/comments?page=1&per_page=100"
-	c.ETags.put(path, `"same"`, []byte(`[]`))
-	comment, complete, err := c.FindIssueComment(context.Background(), "example-org/homelab", 7, 100, func(Comment) bool { return true })
-	if err != nil || !complete || comment == nil || comment.ID != 1 || reads != 2 {
-		t.Fatalf("comment = %+v, complete %v, reads %d, err %v", comment, complete, reads, err)
-	}
-}
-
-func TestFindIssueCommentDiscardsFailedReads(t *testing.T) {
-	for _, body := range []string{"", "null", "[", `{"message":"not a listing"}`} {
-		t.Run(body, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Get("page") == "1" {
-					w.Header().Set("Link", `</comments?page=2>; rel="next"`)
-					_, _ = w.Write([]byte(`[{"id":1,"body":"b","user":{"login":"u"}}]`))
-					return
-				}
-				_, _ = w.Write([]byte(body))
-			}))
-			t.Cleanup(srv.Close)
-			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			comment, complete, err := c.FindIssueComment(context.Background(), "example-org/homelab", 7, 100, func(Comment) bool { return true })
-			if err == nil || complete || comment != nil {
-				t.Fatalf("failed read returned comment %+v, complete %v, err %v", comment, complete, err)
-			}
-		})
-	}
-}
-
-func TestFindIssueCommentDiscardsUnmatchedBodies(t *testing.T) {
-	for _, existing := range []bool{false, true} {
-		t.Run(fmt.Sprintf("existing=%v", existing), func(t *testing.T) {
-			// Retaining these pages would keep roughly 180 MiB of decoded
-			// bodies alive. A page and the first match fit well within 64 MiB.
-			const pages = 30
-			body := strings.Repeat("x", 60<<10)
-			heap := make(chan uint64, 1)
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-				if page == pages {
-					runtime.GC()
-					var stats runtime.MemStats
-					runtime.ReadMemStats(&stats)
-					heap <- stats.HeapAlloc
-				} else {
-					w.Header().Set("Link", fmt.Sprintf(`</comments?page=%d>; rel="next"`, page+1))
-				}
-				_, _ = fmt.Fprint(w, "[")
-				for i := range MaxListed {
-					if i > 0 {
-						_, _ = fmt.Fprint(w, ",")
-					}
-					_, _ = fmt.Fprintf(w, `{"id":%d,"body":%q}`, (page-1)*MaxListed+i+1, body)
-				}
-				_, _ = fmt.Fprint(w, "]")
-			}))
-			t.Cleanup(srv.Close)
-			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
-			runtime.GC()
-			var before runtime.MemStats
-			runtime.ReadMemStats(&before)
-			comment, complete, err := c.FindIssueComment(context.Background(), "example-org/homelab", 7, pages, func(cm Comment) bool {
-				return existing && cm.ID == 1
-			})
-			if err != nil || !complete || (comment != nil) != existing {
-				t.Fatalf("found %v, complete %v, err %v", comment != nil, complete, err)
-			}
-			if existing && (comment.ID != 1 || comment.Body != body) {
-				t.Fatal("lost the first matching comment while discarding later pages")
-			}
-			if live := <-heap; live > before.HeapAlloc+(64<<20) {
-				t.Fatalf("lookup retained %d bytes above baseline, want at most 64 MiB", live-before.HeapAlloc)
-			}
-		})
-	}
-}
-
 func TestIssueCommentsKeepsItsOriginalLimitAndCompleteness(t *testing.T) {
 	for _, n := range []int{999, 1000, 1001, 2500} {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
@@ -979,11 +857,6 @@ func pagedServer(t *testing.T, path string, n int, item func(i int) string) (*ht
 		var items []string
 		for i := (page-1)*per + 1; i <= min(page*per, n); i++ {
 			items = append(items, item(i))
-		}
-		if page*per < n {
-			w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d&per_page=%d>; rel="next"`, path, page+1, per))
-		} else if page > 1 {
-			w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d&per_page=%d>; rel="prev"`, path, page-1, per))
 		}
 		_, _ = w.Write([]byte("[" + strings.Join(items, ",") + "]"))
 	}))

@@ -30,8 +30,8 @@ const maxCommentRequest = jsonExpansion*MaxCommentBody + 4096
 const maxCommentAnswer = 4 << 20
 
 // FindPages bounds the search for the reviewer's comment: pages of 100,
-// oldest first, so 1,000 comments.
-const FindPages = 10
+// oldest first, so 10,000 comments.
+const FindPages = 100
 
 // maxFindPage bounds one listing page GitHub sends while the proxy searches
 // it. The page is decoded one comment at a time and only the match is kept,
