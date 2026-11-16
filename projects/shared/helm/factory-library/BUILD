@@ -1,3 +1,4 @@
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Expose this package's README to the repository documentation aggregate.
@@ -19,4 +20,13 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
+)
+
+# A review helper run by hand (see README). Gazelle generates this target for
+# the script's __main__ block; py_venv_binary needs main set explicitly.
+py_venv_binary(
+    name = "render_landing_diff",
+    srcs = ["render_landing_diff.py"],
+    main = "render_landing_diff.py",
+    deps = ["@pip//pyyaml"],
 )
