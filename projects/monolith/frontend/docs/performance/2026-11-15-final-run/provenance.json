@@ -1,0 +1,39 @@
+{
+  "measuredOrigin": "https://jomcgi.dev",
+  "harnessSha": "6bd5b82c79761e829a0b599c11d68324a800028b",
+  "deployedSha": null,
+  "cacheMissProbesEnabled": true,
+  "pageCache": {
+    "mode": "keyed",
+    "parameter": "__public_perf_page",
+    "key": "run-43671642559-attempt-2"
+  },
+  "probeEndpointCount": 13,
+  "probeSamplesPerEndpoint": 20,
+  "representativeTripSlug": "2025-liard-hot-springs",
+  "admissionOnlyRoutes": [
+    "/app/grimoire"
+  ],
+  "baselineNote": "Grimoire admission is a new observation without an earlier browser baseline; no protected corpus or admission interaction is measured.",
+  "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43671642559",
+  "runAttempt": "2",
+  "startedAt": "2026-11-15T05:04:56.594Z",
+  "nodeVersion": "v22.23.3",
+  "playwrightVersion": "1.62.1",
+  "chromium": {
+    "name": "chromium",
+    "revision": "1234",
+    "installByDefault": true,
+    "browserVersion": "151.0.7922.34",
+    "title": "Chrome for Testing"
+  },
+  "runner": {
+    "os": "Linux",
+    "arch": "X64",
+    "image": "ubuntu24",
+    "imageVersion": "20261111.127.1",
+    "cpu": "Intel(R) Xeon(R) 6975P-C",
+    "logicalCpus": 4
+  },
+  "note": "The checkout identifies the measurement tool, not the deployed application. Verify rollout separately before comparing results."
+}

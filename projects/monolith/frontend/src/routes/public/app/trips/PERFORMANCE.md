@@ -9,14 +9,8 @@ The merged [worker fix](https://github.com/jomcgi-org/homelab/pull/7987)
 uses the emitted MapLibre worker instead of a missing relative module URL.
 The merged [route-preview change](https://github.com/jomcgi-org/homelab/pull/7989)
 renders a bounded SVG route before the interactive map is ready.
-
-Production checks after healthy release `0.792.47` verified the summary's
-nine daily route lines and the day page's route in initial HTML, each sampled
-to at most 128 points. A desktop browser without WebGL retained those previews,
-the displayed day photo and working photo/day navigation. This verifies the
-fallback, not interactive map paint or mobile performance. The
-[measurement report](../../../../../docs/public-app-performance-2026-11-15.md)
-records the later browser samples and remaining LCP gaps.
+Hosted browser measurements and the remaining LCP gaps are in the
+[measurement report](../../../../../docs/public-app-performance-2026-11-15.md).
 
 ## Cache windows
 

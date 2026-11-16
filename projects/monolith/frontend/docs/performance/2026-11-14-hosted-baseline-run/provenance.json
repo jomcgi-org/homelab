@@ -1,0 +1,27 @@
+{
+  "measuredOrigin": "https://jomcgi.dev",
+  "harnessSha": "a2242f86147d3d22cf691a5136ce297bc3048967",
+  "deployedSha": null,
+  "representativeTripSlug": "2025-liard-hot-springs",
+  "runUrl": "https://github.com/jomcgi-org/homelab/actions/runs/43652846917",
+  "runAttempt": "1",
+  "startedAt": "2026-11-14T23:22:09.254Z",
+  "nodeVersion": "v22.23.3",
+  "playwrightVersion": "1.62.1",
+  "chromium": {
+    "name": "chromium",
+    "revision": "1234",
+    "installByDefault": true,
+    "browserVersion": "151.0.7922.34",
+    "title": "Chrome for Testing"
+  },
+  "runner": {
+    "os": "Linux",
+    "arch": "X64",
+    "image": "ubuntu24",
+    "imageVersion": "20261111.370.1",
+    "cpu": "AMD EPYC 9V45 96-Core Processor",
+    "logicalCpus": 4
+  },
+  "note": "The checkout identifies the measurement tool, not the deployed application. Verify rollout separately before comparing results."
+}

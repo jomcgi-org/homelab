@@ -4,7 +4,7 @@ The app-specific `PERFORMANCE.md` files record configured response-cache
 allowances and build budgets as of 15 November 2026, including the merged
 worker and response-boundary fixes. These documentation updates do not change
 those policies. The [measurement report](public-app-performance-2026-11-15.md)
-records rollout evidence separately; merge status is not deployment verification.
+records hosted measurements separately; merge status is not deployment verification.
 Source-data age is separate:
 serving or revalidating an old database row or materialized object can start a
 new response lifetime without refreshing its contents.
