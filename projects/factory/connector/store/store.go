@@ -828,8 +828,8 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 
 // SetAttemptEvents records that the attempt's task changed to count at at,
 // and whether a tool call in it has no result yet.
-func (s *Store) SetAttemptEvents(ctx context.Context, id int64, count int, toolRunning bool, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE delivery_attempt SET event_count = $2, tool_running = $3, event_at = $4 WHERE id = $1`,
+func (s *Store) SetAttemptEvents(ctx context.Context, q Querier, id int64, count int, toolRunning bool, at time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE delivery_attempt SET event_count = $2, tool_running = $3, event_at = $4 WHERE id = $1`,
 		id, count, toolRunning, at)
 	return err
 }
@@ -1099,6 +1099,7 @@ const (
 	CancelQuotaStall   = "quota_stall"   // the turn went quiet on an exhausted quota
 	CancelPending      = "pending"
 	CancelConfirmed    = "confirmed"
+	CancelWithdrawn    = "withdrawn" // a quota_stall the task's activity overtook before CancelTask
 )
 
 // Cancellation is a requested kagent task cancellation.
@@ -1111,6 +1112,8 @@ type Cancellation struct {
 	Requests  int
 	LastAt    time.Time
 	Outcome   string
+	// EventCount is the task size a quota_stall cancellation was decided on.
+	EventCount int
 }
 
 // RequestCancellation records a pending cancellation for an attempt; a
@@ -1121,6 +1124,31 @@ func (s *Store) RequestCancellation(ctx context.Context, q Querier, attemptID, r
 		VALUES ($1, $2, $3, 'pending')
 		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, reason)
 	return err
+}
+
+// RequestQuotaStall records a pending quota_stall cancellation decided on
+// the task at eventCount; a pending one already recorded is kept.
+func (s *Store) RequestQuotaStall(ctx context.Context, q Querier, attemptID, runID int64, eventCount int) error {
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state, event_count)
+		VALUES ($1, $2, 'quota_stall', 'pending', $3)
+		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, eventCount)
+	return err
+}
+
+// WithdrawQuotaStall closes a pending quota_stall cancellation that has
+// sent no CancelTask, while its run is dispatched. It reports whether it
+// withdrew it. The caller holds the run's row lock (LockStop).
+func (s *Store) WithdrawQuotaStall(ctx context.Context, q Querier, id int64, outcome string) (bool, error) {
+	res, err := q.ExecContext(ctx, `
+		UPDATE cancellation c SET state = 'withdrawn', outcome = $2
+		WHERE c.id = $1 AND c.state = 'pending' AND c.reason = 'quota_stall' AND c.requests = 0
+			AND EXISTS (SELECT 1 FROM run r WHERE r.id = c.run_id AND r.state = 'dispatched')`, id, outcome)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // CancelPending reports whether the attempt has a pending cancellation.
@@ -1135,7 +1163,7 @@ func (s *Store) CancelPending(ctx context.Context, attemptID int64) (bool, error
 func (s *Store) PendingCancellations(ctx context.Context) ([]*Cancellation, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, delivery_attempt_id, run_id, reason, state, requests,
-			coalesce(last_request_at, 'epoch'::timestamptz), coalesce(outcome, '')
+			coalesce(last_request_at, 'epoch'::timestamptz), coalesce(outcome, ''), coalesce(event_count, 0)
 		FROM cancellation WHERE state = 'pending' ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1144,7 +1172,7 @@ func (s *Store) PendingCancellations(ctx context.Context) ([]*Cancellation, erro
 	var out []*Cancellation
 	for rows.Next() {
 		c := &Cancellation{}
-		if err := rows.Scan(&c.ID, &c.AttemptID, &c.RunID, &c.Reason, &c.State, &c.Requests, &c.LastAt, &c.Outcome); err != nil {
+		if err := rows.Scan(&c.ID, &c.AttemptID, &c.RunID, &c.Reason, &c.State, &c.Requests, &c.LastAt, &c.Outcome, &c.EventCount); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

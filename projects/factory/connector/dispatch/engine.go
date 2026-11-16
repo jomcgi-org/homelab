@@ -422,8 +422,10 @@ func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error 
 // recorded first (BeginStatusRead). A changed task records its activity
 // and restarts the quiet period. The turn is canceled only when its task is
 // unchanged, has no tool call without a result and has not finished. The
-// cancellation stays pending until kagent confirms it, as every
-// cancellation does; stepCancellation sends CancelTask.
+// cancellation records the task size it was decided on and stays pending
+// until kagent confirms it, as every cancellation does. stepCancellation
+// sends CancelTask, or withdraws the cancellation when the task changed
+// first (withdrawQuotaStall).
 func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt) error {
 	defer e.lockRun(a.RunID)()
 	r, err := e.st.GetRun(ctx, a.RunID)
@@ -454,13 +456,13 @@ func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt) error {
 	}
 	n, running := taskSize(t), t.ToolRunning()
 	if n != a.EventCount || a.EventAt.IsZero() {
-		return e.st.SetAttemptEvents(ctx, a.ID, n, running, e.cfg.Now())
+		return e.st.SetAttemptEvents(ctx, e.st.DB, a.ID, n, running, e.cfg.Now())
 	}
 	if running || kagent.Quiescent(t.Status.State) {
 		return nil
 	}
 	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
-		return e.st.RequestCancellation(ctx, tx, a.ID, a.RunID, store.CancelQuotaStall)
+		return e.st.RequestQuotaStall(ctx, tx, a.ID, a.RunID, n)
 	}); err != nil {
 		return err
 	}
@@ -1572,7 +1574,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	// The first read records the task even when it is empty: a turn is
 	// quiet only after a read (QuietAttempts).
 	if n := taskSize(t); n != a.EventCount || a.EventAt.IsZero() {
-		if err := e.st.SetAttemptEvents(ctx, a.ID, n, t.ToolRunning(), e.cfg.Now()); err != nil {
+		if err := e.st.SetAttemptEvents(ctx, e.st.DB, a.ID, n, t.ToolRunning(), e.cfg.Now()); err != nil {
 			return err
 		}
 	}
@@ -1898,6 +1900,11 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if kagent.Terminal(t.Status.State) {
 		return e.confirmCancel(ctx, c, a, strings.ToLower(strings.TrimPrefix(t.Status.State, "TASK_STATE_")))
 	}
+	if c.Reason == store.CancelQuotaStall && c.Requests == 0 {
+		if withdrawn, err := e.withdrawQuotaStall(ctx, c, r, wi, a, t); err != nil || withdrawn {
+			return err
+		}
+	}
 	if c.Requests > 0 && e.cfg.Now().Sub(c.LastAt) < e.cfg.CancelInterval {
 		return nil
 	}
@@ -1912,6 +1919,45 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		e.log.WarnContext(ctx, "cancel request failed", "task", a.TaskID, "error", err)
 	}
 	return nil
+}
+
+// withdrawQuotaStall withdraws a quota_stall cancellation, before its first
+// CancelTask, whose task changed after the quiet decision: the task grew
+// past the size the decision recorded, or has a tool call without a result.
+// The turn runs on, and the change restarts its quiet period. It reports
+// whether it withdrew the cancellation. A stop's or itsaplan's request
+// joins a pending cancellation (RequestCancellation), so a stopped run or
+// work item, or a run no longer dispatched, keeps it. Once CancelTask is
+// out the cancellation stands: kagent may still apply it, and its
+// confirmation then pauses the turn as a quota failure.
+func (e *Engine) withdrawQuotaStall(ctx context.Context, c *store.Cancellation, r *store.Run, wi *store.WorkItem, a *store.Attempt, t *kagent.Task) (bool, error) {
+	n, running := taskSize(t), t.ToolRunning()
+	if n == c.EventCount && !running {
+		return false, nil
+	}
+	why := "withdrawn: the task changed before CancelTask"
+	if running {
+		why = "withdrawn: a tool call started before CancelTask"
+	}
+	var withdrawn bool
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		withdrawn = false
+		if stopped, err := e.st.LockStop(ctx, tx, wi.ID, r.ID); err != nil || stopped {
+			return err
+		}
+		var err error
+		if withdrawn, err = e.st.WithdrawQuotaStall(ctx, tx, c.ID, why); err != nil || !withdrawn || n == a.EventCount {
+			return err
+		}
+		return e.st.SetAttemptEvents(ctx, tx, a.ID, n, running, e.cfg.Now())
+	})
+	if err != nil || !withdrawn {
+		return false, err
+	}
+	e.m.Cancellations.WithLabelValues(c.Reason, store.CancelWithdrawn).Inc()
+	e.log.InfoContext(ctx, "quota_stall cancellation withdrawn", "run", r.ID, "attempt", a.Seq, "task", a.TaskID,
+		"outcome", why)
+	return true, nil
 }
 
 // confirmCancel records kagent's terminal outcome and finishes the run the

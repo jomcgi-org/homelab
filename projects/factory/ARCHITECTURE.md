@@ -659,7 +659,13 @@ turn's task again before it cancels it, recorded in `status_read` first
 (`kagent/GetTask/<namespace>/<agent>/<task>`). A task that changed since
 the last read, or has an open tool call, is not canceled; the change is
 recorded and the quiet period starts again. A failed read cancels nothing
-for that turn. The
+for that turn. The `quota_stall` cancellation records the task size it was
+decided on. Before its first `CancelTask`, a read that shows the task grew
+or has an open tool call withdraws it (`withdrawn`) and records the change,
+so the quiet period starts again. A stop's or itsaplan's cancellation joins
+a pending one, so a stopped run or work item, or a run no longer
+dispatched, keeps it. Once `CancelTask` is out it stands until kagent
+confirms, since kagent may still apply it. The
 connector reads the broker while a quota block stands or a turn is that
 quiet. Each read is recorded in `quota_read`
 before the call, under the writer's epoch, with one message ID for each
@@ -923,7 +929,8 @@ sees their stops, and GitHub's required
 `factory review` check gates them.
 
 **Cancellation** sends A2A `CancelTask` and stays pending until kagent
-reports the task in a terminal state. A cancellation never sends a message.
+reports the task in a terminal state; only an unsent `quota_stall`
+cancellation can be withdrawn. A cancellation never sends a message.
 For an attempt whose task is unknown, it waits a dispatch window after the
 last send. It then finds the task in any state whose history holds the
 attempt's message ID, looking in the attempt's session or, for a first
