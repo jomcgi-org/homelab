@@ -181,3 +181,68 @@ func TestExhaustedQuotaDoesNotBlockCompletedReport(t *testing.T) {
 		t.Fatal("completed report sent another task")
 	}
 }
+
+// Split requests need no model call, including for checks an older process
+// left waiting before it checked the diff budget.
+func TestOversizedDiffSplitsWhileQuotaExhausted(t *testing.T) {
+	for _, reattach := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reattach=%t", reattach), func(t *testing.T) {
+			h := newHarness(t)
+			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Files: []github.PullRequestFile{
+				{Path: "a.go", Status: "modified", Additions: 400},
+				{Path: "b.go", Status: "added", Additions: 101},
+				{Path: "go.sum", Status: "modified", Additions: 9000},
+			}})
+			h.cfg.Quota = &fakeQuota{reading: github.QuotaReading{Exhausted: true, ReceivedAt: time.Now()}}
+			var checkID int64
+			if reattach {
+				// Leave a durable waiting check, then restore the normal
+				// budget before a new process attaches to that same head.
+				h.cfg.Bindings[0].MaxDiffLines = 1000
+				e, ctx, stop := h.start()
+				e.Tick(ctx)
+				waitForQuotaCheck(t, h)
+				checkID = h.gh.check(shaA).ID
+				stop()
+				h.cfg.Bindings[0].MaxDiffLines = 500
+			}
+			e, ctx, _ := h.start()
+			e.Tick(ctx)
+			eventually(t, "split request while quota is exhausted", func() bool {
+				c := h.gh.check(shaA)
+				return c != nil && c.Status == "completed"
+			})
+			c := h.gh.check(shaA)
+			if c.Conclusion != ConclusionFailure || c.Title != "Split this PR" ||
+				!strings.Contains(c.Summary, "501 changed lines in 2 files, not counting 1 generated files") ||
+				!strings.Contains(c.Summary, splitOnlyMarker) {
+				t.Fatalf("split check = %+v", c)
+			}
+			if reattach && c.ID != checkID {
+				t.Fatal("reattachment replaced the waiting check")
+			}
+			if len(h.k.sent()) != 0 || testutil.ToFloat64(h.m.Retries.WithLabelValues("homelab")) != 0 ||
+				testutil.ToFloat64(h.m.SplitRequests.WithLabelValues("homelab")) != 1 {
+				t.Fatal("split request sent a task, spent an attempt or was not counted")
+			}
+			if reattach && testutil.ToFloat64(h.m.ReviewsStarted.WithLabelValues("homelab", "reattach")) != 0 {
+				t.Fatal("splitting a waiting check acquired a review worker")
+			}
+		})
+	}
+}
+
+func TestQuotaWaitReleasesWorkerWhenDiffUnreadable(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Quota = &fakeQuota{reading: github.QuotaReading{Exhausted: true}}
+	h.gh.failWith("GET /repos/"+testRepo+"/pulls/7/files", 502)
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	rec := waitForQuotaCheck(t, h)
+	e.Tick(ctx)
+	if rec.Attempt != 1 || len(h.k.sent()) != 0 || testutil.ToFloat64(h.m.InFlight) != 0 ||
+		testutil.ToFloat64(h.m.Retries.WithLabelValues("homelab")) != 0 {
+		t.Fatal("unreadable diff spent an attempt or held a worker during quota exhaustion")
+	}
+}

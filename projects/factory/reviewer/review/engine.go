@@ -868,11 +868,20 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 // when the head has none. It reports true, starting nothing, when every
 // slot is taken; a head already under review starts nothing either.
 func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
-	// A waiting check needs only a quota read, without a review worker.
+	// Recheck the diff budget before a quota wait, without a review worker.
+	// This also handles checks that an older process paused before sizing.
 	if run != nil {
 		rec := RecordedTask(run.Summary)
-		if !rec.QuotaSince.IsZero() && e.waitForQuota(ctx, b, run, rec, e.prLog(b, pr)) {
-			return false
+		if !rec.QuotaSince.IsZero() {
+			l := e.prLog(b, pr)
+			files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
+			if err != nil {
+				e.ghError(ctx, l, b, "files", err)
+				return false
+			}
+			if e.requestSplit(ctx, b, pr, run, measure(b, files), l) || e.waitForQuota(ctx, b, run, rec, l) {
+				return false
+			}
 		}
 	}
 	key := headKey{b.Name, pr.HeadSHA}
@@ -1041,6 +1050,21 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 	return s
 }
 
+// requestSplit reports whether the diff is over budget. Its check can
+// complete without a Codex task, even while the grant is exhausted.
+func (e *Engine) requestSplit(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, size DiffSize, l *slog.Logger) bool {
+	if !size.over(b) {
+		return false
+	}
+	l.WarnContext(ctx, "the PR is over the review budget; asking for a split",
+		"lines", size.Lines, "files", size.Files, "generated", size.Generated)
+	e.m.SplitRequests.WithLabelValues(b.Name).Inc()
+	o := SplitOutcome(b, size, e.footer(b, pr, ""))
+	o.Output.Summary += "\n\n" + splitOnlyMarker
+	e.finish(ctx, b, pr, run, o, l)
+	return true
+}
+
 // waitForQuota leaves the check in progress and returns the worker to the
 // pool. A failed read never dispatches work; after a quota refusal, only a
 // newer usable reading can resume it, as in the connector.
@@ -1142,12 +1166,6 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			e.stop(ctx, b, pr, run, rec.ID, l)
 			return
 		}
-		if rec.ID == "" {
-			if e.waitForQuota(ctx, b, run, rec, l) {
-				return
-			}
-			rec.QuotaSince = time.Time{}
-		}
 		late := !e.cfg.Now().Before(began.Add(e.cfg.Timeout))
 		if in == nil {
 			got, err := e.gather(ctx, b, pr, l)
@@ -1185,6 +1203,10 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				// Rebind inherited prior-head recovery to this PR.
 				in.gate, _ = e.recoveryGate(b, pr, in.gate)
 				in.gate, _ = e.retainGate(b, pr, in.gate, false)
+			case rec.ID == "" && e.waitForQuota(ctx, b, run, rec, l):
+				// Unreadable PR data must not hold a worker or spend an
+				// attempt while the grant is also blocked.
+				return
 			case late:
 				if next("the reviewer could not read the PR from GitHub.") {
 					return
@@ -1194,17 +1216,15 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				e.sleep(ctx, e.cfg.Reissue)
 				continue
 			}
-			if rec.ID == "" && in.size.over(b) {
-				l.WarnContext(ctx, "the PR is over the review budget; asking for a split",
-					"lines", in.size.Lines, "files", in.size.Files, "generated", in.size.Generated)
-				e.m.SplitRequests.WithLabelValues(b.Name).Inc()
-				o := SplitOutcome(b, in.size, e.footer(b, pr, ""))
-				o.Output.Summary += "\n\n" + splitOnlyMarker
-				e.finish(ctx, b, pr, run, o, l)
+			if rec.ID == "" && e.requestSplit(ctx, b, pr, run, in.size, l) {
 				return
 			}
 		}
 		if rec.ID == "" {
+			if e.waitForQuota(ctx, b, run, rec, l) {
+				return
+			}
+			rec.QuotaSince = time.Time{}
 			if msg == nil {
 				m, err := e.message(ctx, b, pr, run, in, attempt, refused, l)
 				switch {
