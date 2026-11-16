@@ -1385,7 +1385,9 @@ func TestRecentPRScanCoverage(t *testing.T) {
 	}{
 		{name: "complete at since", created: at, want: true},
 		{name: "complete before since", created: at.Add(-time.Second), want: false},
-		{name: "truncated after boundary", truncated: true, created: at.Add(time.Second), want: true},
+		// A bounded listing skips its final page-1 reread, so a PR updated
+		// mid-read can be missing even after the last listed timestamp.
+		{name: "truncated after boundary", truncated: true, created: at.Add(time.Second), want: false},
 		// Unlisted PRs can share the last listed PR's update time.
 		{name: "truncated tie at boundary", truncated: true, created: at, want: false},
 		{name: "truncated before boundary", truncated: true, created: at.Add(-time.Second), want: false},
