@@ -254,6 +254,21 @@ update `deploy/render.sha256`, start a fresh coding session, run bootstrap
 and local checks, and confirm its review binding has no download grant.
 An existing session with the old egress policy cannot validate downloads.
 
+**BuildBuddy migration blocked (HOME-133).** The proposed gateway replaces
+the gRPC authentication header, but the pinned CLI also copies its stored
+login into the remote Bazel command. In CLI 5.0.321,
+[`ConfigureAPIKey`](https://github.com/buildbuddy-io/buildbuddy/blob/7cd8e347188466582fe66fd24ac6df12568fc9ed/cli/login/login.go#L325-L348)
+appends `--remote_header=x-buildbuddy-api-key` from `.git/config`.
+[`parseArgs` and `HandleRemoteBazel`](https://github.com/buildbuddy-io/buildbuddy/blob/7cd8e347188466582fe66fd24ac6df12568fc9ed/cli/remotebazel/remotebazel.go#L1170-L1277)
+put those arguments into the command sent in `RunRequest`.
+A stored placeholder therefore reaches the runner's Bazel arguments; gateway
+header replacement does not rewrite that request body.
+[HOME-133](https://factory-plan.jomcgi.dev/factory/issue/HOME-133) requires
+stopping and reporting this condition. The BuildBuddy policy, toolchain
+additions and remote-test prompt are not enabled or implemented.
+Resolve placeholder transport before staging them. Live gRPC, runner
+authentication, warm-cache reuse and memory acceptance remain unverified.
+
 ## Memory
 
 `repositories[].memory` binds one coding binding's Agent to Hindsight
