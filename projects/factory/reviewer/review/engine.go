@@ -30,6 +30,7 @@ import (
 
 // GitHub is the part of the GitHub client the reviewer uses.
 type GitHub interface {
+	PullRequestAppComments(ctx context.Context, repo string, number int, author string, appID int64, limit int) ([]github.AppComment, int, bool, error)
 	ListPullRequests(ctx context.Context, repo, base string) ([]github.PullRequest, bool, error)
 	ListCheckRuns(ctx context.Context, repo, sha string, f github.CheckRunFilter) ([]github.CheckRun, error)
 	CreateCheckRun(ctx context.Context, repo string, w github.CheckRunWrite) (*github.CheckRun, error)
@@ -122,6 +123,7 @@ func containsFold(list []string, s string) bool {
 type Config struct {
 	Itsaplan    Itsaplan
 	MACSecret   func() (string, error) // The evidence MAC key's input; never log or publish it.
+	Semgrep     *Semgrep
 	CheckName   string
 	AppID       int64
 	Concurrency int
@@ -310,6 +312,11 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	if cfg.EnqueueBackoff <= 0 {
 		cfg.EnqueueBackoff = 5 * time.Minute
 	}
+	if cfg.Semgrep != nil && cfg.Semgrep.Wait <= 0 {
+		copy := *cfg.Semgrep
+		copy.Wait = 10 * time.Minute
+		cfg.Semgrep = &copy
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -468,6 +475,23 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			start = append(start, candidate{pr, nil})
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
+		case e.semgrepChanged(ctx, b, pr, run):
+			// Withdraw a stale pass even when all review slots are occupied.
+			if run.Conclusion == ConclusionSuccess {
+				st, _ := LoadState(run.Text)
+				st.Semgrep = nil // A new review stays required if the scan changes back.
+				updated, err := e.gh.UpdateCheckRun(ctx, repo, run.ID, github.CheckRunWrite{
+					Status: "completed", Conclusion: ConclusionFailure,
+					Output: &github.CheckRunOutput{Title: "Semgrep evidence changed", Summary: "Semgrep evidence changed on this head. A new review is required before it can pass.", Text: encodeState(st)},
+				})
+				if err != nil {
+					e.ghError(ctx, e.prLog(b, pr), b, "update_check", err)
+				} else {
+					run = updated
+				}
+			}
+			reviews[pr.Number] = nil
+			start = append(start, candidate{pr, run})
 		default:
 			cur, pending, ready := e.reconcileIssues(ctx, b, pr, run)
 			reviews[pr.Number] = cur
@@ -940,7 +964,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 
 	l := e.prLog(b, pr)
 	kind := "reattach"
-	if run == nil || sharedHeadHeld(run) || issuesPending(run) {
+	if run == nil || run.Status == "completed" || sharedHeadHeld(run) || issuesPending(run) {
 		kind = "new"
 		now := e.cfg.Now().UTC()
 		st := State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}}
@@ -1027,11 +1051,12 @@ type recorded struct {
 	// attempt. QuotaSince persists the wait across service restarts.
 	QuotaRetry int
 	QuotaSince time.Time
+	Semgrep    string
 }
 
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
-var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: issues=([a-f0-9]{64}))? -->`)
+var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: issues=([a-f0-9]{64}))?(?: semgrep=([a-f0-9]{64}))? -->`)
 
 var quotaMarker = regexp.MustCompile(`<!-- factory-review:quota retry=([0-9]+) since=([0-9]+) -->`)
 
@@ -1044,7 +1069,7 @@ func RecordedTask(summary string) recorded {
 	}
 	m := all[len(all)-1]
 	n, _ := strconv.Atoi(m[1])
-	rec := recorded{Attempt: max(n, 1), ID: m[2], Issues: m[4]}
+	rec := recorded{Attempt: max(n, 1), ID: m[2], Issues: m[4], Semgrep: m[5]}
 	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
 		rec.Sent = time.Unix(sec, 0)
 	}
@@ -1080,11 +1105,14 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 		if !rec.Sent.IsZero() {
 			sent = rec.Sent.Unix()
 		}
-		issues := ""
+		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d", rec.Attempt, rec.ID, sent)
 		if rec.Issues != "" {
-			issues = " issues=" + rec.Issues
+			s += " issues=" + rec.Issues
 		}
-		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d%s -->", rec.Attempt, rec.ID, sent, issues)
+		if rec.Semgrep != "" {
+			s += " semgrep=" + rec.Semgrep
+		}
+		s += " -->"
 	}
 	if rec.QuotaRetry > 0 || !rec.QuotaSince.IsZero() {
 		var since int64
@@ -1142,6 +1170,7 @@ func (e *Engine) waitForQuota(ctx context.Context, b *Binding, run *github.Check
 type inputs struct {
 	issues    *IssueContext
 	goal      *GoalCheck // the head's goal check, or nil
+	semgrep   *SemgrepEvidence
 	files     []github.PullRequestFile
 	size      DiffSize
 	gate      *Gate
@@ -1192,8 +1221,17 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	next := func(reason string) bool {
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
-			e.finish(ctx, b, pr, run, NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason),
-				e.footer(b, pr, rec.ID)), l)
+			o := NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason), e.footer(b, pr, rec.ID))
+			if in != nil && in.semgrep != nil {
+				st, _ := LoadState(run.Text)
+				st.Semgrep = in.semgrep.stamp()
+				st.Semgrep.NoReport = true
+				o.Output.Text = encodeState(st)
+				if in.semgrep.Unavailable != "" {
+					o.Output.Summary += "\n\n**medium** `semgrep:unverified`: " + in.semgrep.Unavailable + "."
+				}
+			}
+			e.finish(ctx, b, pr, run, o, l)
 			return true
 		}
 		e.m.Retries.WithLabelValues(b.Name).Inc()
@@ -1288,6 +1326,23 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			continue
 		}
+		if e.cfg.Semgrep != nil && in.semgrep == nil {
+			start := run.StartedAt
+			if start.IsZero() {
+				start = began
+			}
+			in.semgrep = e.semgrepEvidence(ctx, b, pr, start.Add(e.cfg.Semgrep.Wait))
+			if ctx.Err() != nil {
+				continue
+			}
+			if rec.ID != "" && rec.Semgrep != in.semgrep.stamp().Digest {
+				e.cancelTask(ctx, b, rec.ID, l)
+				if next("Semgrep evidence changed or was not recorded before this task; review again.") {
+					return
+				}
+				continue
+			}
+		}
 		if rec.ID == "" {
 			if e.waitForQuota(ctx, b, run, rec, l) {
 				return
@@ -1335,6 +1390,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, QuotaRetry: rec.QuotaRetry}
 				if b.ItsaplanProject != "" {
 					rec.Issues = issueDigest(in.issues)
+				}
+				if in.semgrep != nil {
+					rec.Semgrep = in.semgrep.stamp().Digest
 				}
 				e.m.ReviewSessions.WithLabelValues(b.Name, in.plan.path(), in.plan.reason).Inc()
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends,
@@ -1436,6 +1494,12 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					return
 				}
 				continue
+			}
+			if in.semgrep != nil {
+				fresh := e.semgrepEvidence(ctx, b, currentPR, time.Time{})
+				if *fresh.stamp() != *in.semgrep.stamp() {
+					in.semgrep.Unavailable = "Semgrep evidence changed during the review; this head needs another review"
+				}
 			}
 			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if ctx.Err() != nil {
@@ -1590,7 +1654,7 @@ func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.Pull
 	}
 	for _, c := range comments {
 		switch {
-		case strings.TrimSpace(c.Body) == "", e.ownComment(c):
+		case strings.TrimSpace(c.Body) == "", e.ownComment(c), e.cfg.Semgrep != nil && strings.EqualFold(c.Author, semgrepAuthor):
 		case containsFold(b.TrustedCommenters, c.Author):
 			out = append(out, c)
 		default:
@@ -1636,7 +1700,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
-		CheckName: e.cfg.CheckName,
+		CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
 	})
 	id, contextID := AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt), ""
 	if plan.resume != nil {
@@ -1799,11 +1863,23 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 				sortBlocked(a.Blocking)
 			}
 		}
+		var semgrepState *State
+		if in.semgrep != nil {
+			// Save the agent assessment before adding the service finding.
+			// An agent finding with the same ID keeps its identity and severity.
+			st := stateOf(a, r, gate)
+			st.Semgrep = in.semgrep.stamp()
+			semgrepState = &st
+			enforceSemgrep(&a, in.semgrep)
+		}
 		a.Conclusion = ConclusionSuccess
 		if len(a.Blocking) > 0 {
 			a.Conclusion = ConclusionFailure
 		}
 		o := Render(a, r, gate, footer)
+		if semgrepState != nil {
+			o.Output.Text = encodeState(*semgrepState)
+		}
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
 		o.Comment = reviewComment(a, r, b, gate)
@@ -1924,6 +2000,9 @@ func (e *Engine) notifyGate(ctx context.Context, b *Binding, l *slog.Logger, by 
 // It returns the current check (nil on write failure) and whether to defer enqueue.
 func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool) {
 	st, ok := LoadState(run.Text)
+	if st.Semgrep != nil && (st.Semgrep.NoReport || !st.Semgrep.Verified) {
+		return run, true
+	}
 	if !ok && run.Conclusion != ConclusionSuccess {
 		return run, false
 	}
@@ -2006,7 +2085,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, !gate.approved() || len(st.Blocking) > 0
 	}
 	l := e.prLog(b, pr)
-	st.Gate = gate // Keep the cleared record, session and issue evidence binding.
+	st.Gate = gate // Keep the cleared record, session and both evidence bindings.
 	cur := e.gateCheck(ctx, b, pr, run, st, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")

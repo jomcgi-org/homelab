@@ -1864,6 +1864,30 @@ previews).
   `findings[{id, severity, path, line, title, detail, defer, earlier}]`,
   `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
   decides: success only when no critical, high or medium finding blocks.
+  Optional `semgrep {appId, checkName, wait}` adds GitHub-only scan evidence;
+  unset is off. The service holds no Semgrep token and calls no Semgrep API.
+  It matches `semgrep-cloud-platform/scan` by name, App ID 4746654 and exact
+  head. Before dispatch it waits for completion, bounded by `wait` (10m).
+  Success and failure both prove a scan. Missing, pending, cancelled,
+  skipped, errored or unreadable evidence adds the service-owned medium
+  `semgrep:unverified`, which the agent cannot waive.
+  The service reads conversation and inline comments from
+  `semgrep-code-jomcgi-org[bot]`, checking App ID wherever GitHub reports it.
+  Other authors never enter this evidence, including comments that quote Semgrep.
+  A separate `writeUntrusted` block of kind `semgrep` carries at most 50
+  comments of 4,000 characters and the omitted count. It includes path, line,
+  original commit and GitHub's explicit outdated flag where available.
+  Check output shares this block and has a 4,000-character bound.
+  Incomplete listings and omitted or truncated comments also fail closed.
+  The agent accounts for each finding against the current head: fixed,
+  false positive with code evidence, or a normal finding at its review severity.
+  Evidence digests bind tasks and saved reviews. Changed evidence, including
+  a late completed scan on the same head, starts another review.
+  An agent finding that collides with `semgrep:unverified` keeps its ID and
+  severity. Service availability state stays separate. Enablement follows CI's chart
+  write-back in a separate PR.
+  **Why.** Joe chose untrusted GitHub evidence with the reviewer retaining
+  the verdict ([HOME-120 decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-120#comment-799)).
   An attempt without a usable report (unparseable output, an unknown
   severity, a failed task other than quota exhaustion, a rejected send or
   a timeout) is retried on the same head after `retryBackoff` (5m); the

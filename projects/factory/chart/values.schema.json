@@ -464,6 +464,25 @@
           "type": "string",
           "minLength": 1
         },
+        "semgrep": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["appId", "checkName"],
+          "properties": {
+            "appId": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "checkName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "wait": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "commentAuthor": {
           "type": "string",
           "pattern": "^[^\\s/]*$"

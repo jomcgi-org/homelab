@@ -159,7 +159,12 @@ func run(log *slog.Logger) error {
 		bindings = append(bindings, rb)
 		names = append(names, b.Name)
 	}
+	var semgrep *review.Semgrep
+	if s := cfg.Semgrep; s != nil {
+		semgrep = &review.Semgrep{AppID: s.AppID, CheckName: s.CheckName, Wait: time.Duration(s.Wait)}
+	}
 	eng := review.New(review.Config{
+		Semgrep:       semgrep,
 		CheckName:     cfg.CheckName,
 		AppID:         cfg.AppID,
 		Concurrency:   cfg.Concurrency,

@@ -526,6 +526,9 @@ reviewer:
   # broker's comment token, which needs the App's Issues write permission.
   # Empty posts no comment.
   commentAuthor: ""
+  # GitHub-only Semgrep evidence. Unset is off; enabling follows chart write-back.
+  # semgrep: {appId: 4746654, checkName: semgrep-cloud-platform/scan, wait: 10m}
+  semgrep: null
   concurrency: 2
   enqueueAuthors: [jomcgi]
   humanApprovers: [jomcgi]

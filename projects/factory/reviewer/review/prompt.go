@@ -38,16 +38,17 @@ func AttemptMessageID(repo string, number int, sha string, runID int64, attempt 
 
 // PromptInput is what a review task is built from.
 type PromptInput struct {
-	Repo   string
-	Number int
-	URL    string
-	Base   string
-	SHA    string
-	Title  string
-	Body   string
-	Author string
-	Files  []github.PullRequestFile
-	Rules  *Rules
+	Semgrep *SemgrepEvidence
+	Repo    string
+	Number  int
+	URL     string
+	Base    string
+	SHA     string
+	Title   string
+	Body    string
+	Author  string
+	Files   []github.PullRequestFile
+	Rules   *Rules
 	// Previous are the blocking and human-gate findings of the review of
 	// PreviousHead.
 	Previous     []Finding
@@ -285,6 +286,8 @@ func Prompt(in PromptInput) string {
 			b.WriteString("\n\n")
 		}
 	}
+
+	writeSemgrep(&b, in.SHA, in.Semgrep)
 
 	if len(in.Comments) > 0 || in.DroppedComments > 0 {
 		b.WriteString("## Comments from trusted reviewers\n\n")
