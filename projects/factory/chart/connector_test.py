@@ -324,6 +324,7 @@ def test_bindings_derive_from_repositories() -> None:
             "connector.bindings.homelab.maxRebaseRounds=5",
             "connector.bindings.homelab.maxSplitRounds=2",
             "connector.intervals.poll=10s",
+            "connector.intervals.quotaStall=15m",
         ]
     )
     config = _config(docs)
@@ -349,7 +350,7 @@ def test_bindings_derive_from_repositories() -> None:
     ]
     # The binding's kagent Agent is the one the chart renders.
     _in(docs, "Agent", "factory-r-homelab", "homelab-codex")
-    assert config["intervals"] == {"poll": "10s"}
+    assert config["intervals"] == {"poll": "10s", "quotaStall": "15m"}
     assert config["links"] == {
         "issue": "https://factory-plan.jomcgi.dev/issue/{issueId}",
         "run": "",

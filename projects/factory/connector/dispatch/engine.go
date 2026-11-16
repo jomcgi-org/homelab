@@ -97,13 +97,15 @@ type Config struct {
 	ReviewPoll time.Duration
 	// SessionCheck spaces checks of a running turn's session for a crash.
 	SessionCheck time.Duration
-	// Quota reads the broker's quota while a quota failure pauses a grant,
-	// at most once per QuotaPoll (60 s). Nil leaves quota blocks to the
-	// operator's unblock.
-	Quota     QuotaSource
-	QuotaPoll time.Duration
-	Links     Links
-	Now       func() time.Time
+	// Quota reads the broker's quota while a quota failure pauses a grant
+	// or a running turn has had no task event for QuotaStall (10 min), at
+	// most once per QuotaPoll (60 s). Nil leaves quota blocks to the
+	// operator's unblock and cancels no quiet turn.
+	Quota      QuotaSource
+	QuotaPoll  time.Duration
+	QuotaStall time.Duration
+	Links      Links
+	Now        func() time.Time
 }
 
 // QuotaSource reads the broker's quota reading for its Codex grant.
@@ -169,6 +171,9 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.QuotaPoll == 0 {
 		cfg.QuotaPoll = 60 * time.Second
+	}
+	if cfg.QuotaStall == 0 {
+		cfg.QuotaStall = 10 * time.Minute
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -312,7 +317,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	}{
 		{"heartbeats", e.Heartbeats},
 		{"claims", e.claim},
-		{"quota", e.resumeQuota},
+		{"quota", e.checkQuota},
 		{"runs", e.stepRuns},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
@@ -331,17 +336,26 @@ func (e *Engine) Tick(ctx context.Context) error {
 	return nil
 }
 
-// resumeQuota clears quota blocks once the broker reports its grant usable
-// (HOME-127). Only a reading received after a block began clears it: the
-// failed turn's own readings predate the block, so a grant that keeps
-// failing pauses again until the broker's next reading, about every
-// 30 minutes, instead of on every poll.
-func (e *Engine) resumeQuota(ctx context.Context) error {
+// checkQuota reads the broker's quota while a quota block stands or a
+// running turn has had no task event for QuotaStall (HOME-127). An
+// exhausted reading cancels each such quiet turn; kagent's confirmation
+// pauses it as a quota failure. A turn can go quiet for longer during a
+// long tool call, so a usable reading cancels nothing.
+//
+// A usable reading clears quota blocks. Only a reading received after a
+// block began clears it: the failed turn's own readings predate the block,
+// so a grant that keeps failing pauses again until the broker's next
+// reading, about every 30 minutes, instead of on every poll.
+func (e *Engine) checkQuota(ctx context.Context) error {
 	if e.cfg.Quota == nil || e.cfg.Now().Sub(e.quotaRead) < e.cfg.QuotaPoll {
 		return nil
 	}
 	blocked, err := e.st.QuotaBlocked(ctx)
-	if err != nil || !blocked {
+	if err != nil {
+		return err
+	}
+	quiet, err := e.st.QuietAttempts(ctx, e.cfg.Now().Add(-e.cfg.QuotaStall))
+	if err != nil || (!blocked && len(quiet) == 0) {
 		return err
 	}
 	if err := e.guard(ctx); err != nil {
@@ -352,7 +366,10 @@ func (e *Engine) resumeQuota(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if q.Exhausted || q.ReceivedAt.IsZero() {
+	if q.Exhausted {
+		return e.cancelQuiet(ctx, quiet)
+	}
+	if !blocked || q.ReceivedAt.IsZero() {
 		return nil
 	}
 	if err := e.guard(ctx); err != nil {
@@ -363,6 +380,29 @@ func (e *Engine) resumeQuota(ctx context.Context) error {
 		e.log.InfoContext(ctx, "quota block cleared", "scope", scope, "reading_received_at", q.ReceivedAt)
 	}
 	return err
+}
+
+// cancelQuiet requests the cancellation of each quiet turn. It stays
+// pending until kagent confirms it, as every cancellation does.
+func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error {
+	for _, a := range quiet {
+		if err := e.st.RequestCancellation(ctx, e.st.DB, a.ID, a.RunID, store.CancelQuotaStall); err != nil {
+			return err
+		}
+		e.m.Cancellations.WithLabelValues(store.CancelQuotaStall, "requested").Inc()
+		e.log.WarnContext(ctx, "canceling a quiet turn: the broker reads the quota exhausted", "run", a.RunID,
+			"attempt", a.Seq, "task", a.TaskID, "quiet_for", e.cfg.Now().Sub(lastEvent(a)))
+	}
+	return nil
+}
+
+// lastEvent is when the connector last saw the attempt's task change, or
+// its send before the first read.
+func lastEvent(a *store.Attempt) time.Time {
+	if a.EventAt.After(a.SentAt) {
+		return a.EventAt
+	}
+	return a.SentAt
 }
 
 // RunHeartbeats keeps leases alive independently of the tick, so a slow
@@ -1455,11 +1495,34 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	if gone, err := e.postEvents(ctx, r, t); err != nil || gone {
 		return err
 	}
+	if n := taskSize(t); n != a.EventCount {
+		if err := e.st.SetAttemptEvents(ctx, a.ID, n, e.cfg.Now()); err != nil {
+			return err
+		}
+	}
 	if kagent.Quiescent(t.Status.State) {
+		// A pending cancellation reports the turn once kagent confirms it.
+		if pending, err := e.st.CancelPending(ctx, a.ID); err != nil || pending {
+			return err
+		}
 		e.checked.Delete(a.ID)
 		return e.complete(ctx, r, wi, a, t)
 	}
 	return e.watchSession(ctx, r, wi, a)
+}
+
+// taskSize grows with every task event the connector reads: history
+// messages and artifact text.
+func taskSize(t *kagent.Task) int {
+	n := len(t.History)
+	for _, a := range t.Artifacts {
+		if a != nil {
+			for _, p := range a.Parts {
+				n += len(p.Text)
+			}
+		}
+	}
+	return n
 }
 
 // postEvents sends the task's events past the persisted offset. A 409 means
@@ -1552,39 +1615,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	class := Classify(state, msg)
 	switch class {
 	case ClassCredential, ClassQuota:
-		e.m.Blocked.WithLabelValues(class).Inc()
-		e.log.WarnContext(ctx, "turn blocked", "run", r.ID, "attempt", a.Seq, "work_item", wi.ID,
-			"class", class, "status", msg)
-		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
-			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, class, msg); err != nil {
-				return err
-			}
-			started, err := e.st.Block(ctx, tx, wi, class, clip(msg, maxErrorText))
-			if err != nil {
-				return err
-			}
-			if !started {
-				return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
-			}
-			scope := store.GrantScope(wi.KagentNamespace, wi.KagentAgent)
-			body := fmt.Sprintf(
-				"The factory stopped %s: a %s failure needs a person before it can continue (%s). "+
-					"Work items using kagent agent %s/%s wait until an operator fixes the grant "+
-					"and runs `connector unblock %s`.",
-				wi.IssueKey, class, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent, scope)
-			if class == ClassQuota && e.cfg.Quota != nil {
-				body = fmt.Sprintf(
-					"The factory paused %s: %s. Work items using kagent agent %s/%s resume when the "+
-						"broker reports the quota usable again, or when an operator runs `connector unblock %s`.",
-					wi.IssueKey, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent, scope)
-			}
-			body += fmt.Sprintf(" The full error is in the connector's logs and on run %d attempt %d.", r.ID, a.Seq)
-			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/blocked/%d/%d", r.ID, a.Seq), r.ID, "",
-				commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
-				return err
-			}
-			return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
-		})
+		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error { return e.blockTurn(ctx, tx, r, wi, a, class, msg) })
 	case ClassCanceled:
 		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, class, msg); err != nil {
@@ -1594,6 +1625,42 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 		})
 	}
 	return e.engineeringFailure(ctx, r, wi, a, msg)
+}
+
+// blockTurn finishes a turn that failed on its grant, pauses the grant,
+// announces the block once and leaves the run waiting without a slot.
+func (e *Engine) blockTurn(ctx context.Context, tx *sql.Tx, r *store.Run, wi *store.WorkItem, a *store.Attempt, class, msg string) error {
+	e.m.Blocked.WithLabelValues(class).Inc()
+	e.log.WarnContext(ctx, "turn blocked", "run", r.ID, "attempt", a.Seq, "work_item", wi.ID,
+		"class", class, "status", msg)
+	if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, class, msg); err != nil {
+		return err
+	}
+	started, err := e.st.Block(ctx, tx, wi, class, clip(msg, maxErrorText))
+	if err != nil {
+		return err
+	}
+	if !started {
+		return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
+	}
+	scope := store.GrantScope(wi.KagentNamespace, wi.KagentAgent)
+	body := fmt.Sprintf(
+		"The factory stopped %s: a %s failure needs a person before it can continue (%s). "+
+			"Work items using kagent agent %s/%s wait until an operator fixes the grant "+
+			"and runs `connector unblock %s`.",
+		wi.IssueKey, class, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent, scope)
+	if class == ClassQuota && e.cfg.Quota != nil {
+		body = fmt.Sprintf(
+			"The factory paused %s: %s. Work items using kagent agent %s/%s resume when the "+
+				"broker reports the quota usable again, or when an operator runs `connector unblock %s`.",
+			wi.IssueKey, PublicFailure(class), wi.KagentNamespace, wi.KagentAgent, scope)
+	}
+	body += fmt.Sprintf(" The full error is in the connector's logs and on run %d attempt %d.", r.ID, a.Seq)
+	if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/blocked/%d/%d", r.ID, a.Seq), r.ID, "",
+		commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
+		return err
+	}
+	return e.st.SetRunState(ctx, tx, r.ID, store.RunWaiting, "")
 }
 
 // engineeringFailure retries in the same session within the work item's
@@ -1778,11 +1845,6 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 	if err := e.st.ConfirmCancellation(ctx, tx, c.ID, outcome); err != nil {
 		return err
 	}
-	if a.Open() {
-		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, c.Reason+": "+outcome); err != nil {
-			return err
-		}
-	}
 	r := &store.Run{ID: c.RunID}
 	var stopped string
 	if err := tx.QueryRowContext(ctx, `
@@ -1790,6 +1852,14 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 			FROM run r LEFT JOIN work_item w ON w.id = r.work_item_id WHERE r.id = $1`,
 		c.RunID).Scan(&r.AgentKey, &r.State, &r.Origin, &r.WorkItemID, &stopped); err != nil {
 		return err
+	}
+	if c.Reason == store.CancelQuotaStall && r.State != store.RunCanceling && r.State != store.RunClosed {
+		return e.confirmQuotaStall(ctx, tx, r, a, outcome)
+	}
+	if a.Open() {
+		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, c.Reason+": "+outcome); err != nil {
+			return err
+		}
 	}
 	if r.State == store.RunClosed {
 		return nil
@@ -1807,6 +1877,25 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 	}
 	// Reassignment: the superseded run reports that another agent took over.
 	return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "superseded: the work item was reassigned to another agent"})
+}
+
+// confirmQuotaStall pauses a turn canceled for going quiet on an exhausted
+// quota as a quota failure: the run waits without a slot and resumes in the
+// same session when the quota is usable. A turn that ended on its own
+// meanwhile keeps its attempt open, and progress reads its outcome.
+func (e *Engine) confirmQuotaStall(ctx context.Context, tx *sql.Tx, r *store.Run, a *store.Attempt, outcome string) error {
+	switch {
+	case r.State != store.RunDispatched || !a.Open():
+		return nil
+	case outcome == "completed" || outcome == "failed" || outcome == "rejected":
+		return nil
+	}
+	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	return e.blockTurn(ctx, tx, r, wi, a, ClassQuota, fmt.Sprintf(
+		"canceled after %s without a task event while the broker read the quota exhausted (kagent: %s)", e.cfg.QuotaStall, outcome))
 }
 
 // claim takes new runs for each agent key up to its concurrency.

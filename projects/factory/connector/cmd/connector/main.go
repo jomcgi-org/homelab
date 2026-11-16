@@ -229,6 +229,7 @@ func run(log *slog.Logger) error {
 		DispatchWindow:  time.Duration(cfg.File.Intervals.DispatchWindow),
 		ReviewPoll:      time.Duration(cfg.File.Intervals.ReviewPoll),
 		Quota:           quota,
+		QuotaStall:      time.Duration(cfg.File.Intervals.QuotaStall),
 		Links:           dispatch.Links(cfg.File.Links),
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{

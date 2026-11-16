@@ -462,7 +462,7 @@ connector:
   bindings: {}
   # Loop timings as Go durations over the connector's defaults: poll (5s),
   # heartbeat (60s, at most 2m), reissueInterval (15s), dispatchWindow (4m, at
-  # least 210s), acquireRetry (5s), reviewPoll (60s).
+  # least 210s), acquireRetry (5s), reviewPoll (60s), quotaStall (10m).
   intervals: {}
   # URL templates in PR bodies and Done comments: {issue}, {issueId}, {run},
   # {namespace}, {agent} and {session} are replaced. An empty issue link is

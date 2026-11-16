@@ -2024,6 +2024,102 @@ func TestQuotaResumeKeepsTheEngineeringBudget(t *testing.T) {
 	}
 }
 
+// A turn with no task event for 10 minutes while the broker reads the quota
+// exhausted is canceled. It then waits without a slot as a quota failure and
+// resumes in its session without spending a retry (HOME-127).
+func TestQuietTurnOnExhaustedQuotaIsCanceledAndWaits(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{Exhausted: true, ResetsAt: time.Now().Add(48 * time.Hour), ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-stall")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	first := v.latest(1)
+	for i := 0; i < 8; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.kg.say(first.TaskID, fmt.Sprintf("step %d", i))
+		v.tick(v.e)
+	}
+	// 17 minutes after the send, 9 after the last event: the turn is live.
+	for i := 0; i < 9; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if q.count() != 0 || len(v.pendingCancellations()) != 0 {
+		t.Fatalf("reads = %d, cancellations = %+v within 10 minutes of an event", q.count(), v.pendingCancellations())
+	}
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	cs := v.pendingCancellations()
+	if q.count() != 1 || len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall || cs[0].Requests != 1 {
+		t.Fatalf("reads = %d, cancellations = %+v", q.count(), cs)
+	}
+	// The cancellation stays pending until kagent confirms it.
+	if v.run(1).State != store.RunDispatched || v.latest(1).State != store.AttemptAccepted {
+		t.Fatalf("run %s, attempt %s before kagent confirmed", v.run(1).State, v.latest(1).State)
+	}
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if cs := v.pendingCancellations(); len(cs) != 0 || v.kg.state(first.TaskID) != kagent.StateCanceled {
+		t.Fatalf("cancellations = %+v, task %s", cs, v.kg.state(first.TaskID))
+	}
+	if a := v.latest(1); a.State != store.AttemptFailed || a.ErrorClass != dispatch.ClassQuota {
+		t.Fatalf("attempt = %+v, want a quota failure", a)
+	}
+	if busy, err := v.st.CountBusyRuns(v.ctx, "coder"); err != nil || busy != 0 || v.run(1).State != store.RunWaiting {
+		t.Fatalf("busy = %d, %v; run %s", busy, err, v.run(1).State)
+	}
+	if w := v.work(101); w.State != store.WorkBlocked || w.BlockedClass != dispatch.ClassQuota {
+		t.Fatalf("work item = %+v, want quota-blocked", w)
+	}
+	if c := v.its.Comments(); len(c) != 1 || !strings.Contains(c[0].body, "resume when the broker reports the quota usable again") {
+		t.Fatalf("block comment = %+v", c)
+	}
+	if res := v.its.Run(1).results; len(res) != 0 {
+		t.Fatalf("result = %+v, want the run waiting", res)
+	}
+
+	q.set(github.QuotaReading{ReceivedAt: time.Now()})
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	s := v.kg.Sends()
+	if len(s) != 2 || s[1].msg.MessageID != "itsaplan-run/1/quota-resume-1" || s[1].msg.ContextID != first.ContextID {
+		t.Fatalf("resume = %+v", s)
+	}
+	if w := v.work(101); w.State == store.WorkBlocked || w.EngineeringRetries != 0 {
+		t.Fatalf("work item = %+v", w)
+	}
+}
+
+// A turn can go quiet for longer than 10 minutes in a long tool call, such
+// as a 30-minute ci run. While the broker reads the quota usable, it runs on.
+func TestQuietTurnOnUsableQuotaKeepsRunning(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	q.set(github.QuotaReading{ReceivedAt: time.Now()})
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-quiet")
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	task := v.latest(1).TaskID
+	for i := 0; i < 30; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	if q.count() == 0 || len(v.pendingCancellations()) != 0 || v.kg.state(task) != kagent.StateWorking || v.run(1).State != store.RunDispatched {
+		t.Fatalf("reads = %d, cancellations = %+v, task %s, run %s",
+			q.count(), v.pendingCancellations(), v.kg.state(task), v.run(1).State)
+	}
+	v.kg.finish(task, kagent.StateCompleted, "done", nil)
+	v.tick(v.e)
+	if res := v.its.Run(1).results; len(res) != 1 || res[0].Status != "success" {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
 func TestReassignedRunCanceledInItsaplanCloses(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")

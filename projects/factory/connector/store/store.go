@@ -737,6 +737,10 @@ type Attempt struct {
 	SentAt          time.Time
 	// Context is what a replacement session starts from, sent with the input.
 	Context string
+	// EventCount is the task's size when the connector last saw it change,
+	// at EventAt; zero before the first read.
+	EventCount int
+	EventAt    time.Time
 }
 
 // Open reports whether the attempt has not reached a final state.
@@ -747,14 +751,48 @@ func (a *Attempt) Open() bool {
 const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id, kind, message_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
 	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
-	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, '')`
+	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, ''),
+	event_count, coalesce(event_at, 'epoch'::timestamptz)`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
-		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context)
+		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context,
+		&a.EventCount, &a.EventAt)
 	return a, err
+}
+
+// SetAttemptEvents records that the attempt's task changed to count at at.
+func (s *Store) SetAttemptEvents(ctx context.Context, id int64, count int, at time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE delivery_attempt SET event_count = $2, event_at = $3 WHERE id = $1`, id, count, at)
+	return err
+}
+
+// QuietAttempts lists the running turns whose task has not changed since
+// before: the latest attempt of a dispatched run, accepted, not held, and
+// without a pending cancellation. A task the connector has not read yet
+// counts from its send.
+func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
+		WHERE a.state = 'accepted' AND a.error IS NULL AND coalesce(a.event_at, a.sent_at) < $1
+			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = a.run_id)
+			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched')
+			AND NOT EXISTS (SELECT 1 FROM cancellation c WHERE c.delivery_attempt_id = a.id AND c.state = 'pending')
+		ORDER BY a.id`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Attempt
+	for rows.Next() {
+		a, err := scanAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // LatestAttempt returns the run's most recent attempt, or nil.
@@ -990,6 +1028,7 @@ const (
 	CancelRunClosed    = "run_closed" // itsaplan finished the run without this attempt's result
 	CancelReassignment = "reassignment"
 	CancelRoundStopped = "round_stopped" // the round's work item stopped delivery
+	CancelQuotaStall   = "quota_stall"   // the turn went quiet on an exhausted quota
 	CancelPending      = "pending"
 	CancelConfirmed    = "confirmed"
 )
@@ -1014,6 +1053,14 @@ func (s *Store) RequestCancellation(ctx context.Context, q Querier, attemptID, r
 		VALUES ($1, $2, $3, 'pending')
 		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, reason)
 	return err
+}
+
+// CancelPending reports whether the attempt has a pending cancellation.
+func (s *Store) CancelPending(ctx context.Context, attemptID int64) (bool, error) {
+	var ok bool
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM cancellation WHERE delivery_attempt_id = $1 AND state = 'pending')`, attemptID).Scan(&ok)
+	return ok, err
 }
 
 // PendingCancellations lists cancellations kagent has not confirmed.
