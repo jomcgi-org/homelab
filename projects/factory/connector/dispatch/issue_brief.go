@@ -113,19 +113,7 @@ func issueBriefItems(issue *itsaplan.Issue, attachments []itsaplan.Attachment) [
 	section("### Links", rows)
 	rows = nil
 	for _, link := range issue.Development {
-		name := link.Repository
-		if link.Number != 0 {
-			name += fmt.Sprintf("#%d", link.Number)
-		}
-		state := link.State
-		if link.Draft {
-			state += ", draft"
-		}
-		row := fmt.Sprintf("- %s: %s: %s (%s)", link.Kind, name, link.Title, state)
-		if link.URL != "" {
-			row += " " + link.URL
-		}
-		rows = append(rows, row)
+		rows = append(rows, "- "+briefDevelopmentLink(link))
 	}
 	section("### Development links", rows)
 	rows = nil
@@ -134,6 +122,35 @@ func issueBriefItems(issue *itsaplan.Issue, attachments []itsaplan.Attachment) [
 	}
 	section("### Attachments", rows)
 	return items
+}
+
+// itsaplan retains no trusted reviewer identity for development items. Reduce
+// provider fields to fixed classes and numbers in both initial and replacement
+// prompts, as even names and URLs can carry instructions from a PR author.
+func briefDevelopmentLink(link itsaplan.DevelopmentLink) string {
+	kind := "development item"
+	switch link.Kind {
+	case "branch":
+		kind = "branch"
+	case "pull_request":
+		kind = "pull request"
+		if link.Number > 0 {
+			kind += fmt.Sprintf(" #%d", link.Number)
+		}
+	}
+	state := "unknown"
+	switch link.State {
+	case "open":
+		state = "open"
+	case "closed":
+		state = "closed"
+	case "merged":
+		state = "merged"
+	}
+	if link.Kind == "pull_request" && link.Draft {
+		state += ", draft"
+	}
+	return fmt.Sprintf("linked %s (%s)", kind, state)
 }
 
 func briefIssueRef(issue itsaplan.IssueRef) string {

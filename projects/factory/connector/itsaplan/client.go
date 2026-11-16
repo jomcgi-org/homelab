@@ -265,15 +265,13 @@ type IssueLink struct {
 	Issue     IssueRef `json:"issue"`
 }
 
-// DevelopmentLink is a linked branch or pull request, without its check logs.
+// DevelopmentLink retains only fields that prompts can reduce to fixed classes
+// and numbers. Provider text has no trusted reviewer provenance in itsaplan.
 type DevelopmentLink struct {
-	Kind       string `json:"kind"`
-	Repository string `json:"repository"`
-	Number     int    `json:"number"`
-	Title      string `json:"title"`
-	URL        string `json:"url"`
-	State      string `json:"state"`
-	Draft      bool   `json:"draft"`
+	Kind   string `json:"kind"`
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	Draft  bool   `json:"draft"`
 }
 
 // Attachment retains only the name. The connector never fetches its content.

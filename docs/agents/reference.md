@@ -139,15 +139,21 @@ Follow [docs/writing.md](../writing.md) and
   1. The `Refs` line: "Put `Refs HOME-N` in the commit message."
   2. **Problem:** three sentences or fewer.
   3. **Goal:** one sentence.
-  4. **Decisions:** link each decision to its record.
+  4. **Decisions:** state each decision the coder needs and link its record.
   5. **Out of scope:** name the excluded work.
 - **Flows and state machines:** use a small diagram in a code block.
 - **Done when:** create one checklist with this exact title. Each item states one check a reviewer can verify.
 - **Work larger than one PR:** create sub-tasks, one PR each.
 - **Order between tickets:** use `blocked_by` links. Do not write instructions such as "delegate after HOME-X" in prose.
-- **Long design or reference text:** put it in an itsaplan document and link it.
-- **Logs and screenshots:** add attachments.
-- **Joe's decisions:** record each in a comment by `joe` or `joesessions`. Link the comment from **Decisions**.
+- **Long design or reference text:** put the full record in an itsaplan document. Summarize required design details in the description and link the document.
+- **Logs and screenshots:** add attachments. State the relevant errors, reproduction steps and visible results in **Problem**.
+- **Joe's decisions:** record each in a comment by `joe` or `joesessions`. State the decision under **Decisions** and link the comment.
+
+Dispatched agents cannot read itsaplan documents, comments or attachment contents.
+The connector sends attachment names only. Before delegation, put all required
+context in the description and use **Done when** for the checks. Links preserve
+the source records for human readers. If the required context exceeds the ticket
+limits, split the work into smaller sub-tasks before delegation.
 
 ### API access
 
