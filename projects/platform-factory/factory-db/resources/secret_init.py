@@ -5,11 +5,12 @@ Two modes, both safe to rerun:
   init         Before the Cluster: fill each login Secret's password when it
                is absent, then wait for garage-init to fill the backup key.
   connections  After every sync: write each database's connection string
-               into the factory namespace.
+               into its client's namespace.
 
 The login Secrets (factory-db namespace) are the source of truth: the operator
 sets each role's password from its Secret, and a rerun never rotates one. The
-connection strings the factory chart reads are derived from them.
+connection strings the factory chart and Hindsight read are derived from
+them.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -34,13 +35,18 @@ CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 
 NAMESPACE = "factory-db"
 S3 = "factory-db-s3"
-TARGET_NAMESPACE = "factory"
 HOST = "factory-db-rw.factory-db.svc"
-# (login Secret, database, connection-string Secret in TARGET_NAMESPACE)
+# (login Secret, database, client namespace, connection-string Secret there)
 LOGINS = [
-    ("factory-db-itsaplan-login", "itsaplan", "factory-itsaplan-db"),
-    ("factory-db-connector-login", "factory_connector", "factory-connector-db"),
-    ("factory-db-reviewer-login", "factory_reviewer", "factory-reviewer-db"),
+    ("factory-db-itsaplan-login", "itsaplan", "factory", "factory-itsaplan-db"),
+    (
+        "factory-db-connector-login",
+        "factory_connector",
+        "factory",
+        "factory-connector-db",
+    ),
+    ("factory-db-reviewer-login", "factory_reviewer", "factory", "factory-reviewer-db"),
+    ("factory-db-hindsight-login", "factory_hindsight", "hindsight", "hindsight-db"),
 ]
 
 
@@ -86,9 +92,9 @@ def get_eventually(name, namespace, timeout=900):
         if time.monotonic() > deadline:
             raise SystemExit(
                 f"{namespace}/{name} or its Role is still missing; "
-                "the factory-db-secrets Application creates them"
+                "the client's Application creates them"
             )
-        print(f"waiting for {namespace}/{name} (factory-db-secrets)")
+        print(f"waiting for {namespace}/{name} (the client's Application)")
         time.sleep(10)
 
 
@@ -103,7 +109,7 @@ def unb64(value):
 def ensure_logins():
     """Fill each login Secret's password once; return {Secret: password}."""
     passwords = {}
-    for name, login, _ in LOGINS:
+    for name, login, _, _ in LOGINS:
         source = get(name)
         data = dict(source.get("data") or {})
         changed = False
@@ -139,17 +145,17 @@ def wait_for_key():
 
 
 def write_connections(passwords):
-    for name, login, target in LOGINS:
+    for name, login, namespace, target in LOGINS:
         password = passwords[name]
         url = f"postgres://{login}:{password}@{HOST}:5432/{login}?sslmode=require"
         want = {"DATABASE_URL": b64(url)}
-        current = get_eventually(target, TARGET_NAMESPACE)
+        current = get_eventually(target, namespace)
         if current.get("data") != want:
             current["data"] = want
-            call("PUT", secret_path(target, TARGET_NAMESPACE), current)
-            print(f"updated {TARGET_NAMESPACE}/{target}")
+            call("PUT", secret_path(target, namespace), current)
+            print(f"updated {namespace}/{target}")
         else:
-            print(f"{TARGET_NAMESPACE}/{target} current")
+            print(f"{namespace}/{target} current")
 
 
 def main(mode):

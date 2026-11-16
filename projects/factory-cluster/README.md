@@ -774,19 +774,23 @@ These come from the #7817 step 1 checklist:
 
 `factory-db` (`projects/platform-factory/factory-db/`, namespace
 `factory-db`) holds itsaplan's database, the connector's (`factory_connector`,
-which the connector migrates at startup) and the reviewer's (`factory_reviewer`).
+which the connector migrates at startup), the reviewer's (`factory_reviewer`)
+and Hindsight's (`factory_hindsight`, with `vector` and `pg_trgm`).
 The reviewer does not read its connection Secret yet. `factory-db` mirrors `kagent-pg`:
 three instances, the same sizing, WAL and daily base backups (02:45 UTC, 14 days)
 to `factory-db-backups`, and `factory-db-init` (wave -1) holding the Cluster
 back until garage-init fills its key. Unlike `kagent-pg` it has no superuser
 login and no setup script: its roles are managed roles whose passwords come
-from `factory-db-itsaplan-login`, `factory-db-connector-login` and
-`factory-db-reviewer-login`, generated once by `factory-db-init`. The connector
-and reviewer databases are `Database` objects with reclaim policy `retain`.
+from `factory-db-itsaplan-login`, `factory-db-connector-login`,
+`factory-db-reviewer-login` and `factory-db-hindsight-login`, generated once by
+`factory-db-init`. The connector, reviewer and Hindsight databases are
+`Database` objects with reclaim policy `retain`.
 The PostSync `factory-db-setup` Job writes each database's `DATABASE_URL` into
-`factory` (`factory-itsaplan-db`, `factory-connector-db`, `factory-reviewer-db`);
-those Secrets and its Role come from the `factory-db-secrets` Application
-(`factory/`), as for `kagent-postgres-secrets`. `smartShutdownTimeout` is 15 s, so a deleted
+its client's namespace: `factory` (`factory-itsaplan-db`,
+`factory-connector-db`, `factory-reviewer-db`) and `hindsight`
+(`hindsight-db`). Those Secrets and the Role for them come from the client's
+Application (`factory-db-secrets` in `factory/`, `hindsight`), as for
+`kagent-postgres-secrets`. `smartShutdownTimeout` is 15 s, so a deleted
 primary fails over in about 20 s although itsaplan holds its connections
 open.
 

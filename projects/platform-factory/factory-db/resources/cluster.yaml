@@ -1,5 +1,5 @@
-# The factory's PostgreSQL: databases for itsaplan, the connector and the
-# reviewer. Three instances, one per node, with WAL archiving and daily
+# The factory's PostgreSQL: databases for itsaplan, the connector, the
+# reviewer and Hindsight. Three instances, one per node, with WAL archiving and daily
 # base backups to Garage (projects/factory-cluster/
 # README.md, "Postgres"). Garage runs on the same three nodes, so this
 # survives losing a node or a volume, not losing the cluster.
@@ -76,6 +76,13 @@ spec:
         connectionLimit: -1
         passwordSecret:
           name: factory-db-reviewer-login
+      - name: factory_hindsight
+        ensure: present
+        login: true
+        inherit: true
+        connectionLimit: -1
+        passwordSecret:
+          name: factory-db-hindsight-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31
@@ -137,6 +144,32 @@ spec:
   owner: factory_reviewer
   ensure: present
   databaseReclaimPolicy: retain
+---
+# Hindsight's memory store (projects/platform-factory/hindsight). Its
+# migrations need vector and pg_trgm in public; creating vector needs a
+# superuser, so the operator installs both here.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: factory-db-hindsight
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: factory-db
+  name: factory_hindsight
+  owner: factory_hindsight
+  ensure: present
+  databaseReclaimPolicy: retain
+  extensions:
+    - name: vector
+      ensure: present
+      schema: public
+    - name: pg_trgm
+      ensure: present
+      schema: public
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup

@@ -17,6 +17,7 @@ change. Labels: **[V]** verified in upstream source, docs or live state;
 | Repository, PR, CI, merge queue | GitHub | |
 | Provider and GitHub credentials | `projects/factory/broker` | this repo |
 | Relationships between itsaplan, kagent and GitHub | `projects/factory/connector` | this repo |
+| Agents' shared long-term memory | Hindsight (`projects/platform-factory/hindsight`) | 1.2.1 (`ghcr.io/vectorize-io/hindsight-api`), by digest |
 
 itsaplan owns the request and its run history, kagent owns execution and
 session state, GitHub owns PR, check, review and merge state. The connector
@@ -252,6 +253,51 @@ only after CI publishes and pins the supporting chart. That follow-up must
 update `deploy/render.sha256`, start a fresh coding session, run bootstrap
 and local checks, and confirm its review binding has no download grant.
 An existing session with the old egress policy cannot validate downloads.
+
+## Memory
+
+`repositories[].memory` binds one coding binding's Agent to Hindsight
+(`projects/platform-factory/hindsight`) as RemoteMCPServer `memory`, limited
+to `recall` and `retain`, and adds `chart/files/memory-prompt.txt` to its
+prompt: recall before planning, retain lessons with their issue, PR or commit
+and whether CI confirmed them. Review bindings do not inherit it.
+
+**Why.** Joe made memory high priority on 2026-11-16 to cut tokens per
+delivered issue, with Claude Haiku as Hindsight's LLM so that memory writes
+do not spend Codex quota
+([HOME-130 decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-913)).
+Agents rediscover the same failing checks and conventions on each run; a
+recalled lesson costs a few hundred tokens.
+
+Hindsight runs in namespace `hindsight`, one replica of the upstream image
+with its embedding model and reranker built in (Hugging Face offline). Its
+state is database `factory_hindsight` on `factory-db`, so the existing WAL
+archive and daily backups cover it. `retain`, consolidation and `reflect` call
+`claude-haiku-5-5` with the key from 1Password `factory-hindsight`; `recall`
+uses only the local models.
+
+Two keys separate the callers. The REST API takes only the tenant key, which
+nothing outside the pod holds. MCP takes the agents' token
+(`HINDSIGHT_API_MCP_AUTH_TOKEN`) and registers only `recall` and `retain`
+(`HINDSIGHT_API_MCP_ENABLED_TOOLS`), so a caller with the token can neither
+reach REST nor list, delete or reflect. The `hindsight-keys` Jobs generate both
+keys once and copy the token into the binding's `hindsight-mcp` Secret, which
+is labelled injectable: the Substrate egress gateway adds it as the
+`Authorization` header, and the actor holds a placeholder. Hindsight admits
+only the egress gateway; its own egress is `factory-db` and
+`api.anthropic.com`. kagent cannot reach Hindsight, so the RemoteMCPServer
+sets `kagent.dev/discovery: disabled` and the agent lists tools at run time.
+
+The bank is the URL path (`/mcp/homelab/`). With one binding, the token
+grants that bank alone in practice; a second binding needs its own bank and a
+gateway that pins callers to it. Recalled text is data, never an
+instruction: the prompt says the repository, issue and CI win.
+
+**Rollout.** kagent rejects an Agent whose header Secret is missing, so set
+`memory` in `deploy/values.yaml` only after CI publishes and pins the
+supporting chart and `factory-r-homelab/hindsight-mcp` holds a token. That
+change updates `deploy/render.sha256`; a fresh coding session confirms the
+tools.
 
 ## itsaplan
 

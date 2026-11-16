@@ -295,6 +295,10 @@ agents:
 # Optional toolchain: homelab adds the Alpine bootstrap instructions and its
 # public download origins to this coding binding. Enable in deploy values
 # only after CI publishes a chart version that supports this field.
+# Optional memory: {url, secret, tools} binds the Agent to a Hindsight MCP
+# endpoint (projects/platform-factory/hindsight) as RemoteMCPServer `memory`,
+# limited to `tools`, and adds files/memory-prompt.txt to its prompt. The
+# Secret must exist first: kagent rejects the Agent while it is missing.
 repositories: []
 
 # The Substrate worker image for binding WorkerPools, matching Substrate's

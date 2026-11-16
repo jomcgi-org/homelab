@@ -1,0 +1,145 @@
+# Hindsight 1.2.1's API and in-process worker, one replica. Its state is the
+# factory_hindsight database; the pod keeps nothing.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hindsight
+  namespace: hindsight
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hindsight-api
+  namespace: hindsight
+  labels:
+    app.kubernetes.io/name: hindsight
+spec:
+  selector:
+    app.kubernetes.io/name: hindsight
+  ports:
+    - name: http
+      port: 8888
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hindsight
+  namespace: hindsight
+spec:
+  replicas: 1
+  # One schema migrator at a time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight
+    spec:
+      serviceAccountName: hindsight
+      automountServiceAccountToken: false
+      # Service links would set HINDSIGHT_API_PORT to tcp://..., which
+      # Hindsight reads as its own port setting.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        # The image's hindsight user; it defines no other UID.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/vectorize-io/hindsight-api:1.2.1@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8
+          ports:
+            - name: http
+              containerPort: 8888
+          env:
+            - name: HINDSIGHT_API_PORT
+              value: "8888"
+            - name: HINDSIGHT_API_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-db
+                  key: DATABASE_URL
+            # Fact extraction, consolidation and reflect (HOME-130 comment
+            # 913). Recall uses only the local models below.
+            - name: HINDSIGHT_API_LLM_PROVIDER
+              value: anthropic
+            - name: HINDSIGHT_API_LLM_MODEL
+              value: claude-haiku-5-5
+            - name: HINDSIGHT_API_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-anthropic
+                  key: ANTHROPIC_API_KEY
+            # The REST API takes only the tenant key, which nothing outside
+            # this pod holds.
+            - name: HINDSIGHT_API_TENANT_EXTENSION
+              value: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+            - name: HINDSIGHT_API_TENANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: tenant-api-key
+            # MCP takes the agents' token instead, and registers only these
+            # tools, so the token can neither reach REST nor delete memories.
+            - name: HINDSIGHT_API_MCP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: mcp-token
+            - name: HINDSIGHT_API_MCP_ENABLED_TOOLS
+              value: recall,retain
+            # The image bakes in the embedding model and reranker; no
+            # Hugging Face egress.
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The model libraries write caches under the home directory.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          # Model load and migrations on a cold start.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1536Mi
+            limits:
+              memory: 3Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi

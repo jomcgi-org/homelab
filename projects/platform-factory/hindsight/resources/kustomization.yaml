@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Hindsight (projects/factory/ARCHITECTURE.md "Memory").
+resources:
+  - network-policy.yaml
+  - secrets.yaml
+  - hindsight.yaml
+
+configMapGenerator:
+  - name: hindsight-keys
+    namespace: hindsight
+    files:
+      - keys.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"
