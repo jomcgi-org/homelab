@@ -5,6 +5,7 @@ import time
 from contextlib import contextmanager
 
 from playwright.sync_api import expect
+from rehearsal_report import expect_network_diagnostic
 
 ORIGIN = "http://friends.localhost:8177"
 API = f"{ORIGIN}/api/grimoire"
@@ -408,7 +409,40 @@ def rehearse_extended(pages, output, report, width):
                 )
             )
 
-        with observe_lobbies():
+        # A mounted session page polls each held character's sheet history
+        # every five seconds. Until its lobby fence reloads it, the poll for a
+        # character the seat just lost is refused with 404. That refusal is
+        # the access change under test, so declare it for that character only.
+        revoked = {"a": set(), "b": set()}
+
+        def sheets_url(name):
+            return f"{API}{base}/characters/{characters[name]}/sheets"
+
+        def refused_poll(role):
+            def declare(response):
+                if (
+                    response.request.method == "GET"
+                    and response.status == 404
+                    and response.url in {sheets_url(name) for name in revoked[role]}
+                ):
+                    expect_network_diagnostic(
+                        report, role, "GET", response.url, status=404
+                    )
+
+            return declare
+
+        @contextmanager
+        def declare_refused_polls():
+            listeners = {role: refused_poll(role) for role in revoked}
+            for role, listener in listeners.items():
+                pages[role].on("response", listener)
+            try:
+                yield
+            finally:
+                for role, listener in listeners.items():
+                    pages[role].remove_listener("response", listener)
+
+        with observe_lobbies(), declare_refused_polls():
             # Keep both player pages mounted while their existing character access
             # changes. An API-only check would miss a previous character's cached
             # private feed. Start both listeners before either mutation.
@@ -425,10 +459,12 @@ def rehearse_extended(pages, output, report, width):
                         lambda response: confirms(response, None), timeout=20000
                     ),
                 ):
+                    revoked["b"] = {"Bram"}
                     manage("b@example.test").get_by_role(
                         "button", name="Clear assignment", exact=True
                     ).click()
                     toast(dm, "Character assignment saved.")
+                    revoked["a"] = {"Elowen"}
                     dialog = manage("a@example.test")
                     choose(dialog, "Unassigned character", "Bram")
                     dialog.get_by_role("button", name="Assign", exact=True).click()
@@ -457,7 +493,9 @@ def rehearse_extended(pages, output, report, width):
                 capture("assignment-swapped")
             # Restoring a character changes the viewer boundary again. Let each
             # open page confirm its restored access and finish its own reload
-            # before the next journey navigates it elsewhere.
+            # before the next journey navigates it elsewhere. Elowen's player
+            # loses Bram first; Bram's player held nothing until restored.
+            revoked.update(a={"Bram"}, b=set())
             with (
                 a.expect_event("load", timeout=20000),
                 b.expect_event("load", timeout=20000),
