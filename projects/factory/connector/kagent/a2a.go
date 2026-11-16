@@ -88,10 +88,12 @@ type Message struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
-// TaskStatus is a task's current state.
+// TaskStatus is a task's current state. Timestamp is when it last changed
+// (RFC 3339), when kagent reports it.
 type TaskStatus struct {
-	State   string   `json:"state"`
-	Message *Message `json:"message,omitempty"`
+	State     string   `json:"state"`
+	Message   *Message `json:"message,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
 }
 
 // Artifact is a task output.

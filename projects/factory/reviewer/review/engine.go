@@ -145,6 +145,10 @@ type Config struct {
 	// the session that reviewed the previous head; nil starts every review
 	// in a fresh session.
 	Sessions Sessions
+	// Cleaner names each review's session after its PR and deletes the
+	// sessions no review will resume (see sweep); nil keeps every session
+	// until kagent's idle TTL.
+	Cleaner SessionCleaner
 }
 
 // Engine runs the reviewer.
@@ -174,6 +178,10 @@ type Engine struct {
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
+
+	// Under mu: each binding's last session sweep, and whether one runs.
+	swept    map[string]time.Time
+	sweeping map[string]bool
 }
 
 // headKey identifies a commit; its check needs unambiguous PR context.
@@ -306,6 +314,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
 		heads: map[prKey]string{}, comments: map[prKey]github.Comment{},
+		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
 }
 
@@ -368,6 +377,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	}
 	e.supersede(b, prs, complete)
 	e.noteHeads(b, prs, complete)
+	e.sweepSessions(ctx, b, prs, complete, bl)
 	prioritize(b, prs)
 	counts, labels := readyHeads(b, prs)
 	scan := e.recoveryScan(b, prs)
@@ -1160,6 +1170,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends,
 					"path", in.plan.path(), "reason", in.plan.reason, "context_id", t.ContextID)
 				e.recordProgress(ctx, b, run, in.gate, rec, "", l)
+				e.nameSession(ctx, b, pr, t.ContextID, l)
 			case in.plan.resume != nil && (errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrTaskNotFound)):
 				// The session went away or will not take the continuation.
 				e.kagentError(ctx, l, b, "send", err)

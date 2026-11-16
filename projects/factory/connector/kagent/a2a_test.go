@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -298,5 +300,96 @@ func TestUnrecoverableSessionIsFailedPrecondition(t *testing.T) {
 	defer c.Close()
 	if _, err := c.RevertSession(context.Background(), "s1"); !errors.Is(err, ErrSessionUnrecoverable) {
 		t.Fatalf("revert = %v, want ErrSessionUnrecoverable", err)
+	}
+}
+
+func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 11, 16, 1, 52, 28, 500, time.UTC)
+	agent := AgentRef{Namespace: "factory-r-homelab-review", Name: "homelab-reviewer"}
+	var calls []string
+	srv := grpc.NewServer(grpc.ForceServerCodecV2(RawCodec()), grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		method, _ := grpc.MethodFromServerStream(stream)
+		var req RawMessage
+		if err := stream.RecvMsg(&req); err != nil {
+			return err
+		}
+		var resp RawMessage
+		switch method {
+		case "/kagent.api.v1.SessionService/ListSessions":
+			tok, ref, err := DecodeListSessions(req)
+			if err != nil {
+				return err
+			}
+			calls = append(calls, "list:"+tok+":"+ref.Namespace+"/"+ref.Name)
+			if tok == "" {
+				resp = EncodeSessionList([]Session{
+					{ID: "s1", ContextID: "s1", Name: "factory-review/o/r/7", CreatedAt: created, State: RuntimeReady, AgentNamespace: agent.Namespace, AgentName: agent.Name},
+					{ID: "s2", ContextID: "s2", State: RuntimeReady},
+				}, "p2")
+			} else {
+				resp = EncodeSessionList([]Session{{ID: "s3", ContextID: "s3", State: RuntimeDeleting}}, "")
+			}
+		case "/kagent.api.v1.SessionService/DeleteSession":
+			id, _ := DecodeSessionID(req)
+			if len(req) != 2+len(id) { // session_id alone: force stays unset.
+				return status.Error(codes.InvalidArgument, "force must stay unset")
+			}
+			calls = append(calls, "delete:"+id)
+			if id == "busy" {
+				return status.Error(codes.FailedPrecondition, "session has active turns")
+			}
+			resp = EncodeSession(Session{ID: id, ContextID: id, State: RuntimeDeleting})
+		case "/kagent.api.v1.SessionService/UpdateSessionName":
+			id, _ := DecodeSessionID(req)
+			name, _ := field(req, 2)
+			calls = append(calls, "name:"+id+":"+string(name))
+			resp = EncodeSession(Session{ID: id, ContextID: id, Name: string(name), State: RuntimeReady})
+		default:
+			return status.Error(codes.Unimplemented, method)
+		}
+		return stream.SendMsg(&resp)
+	}))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	c, err := DialSessions(lis.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx := context.Background()
+
+	page, next, err := c.ListSessions(ctx, agent, "")
+	if err != nil || next != "p2" || len(page) != 2 {
+		t.Fatalf("first page = %+v %q %v", page, next, err)
+	}
+	if s := page[0]; s.ID != "s1" || s.Name != "factory-review/o/r/7" || !s.CreatedAt.Equal(created) || s.AgentName != agent.Name {
+		t.Fatalf("first session = %+v", s)
+	}
+	if s := page[1]; s.ID != "s2" || s.Name != "" || !s.CreatedAt.IsZero() {
+		t.Fatalf("second session = %+v", s)
+	}
+	page, next, err = c.ListSessions(ctx, agent, "p2")
+	if err != nil || next != "" || len(page) != 1 || !page[0].Gone() {
+		t.Fatalf("last page = %+v %q %v", page, next, err)
+	}
+	if s, err := c.DeleteSession(ctx, "s1"); err != nil || !s.Gone() {
+		t.Fatalf("delete = %+v %v", s, err)
+	}
+	if _, err := c.DeleteSession(ctx, "busy"); err == nil {
+		t.Fatal("a refused delete returned no error")
+	}
+	if s, err := c.NameSession(ctx, "s2", "factory-review/o/r/8"); err != nil || s.Name != "factory-review/o/r/8" {
+		t.Fatalf("name = %+v %v", s, err)
+	}
+	want := []string{
+		"list::factory-r-homelab-review/homelab-reviewer", "list:p2:factory-r-homelab-review/homelab-reviewer",
+		"delete:s1", "delete:busy", "name:s2:factory-review/o/r/8",
+	}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
 	}
 }

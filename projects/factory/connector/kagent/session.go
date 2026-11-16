@@ -54,6 +54,11 @@ type Session struct {
 	FailureReason    string
 	FailureMsg       string
 	ContextID        string
+	// Name is the caller's display name for the session; CreatedAt is when
+	// kagent created it. kagent does not move updated_at when a turn runs, so
+	// a session's last activity is read from its tasks.
+	Name      string
+	CreatedAt time.Time
 }
 
 // Crashed reports whether the session needs RevertSession.
@@ -119,13 +124,19 @@ func (bearer) RequireTransportSecurity() bool { return false }
 const (
 	GetSessionTimeout    = 30 * time.Second
 	RevertSessionTimeout = 150 * time.Second
+	// DeleteSessionTimeout bounds a delete, which removes the session's
+	// runtime and snapshot inline.
+	DeleteSessionTimeout = 150 * time.Second
 )
+
+// ListSessionsPage is the most sessions one ListSessions call returns.
+const ListSessionsPage = 100
 
 // GetSession reads a session.
 func (s *Sessions) GetSession(ctx context.Context, id string) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
 	defer cancel()
-	return s.invoke(ctx, "/kagent.api.v1.SessionService/GetSession", id)
+	return s.invoke(ctx, "/kagent.api.v1.SessionService/GetSession", sessionIDRequest(id))
 }
 
 // RevertSession restores a crashed session to its last durable snapshot. It
@@ -133,7 +144,81 @@ func (s *Sessions) GetSession(ctx context.Context, id string) (*Session, error) 
 func (s *Sessions) RevertSession(ctx context.Context, id string) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, RevertSessionTimeout)
 	defer cancel()
-	return s.invoke(ctx, "/kagent.api.v1.SessionService/RevertSession", id)
+	return s.invoke(ctx, "/kagent.api.v1.SessionService/RevertSession", sessionIDRequest(id))
+}
+
+// ListSessions reads one page of the caller's sessions of agent and the
+// token of the next page, empty after the last.
+func (s *Sessions) ListSessions(ctx context.Context, agent AgentRef, pageToken string) ([]*Session, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
+	defer cancel()
+	// ListSessionsRequest { PageRequest page = 3 { int32 limit = 1; string
+	// page_token = 2 }; ResourceReference agent = 6 }
+	page := protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), ListSessionsPage)
+	if pageToken != "" {
+		page = protowire.AppendString(protowire.AppendTag(page, 2, protowire.BytesType), pageToken)
+	}
+	req := protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), page)
+	req = protowire.AppendBytes(protowire.AppendTag(req, 6, protowire.BytesType), encodeRef(agent))
+	raw := rawMessage(req)
+	var resp rawMessage
+	if err := s.conn.Invoke(ctx, "/kagent.api.v1.SessionService/ListSessions", &raw, &resp, grpc.ForceCodecV2(rawCodec{})); err != nil {
+		return nil, "", err
+	}
+	// ListSessionsResponse { repeated Session sessions = 1; PageResponse page
+	// = 2 { string next_page_token = 1 } }
+	var out []*Session
+	var next string
+	var bad error
+	err := walk(resp, func(num protowire.Number, typ protowire.Type, v []byte, _ uint64) {
+		switch {
+		case typ != protowire.BytesType:
+		case num == 1:
+			sess, err := decodeSession(v)
+			if err != nil {
+				bad = err
+				return
+			}
+			out = append(out, sess)
+		case num == 2:
+			tok, err := field(v, 1)
+			if err != nil {
+				bad = err
+				return
+			}
+			next = string(tok)
+		}
+	})
+	if err == nil {
+		err = bad
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return out, next, nil
+}
+
+// DeleteSession deletes a session with its runtime and snapshot. kagent
+// refuses while the session has an active turn or another lifecycle
+// operation; the caller retries later.
+func (s *Sessions) DeleteSession(ctx context.Context, id string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, DeleteSessionTimeout)
+	defer cancel()
+	// DeleteSessionRequest: session_id = 1; force = 2 stays false.
+	return s.invoke(ctx, "/kagent.api.v1.SessionService/DeleteSession", sessionIDRequest(id))
+}
+
+// NameSession sets the session's display name.
+func (s *Sessions) NameSession(ctx context.Context, id, name string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
+	defer cancel()
+	// UpdateSessionNameRequest { session_id = 1; name = 2 }
+	req := protowire.AppendString(protowire.AppendTag(sessionIDRequest(id), 2, protowire.BytesType), name)
+	return s.invoke(ctx, "/kagent.api.v1.SessionService/UpdateSessionName", req)
+}
+
+func sessionIDRequest(id string) []byte {
+	return protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), id)
 }
 
 // AgentRevision reads the Agent's status.latestSuccessfulRevision through
@@ -250,9 +335,8 @@ func EncodeAgent(agent AgentRef, revision string) []byte {
 	return protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), a)
 }
 
-func (s *Sessions) invoke(ctx context.Context, method, id string) (*Session, error) {
-	// GetSessionRequest and RevertSessionRequest: string session_id = 1.
-	req := rawMessage(protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), id))
+func (s *Sessions) invoke(ctx context.Context, method string, body []byte) (*Session, error) {
+	req := rawMessage(body)
 	var resp rawMessage
 	if err := s.conn.Invoke(ctx, method, &req, &resp, grpc.ForceCodecV2(rawCodec{})); err != nil {
 		switch status.Code(err) {
@@ -263,7 +347,7 @@ func (s *Sessions) invoke(ctx context.Context, method, id string) (*Session, err
 		}
 		return nil, err
 	}
-	// GetSessionResponse and RevertSessionResponse: Session session = 1.
+	// Each session call's response holds Session session = 1.
 	body, err := field(resp, 1)
 	if err != nil {
 		return nil, err
@@ -297,6 +381,20 @@ func EncodeSession(sess Session) []byte {
 		b = protowire.AppendTag(b, 9, protowire.BytesType)
 		b = protowire.AppendBytes(b, f)
 	}
+	if !sess.CreatedAt.IsZero() {
+		// google.protobuf.Timestamp created_at = 10 { seconds = 1; nanos = 2 }
+		var ts []byte
+		ts = protowire.AppendTag(ts, 1, protowire.VarintType)
+		ts = protowire.AppendVarint(ts, uint64(sess.CreatedAt.Unix()))
+		ts = protowire.AppendTag(ts, 2, protowire.VarintType)
+		ts = protowire.AppendVarint(ts, uint64(sess.CreatedAt.Nanosecond()))
+		b = protowire.AppendTag(b, 10, protowire.BytesType)
+		b = protowire.AppendBytes(b, ts)
+	}
+	if sess.Name != "" {
+		b = protowire.AppendTag(b, 13, protowire.BytesType)
+		b = protowire.AppendString(b, sess.Name)
+	}
 	b = protowire.AppendTag(b, 14, protowire.BytesType)
 	b = protowire.AppendString(b, sess.ContextID)
 	if sess.AgentNamespace != "" || sess.AgentName != "" {
@@ -309,6 +407,39 @@ func EncodeSession(sess Session) []byte {
 	}
 	out := protowire.AppendTag(nil, 1, protowire.BytesType)
 	return protowire.AppendBytes(out, b)
+}
+
+// EncodeSessionList encodes a ListSessions response body, for test servers.
+func EncodeSessionList(sessions []Session, next string) []byte {
+	var out []byte
+	for _, sess := range sessions {
+		out = append(out, EncodeSession(sess)...) // Each is field 1, the repeated sessions.
+	}
+	if next != "" {
+		page := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), next)
+		out = protowire.AppendBytes(protowire.AppendTag(out, 2, protowire.BytesType), page)
+	}
+	return out
+}
+
+// DecodeListSessions reads the page token and agent of a ListSessions
+// request, for test servers.
+func DecodeListSessions(b []byte) (pageToken string, agent AgentRef, err error) {
+	page, err := field(b, 3)
+	if err != nil {
+		return "", AgentRef{}, err
+	}
+	tok, err := field(page, 2)
+	if err != nil {
+		return "", AgentRef{}, err
+	}
+	ref, err := field(b, 6)
+	if err != nil {
+		return "", AgentRef{}, err
+	}
+	ns, _ := field(ref, 1)
+	name, _ := field(ref, 2)
+	return string(tok), AgentRef{Namespace: string(ns), Name: string(name)}, nil
 }
 
 func decodeSession(b []byte) (*Session, error) {
@@ -327,6 +458,19 @@ func decodeSession(b []byte) (*Session, error) {
 			s.Operation = int(n)
 		case num == 14 && typ == protowire.BytesType:
 			s.ContextID = string(v)
+		case num == 13 && typ == protowire.BytesType:
+			s.Name = string(v)
+		case num == 10 && typ == protowire.BytesType:
+			var sec, nsec uint64
+			_ = walk(v, func(fn protowire.Number, ft protowire.Type, _ []byte, fv uint64) {
+				switch {
+				case fn == 1 && ft == protowire.VarintType:
+					sec = fv
+				case fn == 2 && ft == protowire.VarintType:
+					nsec = fv
+				}
+			})
+			s.CreatedAt = time.Unix(int64(sec), int64(nsec)).UTC()
 		case num == 15 && typ == protowire.BytesType:
 			ref, err := field(v, 1)
 			if err != nil {
