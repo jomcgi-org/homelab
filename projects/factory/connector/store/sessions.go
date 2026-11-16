@@ -15,7 +15,8 @@ const (
 // FinishedSession is a kagent session of a work item that no open attempt,
 // pending cancellation or recovery hold uses. Current is true when the work
 // item still records it: ReleaseSession must clear that before the session
-// is deleted.
+// is deleted. Requested is true when a delete was recorded and not yet
+// confirmed.
 type FinishedSession struct {
 	ContextID       string
 	WorkItemID      int64
@@ -24,6 +25,7 @@ type FinishedSession struct {
 	KagentAgent     string
 	Reason          string
 	Current         bool
+	Requested       bool
 }
 
 // FinishedSessions lists the binding's finished sessions:
@@ -34,13 +36,15 @@ type FinishedSession struct {
 //
 // A session whose last attempt finished within quiet, or whose work item
 // has an open run (only for a session the work item still records), is not
-// listed. Times are the database's.
+// listed, nor is a session whose deletion is confirmed. Times are the
+// database's.
 func (s *Store) FinishedSessions(ctx context.Context, binding string, stoppedKeep, quiet time.Duration) ([]FinishedSession, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT DISTINCT ON (a.context_id) a.context_id, w.id, w.issue_key, a.kagent_namespace, a.kagent_agent,
 			CASE WHEN a.context_id = w.session_id OR (w.session_id IS NULL AND w.state IN ('done', 'stopped'))
 				THEN w.state ELSE 'replaced' END,
-			(a.context_id = w.session_id) IS TRUE
+			(a.context_id = w.session_id) IS TRUE,
+			EXISTS (SELECT 1 FROM session_deletion d WHERE d.context_id = a.context_id)
 		FROM delivery_attempt a
 		JOIN run r ON r.id = a.run_id
 		JOIN work_item w ON w.id = r.work_item_id
@@ -54,6 +58,8 @@ func (s *Store) FinishedSessions(ctx context.Context, binding string, stoppedKee
 				WHERE o.context_id = a.context_id AND c.state = 'pending')
 			AND NOT EXISTS (SELECT 1 FROM recovery_hold h
 				WHERE h.work_item_id = w.id AND h.state IN ('pending', 'attested'))
+			AND NOT EXISTS (SELECT 1 FROM session_deletion d
+				WHERE d.context_id = a.context_id AND d.confirmed_at IS NOT NULL)
 			AND (a.context_id IS DISTINCT FROM w.session_id OR NOT EXISTS (SELECT 1 FROM run o
 				WHERE o.state <> 'closed' AND (o.work_item_id = w.id OR o.issue_id = w.issue_id)))
 		ORDER BY a.context_id`, binding, stoppedKeep.Seconds(), quiet.Seconds())
@@ -64,7 +70,7 @@ func (s *Store) FinishedSessions(ctx context.Context, binding string, stoppedKee
 	var out []FinishedSession
 	for rows.Next() {
 		var f FinishedSession
-		if err := rows.Scan(&f.ContextID, &f.WorkItemID, &f.IssueKey, &f.KagentNamespace, &f.KagentAgent, &f.Reason, &f.Current); err != nil {
+		if err := rows.Scan(&f.ContextID, &f.WorkItemID, &f.IssueKey, &f.KagentNamespace, &f.KagentAgent, &f.Reason, &f.Current, &f.Requested); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
@@ -93,4 +99,24 @@ func (s *Store) ReleaseSession(ctx context.Context, q Querier, workID int64, con
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// RecordSessionDeletion records a DeleteSession call before it is sent, in
+// q's transaction, which Writer.Tx fences on the epoch. The session ID keys
+// the record; a retry counts another request.
+func (s *Store) RecordSessionDeletion(ctx context.Context, q Querier, f FinishedSession, epoch int64) error {
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO session_deletion (context_id, work_item_id, reason, writer_epoch) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (context_id) DO UPDATE SET writer_epoch = EXCLUDED.writer_epoch,
+			requests = session_deletion.requests + 1, last_requested_at = now()`,
+		f.ContextID, f.WorkItemID, f.Reason, epoch)
+	return err
+}
+
+// ConfirmSessionDeletion records that kagent no longer has the session: it
+// answered NOT_FOUND, or a complete listing no longer shows it.
+func (s *Store) ConfirmSessionDeletion(ctx context.Context, q Querier, contextID string) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE session_deletion SET confirmed_at = now() WHERE context_id = $1 AND confirmed_at IS NULL`, contextID)
+	return err
 }

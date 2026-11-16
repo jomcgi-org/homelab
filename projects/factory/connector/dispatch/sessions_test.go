@@ -1,6 +1,7 @@
 package dispatch_test
 
 import (
+	"database/sql"
 	"errors"
 	"slices"
 	"strings"
@@ -26,6 +27,17 @@ func (v *env) sweep() {
 	v.t.Helper()
 	v.clk.Advance(11 * time.Minute)
 	v.tick(v.e)
+}
+
+// deletion reads a session's recorded delete; requests is 0 without one.
+func (v *env) deletion(id string) (requests int, epoch int64, confirmed bool) {
+	v.t.Helper()
+	err := v.st.DB.QueryRow(`SELECT requests, writer_epoch, confirmed_at IS NOT NULL FROM session_deletion WHERE context_id = $1`, id).
+		Scan(&requests, &epoch, &confirmed)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		v.t.Fatal(err)
+	}
+	return requests, epoch, confirmed
 }
 
 func (v *env) deletedFor(reason string) float64 {
@@ -56,6 +68,9 @@ func TestSweepDeletesAMergedWorkItemsSessionAndAResumeOpensANewOne(t *testing.T)
 	}
 	if got := v.deletedFor(store.SessionDone); got != 1 {
 		t.Fatalf("done deletions = %v, want 1", got)
+	}
+	if n, epoch, confirmed := v.deletion(session); n != 1 || epoch != v.e.Epoch() || confirmed {
+		t.Fatalf("deletion record = %d requests at epoch %d, confirmed %v; want 1 at %d, unconfirmed", n, epoch, confirmed, v.e.Epoch())
 	}
 	calls := v.kg.Calls()
 	v.tick(v.e)
@@ -99,6 +114,9 @@ func TestSweepDeletesOnlyTheCallersReplacedSessionsAndRetries(t *testing.T) {
 	if d := v.kg.Deleted(); len(d) != 0 {
 		t.Fatalf("deleted %v, another creator's session", d)
 	}
+	if n, _, _ := v.deletion(old); n != 0 {
+		t.Fatal("recorded a delete of another creator's session")
+	}
 
 	v.kg.mu.Lock()
 	v.kg.sessions[old].Creator = v.kg.identity.PrincipalID()
@@ -110,6 +128,9 @@ func TestSweepDeletesOnlyTheCallersReplacedSessionsAndRetries(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(v.m.TickErrors.WithLabelValues("sessions")); got != 1 {
 		t.Fatalf("sessions phase errors = %v, want 1", got)
+	}
+	if n, _, confirmed := v.deletion(old); n != 1 || confirmed {
+		t.Fatalf("deletion record = %d requests, confirmed %v; want 1 recorded before the call", n, confirmed)
 	}
 
 	// kagent admitted an earlier delete that did not finish.
@@ -125,6 +146,20 @@ func TestSweepDeletesOnlyTheCallersReplacedSessionsAndRetries(t *testing.T) {
 	}
 	if w := v.work(101); w.SessionID != "ctx-new" {
 		t.Fatalf("work item session = %q, want it kept", w.SessionID)
+	}
+	if n, _, confirmed := v.deletion(old); n != 2 || confirmed {
+		t.Fatalf("deletion record = %d requests, confirmed %v; want 2, unconfirmed", n, confirmed)
+	}
+	// A complete listing without the session confirms the delete, and a
+	// confirmed session is not looked at again.
+	v.sweep()
+	if _, _, confirmed := v.deletion(old); !confirmed {
+		t.Fatal("delete not confirmed after the session left the listing")
+	}
+	calls := v.kg.Calls()
+	v.sweep()
+	if v.kg.Calls() != calls {
+		t.Fatal("a sweep listed sessions for a confirmed delete")
 	}
 }
 

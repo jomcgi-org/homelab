@@ -32,8 +32,9 @@ const (
 // until it is deleted, and kagent expires an idle session only after its idle
 // TTL (HOME-136). It deletes only sessions kagent lists for the pinned
 // caller, so only the connector's own, and never with force: kagent refuses
-// to delete a session during a turn. A session left DELETING is deleted
-// again.
+// to delete a session during a turn. Each delete is recorded before it is
+// sent and confirmed once kagent no longer has the session, so a lost
+// response or a session left DELETING is deleted again.
 func (e *Engine) sweepSessions(ctx context.Context) error {
 	if e.sessions == nil || e.cfg.Caller == nil {
 		return nil
@@ -64,7 +65,7 @@ func (e *Engine) sweepSessions(ctx context.Context) error {
 			byAgent[ref] = append(byAgent[ref], f)
 		}
 		for _, ref := range agents {
-			listed, err := e.callerSessions(ctx, ref, identity)
+			listed, complete, err := e.callerSessions(ctx, ref, identity)
 			if err != nil {
 				if fatal(err) {
 					return err
@@ -74,6 +75,13 @@ func (e *Engine) sweepSessions(ctx context.Context) error {
 			}
 			for _, f := range byAgent[ref] {
 				if s := listed[f.ContextID]; s == nil || s.State == kagent.RuntimeDeleted {
+					// A recorded delete whose session a complete listing no
+					// longer shows has taken effect.
+					if f.Requested && complete {
+						if err := e.confirmDeletion(ctx, f.ContextID); err != nil {
+							return err
+						}
+					}
 					continue
 				}
 				if budget == 0 {
@@ -94,55 +102,74 @@ func (e *Engine) sweepSessions(ctx context.Context) error {
 
 // callerSessions lists the caller's sessions of agent by ID. kagent lists
 // only the caller's own; a session that names another creator is skipped as
-// well. A listing cut short by maxSessionPages only leaves sessions for a
-// later sweep.
-func (e *Engine) callerSessions(ctx context.Context, agent kagent.AgentRef, identity kagent.CallerIdentity) (map[string]*kagent.Session, error) {
+// well. complete is false for a listing cut short by maxSessionPages or a
+// repeated page token: an unlisted session may then still exist.
+func (e *Engine) callerSessions(ctx context.Context, agent kagent.AgentRef, identity kagent.CallerIdentity) (map[string]*kagent.Session, bool, error) {
 	out := map[string]*kagent.Session{}
 	token := ""
 	for page := 0; page < maxSessionPages; page++ {
 		if err := e.guard(ctx); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		ss, next, err := e.sessions.ListSessions(ctx, agent, token)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, s := range ss {
 			if s != nil && s.ID != "" && (s.Creator == "" || s.Creator == identity.PrincipalID()) {
 				out[s.ID] = s
 			}
 		}
-		if next == "" || next == token {
+		if next == "" {
+			return out, true, nil
+		}
+		if next == token {
 			break
 		}
 		token = next
 	}
-	return out, nil
+	return out, false, nil
 }
 
-// deleteFinished releases a session its work item still records, then
-// deletes it. A failed delete leaves a session the work item no longer
-// records, which the next sweep deletes.
+// deleteFinished records the delete, releasing a session its work item
+// still records in the same transaction, then sends it. A failed delete
+// leaves a recorded session the work item no longer records, which the next
+// sweep deletes again.
 func (e *Engine) deleteFinished(ctx context.Context, f store.FinishedSession) error {
-	if f.Current {
-		released := false
-		err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+	released := !f.Current
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		if f.Current {
 			var err error
-			released, err = e.st.ReleaseSession(ctx, tx, f.WorkItemID, f.ContextID)
-			return err
-		})
-		if err != nil || !released {
-			return err
+			if released, err = e.st.ReleaseSession(ctx, tx, f.WorkItemID, f.ContextID); err != nil || !released {
+				return err
+			}
 		}
+		return e.st.RecordSessionDeletion(ctx, tx, f, e.w.Epoch)
+	})
+	if err != nil || !released {
+		return err
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	if _, err := e.sessions.DeleteSession(ctx, f.ContextID); err != nil && !errors.Is(err, kagent.ErrSessionNotFound) {
+	_, err = e.sessions.DeleteSession(ctx, f.ContextID)
+	switch {
+	case errors.Is(err, kagent.ErrSessionNotFound):
+		if err := e.confirmDeletion(ctx, f.ContextID); err != nil {
+			return err
+		}
+	case err != nil:
 		return fmt.Errorf("delete session %s of %s: %w", f.ContextID, f.IssueKey, err)
 	}
 	e.m.SessionsDeleted.WithLabelValues(f.Reason).Inc()
 	e.log.InfoContext(ctx, "deleted a finished session", "context_id", f.ContextID, "work_item", f.WorkItemID,
 		"issue", f.IssueKey, "reason", f.Reason)
 	return nil
+}
+
+// confirmDeletion records that kagent no longer has the session.
+func (e *Engine) confirmDeletion(ctx context.Context, id string) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.ConfirmSessionDeletion(ctx, tx, id)
+	})
 }
