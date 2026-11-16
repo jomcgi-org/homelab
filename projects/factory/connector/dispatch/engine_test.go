@@ -2081,6 +2081,82 @@ func TestQuotaResumeKeepsTheEngineeringBudget(t *testing.T) {
 	}
 }
 
+// A usable quota reading releases only quota-blocked work. A sibling's
+// credential failure on the same grant keeps the grant paused, and both work
+// items blocked, until the operator's unblock (HOME-127).
+func TestQuotaRecoveryKeepsCredentialBlocks(t *testing.T) {
+	v := newEnv(t)
+	q := &fakeQuota{}
+	v.cfg.Quota = q
+	v.e.Release()
+	v.e = v.engine("connector-quota-credential")
+	v.its.add(1, "coder", 101, "HL-1", "Hit the quota.")
+	v.its.add(2, "coder", 102, "HL-2", "Lose the login.")
+	v.tick(v.e)
+	quota, credential := v.latest(1), v.latest(2)
+	v.kg.finish(quota.TaskID, kagent.StateFailed, codexQuotaFailure, nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.kg.finish(credential.TaskID, kagent.StateFailed, "codex_login_required", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	scope := store.GrantScope("factory-homelab", "coder")
+	var class string
+	if err := v.st.DB.QueryRow(`SELECT class FROM grant_block WHERE scope = $1 AND cleared_at IS NULL`, scope).Scan(&class); err != nil || class != dispatch.ClassCredential {
+		t.Fatalf("grant block class = %q, %v; want credential", class, err)
+	}
+	if c := v.its.Comments(); len(c) != 2 || c[1].issueID != 102 || !strings.Contains(c[1].body, "a credential failure needs a person") {
+		t.Fatalf("comments = %+v, want the credential failure announced", c)
+	}
+	held := func(stage string) {
+		t.Helper()
+		if blocked, _, err := v.st.GrantBlocked(v.ctx, scope); err != nil || !blocked {
+			t.Fatalf("%s: grant blocked = %v, %v", stage, blocked, err)
+		}
+		for issue, want := range map[int64]string{101: dispatch.ClassQuota, 102: dispatch.ClassCredential} {
+			if w := v.work(issue); w.State != store.WorkBlocked || w.BlockedClass != want {
+				t.Fatalf("%s: work item %d = %+v, want %s-blocked", stage, issue, w, want)
+			}
+		}
+		if len(v.kg.Sends()) != 2 || len(v.its.Comments()) != 2 {
+			t.Fatalf("%s: sends = %d, comments = %d", stage, len(v.kg.Sends()), len(v.its.Comments()))
+		}
+	}
+	q.set(github.QuotaReading{ReceivedAt: time.Now()})
+	for i := 0; i < 2; i++ {
+		v.clk.Advance(61 * time.Second)
+		v.tick(v.e)
+	}
+	held("credential block")
+
+	// An earlier connector kept the quota class on this grant. The usable
+	// reading still clears nothing while credential-blocked work remains.
+	if _, err := v.st.DB.Exec(`UPDATE grant_block SET class = 'quota', created_at = now() - interval '1 hour' WHERE scope = $1`, scope); err != nil {
+		t.Fatal(err)
+	}
+	reads := q.count()
+	v.clk.Advance(61 * time.Second)
+	v.tick(v.e)
+	if q.count() != reads+1 {
+		t.Fatalf("reads = %d, want the quota block read", q.count()-reads)
+	}
+	held("quota block with a credential failure")
+
+	if ok, err := v.st.ClearGrantBlock(v.ctx, scope); err != nil || !ok {
+		t.Fatalf("unblock = %v, %v", ok, err)
+	}
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.tick(v.e)
+	sent := map[string]bool{}
+	for _, s := range v.kg.Sends()[2:] {
+		sent[s.msg.MessageID] = true
+	}
+	if len(sent) != 2 || !sent["itsaplan-run/1/quota-resume-1"] || !sent["itsaplan-run/2/retry-1"] {
+		t.Fatalf("after unblock = %v", sent)
+	}
+}
+
 // A quota resume that must open a new session sends the failed attempt's
 // recorded brief, as an engineering retry does, without reading the issue.
 func TestQuotaResumeWithoutSessionKeepsTheRecordedBrief(t *testing.T) {

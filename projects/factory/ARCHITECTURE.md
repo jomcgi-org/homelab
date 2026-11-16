@@ -638,7 +638,11 @@ one: itsaplan v1.10.0 runs carry no requester identity, and a mention can
 come from an agent. The connector also clears quota blocks itself
 (HOME-127). While one stands, it reads the broker's `GET /codex/quota` at
 most once a minute. It clears each quota block that began before a reading
-that refuses nothing. The failed turn's own readings predate its block, so
+that refuses nothing, and releases only the work items a quota failure
+blocked. A credential failure on a grant a quota failure paused turns the
+block into a credential block and is announced on its issue. A grant with
+credential-blocked work stays paused, with all its blocked work items,
+until `connector unblock`. The failed turn's own readings predate its block, so
 a grant that still fails pauses again only after the broker's next reading,
 about every 30 minutes. The same reading stops a turn that never fails:
 while the broker reads the quota exhausted, the connector cancels a running
