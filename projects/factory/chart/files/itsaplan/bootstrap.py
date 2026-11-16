@@ -398,11 +398,74 @@ def ensure_sessions(admin, team_id):
             session.call("POST", "/api/auth/sign-out", {})
 
 
-def key_works(key):
+def key_works(key, user_id=None):
     """True when the api resolves the key to an account (/me answers 200 either
     way, with authenticated false for a key it refuses)."""
     _, _, me = request("GET", API + "/me", headers={"x-api-key": key})
-    return bool(me and me.get("authenticated"))
+    return bool(
+        me
+        and me.get("authenticated")
+        and (user_id is None or (me.get("user") or {}).get("id") == user_id)
+    )
+
+
+def ensure_reviewer_role(session, team_id):
+    """A dedicated role, never the default role that coding agents inherit.
+
+    Normalize against the live catalog, explicitly denying every other action
+    (including extension resources and column moves through work_items edit).
+    """
+    catalog = session.call("GET", "/permission-catalog")
+    permissions = {
+        resource["key"]: {
+            action: resource["key"] == "work_items" and action == "read"
+            for action in catalog["actions"]
+        }
+        for resource in catalog["resources"]
+    }
+    base = f"/teams/{team_id}/roles"
+    roles = session.call("GET", base + "/options")
+    matching = [r for r in roles if r["name"] == "Factory reviewer"]
+    if len(matching) > 1 or any(r["system"] for r in matching):
+        raise SystemExit("Factory reviewer must be one team-owned role")
+    if not matching:
+        return session.call(
+            "POST", base, {"name": "Factory reviewer", "permissions": permissions}
+        )["id"]
+    role = matching[0]
+    if role["permissions"] != permissions:
+        session.call("PATCH", f"{base}/{role['id']}", {"permissions": permissions})
+    return role["id"]
+
+
+def ensure_reviewer_access(session, team_id, project_id, agent, role_id):
+    """Remove other project grants, then assign read-only before publishing a key."""
+    projects = [p["id"] for p in agent["projects"]]
+    if any(p != project_id for p in projects):
+        session.call(
+            "PUT",
+            f"/teams/{team_id}/ai-agents/{agent['id']}/projects",
+            {"projectIds": [project_id] if project_id in projects else []},
+        )
+    project = urllib.parse.quote(CONFIG["project"]["key"], safe="")
+    base = f"/projects/{project}/members"
+    want = {"role": "member", "roleId": role_id}
+    if project_id not in projects:
+        # New reviewer agents start with no projects: they never acquire the
+        # default role's writes, even briefly, while bootstrap runs.
+        session.call("POST", base, {"userId": agent["userId"], **want})
+    else:
+        page = session.call(
+            "GET", base + "?kind=agent&search=factory-reviewer&pageSize=100"
+        )
+        member = next(
+            (m for m in page["items"] if m["userId"] == agent["userId"]), None
+        )
+        if member is None:
+            raise SystemExit("reviewer membership could not be verified")
+        if any(member[k] != v for k, v in want.items()):
+            user = urllib.parse.quote(agent["userId"], safe="")
+            session.call("PATCH", f"{base}/{user}", want)
 
 
 def ensure_agents(session, team_id, project_id):
@@ -410,6 +473,8 @@ def ensure_agents(session, team_id, project_id):
     existing = {a["username"].lower(): a for a in session.call("GET", base)}
     for want in CONFIG["agents"]:
         username = want["username"]
+        reviewer = username == "factory-reviewer"
+        role_id = ensure_reviewer_role(session, team_id) if reviewer else None
         name = os.environ["AGENT_SECRET_PREFIX"] + username
         settings = {
             "name": want["name"],
@@ -419,6 +484,10 @@ def ensure_agents(session, team_id, project_id):
             "runnerScope": "team",
             "chatEnabled": False,
         }
+        if reviewer:
+            settings.update(
+                triggerOnAssign=False, triggerOnMention=False, fieldTriggers=[]
+            )
         agent = existing.get(username.lower())
         key = None
         if agent is None:
@@ -429,18 +498,20 @@ def ensure_agents(session, team_id, project_id):
                     **settings,
                     "username": username,
                     "kind": "external",
-                    "projectIds": [project_id],
+                    "projectIds": [] if reviewer else [project_id],
                 },
             )
             agent, key = created["agent"], created["apiKey"]
             print(f"created agent {username} ({agent['id']})")
         else:
+            if reviewer and agent["kind"] != "external":
+                raise SystemExit("factory-reviewer must be an external agent")
             projects = [p["id"] for p in agent["projects"]]
             drift = {k: v for k, v in settings.items() if agent.get(k, v) != v}
             if drift:
                 agent = session.call("PATCH", f"{base}/{agent['id']}", drift)
                 print(f"updated agent {username}: {', '.join(drift)}")
-            if project_id not in projects:
+            if not reviewer and project_id not in projects:
                 agent = session.call(
                     "PUT",
                     f"{base}/{agent['id']}/projects",
@@ -448,12 +519,14 @@ def ensure_agents(session, team_id, project_id):
                 )
                 print(f"attached agent {username} to the project")
             stored = secret_data(k8s("GET", name)).get("apiKey")
-            if stored and key_works(stored):
+            if stored and key_works(stored, agent["userId"] if reviewer else None):
                 key = stored
             else:
                 rotated = session.call("POST", f"{base}/{agent['id']}/regenerate-key")
                 key = rotated["apiKey"]
                 print(f"rotated {username}'s key: its Secret held none that works")
+        if reviewer:
+            ensure_reviewer_access(session, team_id, project_id, agent, role_id)
         write_secret(
             name,
             {

@@ -8,8 +8,15 @@ import (
 	"strconv"
 )
 
-// Project includes assignable users and effective issue-creation permission.
+// Project includes the human members needed to assign a gate issue and the
+// account's effective issue-creation permission. The reviewer also reads the
+// ID and key, and authenticated account identities; display names are never
+// proof of authorship.
 type Project struct {
+	Project struct {
+		ID  int64  `json:"id"`
+		Key string `json:"key"`
+	} `json:"project"`
 	Permissions struct {
 		WorkItems struct {
 			Create bool `json:"create"`
@@ -22,7 +29,7 @@ type Project struct {
 type Assignee struct {
 	UserID   string `json:"userId"`
 	Username string `json:"username"`
-	Kind     string `json:"kind"`
+	Kind     string `json:"kind"` // member | agent
 }
 
 func (c *Client) GetProject(ctx context.Context, key string) (*Project, error) {

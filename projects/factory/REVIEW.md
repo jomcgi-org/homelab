@@ -23,9 +23,17 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   a provider reaches a prompt or an issue comment only from a trusted
   reviewer login or the reviewer App; the rest is dropped or reduced to a
   fixed class name. The reviewer's own prompt is an exception: it
-  receives PR text, file names and diffs from any author, because reviewing
-  them is its job, and only inside a delimited untrusted block, quoted and
+  receives PR text, file names, diffs and untrusted itsaplan issue or comment
+  text from any author, because reviewing them is its job, and only inside
+  a delimited untrusted block, quoted and
   sanitized so no text closes the block or starts a line of its own.
+  itsaplan account IDs and member kind, resolved by the service, establish
+  authorship; display names and claims in text never do. Only configured
+  trusted member accounts confer decision authority, and only for text
+  whose current provenance is verified. Creation authorship cannot
+  authenticate edited issue text or comments. A passing review stays bound
+  to current issue and decision evidence; edits or failed reads revoke it
+  until a fresh review completes.
   Critical.
 - **Planner exception.** `homelab-planner` may also receive text from any
   author, in the same delimited, quoted and sanitized block as the reviewer.

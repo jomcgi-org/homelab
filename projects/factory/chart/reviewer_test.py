@@ -246,7 +246,17 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
         assert mounts[name]["readOnly"] is True
     assert volumes["config"]["configMap"]["name"] == "factory-reviewer"
     assert mounts["config"]["mountPath"] == "/etc/factory-reviewer"
-    assert not any("secret" in v for v in pod["volumes"])
+    assert [v["name"] for v in pod["volumes"] if "secret" in v] == ["itsaplan-key"]
+    assert volumes["itsaplan-key"]["secret"] == {
+        "secretName": "factory-itsaplan-agent-factory-reviewer",
+        "optional": True,
+        "defaultMode": 0o440,
+        "items": [{"key": "apiKey", "path": "apiKey"}],
+    }
+    assert mounts["itsaplan-key"]["readOnly"] is True
+    assert config["itsaplanKeyFile"] == mounts["itsaplan-key"]["mountPath"] + "/apiKey"
+    assert config["itsaplanURL"] == "http://factory-itsaplan-api.factory.svc:3000"
+    assert pod["securityContext"]["fsGroup"] == 65532
     assert config["brokerURL"] == "http://factory-broker.factory.svc:8081"
     assert config["kagentURL"] == "http://kagent-controller.kagent.svc:8083"
     assert config["metricsAddr"] == ":9090"
@@ -263,6 +273,8 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
             "kagentAgent": "homelab-reviewer",
             "enqueueAuthors": [],
             "humanApprovers": ["jomcgi"],
+            "itsaplanProject": "HOME",
+            "branchPrefix": "factory/",
             "requiredChecks": [
                 {"name": "pr-checks", "statusCreator": "buildbuddy-io[bot]"}
             ],
@@ -278,6 +290,41 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
             "template"
         ]["metadata"]["annotations"]["checksum/config"]
     )
+
+
+def test_reviewer_identity_is_mandatory_and_isolated() -> None:
+    docs = _render()
+    config = json.loads(
+        _in(docs, "ConfigMap", "factory", "factory-itsaplan-scripts")["data"][
+            "config.json"
+        ]
+    )
+    reviewers = [a for a in config["agents"] if a["username"] == "factory-reviewer"]
+    assert reviewers == [
+        {
+            "username": "factory-reviewer",
+            "name": "Factory reviewer",
+            "triggerOnAssign": False,
+            "triggerOnMention": False,
+        }
+    ]
+    secret = _in(docs, "Secret", "factory", "factory-itsaplan-agent-factory-reviewer")
+    assert _KEEP.items() <= secret["metadata"]["annotations"].items()
+    assert "data" not in secret and "stringData" not in secret
+    for name in ("factory-connector", "factory-broker"):
+        volumes = _pod(docs, name)["volumes"]
+        assert not any(
+            v.get("secret", {}).get("secretName") == secret["metadata"]["name"]
+            for v in volumes
+        )
+    # A complete agent entry, so the schema passes and the template refuses it.
+    with pytest.raises(RuntimeError, match="reserved"):
+        _render(
+            [
+                "itsaplan.bootstrap.agents[0].username=factory-reviewer",
+                "itsaplan.bootstrap.agents[0].name=Impostor",
+            ]
+        )
 
 
 def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
@@ -441,10 +488,11 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     assert spec["endpointSelector"]["matchLabels"].items() <= labels.items()
     assert "ingress" not in spec
-    assert len(spec["egress"]) == 3
+    assert len(spec["egress"]) == 4
     for rule, ns, name, port in (
         (spec["egress"][0], "factory", "factory-broker", "8081"),
         (spec["egress"][1], "kagent", "kagent-controller", "8083"),
+        (spec["egress"][2], "factory", "factory-itsaplan-api", "3000"),
     ):
         assert rule["toPorts"] == [{"ports": [{"port": port, "protocol": "TCP"}]}]
         peer = _in(docs, "CiliumNetworkPolicy", ns, name)["spec"]
@@ -468,7 +516,7 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
             )
             for entry in peer["ingress"]
         )
-    assert spec["egress"][2] == {
+    assert spec["egress"][3] == {
         "toFQDNs": [{"matchName": "api.github.com"}],
         "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
     }
@@ -497,6 +545,8 @@ def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> No
     )
     assert config["brokerURL"] == "http://factory-broker.other-factory.svc:8181"
     assert config["kagentURL"] == "http://other-kagent-controller.other-kagent.svc:8183"
+    assert "itsaplanURL" not in config
+    assert "itsaplanProject" not in config["bindings"][0]
     broker = yaml.safe_load(
         _in(docs, "ConfigMap", "other-factory", "factory-broker")["data"]["config.yaml"]
     )
@@ -621,6 +671,8 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
     assert binding["MaxDiffFiles"] == 150
     # The deploy values turn enqueues off; the required check gates merges.
     assert binding["EnqueueAuthors"] == []
+    assert binding["TrustedItsaplanAuthors"] == ["joe", "joesessions"]
+    assert binding["ItsaplanProject"] == "HOME"
 
 
 @pytest.mark.parametrize(

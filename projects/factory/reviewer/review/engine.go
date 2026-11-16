@@ -81,23 +81,26 @@ type Check struct {
 // Binding is one repository whose PRs into BaseBranch the kagent Agent
 // reviews, with its gates (see config.Binding).
 type Binding struct {
-	startupBefore     *time.Time
-	Name              string
-	Owner             string
-	Repo              string
-	BaseBranch        string
-	Agent             kagent.AgentRef
-	RequiredChecks    []Check
-	SkipLabels        []string
-	EnqueueAuthors    []string
-	HumanGatePaths    []string
-	HumanGateLabels   []string
-	HumanApprovers    []string
-	TrustedCommenters []string
-	ContextDocs       []string
-	GeneratedPaths    []string
-	MaxDiffLines      int
-	MaxDiffFiles      int
+	startupBefore          *time.Time
+	Name                   string
+	Owner                  string
+	Repo                   string
+	BaseBranch             string
+	Agent                  kagent.AgentRef
+	RequiredChecks         []Check
+	SkipLabels             []string
+	EnqueueAuthors         []string
+	HumanGatePaths         []string
+	HumanGateLabels        []string
+	HumanApprovers         []string
+	TrustedCommenters      []string
+	ItsaplanProject        string
+	BranchPrefix           string
+	TrustedItsaplanAuthors []string
+	ContextDocs            []string
+	GeneratedPaths         []string
+	MaxDiffLines           int
+	MaxDiffFiles           int
 }
 
 func (b *Binding) repo() string { return b.Owner + "/" + b.Repo }
@@ -117,6 +120,7 @@ func containsFold(list []string, s string) bool {
 
 // Config holds the reviewer's settings.
 type Config struct {
+	Itsaplan    Itsaplan
 	CheckName   string
 	AppID       int64
 	Concurrency int
@@ -189,6 +193,10 @@ type Engine struct {
 	commentQueue   []func()
 	commentWorker  bool
 	commentWG      sync.WaitGroup
+
+	// commitRefs (under mu) is the issue key each PR head's commit messages
+	// name, "" for none.
+	commitRefs map[string]string
 
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
@@ -458,7 +466,15 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
 		default:
-			cur, held := e.reconcileGate(ctx, b, pr, run)
+			cur, pending, ready := e.reconcileIssues(ctx, b, pr, run)
+			reviews[pr.Number] = cur
+			if pending {
+				if ready && cur != nil {
+					start = append(start, candidate{pr, cur})
+				}
+				continue
+			}
+			cur, held := e.reconcileGate(ctx, b, pr, cur)
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
 			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
@@ -915,7 +931,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 
 	l := e.prLog(b, pr)
 	kind := "reattach"
-	if run == nil || sharedHeadHeld(run) {
+	if run == nil || sharedHeadHeld(run) || issuesPending(run) {
 		kind = "new"
 		now := e.cfg.Now().UTC()
 		st := State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}}
@@ -926,9 +942,12 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			if st.Gate == nil {
 				st.Gate = &Gate{}
 			}
-			st.Gate.SharedHead = true
+			if sharedHeadHeld(run) {
+				st.Gate.SharedHead = true
+				st.Gate.resetApproval(now) // Prior approval belonged to an ambiguous PR context.
+			}
 			st.Gate.observeLabels(gateLabels(b, pr.Labels), now)
-			st.Gate.resetApproval(now) // Prior approval belonged to an ambiguous PR context.
+			st.IssueDigest, st.IssuesPending = "", false
 		}
 		st.Gate, _ = e.recoveryGate(b, pr, st.Gate)
 		st.Gate, _ = e.retainGate(b, pr, st.Gate, false)
@@ -994,6 +1013,7 @@ type recorded struct {
 	Attempt int
 	ID      string
 	Sent    time.Time
+	Issues  string
 	// QuotaRetry gives a resumed send a new identity without spending an
 	// attempt. QuotaSince persists the wait across service restarts.
 	QuotaRetry int
@@ -1002,7 +1022,7 @@ type recorded struct {
 
 // The task marker is written only by the service; markerStart is stripped
 // from every text the agent or the PR supplies, and the last marker counts.
-var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*) -->`)
+var taskMarker = regexp.MustCompile(`<!-- factory-review:task attempt=([0-9]+) id=([^\s>]*) sent=([0-9]*)(?: issues=([a-f0-9]{64}))? -->`)
 
 var quotaMarker = regexp.MustCompile(`<!-- factory-review:quota retry=([0-9]+) since=([0-9]+) -->`)
 
@@ -1015,7 +1035,7 @@ func RecordedTask(summary string) recorded {
 	}
 	m := all[len(all)-1]
 	n, _ := strconv.Atoi(m[1])
-	rec := recorded{Attempt: max(n, 1), ID: m[2]}
+	rec := recorded{Attempt: max(n, 1), ID: m[2], Issues: m[4]}
 	if sec, err := strconv.ParseInt(m[3], 10, 64); err == nil && sec > 0 {
 		rec.Sent = time.Unix(sec, 0)
 	}
@@ -1051,7 +1071,11 @@ func progressSummary(b *Binding, gate *Gate, rec recorded, note string) string {
 		if !rec.Sent.IsZero() {
 			sent = rec.Sent.Unix()
 		}
-		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d -->", rec.Attempt, rec.ID, sent)
+		issues := ""
+		if rec.Issues != "" {
+			issues = " issues=" + rec.Issues
+		}
+		s += fmt.Sprintf(".\n\n<!-- factory-review:task attempt=%d id=%s sent=%d%s -->", rec.Attempt, rec.ID, sent, issues)
 	}
 	if rec.QuotaRetry > 0 || !rec.QuotaSince.IsZero() {
 		var since int64
@@ -1107,6 +1131,7 @@ func (e *Engine) waitForQuota(ctx context.Context, b *Binding, run *github.Check
 
 // inputs are what a review is judged with, read before its task is sent.
 type inputs struct {
+	issues    *IssueContext
 	files     []github.PullRequestFile
 	size      DiffSize
 	gate      *Gate
@@ -1233,6 +1258,25 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				return
 			}
 		}
+		if b.ItsaplanProject != "" && len(in.issues.Pending) > 0 {
+			if rec.ID != "" {
+				e.cancelTask(ctx, b, rec.ID, l)
+			}
+			st := in.prior
+			st.Gate = in.gate
+			e.holdIssues(ctx, b, pr, run, st, in.issues.Pending)
+			return // Release the slot; every poll retries without another push.
+		}
+		if rec.ID != "" && b.ItsaplanProject != "" && rec.Issues != issueDigest(in.issues) {
+			// An old task may predate issue-aware review, or its issue may
+			// have changed while the service was down. It cannot certify
+			// evidence that was never in its prompt.
+			_, _ = e.tasks.CancelTask(ctx, b.Agent, rec.ID)
+			if next("the recorded task did not review the current issue evidence.") {
+				return
+			}
+			continue
+		}
 		if rec.ID == "" {
 			if e.waitForQuota(ctx, b, run, rec, l) {
 				return
@@ -1278,6 +1322,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			switch {
 			case err == nil:
 				rec = recorded{Attempt: attempt, ID: t.ID, Sent: lastSend, QuotaRetry: rec.QuotaRetry}
+				if b.ItsaplanProject != "" {
+					rec.Issues = issueDigest(in.issues)
+				}
 				e.m.ReviewSessions.WithLabelValues(b.Name, in.plan.path(), in.plan.reason).Inc()
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends,
 					"path", in.plan.path(), "reason", in.plan.reason, "context_id", t.ContextID)
@@ -1346,7 +1393,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}}, l)
 				return
 			}
-			currentPR.Labels = prs[listed].Labels
+			currentPR = prs[listed] // Body/branch references can change on the same head.
 			if in.gate == nil {
 				in.gate = &Gate{ObservedLabels: []string{}}
 			}
@@ -1385,6 +1432,19 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					return
 				}
 				continue
+			}
+			if b.ItsaplanProject != "" {
+				fresh := e.issueContext(ctx, b, currentPR, in.files)
+				if len(fresh.Pending) > 0 || issueDigest(fresh) != rec.Issues {
+					// The completed report only covers the old snapshot. Preserve
+					// its findings and human holds, then review the same head anew.
+					st, _ := LoadState(res.o.Output.Text)
+					e.holdIssues(ctx, b, currentPR, run, st, fresh.Pending)
+					return
+				}
+				st, _ := LoadState(res.o.Output.Text)
+				st.IssueDigest = rec.Issues
+				res.o.Output.Text = encodeState(st)
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
 				e.observe(ctx, b, res.r, res.a, l)
@@ -1445,7 +1505,8 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		gate.inherit(prior.Gate)
 	}
 	return &inputs{
-		files: files, size: measure(b, files), gate: gate,
+		issues: e.issueContext(ctx, b, pr, files),
+		files:  files, size: measure(b, files), gate: gate,
 		prior: prior, priorHead: head, priorUnknown: unknown,
 	}, nil
 }
@@ -1561,7 +1622,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
-		CheckName: e.cfg.CheckName,
+		CheckName: e.cfg.CheckName, Issues: in.issues,
 	})
 	id, contextID := AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt), ""
 	if plan.resume != nil {
@@ -1672,6 +1733,9 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			scope = nil // A fixed finding missing from the record could be lowered.
 		}
 		r = scope.Lower(r, prior, in.prior.Cleared)
+		// The service's own evidence findings are added after lowering, so
+		// none of them is ever lowered.
+		applyIssueFindings(r, in.issues)
 		a := Assess(r, prior)
 		a.Earlier, a.EarlierPartial = in.prior.Cleared, !in.prior.ClearedComplete()
 		for _, f := range a.Deferred {
@@ -1917,7 +1981,8 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, !gate.approved() || len(st.Blocking) > 0
 	}
 	l := e.prLog(b, pr)
-	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Cleared: st.Cleared, ClearedPartial: st.ClearedPartial, Gate: gate, Session: st.Session}, conclusion, title, summary, u, l)
+	st.Gate = gate // Keep the cleared record, session and issue evidence binding.
+	cur := e.gateCheck(ctx, b, pr, run, st, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")
 	}

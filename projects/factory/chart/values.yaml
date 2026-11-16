@@ -520,10 +520,14 @@ reviewer:
   # Per repository name: namespace defaults to <coding namespace>-review.
   # Other keys are reviewer/config Binding policy fields (requiredChecks,
   # skipLabels, enqueueAuthors, humanGatePaths, humanGateLabels,
-  # humanApprovers, trustedCommenters, contextDocs, generatedPaths,
+  # humanApprovers, trustedCommenters, trustedItsaplanAuthors, contextDocs, generatedPaths,
   # maxDiffLines, maxDiffFiles). Unset policy fields use the service defaults;
   # explicit empty lists stay empty. Owner/repo/baseBranch/agent are derived.
   bindings: {}
+  # With itsaplan enabled, bootstrap creates factory-reviewer with work_items
+  # read only. The service mounts its key; review agents never receive it.
+  # Issue project and branch prefix follow the connector's binding. Trusted
+  # itsaplan authors default to [joe, joesessions]; agent accounts never count.
   # Service defaults: poll 30s, taskPoll/reissue 15s, timeout 45m,
   # retryBackoff 5m. Values use Go duration strings.
   intervals: {}

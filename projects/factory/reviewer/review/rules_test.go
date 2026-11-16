@@ -203,7 +203,7 @@ func TestLoadRulesReadsTheBaseBranch(t *testing.T) {
 	}
 }
 
-var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|commits|content|cited)-([0-9a-f]{12})-([0-9a-f]{32})>\n`)
+var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|commits|content|cited|issue|workflow|decision-[0-9]+)-([0-9a-f]{12})-([0-9a-f]{32})>\n`)
 
 // untrustedBlocks checks the prompt's delimiters: "untrusted-pr-" appears
 // only in one opener and one closer per block, each naming the head and the
@@ -211,12 +211,12 @@ var blockTag = regexp.MustCompile(`<(/?)untrusted-pr-(description|commits|conten
 // prompt outside the blocks.
 func untrustedBlocks(t *testing.T, p string) (inside map[string]string, outside string) {
 	t.Helper()
-	// Every "untrusted-pr-" is a delimiter: the description and content
-	// blocks, the cited block when the description cites PRs, and the
-	// commits block when the PR's commit messages were read.
+	// The description and content are always present. Cited PRs, commit
+	// messages, issue text, workflow status and decision references add
+	// their own blocks.
 	tags := blockTag.FindAllStringSubmatchIndex(p, -1)
-	if n := strings.Count(strings.ToLower(p), "untrusted-pr-"); n != len(tags) || n < 4 || n > 8 || n%2 != 0 {
-		t.Fatalf("\"untrusted-pr-\" appears %d times in %d delimiters, want two to four blocks:\n%s", n, len(tags), p)
+	if n := strings.Count(strings.ToLower(p), "untrusted-pr-"); n != len(tags) || n < 4 || n%2 != 0 {
+		t.Fatalf("\"untrusted-pr-\" appears %d times in %d delimiters, want paired blocks:\n%s", n, len(tags), p)
 	}
 	inside = map[string]string{}
 	outside = p[:tags[0][0]]
@@ -230,9 +230,17 @@ func untrustedBlocks(t *testing.T, p string) (inside map[string]string, outside 
 		if got := sha256.Sum256([]byte(text)); sha != shaA[:12] || hex.EncodeToString(got[:16]) != sum {
 			t.Fatalf("the %s block is named %s-%s, not by the head and its text's digest", kind, sha, sum)
 		}
+		if _, exists := inside[kind]; exists {
+			t.Fatalf("duplicate %s block", kind)
+		}
 		inside[kind] = text
 		if i+2 < len(tags) {
 			outside += p[end[1]:tags[i+2][0]]
+		}
+	}
+	for _, kind := range []string{"description", "content"} {
+		if _, exists := inside[kind]; !exists {
+			t.Fatalf("missing %s block", kind)
 		}
 	}
 	return inside, outside + p[tags[len(tags)-1][1]:]

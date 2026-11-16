@@ -536,6 +536,11 @@ type State struct {
 	// Session is the kagent session that reviewed the head, which the next
 	// head's review may resume (session.go).
 	Session *SessionRef `json:"session,omitempty"`
+
+	// IssueDigest binds the report to the external evidence it reviewed.
+	// IssuesPending revokes that report until a fresh review can run.
+	IssueDigest   string `json:"issueDigest,omitempty"`
+	IssuesPending bool   `json:"issuesPending,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -933,7 +938,10 @@ func encodeState(st State) string {
 			return out
 		}
 		// Without the cleared record, so it says the record is partial.
-		small := State{Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session}
+		small := State{
+			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session,
+			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending,
+		}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.
 			gate.Paths, gate.Findings = nil, shrink(g.Findings)

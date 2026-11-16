@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
@@ -122,6 +123,16 @@ func run(log *slog.Logger) error {
 			URL: cfg.BrokerURL, Path: commentsPath, Prefix: review.CommentMarker, Bearer: fileToken(cfg.BrokerTokenFile),
 		}
 	}
+	var issues review.Itsaplan
+	if cfg.ItsaplanURL != "" {
+		issues = &itsaplan.Client{
+			BaseURL: cfg.ItsaplanURL, Coordinator: "factory-reviewer",
+			HTTP: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			}},
+			KeyFunc: func(string) (string, error) { return fileToken(cfg.ItsaplanKeyFile).Token() },
+		}
+	}
 
 	var bindings []review.Binding
 	var names []string
@@ -132,6 +143,7 @@ func run(log *slog.Logger) error {
 			SkipLabels: b.SkipLabels, EnqueueAuthors: b.EnqueueAuthors,
 			HumanGatePaths: b.HumanGatePaths, HumanGateLabels: b.HumanGateLabels, HumanApprovers: b.HumanApprovers,
 			TrustedCommenters: b.TrustedCommenters, ContextDocs: b.ContextDocs,
+			ItsaplanProject: b.ItsaplanProject, BranchPrefix: b.BranchPrefix, TrustedItsaplanAuthors: b.TrustedItsaplanAuthors,
 			GeneratedPaths: b.GeneratedPaths, MaxDiffLines: b.MaxDiffLines, MaxDiffFiles: b.MaxDiffFiles,
 		}
 		for _, c := range b.RequiredChecks {
@@ -158,6 +170,7 @@ func run(log *slog.Logger) error {
 		Sessions:      sessions,
 		Cleaner:       sessions,
 		Quota:         &github.BrokerQuota{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)},
+		Itsaplan:      issues,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

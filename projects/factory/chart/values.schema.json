@@ -545,6 +545,10 @@
                   "minLength": 1
                 }
               },
+              "trustedItsaplanAuthors": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
               "contextDocs": {
                 "type": "array",
                 "items": {

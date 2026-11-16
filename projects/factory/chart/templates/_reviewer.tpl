@@ -26,6 +26,7 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- $bindings := list }}
 {{- range $r := .Values.repositories }}
 {{- $b := index ($c.bindings | default dict) $r.name | default dict }}
+{{- $connector := index ($.Values.connector.bindings | default dict) $r.name | default dict }}
 {{- $binding := dict
   "name" $r.name
   "owner" $r.owner
@@ -36,6 +37,14 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
   "enqueueAuthors" $c.enqueueAuthors
   "humanApprovers" $c.humanApprovers
 }}
+{{- if $.Values.itsaplan.enabled }}
+{{- $project := $connector.itsaplanProject | default $.Values.itsaplan.bootstrap.project.key }}
+{{- if ne $project $.Values.itsaplan.bootstrap.project.key }}
+{{- fail "reviewer itsaplan project must match the bootstrap identity's bound project" }}
+{{- end }}
+{{- $_ := set $binding "itsaplanProject" $project }}
+{{- $_ := set $binding "branchPrefix" ($connector.branchPrefix | default "factory/") }}
+{{- end }}
 {{- range $k, $v := omit $b "namespace" }}
 {{- $_ := set $binding $k $v }}
 {{- end }}
@@ -54,6 +63,10 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
   "ruleIds" $c.ruleIds
   "bindings" $bindings
 }}
+{{- if .Values.itsaplan.enabled }}
+{{- $_ := set $config "itsaplanURL" (include "factory.itsaplanInternalURL" .) }}
+{{- $_ := set $config "itsaplanKeyFile" "/var/run/secrets/itsaplan/apiKey" }}
+{{- end }}
 {{- with $c.commentAuthor }}
 {{- $_ := set $config "commentAuthor" . }}
 {{- end }}
