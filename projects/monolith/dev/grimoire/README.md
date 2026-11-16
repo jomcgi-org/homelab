@@ -66,69 +66,41 @@ Run the complete regression gate with one command:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --all --output /tmp/grimoire-all
 ```
 
-The launcher builds once, then runs the session and invitation scenarios at
-1280px and 390px. Each of the four runs has a fresh database and separate
-Rowan, Elowen and Bram browser contexts. Every run executes even if an earlier
-one fails. The top-level `report.json` and `report.md` link the four reports
-under `session/1280`, `session/390`, `join-links/1280` and `join-links/390`.
-A missing report, an incomplete journey, a failing child, a console error or
-a missed timing budget makes the command fail. `--viewport 390` runs one
-scenario with all seats at that width; omitting it retains the original mixed
-desktop-DM and phone-player setup.
+The launcher builds once, then runs both scenarios at 1280px and 390px, each
+with a fresh database and three browser contexts. Every run executes even if
+one fails. The top-level report links the `<scenario>/<width>` reports; a
+missing report, failed check, console error or missed budget fails it.
+`--viewport 390` puts all seats at that width; without it, the DM is on desktop.
 
-There are 53 required session checks and nine invitation checks. The added
-journeys cover feedback drafts and votes, sheet returns and edits across open
-tabs, concurrent sheet edits and conflict recovery, character reassignment,
-disadvantage, own-fact disputes, shared pin progress and retry, the read-aloud
-queue, first-read failure and Retry, pending Enter submissions, private replies
-across sign-in renewal, session changes, cancellation and reassignment, clearing
-private notes after an account change, and refusing private reads until the first identity check succeeds.
-The local profile checks exercise the real read-only `/api/auth/platform/self`
-route using the same three signed demo identities. They verify profile identity
-changes even when Grimoire access is denied; the fixture registers no platform
-management, account-write, or enrollment route.
-Member and sheet-history checks wait for visible updates without reloading the page.
-The pure report tests enforce the required inventory and matrix completeness.
+There are 53 required session checks and nine invitation checks. New journeys
+cover feedback drafts and votes, sheet edits across tabs and conflict recovery,
+character reassignment, disadvantage, own-fact disputes, shared pins with retry,
+the read-aloud queue, first-read failure and Retry, pending Enter submissions,
+private replies across sign-in renewal, session changes, cancellation and
+reassignment, clearing private notes after an account change, and refusing
+private reads until the first identity check succeeds. Profile checks use the
+real read-only `/api/auth/platform/self` route; the fixture registers no
+platform management, account-write or enrollment route.
 
-The six-second live assignment step added by #8003 to the onboarding journey
-is deferred to [HOME-26](https://factory-plan.jomcgi.dev/factory/issue/HOME-26)
-([#8001](https://github.com/jomcgi-org/homelab/issues/8001)): after the DM
-creates Wren, the player reloads as on main. The invitation, character creation,
-sheet submission, approval and approved-roll checks remain required, with their
-original budgets. All 124 matrix checks remain required. The separate open-page
-reassignment regression still waits for the authoritative lobby response and
-checks private canary removal, denied old sheet reads and retained sheet history;
-the private-reply reassignment regression is unchanged.
+Deferred to [HOME-26](https://factory-plan.jomcgi.dev/factory/issue/HOME-26)
+([#8001](https://github.com/jomcgi-org/homelab/issues/8001)): #8003's six-second
+live assignment step (the player reloads after the DM creates Wren, as on main),
+the five-second character-list and faster lobby refreshes, and dirty-sheet
+clear/swap recovery. All 124 matrix checks stay required with their budgets.
 
-Also deferred to HOME-26 are the five-second character-list refresh (including a
-new assignment appearing in an already open sheets page or character picker),
-the accelerated lobby assignment refresh, and dirty-sheet clear/swap recovery.
-The UI tests cover on-demand character reads and the existing fifteen-second
-lobby refresh. No recovery after revoked access is implemented here.
+`budgets.json` holds each step's budget and the unchanged-main baseline (33
+session and nine link steps, 2026-11-14). API requests have a two-second budget
+(observed maximum 459ms); held or delayed requests are marked `injected: true`.
 
-`budgets.json` records the unchanged-main baseline and each step's budget.
-The original 33 session steps and nine link steps were timed on 2026-11-14;
-the baseline source SHA and durations are included. Step budgets include
-assertions and screenshots, with headroom for the viewport matrix. Existing
-three-second delivery and fifteen-second reveal assertions still apply.
-Normal API requests have a two-second budget; the observed maximum was 459ms.
-Explicitly held or delayed requests remain in the report with `injected: true`.
-`steps`, `requests` and `slow_requests` preserve the measured results.
+Application console and page errors fail the run. A deliberate refusal or
+dropped response is declared first with its seat, method, URL and status or
+failure. One browser diagnostic matches one declaration only when its location,
+observed request and step match; matches stay in `expected_console_diagnostics`.
+Any other diagnostic, including a CSP failure, fails the gate.
 
-Application console errors and uncaught page errors fail the run. Deliberate
-refusals and dropped responses record each exact seat, method, URL and status
-or network failure before the action. A browser resource diagnostic is expected
-only when its location, observed request and current scenario step match that
-declaration; each declaration accounts for one message. These remain visible in
-`expected_console_diagnostics`. An application `console.error`, CSP failure,
-unrelated resource error or additional diagnostic fails the gate.
-
-Fact fixtures use the normal validating writer and deterministic local embedder.
-The speech check replaces only the device voice engine and observes the app's
-real audience-filtered queue. Audible device playback is listed as unavailable.
-Transcript capture stays disabled; all three consent reads must return 404 and
-the report lists the absent UI as unavailable. Neither capability is reported
-as a completed real audio journey.
+Fact fixtures use the normal writer and a deterministic embedder. The speech
+check fakes only the device voice engine. Device audio and transcript capture
+(disabled; all three consent reads must return 404) are listed as unavailable.
 
 Rehearse single-use links for registered players in a fresh local campaign:
 
@@ -169,10 +141,9 @@ Postgres 16 with pgvector, and Chromium's system libraries:
 GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/ci.sh
 ```
 
-Every report records its source SHA, tracked-file dirty state, Playwright version
-and actual browser version. The November 2026 timing baseline used Chromium
-headless shell 156 as supplemental local evidence; CI's repository-pinned browser
-remains authoritative.
+Every report records its source SHA, dirty state, and Playwright and browser
+versions. The November 2026 baseline used Chromium headless shell 156 locally;
+CI's pinned browser is authoritative.
 
 The wrapper installs the pinned runtime and Playwright, builds the React bundle
 once from the checkout (`web-build.log`), and runs the session scenario

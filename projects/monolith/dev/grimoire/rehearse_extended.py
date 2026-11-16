@@ -409,10 +409,8 @@ def rehearse_extended(pages, output, report, width):
                 )
             )
 
-        # A mounted session page polls each held character's sheet history
-        # every five seconds. Until its lobby fence reloads it, the poll for a
-        # character the seat just lost is refused with 404. That refusal is
-        # the access change under test, so declare it for that character only.
+        # An open session page polls each held character's sheets every 5 s.
+        # Until it reloads, a just-lost character's poll gets 404: declare it.
         revoked = {"a": set(), "b": set()}
 
         def sheets_url(name):
