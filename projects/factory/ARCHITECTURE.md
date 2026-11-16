@@ -1625,9 +1625,11 @@ previews).
   findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never
   holds the reviewer App's credentials, and the broker mints the author's and
   the reviewer's tokens only for their own ServiceAccounts.
-- **Quota wait (HOME-110).** Before sending a review, the service reads the
-  broker's `GET /codex/quota`. An exhausted grant or a failed quota read
-  sends no task. A failed task that matches the connector's quota
+- **Quota wait (HOME-110).** The reviewer checks the diff budget before
+  waiting for quota, including when reattaching to a waiting check. An
+  oversized PR receives a split request without a Codex task. Before
+  sending a review, the service reads the broker's `GET /codex/quota`.
+  An exhausted grant or a failed quota read sends no task. A failed task that matches the connector's quota
   classifier also waits without spending an attempt. The check stays
   `in_progress` with title "Waiting for Codex quota"; the worker is released.
   The check records the wait time and a separate quota retry number.
