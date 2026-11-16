@@ -65,7 +65,13 @@ test "$(wc -l <"$TEST_INSTALL_LOG" | tr -d ' ')" = 2
 # A restored snapshot can use a healthy cache without fetching again.
 bash "$bootstrap"
 test "$(wc -l <"$TEST_INSTALL_LOG" | tr -d ' ')" = 2
+# shellcheck source=/dev/null
 source "$env_file"
+test "$TMPDIR" = "/var/tmp/homelab-sandbox-$(id -u)"
+test -d "$TMPDIR"
+temp_file="$(bash -c 'mktemp')"
+test "${temp_file%/*}" = "$TMPDIR"
+rm "$temp_file"
 test -x "$(command -v helm)"
 helm version --short
 
@@ -73,6 +79,7 @@ helm version --short
 rm "$(command -v helm)"
 bash "$bootstrap"
 test "$(wc -l <"$TEST_INSTALL_LOG" | tr -d ' ')" = 3
+# shellcheck source=/dev/null
 source "$env_file"
 helm version --short
 
