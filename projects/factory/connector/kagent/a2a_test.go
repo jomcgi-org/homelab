@@ -200,13 +200,27 @@ func TestSessionsOverGRPC(t *testing.T) {
 		if err := stream.RecvMsg(&req); err != nil {
 			return err
 		}
+		if method == "/kagent.api.v1.AgentService/GetAgent" {
+			ref, err := field(req, 1)
+			if err != nil {
+				return err
+			}
+			ns, _ := field(ref, 1)
+			name, _ := field(ref, 2)
+			revision := "agent-rev-7"
+			if string(name) != "homelab-reviewer" {
+				revision = "" // an Agent with no successful revision
+			}
+			resp := RawMessage(EncodeAgent(AgentRef{Namespace: string(ns), Name: string(name)}, revision))
+			return stream.SendMsg(&resp)
+		}
 		id, err := DecodeSessionID(req)
 		if err != nil {
 			return err
 		}
 		sess := Session{
 			ID: id, ContextID: id, State: RuntimeFailed, Operation: OperationRevert, FailureReason: ReasonRuntimeCrashed,
-			AgentNamespace: "factory-r-homelab-review", AgentName: "homelab-reviewer",
+			AgentNamespace: "factory-r-homelab-review", AgentName: "homelab-reviewer", PreparedRevision: "agent-rev-6",
 		}
 		if method == "/kagent.api.v1.SessionService/RevertSession" {
 			sess = Session{ID: id, ContextID: id, State: RuntimeReady, Operation: 5}
@@ -232,18 +246,33 @@ func TestSessionsOverGRPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.ID != id || !s.Crashed() || s.FailureReason != ReasonRuntimeCrashed ||
-		s.AgentNamespace != "factory-r-homelab-review" || s.AgentName != "homelab-reviewer" {
+		s.AgentNamespace != "factory-r-homelab-review" || s.AgentName != "homelab-reviewer" || s.PreparedRevision != "agent-rev-6" {
 		t.Fatalf("session = %+v", s)
 	}
 	s, err = c.RevertSession(context.Background(), id)
-	if err != nil || s.Crashed() || s.State != RuntimeReady || s.AgentNamespace != "" {
+	if err != nil || s.Crashed() || s.State != RuntimeReady || s.AgentNamespace != "" || s.PreparedRevision != "" {
 		t.Fatalf("revert = %+v %v", s, err)
 	}
-	want := []string{"/kagent.api.v1.SessionService/GetSession", "/kagent.api.v1.SessionService/RevertSession"}
-	if len(methods) != 2 || methods[0] != want[0] || methods[1] != want[1] {
+	rev, err := c.AgentRevision(context.Background(), AgentRef{Namespace: "factory-r-homelab-review", Name: "homelab-reviewer"})
+	if err != nil || rev != "agent-rev-7" {
+		t.Fatalf("agent revision = %q, %v", rev, err)
+	}
+	if rev, err := c.AgentRevision(context.Background(), AgentRef{Namespace: "factory-r-homelab-review", Name: "unready"}); err != nil || rev != "" {
+		t.Fatalf("agent without a revision = %q, %v", rev, err)
+	}
+	want := []string{
+		"/kagent.api.v1.SessionService/GetSession", "/kagent.api.v1.SessionService/RevertSession",
+		"/kagent.api.v1.AgentService/GetAgent", "/kagent.api.v1.AgentService/GetAgent",
+	}
+	if len(methods) != len(want) {
 		t.Fatalf("methods = %v", methods)
 	}
-	if len(auth) != 2 || auth[0] != "Bearer sa-token" {
+	for i := range want {
+		if methods[i] != want[i] {
+			t.Fatalf("methods = %v", methods)
+		}
+	}
+	if len(auth) != 4 || auth[0] != "Bearer sa-token" || auth[2] != "Bearer sa-token" {
 		t.Fatalf("authorization = %v", auth)
 	}
 }

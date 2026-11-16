@@ -8,15 +8,19 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"slices"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
-// Sessions is the part of kagent's SessionService the reviewer reads before
-// it continues a recorded session.
+// Sessions is the part of kagent's SessionService and AgentService the
+// reviewer reads before it continues a recorded session.
 type Sessions interface {
 	GetSession(ctx context.Context, id string) (*kagent.Session, error)
+	// AgentRevision is the Agent's latest successful revision, which kagent
+	// pins a new session to.
+	AgentRevision(ctx context.Context, agent kagent.AgentRef) (string, error)
 }
 
 // A review's task opens a fresh kagent session, or resumes the one that
@@ -35,6 +39,10 @@ const (
 // summary replaces both the cached prefix and the detail a continuation
 // relies on.
 const maxSessionBytes = 512 << 10
+
+// maxSessionReviews bounds the reviews one session holds, and so the task
+// IDs its State records.
+const maxSessionReviews = 32
 
 // contextIDPattern is the shape of a context ID the reviewer records and
 // resumes: kagent's are UUIDs.
@@ -58,6 +66,9 @@ type SessionRef struct {
 	// is the task bytes it holds across them.
 	Reviews int   `json:"reviews"`
 	Bytes   int64 `json:"bytes"`
+	// Tasks are the IDs of those reviews' tasks, oldest first: every task
+	// the session may hold for Bytes to count all of its turns.
+	Tasks []string `json:"tasks,omitempty"`
 	// Rules is the digest of the rules and repository context the session
 	// was last sent, or empty when unknown.
 	Rules string `json:"rules,omitempty"`
@@ -66,18 +77,20 @@ type SessionRef struct {
 // Why a review's task resumed or started fresh. The values bound the
 // sessions metric's reason label.
 const (
-	reasonResumed    = "resumed"
-	reasonNone       = "none"       // no session recorded for an earlier head
-	reasonRetry      = "retry"      // an earlier attempt on this head ended without a report
-	reasonDisabled   = "disabled"   // the service has no SessionService client
-	reasonForeign    = "foreign"    // another binding, agent, PR or head
-	reasonSize       = "size"       // the session holds maxSessionBytes or more
-	reasonMissing    = "missing"    // kagent has no such session for this caller, or cannot recover it
-	reasonDeleted    = "deleted"    // the session is being or was deleted
-	reasonCrashed    = "crashed"    // the session's runtime crashed
-	reasonFailed     = "failed"     // the session's runtime failed
-	reasonUnreadable = "unreadable" // GetSession failed
-	reasonRefused    = "refused"    // kagent refused the continuation
+	reasonResumed     = "resumed"
+	reasonNone        = "none"        // no session recorded for an earlier head
+	reasonRetry       = "retry"       // an earlier attempt on this head ended without a report
+	reasonDisabled    = "disabled"    // the service has no SessionService client
+	reasonForeign     = "foreign"     // another binding, agent, PR or head
+	reasonSize        = "size"        // the session holds maxSessionBytes or more, or maxSessionReviews reviews
+	reasonUnaccounted = "unaccounted" // the session's tasks are not exactly the recorded reviews' tasks
+	reasonMissing     = "missing"     // kagent has no such session for this caller, or cannot recover it
+	reasonDeleted     = "deleted"     // the session is being or was deleted
+	reasonCrashed     = "crashed"     // the session's runtime crashed
+	reasonFailed      = "failed"      // the session's runtime failed
+	reasonRevision    = "revision"    // the session runs another Agent revision than new sessions get
+	reasonUnreadable  = "unreadable"  // reading the session, the Agent or the session's tasks failed
+	reasonRefused     = "refused"     // kagent refused the continuation
 )
 
 // sessionPlan is how an attempt's task starts: in the recorded session
@@ -101,8 +114,13 @@ func agentName(a kagent.AgentRef) string { return a.Namespace + "/" + a.Name }
 // resumable is the recorded session the review of pr's head may resume, or
 // nil and the reason it starts fresh. Only the first attempt on a later head
 // of the same PR resumes, into a session of the same binding and agent that
-// holds less than maxSessionBytes and that kagent reports usable. refused
-// says kagent already refused this attempt's continuation.
+// holds less than maxSessionBytes and maxSessionReviews, that kagent reports
+// usable and pinned to the Agent's current revision, and whose tasks are
+// exactly the ones the recorded reviews ran. A turn no completed review
+// accounts for (an interrupted or superseded review, or a review that ended
+// without a report) leaves a task the State does not list, so Bytes would
+// undercount the session. refused says kagent already refused this
+// attempt's continuation.
 func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, attempt int, refused bool, l *slog.Logger) (*SessionRef, string) {
 	ref := in.prior.Session
 	switch {
@@ -117,8 +135,10 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 	case !contextIDPattern.MatchString(ref.ContextID) || ref.Binding != b.Name || ref.Agent != agentName(b.Agent) ||
 		ref.PR != pr.Number || ref.Head != in.priorHead:
 		return nil, reasonForeign
-	case ref.Bytes >= maxSessionBytes:
+	case ref.Bytes >= maxSessionBytes || len(ref.Tasks) >= maxSessionReviews:
 		return nil, reasonSize
+	case len(ref.Tasks) != ref.Reviews:
+		return nil, reasonUnaccounted
 	}
 	s, err := e.cfg.Sessions.GetSession(ctx, ref.ContextID)
 	switch {
@@ -137,15 +157,69 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 		(s.AgentNamespace != "" && (s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name)):
 		return nil, reasonForeign
 	}
+	// kagent runs every turn of a session on the revision it pinned, so a
+	// model or prompt change reaches only new sessions.
+	rev, err := e.cfg.Sessions.AgentRevision(ctx, b.Agent)
+	if err != nil {
+		e.kagentError(ctx, l, b, "get_agent", err)
+		return nil, reasonUnreadable
+	}
+	if rev == "" || s.PreparedRevision != rev {
+		l.InfoContext(ctx, "the recorded session runs another agent revision", "context_id", ref.ContextID,
+			"session_revision", s.PreparedRevision, "agent_revision", rev)
+		return nil, reasonRevision
+	}
+	page, err := e.tasks.ListTasks(ctx, b.Agent, ref.ContextID, "", "")
+	if err != nil {
+		e.kagentError(ctx, l, b, "list_tasks", err)
+		return nil, reasonUnreadable
+	}
+	if !accounted(page, ref) {
+		listed := -1
+		if page != nil {
+			listed = page.TotalSize
+		}
+		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
+			"recorded_tasks", len(ref.Tasks), "session_tasks", listed)
+		return nil, reasonUnaccounted
+	}
 	return ref, reasonResumed
 }
 
-// rulesDigest identifies the rules and repository context a prompt carries.
-// It leaves out the base commit: main moves with every merge, and a resumed
-// session needs the rules again only when their text changed.
+// accounted reports whether a complete listing of the session's tasks holds
+// exactly the tasks ref records.
+func accounted(page *kagent.TaskPage, ref *SessionRef) bool {
+	if page == nil || page.NextPageToken != "" || page.TotalSize != len(page.Tasks) || len(page.Tasks) != len(ref.Tasks) {
+		return false
+	}
+	want := map[string]bool{}
+	for _, id := range ref.Tasks {
+		want[id] = true
+	}
+	for _, t := range page.Tasks {
+		if t == nil || !want[t.ID] || (t.ContextID != "" && t.ContextID != ref.ContextID) {
+			return false
+		}
+		delete(want, t.ID)
+	}
+	return len(want) == 0
+}
+
+// rulesDigest identifies the rules and repository context a prompt carries
+// or tells the agent to read: each file's whole text, clipped or omitted
+// parts included. It leaves out the base commit: main moves with every
+// merge, and a resumed session needs the rules again only when their text
+// changed. It is empty, so the rules are always sent, when any text that may
+// apply went unread: a file too large to read, or rule files past
+// MaxRuleFiles or changed paths no rule could be looked up for.
 func rulesDigest(r *Rules) string {
-	if r == nil {
+	if r == nil || r.Unchecked > 0 {
 		return ""
+	}
+	for _, f := range append(slices.Clone(r.Files), r.Context...) {
+		if f.Digest == "" {
+			return ""
+		}
 	}
 	h := sha256.New()
 	_ = json.NewEncoder(h).Encode(struct {
@@ -167,10 +241,11 @@ func sessionAfter(b *Binding, pr github.PullRequest, in *inputs, t *kagent.Task)
 	}
 	ref := &SessionRef{
 		ContextID: t.ContextID, Binding: b.Name, Agent: agentName(b.Agent), PR: pr.Number, Head: pr.HeadSHA,
-		Path: PathFresh, Reviews: 1, Bytes: taskBytes(t), Rules: in.plan.rules,
+		Path: PathFresh, Reviews: 1, Bytes: taskBytes(t), Tasks: []string{t.ID}, Rules: in.plan.rules,
 	}
 	if prev := in.prior.Session; prev != nil && prev.ContextID == t.ContextID && in.priorHead != pr.HeadSHA {
 		ref.Path, ref.Reviews, ref.Bytes = PathResumed, prev.Reviews+1, prev.Bytes+ref.Bytes
+		ref.Tasks = append(slices.Clone(prev.Tasks), t.ID)
 		if in.plan.resume == nil {
 			// A restart lost the attempt's prompt, so whether it carried the
 			// rules is unknown: the next continuation sends them again.

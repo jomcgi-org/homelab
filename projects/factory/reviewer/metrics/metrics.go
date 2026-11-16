@@ -97,7 +97,7 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_reviewer_review_sessions_total",
 			Help: "Review tasks kagent accepted, by binding, path (fresh, resumed: in the session that reviewed the PR's " +
 				"previous head) and reason: resumed, or why the task did not resume (none, retry, disabled, foreign, size, " +
-				"missing, deleted, crashed, failed, unreadable, refused).",
+				"unaccounted, missing, deleted, crashed, failed, revision, unreadable, refused).",
 		}, []string{"binding", "path", "reason"}),
 		ReviewTaskBytes: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "factory_reviewer_review_task_bytes",

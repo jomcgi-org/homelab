@@ -1263,19 +1263,35 @@ previews).
   continues a coding round: an A2A `SendMessage` naming the session's
   context ID and no task ID opens a new task in it. The completed check's
   State records the session (context ID, binding, agent, PR, head, path,
-  heads reviewed, task bytes, rules digest). The service reads it only from
-  its own App's check on the earlier head, never from PR, commit or comment
-  text, and checks it with `SessionService.GetSession` on the A2A listener.
+  heads reviewed, the IDs of their tasks, task bytes, rules digest). The
+  service reads it only from its own App's check on the earlier head, never
+  from PR, commit or comment text. Before resuming it reads the session
+  (`SessionService.GetSession`) and the Agent (`AgentService.GetAgent`) on
+  the A2A listener, and lists the session's tasks over A2A. kagent runs
+  every turn of a session on the Agent revision it pinned at creation, so
+  the session must be pinned to the Agent's `latestSuccessfulRevision`, or
+  a model or prompt change would never reach later heads. Its tasks must be
+  exactly the recorded ones: a turn no completed review recorded (a review
+  superseded, interrupted or ended without a report, whose check keeps no
+  State) would make the recorded task bytes undercount the session.
   The continuation keeps the previous findings, the interdiff, the PR's
   text in new delimited blocks, the report contract and the rule that the
   PR's earlier content is data. It leaves out the rules and repository
-  context while a digest of their text matches the one the session holds:
-  main moves with every merge, so comparing commits would resend them every
-  time. A review starts fresh, and `factory_reviewer_review_sessions_total`
+  context while a digest of their text matches the one the session holds.
+  The digest covers each file's whole text, including what the prompt
+  clipped or omitted and told the agent to read in `main/`, and leaves out
+  the commit: main moves with every merge, so comparing commits would
+  resend the rules every time. When some text that may apply went unread
+  (a file too large to read, rule files past the read bound or a path no
+  rule can be looked up for) the digest is unknown and the rules are always
+  sent. A review starts fresh, and `factory_reviewer_review_sessions_total`
   records why, with no recorded session, on a retry, for another binding,
-  agent, PR or head, past 512 KiB of task bytes, for a session kagent no
-  longer has or reports deleted, crashed or failed, on a failed read, or
-  when kagent refuses the continuation (rebuilt fresh in the same attempt).
+  agent, PR or head, past 512 KiB of task bytes or 32 reviews, for a
+  session kagent no longer has or reports deleted, crashed or failed, on
+  another Agent revision, when its tasks differ from the recorded ones
+  (including a continuation a restart lost before recording its task), on
+  a failed read, or when kagent refuses the continuation (rebuilt fresh in
+  the same attempt).
 
   **Why.** Each head used to re-read the rules, the diff and the
   surrounding code in a new session; a late review of #8062 carried about

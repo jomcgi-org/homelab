@@ -900,6 +900,12 @@ type fakeKagent struct {
 	loseResponse bool
 	// afterSend runs after each send, outside the lock.
 	afterSend func()
+	// revision is the Agent's current revision, which a new session is
+	// pinned to; revisions holds each session's.
+	revision  string
+	revisions map[string]string
+	// listErr fails ListTasks.
+	listErr error
 }
 
 type fakeTask struct {
@@ -909,7 +915,10 @@ type fakeTask struct {
 }
 
 func newFakeKagent() *fakeKagent {
-	return &fakeKagent{tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}, gone: map[string]bool{}}
+	return &fakeKagent{
+		tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}, gone: map[string]bool{},
+		revision: "rev-1", revisions: map[string]string{},
+	}
 }
 
 // session reports the agent whose task opened a context, and whether one did.
@@ -965,6 +974,7 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	m.Role, m.TaskID = "ROLE_USER", id
 	if m.ContextID == "" {
 		m.ContextID = "ctx-" + id
+		k.revisions[m.ContextID] = k.revision
 	}
 	k.tasks[id] = &fakeTask{agent: agent, task: kagent.Task{
 		ID: id, ContextID: m.ContextID, Status: kagent.TaskStatus{State: kagent.StateWorking}, History: []*kagent.Message{&m},
@@ -1004,6 +1014,40 @@ func (k *fakeKagent) CancelTask(_ context.Context, agent kagent.AgentRef, id str
 	}
 	t.cancelRequested = true
 	return copyTask(&t.task), nil
+}
+
+// ListTasks lists every task of one session of the agent, without history,
+// on one page.
+func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.listErr != nil {
+		return nil, k.listErr
+	}
+	if contextID == "" || state != "" || pageToken != "" {
+		return nil, fmt.Errorf("unexpected listing %q %q %q", contextID, state, pageToken)
+	}
+	out := []*kagent.Task{}
+	for _, t := range k.tasks {
+		if t.agent == agent && t.task.ContextID == contextID {
+			c := t.task
+			c.History, c.Artifacts = nil, nil
+			out = append(out, &c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return &kagent.TaskPage{Tasks: out, TotalSize: len(out), PageSize: 100}, nil
+}
+
+// open starts a task in an existing session outside the reviewer, as an
+// interrupted turn leaves one.
+func (k *fakeKagent) open(contextID string) string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	agent, _ := k.session(contextID)
+	id := fmt.Sprintf("task-%d", len(k.tasks)+1)
+	k.tasks[id] = &fakeTask{agent: agent, task: kagent.Task{ID: id, ContextID: contextID, Status: kagent.TaskStatus{State: kagent.StateCanceled}}}
+	return id
 }
 
 // finish ends a task with an agent reply.
@@ -1076,11 +1120,13 @@ var testAgent = kagent.AgentRef{Namespace: "factory-review", Name: "reviewer"}
 // as a READY session of the agent that opened it, unless a test sets
 // another answer.
 type fakeSessions struct {
-	k     *fakeKagent
-	mu    sync.Mutex
-	set   map[string]*kagent.Session
-	errs  map[string]error
-	calls []string
+	k          *fakeKagent
+	mu         sync.Mutex
+	set        map[string]*kagent.Session
+	errs       map[string]error
+	calls      []string
+	agentErr   error
+	agentReads int
 }
 
 func (s *fakeSessions) GetSession(_ context.Context, id string) (*kagent.Session, error) {
@@ -1100,7 +1146,26 @@ func (s *fakeSessions) GetSession(_ context.Context, id string) (*kagent.Session
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", kagent.ErrSessionNotFound, id)
 	}
-	return &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady, AgentNamespace: agent.Namespace, AgentName: agent.Name}, nil
+	return &kagent.Session{
+		ID: id, ContextID: id, State: kagent.RuntimeReady, AgentNamespace: agent.Namespace, AgentName: agent.Name,
+		PreparedRevision: s.k.revisions[id],
+	}, nil
+}
+
+// AgentRevision answers the fake kagent's current revision.
+func (s *fakeSessions) AgentRevision(_ context.Context, agent kagent.AgentRef) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentReads++
+	if s.agentErr != nil {
+		return "", s.agentErr
+	}
+	if agent != testAgent {
+		return "", fmt.Errorf("unexpected agent %v", agent)
+	}
+	s.k.mu.Lock()
+	defer s.k.mu.Unlock()
+	return s.k.revision, nil
 }
 
 func (s *fakeSessions) answer(id string, sess *kagent.Session, err error) {
