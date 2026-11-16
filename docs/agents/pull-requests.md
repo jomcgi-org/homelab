@@ -10,10 +10,16 @@ The hard bans and voice rules in [writing.md](../writing.md) apply.
 
 ## Title
 
-A Conventional Commit subject that names the outcome:
-`fix(factory): block Codex calls only when the backend refuses them`. The
-connector titles a factory PR with the head commit's subject when it opens
-the PR.
+A Conventional Commit subject that names the outcome. When a HOME issue
+tracks the work, end the title with its key in parentheses:
+`fix(factory): block Codex calls only when the backend refuses them (HOME-110)`.
+PR lists, the merge queue and notifications show only the title, so the key
+maps a PR to its issue without opening it. Merges rebase, so the title never
+reaches history. Commit subjects stay plain Conventional Commits, and
+`Refs HOME-N` in the commit body stays the record.
+
+The connector titles a factory PR with the head commit's subject when it
+opens the PR. HOME-114 makes it append the key.
 
 ## Body
 
@@ -90,7 +96,11 @@ without following one. Prefix each line in Related with how it relates:
 - `Decision`: where Joe made a decision that the change relies on.
 - `Evidence`: a log query, dashboard or comment that holds the proof.
 
-A HOME issue's link is `https://factory-plan.jomcgi.dev/factory/issue/HOME-N`.
+A repository autolink turns `HOME-N` in issues, PRs, commit messages and
+release notes into a link to
+`https://factory-plan.jomcgi.dev/factory/issue/HOME-N`, so write the bare
+key there. It does not work inside a code span or in Markdown files in the
+repository.
 
 ## Diagrams
 
