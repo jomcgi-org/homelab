@@ -1,0 +1,33 @@
+# Defaults for pods in kube-system that set no requests of their own. k3s
+# owns the manifests of its add-ons (local-path-provisioner) and rewrites them
+# on start, so a request has to come from the namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-system-defaults
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/kube-system-defaults/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

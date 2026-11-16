@@ -128,6 +128,25 @@ patches:
                 resources:
                   requests:
                     memory: 128Mi
+  # The chart sets no resources on the IdP server, so its pods were BestEffort.
+  # Measured 1m CPU and 9-23Mi per pod on 2026-11-16 (HOME-139).
+  - target:
+      kind: Deployment
+      name: ate-idp-server
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ate-idp-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: ate-idp-server
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 48Mi
   - target:
       kind: StatefulSet
       name: postgres

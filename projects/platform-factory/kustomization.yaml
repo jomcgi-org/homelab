@@ -10,6 +10,7 @@ resources:
   - ./onepassword # 1Password Connect and operator; bootstrap secrets are created out of band
   - ./renovate # Suspended dependency CronJob; existing 1Password credential and registry egress
   - ./runtimeclasses # gvisor RuntimeClass for the runsc handler install-node.sh installs
+  - ./kube-system-defaults # Default requests for kube-system pods that set none, such as k3s add-ons
   - ./cfgate # Cloudflare tunnel and DNS lifecycle from Gateway API resources
   - ./factory-edge # The factory cluster's Cloudflare Tunnel, its Gateway and DNS
   - ./substrate # Agent Substrate control plane; bootstrap-substrate.sh creates its key material
