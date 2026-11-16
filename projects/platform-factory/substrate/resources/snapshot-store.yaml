@@ -163,6 +163,12 @@ spec:
               done
               echo "timed out waiting for rustfs"
               exit 1
+          # Lives for seconds after each sync; the memory covers the AWS CLI's
+          # bundled Python runtime.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

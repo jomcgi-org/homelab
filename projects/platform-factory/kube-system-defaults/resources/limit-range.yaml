@@ -1,0 +1,20 @@
+# Gives every kube-system container that sets no request a small one, so no
+# pod there is BestEffort. Only defaultRequest: no default and no max, so it
+# adds no limits. It applies when a pod is created, so a running pod keeps its
+# old resources until it restarts.
+#
+# It reaches the k3s add-on local-path-provisioner (measured 1m CPU and 10Mi on
+# 2026-11-16, HOME-139) and the helper pods it starts for each volume, plus
+# Cilium's init containers. A container with a limit and no request already
+# gets the limit as its request, so this changes nothing for it.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-requests
+  namespace: kube-system
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi

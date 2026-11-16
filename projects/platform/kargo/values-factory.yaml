@@ -14,6 +14,29 @@ kargo:
   externalWebhooksServer:
     # Receives GitHub webhooks for event-driven promotion; nothing sends any.
     enabled: false
+  # Requests for the factory only; the hub sets none. Each pod measured 1m CPU
+  # and 15-20Mi on 2026-11-16 (HOME-139). With a CPU request and no CPU limit,
+  # the chart sets GOMAXPROCS from requests.cpu, which rounds up to 1.
+  controller:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+  managementController:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+  webhooksServer:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+  garbageCollector:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
 
 # The hub's monolith, EmberVM and Scotland connector pipelines.
 promotion:

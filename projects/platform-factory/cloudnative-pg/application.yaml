@@ -10,7 +10,8 @@ metadata:
 spec:
   project: default
   # The hub's operator release and values (projects/platform-gke/cloudnative-pg),
-  # plus this cluster's network policy for the namespace.
+  # this cluster's overrides (values.yaml beside this file), plus this
+  # cluster's network policy for the namespace.
   sources:
     - repoURL: https://cloudnative-pg.github.io/charts
       chart: cloudnative-pg
@@ -19,6 +20,7 @@ spec:
         releaseName: cnpg
         valueFiles:
           - $values/projects/platform/cloudnative-pg/deploy/values.yaml
+          - $values/projects/platform-factory/cloudnative-pg/values.yaml
         ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD

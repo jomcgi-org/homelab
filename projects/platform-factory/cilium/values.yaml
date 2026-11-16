@@ -76,6 +76,13 @@ updateStrategy:
   rollingUpdate:
     maxUnavailable: 1
 
+# The hubble-generate-certs Job and CronJob, whose pod lives for seconds.
+certgen:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
 hubble:
   enabled: true
   # The default 4095-flow ring fills within seconds on a busy node, so flow

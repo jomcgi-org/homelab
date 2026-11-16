@@ -1,0 +1,9 @@
+# The factory cluster's overrides, layered on the hub's
+# projects/platform/cloudnative-pg/deploy/values.yaml (application.yaml).
+
+# The operator measured 3-4m CPU and 55-61Mi on 2026-11-16 (HOME-139). The
+# hub sets no resources, so this stays factory-only.
+resources:
+  requests:
+    cpu: 10m
+    memory: 96Mi
