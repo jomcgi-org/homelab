@@ -45,13 +45,7 @@
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
     },
     "state": {
-      "enum": [
-        "Working",
-        "In review",
-        "In merge queue",
-        "Shipped",
-        "Stopped"
-      ]
+      "enum": ["Working", "In review", "In merge queue", "Shipped", "Stopped"]
     },
     "narrative": {
       "type": "string",
@@ -68,20 +62,10 @@
           "type": "number"
         },
         "unit": {
-          "enum": [
-            "issues",
-            "goals",
-            "hours",
-            "rounds",
-            "%"
-          ]
+          "enum": ["issues", "goals", "hours", "rounds", "%"]
         }
       },
-      "required": [
-        "label",
-        "value",
-        "unit"
-      ],
+      "required": ["label", "value", "unit"],
       "additionalProperties": false
     },
     "point": {
@@ -95,10 +79,7 @@
           "minimum": 0
         }
       },
-      "required": [
-        "label",
-        "value"
-      ],
+      "required": ["label", "value"],
       "additionalProperties": false
     },
     "ratePoint": {
@@ -113,10 +94,7 @@
           "maximum": 100
         }
       },
-      "required": [
-        "label",
-        "value"
-      ],
+      "required": ["label", "value"],
       "additionalProperties": false
     },
     "goalSummary": {
@@ -146,14 +124,7 @@
           "minimum": 0
         }
       },
-      "required": [
-        "goalId",
-        "title",
-        "chapter",
-        "state",
-        "shipped",
-        "total"
-      ],
+      "required": ["goalId", "title", "chapter", "state", "shipped", "total"],
       "additionalProperties": false
     },
     "issueSummary": {
@@ -172,12 +143,7 @@
           "$ref": "#/definitions/state"
         }
       },
-      "required": [
-        "issueKey",
-        "goalId",
-        "title",
-        "state"
-      ],
+      "required": ["issueKey", "goalId", "title", "state"],
       "additionalProperties": false
     },
     "burnPoint": {
@@ -195,11 +161,7 @@
           "minimum": 0
         }
       },
-      "required": [
-        "date",
-        "shipped",
-        "total"
-      ],
+      "required": ["date", "shipped", "total"],
       "additionalProperties": false
     },
     "toolCall": {
@@ -215,11 +177,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "name",
-        "input",
-        "output"
-      ],
+      "required": ["name", "input", "output"],
       "additionalProperties": false
     },
     "manifest": {
@@ -437,11 +395,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text"
-          ],
+          "required": ["kind", "at", "text"],
           "additionalProperties": false
         },
         {
@@ -465,13 +419,7 @@
               "maximum": 9007199254740991
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text",
-            "sessionId",
-            "turn"
-          ],
+          "required": ["kind", "at", "text", "sessionId", "turn"],
           "additionalProperties": false
         },
         {
@@ -492,12 +440,7 @@
               "maximum": 9007199254740991
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text",
-            "prNumber"
-          ],
+          "required": ["kind", "at", "text", "prNumber"],
           "additionalProperties": false
         },
         {
@@ -523,20 +466,10 @@
               "maximum": 9007199254740991
             },
             "outcome": {
-              "enum": [
-                "Changes requested",
-                "Approved"
-              ]
+              "enum": ["Changes requested", "Approved"]
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text",
-            "prNumber",
-            "round",
-            "outcome"
-          ],
+          "required": ["kind", "at", "text", "prNumber", "round", "outcome"],
           "additionalProperties": false
         },
         {
@@ -555,19 +488,10 @@
               "type": "string"
             },
             "result": {
-              "enum": [
-                "Passed",
-                "Failed"
-              ]
+              "enum": ["Passed", "Failed"]
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text",
-            "name",
-            "result"
-          ],
+          "required": ["kind", "at", "text", "name", "result"],
           "additionalProperties": false
         },
         {
@@ -583,18 +507,10 @@
               "type": "string"
             },
             "state": {
-              "enum": [
-                "Entered",
-                "Left"
-              ]
+              "enum": ["Entered", "Left"]
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text",
-            "state"
-          ],
+          "required": ["kind", "at", "text", "state"],
           "additionalProperties": false
         },
         {
@@ -615,12 +531,7 @@
               "maximum": 9007199254740991
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text",
-            "prNumber"
-          ],
+          "required": ["kind", "at", "text", "prNumber"],
           "additionalProperties": false
         },
         {
@@ -636,11 +547,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "at",
-            "text"
-          ],
+          "required": ["kind", "at", "text"],
           "additionalProperties": false
         }
       ]
@@ -702,21 +609,13 @@
               "$ref": "#/definitions/time"
             },
             "role": {
-              "enum": [
-                "user",
-                "assistant"
-              ]
+              "enum": ["user", "assistant"]
             },
             "withheld": {
               "const": true
             }
           },
-          "required": [
-            "number",
-            "at",
-            "role",
-            "withheld"
-          ],
+          "required": ["number", "at", "role", "withheld"],
           "additionalProperties": false
         },
         {
@@ -731,10 +630,7 @@
               "$ref": "#/definitions/time"
             },
             "role": {
-              "enum": [
-                "user",
-                "assistant"
-              ]
+              "enum": ["user", "assistant"]
             },
             "withheld": {
               "const": false
@@ -752,14 +648,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "number",
-            "at",
-            "role",
-            "withheld",
-            "text",
-            "toolCalls"
-          ],
+          "required": ["number", "at", "role", "withheld", "text", "toolCalls"],
           "additionalProperties": false
         }
       ]
