@@ -164,3 +164,16 @@ def test_only_the_egress_gateway_reaches_hindsight():
     ]
     fqdns = [f for r in policy["spec"]["egress"] for f in r.get("toFQDNs", [])]
     assert fqdns == [{"matchName": "api.anthropic.com"}]
+
+
+def test_boundary_test_runs_the_deployed_image():
+    # boundary_test runs inside this image (BUILD exec_properties); an image
+    # bump that skipped it would leave the new version's boundary untested.
+    (deployment,) = [
+        d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
+    ]
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    repository = container["image"].split(":", 1)[0]
+    digest = container["image"].rsplit("@", 1)[1]
+    build = (ROOT / "BUILD").read_text()
+    assert f'"test.container-image": "docker://{repository}@{digest}"' in build
