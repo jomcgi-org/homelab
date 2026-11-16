@@ -453,7 +453,7 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 	for name, tc := range map[string]struct{ state, reply, why string }{
 		"no report":     {kagent.StateCompleted, "LGTM, ship it.", "no fenced JSON block"},
 		"unknown level": {kagent.StateCompleted, "```json\n{\"summary\":\"s\",\"findings\":[{\"severity\":\"nit\",\"title\":\"x\"}]}\n```", `severity "nit"`},
-		"task failed":   {kagent.StateFailed, "usage_limit_reached for account 1234", "ended failed without a report"},
+		"task failed":   {kagent.StateFailed, "execution failed for account 1234", "ended failed without a report"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -469,7 +469,7 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 				!strings.Contains(c.Summary, "Attempt 3 of 3") {
 				t.Fatalf("check = %+v", c)
 			}
-			if strings.Contains(c.Summary, "usage_limit_reached") {
+			if strings.Contains(c.Summary, "account 1234") {
 				t.Fatal("provider status text reached the public check")
 			}
 			if _, ok := LoadState(c.Text); ok {
@@ -485,7 +485,7 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 	}
 }
 
-// TestNoReportRetriesOnTheSameHead covers a rejected send and a quota
+// TestNoReportRetriesOnTheSameHead covers a rejected send and an ordinary
 // failure: each is retried after the backoff without a new push.
 func TestNoReportRetriesOnTheSameHead(t *testing.T) {
 	h := newHarness(t)
@@ -495,7 +495,7 @@ func TestNoReportRetriesOnTheSameHead(t *testing.T) {
 	e.Tick(ctx)
 	var second string
 	eventually(t, "the second attempt", func() bool { second = h.taskOn(7, shaA, 2); return second != "" })
-	h.k.finish(second, kagent.StateFailed, "quota exceeded")
+	h.k.finish(second, kagent.StateFailed, "worker exited unexpectedly")
 	var third string
 	eventually(t, "the third attempt", func() bool { third = h.taskOn(7, shaA, 3); return third != "" })
 	if c := h.gh.check(shaA); c.Status != "in_progress" {
