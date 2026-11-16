@@ -186,7 +186,7 @@ func TestSweepDeletesOnlyTheCallersReplacedSessionsAndRetries(t *testing.T) {
 	}
 }
 
-func TestSweepKeepsAStoppedWorkItemsSessionForADay(t *testing.T) {
+func TestSweepKeepsAStoppedWorkItemsSessionForAnHour(t *testing.T) {
 	v := newDeliveryEnv(t)
 	session := v.delivered()
 	v.gh.close(1)
@@ -199,7 +199,7 @@ func TestSweepKeepsAStoppedWorkItemsSessionForADay(t *testing.T) {
 	if d := v.kg.Deleted(); len(d) != 0 {
 		t.Fatalf("deleted %v, a session a resumed run may still use", d)
 	}
-	if _, err := v.st.DB.Exec(`UPDATE work_item SET updated_at = updated_at - interval '25 hours' WHERE issue_id = 101`); err != nil {
+	if _, err := v.st.DB.Exec(`UPDATE work_item SET updated_at = updated_at - interval '2 hours' WHERE issue_id = 101`); err != nil {
 		t.Fatal(err)
 	}
 	v.sweep()
