@@ -471,17 +471,22 @@ func TestUsageReadingYieldsToNewerRelayedReading(t *testing.T) {
 	}
 }
 
-// flakyPersistence is a quota state ConfigMap whose writes can fail.
+// flakyPersistence is a quota state ConfigMap whose writes can fail, or
+// conflict and then fail to reload.
 type flakyPersistence struct {
-	mu   sync.Mutex
-	data []byte
-	rev  int
-	fail bool
+	mu       sync.Mutex
+	data     []byte
+	rev      int
+	fail     bool
+	conflict bool
 }
 
 func (p *flakyPersistence) Load() ([]byte, string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.conflict {
+		return nil, "", errors.New("api unavailable")
+	}
 	return p.data, fmt.Sprint(p.rev), nil
 }
 
@@ -491,7 +496,7 @@ func (p *flakyPersistence) CompareAndSwap(rev string, data []byte) (string, erro
 	switch {
 	case p.fail:
 		return "", errors.New("api unavailable")
-	case rev != fmt.Sprint(p.rev):
+	case p.conflict || rev != fmt.Sprint(p.rev):
 		return "", quota.ErrPersistenceConflict
 	}
 	p.rev++
@@ -503,9 +508,22 @@ func (p *flakyPersistence) CompareAndSwap(rev string, data []byte) (string, erro
 // relay, and the refresher retries on the next tick rather than after its
 // backoff.
 func TestUsageRefreshFailedStoreWriteKeepsRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(*flakyPersistence)
+	}{
+		{name: "write error", fail: func(p *flakyPersistence) { p.fail = true }},
+		{name: "conflict then reload error", fail: func(p *flakyPersistence) { p.conflict = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testFailedStoreWriteKeepsRejection(t, tc.fail) })
+	}
+}
+
+func testFailedStoreWriteKeepsRejection(t *testing.T, fail func(*flakyPersistence)) {
 	f := newUsageFixture(t)
 	persistence := &flakyPersistence{}
-	st, err := quota.NewPersistentStore(persistence)
+	// As the broker builds it (cmd/broker/main.go).
+	st, err := quota.NewPersistentStore(persistence, quota.KeepCommittedOnWriteFailure())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +531,7 @@ func TestUsageRefreshFailedStoreWriteKeepsRejection(t *testing.T) {
 	reset := usageT0.Add(48 * time.Hour)
 	f.seed(t, usageT0.Add(-UsageMaxAge), reset) // A committed rejection, now expired.
 	persistence.mu.Lock()
-	persistence.fail = true
+	fail(persistence)
 	persistence.mu.Unlock()
 	f.backend.set(func(b *usageBackend) { b.body = usageBody(true, 10, usageT0.Add(5*time.Hour)) })
 	ctx := context.Background()
@@ -528,7 +546,7 @@ func TestUsageRefreshFailedStoreWriteKeepsRejection(t *testing.T) {
 		t.Fatalf("relay block after a failed write = %v until %v, want blocked until %v", blocked, until, reset)
 	}
 	persistence.mu.Lock()
-	persistence.fail = false
+	persistence.fail, persistence.conflict = false, false
 	persistence.mu.Unlock()
 	f.clock.Set(usageT0.Add(UsageTick))
 	if got := f.refresher.check(ctx); got != "refreshed" {

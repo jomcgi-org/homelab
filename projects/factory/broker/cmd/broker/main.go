@@ -63,7 +63,9 @@ func run(logger *slog.Logger) error {
 
 	quotaStore := quota.NewStore()
 	if cfg.Codex.QuotaConfigMap != "" {
-		persistent, err := quota.NewPersistentStore(&store.QuotaStateStore{Client: client, Namespace: cfg.Namespace, Name: cfg.Codex.QuotaConfigMap})
+		// The backend enforces the limit itself, so a failed state write
+		// keeps the last committed reading rather than none.
+		persistent, err := quota.NewPersistentStore(&store.QuotaStateStore{Client: client, Namespace: cfg.Namespace, Name: cfg.Codex.QuotaConfigMap}, quota.KeepCommittedOnWriteFailure())
 		if err != nil {
 			// Usable but empty: quota reads stay unobserved until a fresh
 			// observation commits.
