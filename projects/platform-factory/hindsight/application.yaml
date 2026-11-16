@@ -1,0 +1,46 @@
+# Hindsight, the factory agents' shared long-term memory (HOME-130,
+# projects/factory/ARCHITECTURE.md "Memory"). Its database is factory-db's
+# factory_hindsight, whose setup Job writes hindsight/hindsight-db.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hindsight
+  namespace: argocd
+  annotations:
+    # After factory-db (wave 3), which writes the connection string.
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/hindsight/resources
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hindsight
+  # hindsight-keys and factory-db-setup write these.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: hindsight-keys
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: hindsight-db
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

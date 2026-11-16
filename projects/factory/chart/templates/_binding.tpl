@@ -8,6 +8,7 @@
 {{- $agent := include "factory.bindingAgentName" $r }}
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
+{{- $memory := $r.memory }}
 ---
 # Kept: deleting it would take the Agent's WorkerPool and the git token with
 # it; removing a binding is a deliberate cleanup.
@@ -185,6 +186,32 @@ spec:
     - origin: https://pypi.org
     - origin: https://files.pythonhosted.org
 {{- end }}
+{{- if $memory }}
+---
+# Shared long-term memory (projects/platform-factory/hindsight). The egress
+# gateway injects the token from the Secret; the actor holds a placeholder.
+# The controller cannot reach Hindsight, so the agent lists tools at run time.
+apiVersion: api.kagent.dev/v1alpha3
+kind: RemoteMCPServer
+metadata:
+  name: memory
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+    kagent.dev/discovery: disabled
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  description: {{ printf "Hindsight memory for %s/%s" $r.owner $r.repo | quote }}
+  url: {{ $memory.url | quote }}
+  protocol: STREAMABLE_HTTP
+  headersFrom:
+    - name: Authorization
+      valueFrom:
+        type: Secret
+        name: {{ $memory.secret | quote }}
+        key: token
+{{- end }}
 ---
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
@@ -202,10 +229,21 @@ spec:
       description: {{ printf "%s %s/%s" $description $r.owner $r.repo | quote }}
       modelConfig:
         name: {{ $r.agent }}
+      {{- $prompt := $a.systemPrompt }}
       {{- if $toolchain }}
-      systemPrompt: {{ printf "%s\n%s" $a.systemPrompt ($.Files.Get "files/toolchain-prompt.txt") | quote }}
-      {{- else }}
-      systemPrompt: {{ $a.systemPrompt | quote }}
+      {{- $prompt = printf "%s\n%s" $prompt ($.Files.Get "files/toolchain-prompt.txt") }}
+      {{- end }}
+      {{- if $memory }}
+      {{- $prompt = printf "%s\n%s" $prompt ($.Files.Get "files/memory-prompt.txt") }}
+      {{- end }}
+      systemPrompt: {{ $prompt | quote }}
+      {{- if $memory }}
+      tools:
+        - mcp:
+            server:
+              kind: RemoteMCPServer
+              name: memory
+            tools: {{ $memory.tools | toJson }}
       {{- end }}
   harnessRef:
     name: {{ $a.harness }}

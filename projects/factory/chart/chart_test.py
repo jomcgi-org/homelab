@@ -890,3 +890,81 @@ def test_binding_reader_follows_the_credential_provider_switch() -> None:
         if d["kind"] == "RoleBinding"
         and d["metadata"]["name"] == "substrate-credential-provider"
     ]
+
+
+_MEMORY = [
+    "repositories[0].memory.url="
+    "http://hindsight-api.hindsight.svc.cluster.local:8888/mcp/homelab/",
+    "repositories[0].memory.secret=hindsight-mcp",
+    "repositories[0].memory.tools={recall,retain}",
+]
+
+
+def test_memory_is_opt_in_and_binds_only_the_named_tools() -> None:
+    # HOME-130: Hindsight's MCP endpoint, with the token the egress gateway
+    # injects from the binding's Secret; the actor never holds it.
+    ns = "factory-r-homelab"
+    off = _render()
+    assert not [d for d in off if d["metadata"]["name"] == "memory"]
+    assert (
+        "tools"
+        not in _in(off, "Agent", ns, "homelab-codex")["spec"]["template"]["inline"]
+    )
+    docs = _render(_MEMORY)
+    server = _in(docs, "RemoteMCPServer", ns, "memory")
+    assert server["metadata"]["labels"]["kagent.dev/discovery"] == "disabled"
+    assert server["spec"]["protocol"] == "STREAMABLE_HTTP"
+    assert server["spec"]["headersFrom"] == [
+        {
+            "name": "Authorization",
+            "valueFrom": {"type": "Secret", "name": "hindsight-mcp", "key": "token"},
+        }
+    ]
+    inline = _in(docs, "Agent", ns, "homelab-codex")["spec"]["template"]["inline"]
+    assert inline["tools"] == [
+        {
+            "mcp": {
+                "server": {"kind": "RemoteMCPServer", "name": "memory"},
+                "tools": ["recall", "retain"],
+            }
+        }
+    ]
+    prompt = (_CHART_DIR / "files" / "memory-prompt.txt").read_text()
+    assert inline["systemPrompt"].endswith("\n" + prompt)
+    with pytest.raises(RuntimeError, match="memory"):
+        _render([*_MEMORY, "repositories[0].memory.tools={recall,reflect}"])
+
+
+def test_memory_stays_off_the_review_binding() -> None:
+    docs = _render(
+        [
+            *_MEMORY,
+            "reviewer.enabled=true",
+            "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-r-homelab-review}",
+        ]
+    )
+    servers = [
+        d
+        for d in docs
+        if d["kind"] == "RemoteMCPServer" and d["metadata"]["name"] == "memory"
+    ]
+    assert [d["metadata"]["namespace"] for d in servers] == ["factory-r-homelab"]
+
+
+def test_egress_gateway_reaches_hindsight() -> None:
+    gateway = next(
+        d
+        for d in yaml.safe_load_all(_SUBSTRATE_NETWORK_POLICY.read_text())
+        if d and d["metadata"]["name"] == "atenet-egress"
+    )
+    assert {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "hindsight",
+                    "app.kubernetes.io/name": "hindsight",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "8888", "protocol": "TCP"}]}],
+    } in gateway["spec"]["egress"]

@@ -1,0 +1,45 @@
+# The homelab coding binding's share of Hindsight (agents/secrets.yaml): the
+# MCP token Secret the factory chart's RemoteMCPServer names, and the Role
+# that lets hindsight/hindsight-keys fill it. Separate from hindsight, as
+# factory-db-secrets is from factory-db, so neither Application fails while
+# the other's namespace is missing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hindsight-agents
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/hindsight/agents
+  destination:
+    server: https://kubernetes.default.svc
+    # The factory chart owns this namespace; CreateNamespace only covers a
+    # first sync that runs before the chart's.
+    namespace: factory-r-homelab
+  # hindsight-agents (the PostSync Job in hindsight) writes the token.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: hindsight-mcp
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

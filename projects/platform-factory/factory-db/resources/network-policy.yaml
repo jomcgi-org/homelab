@@ -37,6 +37,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-reviewer
+        # Hindsight's memory store (projects/platform-factory/hindsight).
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight
+            app.kubernetes.io/name: hindsight
         # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: factory-db

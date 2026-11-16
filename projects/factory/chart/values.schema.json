@@ -856,6 +856,31 @@
             "description": "Opt in to the homelab Alpine bootstrap and public download origins for this coding binding.",
             "enum": ["homelab"]
           },
+          "memory": {
+            "description": "Bind the Agent to a Hindsight MCP endpoint (projects/platform-factory/hindsight); the egress gateway injects the token.",
+            "type": "object",
+            "required": ["url", "secret", "tools"],
+            "additionalProperties": false,
+            "properties": {
+              "url": {
+                "description": "The bank's MCP endpoint, for example http://hindsight-api.hindsight.svc.cluster.local:8888/mcp/homelab/.",
+                "type": "string",
+                "pattern": "^https?://[^/]+/mcp/[A-Za-z0-9_-]+/$"
+              },
+              "secret": {
+                "description": "Secret in the binding namespace whose key token is the Authorization value, labelled substrate.ate.dev/injectable=true.",
+                "type": "string",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "tools": {
+                "description": "The memory tools the Agent may call.",
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["recall", "retain"] }
+              }
+            }
+          },
           "namespace": {
             "type": "string",
             "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",

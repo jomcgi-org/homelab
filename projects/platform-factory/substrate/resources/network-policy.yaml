@@ -197,6 +197,17 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # Hindsight's MCP endpoint for bindings with `memory`, with the MCP token
+    # the gateway injects (the factory chart's RemoteMCPServer memory;
+    # projects/platform-factory/hindsight).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
     # git over HTTPS for factory repository bindings, with the broker-minted
     # token the gateway injects (EgressPolicy github-git).
     - toFQDNs:

@@ -11,13 +11,24 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent
+# (login Secret, database, client namespace, connection-string Secret there)
 LOGINS = [
-    ("factory-db-itsaplan-login", "itsaplan", "factory-itsaplan-db"),
-    ("factory-db-connector-login", "factory_connector", "factory-connector-db"),
-    ("factory-db-reviewer-login", "factory_reviewer", "factory-reviewer-db"),
+    ("factory-db-itsaplan-login", "itsaplan", "factory", "factory-itsaplan-db"),
+    (
+        "factory-db-connector-login",
+        "factory_connector",
+        "factory",
+        "factory-connector-db",
+    ),
+    ("factory-db-reviewer-login", "factory_reviewer", "factory", "factory-reviewer-db"),
+    ("factory-db-hindsight-login", "factory_hindsight", "hindsight", "hindsight-db"),
 ]
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")
+HINDSIGHT_LOGIN = ("factory-db", "factory-db-hindsight-login")
+HINDSIGHT_CONNECTION = ("hindsight", "hindsight-db")
+# Each client's placeholders and the Role that lets factory-db-setup fill them.
+CLIENT_SECRETS = ["factory/secrets.yaml", "../hindsight/resources/secrets.yaml"]
 
 
 def read(path):
@@ -32,7 +43,9 @@ class SecretAPI:
     """Serve manifest placeholders, enforcing the setup account's bound Roles."""
 
     def __init__(self):
-        documents = read("resources/setup.yaml") + read("factory/secrets.yaml")
+        documents = read("resources/setup.yaml")
+        for path in CLIENT_SECRETS:
+            documents += read(path)
         self.secrets = {}
         self.permissions = set()
         self.writes = []
@@ -100,14 +113,14 @@ def provisioning(monkeypatch):
     return script, api
 
 
-@pytest.mark.parametrize("existing", [False, True], ids=["fresh", "add-reviewer"])
+@pytest.mark.parametrize("existing", [False, True], ids=["fresh", "add-later-logins"])
 def test_provisioning_preserves_passwords_and_reruns_without_writes(
     provisioning, existing, capsys
 ):
     script, api = provisioning
     old_passwords = {}
     if existing:
-        for index, (name, login, target) in enumerate(LOGINS[:2]):
+        for index, (name, login, namespace, target) in enumerate(LOGINS[:2]):
             old_passwords[name] = str(index + 1) * 48
             api.secrets[("factory-db", name)]["data"]["password"] = encode(
                 old_passwords[name]
@@ -116,33 +129,34 @@ def test_provisioning_preserves_passwords_and_reruns_without_writes(
                 f"postgres://{login}:{old_passwords[name]}@"
                 f"factory-db-rw.factory-db.svc:5432/{login}?sslmode=require"
             )
-            api.secrets[("factory", target)]["data"] = {"DATABASE_URL": encode(url)}
+            api.secrets[(namespace, target)]["data"] = {"DATABASE_URL": encode(url)}
 
     script.main("init")
     assert set(api.writes) == (
-        {REVIEWER_LOGIN}
+        {REVIEWER_LOGIN, HINDSIGHT_LOGIN}
         if existing
-        else {("factory-db", name) for name, _, _ in LOGINS}
+        else {("factory-db", name) for name, _, _, _ in LOGINS}
     )
     script.secrets.token_hex.assert_called_with(24)
-    assert script.secrets.token_hex.call_count == (1 if existing else 3)
+    assert script.secrets.token_hex.call_count == (2 if existing else 4)
     passwords = {}
-    for name, login, _ in LOGINS:
+    for name, login, _, _ in LOGINS:
         data = api.secrets[("factory-db", name)]["data"]
         assert base64.b64decode(data["username"]).decode() == login
         passwords[name] = base64.b64decode(data["password"]).decode()
         assert passwords[name] == old_passwords.get(name, "c" * 48)
     assert "DATABASE_URL" not in api.secrets[REVIEWER_CONNECTION]["data"]
+    assert "DATABASE_URL" not in api.secrets[HINDSIGHT_CONNECTION]["data"]
 
     api.writes.clear()
     script.main("connections")
     assert set(api.writes) == (
-        {REVIEWER_CONNECTION}
+        {REVIEWER_CONNECTION, HINDSIGHT_CONNECTION}
         if existing
-        else {("factory", target) for _, _, target in LOGINS}
+        else {(namespace, target) for _, _, namespace, target in LOGINS}
     )
-    for name, login, target in LOGINS:
-        data = api.secrets[("factory", target)]["data"]
+    for name, login, namespace, target in LOGINS:
+        data = api.secrets[(namespace, target)]["data"]
         assert set(data) == {"DATABASE_URL"}
         url = urlsplit(base64.b64decode(data["DATABASE_URL"]).decode())
         assert url.scheme == "postgres"
@@ -159,7 +173,7 @@ def test_provisioning_preserves_passwords_and_reruns_without_writes(
     script.main("connections")
     assert api.secrets == snapshot
     assert api.writes == []
-    assert script.secrets.token_hex.call_count == (1 if existing else 3)
+    assert script.secrets.token_hex.call_count == (2 if existing else 4)
     output = capsys.readouterr().out
     assert all(password not in output for password in passwords.values())
 
@@ -185,21 +199,21 @@ def test_connections_repair_a_stale_url_without_rotating_login(provisioning):
     script.main("connections")
     assert api.secrets[REVIEWER_LOGIN] == login
     assert api.writes == [REVIEWER_CONNECTION]
-    assert script.secrets.token_hex.call_count == 3
+    assert script.secrets.token_hex.call_count == 4
 
 
 def test_managed_roles_and_databases_use_the_provisioned_logins():
     documents = read("resources/cluster.yaml")
     cluster = next(doc for doc in documents if doc["kind"] == "Cluster")
     roles = {role["name"]: role for role in cluster["spec"]["managed"]["roles"]}
-    for secret, login, _ in LOGINS:
+    for secret, login, _, _ in LOGINS:
         assert roles[login]["login"] is True
         assert roles[login]["ensure"] == "present"
         assert roles[login]["passwordSecret"]["name"] == secret
     databases = {
         doc["spec"]["name"]: doc for doc in documents if doc["kind"] == "Database"
     }
-    for _, login, _ in LOGINS[1:]:
+    for _, login, _, _ in LOGINS[1:]:
         database = databases[login]
         assert database["spec"]["owner"] == login
         assert database["spec"]["cluster"]["name"] == cluster["metadata"]["name"]
@@ -211,6 +225,11 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
         assert annotations["argocd.argoproj.io/sync-options"] == (
             "Prune=false,Delete=false"
         )
+    # Hindsight's migrations need both in public, and vector needs a superuser.
+    assert databases["factory_hindsight"]["spec"]["extensions"] == [
+        {"name": name, "ensure": "present", "schema": "public"}
+        for name in ("vector", "pg_trgm")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -218,6 +237,8 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
     [
         ("factory", "factory-reviewer", "5432", True),
         ("factory", "factory-connector", "5432", True),
+        ("hindsight", "hindsight", "5432", True),
+        ("hindsight", "hindsight-keys", "5432", False),
         ("other", "factory-reviewer", "5432", False),
         ("factory", "unrelated", "5432", False),
         ("factory", "factory-reviewer", "8000", False),

@@ -6,6 +6,7 @@ py_test(
     data = [
         "factory/secrets.yaml",
         "//projects/platform-factory/factory-db/resources:provisioning_resources",
+        "//projects/platform-factory/hindsight/resources:secrets.yaml",
     ],
     deps = [
         "@pip//pytest",
