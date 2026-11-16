@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//projects/factory/connector/github",
+        "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/reviewer/config",
         "//projects/factory/reviewer/metrics",

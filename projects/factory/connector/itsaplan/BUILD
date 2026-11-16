@@ -6,6 +6,7 @@ go_library(
         "client.go",
         "human_gate.go",
         "renovate.go",
+        "review.go",
         "status.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/itsaplan",
@@ -16,6 +17,7 @@ go_test(
     name = "itsaplan_test",
     srcs = [
         "client_test.go",
+        "review_test.go",
         "status_test.go",
     ],
     embed = [":itsaplan"],

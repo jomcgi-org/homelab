@@ -168,6 +168,9 @@ type PullRequestFile struct {
 	Status       string `json:"status"` // added | removed | modified | renamed | copied | changed | unchanged
 	Additions    int    `json:"additions"`
 	Deletions    int    `json:"deletions"`
+	// Patch is the file's diff text. GitHub leaves it out or cuts it for a
+	// large or binary file, so its line counts can fall short of the totals.
+	Patch string `json:"patch"`
 }
 
 // MaxFilePages bounds a PR file listing: GitHub lists at most 3000 files.

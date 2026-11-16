@@ -89,7 +89,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
     {{- include "factory.itsaplanKeep" . | nindent 4 }}
 type: Opaque
-{{- range $i.bootstrap.agents }}
+{{- range (include "factory.itsaplanAgents" . | fromJsonArray) }}
 ---
 # The external agent {{ .username }}'s API key, written by the bootstrap Job.
 apiVersion: v1

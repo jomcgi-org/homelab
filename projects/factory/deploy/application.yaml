@@ -86,6 +86,11 @@ spec:
       namespace: factory
       name: factory-itsaplan-agent-factory-coordinator
       jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan-agent-factory-reviewer
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true

@@ -31,6 +31,16 @@ spec:
         - ports:
             - port: {{ .Values.kagent.controller.service.ports.targetPort | default 8083 | quote }}
               protocol: TCP
+    {{- if .Values.itsaplan.enabled }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.itsaplan.namespace }}
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    {{- end }}
     - toFQDNs:
         - matchName: api.github.com
       toPorts:
