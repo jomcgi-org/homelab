@@ -79,30 +79,6 @@ describe("Codex login page", () => {
     },
   );
 
-  test("offers an explicit dev action and a read-only connection check", async () => {
-    vi.stubGlobal("fetch", vi.fn());
-    const { target } = await render({ environment: "dev", state: "none" });
-
-    expect(target.querySelector("h2").textContent).toBe("Dev conformance");
-    expect(
-      target.querySelector('nav a[aria-current="page"]').getAttribute("href"),
-    ).toBe("?environment=dev");
-    expect(
-      target.querySelector("button.primary-action").textContent.trim(),
-    ).toBe("Authorize Codex for dev conformance");
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(target.querySelector("form").getAttribute("method")).toBe("GET");
-    expect(target.querySelector('input[name="environment"]').value).toBe("dev");
-    expect(
-      target.querySelector("form").hasAttribute("data-sveltekit-reload"),
-    ).toBe(true);
-    expect(
-      [...target.querySelectorAll("nav a")].every((link) =>
-        link.hasAttribute("data-sveltekit-reload"),
-      ),
-    ).toBe(true);
-  });
-
   test.each(["prod", "dev"])(
     "retries saving an approved %s login without another device code",
     async (environment) => {

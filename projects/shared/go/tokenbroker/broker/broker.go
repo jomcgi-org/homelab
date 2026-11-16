@@ -40,7 +40,7 @@ type grantState struct {
 // acceptReplacement clears a consumed-token block only for a newer grant with
 // a different refresh token. The caller holds s.mu.
 func (s *grantState) acceptReplacement(grant store.Grant) {
-	if s.reusedGrant != nil && grant.LastRefresh.After(s.reusedGrant.LastRefresh) &&
+	if s.reusedGrant != nil && store.CompareGrantVersion(grant, *s.reusedGrant) > 0 &&
 		grant.TokenBundle.RefreshToken != "" && grant.TokenBundle.RefreshToken != s.reusedGrant.TokenBundle.RefreshToken {
 		s.reusedGrant = nil
 		s.needsLogin = false
@@ -61,7 +61,7 @@ func (b *Broker) grantStatus(grantName string) (needsLogin, refreshBlocked bool)
 	// Another refresher may finish persisting its rotation after we block. Keep
 	// observing storage so that replacement can recover without a device login.
 	if blocked {
-		if grant, err := b.store.LoadGrant(grantName); err == nil {
+		if grant, err := b.loadGrant(context.Background(), grantName); err == nil {
 			s.mu.Lock()
 			s.acceptReplacement(grant)
 			s.mu.Unlock()
@@ -266,7 +266,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 				// Never fall back behind an in-memory rotation whose save is
 				// still retrying. An unchanged grant gets one confirmation;
 				// repeated reuse below starts storage-only reconciliation.
-				if stored.LastRefresh.After(grant.LastRefresh) {
+				if store.CompareGrantVersion(stored, grant) > 0 {
 					grant = stored
 				}
 				result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
@@ -395,7 +395,7 @@ func (b *Broker) CanServeCachedAccessToken(grantName string) bool {
 	if _, err := b.state(grantName); err != nil {
 		return false
 	}
-	grant, err := b.store.LoadGrant(grantName)
+	grant, err := b.loadGrant(context.Background(), grantName)
 	return err == nil && b.canServeCachedGrant(grant, time.Now())
 }
 
@@ -554,6 +554,7 @@ func (b *Broker) persistLogin(s *grantState, grant store.Grant) error {
 		s.lastErr = ErrGrantPersistencePending
 	} else {
 		s.pendingLogin = nil
+		s.acceptReplacement(grant)
 		s.authoritative = nil
 		s.needsLogin = false
 		s.lastErr = nil

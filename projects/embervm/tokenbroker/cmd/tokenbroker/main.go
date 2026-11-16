@@ -785,7 +785,7 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 	state.mu.RLock()
 	stateValue, detail, recoveringRefresh := state.state, state.detail, state.recoveringRefresh
 	state.mu.RUnlock()
-	if stateValue == "pending" && !recoveringRefresh {
+	if stateValue == "persistence_pending" || (stateValue == "pending" && !recoveringRefresh) {
 		writeJSON(w, http.StatusOK, map[string]string{"state": stateValue, "detail": detail})
 		return
 	}
@@ -803,7 +803,7 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 			return
 		}
 	}
-	if stateValue == "pending" || stateValue == "persistence_pending" {
+	if stateValue == "pending" {
 		writeJSON(w, http.StatusOK, map[string]string{"state": stateValue, "detail": detail})
 		return
 	}

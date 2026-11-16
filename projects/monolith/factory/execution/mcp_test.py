@@ -3589,8 +3589,7 @@ def test_pending_sweep_recovers_credential_wait_after_restart(
             "preserve this prompt"
         )
     assert calls == [("GET", "/grants/codex-cluster/login/status")] * 4
-    assert not mcp._resume_session_after_login(row.id)
-
+    assert not store.resume_session_after_login_sync(row.id)
 
 
 @pytest.mark.parametrize("changed", ["stopped", "claimed", "shutdown"])
@@ -3630,4 +3629,3 @@ def test_credential_recovery_rechecks_wait_after_broker_read(
     assert store.get_session(session, row.id).status == (
         "failed" if changed == "stopped" else "awaiting_login"
     )
-
