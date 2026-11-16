@@ -19,9 +19,9 @@ const (
 	// sessionQuiet keeps a session whose last attempt finished recently.
 	sessionQuiet = 15 * time.Minute
 	// stoppedSessionKeep is how long a stopped work item keeps its session
-	// for a run that resumes it. A later run opens a new session with the
-	// issue brief.
-	stoppedSessionKeep = 24 * time.Hour
+	// for a run that resumes it soon after the stop. A later run opens a new
+	// session with the issue brief, the work branch and the PR.
+	stoppedSessionKeep = time.Hour
 	// maxSessionPages bounds one sweep's listing of an agent's sessions.
 	maxSessionPages = 50
 	// maxSessionDeletes bounds the deletes of one sweep, so a slow kagent

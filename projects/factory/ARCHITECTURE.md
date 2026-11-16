@@ -948,7 +948,7 @@ before its run reports anything.
 sessions no run will send to again (`DeleteSession`, without force), at most
 10 a sweep:
 - the session of a done work item;
-- the session of a work item stopped for 24 hours;
+- the session of a work item stopped for an hour;
 - a session the work item no longer records, such as a replaced one.
 
 It deletes only sessions its pinned caller lists (`ListSessions` lists the
@@ -978,9 +978,12 @@ itsaplan.
 **Why.** Each session keeps a Substrate snapshot (about 340 MB) until it is
 deleted, and kagent's idle TTL is 7 days. On 2026-11-16 the connector's 47
 sessions held 25 GiB on node-2, 26 of them for work that was done,
-stopped or replaced (HOME-136). A stopped work item keeps its session for a day
-because a new itsaplan run resumes it, and a resumed session keeps the
-agent's context.
+stopped or replaced (HOME-136). A stopped work item keeps its session for an
+hour, so a run started again soon after a stop keeps the agent's context.
+A later run opens a new session with the issue brief, the work branch and the
+PR. Joe chose an hour over a day on 2026-11-16 (HOME-136): a suspended
+session holds no worker or Codex slot, only disk, and the old context is
+rarely worth a day of it.
 
 **Deployment.** `templates/connector*.yaml` render with `connector.enabled`,
 which needs `itsaplan.enabled`, `broker.enabled` and kagent's
