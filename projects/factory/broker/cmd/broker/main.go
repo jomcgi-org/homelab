@@ -238,8 +238,8 @@ func (d *deps) relayHandler() http.Handler {
 	return mux
 }
 
-// adminHandler serves health, metrics, the admin endpoints and connector
-// tokens, and nothing else.
+// adminHandler serves health, metrics, the admin endpoints, connector
+// tokens and the connector's quota read, and nothing else.
 func (d *deps) adminHandler(cfg config.Config, metricsHandler http.Handler) http.Handler {
 	mux := d.adminMux(cfg, metricsHandler)
 	mux.Handle("/", http.NotFoundHandler())
@@ -260,6 +260,8 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 		connector = d.minter.ConnectorHandler()
 	}
 	mux.Handle("/github/connector-token", d.reviewer.Require(cfg.TokenReview.ConnectorSubjects, connector))
+	// The connector resumes quota-paused work once this reads usable.
+	mux.Handle("GET /codex/quota", d.reviewer.Require(cfg.TokenReview.ConnectorSubjects, d.relay.QuotaHandler()))
 	reviewer := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)

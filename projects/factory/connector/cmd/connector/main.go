@@ -200,12 +200,13 @@ func run(log *slog.Logger) error {
 	defer sessions.Close()
 
 	// Delivery (PRs, review rounds, merge) needs the broker's GitHub tokens.
+	// The broker's quota reading resumes work a quota failure paused.
 	var gh dispatch.GitHub
+	var quota dispatch.QuotaSource
 	if cfg.BrokerURL != "" {
-		client := &github.Client{BaseURL: cfg.GitHubURL, Tokens: &github.BrokerTokens{
-			URL: cfg.BrokerURL, Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
-		}}
-		gh = client
+		bearer := &kagent.TokenSource{Path: cfg.BrokerTokenFile}
+		gh = &github.Client{BaseURL: cfg.GitHubURL, Tokens: &github.BrokerTokens{URL: cfg.BrokerURL, Bearer: bearer}}
+		quota = &github.BrokerQuota{URL: cfg.BrokerURL, Bearer: bearer}
 	} else {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
 	}
@@ -227,6 +228,7 @@ func run(log *slog.Logger) error {
 		ReissueInterval: time.Duration(cfg.File.Intervals.ReissueInterval),
 		DispatchWindow:  time.Duration(cfg.File.Intervals.DispatchWindow),
 		ReviewPoll:      time.Duration(cfg.File.Intervals.ReviewPoll),
+		Quota:           quota,
 		Links:           dispatch.Links(cfg.File.Links),
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{

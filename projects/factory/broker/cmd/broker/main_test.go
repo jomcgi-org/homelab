@@ -51,6 +51,7 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 		{http.MethodGet, "/healthz", http.StatusOK, ""},
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/codex/quota", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
@@ -68,6 +69,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
 		{http.MethodPost, "/admin/codex/login", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusNotFound, "not_found"},
+		{http.MethodGet, "/codex/quota", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/metrics", http.StatusNotFound, "not_found"},
@@ -77,6 +79,7 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodGet, "/metrics", http.StatusOK, ""},
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/codex/quota", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusNotFound, ""},
@@ -105,7 +108,8 @@ func checkRoutes(t *testing.T, h http.Handler, cases []routeCase) {
 
 // The reviewer token route admits only reviewer subjects: the connector,
 // the author's identity, is refused, and a reviewer reaches the handler
-// (503 here, as no reviewer App key is loaded).
+// (503 here, as no reviewer App key is loaded). The connector's routes
+// refuse the reviewer.
 func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 	const connector, reviewer = "system:serviceaccount:factory:factory-connector", "system:serviceaccount:factory:factory-reviewer"
 	client := fake.NewSimpleClientset()
@@ -137,6 +141,9 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "connector-token", http.StatusForbidden},
 		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "reviewer-token", http.StatusServiceUnavailable},
 		{"/github/connector-token?repository=o/r", "reviewer-token", http.StatusForbidden},
+		// Only the connector reads the quota: it alone pauses and resumes work.
+		{"/codex/quota", "reviewer-token", http.StatusForbidden},
+		{"/codex/quota", "connector-token", http.StatusOK},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		req.Header.Set("Authorization", "Bearer "+tc.token)

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
@@ -28,6 +29,32 @@ func (c *clock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.t = c.t.Add(d)
 	c.mu.Unlock()
+}
+
+// fakeQuota is the broker's quota reading.
+type fakeQuota struct {
+	mu      sync.Mutex
+	reading github.QuotaReading
+	reads   int
+}
+
+func (f *fakeQuota) Quota(context.Context) (github.QuotaReading, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	return f.reading, nil
+}
+
+func (f *fakeQuota) set(r github.QuotaReading) {
+	f.mu.Lock()
+	f.reading = r
+	f.mu.Unlock()
+}
+
+func (f *fakeQuota) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
 }
 
 // fakeItsaplan models the v1.10.0 runner semantics the connector relies on:

@@ -4,6 +4,7 @@ go_library(
     name = "github",
     srcs = [
         "broker_comments.go",
+        "broker_quota.go",
         "checks.go",
         "client.go",
         "etag.go",
@@ -20,6 +21,7 @@ go_test(
     name = "github_test",
     srcs = [
         "broker_comments_test.go",
+        "broker_quota_test.go",
         "github_test.go",
         "recovery_test.go",
         "status_test.go",
