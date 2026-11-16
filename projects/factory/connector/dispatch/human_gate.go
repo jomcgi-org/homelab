@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -18,6 +19,13 @@ func (e *Engine) stepHumanGates(ctx context.Context) error {
 	if e.gh == nil {
 		return nil
 	}
+	// Journal storage may still be unavailable. Retry the independent
+	// database path before opening or locking that directory.
+	recovery, cancelRecovery := context.WithTimeout(ctx, time.Second)
+	defer cancelRecovery()
+	if err := e.recoverPendingHumanGateSends(recovery); err != nil {
+		return err
+	}
 	unlock, err := e.lockHumanGateJournal()
 	if err != nil {
 		return err
@@ -25,7 +33,7 @@ func (e *Engine) stepHumanGates(ctx context.Context) error {
 	defer unlock()
 	// A bounded replay leaves unrelated dispatch work free to progress even
 	// when an attempt is locked or its cleanup write is unavailable.
-	if err := e.recoverHumanGateSends(ctx); err != nil {
+	if err := e.recoverHumanGateSends(recovery); err != nil {
 		return fmt.Errorf("human-gate recovery deferred: %w", err)
 	}
 	items, err := e.st.HumanGateWork(ctx)
@@ -266,14 +274,16 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 				return err // keep the unsent proof when shutdown is already known
 			}
 			if err := e.forgetHumanGateSend(proof); err != nil {
-				return err
+				// The unlink may have succeeded before fsync failed. Persist
+				// proof in the database if the journal cannot restore it.
+				// A failed retirement never reaches POST.
+				return errors.Join(err, e.preserveHumanGateSend(ctx, proof))
 			}
 			found, err = e.its.CreateGateIssue(ctx, b.ItsaplanProject, body)
 			if err != nil {
 				if notCreated(err) {
-					// Persist the refusal independently of PostgreSQL. No
-					// synchronous database cleanup or uncancelable retry loop.
-					err = errors.Join(err, e.prepareHumanGateSend(proof))
+					// Preserve refusal proof even if the journal is unavailable.
+					err = errors.Join(err, e.preserveHumanGateSend(ctx, proof))
 				}
 				return err
 			}

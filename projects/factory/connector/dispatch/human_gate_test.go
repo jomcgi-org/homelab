@@ -430,6 +430,138 @@ func TestHumanGateVolumeLockFencesLivePredecessorWithoutBlocking(t *testing.T) {
 	v.gateIssue(1, "sha-1")
 }
 
+func TestHumanGateFailedFlushAndRestoreRecoverFromDatabaseAfterRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		shutdown, refuseCleanup bool
+	}{
+		{name: "poll"},
+		{name: "shutdown", shutdown: true},
+		{name: "cleanup_retry", refuseCleanup: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newHumanGateEnv(t)
+			v.readyGate("sha-1")
+			ctx, cancel := context.WithCancel(v.ctx)
+			defer cancel()
+			journal := v.cfg.HumanGateJournal
+			offline := journal + ".offline"
+			flushes := 0
+			v.cfg.SyncJournalDirectory = func(path string) error {
+				flushes++
+				if flushes == 2 {
+					// Prepare was durable. Retirement has now unlinked the only
+					// proof; make both its directory flush and restoration fail.
+					files, err := os.ReadDir(path)
+					if err != nil || len(files) != 0 {
+						t.Fatalf("proof was not removed before flush: %v %v", files, err)
+					}
+					if err := os.Rename(path, offline); err != nil {
+						t.Fatal(err)
+					}
+					if tc.refuseCleanup {
+						if _, err := v.st.DB.Exec(`
+							CREATE FUNCTION refuse_journal_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
+							BEGIN
+								RAISE EXCEPTION 'injected cleanup outage';
+							END $$;
+							CREATE TRIGGER refuse_journal_cleanup BEFORE UPDATE OF send_started ON human_gate_attempt
+								FOR EACH ROW EXECUTE FUNCTION refuse_journal_cleanup();`); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if tc.shutdown {
+						cancel()
+					}
+					return errors.New("injected journal flush failure; storage unavailable")
+				}
+				d, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer d.Close()
+				return d.Sync()
+			}
+			v.e.Release()
+			v.e = v.engine("journal-outage")
+			v.clk.Advance(61 * time.Second)
+			if err := v.e.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatal(err)
+			}
+			if flushes != 2 || len(v.its.gateCreates) != 0 {
+				t.Fatalf("failed retirement reached POST: flushes=%d creates=%d", flushes, len(v.its.gateCreates))
+			}
+			var started bool
+			var sends int
+			if tc.refuseCleanup {
+				// Both stores reject proof writes. Dispatch must still return;
+				// retain the proof and retry it on later ticks before touching
+				// the unavailable journal directory.
+				v.tick(v.e)
+				if err := v.st.DB.QueryRow(`SELECT send_started FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started); err != nil || !started {
+					t.Fatalf("cleanup failure not injected: started=%t err=%v", started, err)
+				}
+				if _, err := v.st.DB.Exec(`DROP TRIGGER refuse_journal_cleanup ON human_gate_attempt`); err != nil {
+					t.Fatal(err)
+				}
+				v.tick(v.e) // PostgreSQL recovers while the journal remains offline.
+			}
+			if err := v.st.DB.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started, &sends); err != nil || started || sends != 1 {
+				t.Fatalf("unsent proof missing from database: started=%t sends=%d err=%v", started, sends, err)
+			}
+			// There is no journal file to replay. Discard the engine, restore
+			// storage and recover from the acknowledged database proof alone.
+			v.e.Release()
+			if err := os.Rename(offline, journal); err != nil {
+				t.Fatal(err)
+			}
+			v.cfg.SyncJournalDirectory = nil
+			v.e = v.engine("after-journal-outage")
+			v.gh.push("factory/HL-7", "sha-2", "new head after journal recovery")
+			v.readyGate("sha-2")
+			v.poll()
+			v.gateIssue(1, "sha-2")
+			v.poll()
+			if len(v.its.gateCreates) != 1 {
+				t.Fatal("recovered unsent create did not create exactly one issue")
+			}
+		})
+	}
+}
+
+func TestHumanGateRefusalWithUnavailableJournalRecoversFromDatabase(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	journal := v.cfg.HumanGateJournal
+	offline := journal + ".offline"
+	assertAttempt := v.its.beforeGateWrite
+	v.its.beforeGateWrite = func() {
+		assertAttempt()
+		if err := os.Rename(journal, offline); err != nil {
+			t.Fatal(err)
+		}
+		v.its.beforeGateWrite = assertAttempt
+	}
+	v.its.gateCreateErr = &itsaplan.HTTPError{Status: 403, Body: "refused"}
+	v.poll()
+	var started bool
+	if err := v.st.DB.QueryRow(`SELECT send_started FROM human_gate_attempt WHERE operation = 'create'`).Scan(&started); err != nil || started {
+		t.Fatalf("refusal proof missing from database: started=%t err=%v", started, err)
+	}
+	v.e.Release()
+	if err := os.Rename(offline, journal); err != nil {
+		t.Fatal(err)
+	}
+	v.its.gateCreateErr = nil
+	v.e = v.engine("after-refusal-and-journal-outage")
+	v.poll()
+	v.gateIssue(1, "sha-1")
+	v.poll()
+	if len(v.its.gateCreates) != 2 {
+		t.Fatal("refused create did not retry exactly once")
+	}
+}
+
 func TestHumanGateDatabaseFailureBeforeCreateNeedsNoCleanup(t *testing.T) {
 	v := newHumanGateEnv(t)
 	v.readyGate("sha-1")

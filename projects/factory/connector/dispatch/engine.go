@@ -79,6 +79,8 @@ type Config struct {
 	// HumanGateJournal is a persistent directory shared across pod restarts.
 	// Creates fail closed without it; it must not be an ephemeral volume.
 	HumanGateJournal string
+	// SyncJournalDirectory flushes journal directory changes. Nil uses fsync.
+	SyncJournalDirectory func(string) error
 
 	Caller    Caller
 	Holder    string
@@ -123,7 +125,10 @@ type Engine struct {
 	m        *metrics.Metrics
 	log      *slog.Logger
 	w        *store.Writer
-	locks    sync.Map // run ID -> *sync.Mutex
+	// Unsent proofs whose journal and database writes both failed. Only Tick
+	// uses this map; later ticks retry without blocking unrelated dispatch.
+	gateUnsentPending map[string]gateUnsent
+	locks             sync.Map // run ID -> *sync.Mutex
 	// checked holds when each running attempt's session was last checked.
 	checked sync.Map // attempt ID -> sessionCheck
 	// refusals holds when itsaplan began refusing the coordinator key for

@@ -78,19 +78,56 @@ func (e *Engine) prepareHumanGateSend(p gateUnsent) error {
 	if err := os.Rename(f.Name(), path); err != nil {
 		return err
 	}
-	return syncGateDirectory(e.cfg.HumanGateJournal)
+	return e.syncHumanGateDirectory()
 }
 
 func (e *Engine) forgetHumanGateSend(p gateUnsent) error {
 	if err := os.Remove(e.gateUnsentPath(p)); err != nil {
 		return err
 	}
-	if err := syncGateDirectory(e.cfg.HumanGateJournal); err != nil {
-		// No POST is permitted on a failed directory flush. Restore the
-		// proof if storage is still writable, then fail closed.
-		return errors.Join(err, e.prepareHumanGateSend(p))
+	return e.syncHumanGateDirectory()
+}
+
+// preserveHumanGateSend needs one durable store to acknowledge the unsent
+// proof. A failed journal restore must not leave a send marker set merely
+// because its caller has no file to replay. The epoch/send token prevents
+// this compensation from clearing a successor's request.
+func (e *Engine) preserveHumanGateSend(ctx context.Context, p gateUnsent) error {
+	if e.gateUnsentPending == nil {
+		e.gateUnsentPending = make(map[string]gateUnsent)
+	}
+	e.gateUnsentPending[p.MessageID] = p
+	if err := e.prepareHumanGateSend(p); err != nil {
+		// Shutdown may already have canceled the tick. Make one bounded
+		// attempt; do not reintroduce a synchronous retry loop.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		if clearErr := e.st.ClearHumanGateSend(cleanup, p.MessageID, p.Epoch, p.Send); clearErr != nil {
+			return fmt.Errorf("cannot persist unsent human-gate proof for %s (epoch %d, send %d): %w",
+				p.MessageID, p.Epoch, p.Send, errors.Join(err, clearErr))
+		}
+	}
+	delete(e.gateUnsentPending, p.MessageID)
+	return nil
+}
+
+func (e *Engine) recoverPendingHumanGateSends(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	for key, p := range e.gateUnsentPending {
+		if err := e.st.ClearHumanGateSend(ctx, p.MessageID, p.Epoch, p.Send); err != nil {
+			return err
+		}
+		delete(e.gateUnsentPending, key)
 	}
 	return nil
+}
+
+func (e *Engine) syncHumanGateDirectory() error {
+	if e.cfg.SyncJournalDirectory != nil {
+		return e.cfg.SyncJournalDirectory(e.cfg.HumanGateJournal)
+	}
+	return syncGateDirectory(e.cfg.HumanGateJournal)
 }
 
 func syncGateDirectory(path string) error {
@@ -135,6 +172,8 @@ func (e *Engine) recoverHumanGateSends(ctx context.Context) error {
 		if err := e.st.ClearHumanGateSend(ctx, p.MessageID, p.Epoch, p.Send); err != nil {
 			return err // retain proof and retry on a later tick, including cancellation
 		}
+		// The database has already acknowledged the proof. If removing this
+		// redundant file fails, no compensation is needed before returning.
 		if err := e.forgetHumanGateSend(p); err != nil {
 			return err
 		}

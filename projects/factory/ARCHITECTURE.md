@@ -768,11 +768,26 @@ a live predecessor is still preparing or sending its request.
 Only after the marker COMMIT is acknowledged does the connector remove and
 fsync the proof, then send the POST. A lost COMMIT acknowledgment therefore
 leaves proof that survives forced termination even while PostgreSQL is down.
-A definitely refused POST records new proof on the volume. Each tick replays
-these proofs with a one-second total database budget, honoring cancellation;
-a failure retains the file for the next tick or pod. Cleanup locks the attempt
-before checking the epoch/send token so an in-flight COMMIT cannot escape it
-and an old proof cannot clear a newer send. There is no shutdown cleanup loop.
+A failed removal or flush never reaches POST. Recovery also handles a definite
+POST refusal:
+
+```mermaid
+flowchart TD
+  unsent[Request is proven unsent or refused] --> journal{Restore and fsync proof?}
+  journal -- yes --> replay[Replay from the volume on a later tick or restart]
+  journal -- no --> database{Clear the matching database send marker?}
+  database -- yes --> retry[Retry creation on a later poll, including after restart]
+  database -- no --> pending[Keep proof in memory; retry the database on later ticks]
+  pending --> database
+  pending -- process dies before either store accepts proof --> unknown[Unknown outcome; operator investigation]
+```
+
+The database fallback has a one-second deadline, even if shutdown has canceled
+the tick. Later ticks share a one-second database budget for memory and volume
+recovery. They can retry memory proofs while the journal remains unavailable.
+Cleanup locks the attempt before checking its epoch/send token. Thus an
+in-flight COMMIT cannot escape it, and old proof cannot clear a newer send.
+There is no shutdown cleanup loop.
 Retain this volume with the connector database during restore or replacement.
 
 As with the database send marker, a crash after removing the proof but before
