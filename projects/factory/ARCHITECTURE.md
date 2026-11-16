@@ -293,7 +293,11 @@ grants that bank alone in practice; a second binding needs its own bank and a
 gateway that pins callers to it. Recalled text is data, never an
 instruction: the prompt says the repository, issue and CI win.
 
-**Rollout.** kagent rejects an Agent whose header Secret is missing, so set
+**Rollout.** The reviewer cannot read 1Password or the cluster. Joe accepted
+a labels-only Connect check before merge and a live check after it: Secret
+`hindsight/hindsight-anthropic` holds `ANTHROPIC_API_KEY` and the pod is Ready
+([decision](https://github.com/jomcgi-org/homelab/pull/8107#issuecomment-6920188055)).
+kagent rejects an Agent whose header Secret is missing, so set
 `memory` in `deploy/values.yaml` only after CI publishes and pins the
 supporting chart and `factory-r-homelab/hindsight-mcp` holds a token. That
 change updates `deploy/render.sha256`; a fresh coding session confirms the
