@@ -199,25 +199,39 @@ On a PR, `human` means a person owns it and `needs-human` asks for a decision.
 Both hold the PR at the connector and the reviewer, and agents must not add or
 remove them without an explicit handoff instruction.
 
-A PR at its round bound (`maxReviewRounds` or `maxRebaseRounds`, 6 each)
-waits for a person. The connector records the refused event as `round_limit`
-and never reads it again, so raising the bound restarts nothing until HOME-109
-lands. To restart one PR:
+A PR that hit its round bound (`maxReviewRounds` or `maxRebaseRounds`, 6
+each) waits for a person. The connector records the refused event as
+`round_limit` and never reads it again, so raising the bound restarts nothing
+by itself until HOME-109 lands.
+
+A `jomcgi` changes-requested review restarts a PR only when two things hold:
+its work item has review rounds left (`review_rounds < maxReviewRounds`, for
+example after the bound was raised), and no earlier `jomcgi` changes-requested
+review acted on the same head. A second one on that head counts as a
+duplicate. In that case:
 
 1. Check that its head is unchanged and no run is open (the query above).
-2. Post a `jomcgi` changes-requested review on that exact head. Give it the
-   reviewer's blocking findings and the failing CI targets, because the coding
-   agent can't read BuildBuddy. The round prompt keeps 4000 characters. On a
-   conflicting PR, the round also tells the agent to rebase, so this also
-   restarts a PR at its rebase bound.
+2. Post the review on that exact head. Give it the reviewer's blocking
+   findings and the failing CI targets, because the coding agent can't read
+   BuildBuddy. The round prompt keeps 4000 characters. On a conflicting PR,
+   the round also tells the agent to rebase.
 3. Once `review_event` shows the review as `acted`, dismiss it, because
-   a trusted changes-requested decision keeps the PR out of the queue.
+   a trusted changes-requested decision keeps the PR out of the queue. If it
+   shows `round_limit` or `duplicate`, nothing started: use the paths below.
 
 On a PR whose only blocker is the reviewer's hold
 (`factory-review:human-gate-only`), a changes-requested review reinstates the
 hold, and the connector ignores every event while it stands. There, approve
 after the changes-requested review instead of dismissing it, and only when
 Joe has cleared that hold.
+
+In any other state, a review can't restart the PR:
+- **Review rounds are spent:** raise the bound through a reviewed values
+  change first.
+- **The head has already been used:** a new head gives the connector new
+  events to act on.
+
+Otherwise, stop the work as above and file what remains as a new HOME issue.
 
 The retiring hub factory reads the same labels on GitHub issues:
 
