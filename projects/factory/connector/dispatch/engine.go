@@ -58,6 +58,7 @@ type Sessions interface {
 	RevertSession(ctx context.Context, id string) (*kagent.Session, error)
 	ListSessions(ctx context.Context, agent kagent.AgentRef, pageToken string) ([]*kagent.Session, string, error)
 	DeleteSession(ctx context.Context, id string) (*kagent.Session, error)
+	ForceDeleteSession(ctx context.Context, id string) (*kagent.Session, error)
 }
 
 // Agent is an itsaplan agent key the connector claims runs for.
@@ -110,8 +111,15 @@ type Config struct {
 	Quota      QuotaSource
 	QuotaPoll  time.Duration
 	QuotaStall time.Duration
-	Links      Links
-	Now        func() time.Time
+	// The liveness lease (HOME-141, liveness.go): a send must show a task
+	// within TaskLease (5 min), and a running turn a task event or an open
+	// tool call every ProgressLease (20 min). A cancellation kagent has not
+	// confirmed within ForceDelete (10 min) deletes the session with force.
+	TaskLease     time.Duration
+	ProgressLease time.Duration
+	ForceDelete   time.Duration
+	Links         Links
+	Now           func() time.Time
 }
 
 // QuotaSource reads the broker's quota reading for its Codex grant.
@@ -180,6 +188,15 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.QuotaStall == 0 {
 		cfg.QuotaStall = 10 * time.Minute
+	}
+	if cfg.TaskLease == 0 {
+		cfg.TaskLease = 5 * time.Minute
+	}
+	if cfg.ProgressLease == 0 {
+		cfg.ProgressLease = 20 * time.Minute
+	}
+	if cfg.ForceDelete == 0 {
+		cfg.ForceDelete = 10 * time.Minute
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -326,6 +343,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"claims", e.claim},
 		{"quota", e.checkQuota},
 		{"runs", e.stepRuns},
+		{"leases", e.checkLeases},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
 		{"human_gates", e.stepHumanGates},
@@ -416,7 +434,7 @@ func quotaReadIDs(blocks []store.QuotaBlock, quiet []*store.Attempt) []string {
 func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error {
 	var errs []error
 	for _, a := range quiet {
-		if err := e.cancelIfQuiet(ctx, a); err != nil {
+		if err := e.cancelIfQuiet(ctx, a, store.CancelQuotaStall); err != nil {
 			if fatal(err) {
 				return err
 			}
@@ -428,13 +446,15 @@ func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error 
 
 // cancelIfQuiet reads the turn's task as progress does, with the read
 // recorded first (BeginStatusRead). A changed task records its activity
-// and restarts the quiet period. The turn is canceled only when its task is
-// unchanged, has no tool call without a result and has not finished. The
-// cancellation records the task size it was decided on and stays pending
-// until kagent confirms it, as every cancellation does. stepCancellation
-// sends CancelTask, or withdraws the cancellation when the task changed
-// first (withdrawQuotaStall).
-func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt) error {
+// and restarts the quiet period. The turn is canceled, for reason
+// quota_stall or lease_expired, only when its task is unchanged, has no
+// tool call without a result and has not finished. The cancellation
+// records the task size it was decided on and stays pending until kagent
+// confirms it, as every cancellation does. stepCancellation sends
+// CancelTask, or withdraws the cancellation when the task changed first
+// (withdrawQuiet). A lease also expires on a task kagent no longer has:
+// its cancellation deletes the session.
+func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt, reason string) error {
 	defer e.lockRun(a.RunID)()
 	r, err := e.st.GetRun(ctx, a.RunID)
 	if err != nil || r.State != store.RunDispatched {
@@ -455,24 +475,32 @@ func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt) error {
 		return err
 	}
 	t, err := e.tasks.GetTask(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
-	if errors.Is(err, kagent.ErrTaskNotFound) {
+	n := a.EventCount
+	switch {
+	case errors.Is(err, kagent.ErrTaskNotFound) && reason == store.CancelLeaseExpired:
+	case errors.Is(err, kagent.ErrTaskNotFound):
 		// progress handles a missing task.
 		return nil
-	}
-	if err != nil {
+	case err != nil:
 		return err
-	}
-	n, running := taskSize(t), t.ToolRunning()
-	if n != a.EventCount || a.EventAt.IsZero() {
-		return e.st.SetAttemptEvents(ctx, e.st.DB, a.ID, n, running, e.cfg.Now())
-	}
-	if running || kagent.Quiescent(t.Status.State) {
-		return nil
+	default:
+		var running bool
+		n, running = taskSize(t), t.ToolRunning()
+		if n != a.EventCount || a.EventAt.IsZero() {
+			return e.st.SetAttemptEvents(ctx, e.st.DB, a.ID, n, running, e.cfg.Now())
+		}
+		if running || kagent.Quiescent(t.Status.State) {
+			return nil
+		}
 	}
 	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
-		return e.st.RequestQuotaStall(ctx, tx, a.ID, a.RunID, n)
+		return e.st.RequestQuietCancel(ctx, tx, a.ID, a.RunID, reason, n)
 	}); err != nil {
 		return err
+	}
+	if reason == store.CancelLeaseExpired {
+		e.leaseRequested(ctx, a, fmt.Sprintf("no task event for %s", e.cfg.Now().Sub(a.EventAt)))
+		return nil
 	}
 	e.m.Cancellations.WithLabelValues(store.CancelQuotaStall, "requested").Inc()
 	e.log.WarnContext(ctx, "canceling a quiet turn: the broker reads the quota exhausted", "run", a.RunID,
@@ -737,6 +765,20 @@ func (e *Engine) step(ctx context.Context, r *store.Run) error {
 		}
 		if wi.State == store.WorkStopped {
 			return e.stopRun(ctx, r, wi.StoppedReason)
+		}
+		// A run claimed before its work item's PR merged has nothing left to
+		// deliver: it carries a stop, as StopWork's runs do (HOME-141).
+		if wi.State == store.WorkDone {
+			stopped, err := e.st.StopMergedRun(ctx, r.ID)
+			if err != nil {
+				return err
+			}
+			if stopped {
+				if r, err = e.st.GetRun(ctx, r.ID); err != nil {
+					return err
+				}
+				return e.stopRun(ctx, r, r.StoppedReason)
+			}
 		}
 	}
 	switch r.State {
@@ -1375,18 +1417,15 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	}
 }
 
-// unresolved only adopts positive evidence of the original message. Absence
-// cannot prove physical cessation: NodeGone deletion may hide an orphan actor,
-// and idle expiry can remove even its initial-message creation receipt.
+// unresolved only adopts positive evidence of the original message. It
+// never resends: NodeGone deletion may hide an orphan actor, and idle expiry
+// can remove even its initial-message creation receipt. Past TaskLease the
+// lease's cancellation decides what absence means (stepCancellation) and
+// holds the attempt for an operator when it cannot.
 func (e *Engine) unresolved(ctx context.Context, r *store.Run, wi *store.WorkItem, a *store.Attempt) error {
 	t, err := e.taskWithMessage(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.ContextID, a.MessageID)
 	if err == nil && t != nil {
 		return e.attach(ctx, a, wi, t)
-	}
-	if e.cfg.Now().Sub(a.SentAt) >= e.cfg.DispatchWindow {
-		if holdErr := e.holdUncertain(ctx, r, wi, a); holdErr != nil {
-			return holdErr
-		}
 	}
 	return err
 }
@@ -1543,6 +1582,10 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		// Reassignment fenced this run's attempt; its cancellation reports it.
 		return nil
 	}
+	if a.State == store.AttemptFailed && a.ErrorClass == ClassAbandoned {
+		// The liveness lease ended the turn; retry within the budget.
+		return e.engineeringFailure(ctx, r, wi, a, a.Error)
+	}
 	switch a.State {
 	case store.AttemptSending, store.AttemptAmbiguous:
 		b := e.binding(wi.BindingName)
@@ -1555,6 +1598,14 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	case store.AttemptAccepted:
 	default:
 		return nil
+	}
+	if pending, err := e.st.CancelPending(ctx, a.ID); err != nil {
+		return err
+	} else if pending {
+		// The cancellation that deletes the session decides the turn.
+		if deleting, err := e.st.ForceDeleting(ctx, a.ContextID); err != nil || deleting {
+			return err
+		}
 	}
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err
@@ -1583,8 +1634,14 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	}
 	if kagent.Quiescent(t.Status.State) {
 		// A pending cancellation reports the turn once kagent confirms it.
-		if pending, err := e.st.CancelPending(ctx, a.ID); err != nil || pending {
+		// A lease_expired one that sent no CancelTask yields to a turn that
+		// ended on its own.
+		if pending, err := e.st.CancelPending(ctx, a.ID); err != nil {
 			return err
+		} else if pending {
+			if ended, err := e.leaseYields(ctx, r, wi, a); err != nil || !ended {
+				return err
+			}
 		}
 		e.checked.Delete(a.ID)
 		return e.complete(ctx, r, wi, a, t)
@@ -1765,12 +1822,21 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 	var brief string
 	if wi.EngineeringRetries < budget && wi.SessionID == "" {
 		brief = a.Context
+		var err error
+		if !hasIssueBrief(brief, wi.IssueKey) && a.ErrorClass == ClassAbandoned {
+			// An abandoned continuation recorded no brief; its session did.
+			if brief, err = e.recordedBrief(ctx, wi); err != nil {
+				return err
+			}
+		}
 		if !hasIssueBrief(brief, wi.IssueKey) {
-			var err error
 			brief, err = e.issueBrief(ctx, r, wi)
 			if err != nil {
 				return err
 			}
+		}
+		if a.ErrorClass == ClassAbandoned {
+			brief += replacementNote
 		}
 	}
 	var next *store.Attempt
@@ -1856,9 +1922,15 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if err != nil {
 		return e.recoverHeld(ctx, r, wi, a, "caller ownership unproven")
 	}
+	// kagent has not confirmed the cancellation in time: deleting the
+	// session with force ends the turn, and settles a lifecycle hold too.
+	escalate, err := e.escalating(ctx, c, a)
+	if err != nil {
+		return err
+	}
 	if reason, err := e.recoveryReason(ctx, a); err != nil {
 		return err
-	} else if reason == recoveryLifecycle {
+	} else if reason == recoveryLifecycle && !escalate {
 		return e.recoverHeld(ctx, r, wi, a, reason)
 	}
 	if a.State == store.AttemptSending {
@@ -1867,8 +1939,7 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	ref := kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}
 	if a.TaskID == "" {
 		// The send's outcome is unknown. A cancellation never sends: that
-		// could start the turn it is meant to stop. After the reservation
-		// window, a missing task still cannot prove its runtime stopped.
+		// could start the turn it is meant to stop.
 		if e.cfg.Now().Sub(a.SentAt) < e.cfg.DispatchWindow {
 			return nil
 		}
@@ -1876,7 +1947,22 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		// all-state listing covers the original caller's sessions, including
 		// a first send whose session the work item has not recorded yet.
 		t, err := e.taskWithMessage(ctx, ref, a.ContextID, a.MessageID)
-		if err != nil || t == nil {
+		switch {
+		case err == nil && t == nil && e.cfg.Now().Sub(a.SentAt) < notStartedWithin:
+			// A complete scan finds no task with the message after the
+			// dispatch window. kagent rejects a first save after its
+			// two-minute dispatch reservation, before native execution
+			// (https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_tasks.go#L29-L32,
+			// https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_tasks.go#L192-L203),
+			// so the send never started and never will (HOME-141).
+			e.m.StuckTurns.WithLabelValues(stepNotStarted).Inc()
+			return e.confirmCancel(ctx, c, a, stepNotStarted)
+		case (err != nil || t == nil) && escalate:
+			return e.forceDelete(ctx, c, r, wi, a)
+		case (err != nil || t == nil) && a.ContextID != "" && e.sessions != nil:
+			// Deleting the named session settles it after ForceDelete.
+			return err
+		case err != nil || t == nil:
 			if holdErr := e.holdUncertain(ctx, r, wi, a); holdErr != nil {
 				return holdErr
 			}
@@ -1891,10 +1977,12 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		return err
 	}
 	t, err := e.tasks.GetTask(ctx, ref, a.TaskID)
-	if errors.Is(err, kagent.ErrTaskNotFound) {
+	switch {
+	case errors.Is(err, kagent.ErrTaskNotFound) && escalate:
+		return e.forceDelete(ctx, c, r, wi, a)
+	case errors.Is(err, kagent.ErrTaskNotFound):
 		return e.missingTask(ctx, r, wi, a)
-	}
-	if err != nil {
+	case err != nil:
 		return err
 	}
 	if _, err := e.originalVisible(ctx, a); err != nil {
@@ -1903,8 +1991,11 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if kagent.Terminal(t.Status.State) {
 		return e.confirmCancel(ctx, c, a, strings.ToLower(strings.TrimPrefix(t.Status.State, "TASK_STATE_")))
 	}
-	if c.Reason == store.CancelQuotaStall && c.Requests == 0 {
-		if withdrawn, err := e.withdrawQuotaStall(ctx, c, r, wi, a, t); err != nil || withdrawn {
+	if escalate {
+		return e.forceDelete(ctx, c, r, wi, a)
+	}
+	if (c.Reason == store.CancelQuotaStall || c.Reason == store.CancelLeaseExpired) && c.Requests == 0 {
+		if withdrawn, err := e.withdrawQuiet(ctx, c, r, wi, a, t); err != nil || withdrawn {
 			return err
 		}
 	}
@@ -1914,7 +2005,7 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	if err := e.st.CountCancelRequest(ctx, c.ID, e.cfg.Now()); err != nil {
+	if err := e.st.CountCancelRequest(ctx, e.st.DB, c.ID, e.cfg.Now()); err != nil {
 		return err
 	}
 	if _, err := e.tasks.CancelTask(ctx, ref, a.TaskID); err != nil {
@@ -1924,16 +2015,17 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	return nil
 }
 
-// withdrawQuotaStall withdraws a quota_stall cancellation, before its first
-// CancelTask, whose task changed after the quiet decision: the task grew
-// past the size the decision recorded, or has a tool call without a result.
+// withdrawQuiet withdraws a quota_stall or lease_expired cancellation,
+// before its first CancelTask, whose task changed after the quiet decision:
+// the task grew past the size the decision recorded, or has a tool call
+// without a result.
 // The turn runs on, and the change restarts its quiet period. It reports
 // whether it withdrew the cancellation. A stop's or itsaplan's request
 // joins a pending cancellation (RequestCancellation), so a stopped run or
 // work item, or a run no longer dispatched, keeps it. Once CancelTask is
 // out the cancellation stands: kagent may still apply it, and its
-// confirmation then pauses the turn as a quota failure.
-func (e *Engine) withdrawQuotaStall(ctx context.Context, c *store.Cancellation, r *store.Run, wi *store.WorkItem, a *store.Attempt, t *kagent.Task) (bool, error) {
+// confirmation then pauses the turn as a quota failure, or abandons it.
+func (e *Engine) withdrawQuiet(ctx context.Context, c *store.Cancellation, r *store.Run, wi *store.WorkItem, a *store.Attempt, t *kagent.Task) (bool, error) {
 	n, running := taskSize(t), t.ToolRunning()
 	if n == c.EventCount && !running {
 		return false, nil
@@ -1949,7 +2041,7 @@ func (e *Engine) withdrawQuotaStall(ctx context.Context, c *store.Cancellation, 
 			return err
 		}
 		var err error
-		if withdrawn, err = e.st.WithdrawQuotaStall(ctx, tx, c.ID, why); err != nil || !withdrawn || n == a.EventCount {
+		if withdrawn, err = e.st.WithdrawQuietCancel(ctx, tx, c.ID, why); err != nil || !withdrawn || n == a.EventCount {
 			return err
 		}
 		return e.st.SetAttemptEvents(ctx, tx, a.ID, n, running, e.cfg.Now())
@@ -1958,8 +2050,8 @@ func (e *Engine) withdrawQuotaStall(ctx context.Context, c *store.Cancellation, 
 		return false, err
 	}
 	e.m.Cancellations.WithLabelValues(c.Reason, store.CancelWithdrawn).Inc()
-	e.log.InfoContext(ctx, "quota_stall cancellation withdrawn", "run", r.ID, "attempt", a.Seq, "task", a.TaskID,
-		"outcome", why)
+	e.log.InfoContext(ctx, "quiet turn's cancellation withdrawn", "reason", c.Reason, "run", r.ID, "attempt", a.Seq,
+		"task", a.TaskID, "outcome", why)
 	return true, nil
 }
 
@@ -1987,6 +2079,9 @@ func (e *Engine) confirmCancelTx(ctx context.Context, tx *sql.Tx, c *store.Cance
 	}
 	if c.Reason == store.CancelQuotaStall && r.State != store.RunCanceling && r.State != store.RunClosed {
 		return e.confirmQuotaStall(ctx, tx, r, a, outcome)
+	}
+	if c.Reason == store.CancelLeaseExpired && r.State == store.RunDispatched {
+		return e.abandonTx(ctx, tx, r, a, outcome)
 	}
 	if a.Open() {
 		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, c.Reason+": "+outcome); err != nil {

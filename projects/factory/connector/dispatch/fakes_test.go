@@ -507,12 +507,26 @@ type fakeKagent struct {
 	// sessions deleted.
 	deleteErr []error
 	deleted   []string
+	// hung makes the calls a hung runtime never answers time out: Send,
+	// CancelTask and DeleteSession without force (HOME-141). GetTask, the
+	// session reads and ForceDeleteSession still answer; listErr fails
+	// ListTasks.
+	hung bool
+	// forceErr fails every ForceDeleteSession while set; forced lists the
+	// sessions it deleted.
+	forceErr error
+	forced   []string
 }
+
+// errHung is a call to a hung kagent runtime that timed out.
+var errHung = fmt.Errorf("kagent: %w", context.DeadlineExceeded)
 
 type fakeTask struct {
 	task            kagent.Task
 	agent           kagent.AgentRef
 	cancelRequested bool
+	// gone hides a task of a force-deleted session.
+	gone bool
 }
 
 // settle completes a requested cancellation on the next read.
@@ -558,6 +572,9 @@ func (k *fakeKagent) Send(_ context.Context, agent kagent.AgentRef, msg kagent.M
 	defer k.mu.Unlock()
 	k.calls++
 	k.sends = append(k.sends, fakeSend{agent, msg})
+	if k.hung {
+		return nil, errHung
+	}
 	if k.dropFor[msg.MessageID] {
 		return nil, fmt.Errorf("%w: connection reset", kagent.ErrAmbiguous)
 	}
@@ -696,7 +713,7 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 		return nil, k.taskReadErr
 	}
 	t, ok := k.tasks[id]
-	if !ok || t.agent != agent {
+	if !ok || t.agent != agent || t.gone {
 		return nil, fmt.Errorf("%w: task", kagent.ErrTaskNotFound)
 	}
 	t.settle()
@@ -723,7 +740,7 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 	var out []*kagent.Task
 	for _, id := range k.order {
 		t := k.tasks[id]
-		if t == nil {
+		if t == nil || t.gone {
 			continue
 		}
 		t.settle()
@@ -752,6 +769,9 @@ func (k *fakeKagent) CancelTask(_ context.Context, agent kagent.AgentRef, id str
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	if k.hung {
+		return nil, errHung
+	}
 	t, ok := k.tasks[id]
 	if !ok || t.agent != agent {
 		return nil, fmt.Errorf("%w: task", kagent.ErrTaskNotFound)
@@ -842,6 +862,9 @@ func (k *fakeKagent) DeleteSession(_ context.Context, id string) (*kagent.Sessio
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++
+	if k.hung {
+		return nil, errHung
+	}
 	if len(k.deleteErr) > 0 {
 		err := k.deleteErr[0]
 		k.deleteErr = k.deleteErr[1:]
@@ -862,6 +885,43 @@ func (k *fakeKagent) DeleteSession(_ context.Context, id string) (*kagent.Sessio
 	c := *s
 	c.State = kagent.RuntimeDeleting
 	return &c, nil
+}
+
+// ForceDeleteSession deletes a session with force, as kagent v1.0.1 does:
+// its active tasks end CANCELED and, with the session, can no longer be
+// read. A deleted session answers NOT_FOUND.
+func (k *fakeKagent) ForceDeleteSession(_ context.Context, id string) (*kagent.Session, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.calls++
+	if k.forceErr != nil {
+		return nil, k.forceErr
+	}
+	s, ok := k.sessions[id]
+	if !ok {
+		return nil, kagent.ErrSessionNotFound
+	}
+	for _, t := range k.tasks {
+		if t.task.ContextID == id {
+			if !kagent.Quiescent(t.task.Status.State) {
+				t.task.Status = kagent.TaskStatus{State: kagent.StateCanceled}
+			}
+			t.gone = true
+		}
+	}
+	delete(k.sessions, id)
+	delete(k.contexts, id)
+	k.forced = append(k.forced, id)
+	c := *s
+	c.State = kagent.RuntimeDeleted
+	return &c, nil
+}
+
+// Forced lists the sessions ForceDeleteSession deleted.
+func (k *fakeKagent) Forced() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]string(nil), k.forced...)
 }
 
 // Deleted lists the sessions DeleteSession deleted.

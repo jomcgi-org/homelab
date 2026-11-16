@@ -10,6 +10,7 @@ const (
 	SessionDone     = "done"     // its work item merged
 	SessionStopped  = "stopped"  // its work item stopped and no run resumed it
 	SessionReplaced = "replaced" // its work item no longer records it
+	SessionStuck    = "stuck"    // kagent did not confirm a cancellation in it (HOME-141)
 )
 
 // FinishedSession is a kagent session of a work item that no open attempt,
@@ -123,4 +124,45 @@ func (s *Store) ConfirmSessionDeletion(ctx context.Context, q Querier, contextID
 	_, err := q.ExecContext(ctx, `
 		UPDATE session_deletion SET confirmed_at = now() WHERE context_id = $1 AND confirmed_at IS NULL`, contextID)
 	return err
+}
+
+// RecordForceDelete records a DeleteSession call with force before it is
+// sent, in q's transaction, which Writer.Tx fences on the epoch: the
+// attempt's session holds a turn kagent has not confirmed canceled. It
+// clears the session from the work item, so no send goes there again and a
+// retry opens a new session. caller is the pinned caller boundary.
+func (s *Store) RecordForceDelete(ctx context.Context, q Querier, contextID string, workID, epoch int64, caller string) error {
+	if _, err := q.ExecContext(ctx, `
+		UPDATE work_item SET session_id = NULL, updated_at = now() WHERE id = $1 AND session_id = $2`,
+		workID, contextID); err != nil {
+		return err
+	}
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO session_deletion (context_id, work_item_id, reason, writer_epoch, caller_identity, force)
+		VALUES ($1, $2, 'stuck', $3, $4, true)
+		ON CONFLICT (context_id) DO UPDATE SET writer_epoch = EXCLUDED.writer_epoch,
+			caller_identity = EXCLUDED.caller_identity, force = true,
+			requests = session_deletion.requests + 1, last_requested_at = now()`,
+		contextID, workID, epoch, caller)
+	return err
+}
+
+// RecordRevert records a RevertSession call before it is sent, on a session
+// whose force delete kagent refused, under the writer epoch in q's
+// transaction.
+func (s *Store) RecordRevert(ctx context.Context, q Querier, contextID string, epoch int64) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE session_deletion SET reverts = reverts + 1, writer_epoch = $2 WHERE context_id = $1 AND force`,
+		contextID, epoch)
+	return err
+}
+
+// ForceDeleting reports whether the connector sent DeleteSession with force
+// for the session and kagent has not yet confirmed it gone.
+func (s *Store) ForceDeleting(ctx context.Context, contextID string) (bool, error) {
+	var ok bool
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM session_deletion WHERE context_id = $1 AND force AND confirmed_at IS NULL)`,
+		contextID).Scan(&ok)
+	return ok, err
 }

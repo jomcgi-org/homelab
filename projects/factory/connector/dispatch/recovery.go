@@ -91,7 +91,7 @@ func (e *Engine) recoverHeld(ctx context.Context, r *store.Run, wi *store.WorkIt
 	var canceled bool
 	var retries int
 	if err := e.st.DB.QueryRowContext(ctx, `SELECT w.state = 'stopped' OR r.state = 'canceling'
-		OR EXISTS (SELECT 1 FROM cancellation WHERE delivery_attempt_id = $2 AND state = 'pending'),
+		OR EXISTS (SELECT 1 FROM cancellation WHERE delivery_attempt_id = $2 AND state = 'pending' AND reason <> 'lease_expired'),
 		w.engineering_retries FROM work_item w JOIN run r ON r.work_item_id = w.id
 		WHERE r.id = $1`, r.ID, a.ID).Scan(&canceled, &retries); err != nil {
 		return err
@@ -143,6 +143,14 @@ func (e *Engine) recoverHeld(ctx context.Context, r *store.Run, wi *store.WorkIt
 		err := tx.QueryRowContext(ctx, `SELECT id, reason FROM cancellation WHERE delivery_attempt_id = $1 AND state = 'pending' FOR UPDATE`, a.ID).Scan(&c.ID, &c.Reason)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if c.Reason == store.CancelLeaseExpired {
+			// The liveness lease's own cancellation yields to the operator's
+			// decision (HOME-141).
+			if err := e.st.ConfirmCancellation(ctx, tx, c.ID, "operator_attested_fencing"); err != nil {
+				return err
+			}
+			c = store.Cancellation{AttemptID: a.ID, RunID: r.ID}
 		}
 		cancel := c.ID != 0 || hold.Action == "cancel" || workState == store.WorkStopped || state == store.RunCanceling
 		if a.WorkItemEpoch == wi.Epoch {

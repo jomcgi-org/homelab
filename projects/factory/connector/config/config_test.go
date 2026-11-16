@@ -121,7 +121,9 @@ links:
 	if *b.MaxReviewRounds != 3 || *b.MaxRebaseRounds != 3 || *b.MaxSplitRounds != 1 || len(b.RequiredChecks) != 2 || b.ReviewerCheck.AppID != 4242 || b.TrustedReviewers[0] != "reviewer" {
 		t.Fatalf("binding = %+v", b)
 	}
-	if time.Duration(f.Intervals.ReviewPoll) != time.Minute || time.Duration(f.Intervals.QuotaStall) != 10*time.Minute || f.Links.Issue == "" {
+	if time.Duration(f.Intervals.ReviewPoll) != time.Minute || time.Duration(f.Intervals.QuotaStall) != 10*time.Minute ||
+		time.Duration(f.Intervals.TaskLease) != 5*time.Minute || time.Duration(f.Intervals.ProgressLease) != 20*time.Minute ||
+		time.Duration(f.Intervals.ForceDelete) != 10*time.Minute || f.Links.Issue == "" {
 		t.Fatalf("intervals = %+v links = %+v", f.Intervals, f.Links)
 	}
 	if _, err := Parse([]byte(strings.Replace(review, "        statusCreator: lint-bot\n", "", 1))); err == nil {
