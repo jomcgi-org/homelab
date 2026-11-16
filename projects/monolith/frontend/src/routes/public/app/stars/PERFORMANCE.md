@@ -116,7 +116,7 @@ captured public history response, including zero months. Subsequent local
 PostgreSQL 16.14 plans used the migrated schema and reconstructed fixture:
 three read-only runs gave median sequential-scan execution of 1.596 ms for
 14,234 site metadata rows and 19.699 ms for 170,808 monthly rows. Zero-month
-rows are synthetic. These [saved plans](../../../../../docs/public-app-performance-2026-11-15.md#evidence-archive)
+rows are synthetic. These plans ([not published](../../../../../docs/public-app-performance-2026-11-15.md#evidence))
 do not measure production statistics, concurrency, Python assembly or transport,
 and do not justify an index.
 

@@ -4,7 +4,7 @@
 
 Final median LCP is **Hikes 1064 ms, Ships 1036 ms, Stars 1048 ms and Trips index 1380 ms**. Hikes/Ships/Stars first-MISS header arrival is **890/1001/1046 ms** and first-MISS LCP is **1768/1856/1912 ms**. Stars’ naturally ready Historical click remains **304 ms**. These are the last reviewed lab observations, not a claim that every target passed.
 
-PR states are a snapshot at **2026-11-15T05:30:13.419147+00:00**. The structured report in the [evidence archive](#evidence-archive) preserves full SHAs, every intermediate stage, asset cohorts, sample exclusions, observed cache groups and explicit nulls. A rollout check identifies deployed source, while the observed immutable assets identify what cached HTML actually served.
+PR states are a snapshot at **2026-11-15T05:30:13.419147+00:00**. Each run's measurements are in its hosted workflow artifact; see [Evidence](#evidence) for what is published. A rollout check identifies deployed source, while the observed immutable assets identify what cached HTML actually served.
 
 ## Target status
 
@@ -225,7 +225,7 @@ Archive stage 1 #8020 is verified live at **0.792.59**, source `a7d0b8cd41cb658f
 
 The release-A retry captures 253 assets, including 1 worker, across 759 identity/gzip/Brotli responses, all observed HIT with zero errors. It preserves the first attempt's proxy timeout separately. Because these responses came from edge cache, they do not establish archive fallback. Stage 2 #8025: rollout verified at 0.792.62 and current 0.792.63; subsequent HTTP/source checks recorded below, with browser/per-pod limitations. No final browser metric is inferred from the capture or rollout.
 
-The later 0.792.62→0.792.63 comparison covers 197 common paths (591 representations) and 56 removed paths. The original removed-only pass returns 223/224 exact content responses; one cold identity request receives an Envoy 503 and remains a failed observation. All 56 removed paths have non-HIT archive evidence in their other representations. A separately recorded later 200/MISS identity confirmation has exact bytes and the expected strong ETag, giving 253/253 path coverage across observations—not a single clean pass. Its pre-response proxy retry is retained. Earlier bootstrap 174 HTTP 429 responses and the paced continuation remain in the archive.
+The later 0.792.62→0.792.63 comparison covers 197 common paths (591 representations) and 56 removed paths. The original removed-only pass returns 223/224 exact content responses; one cold identity request receives an Envoy 503 and remains a failed observation. All 56 removed paths have non-HIT archive evidence in their other representations. A separately recorded later 200/MISS identity confirmation has exact bytes and the expected strong ETag, giving 253/253 path coverage across observations—not a single clean pass. Its pre-response proxy retry is retained. Earlier bootstrap 174 HTTP 429 responses and the paced continuation are in the unpublished [local evidence](#evidence).
 
 These are HTTP/source checks. A held old-HTML browser session, per-pod rolling mixtures/alternation and account-wide lifecycle duration were not tested. Current generation content confirms the Stars transport helper and visible-photo high priority; it does not prove every historical generation is recoverable.
 
@@ -241,7 +241,7 @@ Only public non-personalized responses may be cached. Session/cookie-dependent/p
 
 ## Local PostgreSQL query evidence
 
-An isolated PostgreSQL 16.14 fixture database used the actual migrations and indexes. All 11 measured SELECTs ran three times with transaction_read_only=on after fixture loading and ANALYZE. No production database was contacted. Raw SQL, plans, buffers and timings are preserved as `evidence/public-app-postgres-explain.json` in the [evidence archive](#evidence-archive), without corpus rows.
+An isolated PostgreSQL 16.14 fixture database used the actual migrations and indexes. All 11 measured SELECTs ran three times with transaction_read_only=on after fixture loading and ANALYZE. No production database was contacted. The raw SQL, plans, buffers and timings are not published ([Evidence](#evidence)); the table below is the published record.
 
 | Query | Plan | Rows | Median execution ms |
 | --- | --- | ---: | ---: |
@@ -312,9 +312,11 @@ States below distinguish merged code, verified runtime/tooling and pending accep
 
 No production database plan, physical Moto G run, field INP collection, complete worker-throttle validation or exhaustive dynamic-route measurement was available. Local fixture EXPLAIN is recorded separately. Those gaps remain unverified rather than passes.
 
-## Evidence archive
+## Evidence
 
-The complete `public-app-performance-evidence.zip` accompanies delivery. The [evidence manifest](performance/2026-11-15-evidence-manifest.json) names its exact report/plan members, source hashes and public workflow artifacts. The archive preserves full structured metrics, request inventories, calibration, sample exclusions, local plans and separate CPU profiles; it is intentionally outside this documentation PR. Its checksum is delivered beside the archive, avoiding a circular archive/report hash. A private account link is not embedded in this public repository.
+The hosted workflow artifacts in the [provenance table](#compact-measurement-provenance) are the published evidence. Downloading one needs a GitHub sign-in, and they expire on 2027-02-13. The final artifact holds `results.json`, `table.md`, calibration, the measurement log and Stars CPU profiles. Its SHA-256 matches `downloadedArtifactSha256` in the [evidence manifest](performance/2026-11-15-evidence-manifest.json), and its `table.md` holds the final LCP and interaction figures above.
+
+The combined structured report, PostgreSQL plans, rollout checks and asset-retention captures were collected locally into `public-app-performance-evidence.zip`. That archive is not published. The manifest records each member's size and SHA-256 only, so figures taken from those members cannot be checked from this repository.
 
 ## Compact measurement provenance
 

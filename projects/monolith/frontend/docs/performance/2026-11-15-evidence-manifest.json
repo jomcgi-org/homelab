@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "final",
   "archiveFilename": "public-app-performance-evidence.zip",
-  "archiveDelivery": "The complete archive and its SHA-256 accompany delivery. No private account URL is embedded in this public repository.",
+  "archiveDelivery": "Not published. The archive was collected locally; this manifest records member sizes and SHA-256 hashes only.",
   "archiveIndex": "index.json contains the complete member list, source sizes and SHA-256 hashes.",
   "hashScope": "Hashes below identify source member bytes only. No archive or human-report hash is embedded here, avoiding circular archive/report references.",
   "measurementScope": "17 anonymous browser journeys; 13 normal-key and 13 unique-query endpoint series; separate CPU diagnostics. Field INP and incomplete worker measurements remain unavailable.",
