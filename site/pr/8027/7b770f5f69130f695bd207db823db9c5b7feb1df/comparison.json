@@ -1,5 +1,5 @@
 {
-  "head": "76f2c00ef5893a4e1aefaec054c306a9f957d8f1",
+  "head": "7b770f5f69130f695bd207db823db9c5b7feb1df",
   "baseline": "1dddc77dab52533aaf7b16a4ef5201f716ebdc50",
   "baseline_kind": "git merge-base",
   "rows": [
@@ -657,7 +657,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -999,7 +999,7 @@
       "after": "captures/review/after-gaps-audit-390-light.png",
       "before": "captures/review/before-gaps-audit-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1227,7 +1227,7 @@
       "after": "captures/review/after-notes-pending-390-light.png",
       "before": "captures/review/before-notes-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
