@@ -135,4 +135,7 @@ def test_runtime_packages_follow_repository_pins_without_install_scripts(tmp_pat
         "svelte@5.56.9",
     ]
     assert "--ignore-scripts" in npm
+    assert "--userconfig=/dev/null" in npm
+    assert f"--globalconfig={root / 'npm-global.conf'}" in npm
+    assert (root / "npm-global.conf").read_text() == ""
     assert all(call.kwargs["check"] for call in run.call_args_list)

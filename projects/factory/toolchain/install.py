@@ -86,6 +86,9 @@ def install(repo: Path, root: Path) -> None:
         f"{name}@{dependencies[name]}"
         for name in ("prettier", "prettier-plugin-svelte", "svelte")
     ]
+    # npm requires separate paths for user and global configuration.
+    npm_global_config = root / "npm-global.conf"
+    npm_global_config.write_text("")
     subprocess.run(
         [
             str(root / "bin/node"),
@@ -97,7 +100,7 @@ def install(repo: Path, root: Path) -> None:
             "--no-audit",
             "--no-fund",
             "--userconfig=/dev/null",
-            "--globalconfig=/dev/null",
+            f"--globalconfig={npm_global_config}",
             "--registry=https://registry.npmjs.org",
             *packages,
         ],

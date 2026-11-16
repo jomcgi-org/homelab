@@ -134,6 +134,13 @@ func start() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	srv := &Server{dir: dir}
+	started := false
+	defer func() {
+		if !started {
+			srv.stop()
+		}
+	}()
 	// PostgreSQL refuses to run as root, which is how remote CI runs tests.
 	var cred *syscall.Credential
 	if os.Getuid() == 0 {
@@ -183,23 +190,25 @@ func start() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer logFile.Close()
 	cmd := run("postgres", "-D", data, "-p", strconv.Itoa(port), "-k", dir, "-c", "fsync=off")
+	srv.port = port
+	srv.cmd = cmd
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	srv := &Server{port: port, cmd: cmd, dir: dir}
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		db, _ := sql.Open("postgres", srv.DSN("postgres"))
 		err = db.Ping()
 		db.Close()
 		if err == nil {
+			started = true
 			return srv, nil
 		}
 		if time.Now().After(deadline) {
-			srv.stop()
 			logs, _ := os.ReadFile(logFile.Name())
 			return nil, fmt.Errorf("postgres not ready: %v\n%s", err, logs)
 		}
@@ -208,7 +217,7 @@ func start() (*Server, error) {
 }
 
 func (s *Server) stop() {
-	if s.cmd.Process != nil {
+	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Signal(syscall.SIGTERM)
 		done := make(chan struct{})
 		go func() { _ = s.cmd.Wait(); close(done) }()
@@ -216,7 +225,12 @@ func (s *Server) stop() {
 		case <-done:
 		case <-time.After(10 * time.Second):
 			_ = s.cmd.Process.Kill()
+			<-done
 		}
+		s.cmd = nil
+	}
+	if err := os.RemoveAll(s.dir); err != nil {
+		fmt.Fprintln(os.Stderr, "pgtest: remove data directory:", err)
 	}
 }
 
