@@ -38,11 +38,13 @@ spec:
                       --set=substrate_readwrite_password= \
                       -f /etc/postgresql-setup/setup.sql >/dev/null
           # Upstream sizes this for a dedicated node (2 CPU request, 16 limit);
-          # the kind overlay's request, with room to burst on a 12-core node.
+          # the kind overlay's CPU request, with room to burst on a 12-core
+          # node. Memory peaked at 111Mi over two days (2026-11-16), so the
+          # request is 256Mi; the 2Gi limit keeps the headroom.
           resources:
             requests:
               cpu: 250m
-              memory: 1Gi
+              memory: 256Mi
             limits:
               cpu: "4"
               memory: 2Gi

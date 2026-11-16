@@ -110,6 +110,24 @@ patches:
   # The bundled PostgreSQL, sized for this cluster, with its role setup run on
   # every start rather than by an installer over kubectl exec.
   - path: patches/postgres.yaml
+  # The API server peaked at 46Mi over two days (2026-11-16) against the
+  # chart's 256Mi request; the 1Gi limit stays.
+  - target:
+      kind: Deployment
+      name: ate-api-server
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ate-api-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: ate-api-server
+                resources:
+                  requests:
+                    memory: 128Mi
   - target:
       kind: StatefulSet
       name: postgres

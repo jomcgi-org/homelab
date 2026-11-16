@@ -47,6 +47,12 @@ kagent:
   controller:
     metrics:
       enabled: true
+  # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
+  # 256Mi request.
+  ui:
+    resources:
+      requests:
+        memory: 64Mi
   # Every agent runtime's limits, the codex agent's size (kagent 1.0.1 sets
   # one for all Agents).
   config:
@@ -83,6 +89,13 @@ agents:
     model: gpt-6.1-terra
     # One worker per concurrent review (reviewer.concurrency).
     concurrency: 3
+    # The review binding has no toolchain and runs no PR code, so its
+    # workers stay small: 1.2Gi at most over two days (2026-11-16), against
+    # the coder's 7.2Gi. The limit stays at the actor booking plus gVisor.
+    worker:
+      resources:
+        requests:
+          memory: 1536Mi
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
@@ -105,6 +118,11 @@ repositories:
 # factory/factory-itsaplan-oidc, both from factory-buckets.
 itsaplan:
   enabled: true
+  # The worker peaked at 43Mi over two days (2026-11-16) against 192Mi.
+  resources:
+    worker:
+      requests:
+        memory: 64Mi
   database:
     endpoints:
       - matchLabels:

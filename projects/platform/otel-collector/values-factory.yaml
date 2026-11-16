@@ -36,6 +36,13 @@ gateway:
 
 logs:
   enabled: true
+  # 2-day peak 123Mi per agent (2026-11-16) against the base's 64Mi request.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
   # Every namespace, warning and above, except:
   #   otel-collector: the agents' own export errors would be exported;
   #   authentik: the identity provider logs sign-in details and its database
@@ -112,10 +119,11 @@ clusterAgent:
   # 512Mi: process RSS peaked at 348 MiB with the heap at 124 MiB, so
   # GOMEMLIMIT makes the runtime return freed memory before the limit.
   goMemLimit: 400MiB
+  # Requested at the 2-day peak (248Mi, 2026-11-16) plus about 15%.
   resources:
     requests:
       cpu: 20m
-      memory: 192Mi
+      memory: 288Mi
     limits:
       memory: 512Mi
   events:

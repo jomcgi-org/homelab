@@ -34,20 +34,37 @@ argo-cd:
         memory: 256Mi
       limits:
         memory: 1Gi
+  # Controller and redis from the 2-day peaks (2026-11-16: 577Mi, 84Mi)
+  # plus about 15%. The last three had no requests (BestEffort).
   controller:
     resources:
       requests:
         cpu: 250m
-        memory: 512Mi
+        memory: 640Mi
       limits:
         memory: 1536Mi
   redis:
     resources:
       requests:
         cpu: 15m
-        memory: 32Mi
+        memory: 96Mi
       limits:
-        memory: 128Mi
+        memory: 192Mi
+  applicationSet:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+  dex:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+  notifications:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
   configs:
     cm:
       url: https://factory-argocd.jomcgi.dev
