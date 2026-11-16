@@ -184,8 +184,9 @@ poll and can be stale. When the query shows no PR, look on GitHub for one
 from the issue's branch, which the connector may have opened after its last
 write: `gh pr list --head factory/HOME-N --state all`. Close any open one.
 These checks do not prove that a PR creation already sent to GitHub has
-finished: one can still open a PR later. Say so in the new HOME issue below.
-Its owner closes any PR that later appears from `factory/HOME-N`. If
+finished: one can still open a PR later, until HOME-138 fences creation
+against the stop. Say so in the new HOME issue below. Its owner closes any
+PR that later appears from `factory/HOME-N`. If
 `factory-db-1` is not the primary, take the name from
 `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get cluster
 factory-db`.
