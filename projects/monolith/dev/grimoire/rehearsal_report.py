@@ -123,6 +123,19 @@ def expect_network_diagnostic(report, seat, method, url, *, status=None, failure
     )
 
 
+def declare_refused_poll(report, seat, method, url, status, refused_urls):
+    """Declare a sheet-history poll refused for a character the seat just lost.
+
+    Only a GET answered 404 at one of this seat's refused URLs is declared.
+    Any other response stays undeclared, so its console error still fails
+    the report. Returns whether a declaration was made.
+    """
+    if method == "GET" and status == 404 and url in refused_urls:
+        expect_network_diagnostic(report, seat, method, url, status=404)
+        return True
+    return False
+
+
 def record_console(report, text, location, seat, *, argument_count=None):
     report["console_errors"].append(text)
     report["console_events"].append(

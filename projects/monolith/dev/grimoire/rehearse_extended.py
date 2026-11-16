@@ -5,7 +5,7 @@ import time
 from contextlib import contextmanager
 
 from playwright.sync_api import expect
-from rehearsal_report import expect_network_diagnostic
+from rehearsal_report import declare_refused_poll
 
 ORIGIN = "http://friends.localhost:8177"
 API = f"{ORIGIN}/api/grimoire"
@@ -420,14 +420,14 @@ def rehearse_extended(pages, output, report, width):
 
         def refused_poll(role):
             def declare(response):
-                if (
-                    response.request.method == "GET"
-                    and response.status == 404
-                    and response.url in {sheets_url(name) for name in revoked[role]}
-                ):
-                    expect_network_diagnostic(
-                        report, role, "GET", response.url, status=404
-                    )
+                declare_refused_poll(
+                    report,
+                    role,
+                    response.request.method,
+                    response.url,
+                    response.status,
+                    {sheets_url(name) for name in revoked[role]},
+                )
 
             return declare
 
