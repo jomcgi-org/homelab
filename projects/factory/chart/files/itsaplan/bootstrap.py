@@ -484,11 +484,61 @@ def has_coordinator_permissions(permissions):
     )
 
 
+def is_coordinator_role(role):
+    """Allow false entries from API normalization, but no unrelated grant."""
+    permissions = role["permissions"]
+    return (
+        not role["system"]
+        and has_coordinator_permissions(permissions)
+        and all(
+            enabled is False
+            or COORDINATOR_PERMISSIONS.get(resource, {}).get(action) is True
+            for resource, actions in permissions.items()
+            for action, enabled in actions.items()
+        )
+    )
+
+
+def coordinator_role(session, team_id, username):
+    """Never patch a role: its users may span projects, invites and groups.
+
+    Only reuse an unused role with exactly the required grants. Otherwise
+    choose an unused name and create a separate role. A lost create response
+    leaves an unused role that a retry can safely adopt.
+    """
+    base = f"/teams/{team_id}/roles"
+    roles = session.call("GET", base + "/options")
+    stem = f"Factory coordinator ({username})"
+    unused = {"members": 0, "agents": 0, "invites": 0, "groups": 0}
+    for suffix in range(len(roles) + 1):
+        name = stem if suffix == 0 else f"{stem} {suffix}"
+        matches = [r for r in roles if r["name"] == name]
+        if matches:
+            if len(matches) != 1 or not is_coordinator_role(matches[0]):
+                continue
+            role = matches[0]
+        else:
+            role = session.call(
+                "POST", base, {"name": name, "permissions": COORDINATOR_PERMISSIONS}
+            )
+        path = f"{base}/{role['id']}"
+        if session.call("GET", path + "/usage") != unused:
+            continue
+        # Recheck the role itself, not just its name or the earlier list.
+        current = [
+            r for r in session.call("GET", base + "/options") if r["id"] == role["id"]
+        ]
+        if len(current) != 1 or not is_coordinator_role(current[0]):
+            raise SystemExit("coordinator role permissions changed; not assigned")
+        return current[0]
+    raise SystemExit("no unused coordinator role; retry with current role usage")
+
+
 def ensure_coordinator_permissions(session, team_id, agent, key):
     """Use admin only to grant rights; verify effective access as the agent.
 
-    Never edit the shared default role. Existing sufficient grants stay as-is;
-    missing rights get a dedicated role on this one project membership.
+    Existing sufficient grants stay as-is. Missing rights get an unused role
+    with only the required grants on this one project membership.
     """
     headers = {"x-api-key": key}
     _, _, me = request("GET", API + "/me", headers=headers)
@@ -500,28 +550,7 @@ def ensure_coordinator_permissions(session, team_id, agent, key):
     project = f"/projects/{team_id}.{CONFIG['project']['key']}"
     _, _, access = request("GET", API + project, headers=headers)
     if not has_coordinator_permissions(access["permissions"]):
-        base = f"/teams/{team_id}/roles"
-        name = f"Factory coordinator ({agent['username']})"
-        roles = [r for r in session.call("GET", base + "/options") if r["name"] == name]
-        if len(roles) > 1 or (roles and roles[0]["system"]):
-            raise SystemExit("coordinator role name must identify one team-owned role")
-        if not roles:
-            role = session.call(
-                "POST", base, {"name": name, "permissions": COORDINATOR_PERMISSIONS}
-            )
-        else:
-            role = roles[0]
-            if not has_coordinator_permissions(role["permissions"]):
-                # This dedicated role may carry other deliberate grants. Keep
-                # those, and repair only the rights the connector requires.
-                permissions = {
-                    r: dict(actions) for r, actions in role["permissions"].items()
-                }
-                for resource, actions in COORDINATOR_PERMISSIONS.items():
-                    permissions.setdefault(resource, {}).update(actions)
-                session.call(
-                    "PATCH", f"{base}/{role['id']}", {"permissions": permissions}
-                )
+        role = coordinator_role(session, team_id, agent["username"])
         session.call(
             "PATCH",
             project + "/members/" + urllib.parse.quote(agent["userId"], safe=""),

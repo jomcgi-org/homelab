@@ -1144,10 +1144,14 @@ Attestations and their consumed/invalidated states remain in the audit trail.
 coordinator's identity with `/me` using its stored key. It reads that identity's
 effective permissions from `/projects/{teamId}.HOME` (the bootstrap project):
 `work_items read/create/edit` and `ai_agents read`. If rights are missing, the
-existing bootstrap admin creates or repairs a dedicated team role. It assigns
-that role to the coordinator's project membership, then verifies effective
-permissions again using the coordinator key. Missing rights fail bootstrap.
-Sufficient grants stay unchanged; shared roles and other members stay unchanged.
+existing bootstrap admin selects an unused team role with exactly those grants.
+It checks the role's members, agents, pending invites and groups through the
+usage API. A same-named role with other grants or any users is left untouched;
+bootstrap creates a separate role under an unused numbered name. It never
+patches role permissions. It re-reads the selected role before assigning it to
+the coordinator's project membership, then verifies effective permissions using
+the coordinator key. A failed read or missing grant fails bootstrap.
+Sufficient existing grants and all other memberships stay unchanged.
 Logs name the verified project and rights without keys. The pinned
 [roles](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/roles/index.ts)
 and [membership](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/members/index.ts)
@@ -1168,6 +1172,12 @@ The coordinator grant must be deployed before that lifecycle is enabled.
 The removed implementation and regression tests remain available at
 [e3261528e](https://github.com/jomcgi-org/homelab/commit/e3261528e3830c2cabc939ec8ad3c15ec7558c3a)
 for those follow-up PRs. This permission prerequisite does not complete HOME-106.
+The current connector still moves its delivery issue to Done on merge and does
+not read the pending `Activation:` trailer. Before this prerequisite can land,
+the factory must create an owned HOME follow-up for the remaining work and link
+it as blocking HOME-106, or stop completion of HOME-106 through delivery.
+No such tracker handoff is recorded here. This remains a landing blocker;
+the dispatched coding worker has no itsaplan access to complete that handoff.
 
 **Merge.** When the required checks and the trusted reviewer succeed on the
 current head, enqueue with GraphQL `enqueuePullRequest` and
