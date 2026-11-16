@@ -798,7 +798,8 @@ type Attempt struct {
 	// Context is what a replacement session starts from, sent with the input.
 	Context string
 	// EventCount is the task's size when the connector last saw it change,
-	// at EventAt; zero before the first read.
+	// at EventAt. Both are zero before the first read, including on an
+	// attempt sent before the quota_stall migration.
 	EventCount int
 	EventAt    time.Time
 }
@@ -812,14 +813,16 @@ const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
 	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
 	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, ''),
-	event_count, coalesce(event_at, 'epoch'::timestamptz)`
+	event_count, event_at`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
+	var eventAt sql.NullTime
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
 		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context,
-		&a.EventCount, &a.EventAt)
+		&a.EventCount, &eventAt)
+	a.EventAt = eventAt.Time
 	return a, err
 }
 
@@ -834,10 +837,12 @@ func (s *Store) SetAttemptEvents(ctx context.Context, id int64, count int, toolR
 // QuietAttempts lists the running turns whose task has not changed since
 // before: the latest attempt of a dispatched run without a stop, accepted,
 // not held, without a running tool call and without a pending
-// cancellation. A task the connector has not read yet counts from its send.
+// cancellation. A turn whose task the connector has not read yet is not
+// quiet: event_at is unset on a new attempt and, at rollout, on one sent
+// before the migration, whose activity is unknown.
 func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
-		WHERE a.state = 'accepted' AND a.error IS NULL AND coalesce(a.event_at, a.sent_at) < $1
+		WHERE a.state = 'accepted' AND a.error IS NULL AND a.event_at < $1
 			AND NOT a.tool_running
 			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = a.run_id)
 			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched' AND r.stopped_reason IS NULL)
