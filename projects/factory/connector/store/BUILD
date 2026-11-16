@@ -8,6 +8,7 @@ go_library(
         "human_gate.go",
         "notify.go",
         "recovery.go",
+        "renovate.go",
         "sessions.go",
         "status.go",
         "store.go",
@@ -25,6 +26,7 @@ go_test(
     name = "store_test",
     srcs = [
         "recovery_test.go",
+        "renovate_test.go",
         "status_test.go",
         "store_test.go",
         "transcript_test.go",

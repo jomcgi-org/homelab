@@ -8,8 +8,13 @@ import (
 	"strconv"
 )
 
-// Project includes the human members needed to assign a gate issue.
+// Project includes assignable users and effective issue-creation permission.
 type Project struct {
+	Permissions struct {
+		WorkItems struct {
+			Create bool `json:"create"`
+		} `json:"work_items"`
+	} `json:"permissions"`
 	Columns   []Column   `json:"columns"`
 	Assignees []Assignee `json:"assignees"`
 }

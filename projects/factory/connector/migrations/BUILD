@@ -23,6 +23,7 @@ go_library(
         "20261116220000_human_gate_issues.sql",
         "20261116230000_liveness.sql",
         "20261116240000_admission_holds.sql",
+        "20261117000000_renovate_majors.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

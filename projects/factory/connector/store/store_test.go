@@ -94,7 +94,7 @@ func TestMigrationsAreIdempotentAndCreateTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, table := range []string{
-		"repo_binding", "work_item", "run", "delivery_attempt", "pull_request",
+		"repo_binding", "work_item", "run", "delivery_attempt", "pull_request", "renovate_major", "renovate_attempt",
 		"review_event", "delivery_read", "status_read", "quota_read", "cancellation", "outbox", "writer", "session_deletion",
 		"human_gate_issue", "human_gate_attempt",
 	} {

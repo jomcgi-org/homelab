@@ -106,6 +106,18 @@ func (c *Client) PullRequestCommits(ctx context.Context, repo string, number int
 // MaxPullPages bounds an open PR listing: 10,000 PRs.
 const MaxPullPages = 100
 
+// GetPullRequest reads the source identity and body as well as its state.
+func (c *Client) GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error) {
+	var out restPull
+	if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls/"+strconv.Itoa(number), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Number != number || out.User.Login == "" || out.State == "" {
+		return nil, errors.New("github: incomplete PR identity")
+	}
+	return out.pr(), nil
+}
+
 // PullRequestCreationBoundary includes all PR states; zero means an empty list.
 func (c *Client) PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error) {
 	var pulls []restPull

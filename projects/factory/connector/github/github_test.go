@@ -286,6 +286,21 @@ func TestPullRequestPreservesHeadRepository(t *testing.T) {
 	}
 }
 
+func TestGetPullRequestReadsRenovateIdentityAndClosure(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/jomcgi-org/homelab/pulls/42" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"number":42,"state":"closed","merged_at":"2026-11-15T12:00:00Z", "user":{"login":"jomcgi-factory-renovate[bot]"},"labels":[{"name":"major-upgrade"}],"head":{"ref":"renovate/pkg-2.x","sha":"head"},"base":{"ref":"main"},"body":"version table"}`))
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	p, err := c.GetPullRequest(context.Background(), "jomcgi-org/homelab", 42)
+	if err != nil || !p.Merged || p.Author != "jomcgi-factory-renovate[bot]" || p.HeadRef != "renovate/pkg-2.x" || p.Body != "version table" || len(p.Labels) != 1 {
+		t.Fatalf("PR = %+v, %v", p, err)
+	}
+}
+
 func (fixedTokens) Token(context.Context, string) (string, error) { return "ghs_fixed", nil }
 func (fixedTokens) Invalidate(string)                             {}
 

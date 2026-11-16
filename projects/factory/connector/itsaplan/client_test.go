@@ -4,12 +4,85 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestMajorIssueWritesUseCoordinatorAndRealDelegateUserID(t *testing.T) {
+	var got seen
+	c := server(t, 200, `{"permissions":{"work_items":{"read":true,"create":true,"edit":true}},"columns":[{"id":2,"name":"Todo","stateType":"unstarted"}],"assignees":[{"userId":"user-coder","username":"homelab-codex","kind":"agent"}]}`, &got)
+	p, err := c.GetProject(context.Background(), "HOME")
+	if err != nil || !p.Permissions.WorkItems.Create || len(p.Assignees) != 1 || p.Assignees[0].UserID != "user-coder" || got.path != "/projects/HOME" || got.key != "k-coord" {
+		t.Fatalf("project = %+v, %v; request = %+v", p, err, got)
+	}
+	c = server(t, 201, `{"id":62,"identifier":"HOME-62","delegateUserId":null}`, &got)
+	is, err := c.CreateIssue(context.Background(), "HOME", NewIssue{Title: "Land Renovate major", Description: "brief", ColumnID: 2})
+	if err != nil || is.ID != 62 || is.Identifier != "HOME-62" || is.DelegateUserID != nil || got.path != "/projects/HOME/issues" || got.key != "k-coord" {
+		t.Fatalf("create = %+v, %v; request = %+v", is, err, got)
+	}
+	if _, ok := got.body["delegateUserId"]; ok {
+		t.Fatal("create delegated before the issue key was known")
+	}
+	description, delegate := "Put `Refs HOME-62` in the commit message.\n\nbrief", p.Assignees[0].UserID
+	c = server(t, 200, `{}`, &got)
+	if err := c.UpdateIssue(context.Background(), 62, IssueUpdate{Description: &description, DelegateUserID: &delegate}); err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "PATCH" || got.path != "/issues/62" || got.key != "k-coord" || got.body["description"] != description || got.body["delegateUserId"] != "user-coder" {
+		t.Fatalf("delegate request = %+v", got)
+	}
+	if _, ok := got.body["columnId"]; ok {
+		t.Fatal("delegation unexpectedly moved the issue")
+	}
+}
+
+func TestMajorIssueSearchAndIncompleteCreation(t *testing.T) {
+	var got seen
+	c := server(t, 200, `[{"id":62,"identifier":"HOME-62","archived":true}]`, &got)
+	marker := "<!-- factory-renovate:abc -->"
+	hits, err := c.SearchIssues(context.Background(), "HOME", marker)
+	q, _ := url.ParseQuery(got.query)
+	if err != nil || len(hits) != 1 || hits[0].ID != 62 || got.path != "/projects/HOME/issues/search" || q.Get("q") != marker || q.Get("limit") != "500" || got.key != "k-coord" {
+		t.Fatalf("search = %+v, %v; request = %+v", hits, err, got)
+	}
+	for _, reply := range []string{`{}`, `null`, `{"id":62}`} {
+		c = server(t, 201, reply, &got)
+		if _, err := c.CreateIssue(context.Background(), "HOME", NewIssue{}); err == nil {
+			t.Fatalf("incomplete create acknowledged: %s", reply)
+		}
+	}
+	c = server(t, 200, `null`, &got)
+	if _, err := c.SearchIssues(context.Background(), "HOME", marker); err == nil {
+		t.Fatal("null search treated as evidence of absence")
+	}
+}
+
+func TestGetIssueDecodesNullableArchivedAt(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		t.Run(fmt.Sprint(archived), func(t *testing.T) {
+			var got seen
+			stamp := "null"
+			if archived {
+				stamp = `"2026-11-15T12:34:56.000Z"`
+			}
+			// GET /issues/{id} has archivedAt; only search hits have archived.
+			c := server(t, 200, `{"id":62,"identifier":"HOME-62","columnId":1,"archivedAt":`+stamp+`}`, &got)
+			is, err := c.GetIssue(context.Background(), 62)
+			if err != nil || is.ID != 62 || (is.ArchivedAt != nil) != archived || got.path != "/issues/62" || got.key != "k-coord" {
+				t.Fatalf("issue = %+v, %v; request = %+v", is, err, got)
+			}
+			if archived && is.ArchivedAt.Format(time.RFC3339) != "2026-11-15T12:34:56Z" {
+				t.Fatalf("archivedAt = %v", is.ArchivedAt)
+			}
+		})
+	}
+}
 
 type seen struct {
 	method, path, query, key string
