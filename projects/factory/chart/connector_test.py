@@ -191,6 +191,30 @@ def test_identity_is_kept() -> None:
     assert sa["automountServiceAccountToken"] is False
 
 
+def test_human_gate_journal_survives_pod_replacement() -> None:
+    docs = _render(["connector.humanGateJournal.storageClass=standard-rwo"])
+    pvc = _in(docs, "PersistentVolumeClaim", _NS, "factory-connector-human-gate")
+    assert _KEEP.items() <= pvc["metadata"]["annotations"].items()
+    deploy = _in(docs, "Deployment", _NS, "factory-connector")
+    assert (
+        pvc["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+        == deploy["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+    )
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert pvc["spec"]["storageClassName"] == "standard-rwo"
+    assert pvc["spec"]["resources"]["requests"]["storage"] == "1Gi"
+    pod = _pod(docs)["spec"]
+    assert pod["securityContext"]["fsGroup"] == 65532
+    volume = next(v for v in pod["volumes"] if v["name"] == "human-gate-journal")
+    assert volume["persistentVolumeClaim"]["claimName"] == pvc["metadata"]["name"]
+    (container,) = pod["containers"]
+    mount = next(v for v in container["volumeMounts"] if v["name"] == volume["name"])
+    assert not mount.get("readOnly", False)
+    assert mount["mountPath"] == _env(docs)["FACTORY_CONNECTOR_HUMAN_GATE_JOURNAL"]
+    default = _in(_render(), "PersistentVolumeClaim", _NS, pvc["metadata"]["name"])
+    assert "storageClassName" not in default["spec"]
+
+
 def test_tokens_are_bound_to_kagent_and_the_broker() -> None:
     def audiences(docs: list[dict[str, Any]]) -> dict[str, str]:
         out = {}

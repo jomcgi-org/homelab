@@ -24,11 +24,12 @@ type Config struct {
 	KagentAuthority  string // FACTORY_CONNECTOR_KAGENT_AUTHORITY, exactly kagent's configured authority
 	// BrokerURL turns delivery on: the connector's GitHub tokens come from
 	// the broker, authenticated with the projected token in BrokerTokenFile.
-	BrokerURL       string // FACTORY_CONNECTOR_BROKER_URL
-	BrokerTokenFile string // FACTORY_CONNECTOR_BROKER_TOKEN_FILE
-	GitHubURL       string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
-	MetricsAddr     string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
-	Holder          string // POD_NAME, default hostname
+	BrokerURL        string // FACTORY_CONNECTOR_BROKER_URL
+	BrokerTokenFile  string // FACTORY_CONNECTOR_BROKER_TOKEN_FILE
+	GitHubURL        string // FACTORY_CONNECTOR_GITHUB_URL, default https://api.github.com
+	MetricsAddr      string // FACTORY_CONNECTOR_METRICS_ADDR, default :9090
+	Holder           string // POD_NAME, default hostname
+	HumanGateJournal string // FACTORY_CONNECTOR_HUMAN_GATE_JOURNAL, a persistent volume
 
 	File File
 }
@@ -138,6 +139,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		GitHubURL:        strings.TrimSuffix(getenv("FACTORY_CONNECTOR_GITHUB_URL"), "/"),
 		MetricsAddr:      getenv("FACTORY_CONNECTOR_METRICS_ADDR"),
 		Holder:           getenv("POD_NAME"),
+		HumanGateJournal: getenv("FACTORY_CONNECTOR_HUMAN_GATE_JOURNAL"),
 	}
 	if c.MetricsAddr == "" {
 		c.MetricsAddr = ":9090"

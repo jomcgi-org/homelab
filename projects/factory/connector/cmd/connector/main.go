@@ -213,6 +213,7 @@ func run(log *slog.Logger) error {
 		// rollback target is chart 0.29.10, which resumes admitted journals
 		// but admits no new ones (ARCHITECTURE.md "Rollback transition").
 		ArtifactTranscripts: true,
+		HumanGateJournal:    cfg.HumanGateJournal,
 
 		Caller: &kagent.InvocationCredentials{
 			Tokens: tokens, Authority: cfg.KagentAuthority,

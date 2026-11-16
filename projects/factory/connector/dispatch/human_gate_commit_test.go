@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,11 +101,9 @@ func (tx *gateFaultTx) Commit() error {
 	return nil
 }
 
-func TestHumanGateLostCommitAcknowledgmentRecoversBeforeExit(t *testing.T) {
+func TestHumanGateLostCommitAcknowledgmentSurvivesProcessLoss(t *testing.T) {
 	v := newHumanGateEnv(t)
 	v.readyGate("sha-1")
-	// Reconnect the writer through the faulting driver to the same real DB.
-	// Keep the original pool for observations unaffected by the injected fault.
 	db := v.st.DB
 	var database string
 	var port int
@@ -121,72 +120,107 @@ func TestHumanGateLostCommitAcknowledgmentRecoversBeforeExit(t *testing.T) {
 	})
 	t.Cleanup(func() { db.Close() })
 	v.e = v.engine("lost-gate-commit")
-	ctx, cancel := context.WithCancel(v.ctx)
-	defer cancel()
 	v.clk.Advance(61 * time.Second)
 	returned := make(chan error, 1)
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		returned <- v.e.Tick(ctx)
-	}()
-	// Always let recovery drain before releasing the test database, including
-	// if an assertion fails while the dispatch goroutine is waiting to retry.
-	defer func() {
+	go func() { returned <- v.e.Tick(v.ctx) }()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, store.ErrNotWriter) {
+			t.Fatalf("tick = %v, want writer loss", err)
+		}
+	case <-time.After(5 * time.Second):
+		// Let a regressed synchronous retry drain before DB teardown.
 		fault.recover()
-		select {
-		case <-finished:
-		case <-time.After(10 * time.Second):
-			t.Error("dispatch did not finish after database recovery")
-		}
-	}()
-	wait := func(signal <-chan struct{}, what string) {
-		t.Helper()
-		select {
-		case <-signal:
-		case err := <-returned:
-			t.Fatalf("dispatch exited before %s: %v", what, err)
-		case <-time.After(10 * time.Second):
-			t.Fatalf("timed out waiting for %s", what)
-		}
+		<-returned
+		t.Fatal("dispatch blocked waiting for database recovery")
 	}
-	wait(fault.committed, "the committed marker")
+	select {
+	case <-fault.committed:
+	default:
+		t.Fatal("fault did not commit before dropping the acknowledgment")
+	}
 	const messageID = "factory-human-gate/jomcgi-org/homelab/1/create"
 	var started bool
 	var sends int
 	if err := db.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE message_id = $1`, messageID).Scan(&started, &sends); err != nil || !started || sends != 1 {
 		t.Fatalf("marker did not commit: started=%t sends=%d err=%v", started, sends, err)
 	}
-	wait(fault.cleanupTried, "the first refused cleanup")
-	cancel() // losing the tick context must not discard the unsent proof
-	wait(fault.cleanupTried, "a cleanup retry after cancellation")
-	select {
-	case err := <-returned:
-		t.Fatalf("dispatch discarded unsent proof while cleanup was unavailable: %v", err)
-	default:
-	}
-	fault.recover()
-	select {
-	case err := <-returned:
-		if !errors.Is(err, store.ErrNotWriter) {
-			t.Fatalf("tick = %v, want the original writer error after recovery", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("dispatch did not return after persisting unsent proof")
-	}
 	if len(v.its.gateCreates) != 0 {
 		t.Fatal("failed marker acknowledgment reached POST")
 	}
-	if err := db.QueryRow(`SELECT send_started, sends FROM human_gate_attempt WHERE message_id = $1`, messageID).Scan(&started, &sends); err != nil || started || sends != 1 {
-		t.Fatalf("unsent proof was not durable: started=%t sends=%d err=%v", started, sends, err)
+	files, err := os.ReadDir(v.cfg.HumanGateJournal)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("unsent proof missing from persistent storage: %v %v", files, err)
 	}
+	// Discard the entire engine while cleanup is still unavailable. There is
+	// no shutdown recovery callback or in-memory proof passed to its successor.
 	v.e.Release()
-	v.e = v.engine("after-lost-gate-commit")
+	v.e = v.engine("after-process-loss")
+	v.poll()
+	select {
+	case <-fault.cleanupTried:
+	default:
+		t.Fatal("new process did not read and replay the persisted proof")
+	}
+	if len(v.its.gateCreates) != 0 {
+		t.Fatal("failed cleanup repeated POST")
+	}
+	fault.recover()
 	v.poll()
 	v.gateIssue(1, "sha-1")
 	v.poll()
 	if len(v.its.gateCreates) != 1 {
 		t.Fatal("replacement writer did not create exactly one issue")
+	}
+	files, err = os.ReadDir(v.cfg.HumanGateJournal)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("acknowledged recovery left stale proof: %v %v", files, err)
+	}
+}
+
+func TestHumanGateRefusedCreateCleanupCannotBlockDispatch(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.its.gateCreateErr = &itsaplan.HTTPError{Status: 403, Body: "refused"}
+	v.poll()
+	const messageID = "factory-human-gate/jomcgi-org/homelab/1/create"
+	tx, err := v.st.DB.BeginTx(v.ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT message_id FROM human_gate_attempt WHERE message_id = $1 FOR UPDATE`, messageID); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated outbox item is after human-gate work in the singleton tick.
+	if err := v.st.Enqueue(v.ctx, v.st.DB, "comment", "after-locked-gate", 0, "", map[string]any{
+		"issueId": 101, "body": "dispatch continued after locked cleanup",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(v.its.Comments())
+	// Keep the PR below its poll interval: only recovery, not a new write,
+	// encounters the lock. Repeated ticks must stay bounded while it is held.
+	for range 2 {
+		ctx, cancel := context.WithTimeout(v.ctx, 3*time.Second)
+		started := time.Now()
+		err := v.e.Tick(ctx)
+		cancel()
+		if err != nil || time.Since(started) >= 2500*time.Millisecond {
+			t.Fatalf("locked recovery blocked dispatch: %v (%v)", err, time.Since(started))
+		}
+	}
+	if len(v.its.Comments()) != before+1 {
+		t.Fatal("locked gate cleanup blocked the later outbox phase")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	v.its.gateCreateErr = nil
+	v.poll()
+	v.gateIssue(1, "sha-1")
+	if len(v.its.gateCreates) != 2 {
+		t.Fatal("refused create did not retry exactly once after recovery")
 	}
 }
 

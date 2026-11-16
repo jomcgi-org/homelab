@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -91,6 +93,7 @@ func newHumanGateEnv(t *testing.T) *env {
 	t.Helper()
 	v := newDeliveryEnv(t)
 	v.cfg.Bindings[0].HumanGateAssignee = "joe"
+	v.cfg.HumanGateJournal = t.TempDir()
 	v.cfg.Bindings[0].Review.RequiredChecks = []dispatch.Check{{Name: "pr-checks", StatusCreator: "buildbuddy-io[bot]"}}
 	v.cfg.Bindings[0].Review.ReviewerCheck = &dispatch.Check{Name: "factory review", AppID: 200}
 	v.e.Release()
@@ -388,6 +391,45 @@ func TestHumanGateWriterLossBeforeCreateCanRetry(t *testing.T) {
 	}
 }
 
+func TestHumanGateRequiresPersistentJournalBeforeMarkingSend(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.cfg.HumanGateJournal = ""
+	v.e.Release()
+	v.e = v.engine("missing-journal")
+	v.poll()
+	var sends int
+	if err := v.st.DB.QueryRow(`SELECT sends FROM human_gate_attempt WHERE operation = 'create'`).Scan(&sends); err != nil || sends != 0 {
+		t.Fatalf("missing journal allowed a send marker: sends=%d err=%v", sends, err)
+	}
+	if len(v.its.gateCreates) != 0 {
+		t.Fatal("missing persistent storage reached POST")
+	}
+}
+
+func TestHumanGateVolumeLockFencesLivePredecessorWithoutBlocking(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	d, err := os.Open(v.cfg.HumanGateJournal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := syscall.Flock(int(d.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	v.poll()
+	if time.Since(start) > time.Second || len(v.its.gateCreates) != 0 {
+		t.Fatal("live predecessor's volume lock blocked dispatch or permitted a POST")
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	v.poll()
+	v.gateIssue(1, "sha-1")
+}
+
 func TestHumanGateDatabaseFailureBeforeCreateNeedsNoCleanup(t *testing.T) {
 	v := newHumanGateEnv(t)
 	v.readyGate("sha-1")
@@ -446,7 +488,7 @@ func TestHumanGateDatabaseFailureBeforeCreateNeedsNoCleanup(t *testing.T) {
 	}
 }
 
-func TestHumanGateUnsentCleanupSurvivesCancellationAndIsFenced(t *testing.T) {
+func TestHumanGateUnsentCleanupHonorsCancellationAndIsFenced(t *testing.T) {
 	v := newHumanGateEnv(t)
 	v.readyGate("sha-1")
 	v.its.gateCreateErr = errors.New("timeout; outcome unknown")
@@ -461,9 +503,12 @@ func TestHumanGateUnsentCleanupSurvivesCancellationAndIsFenced(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(v.ctx)
 	cancel()
+	if err := v.st.ClearHumanGateSend(canceled, messageID, epoch, send); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cleanup ignored cancellation: %v", err)
+	}
 	clearAndCheck := func(clearEpoch int64, clearSend int, wantStarted bool) {
 		t.Helper()
-		if err := v.st.ClearHumanGateSend(canceled, messageID, clearEpoch, clearSend); err != nil {
+		if err := v.st.ClearHumanGateSend(v.ctx, messageID, clearEpoch, clearSend); err != nil {
 			t.Fatal(err)
 		}
 		var started bool
@@ -473,7 +518,7 @@ func TestHumanGateUnsentCleanupSurvivesCancellationAndIsFenced(t *testing.T) {
 	}
 	clearAndCheck(epoch, send-1, true) // cannot clear a later send in this epoch
 	clearAndCheck(epoch-1, send, true) // cannot clear a later writer's send
-	clearAndCheck(epoch, send, false)  // canceled caller can record its own proof
+	clearAndCheck(epoch, send, false)  // retry can record the matching proof
 }
 
 func TestHumanGateLostCreateResponseReconcilesCurrentHead(t *testing.T) {

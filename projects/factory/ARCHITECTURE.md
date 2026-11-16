@@ -758,16 +758,26 @@ repeated, and reconciliation keeps searching, including archived issues.
 A send proven unaccepted can retry with the current payload under the same
 create message ID; accepted or ambiguous payloads remain frozen. The pre-send
 writer check and send marker commit in one transaction on the advisory-lock
-session, followed immediately by the request. A failed check or aborted
-transaction leaves the attempt unsent even when the database cannot accept a
-cleanup write. If the marker COMMIT loses its acknowledgment, the caller knows
-it has not made the POST. It retries cleanup scoped to that writer epoch and
-send number until the database acknowledges that proof, even after cancellation
-or writer loss; normal shutdown waits for this recovery. Cleanup locks the attempt before
-checking its token so an in-flight COMMIT cannot escape it. Individual cleanup
-writes have a five-second timeout, with retry backoff up to 30 seconds and no
-overall deadline. A forced process death before proof is recorded remains an
-unknown outcome, as does an ambiguous POST; neither is automatically repeated.
+session. Before that transaction, the connector fsyncs an unsent proof (message
+ID, epoch and next send number) to its retained `factory-connector-human-gate`
+PVC. `FACTORY_CONNECTOR_HUMAN_GATE_JOURNAL` names that mounted directory;
+creation fails closed without it. All writers must mount the same volume.
+A nonblocking filesystem lock prevents a successor from recovering proof while
+a live predecessor is still preparing or sending its request.
+
+Only after the marker COMMIT is acknowledged does the connector remove and
+fsync the proof, then send the POST. A lost COMMIT acknowledgment therefore
+leaves proof that survives forced termination even while PostgreSQL is down.
+A definitely refused POST records new proof on the volume. Each tick replays
+these proofs with a one-second total database budget, honoring cancellation;
+a failure retains the file for the next tick or pod. Cleanup locks the attempt
+before checking the epoch/send token so an in-flight COMMIT cannot escape it
+and an old proof cannot clear a newer send. There is no shutdown cleanup loop.
+Retain this volume with the connector database during restore or replacement.
+
+As with the database send marker, a crash after removing the proof but before
+sending HTTP is indistinguishable from an ambiguous POST. Neither is repeated
+automatically: itsaplan offers no server-side creation idempotency key.
 An ambiguous create that never becomes visible requires operator investigation;
 it is logged each review poll.
 Absolute state updates retry with the same message ID and payload for

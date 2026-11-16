@@ -120,6 +120,26 @@ data:
   config.yaml: |
     {{- $configYAML | nindent 4 }}
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-human-gate
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    # WaitForFirstConsumer storage must share the Deployment's wave.
+    argocd.argoproj.io/sync-wave: "1"
+    {{- include "factory.keep" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if $c.humanGateJournal.storageClass }}
+  storageClassName: {{ $c.humanGateJournal.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $c.humanGateJournal.size | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -153,6 +173,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -162,6 +183,8 @@ spec:
           env:
             - name: FACTORY_CONNECTOR_CONFIG
               value: /etc/factory-connector/config.yaml
+            - name: FACTORY_CONNECTOR_HUMAN_GATE_JOURNAL
+              value: /var/lib/factory-connector/human-gate
             - name: FACTORY_CONNECTOR_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -218,6 +241,8 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            - name: human-gate-journal
+              mountPath: /var/lib/factory-connector/human-gate
             - name: config
               mountPath: /etc/factory-connector
               readOnly: true
@@ -233,6 +258,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: human-gate-journal
+          persistentVolumeClaim:
+            claimName: {{ $name }}-human-gate
         - name: config
           configMap:
             name: {{ $name }}

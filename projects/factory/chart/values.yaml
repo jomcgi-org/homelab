@@ -472,6 +472,11 @@ connector:
     secretName: factory-connector-db
     endpoints: []
     port: 5432
+  # Unsent create proofs survive database outages and pod replacement. Retained
+  # with the database; every connector writer must mount this same volume.
+  humanGateJournal:
+    size: 1Gi
+    storageClass: ""
   # Metrics and /healthz.
   metricsPort: 9090
   resources:

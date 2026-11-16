@@ -88,6 +88,7 @@ type HumanGateAttempt struct {
 	Payload     json.RawMessage
 	SendStarted bool
 	Finished    bool
+	Sends       int
 }
 
 // HumanGateWrite freezes a write before it is sent; retries load those bytes.
@@ -109,8 +110,8 @@ func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int
 		return nil, err
 	}
 	a := &HumanGateAttempt{MessageID: messageID}
-	err = s.DB.QueryRowContext(ctx, `SELECT payload, send_started, finished_at IS NOT NULL
-		FROM human_gate_attempt WHERE message_id = $1`, messageID).Scan(&a.Payload, &a.SendStarted, &a.Finished)
+	err = s.DB.QueryRowContext(ctx, `SELECT payload, send_started, finished_at IS NOT NULL, sends
+		FROM human_gate_attempt WHERE message_id = $1`, messageID).Scan(&a.Payload, &a.SendStarted, &a.Finished, &a.Sends)
 	return a, err
 }
 
@@ -118,23 +119,23 @@ func (s *Store) HumanGateWrite(ctx context.Context, h *HumanGateIssue, epoch int
 // on the advisory-lock session. A failed guard or aborted transaction leaves
 // the attempt unsent without requiring a compensating write. After commit the
 // caller must send immediately, without another database guard in between.
-// A positive send number with an error includes an ambiguous COMMIT; a create
-// caller must durably clear that unsent marker before returning the error.
-func (s *Store) StartHumanGateWrite(ctx context.Context, w *Writer, messageID string) (int, error) {
+// previous fences the send number recorded in the caller's durable unsent
+// journal before this transaction, including when COMMIT loses its response.
+func (s *Store) StartHumanGateWrite(ctx context.Context, w *Writer, messageID string, previous int) (int, error) {
 	var send int
 	err := w.Tx(ctx, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `UPDATE human_gate_attempt SET send_started = true, finished_at = NULL,
-			sends = sends + 1, writer_epoch = $2, attempted_at = now() WHERE message_id = $1
-			RETURNING sends`, messageID, w.Epoch).Scan(&send)
+			sends = sends + 1, writer_epoch = $2, attempted_at = now() WHERE message_id = $1 AND sends = $3
+			RETURNING sends`, messageID, w.Epoch, previous).Scan(&send)
 	})
 	return send, err
 }
 
 // ClearHumanGateSend records proof that this send did not create an issue,
-// such as a definite HTTP refusal. Cleanup survives cancellation but cannot
+// such as a definite HTTP refusal. Cleanup honors cancellation and cannot
 // clear a later writer's send or an acknowledged attempt.
 func (s *Store) ClearHumanGateSend(ctx context.Context, messageID string, epoch int64, send int) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		// Wait for an in-flight marker transaction before testing its token.

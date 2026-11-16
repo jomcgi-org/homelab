@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -18,6 +17,16 @@ import (
 func (e *Engine) stepHumanGates(ctx context.Context) error {
 	if e.gh == nil {
 		return nil
+	}
+	unlock, err := e.lockHumanGateJournal()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// A bounded replay leaves unrelated dispatch work free to progress even
+	// when an attempt is locked or its cleanup write is unavailable.
+	if err := e.recoverHumanGateSends(ctx); err != nil {
+		return fmt.Errorf("human-gate recovery deferred: %w", err)
 	}
 	items, err := e.st.HumanGateWork(ctx)
 	if err != nil {
@@ -243,20 +252,28 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 				return err
 			}
 			epoch := e.Epoch()
-			send, err := e.st.StartHumanGateWrite(ctx, e.w, messageID)
+			proof := gateUnsent{MessageID: messageID, Epoch: epoch, Send: a.Sends + 1}
+			if err := e.prepareHumanGateSend(proof); err != nil {
+				return err
+			}
+			_, err := e.st.StartHumanGateWrite(ctx, e.w, messageID, a.Sends)
 			if err != nil {
-				// A returned send number means the UPDATE ran; COMMIT may
-				// have succeeded without its acknowledgment. This caller has
-				// not made the POST, so preserve that proof before exiting.
-				if send > 0 {
-					e.recoverUnsentHumanGate(ctx, messageID, epoch, send)
-				}
+				// Proof already survives SIGKILL and a database outage. Leave
+				// replay to a later tick/writer, even if COMMIT was ambiguous.
+				return err
+			}
+			if err := ctx.Err(); err != nil {
+				return err // keep the unsent proof when shutdown is already known
+			}
+			if err := e.forgetHumanGateSend(proof); err != nil {
 				return err
 			}
 			found, err = e.its.CreateGateIssue(ctx, b.ItsaplanProject, body)
 			if err != nil {
 				if notCreated(err) {
-					e.recoverUnsentHumanGate(ctx, messageID, epoch, send)
+					// Persist the refusal independently of PostgreSQL. No
+					// synchronous database cleanup or uncancelable retry loop.
+					err = errors.Join(err, e.prepareHumanGateSend(proof))
 				}
 				return err
 			}
@@ -284,33 +301,13 @@ func (e *Engine) deliverHumanGate(ctx context.Context, b *Binding, pr *store.Pul
 	if err := json.Unmarshal(a.Payload, &body); err != nil {
 		return err
 	}
-	if _, err := e.st.StartHumanGateWrite(ctx, e.w, messageID); err != nil {
+	if _, err := e.st.StartHumanGateWrite(ctx, e.w, messageID, a.Sends); err != nil {
 		return err
 	}
 	if err := e.its.UpdateGateIssue(ctx, h.IssueID, body); err != nil {
 		return err
 	}
 	return e.st.FinishHumanGateWrite(ctx, h, messageID, h.IssueID, true)
-}
-
-// recoverUnsentHumanGate retains the caller's proof until the database
-// acknowledges it. Returning a fatal error or honoring shutdown before then
-// would lose the only distinction between an unsent and an ambiguous POST.
-// Each write is bounded, but recovery has no overall deadline. The epoch and
-// send number fence this cleanup from any successor's work.
-func (e *Engine) recoverUnsentHumanGate(ctx context.Context, messageID string, epoch int64, send int) {
-	ctx = context.WithoutCancel(ctx)
-	delay := time.Second
-	for {
-		if err := e.st.ClearHumanGateSend(ctx, messageID, epoch, send); err != nil {
-			e.log.ErrorContext(ctx, "retrying unsent human-gate recovery", "message_id", messageID,
-				"writer_epoch", epoch, "send", send, "error", err)
-		} else {
-			return
-		}
-		time.Sleep(delay)
-		delay = min(2*delay, 30*time.Second)
-	}
 }
 
 // Reads have stable message IDs too, but always fetch current evidence.

@@ -7,6 +7,7 @@ go_library(
         "delivery.go",
         "engine.go",
         "human_gate.go",
+        "human_gate_journal.go",
         "reconciliation.go",
         "recovery.go",
         "transcript.go",

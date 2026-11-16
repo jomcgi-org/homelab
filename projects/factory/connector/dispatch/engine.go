@@ -76,6 +76,9 @@ type Config struct {
 	// ArtifactTranscripts admits artifact text into journals. Existing
 	// artifact journals always resume, even when admission is off.
 	ArtifactTranscripts bool
+	// HumanGateJournal is a persistent directory shared across pod restarts.
+	// Creates fail closed without it; it must not be an ephemeral volume.
+	HumanGateJournal string
 
 	Caller    Caller
 	Holder    string

@@ -732,6 +732,15 @@
             "port": { "$ref": "#/definitions/port" }
           }
         },
+        "humanGateJournal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["size", "storageClass"],
+          "properties": {
+            "size": { "type": "string", "minLength": 1 },
+            "storageClass": { "type": "string" }
+          }
+        },
         "metricsPort": { "$ref": "#/definitions/port" },
         "resources": { "type": "object" }
       }
