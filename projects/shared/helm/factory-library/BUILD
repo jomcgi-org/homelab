@@ -1,3 +1,4 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -28,5 +29,13 @@ py_venv_binary(
     name = "render_landing_diff",
     srcs = ["render_landing_diff.py"],
     main = "render_landing_diff.py",
+    visibility = ["//:__subpackages__"],
+    deps = ["@pip//pyyaml"],
+)
+
+py_library(
+    name = "factory-library",
+    srcs = ["render_landing_diff.py"],
+    visibility = ["//:__subpackages__"],
     deps = ["@pip//pyyaml"],
 )
