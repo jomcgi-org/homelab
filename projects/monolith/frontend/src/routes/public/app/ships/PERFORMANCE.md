@@ -114,9 +114,9 @@ schema and the same synthetic table split. Both queries used sequential scans:
 three-run median execution was 0.793/1.027 ms before/after for the live table
 and 11.484/15.011 ms for history. The measured statements were read-only after
 fixture loading and analysis. These plans support no SQL speedup or new index;
-production statistics, concurrency and topology remain unmeasured. The
-[saved plans](../../../../../docs/public-app-performance-2026-11-15.md#evidence-archive)
-retain SQL, buffers and every sample.
+production statistics, concurrency and topology remain unmeasured. The plans,
+with SQL, buffers and every sample, are
+[not published](../../../../../docs/public-app-performance-2026-11-15.md#evidence).
 
 After verified release `0.792.55`, 20 public MISS probes measured p50/p95 of
 1,697.6/2,087.3 ms, compared with 5,651.0/7,544.4 ms in the preceding hosted
