@@ -901,6 +901,12 @@ and retries once, so a brief overlap during a rollout is safe.
   so active SSE has no overall time limit. Actor cancellation aborts body
   reads immediately; completion or failure releases the concurrency slot.
   Quota observations are committed off the request path, latest only.
+- **Quota reading.** A reading comes from relayed `x-codex-*` headers or
+  from `GET chatgpt.com/backend-api/wham/usage`. It expires 30 minutes after
+  it arrives, or at its first window reset if that is sooner. Every minute
+  the broker checks the stored reading and reads the usage endpoint once it
+  has expired, so relayed traffic defers the read. A failed read keeps the
+  old reading and retries after 5 minutes; one read runs at a time.
 - **Refresh.** One grant, `codex-primary`, from the broker's own device
   login: `POST /admin/codex/login` returns the user code, `GET` reports
   state, `POST /admin/codex/refresh` forces a refresh. These require a
@@ -979,8 +985,8 @@ and retries once, so a brief overlap during a rollout is safe.
 - **Metrics** (`factory_broker_*`): grant state and expiry, refresh checks
   and the shared refresh counters, relay requests by outcome and status
   class, actor JWT rejections by reason, GitHub mints by kind, binding and
-  outcome, and the shared quota gauges. Labels come only from fixed sets or
-  configuration.
+  outcome, usage endpoint reads by outcome, and the shared quota gauges.
+  Labels come only from fixed sets or configuration.
 
 ## Identities
 
