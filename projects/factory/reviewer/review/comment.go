@@ -421,7 +421,7 @@ func (e *Engine) lookupComment(ctx context.Context, b *Binding, pr github.PullRe
 	if cur, ok := e.comments[key]; ok {
 		return cur
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), github.CommentLookupTimeout)
 	defer cancel()
 	found, complete, err := e.findComment(ctx, b, pr.Number)
 	cur := &commentState{comment: found, complete: complete, err: err}
@@ -571,8 +571,6 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if u == nil || e.cfg.Comments == nil || e.cfg.CommentAuthor == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
-	defer cancel()
 	key := prKey{b.Name, pr.Number}
 	l := e.prLog(b, pr)
 	e.commentMu.Lock()
@@ -611,6 +609,10 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if cur != nil && cur.Body == body {
 		return
 	}
+	// The page search has its own budget. Start the write deadline only
+	// after lookup and lock acquisition, so neither can consume it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
+	defer cancel()
 	if cur != nil {
 		_, err := e.cfg.Comments.UpdateIssueComment(ctx, b.repo(), cur.ID, body)
 		switch {
