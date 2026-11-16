@@ -863,6 +863,57 @@ func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt
 	return out, rows.Err()
 }
 
+// LeaseExpired lists the running turns past their liveness lease (HOME-141):
+// the latest attempt of a dispatched run without a stop or a pending
+// cancellation, either sent before sentBefore without a task, or accepted
+// with no task event or open tool call since quietBefore. A recovery hold
+// does not exempt a turn: the lease's cancellation settles it. An operator's
+// attestation does: its recovery owns the turn. A turn whose
+// task the connector has not read yet has no event_at and waits for a read.
+func (s *Store) LeaseExpired(ctx context.Context, sentBefore, quietBefore time.Time) ([]*Attempt, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
+		WHERE ((a.state = 'ambiguous' AND a.task_id IS NULL AND a.sent_at < $1)
+				OR (a.state = 'accepted' AND a.event_at < $2 AND NOT a.tool_running))
+			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = a.run_id)
+			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched' AND r.stopped_reason IS NULL)
+			AND NOT EXISTS (SELECT 1 FROM cancellation c WHERE c.delivery_attempt_id = a.id AND c.state = 'pending')
+			AND NOT EXISTS (SELECT 1 FROM recovery_hold h WHERE h.target_attempt_id = a.id AND h.state = 'attested')
+		ORDER BY a.id`, sentBefore, quietBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Attempt
+	for rows.Next() {
+		a, err := scanAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// StopMergedRun stops a live run whose work item's pull request merged after
+// the run was claimed, as StopWork stops a run: the run carries the stop, so
+// step cancels its turn and reports it. A review round always predates the
+// merge. A run claimed after the merge, such as a question on the done
+// issue, keeps running. It reports whether it stopped the run.
+func (s *Store) StopMergedRun(ctx context.Context, runID int64) (bool, error) {
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE run r SET stopped_reason = 'its pull request #' || p.number || ' merged', updated_at = now()
+		FROM work_item w, pull_request p
+		WHERE r.id = $1 AND w.id = r.work_item_id AND w.state = 'done' AND p.work_item_id = w.id
+			AND p.state = 'merged' AND r.stopped_reason IS NULL
+			AND r.state IN ('claimed', 'waiting', 'dispatched')
+			AND (r.origin = 'connector' OR r.created_at < p.merged_at)`, runID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // LatestAttempt returns the run's most recent attempt, or nil.
 func (s *Store) LatestAttempt(ctx context.Context, runID int64) (*Attempt, error) {
 	a, err := scanAttempt(s.DB.QueryRowContext(ctx,
@@ -1083,6 +1134,28 @@ func (s *Store) FinishAttempt(ctx context.Context, q Querier, id int64, state, c
 	return err
 }
 
+// Briefs lists the contexts the work item's session-opening sends
+// recorded, newest first.
+func (s *Store) Briefs(ctx context.Context, workID int64) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT a.context FROM delivery_attempt a JOIN run r ON r.id = a.run_id
+		WHERE r.work_item_id = $1 AND a.kind = 'initial' AND a.context IS NOT NULL
+		ORDER BY a.id DESC`, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // CountSends counts attempts of a run that were sent.
 func (s *Store) CountSends(ctx context.Context, runID int64) (int, error) {
 	var n int
@@ -1097,9 +1170,10 @@ const (
 	CancelReassignment = "reassignment"
 	CancelRoundStopped = "round_stopped" // the round's work item stopped delivery
 	CancelQuotaStall   = "quota_stall"   // the turn went quiet on an exhausted quota
+	CancelLeaseExpired = "lease_expired" // the turn showed no task or progress within its lease
 	CancelPending      = "pending"
 	CancelConfirmed    = "confirmed"
-	CancelWithdrawn    = "withdrawn" // a quota_stall the task's activity overtook before CancelTask
+	CancelWithdrawn    = "withdrawn" // a quota_stall or lease_expired the task's activity overtook before CancelTask
 )
 
 // Cancellation is a requested kagent task cancellation.
@@ -1112,38 +1186,60 @@ type Cancellation struct {
 	Requests  int
 	LastAt    time.Time
 	Outcome   string
-	// EventCount is the task size a quota_stall cancellation was decided on.
+	// EventCount is the task size a quota_stall or lease_expired
+	// cancellation was decided on.
 	EventCount int
+	// RequestedAt is when the cancellation was recorded, on the engine's
+	// clock (Store.Now).
+	RequestedAt time.Time
 }
 
 // RequestCancellation records a pending cancellation for an attempt; a
-// pending one already recorded is kept.
+// pending one already recorded is kept. requested_at is the engine's
+// clock, which the force-delete escalation compares with.
 func (s *Store) RequestCancellation(ctx context.Context, q Querier, attemptID, runID int64, reason string) error {
 	_, err := q.ExecContext(ctx, `
-		INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state)
-		VALUES ($1, $2, $3, 'pending')
-		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, reason)
+		INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state, requested_at)
+		VALUES ($1, $2, $3, 'pending', $4)
+		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, reason, s.now())
 	return err
 }
 
-// RequestQuotaStall records a pending quota_stall cancellation decided on
-// the task at eventCount; a pending one already recorded is kept.
-func (s *Store) RequestQuotaStall(ctx context.Context, q Querier, attemptID, runID int64, eventCount int) error {
+// RequestQuietCancel records a pending quota_stall or lease_expired
+// cancellation decided on the task at eventCount; a pending one already
+// recorded is kept.
+func (s *Store) RequestQuietCancel(ctx context.Context, q Querier, attemptID, runID int64, reason string, eventCount int) error {
 	_, err := q.ExecContext(ctx, `
-		INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state, event_count)
-		VALUES ($1, $2, 'quota_stall', 'pending', $3)
-		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, eventCount)
+		INSERT INTO cancellation (delivery_attempt_id, run_id, reason, state, event_count, requested_at)
+		VALUES ($1, $2, $3, 'pending', $4, $5)
+		ON CONFLICT (delivery_attempt_id) WHERE state = 'pending' DO NOTHING`, attemptID, runID, reason, eventCount, s.now())
 	return err
 }
 
-// WithdrawQuotaStall closes a pending quota_stall cancellation that has
-// sent no CancelTask, while its run is dispatched. It reports whether it
-// withdrew it. The caller holds the run's row lock (LockStop).
-func (s *Store) WithdrawQuotaStall(ctx context.Context, q Querier, id int64, outcome string) (bool, error) {
+// WithdrawQuietCancel closes a pending quota_stall or lease_expired
+// cancellation that has sent no CancelTask, while its run is dispatched. It
+// reports whether it withdrew it. The caller holds the run's row lock
+// (LockStop).
+func (s *Store) WithdrawQuietCancel(ctx context.Context, q Querier, id int64, outcome string) (bool, error) {
 	res, err := q.ExecContext(ctx, `
 		UPDATE cancellation c SET state = 'withdrawn', outcome = $2
-		WHERE c.id = $1 AND c.state = 'pending' AND c.reason = 'quota_stall' AND c.requests = 0
+		WHERE c.id = $1 AND c.state = 'pending' AND c.reason IN ('quota_stall', 'lease_expired') AND c.requests = 0
 			AND EXISTS (SELECT 1 FROM run r WHERE r.id = c.run_id AND r.state = 'dispatched')`, id, outcome)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// WithdrawLease closes the attempt's pending lease_expired cancellation that
+// has sent no CancelTask, while its run is dispatched. It reports whether it
+// withdrew one. The caller holds the run's row lock (LockStop).
+func (s *Store) WithdrawLease(ctx context.Context, q Querier, attemptID int64, outcome string) (bool, error) {
+	res, err := q.ExecContext(ctx, `
+		UPDATE cancellation c SET state = 'withdrawn', outcome = $2
+		WHERE c.delivery_attempt_id = $1 AND c.state = 'pending' AND c.reason = 'lease_expired' AND c.requests = 0
+			AND EXISTS (SELECT 1 FROM run r WHERE r.id = c.run_id AND r.state = 'dispatched')`, attemptID, outcome)
 	if err != nil {
 		return false, err
 	}
@@ -1163,7 +1259,7 @@ func (s *Store) CancelPending(ctx context.Context, attemptID int64) (bool, error
 func (s *Store) PendingCancellations(ctx context.Context) ([]*Cancellation, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, delivery_attempt_id, run_id, reason, state, requests,
-			coalesce(last_request_at, 'epoch'::timestamptz), coalesce(outcome, ''), coalesce(event_count, 0)
+			coalesce(last_request_at, 'epoch'::timestamptz), coalesce(outcome, ''), coalesce(event_count, 0), requested_at
 		FROM cancellation WHERE state = 'pending' ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1172,7 +1268,7 @@ func (s *Store) PendingCancellations(ctx context.Context) ([]*Cancellation, erro
 	var out []*Cancellation
 	for rows.Next() {
 		c := &Cancellation{}
-		if err := rows.Scan(&c.ID, &c.AttemptID, &c.RunID, &c.Reason, &c.State, &c.Requests, &c.LastAt, &c.Outcome, &c.EventCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.AttemptID, &c.RunID, &c.Reason, &c.State, &c.Requests, &c.LastAt, &c.Outcome, &c.EventCount, &c.RequestedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -1190,9 +1286,10 @@ func (s *Store) HasPendingCancellation(ctx context.Context, workID int64) (bool,
 	return ok, err
 }
 
-// CountCancelRequest records that CancelTask was sent.
-func (s *Store) CountCancelRequest(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE cancellation SET requests = requests + 1, last_request_at = $2 WHERE id = $1`, id, at)
+// CountCancelRequest records that CancelTask, or a force delete of the
+// attempt's session, was sent.
+func (s *Store) CountCancelRequest(ctx context.Context, q Querier, id int64, at time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE cancellation SET requests = requests + 1, last_request_at = $2 WHERE id = $1`, id, at)
 	return err
 }
 

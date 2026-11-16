@@ -208,6 +208,28 @@ func (s *Sessions) DeleteSession(ctx context.Context, id string) (*Session, erro
 	return s.invoke(ctx, "/kagent.api.v1.SessionService/DeleteSession", sessionIDRequest(id))
 }
 
+// ForceDeleteSession deletes a session with force: kagent ends an active
+// turn instead of refusing. kagent v1.0.1's DeleteSessionRequest has
+// `bool force = 2`, "Terminate ongoing turns instead of rejecting deletion
+// while they are active"
+// (https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/proto/kagent/api/v1/sessions.proto#L120-L125).
+// Force skips the active-turn, pending-dispatch and unsettled-cleanup checks
+// but still refuses while a checkpoint is copied or an idle suspend holds
+// its claim
+// (https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_deletion.go#L37-L79).
+// Admission revokes the session's dispatch, so no new turn starts, and the
+// call deletes the Actor in Substrate before kagent marks the session
+// DELETED and its active tasks CANCELED
+// (https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/substrate/lifecycle.go#L206-L214,
+// https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_deletion.go#L80-L113).
+// A deleted session answers DELETED again, or NOT_FOUND.
+func (s *Sessions) ForceDeleteSession(ctx context.Context, id string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, DeleteSessionTimeout)
+	defer cancel()
+	req := protowire.AppendVarint(protowire.AppendTag(sessionIDRequest(id), 2, protowire.VarintType), 1)
+	return s.invoke(ctx, "/kagent.api.v1.SessionService/DeleteSession", req)
+}
+
 // NameSession sets the session's display name.
 func (s *Sessions) NameSession(ctx context.Context, id, name string) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)

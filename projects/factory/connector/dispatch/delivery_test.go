@@ -2346,6 +2346,7 @@ func TestIssueMovedToCanceledColumnCancelsRunningRound(t *testing.T) {
 func TestRefusedIssueCheckWaitsWithoutStopping(t *testing.T) {
 	v := newDeliveryEnv(t)
 	round, task := v.startRound()
+	v.kg.tool(task, "ci-1", kagent.PartToolCall) // busy past the progress lease
 	v.its.mu.Lock()
 	v.its.issueErr = &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
 	v.its.mu.Unlock()

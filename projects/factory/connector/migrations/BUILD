@@ -21,6 +21,7 @@ go_library(
         "20261116200000_session_deletion.sql",
         "20261116210000_quota_stall.sql",
         "20261116220000_human_gate_issues.sql",
+        "20261116230000_liveness.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

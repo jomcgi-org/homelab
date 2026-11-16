@@ -35,6 +35,7 @@ func TestAcceptedInitialSendWithEveryResponseLostNeverStartsSecondWriter(t *test
 	v := newEnv(t)
 	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
 	v.dispatchReconciliationInitial()
+	v.kg.tool(v.kg.lastTask(), "ci-1", kagent.PartToolCall) // busy past the progress lease
 	v.tickReconciliation(30, v.cfg.DispatchWindow)
 	if got := v.kg.Executions(); got != 1 {
 		t.Fatalf("executions = %d; accepted initial send is still running, want one writer", got)
@@ -150,7 +151,7 @@ func TestDeletedPageBoundaryCannotProveOriginalAbsent(t *testing.T) {
 	v.dispatchReconciliationInitial()
 	v.advanceDispatchWindow()
 	v.tickReconciliation(1, v.cfg.DispatchWindow)
-	if v.kg.Executions() != 2 || v.work(101).EngineeringRetries != 0 || v.latest(1).State != store.AttemptAmbiguous {
+	if a := v.latest(1); v.kg.Executions() != 2 || v.work(101).EngineeringRetries != 0 || a.MessageID != "itsaplan-run/1/initial" || !a.Open() {
 		t.Fatal("deleted cursor caused false absence and retry")
 	}
 	// A fresh scan starts before the vanished boundary and finds the original.
@@ -427,25 +428,41 @@ func TestCallerChangeHoldsCancellationAndContinuation(t *testing.T) {
 	}
 }
 
-func TestUnknownAbsenceBecomesVisibleHoldAfterDispatchWindow(t *testing.T) {
-	v := newEnv(t)
-	v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
-	v.dispatchReconciliationInitial()
-	original := v.latest(1).ID
-	v.tickReconciliation(1, v.cfg.DispatchWindow-time.Nanosecond)
-	if v.work(101).EngineeringRetries != 0 || v.latest(1).Error != "" {
-		t.Fatal("operator hold announced inside dispatch window")
-	}
-	v.tickReconciliation(1, time.Nanosecond)
-	v.tickReconciliation(3, v.cfg.DispatchWindow)
-	if a := v.latest(1); a.ID != original || a.State != store.AttemptAmbiguous || a.Error == "" || v.work(101).EngineeringRetries != 0 || v.kg.Executions() != 0 || len(v.kg.Sends()) != 1 {
-		t.Fatalf("complete absence released unknown work: %+v", a)
-	}
-	var notices int
-	if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE dedupe_key LIKE 'comment/recovery-held/%'`).Scan(&notices); err != nil {
-		t.Fatal(err)
-	}
-	if notices != 1 {
-		t.Fatalf("hold announcements=%d, want one", notices)
+// An unknown send that a complete listing cannot find is held while kagent
+// could still save it. Past the task lease, the listing proves it never
+// started: the connector resends in a fresh session and asks no operator
+// to fence it (HOME-141). A listing it cannot complete holds it for one.
+func TestUnknownAbsenceIsResentAfterTheTaskLease(t *testing.T) {
+	for _, complete := range []bool{true, false} {
+		t.Run(fmt.Sprintf("complete=%t", complete), func(t *testing.T) {
+			v := newEnv(t)
+			v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
+			v.dispatchReconciliationInitial()
+			original := v.latest(1).ID
+			if !complete {
+				v.kg.listErr = errors.New("list unavailable")
+			}
+			v.tickReconciliation(1, v.cfg.DispatchWindow)
+			v.tickReconciliation(1, time.Minute)
+			if a := v.latest(1); a.ID != original || a.State != store.AttemptAmbiguous || a.Error != "" || len(v.kg.Sends()) != 1 {
+				t.Fatalf("unknown send settled or held within the task lease: %+v", a)
+			}
+			v.tickReconciliation(3, time.Minute)
+			var notices int
+			if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE dedupe_key LIKE 'comment/recovery-held/%'`).Scan(&notices); err != nil {
+				t.Fatal(err)
+			}
+			a := v.latest(1)
+			if !complete {
+				if a.ID != original || a.State != store.AttemptAmbiguous || a.Error == "" || notices != 1 || len(v.kg.Sends()) != 1 {
+					t.Fatalf("incomplete listing released unknown work: %+v, notices %d", a, notices)
+				}
+				return
+			}
+			if a.ID == original || a.MessageID != "itsaplan-run/1/replacement-0-1" || v.work(101).EngineeringRetries != 1 ||
+				v.kg.Executions() != 1 || len(v.kg.Sends()) != 2 || notices != 0 {
+				t.Fatalf("attempt = %+v, executions %d, notices %d; want one fresh-session retry", a, v.kg.Executions(), notices)
+			}
+		})
 	}
 }

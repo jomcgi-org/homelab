@@ -362,6 +362,11 @@ func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
 			}
 		case "/kagent.api.v1.SessionService/DeleteSession":
 			id, _ := DecodeSessionID(req)
+			if len(req) == 4+len(id) && req[2+len(id)] == 0x10 && req[3+len(id)] == 1 { // force = 2 set true
+				calls = append(calls, "force-delete:"+id)
+				resp = EncodeSession(Session{ID: id, ContextID: id, State: RuntimeDeleted})
+				break
+			}
 			if len(req) != 2+len(id) { // session_id alone: force stays unset.
 				return status.Error(codes.InvalidArgument, "force must stay unset")
 			}
@@ -409,12 +414,15 @@ func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
 	if _, err := c.DeleteSession(ctx, "busy"); err == nil {
 		t.Fatal("a refused delete returned no error")
 	}
+	if s, err := c.ForceDeleteSession(ctx, "busy"); err != nil || s.State != RuntimeDeleted {
+		t.Fatalf("force delete = %+v %v", s, err)
+	}
 	if s, err := c.NameSession(ctx, "s2", "factory-review/o/r/8"); err != nil || s.Name != "factory-review/o/r/8" {
 		t.Fatalf("name = %+v %v", s, err)
 	}
 	want := []string{
 		"list::factory-r-homelab-review/homelab-reviewer", "list:p2:factory-r-homelab-review/homelab-reviewer",
-		"delete:s1", "delete:busy", "name:s2:factory-review/o/r/8",
+		"delete:s1", "delete:busy", "force-delete:busy", "name:s2:factory-review/o/r/8",
 	}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)

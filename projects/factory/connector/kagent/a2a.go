@@ -201,6 +201,12 @@ func (s *TokenSource) Token() (string, error) {
 // exceed it plus kagent's two-minute dispatch reservation.
 const DefaultTimeout = 60 * time.Second
 
+// CancelTaskTimeout bounds one CancelTask. kagent forwards it to the
+// session's runtime, which can hang; the connector deletes a session whose
+// cancellation kagent does not confirm, so a long wait gains nothing
+// (HOME-141).
+const CancelTaskTimeout = 15 * time.Second
+
 // A2A calls the public A2A gateway.
 type A2A struct {
 	BaseURL string
@@ -377,6 +383,8 @@ func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, p
 // CancelTask requests cancellation and returns the task as kagent then
 // reports it. Cancellation is confirmed only by a terminal state.
 func (c *A2A) CancelTask(ctx context.Context, agent AgentRef, taskID string) (*Task, error) {
+	ctx, cancel := context.WithTimeout(ctx, CancelTaskTimeout)
+	defer cancel()
 	var t Task
 	if err := c.call(ctx, agent, "CancelTask", map[string]any{"id": taskID}, &t); err != nil {
 		return nil, err

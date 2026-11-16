@@ -12,6 +12,9 @@ const (
 	ClassCredential  = "credential"  // blocks: a person must fix the grant
 	ClassQuota       = "quota"       // blocks: retrying burns the same limit
 	ClassCanceled    = "canceled"
+	// ClassAbandoned is a turn the connector ended after its liveness
+	// lease; it takes an engineering retry in a fresh session (HOME-141).
+	ClassAbandoned = "abandoned"
 )
 
 // kagent v1.0.1 reports a failed turn as status text only; the Codex error

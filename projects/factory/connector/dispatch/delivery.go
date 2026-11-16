@@ -313,7 +313,8 @@ func (e *Engine) readIssueStopped(ctx context.Context, wi *store.WorkItem, b *Bi
 
 // checkRound is a review round's heartbeat: its issue must still want
 // delivery and its PR must be open, or delivery stops and the round is
-// canceled.
+// canceled. The PR poll skips a work item while its turn runs, so a merge is
+// recorded here; step then stops the round (HOME-141).
 func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 	now := e.cfg.Now()
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
@@ -333,7 +334,7 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 		if err != nil {
 			return err
 		}
-		if pr != nil {
+		if pr != nil && pr.State != "merged" {
 			if err := e.guard(ctx); err != nil {
 				return err
 			}
@@ -341,7 +342,13 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 			if err != nil {
 				return err
 			}
-			if d.State != "open" && !d.Merged {
+			if d.Merged {
+				if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
+					return err
+				}
+				return e.merged(ctx, wi, b, pr, d)
+			}
+			if d.State != "open" {
 				reason = fmt.Sprintf("PR #%d (%s) was closed", pr.Number, pr.URL)
 			}
 		}
@@ -356,7 +363,8 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 }
 
 // checkPRClosed stops delivery when the PR of an itsaplan run's work item
-// was closed during the turn; dispatch then cancels the turn.
+// was closed during the turn; dispatch then cancels the turn. A merge is
+// recorded, and step stops a run claimed before it (HOME-141).
 func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
 	if e.gh == nil || r.WorkItemID == 0 {
 		return nil
@@ -377,8 +385,11 @@ func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
 		return err
 	}
 	d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
-	if err != nil || d.State == "open" || d.Merged {
+	switch {
+	case err != nil || d.State == "open":
 		return err
+	case d.Merged:
+		return e.merged(ctx, wi, b, pr, d)
 	}
 	return e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed", pr.Number, pr.URL))
 }

@@ -201,9 +201,7 @@ func TestNullAndEmptyTaskListsKeepUnknownSendHeld(t *testing.T) {
 		for _, cancel := range []bool{false, true} {
 			t.Run(fmt.Sprintf("accepted=%t/cancel=%t", accepted, cancel), func(t *testing.T) {
 				v, wire := newReconciliationWire(t, 1)
-				if accepted {
-					wire.listResult = json.RawMessage("null")
-				}
+				wire.listResult = json.RawMessage("null")
 				v.checkListHold(wire, accepted, cancel)
 			})
 		}
@@ -249,7 +247,12 @@ func (v *env) checkListHold(wire *reconciliationWire, accepted, cancel bool) {
 	wire.mu.Unlock()
 	v.tick(v.e)
 	if !accepted {
-		assertHeld()
+		// Past the task lease, a healthy listing without the message shows
+		// kagent never admitted it: the attempt closes unexecuted (HOME-141).
+		a, err := v.st.GetAttempt(v.ctx, original)
+		if err != nil || a.Open() || v.kg.Executions() != executions || len(v.kg.Sends()) != sends || len(v.pendingCancellations()) != 0 {
+			v.t.Fatalf("healthy empty listing did not settle the unadmitted send: attempt=%+v, %v", a, err)
+		}
 		return
 	}
 	if a := v.latest(1); a.TaskID != taskID || a.Error != "" || v.kg.Executions() != executions || len(v.kg.Sends()) != sends {
@@ -370,7 +373,18 @@ func TestTaskListCountsCannotReleaseUnknownSend(t *testing.T) {
 					wire.listPages["second"] = wirePage(t, tasks[1:], 2, 1, "end")
 					wire.listPages["end"] = wirePage(t, []*kagent.Task{}, 2, 1, "")
 				}
-
+				// A consistent listing is complete: past the task lease it
+				// proves kagent never admitted the send (HOME-141).
+				v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
+				v.dispatchReconciliationInitial()
+				original := v.latest(1).ID
+				v.tickReconciliation(3, v.cfg.DispatchWindow)
+				if a, err := v.st.GetAttempt(v.ctx, original); err != nil || a.ErrorClass != dispatch.ClassAbandoned ||
+					a.Error != "lease_expired: not_started" || v.kg.Executions() != 3 ||
+					v.latest(1).MessageID != "itsaplan-run/1/replacement-0-1" {
+					t.Fatalf("complete listing did not settle the unadmitted send: %+v, %v", a, err)
+				}
+				return
 			}
 			v.checkListHold(wire, false, false)
 		})
@@ -482,7 +496,11 @@ func TestPrunedCreationReceiptNeverResendsUnknownExecution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if a.ID != original.ID || a.State != store.AttemptAmbiguous || a.Error == "" || v.kg.Executions() != executions || len(v.kg.Sends()) != sends || v.work(101).EngineeringRetries != 0 || active != 1 {
+			// A first send held a day is past what a listing can prove, so an
+			// operator must fence it. A continuation names its session, which
+			// the connector deletes with force after intervals.forceDelete,
+			// and holds no operator notice meanwhile (HOME-141).
+			if a.ID != original.ID || a.State != store.AttemptAmbiguous || (a.Error == "") != continuation || v.kg.Executions() != executions || len(v.kg.Sends()) != sends || v.work(101).EngineeringRetries != 0 || active != 1 {
 				t.Fatalf("unknown execution escaped hold after receipt pruning: attempt=%+v executions=%d sends=%d active=%d", a, v.kg.Executions(), len(v.kg.Sends()), active)
 			}
 		})

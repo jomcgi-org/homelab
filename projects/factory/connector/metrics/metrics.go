@@ -27,6 +27,7 @@ type Metrics struct {
 	MergeQueue        *prometheus.CounterVec // outcome
 	SessionRecoveries *prometheus.CounterVec // kind
 	SessionsDeleted   *prometheus.CounterVec // reason
+	StuckTurns        *prometheus.CounterVec // step
 
 	CredentialRefusals *prometheus.CounterVec // role, kind
 }
@@ -114,6 +115,11 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_sessions_deleted_total",
 			Help: "kagent sessions the connector deleted by reason: its work item is done or stopped, or it was replaced.",
 		}, []string{"reason"}),
+		StuckTurns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_stuck_turns_total",
+			Help: "Steps that free a turn past its liveness lease (HOME-141): lease, not_started, force_delete, " +
+				"refused, revert, deleted.",
+		}, []string{"step"}),
 		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_credential_refusals_total",
 			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
@@ -124,7 +130,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.SessionsDeleted, m.CredentialRefusals)
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals)
 	}
 	return m
 }

@@ -159,7 +159,9 @@ func TestAttestedUnknownSendRespectsBudget(t *testing.T) {
 			v.e = v.engine("bounded-recovery")
 			v.kg.dropFor = map[string]bool{"itsaplan-run/1/initial": true}
 			v.dispatchReconciliationInitial()
-			v.tickReconciliation(1, v.cfg.DispatchWindow)
+			// A listing that cannot complete holds the send past its lease.
+			v.kg.listErr = errors.New("list unavailable")
+			v.tickReconciliation(6, time.Minute)
 			v.attestRecovery("retry")
 			if budget == 0 {
 				v.its.issueErr = errors.New("no issue text needed to finish exhausted recovery")

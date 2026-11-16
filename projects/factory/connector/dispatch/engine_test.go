@@ -256,7 +256,9 @@ func TestLostSendResponseReconcilesWithoutResending(t *testing.T) {
 	}
 }
 
-func TestDroppedSendRetainsAttemptAndSlotAfterWindow(t *testing.T) {
+// Within its task lease a send with no task keeps its attempt and slot,
+// past the dispatch window too (HOME-141 settles it after the lease).
+func TestDroppedSendRetainsAttemptAndSlotWithinTheTaskLease(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.kg.dropSend = true
@@ -268,10 +270,10 @@ func TestDroppedSendRetainsAttemptAndSlotAfterWindow(t *testing.T) {
 	if n := len(v.kg.Sends()); n != 1 {
 		t.Fatalf("sends = %d, want 1", n)
 	}
-	for i := 0; i < 3; i++ {
-		v.clk.Advance(v.cfg.DispatchWindow)
-		v.tick(v.e)
-	}
+	v.clk.Advance(v.cfg.DispatchWindow)
+	v.tick(v.e)
+	v.clk.Advance(4*time.Minute + 50*time.Second - v.cfg.DispatchWindow)
+	v.tick(v.e)
 	if a := v.latest(1); a.ID != original.ID || a.MessageID != original.MessageID || a.State != store.AttemptAmbiguous || a.Issues != 1 {
 		t.Fatalf("unknown original was replaced or retried: %+v", a)
 	}
@@ -359,28 +361,41 @@ func TestLateCommitAfterEmptyLookupsIsFoundWithoutResending(t *testing.T) {
 	}
 }
 
-func TestExpiredUnknownReservationRetainsAttemptAndSlot(t *testing.T) {
+// A send kagent reserved but never saved has no task at its task lease. A
+// complete listing then proves it never started: kagent rejects a first
+// save after its two-minute reservation. The connector closes the attempt
+// as never started and resends in a fresh session with the brief, spending
+// one engineering retry (HOME-141).
+func TestExpiredReservationIsResentAfterTheTaskLease(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.kg.lateAcceptAll = true // the send reserves and loses its response
 	v.tick(v.e)
 	original := v.latest(1)
 	v.kg.lateAcceptAll = false
-	for i := 0; i < 3; i++ {
-		v.clk.Advance(v.cfg.DispatchWindow)
-		v.tick(v.e)
+	v.tickUntil(30*time.Second, 20, func() bool { return v.latest(1).ID != original.ID })
+	if waited := v.clk.Now().Sub(original.SentAt); waited < 5*time.Minute || waited > 6*time.Minute {
+		t.Fatalf("resent %s after the send, want the 5m task lease", waited)
 	}
-	// This fake's late save is rejected, but absence cannot prove that an
-	// unobserved runtime stopped. No replacement is admitted on that basis.
+	// The late save is rejected after the reservation: the original never runs.
 	v.kg.acceptPending()
-	if a := v.latest(1); a.ID != original.ID || a.State != store.AttemptAmbiguous || a.Issues != 1 {
-		t.Fatalf("expired unknown attempt was retired: %+v", a)
+	if a, err := v.st.GetAttempt(v.ctx, original.ID); err != nil || a.State != store.AttemptFailed ||
+		a.ErrorClass != dispatch.ClassAbandoned || a.Error != "lease_expired: not_started" {
+		t.Fatalf("original = %+v, %v; want abandoned as never started", a, err)
 	}
-	if len(v.kg.Sends()) != 1 || v.kg.Executions() != 0 || v.work(101).EngineeringRetries != 0 {
-		t.Fatal("expired reservation authorized a new execution")
+	retry := v.latest(1)
+	s := v.kg.Sends()
+	if retry.MessageID != "itsaplan-run/1/replacement-0-1" || retry.State != store.AttemptAccepted || len(s) != 2 ||
+		s[1].msg.ContextID != "" || !strings.Contains(s[1].msg.Parts[0].Text, "Issue 101 description.") ||
+		!strings.Contains(s[1].msg.Parts[0].Text, "## Replacement session") {
+		t.Fatalf("retry = %+v, sends = %+v", retry, s)
 	}
-	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
-		t.Fatalf("active slots = %d, %v; want original slot held", n, err)
+	if v.kg.Executions() != 1 || v.work(101).EngineeringRetries != 1 {
+		t.Fatalf("executions = %d, retries = %d; want only the retry", v.kg.Executions(), v.work(101).EngineeringRetries)
+	}
+	var holds int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM outbox WHERE dedupe_key LIKE 'comment/recovery-held/%'`).Scan(&holds); err != nil || holds != 0 {
+		t.Fatalf("operator holds announced = %d, %v; the connector settled the send itself", holds, err)
 	}
 }
 
@@ -1090,7 +1105,9 @@ func TestAmbiguousLegacyPlaceholderIsNotRetried(t *testing.T) {
 	reads := v.its.issueCalls
 	v.e.Release()
 	v.e = v.engine("connector-upgraded")
-	v.tickReconciliation(3, v.cfg.DispatchWindow)
+	// Within the task lease, after which HOME-141's lookup decides.
+	v.tickReconciliation(1, v.cfg.DispatchWindow)
+	v.tickReconciliation(1, time.Minute)
 	if len(v.kg.Sends()) != 1 || v.latest(1).ID != original.ID || v.work(101).EngineeringRetries != 0 || v.its.issueCalls != reads {
 		t.Fatal("missing legacy brief bypassed reconciliation of an ambiguous send")
 	}
@@ -1702,11 +1719,10 @@ func TestCanceledNewerRunPreservesGrantFailureRetry(t *testing.T) {
 					v.clk.Advance(61 * time.Second)
 					v.tick(v.e)
 					if sendErr == kagent.ErrAmbiguous {
-						// Canceling the run, restarting and an empty task listing cannot
-						// establish that an unknown send's physical writer stopped.
+						// Within the dispatch window kagent could still save the
+						// unknown send, so its cancellation stays pending.
 						v.e.Release()
 						v.e = v.engineWithTasks("connector-cancel-restarted", sender)
-						v.clk.Advance(v.cfg.DispatchWindow + time.Second)
 						v.tick(v.e)
 						if v.run(2).State != store.RunCanceling || v.latest(2).State != store.AttemptAmbiguous ||
 							len(v.pendingCancellations()) != 1 || v.run(runID).State != store.RunWaiting ||
@@ -1714,8 +1730,9 @@ func TestCanceledNewerRunPreservesGrantFailureRetry(t *testing.T) {
 							v.kg.Executions() != beforeExecutions || len(v.gh.Enqueues()) != 0 {
 							t.Fatal("uncertain cancellation admitted or superseded the older retry")
 						}
-						// An operator's fencing attestation can safely finish cancellation.
-						v.attestRecovery("retry")
+						// After it, a complete listing of the session without the
+						// message proves kagent never admitted it (HOME-141).
+						v.clk.Advance(v.cfg.DispatchWindow + time.Second)
 						v.tick(v.e)
 						v.tick(v.e)
 					}
@@ -1914,11 +1931,13 @@ func TestCancelSparesAnotherRunsUnattachedFirstSend(t *testing.T) {
 	if v.kg.state(other) != kagent.StateWorking {
 		t.Fatalf("run 2's task = %s; run 1's cancellation stopped it", v.kg.state(other))
 	}
-	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].RunID != 1 || cs[0].Requests != 0 {
-		t.Fatalf("unknown original cancellation was cleared or targeted another task: %+v", cs)
+	// A complete listing holds no task with run 1's message: kagent never
+	// admitted it, so the cancellation is confirmed without a CancelTask.
+	if got := v.cancellationRows(v.latest(1).ID); len(got) != 1 || got[0] != "run_canceled/confirmed/0" {
+		t.Fatalf("run 1's cancellation = %v, want confirmed unsent", got)
 	}
-	if r := v.run(1); r.State != store.RunCanceling {
-		t.Fatalf("run 1 = %s, want held for cancellation", r.State)
+	if r := v.run(1); r.State != store.RunClosed {
+		t.Fatalf("run 1 = %s, want closed", r.State)
 	}
 	if len(v.kg.Sends()) != 2 {
 		t.Fatal("cancellation or reconciliation resent an ambiguous message")
@@ -2415,7 +2434,8 @@ func TestQuietTurnOnUsableQuotaKeepsRunning(t *testing.T) {
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	task := v.latest(1).TaskID
-	for i := 0; i < 30; i++ {
+	// Quiet past QuotaStall, within the 20-minute progress lease.
+	for i := 0; i < 18; i++ {
 		v.clk.Advance(61 * time.Second)
 		v.tick(v.e)
 	}
@@ -2877,17 +2897,19 @@ func TestCancelOfUnresolvedSendNeverSends(t *testing.T) {
 	if got := len(v.kg.Sends()); got != sends {
 		t.Fatalf("cancellation sent %d messages", got-sends)
 	}
-	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Requests != 0 {
-		t.Fatalf("absence confirmed or targeted an unknown task: %+v", cs)
+	// kagent never admitted the send: the cancellation is confirmed as
+	// never started, without a CancelTask, and the slot frees (HOME-141).
+	if got := v.cancellationRows(v.latest(1).ID); len(got) != 1 || got[0] != "run_canceled/confirmed/0" {
+		t.Fatalf("cancellation = %v, want confirmed unsent", got)
 	}
-	if a := v.latest(1); a.State != store.AttemptAmbiguous || a.Issues != 1 {
-		t.Fatalf("cancellation retired the unknown attempt: %+v", a)
+	if a := v.latest(1); a.State != store.AttemptCanceled || a.Issues != 1 || v.kg.Executions() != 0 {
+		t.Fatalf("attempt = %+v, executions = %d", a, v.kg.Executions())
 	}
-	if r := v.run(1); r.State != store.RunCanceling {
-		t.Fatalf("run = %s, want held for cancellation", r.State)
+	if r := v.run(1); r.State != store.RunClosed {
+		t.Fatalf("run = %s, want closed", r.State)
 	}
-	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 1 {
-		t.Fatalf("active slots = %d, %v; want original slot held", n, err)
+	if n, err := v.st.CountActiveRuns(v.ctx, "coder"); err != nil || n != 0 {
+		t.Fatalf("active slots = %d, %v; want the slot freed", n, err)
 	}
 }
 
@@ -3056,6 +3078,8 @@ func TestRefusedRunLookupClosesRunAfterBound(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
+	// An open tool call keeps the turn busy past the progress lease.
+	v.kg.tool(v.latest(1).TaskID, "ci-1", kagent.PartToolCall)
 	v.its.holdElsewhere(1) // the next heartbeat gets 404
 	forbidden := &itsaplan.HTTPError{Status: 403, Body: "forbidden"}
 	v.setRunErr(forbidden)

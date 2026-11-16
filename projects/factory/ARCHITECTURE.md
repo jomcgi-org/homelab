@@ -566,12 +566,11 @@ whose machine has not physically stopped, so even a complete empty listing
 does not prove the original execution ceased.
 
 After a dispatch window with no positive match, the connector keeps the
-original attempt and concurrency slot, records an operator-visible hold,
-and announces it once on the issue. Missing, malformed or incomplete reads
-retain that hold; later positive evidence resumes the original task. A
-request that truly never arrived may also remain held. Recovery requires
-operator verification that the original runtime is fenced; empty task
-lists and elapsed time cannot authorize retry or cancellation confirmation.
+original attempt and concurrency slot. Missing, malformed or incomplete
+reads keep it; later positive evidence resumes the original task. Past
+`intervals.taskLease`, the liveness lease below decides what absence means.
+Where it cannot, recovery requires operator verification that the original
+runtime is fenced, announced once on the issue.
 
 Task scans retain page coverage metadata: a negative scan must observe a
 stable total and exactly that many distinct task IDs. Counts and page rows
@@ -581,16 +580,18 @@ Every non-matching task must expose its opening user input: a first
 terminal or waiting save may remain publicly SUBMITTED with hidden history
 until native cleanup finishes. Null/partial responses, failed reads,
 repeated cursors and scan timeouts remain uncertainty. None of these
-negative scans releases an unknown send.
+releases an unknown send.
 
-This guarantee is specific to an unknown send: it never causes another send
-or replacement from absence alone. A positively observed original task
+Reconciliation never resends the original message or replaces its context.
+The liveness lease closes an unknown send only on kagent's evidence: a
+complete scan within its bound, or a deleted session. A positively observed original task
 continues through the existing completion and lifecycle handling. That does
 not prove physical quiescence for every published terminal state: kagent
 can publish saved outcomes or synthetic failure after an inferred crash,
 and Substrate's NodeGone cleanup can succeed without an independent kill
 acknowledgment. That platform fencing gap is tracked separately from send
-reconciliation; missing-task recovery must not add a new cessation inference.
+reconciliation. The liveness lease relies on kagent's force delete of the
+Actor and accepts this gap (HOME-141).
 
 The dispatch window covers the 60 s call timeout, the two-minute reservation
 and 30 s of skew; configuration refuses anything under 210 s. The repository
@@ -931,6 +932,12 @@ So a person cancels a round by moving the issue to a canceled column (or
 another project), by closing the PR, or with `connector cancel`; it
 reaches kagent within a heartbeat interval.
 
+The PR poll skips a work item while a turn runs, so the heartbeat of a
+round or an itsaplan run records a merge it sees. Each tick then stops
+every live run claimed before its work item's PR merged, as a stop does,
+with the reason "its pull request #N merged". A run claimed after the
+merge, such as a question on the done issue, runs (HOME-141).
+
 A missing accepted task or a session observed crashed, deleting, deleted,
 missing, or unrecoverable enters an explicit fencing hold. The connector does
 not revert or replace it automatically: controller absence and READY after a
@@ -938,7 +945,8 @@ revert do not prove the old physical writer stopped. A positive original task
 clears a missing-task hold; a lifecycle hold remains sticky until attested,
 even if the task returns or the session later reports READY. The attempt and
 concurrency slot remain occupied, including an unsent continuation whose
-previous session is uncertain.
+previous session is uncertain. The liveness lease settles a held turn by
+deleting its session with force; an operator's attestation outranks it.
 
 An operator with the connector's database access can inspect and recover it:
 
@@ -1028,21 +1036,93 @@ authority" (#7919) the connector still enqueues the factory's PRs, since it
 sees their stops, and GitHub's required
 `factory review` check gates them.
 
-**Cancellation** sends A2A `CancelTask` and stays pending until kagent
-reports the task in a terminal state; only an unsent `quota_stall`
+**Cancellation** sends A2A `CancelTask`, with a 15 s timeout, and stays
+pending until kagent reports the task in a terminal state or the liveness
+lease deletes its session; only an unsent `quota_stall` or `lease_expired`
 cancellation can be withdrawn. A cancellation never sends a message.
 For an attempt whose task is unknown, it waits a dispatch window after the
 last send. It then finds the task in any state whose history holds the
 attempt's message ID, looking in the attempt's session or, for a first
 send, across all of the original caller's sessions. A terminal task confirms
 cancellation; a running or waiting task is cancelled. A complete scan with
-no match keeps cancellation pending and records the recovery hold described
-above. A never-sent or definitively unaccepted attempt with no prior-session
-uncertainty can confirm cancellation without a task. Otherwise the explicit
-operator fencing attestation above is required. A run that itsaplan ended closes once its
+no match within an hour of the send confirms the cancellation as never
+started: kagent rejects a first save after its two-minute dispatch
+reservation, before native execution
+([session_tasks.go](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_tasks.go#L29-L32)).
+Later, idle expiry could have removed a session that ran it. A scan that
+cannot complete keeps the cancellation pending. The force delete below
+settles an attempt that names its session; an operator settles one that
+does not. A never-sent or definitively unaccepted attempt with no
+prior-session uncertainty can confirm cancellation without a task. A run that itsaplan ended closes once its
 cancellation is confirmed, whatever started that cancellation. A
 quiescent task with a pending cancellation waits for the confirmation
 before its run reports anything.
+
+**Liveness lease (HOME-141).** No run holds a coding slot for long without
+progress, and freeing it needs no person.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: send
+    Running --> Expired: no task in taskLease, or quiet for progressLease
+    Expired --> Running: task changed before CancelTask (withdrawn)
+    Expired --> Abandoned: kagent confirms, or a complete scan finds no task
+    Expired --> ForceDelete: unconfirmed after forceDelete
+    ForceDelete --> Abandoned: session DELETED or NOT_FOUND
+    ForceDelete --> ForceDelete: refused, RevertSession, try again
+    Abandoned --> [*]: engineering retry, or retries exhausted
+```
+
+- Each tick, after the runs phase, the connector checks the latest attempt
+  of each dispatched run without a stop. A send expires without a task
+  `intervals.taskLease` (5 min) after it went out. An accepted turn expires
+  with no task event and no open tool call for `intervals.progressLease`
+  (20 min). The longest quiet stretch of a turn that completed normally on
+  2026-11-16 was 8 min 16 s. An open tool call counts as progress, so a
+  30-minute `ci` run keeps its slot.
+- A turn with a task is read again first, recorded in `status_read` as for
+  `quota_stall`. A changed task restarts the lease. Otherwise the turn gets
+  a `lease_expired` cancellation that records the task size. An event before
+  the first `CancelTask` withdraws it, and so does a turn that ends first.
+- A cancellation of any reason that kagent has not confirmed
+  `intervals.forceDelete` (10 min) after it was requested deletes the
+  attempt's session with force
+  ([sessions.proto](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/proto/kagent/api/v1/sessions.proto#L120-L125)).
+  The connector records the call in `session_deletion` (reason `stuck`,
+  `force`) under the writer epoch first, keyed by the session ID, and clears
+  the session from the work item. kagent revokes the session's dispatch,
+  deletes the Actor in Substrate, then marks the session DELETED and its
+  active tasks CANCELED
+  ([session_deletion.go](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/database/session_deletion.go#L37-L113)).
+  DELETED or NOT_FOUND confirms the cancellation.
+- kagent refuses a force delete while an idle suspend holds its claim. The
+  run then keeps its slot, since kagent may still run the turn, and the
+  `refused` step of `factory_connector_stuck_turns_total` counts it. After
+  each refusal the connector sends `RevertSession`, recorded first. It acts
+  only on a crashed Actor and fails its turn
+  ([recovery.go](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/service/session/recovery.go#L71-L91)),
+  so the turn ends once a person deletes the Actor's worker pod. The
+  connector holds no Kubernetes credentials.
+- A confirmed `lease_expired` cancellation closes the attempt as
+  `abandoned`, unless the turn ended on its own. A stop or a reassignment
+  that joined it wins, as for `quota_stall`. The run then spends one
+  engineering retry, or reports the existing exhausted failure. After a
+  deleted session or an unstarted send, the retry opens a fresh session
+  with the work item's recorded brief and a fixed replacement note. After a
+  confirmed `CancelTask` it stays in the session.
+- An operator's attestation outranks the lease: an attested attempt gets
+  no lease, and recovery confirms a pending `lease_expired` cancellation
+  before it acts.
+- Two cases still hold a slot while kagent cannot list tasks: a claimed
+  continuation that cannot check its session is idle, and a first send
+  whose session kagent never named. The notify alarm (HOME-141 item 4) is
+  not built yet; these show in the logs and the tick error metric.
+
+**Why.** On 2026-11-16 all four Codex slots were held for hours while 8
+runs waited. Two rounds had working tasks with no event since 13:31 UTC,
+and their `CancelTask` timed out against a hung runtime. Two more had
+sends with no task, held for an operator. A person freed them with
+`connector cancel` and a restart of the coder's worker pods.
 
 **Finished sessions.** Every 10 minutes the connector deletes the coder
 sessions no run will send to again (`DeleteSession`, without force), at most

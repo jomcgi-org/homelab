@@ -64,6 +64,13 @@ type Intervals struct {
 	// QuotaStall is how long a running turn may go without a task event
 	// while the broker reads the Codex quota exhausted.
 	QuotaStall Duration `yaml:"quotaStall"`
+	// The liveness lease (HOME-141): TaskLease is how long a send may go
+	// without a kagent task, ProgressLease how long a running turn may go
+	// without a task event or an open tool call, and ForceDelete how long a
+	// cancellation waits for kagent before the session is deleted with force.
+	TaskLease     Duration `yaml:"taskLease"`
+	ProgressLease Duration `yaml:"progressLease"`
+	ForceDelete   Duration `yaml:"forceDelete"`
 }
 
 // MinDispatchWindow covers the 60 s A2A call timeout (kagent.DefaultTimeout),
@@ -229,6 +236,15 @@ func Parse(b []byte) (*File, error) {
 	}
 	if f.Intervals.QuotaStall == 0 {
 		f.Intervals.QuotaStall = Duration(10 * time.Minute)
+	}
+	if f.Intervals.TaskLease == 0 {
+		f.Intervals.TaskLease = Duration(5 * time.Minute)
+	}
+	if f.Intervals.ProgressLease == 0 {
+		f.Intervals.ProgressLease = Duration(20 * time.Minute)
+	}
+	if f.Intervals.ForceDelete == 0 {
+		f.Intervals.ForceDelete = Duration(10 * time.Minute)
 	}
 	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {
 		return nil, fmt.Errorf("config: coordinator key and apiKeyFile are required")

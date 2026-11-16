@@ -231,6 +231,9 @@ func run(log *slog.Logger) error {
 		ReviewPoll:      time.Duration(cfg.File.Intervals.ReviewPoll),
 		Quota:           quota,
 		QuotaStall:      time.Duration(cfg.File.Intervals.QuotaStall),
+		TaskLease:       time.Duration(cfg.File.Intervals.TaskLease),
+		ProgressLease:   time.Duration(cfg.File.Intervals.ProgressLease),
+		ForceDelete:     time.Duration(cfg.File.Intervals.ForceDelete),
 		Links:           dispatch.Links(cfg.File.Links),
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{
