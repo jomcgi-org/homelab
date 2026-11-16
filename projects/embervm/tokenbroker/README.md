@@ -21,6 +21,8 @@ The Codex login console offers **Retry saving login** for this state. Use
 **Check connection** after recovery; no new device code is required.
 The execution service keeps watching `pending` and `persistence_pending`
 beyond its initial 15-minute window, including across temporary polling failures.
+Polling failures from startup also keep the watch alive: an outage cannot confirm
+that the broker has lost its retained login.
 When a later persistence retry reaches `granted`, the watcher resumes the
 original queued turn. A failed login or a lost pending flow does not resume it.
 
