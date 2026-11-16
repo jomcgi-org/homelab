@@ -8,6 +8,7 @@ import {
   readFile,
   readdir,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,7 +44,9 @@ async function snapshot(root) {
     ...(await readdir(join(root, "objects"))).sort().map((n) => `objects/${n}`),
   ];
   return Object.fromEntries(
-    await Promise.all(paths.map(async (p) => [p, await readFile(join(root, p))])),
+    await Promise.all(
+      paths.map(async (p) => [p, await readFile(join(root, p))]),
+    ),
   );
 }
 
@@ -90,15 +93,26 @@ test("rehashes exact bytes, updates references and is repeatable", async (t) => 
     [original[0].name]: edits[0],
     [original[1].name]: edits[1],
   });
+  const { ino } = await stat(join(root, "manifest.json"));
   const result = run(root);
   assert.equal(result.status, 0, result.stderr);
+  // Rename replaces the manifest; an in-place write would keep its inode.
+  assert.notEqual((await stat(join(root, "manifest.json"))).ino, ino);
+  assert.deepEqual((await readdir(root)).sort(), [
+    "manifest.json",
+    "objects",
+    "rehash.mjs",
+  ]);
   const after = await snapshot(root);
   const paths = edits.map((bytes) => `objects/${address(bytes)}`);
   const expected = manifest
     .replace(`objects/${original[0].name}`, paths[0])
     .replace(`objects/${original[1].name}`, paths[1]);
   assert.equal(after["manifest.json"].toString(), expected);
-  assert.deepEqual(Object.keys(after).sort(), ["manifest.json", ...paths].sort());
+  assert.deepEqual(
+    Object.keys(after).sort(),
+    ["manifest.json", ...paths].sort(),
+  );
   for (const [i, path] of paths.entries()) {
     assert.equal(after[path].toString(), edits[i]);
   }

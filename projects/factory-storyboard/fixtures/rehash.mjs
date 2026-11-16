@@ -1,7 +1,14 @@
 // Run after editing or formatting an object. Hash exactly the bytes on disk;
 // keep manifest formatting intact and never rewrite an object's contents.
-import { createHash } from "node:crypto";
-import { readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  readFile,
+  readdir,
+  rename,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 
 const root = new URL("./", import.meta.url);
 const manifestURL = new URL("manifest.json", root);
@@ -38,7 +45,15 @@ for (const { next, bytes } of changed) {
   // Exclusive creation also protects a destination created after the check.
   await writeFile(new URL(`objects/${next}`, root), bytes, { flag: "wx" });
 }
-await writeFile(manifestURL, updated);
+// Replace the manifest by rename so a failed write leaves the original intact.
+const staged = new URL(`.manifest.json.${randomUUID()}.tmp`, root);
+try {
+  await writeFile(staged, updated, { flag: "wx" });
+  await rename(staged, manifestURL);
+} catch (error) {
+  await rm(staged, { force: true });
+  throw error;
+}
 // Originals survive any failure while creating the new objects or manifest.
 for (const { name } of changed) {
   await unlink(new URL(`objects/${name}`, root));
