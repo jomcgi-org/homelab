@@ -40,6 +40,24 @@ if command -v tailscale >/dev/null && systemctl is-active --quiet tailscaled; th
 fi
 sysctl --system >/dev/null
 
+# zram swap replaces the disk swap file (zram-generator.conf).
+if ! dpkg -s systemd-zram-generator >/dev/null 2>&1; then
+	apt-get update -qq
+	DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd-zram-generator
+fi
+install -m 0644 "${HERE}/zram-generator.conf" /etc/systemd/zram-generator.conf
+systemctl daemon-reload
+# The setup unit waits for /dev/zram0, which loading the module creates.
+modprobe zram
+[[ -e /dev/zram0 ]] || cat /sys/class/zram-control/hot_add >/dev/null
+# Sets up and enables zram0, or does nothing when it is already swap.
+systemctl start dev-zram0.swap
+if grep -q '^/swap.img ' /proc/swaps; then
+	swapoff /swap.img
+fi
+sed -i 's|^/swap.img|#/swap.img|' /etc/fstab
+rm -f /swap.img
+
 # gVisor, at the release Agent Substrate's SandboxConfig pins.
 # runsc execs its sentry and helpers from gvisor-bin/ beside its own binary.
 if [[ "$(/usr/local/bin/runsc --version 2>/dev/null | head -1)" != *"release-${GVISOR_RELEASE}"* ||
@@ -63,6 +81,11 @@ install -m 0644 "${HERE}/registries.yaml" /etc/rancher/k3s/registries.yaml
 rm -f /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
 install -m 0644 "${HERE}/containerd-runsc.toml" \
 	/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/runsc.toml
+# The kubelet and k3s read these at start; the install below restarts k3s.
+install -D -m 0644 "${HERE}/kubelet-swap.conf" \
+	/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-swap.conf
+install -D -m 0644 "${HERE}/k3s-gogc.conf" /etc/systemd/system/k3s.service.d/10-gogc.conf
+systemctl daemon-reload
 
 # The install script is taken from the pinned release tag, not get.k3s.io.
 # It restarts k3s only when the binary, unit or env file changed; k3s reads
