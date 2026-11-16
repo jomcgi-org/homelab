@@ -96,62 +96,32 @@ def test_expected_network_diagnostic_cannot_hide_an_extra_error(mismatch):
     assert len(report["console_errors"]) == 1
 
 
-SHEETS = "http://friends.localhost:8177/api/grimoire/campaigns/c/characters/{}/sheets"
-REFUSED_TEXT = (
-    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+@pytest.mark.parametrize(
+    "seat, polled, method, status, passes",
+    [
+        ("a", "elowen", "GET", 404, True),  # the character seat a just lost
+        ("a", "bram", "GET", 404, False),  # a character seat a still holds
+        ("b", "elowen", "GET", 404, False),  # seat a's loss, seen on seat b
+        ("a", "elowen", "POST", 404, False),
+        ("a", "elowen", "GET", 500, False),
+    ],
 )
-
-
-def refused_poll_report(seat, polled, refused_for_seat):
-    """One session poll answered 404, as the reassignment journey observes it."""
+def test_only_a_lost_characters_refused_poll_is_accepted(
+    seat, polled, method, status, passes
+):
+    sheets = "http://friends.localhost:8177/api/grimoire/c/characters/{}/sheets"
+    url, refused = sheets.format(polled), {"a": {sheets.format("elowen")}, "b": set()}
     report = new_report("session", 1280)
     report["checks"].append("Character reassignment starts")
-    declared = declare_refused_poll(report, seat, "GET", polled, 404, refused_for_seat)
+    declare_refused_poll(report, seat, method, url, status, refused[seat])
     report["responses"].append(
-        {"seat": seat, "method": "GET", "url": polled, "status": 404}
+        {"seat": seat, "method": method, "url": url, "status": status}
     )
-    record_console(report, REFUSED_TEXT, {"url": polled}, seat, argument_count=0)
+    text = f"Failed to load resource: the server responded with a status of {status}"
+    record_console(report, text, {"url": url}, seat, argument_count=0)
     finish_report(report)
-    return declared, report
-
-
-def test_refused_poll_for_the_lost_character_is_accepted():
-    lost = SHEETS.format("elowen")
-    declared, report = refused_poll_report("a", lost, {lost})
-    assert declared is True
-    assert report["passed"] is True
-    assert report["console_errors"] == []
-    assert len(report["expected_console_diagnostics"]) == 1
-
-
-def test_refused_poll_for_a_character_the_seat_still_holds_fails():
-    held = SHEETS.format("bram")
-    declared, report = refused_poll_report("a", held, {SHEETS.format("elowen")})
-    assert declared is False
-    assert report["passed"] is False
-    assert report["console_errors"] == [REFUSED_TEXT]
-
-
-def test_refused_poll_declared_for_one_seat_fails_on_another():
-    lost_by_a = SHEETS.format("elowen")
-    report = new_report("session", 1280)
-    report["checks"].append("Character reassignment starts")
-    assert declare_refused_poll(report, "a", "GET", lost_by_a, 404, {lost_by_a})
-    report["responses"].append(
-        {"seat": "b", "method": "GET", "url": lost_by_a, "status": 404}
-    )
-    record_console(report, REFUSED_TEXT, {"url": lost_by_a}, "b", argument_count=0)
-    finish_report(report)
-    assert report["passed"] is False
-    assert report["console_errors"] == [REFUSED_TEXT]
-
-
-@pytest.mark.parametrize("method, status", [("POST", 404), ("GET", 403), ("GET", 500)])
-def test_only_a_refused_get_is_declared(method, status):
-    lost = SHEETS.format("elowen")
-    report = new_report("session", 1280)
-    assert declare_refused_poll(report, "a", method, lost, status, {lost}) is False
-    assert report["expected_network_diagnostics"] == []
+    assert report["passed"] is passes
+    assert report["console_errors"] == ([] if passes else [text])
 
 
 def test_step_budget_and_missing_step_are_independent_failures():

@@ -2004,26 +2004,13 @@ def main():
                 ]
             )
             (args.output / "report.md").write_text("\n".join(lines))
-            # The full report can exceed a megabyte and is in report.json.
-            # Playwright's Node driver inherits this pipe through stderr
-            # (ci.sh joins both into tee) and can leave it non-blocking, so a
-            # large write fails with EAGAIN when tee lags. Print only the
-            # verdict, with blocking writes.
+            # report.json has the full report (over 1 MB). Playwright can leave
+            # this pipe non-blocking, so print a short verdict, blocking.
             os.set_blocking(sys.stdout.fileno(), True)
-            summary = {"report": str(args.output / "report.json")}
-            for key in (
-                "mode",
-                "width",
-                "passed",
-                "failed_checks",
-                "errors",
-                "console_errors",
-                "slow_requests",
-                "capture_errors",
-                "failure",
-            ):
-                if key in report:
-                    summary[key] = report[key]
+            keys = "mode width passed failed_checks errors console_errors"
+            keys += " slow_requests capture_errors failure"
+            summary = {k: report[k] for k in keys.split() if k in report}
+            summary["report"] = str(args.output / "report.json")
             print(json.dumps(summary, indent=2), flush=True)
             if report["capture_errors"]:
                 raise RuntimeError(
