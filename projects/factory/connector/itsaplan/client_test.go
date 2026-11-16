@@ -167,8 +167,8 @@ func TestGetIssueDecodesStructuredContext(t *testing.T) {
 		Parent:     &IssueRef{ID: 230, Identifier: "HOME-122", Title: "Improve tickets", ColumnID: 3},
 		Links:      []IssueLink{{Kind: "blocks", Direction: "inward", Issue: IssueRef{Identifier: "HOME-125", Title: "Define the API", ColumnID: 4}}},
 		Development: []DevelopmentLink{
-			{Kind: "branch", Repository: "jomcgi-org/homelab", Title: "factory/HOME-126", State: "open"},
-			{Kind: "pull_request", Repository: "jomcgi-org/homelab", Number: 42, Title: "Show the ticket", URL: "https://github.com/jomcgi-org/homelab/pull/42", State: "open", Draft: true},
+			{Kind: "branch", State: "open"},
+			{Kind: "pull_request", Number: 42, State: "open", Draft: true},
 		},
 	}
 	if !reflect.DeepEqual(issue, want) {

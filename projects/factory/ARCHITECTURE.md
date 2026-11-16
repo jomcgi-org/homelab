@@ -501,7 +501,10 @@ a session quotes its title, description, checklists, sub-tasks, parent,
 issue links, development links and attachment names, in that order
 ([HOME-126 decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-126#comment-841)).
 The coordinator reads the issue and lists its attachments without fetching
-attachment content. The attempt records the brief so resends stay identical.
+attachment content. Development items show only fixed type and status labels
+and numeric PR IDs. itsaplan retains no trusted reviewer identity for these
+items, so provider titles, branch names, repository text and URLs are omitted.
+The attempt records the brief so resends stay identical.
 The whole brief has an 8,000-byte bound, including headings and notices.
 It cuts whole list items from the end before clipping the description and
 reports the number cut. Clipped text preserves UTF-8 characters and carries
