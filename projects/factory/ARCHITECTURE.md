@@ -1143,8 +1143,10 @@ accepts `assigneeUserId`, `limit` (at most 500) and `includeArchived`, and retur
 an array of [summary fields](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/model.ts#L318).
 It cannot filter a null delegate, so the connector checks that locally.
 Joe's user ID is resolved from the bound project's current members on every
-refresh; a missing member fails the refresh. The HOME-24 task identifies the
-owner as `@joe`; live membership and HOME-20 to HOME-23 remain rollout checks.
+refresh. If a bound project has no member `joe`, the snapshot sets `needsYou`
+to null and the page shows Needs you as unavailable; In flight and Shipped
+recently still render. On 2026-11-16 HOME's live `assignees` included
+`username: joe` with `kind: member`. HOME-20 to HOME-23 remain rollout checks.
 
 Status polling starts after writer acquisition. Every request, including each
 retry, follows this sequence:

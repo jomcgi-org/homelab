@@ -126,6 +126,23 @@ it("renders each empty state", async () => {
   expect(screen.getByText("No recent merges.")).toBeTruthy();
 });
 
+it("shows Needs you as unavailable and keeps the other sections", async () => {
+  vi.mocked(fetch).mockResolvedValue({
+    ok: true,
+    json: async () => ({ ...status, needsYou: null }),
+  } as Response);
+  renderApp();
+  await screen.findByText(
+    "Unavailable: no itsaplan member @joe in the factory's project.",
+  );
+  expect(screen.getByRole("heading", { name: "Needs you" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "In flight (2)" })).toBeTruthy();
+  expect(
+    screen.getByRole("link", { name: "HOME-19: Previous change (#7999)" }),
+  ).toBeTruthy();
+  expect(screen.queryByText("Nothing needs you right now.")).toBeNull();
+});
+
 it.each(["http", "network", "malformed"])(
   "keeps the tools usable after a %s failure",
   async (failure) => {

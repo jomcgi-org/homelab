@@ -4,6 +4,7 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -52,6 +53,8 @@ type Shipped struct {
 	MergedAt time.Time `json:"mergedAt"`
 }
 
+// Snapshot.NeedsYou is nil (JSON null) when a bound project has no member
+// `joe`; In flight and Shipped recently still render.
 type Snapshot struct {
 	NeedsYou    []NeedsYou `json:"needsYou"`
 	InFlight    []InFlight `json:"inFlight"`
@@ -84,10 +87,15 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 	out := &Snapshot{NeedsYou: []NeedsYou{}, InFlight: []InFlight{}, Shipped: []Shipped{}}
 	bindings := map[string]config.Binding{}
 	names := make([]string, 0, len(s.Bindings))
+	ownerMissing := false
 	for _, b := range s.Bindings {
 		bindings[b.Name] = b
 		names = append(names, b.Name)
 		issues, err := s.Plan.NeedsYou(ctx, b.ItsaplanProject, "joe")
+		if errors.Is(err, itsaplan.ErrNotMember) {
+			ownerMissing = true
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -99,6 +107,10 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 				Priority: issue.Priority, URL: link, CreatedAt: issue.CreatedAt,
 			})
 		}
+	}
+	if ownerMissing {
+		// A partial list would undercount Joe's tasks.
+		out.NeedsYou = nil
 	}
 	items, err := s.Store.StatusItems(ctx, names)
 	if err != nil {

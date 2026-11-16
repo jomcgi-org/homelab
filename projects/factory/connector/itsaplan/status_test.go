@@ -3,6 +3,7 @@ package itsaplan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,8 +73,8 @@ func TestNeedsYouRejectsMissingMemberAndFullListing(t *testing.T) {
 		c := &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "key"}}
 		_, err := c.NeedsYou(context.Background(), "HOME", "joe")
 		srv.Close()
-		if err == nil {
-			t.Fatalf("full=%v: expected an error", full)
+		if err == nil || errors.Is(err, ErrNotMember) == full {
+			t.Fatalf("full=%v: err = %v", full, err)
 		}
 	}
 }
