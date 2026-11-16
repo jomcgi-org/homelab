@@ -109,13 +109,13 @@ func checkRoutes(t *testing.T, h http.Handler, cases []routeCase) {
 // The reviewer token route admits only reviewer subjects: the connector,
 // the author's identity, is refused, and a reviewer reaches the handler
 // (503 here, as no reviewer App key is loaded). The connector's routes
-// refuse the reviewer.
+// refuse the reviewer, except for the shared read-only quota endpoint.
 func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 	const connector, reviewer = "system:serviceaccount:factory:factory-connector", "system:serviceaccount:factory:factory-reviewer"
 	client := fake.NewSimpleClientset()
 	client.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authenticationv1.TokenReview).DeepCopy()
-		user := map[string]string{"connector-token": connector, "reviewer-token": reviewer}[review.Spec.Token]
+		user := map[string]string{"connector-token": connector, "reviewer-token": reviewer, "actor-token": "system:serviceaccount:factory:actor"}[review.Spec.Token]
 		if user != "" {
 			review.Status = authenticationv1.TokenReviewStatus{Authenticated: true, Audiences: review.Spec.Audiences, User: authenticationv1.UserInfo{Username: user}}
 		}
@@ -141,8 +141,10 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "connector-token", http.StatusForbidden},
 		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "reviewer-token", http.StatusServiceUnavailable},
 		{"/github/connector-token?repository=o/r", "reviewer-token", http.StatusForbidden},
-		// Only the connector reads the quota: it alone pauses and resumes work.
-		{"/codex/quota", "reviewer-token", http.StatusForbidden},
+		// Both dispatchers can read quota; unrelated subjects remain refused.
+		{"/codex/quota", "reviewer-token", http.StatusOK},
+		{"/codex/quota", "unknown-token", http.StatusUnauthorized},
+		{"/codex/quota", "actor-token", http.StatusForbidden},
 		{"/codex/quota", "connector-token", http.StatusOK},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)

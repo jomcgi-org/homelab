@@ -1246,9 +1246,9 @@ and retries once, so a brief overlap during a rollout is safe.
   `metadata: read`); any other token is revoked and the mint fails. The
   broker only updates a `github-git` Secret labelled
   `app.kubernetes.io/managed-by=factory-broker`. `GET /codex/quota` serves
-  `connectorSubjects` the stored quota reading: `exhausted` (the relay's
-  pre-check without its probe), `resets_at` and `received_at`. It never
-  calls the backend.
+  `connectorSubjects` and `reviewerSubjects` the stored quota reading:
+  `exhausted` (the relay's pre-check without its probe), `resets_at` and
+  `received_at`. It never calls the backend.
 - **Reviewer App.** `githubReview` configures the reviewer App
   (`jomcgi-factory-review`, "Merge authority") the same way, kept apart from
   the author's: it mints a read-only (`contents: read`) `github-git` Secret
@@ -1486,7 +1486,7 @@ previews).
   `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
   decides: success only when no critical, high or medium finding blocks.
   An attempt without a usable report (unparseable output, an unknown
-  severity, a failed task such as a quota or login error, a rejected send or
+  severity, a failed task other than quota exhaustion, a rejected send or
   a timeout) is retried on the same head after `retryBackoff` (5m); the
   third such attempt fails the check. A later head's prompt carries the
   previous blocking and `human-gate` findings and the interdiff; each comes
@@ -1625,6 +1625,32 @@ previews).
   findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never
   holds the reviewer App's credentials, and the broker mints the author's and
   the reviewer's tokens only for their own ServiceAccounts.
+- **Quota wait (HOME-110).** Before sending a review, the service reads the
+  broker's `GET /codex/quota`. An exhausted grant or a failed quota read
+  sends no task. A failed task that matches the connector's quota
+  classifier also waits without spending an attempt. The check stays
+  `in_progress` with title "Waiting for Codex quota"; the worker is released.
+  The check records the wait time and a separate quota retry number.
+  Polls resume the same head after a newer broker reading reports usable
+  quota, including after a service restart. The replacement opens a fresh
+  session and adds `/quota-<n>` to its message ID, so kagent cannot return
+  the refused task again. Ordinary failures still spend attempts.
+
+  ```mermaid
+  stateDiagram-v2
+    [*] --> Ready
+    Ready --> Waiting: broker exhausted or unreadable
+    Ready --> Reviewing: broker usable
+    Reviewing --> Waiting: task fails with quota status
+    Waiting --> Ready: newer usable reading
+    Reviewing --> Complete: usable report
+    Reviewing --> Ready: ordinary failure and attempts remain
+    Reviewing --> Complete: ordinary failure on last attempt
+  ```
+
+  **Why.** Quota refusals exhausted all three review attempts on the same
+  head. [HOME-110](https://factory-plan.jomcgi.dev/factory/issue/HOME-110)
+  keeps waiting work outside the worker pool and resumes it without a new commit.
 - **Resumed sessions.** The first attempt on a later head continues the
   kagent session that reviewed the previous head, as the connector
   continues a coding round: an A2A `SendMessage` naming the session's
