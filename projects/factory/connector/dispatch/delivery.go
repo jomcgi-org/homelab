@@ -1701,7 +1701,17 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 	if issue == nil || issue.ID != wi.IssueID || strings.TrimSpace(issue.Title+issue.Description) == "" {
 		return "", errors.New("recovery requires authoritative issue text")
 	}
-	fmt.Fprintf(&s, "\n### Issue %s: %s\n\n%s\n", wi.IssueKey, issue.Title, clipDescription(issue.Description))
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	attachments, err := e.its.GetAttachments(ctx, wi.IssueID)
+	e.countRefusal(roleCoordinator, lookupReplacement, err)
+	if err != nil {
+		return "", err
+	}
+	brief := renderIssueBrief(s.String(), wi.IssueKey, issue, attachments)
+	s.Reset()
+	s.WriteString(brief)
 	if e.gh == nil {
 		return s.String(), nil
 	}

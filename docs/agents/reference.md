@@ -129,6 +129,28 @@ record from the HOME issue. `factoryadmin` is reserved for bootstrap and
 break-glass recovery; its comments are never evidence of Joe's decisions.
 Dispatched agents have no itsaplan access; their issues come from the connector.
 
+### Ticket shape
+
+Follow [docs/writing.md](../writing.md) and
+[Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-126#comment-841).
+
+- **Title:** state the outcome as an instruction in 70 characters or fewer.
+- **Description:** use 200 words or fewer, in this order:
+  1. The `Refs` line: "Put `Refs HOME-N` in the commit message."
+  2. **Problem:** three sentences or fewer.
+  3. **Goal:** one sentence.
+  4. **Decisions:** link each decision to its record.
+  5. **Out of scope:** name the excluded work.
+- **Flows and state machines:** use a small diagram in a code block.
+- **Done when:** create one checklist with this exact title. Each item states one check a reviewer can verify.
+- **Work larger than one PR:** create sub-tasks, one PR each.
+- **Order between tickets:** use `blocked_by` links. Do not write instructions such as "delegate after HOME-X" in prose.
+- **Long design or reference text:** put it in an itsaplan document and link it.
+- **Logs and screenshots:** add attachments.
+- **Joe's decisions:** record each in a comment by `joe` or `joesessions`. Link the comment from **Decisions**.
+
+### API access
+
 - Port-forward the API: `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory
   port-forward svc/factory-itsaplan-api 13000:3000`.
 - Sign in with `POST /api/auth/sign-in/email`, using fields `email` and
@@ -151,8 +173,7 @@ Dispatched agents have no itsaplan access; their issues come from the connector.
   `blocked_by`, `relates`, `duplicates`).
 
 Setting `delegateUserId` to the coding agent (`homelab-codex`) starts a run
-from the description as it is then. Write the final description first, and
-start it with "Put `Refs HOME-N` in the commit message." The connector does
+with the ticket's current content. Complete the ticket before delegation. The connector does
 not yet hold a run for its `blocked_by` links (HOME-55), so delegate a
 dependent issue only after its blocker is Done. Never predict a new issue's
 key: other sessions create issues concurrently, so read it from the response.

@@ -776,6 +776,24 @@ func TestStaleHeadAndUntrustedEventsAreIgnored(t *testing.T) {
 	}
 }
 
+func TestReplacementSessionReadsStructuredIssue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	old := v.delivered()
+	v.its.issues[101].Checklists = []itsaplan.Checklist{{Title: "Done when", Items: []itsaplan.ChecklistItem{{Content: "Verify replacement context"}}}}
+	v.its.attachments = map[int64][]itsaplan.Attachment{101: {{Filename: "replacement.log"}}}
+	v.kg.expire(old)
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Handle the timeout.")
+	v.poll()
+	v.attestLifecycleRecovery(1)
+	sends := v.kg.Sends()
+	text := sends[len(sends)-1].msg.Parts[0].Text
+	for _, want := range []string{"## Replacement session", "- [ ] Verify replacement context", "- replacement.log"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("replacement text lacks %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	v := newDeliveryEnv(t)
 	old := v.delivered()
@@ -794,7 +812,7 @@ func TestExpiredSessionRequiresFencingAndPreservesContext(t *testing.T) {
 	text := last.msg.Parts[0].Text
 	for _, want := range []string{
 		"Handle the timeout.", "## Replacement session", old, "Issue 101 title", "Issue 101 description.",
-		"(description clipped at 8000 of 8023 bytes)",
+		"(description clipped at ", "of 8023 bytes)",
 		"#1 https://github.com/example-org/homelab/pull/1", "is at sha-1", "Review thread (file path omitted)", "Timeout is ignored here.",
 	} {
 		if !strings.Contains(text, want) {

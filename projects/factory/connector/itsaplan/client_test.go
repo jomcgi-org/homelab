@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -135,6 +136,73 @@ func TestComment(t *testing.T) {
 	}
 	if got.path != "/issues/41/comments" || got.key != "k-coord" || got.body["body"] != "hello" {
 		t.Fatalf("request = %+v", got)
+	}
+}
+
+// These fields follow itsaplan v1.10.0's issue and attachment responses.
+func TestGetIssueDecodesStructuredContext(t *testing.T) {
+	var got seen
+	c := server(t, 200, `{
+		"id":234,"identifier":"HOME-126","title":"Show the ticket","description":"Refs HOME-126","columnId":3,
+		"checklists":[{"id":1,"title":"Done when","position":0,"items":[{"id":2,"content":"Verify the brief","done":true,"position":1.5}]}],
+		"subtasks":[{"id":235,"identifier":"HOME-127","title":"Add tests","columnId":2,"archived":true}],
+		"parent":{"id":230,"identifier":"HOME-122","title":"Improve tickets","columnId":3},
+		"links":[{"kind":"blocks","direction":"inward","issue":{"identifier":"HOME-125","title":"Define the API","columnId":4}}],
+		"development":[
+			{"kind":"branch","repository":"jomcgi-org/homelab","number":null,"title":"factory/HOME-126","url":null,"state":"open","draft":false},
+			{"kind":"pull_request","repository":"jomcgi-org/homelab","number":42,"title":"Show the ticket","url":"https://github.com/jomcgi-org/homelab/pull/42","state":"open","draft":true}
+		]
+	}`, &got)
+	issue, err := c.GetIssue(context.Background(), 234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "GET" || got.path != "/issues/234" || got.key != "k-coord" {
+		t.Fatalf("request = %+v", got)
+	}
+	want := &Issue{
+		ID: 234, Identifier: "HOME-126", Title: "Show the ticket", Description: "Refs HOME-126", ColumnID: 3,
+		Checklists: []Checklist{{ID: 1, Title: "Done when", Items: []ChecklistItem{{ID: 2, Content: "Verify the brief", Done: true, Position: 1.5}}}},
+		Subtasks:   []IssueRef{{ID: 235, Identifier: "HOME-127", Title: "Add tests", ColumnID: 2, Archived: true}},
+		Parent:     &IssueRef{ID: 230, Identifier: "HOME-122", Title: "Improve tickets", ColumnID: 3},
+		Links:      []IssueLink{{Kind: "blocks", Direction: "inward", Issue: IssueRef{Identifier: "HOME-125", Title: "Define the API", ColumnID: 4}}},
+		Development: []DevelopmentLink{
+			{Kind: "branch", Repository: "jomcgi-org/homelab", Title: "factory/HOME-126", State: "open"},
+			{Kind: "pull_request", Repository: "jomcgi-org/homelab", Number: 42, Title: "Show the ticket", URL: "https://github.com/jomcgi-org/homelab/pull/42", State: "open", Draft: true},
+		},
+	}
+	if !reflect.DeepEqual(issue, want) {
+		t.Fatalf("issue = %+v, want %+v", issue, want)
+	}
+	c = server(t, 200, `{"id":234,"title":"Plain ticket","description":"Do it.","parent":null}`, &got)
+	issue, err = c.GetIssue(context.Background(), 234)
+	if err != nil || !reflect.DeepEqual(issue, &Issue{ID: 234, Title: "Plain ticket", Description: "Do it."}) {
+		t.Fatalf("plain issue = %+v, %v", issue, err)
+	}
+}
+
+func TestGetAttachmentsReadsOnlyNames(t *testing.T) {
+	var got seen
+	c := server(t, 200, `[{"id":"public-id","filename":"failure.log","contentType":"text/plain","sizeBytes":123,"url":"/attachments/public-id/raw"}]`, &got)
+	attachments, err := c.GetAttachments(context.Background(), 234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "GET" || got.path != "/issues/234/attachments" || got.key != "k-coord" {
+		t.Fatalf("request = %+v", got)
+	}
+	if !reflect.DeepEqual(attachments, []Attachment{{Filename: "failure.log"}}) {
+		t.Fatalf("attachments = %+v", attachments)
+	}
+	c = server(t, 200, `[]`, &got)
+	if attachments, err = c.GetAttachments(context.Background(), 234); err != nil || len(attachments) != 0 {
+		t.Fatalf("empty attachments = %+v, %v", attachments, err)
+	}
+	for _, status := range []int{403, 404, 503} {
+		c = server(t, status, `{}`, &got)
+		if _, err := c.GetAttachments(context.Background(), 234); err == nil {
+			t.Fatalf("status %d succeeded", status)
+		}
 	}
 }
 
