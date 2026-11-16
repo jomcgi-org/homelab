@@ -651,8 +651,9 @@ func TestRelayQuota(t *testing.T) {
 	if resp.StatusCode != http.StatusTooManyRequests || body["factory_error"] != ErrQuotaExhausted || body["resets_at"] != reset.UTC().Format(time.RFC3339) {
 		t.Fatalf("quota response = %d %v", resp.StatusCode, body)
 	}
-	if resp.Header.Get("Retry-After") == "" {
-		t.Fatal("quota response has no Retry-After")
+	// A Retry-After would make Codex sleep until the window resets.
+	if got := resp.Header.Get("Retry-After"); got != "" {
+		t.Fatalf("quota response Retry-After = %q, want none", got)
 	}
 	// The observation now blocks without calling the backend.
 	h.waitQuota(func(v quota.View) bool { return v.Exhausted })
@@ -660,6 +661,9 @@ func TestRelayQuota(t *testing.T) {
 	resp = h.post("/v1/responses", h.actorJWT())
 	if resp.StatusCode != http.StatusTooManyRequests || factoryError(t, resp)["factory_error"] != ErrQuotaExhausted || h.backend.count() != calls {
 		t.Fatalf("pre-check status = %d, backend calls %d -> %d", resp.StatusCode, calls, h.backend.count())
+	}
+	if got := resp.Header.Get("Retry-After"); got != "" {
+		t.Fatalf("pre-check Retry-After = %q, want none", got)
 	}
 	if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("quota_exhausted", "4xx")); got != 2 {
 		t.Fatalf("quota metric = %v", got)

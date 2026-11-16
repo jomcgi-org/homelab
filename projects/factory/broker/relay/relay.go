@@ -12,7 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -553,13 +552,15 @@ func latestReset(obs quota.Observation) time.Time {
 	return until
 }
 
+// writeQuota refuses a call while the grant is exhausted. It sends no
+// Retry-After: Codex sleeps until that deadline, and a window reset is days
+// away, so a turn would hold its slot until then. Without the header, Codex
+// retries on its short backoff and ends the turn with "exceeded retry limit,
+// last status: 429", which the connector classes as quota and pauses.
 func writeQuota(w http.ResponseWriter, until time.Time) outcome {
 	extra := map[string]string{}
 	if !until.IsZero() {
 		extra["resets_at"] = until.UTC().Format(time.RFC3339)
-		if wait := time.Until(until); wait > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		}
 	}
 	return writeError(w, http.StatusTooManyRequests, ErrQuotaExhausted, "quota_exhausted", extra)
 }
