@@ -50,6 +50,7 @@ data:
       "team" $i.bootstrap.team
       "project" $i.bootstrap.project
       "agents" $agents
+      "coordinator" (ternary .Values.connector.coordinator "" .Values.connector.enabled)
       | toPrettyJson | nindent 4 }}
 ---
 apiVersion: v1

@@ -191,6 +191,178 @@ def bootstrap(tmp_path, monkeypatch):
     return script, api, lambda: script.ensure_sessions(admin, 7)
 
 
+class CoordinatorAPI:
+    """The pinned roles/member API and effective access under the agent key."""
+
+    def __init__(self, script):
+        self.script = script
+        self.agent = {
+            "id": 8,
+            "userId": "coordinator-user",
+            "username": "factory-coordinator",
+            "projects": [{"id": 9}],
+        }
+        self.key = "test-private-coordinator-key"
+        self.secret = {"data": {"apiKey": base64.b64encode(self.key.encode()).decode()}}
+        self.permissions = {
+            "work_items": {"read": True, "edit": True},
+            "ai_agents": {"read": True},
+        }
+        self.roles = []
+        self.writes = []
+        self.effective_reads = 0
+        self.fail = None
+        self.wrong_identity = False
+
+    def request(self, method, url, body=None, headers=None, ctx=None):
+        path = urlsplit(url).path
+        response_headers = Message()
+        if method != "GET":
+            self.writes.append((method, path, copy.deepcopy(body)))
+        if path.startswith("/api/v1/namespaces/"):
+            assert path.endswith("/factory-itsaplan-agent-factory-coordinator")
+            if method == "PUT":
+                self.secret = copy.deepcopy(body)
+            return 200, response_headers, copy.deepcopy(self.secret)
+        if (headers or {}).get("x-api-key"):
+            assert headers["x-api-key"] == self.key and "Cookie" not in headers
+            assert method == "GET"
+            if path == "/me":
+                data = {
+                    "authenticated": True,
+                    "user": {
+                        "id": "wrong-user"
+                        if self.wrong_identity
+                        else self.agent["userId"]
+                    },
+                }
+            else:
+                assert path == _PROJECT
+                self.effective_reads += 1
+                if self.fail == "read":
+                    raise self.script.HTTPError(method, url, 403, self.key)
+                data = {"permissions": copy.deepcopy(self.permissions)}
+            return 200, response_headers, data
+        assert headers["Cookie"] == "session=admin"
+        data = None
+        if path == "/teams/7/ai-agents":
+            assert method == "GET"
+            data = [self.agent]
+        elif path == "/teams/7/roles/options":
+            assert method == "GET"
+            data = self.roles
+        elif path == "/teams/7/roles":
+            assert method == "POST"
+            role = {"id": 20, "system": False, **copy.deepcopy(body)}
+            self.roles.append(role)
+            if self.fail == "create response":
+                raise OSError("lost role create response")
+            data = role
+        elif path == "/teams/7/roles/20":
+            assert method == "PATCH"
+            self.roles[0].update(copy.deepcopy(body))
+            data = self.roles[0]
+        elif path == _PROJECT + "/members/coordinator-user":
+            assert method == "PATCH" and body == {"role": "member", "roleId": 20}
+            if self.fail != "grant ignored":
+                self.permissions = copy.deepcopy(self.roles[0]["permissions"])
+            if self.fail == "grant response":
+                raise OSError("lost membership update response")
+        else:
+            pytest.fail(f"unexpected coordinator API call: {method} {path}")
+        return 200, response_headers, copy.deepcopy(data)
+
+
+@pytest.fixture
+def coordinator(bootstrap, monkeypatch):
+    script, _, _ = bootstrap
+    script.CONFIG.update(
+        {
+            "coordinator": "factory-coordinator",
+            "agents": [
+                {"username": "factory-coordinator", "name": "Factory coordinator"}
+            ],
+        }
+    )
+    monkeypatch.setenv("AGENT_SECRET_PREFIX", "factory-itsaplan-agent-")
+    api = CoordinatorAPI(script)
+    monkeypatch.setattr(script, "request", api.request)
+    admin = script.Session()
+    admin.cookies = {"session": "admin"}
+    return script, api, lambda: script.ensure_agents(admin, 7, 9)
+
+
+def test_coordinator_bootstrap_grants_and_verifies_effective_permissions(
+    coordinator, capsys
+):
+    script, api, run = coordinator
+    run()
+    assert script.has_coordinator_permissions(api.permissions)
+    assert api.effective_reads == 2
+    assert len(api.roles) == 1 and not api.roles[0]["system"]
+    assert api.roles[0]["permissions"] == script.COORDINATOR_PERMISSIONS
+    assert api.roles[0]["permissions"]["ai_agents"] == {"read": True}
+    api.writes.clear()
+    run()
+    assert api.effective_reads == 3 and api.writes == []
+    output = capsys.readouterr().out
+    assert "verified factory-coordinator on HOME" in output and api.key not in output
+
+
+@pytest.mark.parametrize("failure", ["create response", "grant response"])
+def test_coordinator_bootstrap_recovers_partial_grant_without_duplicate_role(
+    coordinator, failure
+):
+    _, api, run = coordinator
+    api.fail = failure
+    with pytest.raises(OSError, match="lost"):
+        run()
+    api.fail = None
+    run()
+    assert len(api.roles) == 1 and api.permissions["work_items"]["create"] is True
+
+
+def test_coordinator_bootstrap_repairs_dedicated_role_without_editing_default(
+    coordinator,
+):
+    script, api, run = coordinator
+    run()
+    api.roles[0]["permissions"]["work_items"]["create"] = False
+    api.permissions = copy.deepcopy(api.roles[0]["permissions"])
+    api.writes.clear()
+    run()
+    assert script.has_coordinator_permissions(api.permissions)
+    role_writes = [p for m, p, _ in api.writes if p.startswith("/teams/7/roles")]
+    assert role_writes == ["/teams/7/roles/20"]
+
+
+@pytest.mark.parametrize(
+    "failure", ["wrong identity", "read", "grant ignored", "system role"]
+)
+def test_coordinator_bootstrap_fails_closed_without_effective_grant(
+    coordinator, failure, capsys
+):
+    script, api, run = coordinator
+    if failure == "wrong identity":
+        api.wrong_identity = True
+    elif failure == "system role":
+        api.roles = [
+            {
+                "id": 1,
+                "name": "Factory coordinator (factory-coordinator)",
+                "system": True,
+            }
+        ]
+    else:
+        api.fail = failure
+    with pytest.raises((SystemExit, script.HTTPError)):
+        run()
+    output = capsys.readouterr().out
+    assert "verified factory-coordinator" not in output and api.key not in output
+    if failure != "grant ignored":
+        assert not any("/roles" in p or "/members/" in p for _, p, _ in api.writes)
+
+
 def test_second_run_preserves_member_password_and_secret(bootstrap, capsys):
     _, api, run = bootstrap
     run()

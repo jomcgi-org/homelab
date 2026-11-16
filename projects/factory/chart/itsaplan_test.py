@@ -301,6 +301,7 @@ def test_bootstrap_config_lists_the_agents() -> None:
         "factory-reviewer",
     ]
     assert config["project"]["key"] == "HOME"
+    assert config["coordinator"] == "factory-coordinator"
     assert config["oidc"]["clientId"] == "factory-itsaplan"
 
 
@@ -426,6 +427,17 @@ def test_reviewer_bootstrap_does_not_publish_when_role_fails(bootstrap, monkeypa
     with pytest.raises(RuntimeError, match="role read/write failed"):
         bootstrap.ensure_agents(api, 1, 3)
     assert not published
+
+
+def test_coordinator_grant_is_only_requested_with_connector_enabled() -> None:
+    config = json.loads(
+        _one(
+            _render(["connector.enabled=false"]),
+            "ConfigMap",
+            "factory-itsaplan-scripts",
+        )["data"]["config.json"]
+    )
+    assert config["coordinator"] == ""
 
 
 def test_policies_select_their_pods() -> None:
