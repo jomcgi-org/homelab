@@ -50,6 +50,7 @@ router must reserve these three leases.
 | Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
 | Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
 | Admission policy | ValidatingAdmissionPolicy (`projects/platform-factory/edge-admission/`) | Keeps Gateways, routes, the edge label and Envoy's proxy and auth objects inside `edge`. The API server evaluates it in every namespace; Kyverno skips kube-system, kube-public, kube-node-lease and its own namespace |
+| Promotion | Kargo 1.11.1 (`projects/platform-factory/kargo/`), with cert-manager v1.21.1 issuing its webhook certificate from a self-signed Issuer; no pipelines yet | One way to deploy everything except what Kargo runs on: Cilium, 1Password Connect, ArgoCD, cert-manager and Kargo stay on ArgoCD from Git. Verified Freight becomes the signal a HOME issue closes on, and promoting the last verified Freight is the rollback (HOME-116, HOME-77, HOME-78). The UI, API server and GitHub webhook receiver are off until a pipeline needs them |
 | Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's `authentik-pg`, kagent's `kagent-pg` and the factory's `factory-db` are configured for three instances each, one per node |
 | Backups | All three CNPG clusters: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Garage shares the cluster's failure domain. Off-site copies (R2 or GCS) are deferred; Authentik's rollout and backup acceptance checks are listed under Postgres |
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Recovery needs the existing `authentik-secrets`. Copying it to 1Password remains on #7952 |
@@ -751,8 +752,10 @@ These come from the #7817 step 1 checklist:
   snapshots to Garage's `ate-snapshots` (grant `ate-system` a key), its
   database to CloudNativePG.
 - Moving `kagent-pg`, `factory-db` and Authentik backups to the barman-cloud
-  plugin (and cert-manager) before upgrading CloudNativePG to 1.31, which
-  removes the in-tree integration.
+  plugin before upgrading CloudNativePG to 1.31, which removes the in-tree
+  integration. cert-manager, which the plugin needs, now runs.
+- Kargo pipelines (HOME-116): the first Warehouse, stage branch, verification
+  and rollback, then each application moved onto Kargo one at a time.
 - Agent Substrate CA rotation before 2027-11-13
   ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
 - Verify Authentik's three instances, WAL archiving and a completed Garage

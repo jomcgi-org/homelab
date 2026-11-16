@@ -22,6 +22,23 @@ argocd_app(
     ],
 )
 
+argocd_app(
+    name = "kargo-factory",
+    chart = "projects/platform/kargo",
+    chart_files = ":chart",
+    namespace = "kargo",
+    release_name = "kargo",
+    tags = [
+        "helm",
+        "template",
+    ],
+    target_suffix = "_factory",
+    values_files = [
+        "values.yaml",
+        "values-factory.yaml",
+    ],
+)
+
 # Hand-written test target (this directory has no gazelle-managed Python).
 # argocd_app only proves the chart renders; nothing there reads the promotion
 # steps. This pins the staged revision gate (#4745): off by default it changes

@@ -1,0 +1,38 @@
+# Kargo's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). With no Warehouses yet, Kargo
+# talks only to the API server. The first pipeline adds the controller's
+# egress to the registries and git hosts its Warehouses read.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kargo
+  namespace: kargo
+  annotations:
+    # Before the controllers and the garbage-collector CronJob start.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kargo
+  egress:
+    - toEntities: [kube-apiserver]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: webhooks-server
+  namespace: kargo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kargo
+      app.kubernetes.io/component: kubernetes-webhooks-server
+  ingress:
+    # The validating and mutating webhooks; most fail closed.
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
