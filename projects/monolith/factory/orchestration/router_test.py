@@ -427,11 +427,26 @@ def test_one_shot_resolves_session_and_credential_wait_payload(
     status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
     assert status["kind"] == "session"
     assert status["session_id"] == 42
-    assert bool(status["login_required"]) is not blocked
-    assert bool(status["refresh_blocked"]) is blocked
-    assert status["user_code"] == (None if blocked else "CODE-123")
+    # Optional false flags and null code fields are omitted by the route's
+    # response_model_exclude_none contract. The active flag must be present.
     if blocked:
-        assert status["login_message"] == "Wait for refreshed credentials."
+        assert status == {
+            "kind": "session",
+            "session_id": 42,
+            "refresh_blocked": True,
+            "grant": "codex-cluster",
+            "login_message": "Wait for refreshed credentials.",
+        }
+    else:
+        assert status == {
+            "kind": "session",
+            "session_id": 42,
+            "login_required": True,
+            "verification_url": "https://example.test/device",
+            "user_code": "CODE-123",
+            "grant": "codex-cluster",
+            "login_message": "Approve the Codex login in your browser.",
+        }
 
 
 def test_classifier_refusal_never_starts_session(monkeypatch, start_engine):

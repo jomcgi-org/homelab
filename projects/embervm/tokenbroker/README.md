@@ -41,8 +41,9 @@ for storage, so this state never becomes login-required based on elapsed time.
 A newer stored grant with a different refresh token restores serving
 automatically. If the replacement was lost, complete a new device login to
 clear the block. The stored access token is preserved.
-Login status reports a recovered stored grant even if a device approval is
-still pending, so sessions can resume without finishing that flow.
+Login status reports a recovered stored grant even if a device approval
+started for that consumed token is still pending. An operator's login started
+with a healthy stored grant continues to report pending until it completes.
 
 ## Quota observation durability
 

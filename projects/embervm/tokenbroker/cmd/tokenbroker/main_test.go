@@ -637,6 +637,41 @@ func TestLoginStatusUsesDurableGrantAndNeedsLoginMarker(t *testing.T) {
 	}
 }
 
+func TestExistingGrantDoesNotHideNewDeviceLogin(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	now := time.Now().UTC()
+	st := &fakeStore{grants: map[string]store.Grant{"codex-cluster": {
+		Name: "codex-cluster", ProviderName: "test", LastRefresh: now,
+		TokenBundle: store.TokenBundle{RefreshToken: "existing"},
+	}}}
+	s := newTestServer(st, &fakeAdapter{
+		deviceCode: provider.DeviceCodeResponse{VerificationURL: "https://auth.example/device", UserCode: "ABCD-EFGH", ExpiresIn: 900},
+		pollWait:   release,
+	})
+	started := requestGrant(t, s, http.MethodPost, "/grants/codex-cluster/login/start")
+	if started.Code != http.StatusOK {
+		t.Fatalf("start = %d", started.Code)
+	}
+	for i := 0; i < 2; i++ {
+		status := decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+		if status["state"] != "pending" {
+			t.Fatalf("existing grant hid explicit device login: %#v", status)
+		}
+		// Even a routine refresh of the healthy grant is not completion of
+		// the operator's explicitly requested login.
+		g, _ := st.LoadGrant("codex-cluster")
+		g.LastRefresh = now.Add(time.Minute)
+		g.TokenBundle.RefreshToken = "routinely-rotated"
+		_ = st.SaveGrant(g)
+	}
+	s.setLogin("codex-cluster", "granted", "device authorization complete")
+	status := decodeBody(t, requestGrant(t, s, http.MethodGet, "/grants/codex-cluster/login/status"))
+	if status["state"] != "granted" {
+		t.Fatalf("completed device login = %#v", status)
+	}
+}
+
 func TestPendingLoginStatusAndConflictRepeatLiveDeviceCode(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)

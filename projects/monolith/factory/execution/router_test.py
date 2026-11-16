@@ -2069,7 +2069,7 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
     )
     monkeypatch.setattr(
         "factory.execution.router.watch_for_login",
-        lambda grant, callback: watched.append((grant, callback)),
+        lambda grant, callback, **options: watched.append((grant, callback)),
     )
     monkeypatch.setattr(
         "factory.execution.router._set_session_status",
@@ -2195,7 +2195,11 @@ def test_send_message_login_required_persists_and_watches(client, session, monke
     )
     monkeypatch.setattr(
         "factory.execution.router.watch_for_login",
-        lambda grant, callback: watched.append((grant, callback)),
+        lambda grant, callback, **options: watched.append((grant, callback, options)),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._resume_session_after_login",
+        lambda session_id: store.resume_session_after_login(session, session_id),
     )
     monkeypatch.setattr(
         "factory.execution.router._schedule_next_message", scheduled.append
@@ -3149,7 +3153,12 @@ def test_send_to_thread_session_login_required_persists_and_watches(
     monkeypatch.setattr(
         api,
         "watch_for_login",
-        lambda grant, callback: watched.append((grant, callback)),
+        lambda grant, callback, **options: watched.append((grant, callback, options)),
+    )
+    monkeypatch.setattr(
+        api,
+        "_resume_session_after_login",
+        lambda session_id: store.resume_session_after_login(session, session_id),
     )
     monkeypatch.setattr(api, "_schedule_next_message", scheduled.append)
 
@@ -3836,13 +3845,17 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
     )
     monkeypatch.setattr(
         "factory.execution.router.watch_for_login",
-        lambda grant, callback: watched.append((grant, callback)),
+        lambda grant, callback, **options: watched.append((grant, callback, options)),
     )
     monkeypatch.setattr(
         "factory.execution.router._set_session_status",
         lambda session_id, status: store.update_session_status(
             session, session_id, status
         ),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._resume_session_after_login",
+        lambda session_id: store.resume_session_after_login(session, session_id),
     )
     monkeypatch.setattr(
         "factory.execution.router._schedule_next_message", scheduled.append
@@ -3866,6 +3879,7 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
     assert row.discord_thread is None
     assert row.status == "awaiting_login"
     assert watched and watched[0][0] == "codex-cluster"
+    assert watched[0][2] == {"refresh_blocked": state == "blocked"}
     assert scheduled == []
     expected = [("GET", "/grants/codex-cluster/login/status")]
     if state == "none":
@@ -3878,7 +3892,7 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
         # not abandon recovery or start a login while the write is pending.
         monkeypatch.setattr(codex_login, "_LOGIN_TIMEOUT", 0)
         monkeypatch.setattr(codex_login, "_LOGIN_POLL_INTERVAL", 0)
-        statuses = iter(["blocked", "unreachable", "blocked", "granted"])
+        statuses = iter(["unreachable", "unreachable", "blocked", "granted"])
 
         async def delayed_replacement(method, path):
             calls.append((method, path))
@@ -3892,7 +3906,7 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
 
         async def wait_for_replacement():
             previous = set(codex_login._login_watch_tasks)
-            codex_login.watch_for_login(*watched[0])
+            codex_login.watch_for_login(*watched[0][:2], **watched[0][2])
             await asyncio.wait_for(
                 asyncio.gather(*(codex_login._login_watch_tasks - previous)), timeout=1
             )
@@ -3905,6 +3919,8 @@ def test_router_start_codex_credential_wait_preserves_session_and_resumes(
     assert store.get_session(session, body["session_id"]).status == "running"
     pending = store.get_pending_message(session, row.id, body["turn"])
     assert pending.message_text == "Hello"
+    assert scheduled == [body["session_id"]]
+    asyncio.run(watched[0][1]())
     assert scheduled == [body["session_id"]]
 
 
