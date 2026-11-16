@@ -4,6 +4,7 @@ go_library(
     name = "itsaplan",
     srcs = [
         "client.go",
+        "human_gate.go",
         "status.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/itsaplan",

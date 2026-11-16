@@ -831,6 +831,82 @@ during a key rotation) is retried under the outbox's usual bounds.
 HOME-15 and HOME-18 waited silently for eight hours after rounds whose
 agent could not read the CI failure.
 
+**Human gate.** For the Homelab binding's HOME project ([#7935](https://github.com/jomcgi-org/homelab/issues/7935)), `humanGateAssignee` defaults to
+`joe`; an explicit empty string disables it, and other bindings opt in.
+When the current PR head passes `pr-checks` and the configured reviewer
+App marks its failed review `human-gate-only`, the connector creates one
+issue titled `Merge #<n> past the human gate`. It is assigned to Joe with
+no delegate, in Todo, so it appears in Needs Joe. Its body links the PR,
+names the head and includes the review's gated files and findings. It also
+names the approval that clears the gate under `REVIEW.md` "Joe decides":
+
+| PR | Approval |
+| --- | --- |
+| Has a hold label (`human`, `needs-human`) | An APPROVED review of the head by `jomcgi` |
+| Authored by `jomcgi` | The one the `factory review` check names. The verified authorship waiver may apply ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540), [#8049 scope](https://github.com/jomcgi-org/homelab/issues/8049)); shared-head, foreign-check and restart-recovery holds need an APPROVED review |
+| Any other, such as the factory's | An APPROVED review of the head by `jomcgi` |
+
+Long review summaries are clipped within itsaplan's 50,000-character
+description limit, preserving the PR link, head, recovery markers and a link
+to the full review.
+
+The issue follows the PR during coding turns and after delivery stops:
+an unready head moves it to Backlog, a ready head to Todo, a merge to Done,
+and a close to Canceled. Canceled issues keep polling so reopening a PR
+restores Backlog or Todo without resuming stopped coding work.
+`human_gate_issue` has one row per repository and PR. Every write first
+records a `human_gate_attempt` with its message ID, payload and writer epoch.
+Absolute state updates retry with the same message ID and payload for that
+revision, and failed terminal moves remain eligible after PR delivery ends.
+
+Itsaplan v1.10.0 has no create idempotency key: the
+[create route](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/index.ts#L325-L343)
+takes only issue fields. Its
+[search](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/index.ts#L433-L443)
+includes archived issues and
+[matches](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/issues/service.ts#L322-L334)
+the description with `ILIKE` in the database that stores the issue, so a
+created issue is found once its create commits. Every create description
+carries the PR's marker, `<!-- factory-human-gate/<repo>/<n> -->`, and the
+connector creates only when a search finds no marked issue:
+
+```mermaid
+flowchart TD
+  search{Search finds marked issues?} -- yes --> adopt[Adopt the earliest created, apply the current state, cancel the others]
+  search -- no --> started{Send marked less than 10 minutes ago?}
+  started -- yes --> wait[Wait: its POST can still land]
+  started -- no --> todo{State is Todo?}
+  todo -- no --> none[Create nothing]
+  todo -- yes --> mark[Check the writer and mark the send in one transaction]
+  mark --> post[POST, 30-second deadline set before the mark]
+  post -- created --> adopt
+  post -- no connection or 4xx --> clear[Clear the mark; retry on the next poll]
+  post -- crash, timeout or 5xx --> wait
+```
+
+The mark records `attempted_at` from the database clock. Ten minutes later,
+no POST under that mark is open: its process stopped, or its deadline closed
+the request. If a search then finds no marker, the connector sends again
+with the frozen payload. A crash
+between the mark and the POST, a lost COMMIT acknowledgment and a timed-out
+POST all recover this way without a person. A send that provably created
+nothing clears its mark at once, and its retry uses the current payload.
+
+The deadline does not stop itsaplan's work. A create that waits more than
+ten minutes on the project's sequence row can commit after the retry, so a
+late commit can briefly make a second marked issue in Needs Joe. The next
+poll cancels it. Unless a gate's create was sent exactly once, every poll
+searches for the marker. The connector keeps the issue it adopted; before
+adoption it adopts the earliest created (`createdAt`, then ID), so every
+poll and writer keeps the same issue. It moves each other marked issue to
+Canceled once, under message ID `<marker key>/duplicate/<issue ID>`
+recorded before the move, then queues a comment that names the kept issue.
+Under root `REVIEW.md` Severity rule 3 this is a loud, recoverable failure
+that needs unusual timing.
+
+The coordinator needs `work_items` create, read and edit. HOME-51's
+notify sink is not wired yet; these issues are the notification for now.
+
 **Stopping delivery.** A round has no itsaplan run to cancel, and its
 kagent session belongs to the connector, so the connector watches for the
 signals a person gives. It reads the issue before a round starts, every
@@ -1293,7 +1369,7 @@ page removes its access. The edge's sign-in and route stay unchanged.
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
 | Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge admits only the Authentik operators group, and kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
-| Connector to itsaplan | A coordinator external agent for comments, issue reads, run lookups and moving merged issues to Done (`work_items read` and `edit`, `ai_agents read` in each bound project); the coding agent's key claims runs |
+| Connector to itsaplan | A coordinator external agent for comments, human-gate issues, run lookups and moving merged issues to Done (`work_items` create, read and edit, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
 | Independent review | During bootstrap, local review agents approving as a trusted reviewer (`jomcgi`); afterwards the reviewer App's required `factory review` check ("Merge authority") |
 | Workloads | Substrate pod certificates and actor SPIFFE IDs; no SPIRE |

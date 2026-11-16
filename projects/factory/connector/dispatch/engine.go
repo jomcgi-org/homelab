@@ -38,6 +38,10 @@ type Itsaplan interface {
 	GetAttachments(ctx context.Context, issueID int64) ([]itsaplan.Attachment, error)
 	ProjectColumns(ctx context.Context, projectKey string) ([]itsaplan.Column, error)
 	MoveIssue(ctx context.Context, issueID, columnID int64) error
+	GetProject(ctx context.Context, key string) (*itsaplan.Project, error)
+	SearchGateIssues(ctx context.Context, project, marker string) ([]itsaplan.Issue, error)
+	CreateGateIssue(ctx context.Context, project string, body itsaplan.GateIssueWrite) (*itsaplan.Issue, error)
+	UpdateGateIssue(ctx context.Context, id int64, body itsaplan.GateIssueWrite) error
 }
 
 // Tasks is the subset of the kagent A2A client dispatch uses.
@@ -66,8 +70,9 @@ type Agent struct {
 // its review policy.
 type Binding struct {
 	store.Binding
-	Agents []string
-	Review ReviewPolicy
+	Agents            []string
+	Review            ReviewPolicy
+	HumanGateAssignee string
 }
 
 // Config holds dispatch settings.
@@ -227,7 +232,8 @@ func (e *Engine) Release() {
 	e.m.WriterEpoch.Set(0)
 }
 
-// guard checks the writer epoch. Every external side effect calls it first.
+// guard checks the writer epoch before external side effects that do not use
+// a writer transaction to check authority and record the send together.
 func (e *Engine) guard(ctx context.Context) error {
 	return e.w.Check(ctx)
 }
@@ -322,6 +328,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"runs", e.stepRuns},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
+		{"human_gates", e.stepHumanGates},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},
 	}

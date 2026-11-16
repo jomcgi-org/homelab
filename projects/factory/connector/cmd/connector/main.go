@@ -183,8 +183,9 @@ func run(log *slog.Logger) error {
 				KagentAgent: b.KagentAgent, BranchPrefix: b.BranchPrefix,
 				MaxEngineeringRetries: *b.MaxEngineeringRetries,
 			},
-			Agents: b.Agents,
-			Review: review,
+			Agents:            b.Agents,
+			Review:            review,
+			HumanGateAssignee: *b.HumanGateAssignee,
 		})
 	}
 
