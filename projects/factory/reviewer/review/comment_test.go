@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -47,6 +49,98 @@ func conversationComments(n int) []github.Comment {
 		comments[i] = github.Comment{ID: int64(100000 + i), Author: "someone", Body: "Conversation"}
 	}
 	return comments
+}
+
+// delayedComments models a slow, complete broker search followed by a
+// write. All waits use virtual time; no network or wall-clock sleep occurs.
+type delayedComments struct {
+	comment                   *github.Comment
+	complete                  bool
+	delay                     time.Duration
+	lookups, creates, updates int
+}
+
+func (c *delayedComments) IssueComments(ctx context.Context, _ string, _ int) ([]github.Comment, bool, error) {
+	c.lookups++
+	select {
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	case <-time.After(c.delay):
+	}
+	if c.comment == nil {
+		return nil, c.complete, nil
+	}
+	return []github.Comment{*c.comment}, c.complete, nil
+}
+
+func (c *delayedComments) write(ctx context.Context, body string) (*github.Comment, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) != 30*time.Second {
+		return nil, fmt.Errorf("write budget = %s, want a fresh 30 seconds", time.Until(deadline))
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(20 * time.Second):
+	}
+	c.comment = &github.Comment{ID: 9, Author: botLogin, Body: body}
+	return c.comment, nil
+}
+
+func (c *delayedComments) CreateIssueComment(ctx context.Context, _ string, _ int, body string) (*github.Comment, error) {
+	c.creates++
+	return c.write(ctx, body)
+}
+
+func (c *delayedComments) UpdateIssueComment(ctx context.Context, _ string, _ int64, body string) (*github.Comment, error) {
+	c.updates++
+	return c.write(ctx, body)
+}
+
+func TestCommentSlowLookupHasASeparateWriteBudget(t *testing.T) {
+	for _, delay := range []time.Duration{40 * time.Second, github.CommentLookupTimeout - time.Second} {
+		for _, result := range []string{"absent", "found", "limit"} {
+			t.Run(fmt.Sprintf("%s/%s", delay, result), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					comments := &delayedComments{delay: delay, complete: result != "limit"}
+					if result == "found" {
+						comments.comment = &github.Comment{ID: 9, Author: botLogin, Body: commentMarker + "\nPrevious verdict"}
+					}
+					e := New(Config{Comments: comments, CommentAuthor: botLogin}, nil, nil, nil, nil)
+					b := &Binding{Name: "homelab", Owner: "example-org", Repo: "homelab"}
+					key := prKey{b.Name, 7}
+					pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+					e.mirror(context.Background(), b, pr, nil, &CommentUpdate{Verdict: VerdictApproved})
+					state := e.comments[key]
+					if state == nil || state.err != nil || state.complete != comments.complete {
+						t.Fatalf("lookup after %s was not cached: %+v", delay, state)
+					}
+					if result != "limit" && (state.comment == nil || !strings.Contains(state.comment.Body, "Approved")) {
+						t.Fatal("lookup consumed the comment write's budget")
+					}
+					pr.HeadSHA = strings.Repeat("b", 40)
+					e.mirror(context.Background(), b, pr, nil, &CommentUpdate{Verdict: VerdictChanges})
+					if comments.lookups != 1 {
+						t.Fatalf("later head repeated the lookup: %d calls", comments.lookups)
+					}
+					if result == "limit" {
+						if !e.commentLimits[key] || comments.creates != 0 || comments.updates != 0 {
+							t.Fatal("slow lookup lost the limit notice or wrote a comment")
+						}
+						return
+					}
+					wantCreates, wantUpdates := 1, 1
+					if result == "found" {
+						wantCreates, wantUpdates = 0, 2
+					}
+					if comments.creates != wantCreates || comments.updates != wantUpdates ||
+						state.comment == nil || !strings.Contains(state.comment.Body, "Changes requested") {
+						t.Fatalf("later write = %+v, creates = %d, updates = %d", state, comments.creates, comments.updates)
+					}
+				})
+			})
+		}
+	}
 }
 
 func TestCommentLookupFindsOrCreatesOnceOnLargePRs(t *testing.T) {

@@ -17,6 +17,10 @@ import (
 // conversation comments.
 const DefaultCommentsPath = "/github/reviewer-comments"
 
+// CommentLookupTimeout gives the broker five minutes to read up to 100
+// GitHub pages sequentially. Comment writes have a separate 30-second budget.
+const CommentLookupTimeout = 5 * time.Minute
+
 // maxBrokerCommentAnswer bounds a broker answer: one comment of at most
 // 65536 characters at six bytes each when escaped, plus its other fields.
 const maxBrokerCommentAnswer = 1 << 20
@@ -122,7 +126,11 @@ func (b *BrokerComments) do(ctx context.Context, method, query string, in, out a
 	}
 	hc := b.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
+		timeout := 30 * time.Second
+		if method == http.MethodGet {
+			timeout = CommentLookupTimeout
+		}
+		hc = &http.Client{Timeout: timeout}
 	}
 	resp, err := hc.Do(req)
 	if err != nil {

@@ -9,7 +9,69 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 )
+
+type delayedCommentTransport struct{ delay time.Duration }
+
+func (d delayedCommentTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	case <-time.After(d.delay):
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"comment":null,"complete":true}`)),
+		}, nil
+	}
+}
+
+func TestBrokerCommentsDefaultTimeouts(t *testing.T) {
+	for _, tc := range []struct {
+		name, method string
+		delay, limit time.Duration
+	}{
+		// 100 pages at 400 ms each exceed the former 30-second limit.
+		{"slow lookup", http.MethodGet, 40 * time.Second, 0},
+		{"bounded lookup", http.MethodGet, 6 * time.Minute, CommentLookupTimeout},
+		{"bounded create", http.MethodPost, 40 * time.Second, 30 * time.Second},
+		{"bounded update", http.MethodPatch, 40 * time.Second, 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// Leave HTTP nil to exercise the deployed client's defaults.
+				original := http.DefaultTransport
+				http.DefaultTransport = delayedCommentTransport{delay: tc.delay}
+				defer func() { http.DefaultTransport = original }()
+				b := &BrokerComments{URL: "https://broker.invalid", Prefix: "m", Bearer: staticBearer("t")}
+				ctx := context.Background()
+				start := time.Now()
+				var err error
+				switch tc.method {
+				case http.MethodGet:
+					var complete bool
+					_, complete, err = b.IssueComments(ctx, "o/r", 7)
+					if err == nil && !complete {
+						t.Fatal("lookup lost its completeness result")
+					}
+				case http.MethodPost:
+					_, err = b.CreateIssueComment(ctx, "o/r", 7, "new")
+				case http.MethodPatch:
+					_, err = b.UpdateIssueComment(ctx, "o/r", 9, "edit")
+				}
+				if tc.limit == 0 {
+					if err != nil || time.Since(start) != tc.delay {
+						t.Fatalf("lookup after %s = %v, want success after %s", time.Since(start), err, tc.delay)
+					}
+				} else if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != tc.limit {
+					t.Fatalf("request after %s = %v, want deadline at %s", time.Since(start), err, tc.limit)
+				}
+			})
+		})
+	}
+}
 
 func TestBrokerCommentsUsesTheBrokerProxy(t *testing.T) {
 	var calls []string
