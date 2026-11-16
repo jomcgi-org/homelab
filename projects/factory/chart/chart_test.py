@@ -737,7 +737,7 @@ def test_binding_worker_pool_sets_resources_and_concurrency() -> None:
     labels = pool["metadata"]["labels"]
     assert labels["kagent.dev/worker-pool-name"] == "homelab-codex"
     assert labels["kagent.dev/worker-pool-namespace"] == "factory-r-homelab"
-    assert pool["spec"]["replicas"] == 4  # deploy agents.codex.concurrency
+    assert pool["spec"]["replicas"] == 6  # deploy agents.codex.concurrency
     assert pool["spec"]["template"]["serviceAccountName"] == "homelab-codex-worker"
     # The worker's capacity is its limit less a 64Mi reserve, and must hold
     # the actor's 8Gi plus gVisor's sentry.
