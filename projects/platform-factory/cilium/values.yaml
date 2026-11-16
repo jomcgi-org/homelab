@@ -41,7 +41,8 @@ encryption:
 # host itself out of scope, which "always" would not.
 policyEnforcementMode: default
 
-# Requests from the 2-day peaks (2026-11-16) plus about 15%. Without one the
+# Requests from the 14-16 Nov peaks plus about 15%: agent 472Mi, envoy 55Mi,
+# operator 108Mi. Without one the
 # pods are BestEffort, which the kernel OOM-kills first under node memory
 # pressure; losing the agent cuts networking for every pod on its node. No
 # memory limits: the CNI must not be OOM-killed by its own limit.
@@ -53,14 +54,14 @@ envoy:
   resources:
     requests:
       cpu: 10m
-      memory: 32Mi
+      memory: 64Mi
 
 operator:
   replicas: 2
   resources:
     requests:
       cpu: 20m
-      memory: 96Mi
+      memory: 128Mi
 
 # Agent metrics on :9962 (host network), scraped node-locally by the
 # otel-collector log agent (projects/platform/otel-collector/values-factory.yaml).

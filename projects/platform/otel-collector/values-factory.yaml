@@ -36,13 +36,15 @@ gateway:
 
 logs:
   enabled: true
-  # 2-day peak 123Mi per agent (2026-11-16) against the base's 64Mi request.
+  # 198Mi median and 238Mi peak per agent over 14-16 Nov, near the old 256Mi
+  # limit. Requested at the 99th percentile plus 10%; the limit is 1.5 times
+  # that.
   resources:
     requests:
       cpu: 25m
-      memory: 128Mi
+      memory: 288Mi
     limits:
-      memory: 256Mi
+      memory: 448Mi
   # Every namespace, warning and above, except:
   #   otel-collector: the agents' own export errors would be exported;
   #   authentik: the identity provider logs sign-in details and its database

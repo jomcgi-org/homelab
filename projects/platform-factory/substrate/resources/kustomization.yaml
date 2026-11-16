@@ -110,8 +110,10 @@ patches:
   # The bundled PostgreSQL, sized for this cluster, with its role setup run on
   # every start rather than by an installer over kubectl exec.
   - path: patches/postgres.yaml
-  # The API server peaked at 46Mi over two days (2026-11-16) against the
-  # chart's 256Mi request; the 1Gi limit stays.
+  # Memory requests at the 99th-percentile working set plus 10% (14-16 Nov);
+  # the limits stay. The API server peaked at 68Mi against the chart's 256Mi,
+  # and its snapshot plugin, which the chart leaves without resources, at
+  # 37Mi.
   - target:
       kind: Deployment
       name: ate-api-server
@@ -123,11 +125,76 @@ patches:
       spec:
         template:
           spec:
+            initContainers:
+              - name: objectstore-plugin
+                resources:
+                  requests:
+                    memory: 48Mi
             containers:
               - name: ate-api-server
                 resources:
                   requests:
-                    memory: 128Mi
+                    memory: 80Mi
+  # atelet peaked at 116Mi against 256Mi. Its snapshot plugin bursts while
+  # sandboxes snapshot: median 20Mi, above 256Mi a fifth of the time, 90th
+  # percentile 528Mi and peak 915Mi (14-16 Nov), against 128Mi. It is
+  # requested at the 90th percentile; a larger burst uses free node memory,
+  # then zram swap.
+  - target:
+      kind: DaemonSet
+      name: atelet
+    patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: atelet
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: objectstore-plugin
+                resources:
+                  requests:
+                    memory: 544Mi
+            containers:
+              - name: atelet
+                resources:
+                  requests:
+                    memory: 80Mi
+  # The agentgateways peaked at 24Mi (router) and 39Mi (egress) over
+  # 14-16 Nov against 128Mi each; the 1Gi limits stay.
+  - target:
+      kind: Deployment
+      name: atenet-router
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: atenet-router
+      spec:
+        template:
+          spec:
+            containers:
+              - name: agentgateway
+                resources:
+                  requests:
+                    memory: 32Mi
+  - target:
+      kind: Deployment
+      name: atenet-egress
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: atenet-egress
+      spec:
+        template:
+          spec:
+            containers:
+              - name: agentgateway
+                resources:
+                  requests:
+                    memory: 48Mi
   # The chart sets no resources on the IdP server, so its pods were BestEffort.
   # Measured 1m CPU and 9-23Mi per pod on 2026-11-16 (HOME-139).
   - target:
