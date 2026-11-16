@@ -3172,7 +3172,7 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
 
 
 def get_sessions_awaiting_login_sync() -> list[int]:
-    """Find durable login waits, including those whose process has restarted."""
+    """Find durable credential waits with queued work after a replica restart."""
     with Session(get_engine()) as session:
         return list(
             session.exec(
@@ -3185,30 +3185,42 @@ def get_sessions_awaiting_login_sync() -> list[int]:
 
 
 def resume_session_after_login_sync(session_id: int) -> bool:
-    """Release only a live login wait; watchers and restart recovery may race."""
+    """Release a live credential wait using a fresh session."""
     with Session(get_engine()) as session:
-        row = _lock_session(session, session_id)
-        if (
-            row is None
-            or row.status != "awaiting_login"
-            or admission.cleanup_pending(session, row)
-            or session.exec(
-                select(PendingMessage.seq).where(
-                    PendingMessage.session_id == session_id
-                )
-            ).first()
-            is None
-        ):
-            return False
-        try:
-            _assert_sendable(session, session_id)
-        except (SessionOutcomeUnknown, PendingClaimLost):
-            return False
-        row.status = "running"
-        row.last_turn_at = datetime.now(timezone.utc)
-        session.add(row)
-        session.commit()
-        return True
+        return resume_session_after_login(session, session_id)
+
+
+def resume_session_after_login(session: Session, session_id: int) -> bool:
+    """Release only the credential wait; retain cancellation and recovery fences.
+
+    The watcher and leader sweep can observe the same grant. The session lock
+    makes their transition idempotent and prevents a late watcher reviving a
+    session that was stopped while the broker request was in flight.
+    """
+    row = _lock_session(session, session_id)
+    if (
+        row is None
+        or row.status != "awaiting_login"
+        or row.result_receipt_fence_id is not None
+        or admission.cleanup_pending(session, row)
+    ):
+        return False
+    try:
+        _assert_sendable(session, session_id)
+    except (SessionOutcomeUnknown, PendingClaimLost):
+        return False
+    pending = session.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == session_id)
+        .order_by(PendingMessage.seq)
+    ).first()
+    if pending is None or pending.claimed_by_replica is not None:
+        return False
+    row.status = "running"
+    row.last_turn_at = datetime.now(timezone.utc)
+    session.add(row)
+    session.commit()
+    return True
 
 
 def get_all_pending_messages_sync() -> list[PendingMessage]:

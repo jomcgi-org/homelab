@@ -2133,7 +2133,7 @@ def test_login_reconciliation_requires_connected_grant(monkeypatch, session, sta
         return {"state": state}
 
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
-    asyncio.run(mcp._reconcile_login_sessions())
+    asyncio.run(mcp._reconcile_credential_waits())
     session.expire_all()
     assert store.get_session(session, row.id).status == "awaiting_login"
     assert store.claim_pending_message_for_session_sync(row.id, "worker") is None
@@ -2149,7 +2149,7 @@ def test_login_reconciliation_preserves_stop_during_broker_poll(monkeypatch, ses
         return {"state": "granted"}
 
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
-    asyncio.run(mcp._reconcile_login_sessions())
+    asyncio.run(mcp._reconcile_credential_waits())
     session.expire_all()
     assert store.get_session(session, row.id).status == "failed"
     assert store.claim_pending_message_for_session_sync(row.id, "worker") is None
@@ -3531,3 +3531,95 @@ def test_capture_retention_reaches_only_first_model_turn(monkeypatch, session):
     store.create_pending_message(session, row.id, "continue")
     asyncio.run(mcp._execute_pending_message(row.id))
     assert "capture_evidence_ttl_seconds" not in calls[1]
+
+
+def test_pending_sweep_recovers_credential_wait_after_restart(monkeypatch, session):
+    row = store.create_session(
+        session, "waiting-for-rotation", "/workspace", "main", model="luna"
+    )
+    pending = store.create_pending_message(session, row.id, "preserve this prompt")
+    store.update_session_status(session, row.id, "awaiting_login")
+    calls = []
+    scheduled = []
+    broker_state = "unreachable"
+
+    async def broker_request(method, path):
+        calls.append((method, path))
+        assert method == "GET", "restart recovery must not start device login"
+        if broker_state == "unreachable":
+            raise httpx.ConnectError("broker temporarily unavailable")
+        return {"state": broker_state}
+
+    async def no_recovery():
+        return 0
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(mcp, "_reconcile_zombie_sessions", no_recovery)
+    monkeypatch.setattr(mcp, "_reclaim_stale_claims_sync", lambda: 0)
+    monkeypatch.setattr(mcp, "_schedule_next_message", scheduled.append)
+    monkeypatch.setattr(mcp, "rollout_shutdown_in_progress", lambda: False)
+
+    # No in-memory watcher survives. Run the real leader sweep in a fresh
+    # event loop each time, recovering only from the persisted wait and prompt.
+    for broker_state in ("unreachable", "blocked", "pending", "granted"):
+        sleeps = 0
+
+        async def one_sweep(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 1:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(mcp.asyncio, "sleep", one_sweep)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(mcp._sweep_orphaned_pending_messages())
+        session.expire_all()
+        expected = "running" if broker_state == "granted" else "awaiting_login"
+        assert store.get_session(session, row.id).status == expected
+        assert scheduled == ([row.id] if broker_state == "granted" else [])
+        assert store.get_pending_message(session, row.id, pending.seq).message_text == (
+            "preserve this prompt"
+        )
+    assert calls == [("GET", "/grants/codex-cluster/login/status")] * 4
+    assert not mcp._resume_session_after_login(row.id)
+
+
+
+@pytest.mark.parametrize("changed", ["stopped", "claimed", "shutdown"])
+def test_credential_recovery_rechecks_wait_after_broker_read(
+    monkeypatch, session, changed
+):
+    row = store.create_session(
+        session, "waiting-for-login", "/workspace", "main", model="luna"
+    )
+    pending = store.create_pending_message(session, row.id, "keep queued")
+    store.update_session_status(session, row.id, "awaiting_login")
+    engine, session_id, turn_seq = session.bind, row.id, pending.seq
+    shutting_down = False
+
+    def change_wait():
+        with Session(engine) as db:
+            if changed == "stopped":
+                store.update_session_status(db, session_id, "failed")
+            else:
+                claimed = store.get_pending_message(db, session_id, turn_seq)
+                claimed.claimed_by_replica = "another-owner"
+                db.add(claimed)
+                db.commit()
+
+    async def broker_request(method, path):
+        nonlocal shutting_down
+        if changed == "shutdown":
+            shutting_down = True
+        else:
+            await asyncio.to_thread(change_wait)
+        return {"state": "granted"}
+
+    monkeypatch.setattr(mcp, "_broker_request", broker_request)
+    monkeypatch.setattr(mcp, "rollout_shutdown_in_progress", lambda: shutting_down)
+    asyncio.run(mcp._reconcile_credential_waits())
+    session.expire_all()
+    assert store.get_session(session, row.id).status == (
+        "failed" if changed == "stopped" else "awaiting_login"
+    )
+

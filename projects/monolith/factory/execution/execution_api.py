@@ -35,6 +35,7 @@ from factory.execution.mcp import (
     _refresh_claim_sync,
     _release_pending_message_claim_sync,
     _release_receipt_fence,
+    _resume_session_after_login,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -858,10 +859,14 @@ async def start_session_for_thread(
         # approves the device code. The watcher starts this exact pending turn
         # once the broker reports granted.
         async def resume() -> None:
-            if await asyncio.to_thread(store.resume_session_after_login_sync, row.id):
+            if await asyncio.to_thread(_resume_session_after_login, row.id):
                 _schedule_next_message(row.id)
 
-        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        watch_for_login(
+            login.get("grant", "codex-cluster"),
+            resume,
+            refresh_blocked=bool(login.get("refresh_blocked")),
+        )
         return login
     _schedule_next_message(row.id)
     return row.id
@@ -925,12 +930,14 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            if await asyncio.to_thread(
-                store.resume_session_after_login_sync, session_id
-            ):
+            if await asyncio.to_thread(_resume_session_after_login, session_id):
                 _schedule_next_message(session_id)
 
-        watch_for_login(login.get("grant", "codex-cluster"), resume)
+        watch_for_login(
+            login.get("grant", "codex-cluster"),
+            resume,
+            refresh_blocked=bool(login.get("refresh_blocked")),
+        )
         return login
     _schedule_next_message(session_id)
     return {"action": "queued", "session_id": session_id, "turn": turn}

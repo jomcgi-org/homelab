@@ -95,8 +95,13 @@ async def codex_login_gate(
     }
 
 
-def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> None:
-    """Watch approval and persistence, then invoke ``on_granted`` once.
+def watch_for_login(
+    grant: str,
+    on_granted: Callable[[], Awaitable[None]],
+    *,
+    refresh_blocked: bool = False,
+) -> None:
+    """Watch for usable credentials and invoke ``on_granted`` once.
 
     The device flow belongs to the broker, so callers that had to pause a
     session need a small bridge from the broker's eventual state change back to
@@ -110,7 +115,11 @@ def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> No
     """
 
     async def wait() -> None:
-        deadline = monotonic() + _LOGIN_TIMEOUT
+        deadline = (
+            None
+            if refresh_blocked
+            else monotonic() + _LOGIN_TIMEOUT
+        )
         while True:
             try:
                 status = await mcp._broker_request(

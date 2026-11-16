@@ -41,6 +41,9 @@ type loginState struct {
 	state, detail string
 	code          *provider.DeviceCodeResponse
 	ready         chan struct{}
+	// Only a flow started to recover a consumed token may be superseded by
+	// another refresher's durable replacement.
+	recoveringRefresh bool
 }
 type forceRefreshState struct {
 	mu         sync.Mutex
@@ -659,6 +662,7 @@ func (s *server) token(name string, w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request) {
+	recoveringRefresh := s.broker.RefreshBlocked(name)
 	value, _ := s.logins.LoadOrStore(name, &loginState{state: "none"})
 	state := value.(*loginState)
 	state.mu.Lock()
@@ -712,6 +716,7 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 		return
 	}
 	state.state, state.detail, state.code = "pending", "approval required", nil
+	state.recoveringRefresh = recoveringRefresh
 	state.ready = make(chan struct{})
 	readyChan := state.ready
 	state.mu.Unlock()
@@ -778,13 +783,17 @@ func (s *server) loginStatus(name string, w http.ResponseWriter, _ *http.Request
 	value, _ := s.logins.LoadOrStore(name, &loginState{state: "none"})
 	state := value.(*loginState)
 	state.mu.RLock()
-	stateValue, detail := state.state, state.detail
+	stateValue, detail, recoveringRefresh := state.state, state.detail, state.recoveringRefresh
 	state.mu.RUnlock()
+	if stateValue == "pending" && !recoveringRefresh {
+		writeJSON(w, http.StatusOK, map[string]string{"state": stateValue, "detail": detail})
+		return
+	}
 	needsLogin := s.broker.NeedsLogin(name)
 	refreshBlocked := s.broker.RefreshBlocked(name)
-	// An overlapping refresher can restore the grant while a device flow
-	// is pending or has failed. Report usable credentials first so sessions
-	// waiting for recovery do not depend on completing that unrelated flow.
+	// A flow started for a consumed token can be superseded by a delayed
+	// replacement. Ordinary operator login still reports pending above,
+	// even when credentials were already stored before the flow started.
 	if !needsLogin && !refreshBlocked {
 		grant, err := s.store.LoadGrant(name)
 		if err != nil {

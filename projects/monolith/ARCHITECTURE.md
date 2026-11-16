@@ -113,11 +113,16 @@ production default.
 A broker status of `blocked` means a consumed refresh token is awaiting a
 replacement or operator recovery. Session preflight retains the pending turn
 under the existing `awaiting_login` credential wait, reports `refresh_blocked`
-instead of `login_required`, and starts no device flow. Its watcher continues
-through this state without a device-flow deadline and resumes the turn once
-the broker reports `granted`. A recovered stored grant takes precedence over
-an already pending device flow. The login page offers both a status check and
-an explicit device login if the replacement was lost, in production and dev.
+instead of `login_required`, and starts no device flow. Its watcher inherits
+that state from preflight, so an outage before its first poll cannot introduce
+a device-flow deadline. The leader's existing pending-message sweep also
+reconciles persisted waits after restart using a status read of the production
+default grant. Only `granted` releases a wait; the transition rechecks session
+state, claims and recovery fences before ordinary dispatch can continue.
+A recovered grant can supersede a pending device flow started for a consumed
+token. An operator's login started with a healthy stored grant stays pending
+until that flow completes. The login page offers both a status check and an
+explicit device login if the replacement was lost, in production and dev.
 
 Routine-job reconciliation uses the narrow existing contracts in `factory.api`.
 The domain boundary test checks factory internals
