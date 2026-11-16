@@ -1,5 +1,5 @@
 {
-  "head": "3615ab9e5f140df2499ea949a9cdfd9ee0e92466",
+  "head": "1e1345207dc648d828e67065d750b028010737a4",
   "baseline": "1a7f47981c04a5aca264b3b0e374ef10652d7ea6",
   "baseline_kind": "git merge-base",
   "rows": [
@@ -657,7 +657,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -676,7 +676,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-full.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-full.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 1440,
         "height": 1024
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -980,7 +980,7 @@
       "after": "captures/review/after-gaps-audit-390-dark.png",
       "before": "captures/review/before-gaps-audit-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
