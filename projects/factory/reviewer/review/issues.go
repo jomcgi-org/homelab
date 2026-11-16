@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -388,76 +387,6 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 		in.Decisions = append(in.Decisions, d)
 	}
 	return in
-}
-
-// quoteWords is the shortest run of issue words a public report may not
-// repeat. The prompt forbids quotes; this is the service's own barrier.
-const quoteWords = 8
-
-// words returns each word, lower-cased, and its byte span in s.
-func words(s string) (ws []string, at [][2]int) {
-	start := -1
-	for i, r := range s + " " {
-		switch word := unicode.IsLetter(r) || unicode.IsDigit(r); {
-		case word && start < 0:
-			start = i
-		case !word && start >= 0:
-			ws, at = append(ws, strings.ToLower(s[start:i])), append(at, [2]int{start, i})
-			start = -1
-		}
-	}
-	return ws, at
-}
-
-// redactIssueText removes each run of quoteWords or more words that also
-// occurs in the issue or decision text before the report is posted.
-func redactIssueText(r *Report, in *IssueContext) {
-	if in == nil {
-		return
-	}
-	var sources []string
-	if in.Issue != nil {
-		sources = append(sources, in.Issue.Title, in.Issue.Description)
-	}
-	for _, d := range in.Decisions {
-		sources = append(sources, d.Text)
-	}
-	grams := map[string]bool{}
-	for _, s := range sources {
-		ws, _ := words(s)
-		for k := 0; k+quoteWords <= len(ws); k++ {
-			grams[strings.Join(ws[k:k+quoteWords], " ")] = true
-		}
-	}
-	redact := func(s string) string {
-		ws, at := words(s)
-		var out strings.Builder
-		last, from, to := 0, -1, -1
-		flush := func() {
-			if from >= 0 {
-				out.WriteString(s[last:at[from][0]] + "[issue text removed]")
-				last = at[to-1][1]
-			}
-		}
-		for k := 0; k+quoteWords <= len(ws); k++ {
-			if grams[strings.Join(ws[k:k+quoteWords], " ")] {
-				if from < 0 || k > to {
-					flush()
-					from = k
-				}
-				to = k + quoteWords
-			}
-		}
-		flush()
-		return out.String() + s[last:]
-	}
-	r.Summary = redact(r.Summary)
-	for i, f := range r.Findings {
-		r.Findings[i].Title, r.Findings[i].Detail = redact(f.Title), redact(f.Detail)
-	}
-	for i, p := range r.Previous {
-		r.Previous[i].Note = redact(p.Note)
-	}
 }
 
 func issuesPending(run *github.CheckRun) bool {

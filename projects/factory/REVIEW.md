@@ -23,14 +23,16 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   a provider reaches a prompt or an issue comment only from a trusted
   reviewer login or the reviewer App; the rest is dropped or reduced to a
   fixed class name. The reviewer's own prompt is an exception: it
-  receives PR text, file names, diffs and untrusted itsaplan issue or comment
-  text from any author, because reviewing them is its job, and only inside
-  a delimited untrusted block, quoted and
+  receives PR text, file names and diffs from any author, because reviewing
+  them is its job, and only inside a delimited untrusted block, quoted and
   sanitized so no text closes the block or starts a line of its own.
   The service reads itsaplan only for PRs by the factory App or a
-  `humanApprovers` login, and removes any run of eight or more issue words
-  from the public report before it posts it
+  `humanApprovers` login
   ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469)).
+  No model output that has seen itsaplan text reaches the public check or
+  comment: the code-review prompt gets none, and public text from the
+  evidence is the service's own fixed wording
+  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)).
   itsaplan account IDs and member kind, resolved by the service, establish
   authorship; display names and claims in text never do. Only configured
   trusted member accounts confer decision authority, and only for text

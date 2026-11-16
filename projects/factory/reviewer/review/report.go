@@ -145,7 +145,9 @@ func isGate(f Finding) bool {
 // No block, a block in another language, invalid JSON, a report without a
 // summary or a findings list, an unknown severity or a finding without a
 // title or detail is an error, never a pass. A missing ID is derived from
-// the path and title; an unknown previous status counts as open.
+// the path and title; an unknown previous status counts as open. An error
+// names a fixed class and never a value from the reply, since the check
+// publishes it.
 func ParseReport(reply string) (*Report, error) {
 	if len(reply) > maxReply {
 		reply = reply[len(reply)-maxReply:]
@@ -156,12 +158,12 @@ func ParseReport(reply string) (*Report, error) {
 	}
 	last := blocks[len(blocks)-1]
 	if lang := strings.ToLower(last[1]); lang != "" && lang != "json" {
-		return nil, fmt.Errorf("the last fenced block is %q, not JSON", clip(lang, 40))
+		return nil, errors.New("the last fenced block is not JSON")
 	}
 	dec := json.NewDecoder(strings.NewReader(last[2]))
 	var r Report
 	if err := dec.Decode(&r); err != nil {
-		return nil, fmt.Errorf("the last fenced block is not a findings report: %w", err)
+		return nil, errors.New("the last fenced block is not a findings report")
 	}
 	if dec.More() {
 		return nil, errors.New("the last fenced block holds more than one JSON value")
@@ -179,7 +181,7 @@ func ParseReport(reply string) (*Report, error) {
 		f := &r.Findings[i]
 		f.Severity = strings.ToLower(strings.TrimSpace(f.Severity))
 		if rank(f.Severity) == len(Severities) {
-			return nil, fmt.Errorf("finding %d has severity %q, not one of %s", i+1, clip(f.Severity, 40), strings.Join(Severities, ", "))
+			return nil, fmt.Errorf("finding %d has a severity that is not one of %s", i+1, strings.Join(Severities, ", "))
 		}
 		f.Title, f.Detail = strings.TrimSpace(f.Title), strings.TrimSpace(f.Detail)
 		if f.Title == "" {
