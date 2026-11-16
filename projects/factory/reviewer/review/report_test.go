@@ -604,10 +604,10 @@ func TestAssessKeepsPreviousGateFindings(t *testing.T) {
 	}
 }
 
-// TestLaterScopeLowersNewFindingsOutsideTheInterdiff lowers a new high or
-// medium finding the agent marks earlier to a deferred low one when its file
-// is outside the files changed since the previous head. Unmarked, critical,
-// human-gate, previous, pathless and review-process findings keep their
+// TestLaterScopeLowersNewFindingsOutsideTheInterdiff lowers a new medium
+// finding the agent marks earlier to a deferred low one when its file
+// is outside the files changed since the previous head. Unmarked, high,
+// critical, human-gate, previous, pathless and review-process findings keep their
 // severity, and nothing is lowered without an interdiff the service can
 // trust.
 func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
@@ -656,7 +656,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 			lowered = append(lowered, f.ID+"="+f.Lowered)
 		}
 	}
-	if want := "u.go:correctness=high,u.go:validation=medium"; strings.Join(lowered, ",") != want {
+	if want := "u.go:validation=medium"; strings.Join(lowered, ",") != want {
 		t.Fatalf("lowered = %v, want %s", lowered, want)
 	}
 	if r.Findings[0].Severity != SeverityHigh || r.Findings[0].Lowered != "" {
@@ -667,10 +667,10 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	for _, b := range a.Blocking {
 		blocking = append(blocking, b.ID)
 	}
-	if want := "u.go:security,:correctness,u.go:unreviewed,u.go:boundary,u.go:connector-state,u.go:prior,:unverified,u.go:review-injection:prompt,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
+	if want := "u.go:security,u.go:correctness,:correctness,u.go:unreviewed,u.go:boundary,u.go:connector-state,u.go:prior,:unverified,u.go:review-injection:prompt,changed.go:correctness,old/name.go:goal"; strings.Join(blocking, ",") != want {
 		t.Fatalf("blocking = %v, want %s", blocking, want)
 	}
-	if len(a.Gated) != 1 || len(a.Deferred) != 2 || len(a.Optional) != 1 {
+	if len(a.Gated) != 1 || len(a.Deferred) != 1 || len(a.Optional) != 1 {
 		t.Fatalf("assessment = %+v", a)
 	}
 
@@ -679,16 +679,16 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 	for i := range MaxLow + 1 {
 		many = append(many, finding(fmt.Sprintf("l%d", i), SeverityLow))
 	}
-	many = append(many, at("u.go:correctness:late", SeverityHigh, "u.go", true))
+	many = append(many, at("u.go:correctness:late", SeverityMedium, "u.go", true))
 	a = Assess(LaterScope("prev", d).Lower(&Report{Findings: many}, nil), nil)
-	if a.Conclusion != ConclusionSuccess || a.DroppedLow != 1 || len(a.Deferred) != 1 || a.Deferred[0].Lowered != SeverityHigh {
+	if a.Conclusion != ConclusionSuccess || a.DroppedLow != 1 || len(a.Deferred) != 1 || a.Deferred[0].Lowered != SeverityMedium {
 		t.Fatalf("assessment = %+v", a)
 	}
 	o := Render(a, &Report{Summary: "s"}, nil, "footer")
-	if !strings.Contains(o.Output.Summary, "### Deferred") || !strings.Contains(o.Output.Summary, "Reported high; lowered because") {
+	if !strings.Contains(o.Output.Summary, "### Deferred") || !strings.Contains(o.Output.Summary, "Reported medium; lowered because") {
 		t.Fatalf("summary:\n%s", o.Output.Summary)
 	}
-	if body := *reviewComment(a, &Report{Summary: "s"}, &Binding{}, nil).Findings; !strings.Contains(body, "Reported high; lowered because") {
+	if body := *reviewComment(a, &Report{Summary: "s"}, &Binding{}, nil).Findings; !strings.Contains(body, "Reported medium; lowered because") {
 		t.Fatalf("comment:\n%s", body)
 	}
 }
@@ -727,7 +727,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
 	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead})
 	for _, line := range []string{
-		"Reviews of earlier heads cleared these findings. Raise one again when a change since prev, in any file, affects it, or when it is critical and present on this head:",
+		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again only when a change since prev, in any file, affects it:",
 		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
 		"- `old.go:correctness` fixed: Old. Note: Earlier fix.\n",
 	} {
@@ -739,8 +739,15 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	// Without an interdiff the service trusts, nothing shows they stay cleared.
 	for _, d := range []*github.CommitComparison{nil, {Status: "diverged"}, {Status: "ahead", Truncated: true}} {
 		text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: d})
-		if !strings.Contains(text, "cannot show that they stay cleared, so check each again") || strings.Contains(text, "Raise one again when") {
+		if !strings.Contains(text, "cannot show that they stay cleared, so check each again") || strings.Contains(text, "is a regression") {
 			t.Errorf("interdiff %+v: prompt does not ask to recheck cleared findings", d)
+		}
+		// Nothing tells the agent to lower what the service cannot check.
+		if strings.Contains(text, "Mark such a finding") || strings.Contains(text, "low with defer") || strings.Contains(text, "- earlier:") {
+			t.Errorf("interdiff %+v: prompt asks for lowering the service cannot enforce:\n%s", d, text)
+		}
+		if d != nil && d.Truncated && !strings.Contains(text, "rate every finding at its full severity") {
+			t.Errorf("a truncated interdiff does not ask for full severities:\n%s", text)
 		}
 	}
 
