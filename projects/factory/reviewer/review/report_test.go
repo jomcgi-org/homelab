@@ -777,8 +777,28 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	for i := range maxCleared {
 		a.Earlier = append(a.Earlier, Cleared{ID: fmt.Sprintf("e%d", i), Status: StatusFixed})
 	}
-	if got := clearedOf(a, r); len(got) != maxCleared || got[0].ID != "fixed.go:correctness" || got[maxCleared-1].ID != fmt.Sprintf("e%d", maxCleared-4) {
+	got, partial := clearedOf(a, r)
+	if len(got) != maxCleared || got[0].ID != "fixed.go:correctness" || got[maxCleared-1].ID != fmt.Sprintf("e%d", maxCleared-4) {
 		t.Fatalf("cleared = %+v", got)
+	}
+	// Entries past the bound are lost, so the record says it is partial.
+	if !partial || (State{Cleared: got}).ClearedComplete() {
+		t.Fatalf("a record past its bound reads complete")
+	}
+	a.Earlier = a.Earlier[:1]
+	if got, partial := clearedOf(a, r); partial || !(State{Cleared: got}).ClearedComplete() {
+		t.Fatalf("a record within its bound reads partial: %d entries", len(got))
+	}
+}
+
+// TestLaterScopeNeedsAFileList treats an answer without a file list as no
+// interdiff, unlike an empty one.
+func TestLaterScopeNeedsAFileList(t *testing.T) {
+	if LaterScope("prev", &github.CommitComparison{Status: "ahead"}) != nil {
+		t.Fatal("an answer without a file list gave a scope")
+	}
+	if LaterScope("prev", &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{}}) == nil {
+		t.Fatal("an empty interdiff gave no scope")
 	}
 }
 
@@ -810,8 +830,8 @@ func TestStateTrimsTheClearedRecordFirst(t *testing.T) {
 	for range 25 {
 		st.Blocking = append(st.Blocking, st.Blocking[0])
 	}
-	if got, _ := LoadState(encodeState(st)); len(got.Blocking) != 40 || got.Cleared != nil {
-		t.Fatalf("state = %d blocking, %d cleared", len(got.Blocking), len(got.Cleared))
+	if got, _ := LoadState(encodeState(st)); len(got.Blocking) != 40 || got.Cleared != nil || !got.ClearedPartial || got.ClearedComplete() {
+		t.Fatalf("state = %d blocking, %d cleared, partial %v", len(got.Blocking), len(got.Cleared), got.ClearedPartial)
 	}
 
 	// Blocking findings that fit alone stay whole when only the cleared IDs

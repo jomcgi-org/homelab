@@ -249,6 +249,8 @@ type Assessment struct {
 	// Earlier is what earlier heads' reviews cleared; the State carries it
 	// on with this review's (clearedOf).
 	Earlier []Cleared
+	// EarlierPartial carries an incomplete cleared record forward.
+	EarlierPartial bool
 }
 
 // withdrawn reports a note withdrawing a previous finding.
@@ -398,7 +400,8 @@ type Scope struct {
 // is none to enforce: a first review, or an interdiff that is missing,
 // truncated or spans a rebase.
 func LaterScope(since string, d *github.CommitComparison) *Scope {
-	if since == "" || d == nil || d.Status != "ahead" || d.Truncated {
+	// An answer with no file list at all, unlike an empty one, shows nothing.
+	if since == "" || d == nil || d.Status != "ahead" || d.Truncated || d.Files == nil {
 		return nil
 	}
 	s := &Scope{paths: map[string]bool{}}
@@ -525,7 +528,17 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*)
 type State struct {
 	Blocking []Finding `json:"blocking"`
 	Cleared  []Cleared `json:"cleared,omitempty"`
-	Gate     *Gate     `json:"gate,omitempty"`
+	// ClearedPartial marks a cleared record that has lost entries, on this
+	// head or an earlier one, so it cannot show every fixed finding.
+	ClearedPartial bool  `json:"cleared_partial,omitempty"`
+	Gate           *Gate `json:"gate,omitempty"`
+}
+
+// ClearedComplete reports whether the cleared record still holds every
+// finding earlier reviews cleared. A record at its bound from before
+// ClearedPartial existed may have lost some.
+func (st State) ClearedComplete() bool {
+	return !st.ClearedPartial && len(st.Cleared) < maxCleared
 }
 
 // Cleared is a finding a review of an earlier head cleared: fixed,
@@ -725,7 +738,8 @@ func loweredNote(f Finding) string {
 // what this and earlier reviews cleared. The human gate is kept apart: only
 // a person clears it, so no round carries it.
 func stateOf(a Assessment, r *Report, gate *Gate) State {
-	st := State{Blocking: []Finding{}, Cleared: clearedOf(a, r), Gate: gate}
+	cleared, partial := clearedOf(a, r)
+	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate}
 	for _, b := range a.Blocking {
 		if isGate(b.Finding) || len(st.Blocking) == maxStored {
 			continue
@@ -739,7 +753,7 @@ func stateOf(a Assessment, r *Report, gate *Gate) State {
 // justified and withdrawn findings, then the earlier ones, at most
 // maxCleared. A finding that blocks this head is not cleared, and
 // human-gate findings are left out: only a person clears the gate.
-func clearedOf(a Assessment, r *Report) []Cleared {
+func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 	notes := map[string]string{}
 	if r != nil {
 		for _, p := range r.Previous {
@@ -753,9 +767,14 @@ func clearedOf(a Assessment, r *Report) []Cleared {
 		skip[b.ID] = true
 	}
 	var out []Cleared
+	partial := false
 	add := func(f Finding, status, note string) {
 		id := storeText(f.ID, maxTitle)
-		if isGate(f) || skip[f.ID] || skip[id] || len(out) == maxCleared {
+		if isGate(f) || skip[f.ID] || skip[id] {
+			return
+		}
+		if len(out) == maxCleared {
+			partial = true
 			return
 		}
 		skip[id] = true
@@ -773,7 +792,7 @@ func clearedOf(a Assessment, r *Report) []Cleared {
 	for _, c := range a.Earlier {
 		add(Finding{ID: c.ID, Title: c.Title}, c.Status, c.Note)
 	}
-	return out
+	return out, partial
 }
 
 // storable bounds a finding for the hidden State: every field is one line
@@ -882,7 +901,7 @@ func encodeState(st State) string {
 		out = enc(st)
 	}
 	if len(out) > maxState && len(st.Cleared) > 0 {
-		st.Cleared = nil // Drop the record whole before any blocking text.
+		st.Cleared, st.ClearedPartial = nil, true // Drop the record whole before any blocking text.
 		out = enc(st)
 	}
 	for _, lim := range []struct{ text, detail, path, id int }{
@@ -909,7 +928,8 @@ func encodeState(st State) string {
 			}
 			return out
 		}
-		small := State{Blocking: shrink(st.Blocking)} // Without the cleared record.
+		// Without the cleared record, so it says the record is partial.
+		small := State{Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.
 			gate.Paths, gate.Findings = nil, shrink(g.Findings)

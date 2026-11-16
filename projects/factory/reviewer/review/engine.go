@@ -1498,9 +1498,13 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			// review reads the interdiff before outcome; never assess without it.
 			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		r = LaterScope(in.priorHead, since).Lower(r, prior, in.prior.Cleared)
+		scope := LaterScope(in.priorHead, since)
+		if !in.prior.ClearedComplete() {
+			scope = nil // A fixed finding missing from the record could be lowered.
+		}
+		r = scope.Lower(r, prior, in.prior.Cleared)
 		a := Assess(r, prior)
-		a.Earlier = in.prior.Cleared
+		a.Earlier, a.EarlierPartial = in.prior.Cleared, !in.prior.ClearedComplete()
 		for _, f := range a.Deferred {
 			if f.Lowered != "" {
 				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)
@@ -1742,7 +1746,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		return run, !gate.approved() || len(st.Blocking) > 0
 	}
 	l := e.prLog(b, pr)
-	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Cleared: st.Cleared, Gate: gate}, conclusion, title, summary, u, l)
+	cur := e.gateCheck(ctx, b, pr, run, State{Blocking: st.Blocking, Cleared: st.Cleared, ClearedPartial: st.ClearedPartial, Gate: gate}, conclusion, title, summary, u, l)
 	if cur != nil && conclusion == ConclusionFailure && run.Conclusion == ConclusionSuccess {
 		e.notifyGate(ctx, b, l, "the current human gate")
 	}
