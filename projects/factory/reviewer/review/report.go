@@ -421,16 +421,23 @@ func (s *Scope) changed(p string) bool {
 // one when the agent marks it earlier (on code an earlier
 // review covered and this head left alone) and its file is outside the files
 // changed since the previous head. Unmarked findings, high and critical
-// findings, human-gate findings, the previous round's IDs, findings with no path and
-// findings under any rule but lowerableRules keep their severity, so an
-// omitted mark never lowers a regression. A nil Scope lowers nothing.
-func (s *Scope) Lower(r *Report, prior []Finding) *Report {
+// findings, human-gate findings, the previous round's IDs, IDs an earlier
+// review recorded as fixed, findings with no path and findings under any rule
+// but lowerableRules keep their severity, so neither an omitted mark nor a
+// regression missed on an intervening head lowers one. A nil Scope lowers
+// nothing.
+func (s *Scope) Lower(r *Report, prior []Finding, cleared []Cleared) *Report {
 	if s == nil {
 		return r
 	}
 	known := map[string]bool{}
 	for _, p := range prior {
 		known[p.ID] = true
+	}
+	for _, c := range cleared {
+		if c.Status == StatusFixed {
+			known[c.ID] = true
+		}
 	}
 	out := *r
 	out.Findings = slices.Clone(r.Findings)
