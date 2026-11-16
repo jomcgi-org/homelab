@@ -574,7 +574,11 @@ def test_codex_login_start_preserves_persistence_retry_without_device_fields(
     client, monkeypatch
 ):
     async def broker_request(*_args):
-        return {"state": "pending", "persistence_retry": True, "refresh_token": "secret"}
+        return {
+            "state": "pending",
+            "persistence_retry": True,
+            "refresh_token": "secret",
+        }
 
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
     response = client.post("/api/agents/codex-login/start")
@@ -1878,9 +1882,8 @@ async def test_codex_login_gate_login_pending_is_not_an_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("unreachable", [False, True])
-async def test_codex_login_watch_without_active_flow_still_expires(
-    monkeypatch, unreachable
+async def test_codex_login_watch_confirmed_without_active_flow_still_expires(
+    monkeypatch,
 ):
     now = 0
     resumed = []
@@ -1889,8 +1892,6 @@ async def test_codex_login_watch_without_active_flow_still_expires(
         nonlocal now
         assert (method, path) == ("GET", "/grants/codex-cluster/login/status")
         now = 901
-        if unreachable:
-            raise RuntimeError("broker offline")
         return {"state": "none"}
 
     async def on_granted():
@@ -2036,8 +2037,9 @@ def test_router_start_non_codex_models_enqueue_without_broker(
 
 
 @pytest.mark.parametrize("terminal", ["granted", "failed", "none"])
+@pytest.mark.parametrize("first_poll", ["pending", "unreachable", "none"])
 def test_router_start_codex_login_required_preserves_session_and_watches(
-    client, session, monkeypatch, caplog, terminal
+    client, session, monkeypatch, caplog, terminal, first_poll
 ):
     calls = []
     watched = []
@@ -2100,12 +2102,22 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
 
     # Approval/persistence may cross the original 15-minute watcher limit.
     # A later operator retry must resume the original queued turn exactly once,
-    # even if polling temporarily failed while the credentials were retained.
+    # even if polling failed from the start or after an earlier "none" result.
     now = 0
     responses = iter(
         [
-            (0, {"state": "pending"}),
-            (901, {"state": "pending"}),
+            (
+                0,
+                RuntimeError("sensitive diagnostic")
+                if first_poll == "unreachable"
+                else {"state": first_poll},
+            ),
+            (
+                901,
+                {"state": "pending"}
+                if first_poll == "pending"
+                else RuntimeError("sensitive diagnostic"),
+            ),
             (1800, {"state": "persistence_pending"}),
             (3600, RuntimeError("sensitive diagnostic")),
             (7200, {"state": "persistence_pending"}),

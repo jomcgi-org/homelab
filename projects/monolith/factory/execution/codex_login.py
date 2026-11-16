@@ -90,33 +90,32 @@ def watch_for_login(grant: str, on_granted: Callable[[], Awaitable[None]]) -> No
     The device flow belongs to the broker, so callers that had to pause a
     session need a small bridge from the broker's eventual state change back to
     their pending work. The broker owns approval expiry; a retained login may
-    need a persistence retry long after that window. Keep watching active flows,
-    including through transient polling failures, until the broker resolves
-    them. The local timeout only bounds waiting without an active broker flow.
+    need a persistence retry long after that window. A polling failure cannot
+    establish whether credentials are retained, even on the very first poll.
+    Only a successful response confirming no flow after the local timeout, or
+    an explicit failure, ends the watch without resuming the session.
     Keep the task strongly referenced until it finishes.
     """
 
     async def wait() -> None:
         deadline = monotonic() + _LOGIN_TIMEOUT
-        active_flow = False
         while True:
             try:
                 status = await mcp._broker_request(
                     "GET", f"/grants/{grant}/login/status"
                 )
+                state = status.get("state")
             except Exception:
                 logger.warning("Could not poll Codex login status")
             else:
-                state = status.get("state")
                 if state == "granted":
                     await on_granted()
                     return
                 if state == "failed":
                     logger.error("Codex broker login failed")
                     return
-                active_flow = state in {"pending", "persistence_pending"}
-            if not active_flow and monotonic() >= deadline:
-                return
+                if state == "none" and monotonic() >= deadline:
+                    return
             await asyncio.sleep(_LOGIN_POLL_INTERVAL)
 
     task = asyncio.create_task(wait())

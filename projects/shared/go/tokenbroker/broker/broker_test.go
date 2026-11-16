@@ -657,6 +657,7 @@ type stuckRefreshStore struct {
 	*testStore
 	operation string
 	started   chan struct{}
+	fenced    chan struct{}
 	once      sync.Once
 	released  bool
 }
@@ -679,6 +680,7 @@ func (s *stuckRefreshStore) SaveGrantIfNewerContext(ctx context.Context, g store
 	if s.operation == "save" && g.LoginID == "" {
 		current, _ := s.testStore.LoadGrant(g.Name)
 		if store.CompareGrantVersion(g, current) <= 0 {
+			close(s.fenced)
 			return store.ErrGrantNotNewer
 		}
 		s.stall(ctx)
@@ -691,7 +693,7 @@ func TestStuckRefreshStorageReleasesWaitingLogin(t *testing.T) {
 	for _, operation := range []string{"load", "save"} {
 		t.Run(operation, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				st := &stuckRefreshStore{testStore: &testStore{grants: map[string]store.Grant{"one": loginGrant()}}, operation: operation, started: make(chan struct{})}
+				st := &stuckRefreshStore{testStore: &testStore{grants: map[string]store.Grant{"one": loginGrant()}}, operation: operation, started: make(chan struct{}), fenced: make(chan struct{})}
 				b := New(st, map[string]provider.Adapter{"test": &testAdapter{}}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
 				refreshed := make(chan struct{})
 				go func() {
@@ -706,6 +708,17 @@ func TestStuckRefreshStorageReleasesWaitingLogin(t *testing.T) {
 				<-refreshed
 				if time.Since(start) > time.Minute || !st.released {
 					t.Fatal("refresh Secret request was not bounded")
+				}
+				if operation == "save" {
+					// The timed-out rotation retries in the background. Keep the
+					// bubble alive until it observes the new login and exits;
+					// returning with its sleep pending deadlocks synctest teardown.
+					select {
+					case <-st.fenced:
+					case <-time.After(time.Minute):
+						t.Fatal("detached rotation did not observe the replacement login")
+					}
+					synctest.Wait()
 				}
 			})
 		})
