@@ -27,9 +27,9 @@ spec:
         stage: prod
         edge:
           enabled: true
-          # Off: the edge Job keeps no route, so jomcgi.dev stays on the hub.
-          # HOME-202 turns it on in its own PR; reverting that is the rollback.
-          serveRoutes: false
+          # On (HOME-202): the edge Job serves edge/routes.json. Revert the PR
+          # that turned this on to roll back: the Job deletes every route.
+          serveRoutes: true
   destination:
     server: https://kubernetes.default.svc
     namespace: jomcgi-site-prod
