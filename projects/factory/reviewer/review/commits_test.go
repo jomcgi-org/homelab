@@ -217,7 +217,8 @@ func TestMissingActivationAssessmentPreservesReviewFindings(t *testing.T) {
 func TestActivationAssessmentSurvivesBoundedStateAndSessionUpdate(t *testing.T) {
 	step := &github.ActivationAssessment{HeadSHA: shaA, Text: strings.Repeat("x", github.MaxActivationAssessment)}
 	goal := &GoalCheck{Head: shaA, Digest: "evidence", Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}}
-	st := State{Activation: step, Goal: goal}
+	scan := &SemgrepStamp{Digest: strings.Repeat("d", 64), NoReport: true}
+	st := State{Activation: step, Goal: goal, Semgrep: scan}
 	for i := range 80 {
 		st.Blocking = append(st.Blocking, Finding{
 			ID: fmt.Sprintf("f%d:correctness", i), Severity: SeverityHigh,
@@ -231,8 +232,12 @@ func TestActivationAssessmentSurvivesBoundedStateAndSessionUpdate(t *testing.T) 
 	if a := github.ReviewedActivation(text, shaA); a == nil || *a != *step {
 		t.Fatalf("lost assessment: %+v", a)
 	}
-	if got, ok := LoadState(text); !ok || got.Goal == nil || got.Goal.Head != goal.Head || got.Goal.Digest != goal.Digest || got.Goal.Overall != goalMet || len(got.Goal.Criteria) != 1 || got.Goal.Criteria[0] != goal.Criteria[0] {
+	got, ok := LoadState(text)
+	if !ok || got.Goal == nil || got.Goal.Head != goal.Head || got.Goal.Digest != goal.Digest || got.Goal.Overall != goalMet || len(got.Goal.Criteria) != 1 || got.Goal.Criteria[0] != goal.Criteria[0] {
 		t.Fatalf("lost goal check: %+v", got.Goal)
+	}
+	if got.Semgrep == nil || *got.Semgrep != *scan {
+		t.Fatalf("lost Semgrep gate: %+v", got.Semgrep)
 	}
 }
 
