@@ -900,11 +900,19 @@ _MEMORY = [
 ]
 
 
-def test_memory_is_opt_in_and_binds_only_the_named_tools() -> None:
+def test_memory_is_opt_in_and_binds_only_the_named_tools(tmp_path: Path) -> None:
     # HOME-130: Hindsight's MCP endpoint, with the token the egress gateway
     # injects from the binding's Secret; the actor never holds it.
     ns = "factory-r-homelab"
-    off = _render()
+    # The deploy values turn memory on for homelab (HOME-185).
+    assert _in(_render(), "RemoteMCPServer", ns, "memory")
+    # Without the key, a binding has no memory server and no tools.
+    stripped = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    for repository in stripped["repositories"]:
+        repository.pop("memory", None)
+    values = tmp_path / "values.yaml"
+    values.write_text(yaml.safe_dump(stripped))
+    off = _render(values=values)
     assert not [d for d in off if d["metadata"]["name"] == "memory"]
     assert (
         "tools"
