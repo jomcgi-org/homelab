@@ -35,14 +35,20 @@ def call(base, key, method, path, body=None):
 
 
 def labels(groups):
-    """Entity label groups without the defaults Hindsight fills in."""
+    """Entity label groups with Hindsight's defaults filled in, so a stored
+    group equals its template group. Descriptions steer extraction, so they
+    count."""
     return [
         {
             "key": g["key"],
+            "description": g.get("description", ""),
             "type": g.get("type", "value"),
             "tag": g.get("tag", False),
             "optional": g.get("optional", True),
-            "values": [v["value"] for v in g.get("values", [])],
+            "values": [
+                (v["value"], v.get("description", "")) for v in g.get("values", [])
+            ],
+            "fields": g.get("fields") or {},
         }
         for g in groups or []
     ]
