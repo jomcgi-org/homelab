@@ -49,7 +49,11 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     assert {"name": "STAGE", "value": "dev"} in container["env"]
     assert {"name": "MODE", "value": "sync"} in container["env"]
     version = yaml.safe_load((CHART / "Chart.yaml").read_text())["version"]
-    assert {"name": "CHART_VERSION", "value": version} in container["env"]
+    # The release label: chart version and the image digest's first 12 hex.
+    assert {
+        "name": "RELEASE",
+        "value": f"chart {version} image {DIGEST.removeprefix('sha256:')[:12]}",
+    } in container["env"]
     assert container["image"].endswith(f"@{DIGEST}")
     secrets = {
         env["name"]: env["valueFrom"]["secretKeyRef"]

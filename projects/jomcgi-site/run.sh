@@ -2,23 +2,31 @@
 # Deploys the site with fresh data (HOME-209). The image holds the built pages
 # at /app/site; the root filesystem is read-only, so assemble a copy in /tmp,
 # add each section's data from R2 under web/dist/data, then deploy that copy.
+# Each deploy carries its release (chart version and image digest) as the
+# deployment message.
 #
-# MODE=sync (the Sync-hook Job) deploys this release, then re-checks for a
-# while and deploys again if an older refresh that was already running
-# replaced it. MODE=refresh (the CronJob) deploys only while the live
-# deployment is this release, so a refresh never replaces another release.
-# Each deploy carries its chart version as the deployment message.
+# Release fence. Two paths deploy: MODE=sync (the Sync-hook Job, a release)
+# and MODE=refresh (the CronJob, new data for the same release).
+# - A refresh deploys only while the live deployment carries its own label.
+#   It checks at the start and again just before deploying, and the whole run
+#   must finish within REFRESH_BUDGET seconds (enforced with `timeout`).
+# - The hook deploys, then re-checks for SYNC_WINDOW seconds, longer than
+#   REFRESH_BUDGET, and deploys again if a refresh replaced it. A refresh that
+#   was running before the sync ends inside that window and cannot start again
+#   (the sync replaced the CronJob's spec), so the hook always deploys last.
 #
-# Env: STAGE (dev|prod), MODE (sync|refresh), CHART_VERSION, R2_ACCESS_KEY_ID,
+# Env: STAGE (dev|prod), MODE (sync|refresh), RELEASE, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
-# The *_BIN, SITE_SRC/SITE_DIR and FENCE_* overrides exist for run_test.sh.
+# The *_BIN, SITE_SRC/SITE_DIR, REFRESH_BUDGET, SYNC_WINDOW and FENCE_INTERVAL
+# overrides exist for run_test.sh.
 set -o errexit -o nounset -o pipefail
 
 SITE_SRC="${SITE_SRC:-/app/site}"
 SITE_DIR="${SITE_DIR:-/tmp/site}"
 SNAPSHOT_BIN="${SNAPSHOT_BIN:-/app/projects/jomcgi-site/data/snapshot}"
 WRANGLER_BIN="${WRANGLER_BIN:-/app/projects/jomcgi-site/wrangler/wrangler}"
-FENCE_CHECKS="${FENCE_CHECKS:-6}"
+REFRESH_BUDGET="${REFRESH_BUDGET:-240}"
+SYNC_WINDOW="${SYNC_WINDOW:-300}"
 FENCE_INTERVAL="${FENCE_INTERVAL:-15}"
 
 case "${STAGE:-}" in
@@ -36,45 +44,80 @@ sync | refresh) ;;
 	exit 2
 	;;
 esac
-: "${CHART_VERSION:?CHART_VERSION must be set}"
+: "${RELEASE:?RELEASE must be set}"
+if ((SYNC_WINDOW <= REFRESH_BUDGET)); then
+	echo "SYNC_WINDOW ($SYNC_WINDOW) must exceed REFRESH_BUDGET ($REFRESH_BUDGET)" >&2
+	exit 2
+fi
 
-# 0: this release may deploy; 10: a different release is live; else an error.
+# Prints the fence result: 0 this release may deploy, 10 a different release
+# is live, anything else an error.
 fence() {
 	local status=0
-	"$SNAPSHOT_BIN" fence-check || status=$?
-	return "$status"
+	"$SNAPSHOT_BIN" fence-check >&2 || status=$?
+	echo "$status"
+}
+
+# In refresh mode: return on 0, exit 0 (skip) on 10, and fail on an error, so
+# a broken check shows as a failed Job instead of a quiet skip.
+refresh_gate() {
+	local status
+	status="$(fence)"
+	case "$status" in
+	0) ;;
+	10)
+		echo "refresh skipped: the live deployment is another release ($1)"
+		exit 0
+		;;
+	*)
+		echo "refresh failed: the release fence check failed with $status ($1)" >&2
+		exit 1
+		;;
+	esac
+}
+
+# Runs a step; in refresh mode it must end before the run's deadline.
+step() {
+	if [[ "$MODE" == refresh ]]; then
+		local left=$((deadline - SECONDS))
+		if ((left <= 0)); then
+			echo "refresh failed: out of time before: $*" >&2
+			exit 1
+		fi
+		timeout "$left" "$@"
+	else
+		"$@"
+	fi
 }
 
 deploy() {
-	"$WRANGLER_BIN" deploy --config "$SITE_DIR/wrangler.jsonc" --env "$STAGE" \
-		--message "jomcgi-site chart $CHART_VERSION"
+	step "$WRANGLER_BIN" deploy --config "$SITE_DIR/wrangler.jsonc" \
+		--env "$STAGE" --message "jomcgi-site $RELEASE"
 }
 
+deadline=$((SECONDS + REFRESH_BUDGET))
 if [[ "$MODE" == refresh ]]; then
-	status=0
-	fence || status=$?
-	if [[ "$status" -ne 0 ]]; then
-		echo "refresh skipped: the live deployment is not chart $CHART_VERSION (fence $status)"
-		exit 0
-	fi
+	refresh_gate "before the snapshot"
 fi
 
 rm -rf "$SITE_DIR"
 cp -R "$SITE_SRC" "$SITE_DIR"
-"$SNAPSHOT_BIN" "$SITE_DIR/web/dist/data"
+step "$SNAPSHOT_BIN" "$SITE_DIR/web/dist/data"
+
+if [[ "$MODE" == refresh ]]; then
+	refresh_gate "before the deploy"
+fi
 deploy
 
 if [[ "$MODE" == sync ]]; then
-	# A refresh from the old CronJob spec may still be deploying. It cannot
-	# start again after this sync, so a few checks are enough.
-	for _ in $(seq 1 "$FENCE_CHECKS"); do
+	end=$((SECONDS + SYNC_WINDOW))
+	while ((SECONDS < end)); do
 		sleep "$FENCE_INTERVAL"
-		status=0
-		fence || status=$?
-		if [[ "$status" -eq 10 ]]; then
-			echo "another deploy replaced chart $CHART_VERSION; deploying it again"
+		status="$(fence)"
+		if [[ "$status" == 10 ]]; then
+			echo "another deploy replaced $RELEASE; deploying it again"
 			deploy
-		elif [[ "$status" -ne 0 ]]; then
+		elif [[ "$status" != 0 ]]; then
 			echo "fence check failed ($status); will check again" >&2
 		fi
 	done

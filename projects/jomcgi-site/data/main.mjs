@@ -4,9 +4,9 @@
 //   snapshot <output directory>
 //     Env: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY (read-only R2 token).
 //   snapshot fence-check
-//     Env: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, WORKER, CHART_VERSION.
-//     Exits 0 when this chart version may deploy, 10 when a different
-//     release is live, and 1 on an error.
+//     Env: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, WORKER, RELEASE.
+//     Exits 0 when this release may deploy, 10 when a different release is
+//     live, and 1 on an error.
 import { readFileSync } from "node:fs";
 import { isCurrent, liveMessage, releaseMessage } from "./fence.mjs";
 import { r2Getter, snapshot } from "./snapshot.mjs";
@@ -18,16 +18,16 @@ const need = (name) => {
 };
 
 if (process.argv[2] === "fence-check") {
-  const chart = need("CHART_VERSION");
+  const release = need("RELEASE");
   const live = await liveMessage({
     token: need("CLOUDFLARE_API_TOKEN"),
     account: need("CLOUDFLARE_ACCOUNT_ID"),
     worker: need("WORKER"),
   });
-  const ok = isCurrent(live, chart);
+  const ok = isCurrent(live, release);
   console.log(
     `live: ${live === null ? "no deployment" : JSON.stringify(live)}; ` +
-      `this release: ${JSON.stringify(releaseMessage(chart))}; ` +
+      `this release: ${JSON.stringify(releaseMessage(release))}; ` +
       (ok ? "may deploy" : "a different release is live"),
   );
   process.exit(ok ? 0 : 10);
