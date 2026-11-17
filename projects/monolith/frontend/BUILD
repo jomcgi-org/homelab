@@ -1159,8 +1159,9 @@ build_test(
     targets = [":theme_fixture_preview"],
 )
 
-# The static blog index reads public summaries from the existing manifest.
-filegroup(
+# Copy the manifest in its owning package before exposing it through JsInfo.
+# rules_js rejects raw sources from another package in a consumer's srcs.
+js_library(
     name = "blog_index_manifest",
     srcs = ["src/lib/public/posts/posts-manifest.json"],
     visibility = ["//projects/jomcgi-site/web:__pkg__"],

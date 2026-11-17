@@ -31,7 +31,6 @@ js_library(
         "package.json",
         "tsconfig.json",
         "vite.config.ts",
-        "//projects/monolith/frontend:blog_index_manifest",
     ],
     deps = [
         ":node_modules/@astryxdesign/core",
@@ -42,6 +41,7 @@ js_library(
         ":node_modules/react",
         ":node_modules/react-dom",
         ":node_modules/vite",
+        "//projects/monolith/frontend:blog_index_manifest",
     ],
 )
 
