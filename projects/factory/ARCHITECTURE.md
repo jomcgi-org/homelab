@@ -360,6 +360,22 @@ keeps serving.
 deployed image without network, from 1,024-dimensional vectors, and
 `keys_test` pins the recovery Job to its settings.
 
+**Schema v1.** Every new bank starts from
+`projects/platform-factory/hindsight/resources/bank-template.json`, which the
+Deployment passes as `HINDSIGHT_API_DEFAULT_BANK_TEMPLATE`
+([HOME-183](https://factory-plan.jomcgi.dev/factory/issue/HOME-183)). Its
+retain mission keeps reusable lessons, incidents, decisions and pointers with
+their issue, PR or commit, and drops chatter, logs and credentials. Two label
+groups have `tag: true`, so extraction tags each fact. `app:<path>` names the
+project, a directory under `projects/`, `projects/platform/`,
+`projects/platform-gke/` or `projects/platform-factory/`. `kind:` is
+`lesson`, `incident`, `decision` or `reference`. Consolidation builds
+observations per `app:*` tag, and recall can filter on both tags. Hindsight
+applies the template only when it creates a bank. For an existing bank,
+change the file and then apply it with `PATCH .../config` or
+`POST .../import`; `POST .../import?dry_run=true` validates a manifest
+without changing anything. A new project needs a new `app` value.
+
 Two keys separate the callers. The REST API takes only the tenant key, which
 nothing outside the pod holds. MCP takes the agents' token
 (`HINDSIGHT_API_MCP_AUTH_TOKEN`) and registers only `recall` and `retain`

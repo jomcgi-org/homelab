@@ -236,7 +236,11 @@ def test_the_script_configmap_names_are_not_role_resource_names():
     # left the Jobs without access to hindsight-keys, waiting forever.
     (kustomization,) = read("resources/kustomization.yaml")
     generators = {g["name"] for g in kustomization["configMapGenerator"]}
-    assert generators == {"hindsight-keys-script", "hindsight-preflight-script"}
+    assert generators == {
+        "hindsight-bank-template",
+        "hindsight-keys-script",
+        "hindsight-preflight-script",
+    }
     documents = read("resources/secrets.yaml") + read("agents/secrets.yaml")
     names = {
         name
@@ -456,3 +460,39 @@ def test_recovery_job_runs_what_rollback_test_proves():
     for path in ("kustomization.yaml", "resources/kustomization.yaml"):
         (kustomization,) = read(path)
         assert not any("recovery" in r for r in kustomization.get("resources", []))
+
+
+def test_new_banks_start_with_schema_v1():
+    # HOME-183: extraction tags each fact app:<project> and kind:<kind>, and
+    # consolidation builds observations per project.
+    template = json.loads((ROOT / "resources/bank-template.json").read_text())
+    bank = template["bank"]
+    assert template["version"] == "1"
+    labels = {g["key"]: g for g in bank["entity_labels"]}
+    assert set(labels) == {"app", "kind"}
+    assert all(g["tag"] and g["optional"] for g in labels.values())
+    apps = [v["value"] for v in labels["app"]["values"]]
+    assert apps == sorted(set(apps)), "app values must be unique and sorted"
+    assert "platform-factory/hindsight" in apps and "factory" in apps
+    for app in apps:
+        top, _, rest = app.partition("/")
+        if rest:
+            assert top in ("platform", "platform-gke", "platform-factory"), app
+    assert [v["value"] for v in labels["kind"]["values"]] == [
+        "lesson",
+        "incident",
+        "decision",
+        "reference",
+    ]
+    assert bank["entities_allow_free_form"] is True
+    assert bank["default_observation_scopes"] == [["app:*"]]
+
+    container, env = container_env(
+        manifest("resources/hindsight.yaml", "Deployment")["spec"]["template"]["spec"]
+    )
+    assert env["HINDSIGHT_API_DEFAULT_BANK_TEMPLATE"] == {
+        "configMapKeyRef": {
+            "name": "hindsight-bank-template",
+            "key": "bank-template.json",
+        }
+    }
