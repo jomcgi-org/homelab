@@ -180,16 +180,19 @@ the evidence, then report it `justified` with a note that starts
 lower than when it was raised: withdraw it with a note naming the test,
 and report it again under the same ID at its new severity.
 
-A high finding whose failure depends only on state the reviewer cannot
-read, such as a live cluster, a secret store or an outside service, is
-also justified by Joe's decision in a comment on the PR from his account,
-a `humanApprovers` login. The decision names the finding ID, the evidence
-it accepts and the check after rollout. Report the finding `justified`
-with a note that starts `decision:` and links the comment, only after you
-read that it accepts the evidence and names the check. The service checks
-the author, the link, the finding ID and that the text is unchanged. An
-edit or a deletion of the comment revokes the decision and restores the
-finding. A critical finding, and every other high finding, clears no other
+A medium or high finding whose failure depends only on state the reviewer
+cannot read, such as a live cluster, a secret store, an outside service or
+another PR's rollout, is also justified by Joe's decision in a comment on
+the PR from his account, a `humanApprovers` login. The decision names the
+finding ID, the evidence it accepts and the check after rollout. Live
+evidence says what ran, when, and its result. Report the finding
+`justified` with a note that starts `decision:` and links the comment, only
+after you read that it accepts the evidence and names the check. Do not ask
+again for evidence you cannot read: name the check after rollout instead
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-188#comment-1550)).
+For a high finding, the service also checks the author, the link, the
+finding ID and that the text is unchanged, and an edit or a deletion of the
+comment revokes the decision and restores the finding. A critical finding, and every other high finding, clears no other
 way.
 
 ## Later heads
