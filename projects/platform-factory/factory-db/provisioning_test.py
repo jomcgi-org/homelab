@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent
-# (login Secret, database, client namespace, connection-string Secret there)
+# (login Secret, login role, client namespace, connection-string Secret there)
 LOGINS = [
     ("factory-db-itsaplan-login", "itsaplan", "factory", "factory-itsaplan-db"),
     (
@@ -28,7 +28,15 @@ LOGINS = [
         "hindsight-discord",
         "hindsight-db",
     ),
+    (
+        "factory-db-broker-accounting-login",
+        "factory_broker_accounting",
+        "factory",
+        "factory-broker-accounting-db",
+    ),
 ]
+# The accounting login owns no database.
+DATABASES = {"factory_broker_accounting": "factory_connector"}
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")
 # Each client's placeholders and the Role that lets factory-db-setup fill them.
@@ -122,7 +130,9 @@ def provisioning(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "existing_count", [0, 2, 4], ids=["fresh", "later-logins", "discord"]
+    "existing_count",
+    [0, 2, 4, 5],
+    ids=["fresh", "later-logins", "discord", "accounting"],
 )
 def test_provisioning_preserves_passwords_and_reruns_without_writes(
     provisioning, existing_count, capsys
@@ -139,7 +149,7 @@ def test_provisioning_preserves_passwords_and_reruns_without_writes(
             )
             url = (
                 f"postgres://{login}:{old_passwords[name]}@"
-                f"factory-db-rw.factory-db.svc:5432/{login}?sslmode=require"
+                f"factory-db-rw.factory-db.svc:5432/{DATABASES.get(login, login)}?sslmode=require"
             )
             api.secrets[(namespace, target)]["data"] = {"DATABASE_URL": encode(url)}
 
@@ -172,7 +182,7 @@ def test_provisioning_preserves_passwords_and_reruns_without_writes(
         assert url.password == passwords[name]
         assert url.hostname == "factory-db-rw.factory-db.svc"
         assert url.port == 5432
-        assert url.path == f"/{login}"
+        assert url.path == f"/{DATABASES.get(login, login)}"
         assert parse_qs(url.query) == {"sslmode": ["require"]}
 
     snapshot = copy.deepcopy(api.secrets)
@@ -221,7 +231,21 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
     databases = {
         doc["spec"]["name"]: doc for doc in documents if doc["kind"] == "Database"
     }
+    assert "factory_broker_accounting" not in databases
+    broker = roles["factory_broker_accounting"]
+    assert broker["inherit"] is False
+    for capability in (
+        "superuser",
+        "createdb",
+        "createrole",
+        "replication",
+        "bypassrls",
+    ):
+        assert broker[capability] is False
+    assert not broker.get("inRoles")
     for _, login, _, _ in LOGINS[1:]:
+        if login in DATABASES:
+            continue
         database = databases[login]
         assert database["spec"]["owner"] == login
         assert database["spec"]["cluster"]["name"] == cluster["metadata"]["name"]
@@ -246,6 +270,9 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
     [
         ("factory", "factory-reviewer", "5432", True),
         ("factory", "factory-connector", "5432", True),
+        ("factory", "factory-broker", "5432", True),
+        ("other", "factory-broker", "5432", False),
+        ("factory", "factory-broker", "8000", False),
         ("hindsight", "hindsight", "5432", True),
         ("hindsight", "hindsight-keys", "5432", False),
         ("hindsight-discord", "hindsight", "5432", True),

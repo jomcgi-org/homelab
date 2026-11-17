@@ -6,6 +6,10 @@ tokens per delivered issue for HOME-130's memory comparison.
 ```text
 verified actor JWT -> broker -> Responses API
                          |
+              factory_broker_accounting
+                         |
+                append-only SQL functions
+                         |
                   codex_call + codex_usage
                          |
              delivery_attempt -> run totals
@@ -47,12 +51,31 @@ closed the run and no longer accepts a result. Connector-owned review rounds
 have local totals but no itsaplan `agent_run` row.
 
 The connector owns the migration and its dispatch writer. The broker uses
-`BROKER_USAGE_DATABASE_URL`, supplied from the connector's database Secret
-when the connector is enabled, to append observations. Its code changes no
-dispatch state. Both sides of the database network policy admit the broker
+`BROKER_USAGE_DATABASE_URL` from `factory-broker-accounting-db`, with the
+separate `factory_broker_accounting` login. CloudNativePG provisions this
+login without database ownership, role membership or administrative powers.
+The connector grants it only schema access and execution of
+`record_codex_call` and `record_codex_usage`. These functions append accounting
+evidence with a fixed search path and qualified table names. They cannot change
+dispatch state; the login has no direct table or sequence privileges. Execution
+is revoked from `PUBLIC`. Both sides of the network policy admit the broker
 on the configured PostgreSQL port. No provider responses, prompts or
 credentials are stored in the accounting tables. PostgreSQL and its existing
 backups preserve observations across broker and connector restarts.
+
+## Regression evidence
+
+The following tests cover the issue's pre-rollout criteria. Dispatch tests use
+real PostgreSQL, migrations run as a non-superuser database owner, and the
+broker connects as `factory_broker_accounting`.
+
+| Criterion | Evidence |
+| --- | --- |
+| 1: byte-preserving JSON and SSE accounting, attributed by actor | `broker/relay/tokens_test.go` tests chunk boundaries, completion-before-forwarding and unchanged response bytes. `dispatch/usage_test.go:TestRunTokenTotalsFromRelay` ignores a forged session header and excludes other sessions and namespaces. |
+| 2: totals sent to itsaplan | `TestRunTokenTotalsFromRelay` sends two measured calls plus a duplicate and a missing-usage call: the result fixture receives 300 input and 20 output tokens, and PostgreSQL stores 150 cached tokens. A second run in the same session receives only its own 400/10 tokens. `itsaplan/client_test.go:TestResultSendsAttemptAndUsage` checks the result endpoint and JSON field names. |
+| 3: tokens per delivered issue | The SQL below sums every run of each Done issue and identifies unmeasured historical runs. |
+| 4: streamed, non-streamed, missing usage and correct run | `TestRunTokenTotalsFromRelay` and `TestRunWithoutResponseUsageStaysUnknown` each run with JSON and SSE. `TestUsageBeforeSessionAcknowledgementAndAcrossRetry` covers an early call, a lost dispatch acknowledgement and retry totals. |
+| Database boundary | `TestAccountingLoginCannotChangeDispatchState` rejects direct table access, state changes and role escalation, then records usage despite caller-created tables and a hostile search path. |
 
 ## Tokens per delivered issue
 
@@ -96,8 +119,15 @@ broker counts only usage the provider reports, without estimating it.
 
 ## Rollout acceptance
 
-After the chart and both images roll out, confirm migration
-`20261117160000_codex_usage` exists in `factory_connector.schema_migrations`
+First sync `factory-db` and `factory-db-secrets` to provision the accounting
+login and its connection-string Secret. The broker's Secret reference changes,
+so the chart restarts the broker. The connector applies the two accounting
+migrations on startup; missing roles fail the grant migration instead of
+silently disabling accounting. No database or existing login changes owner.
+
+After the chart and both images roll out, confirm migrations
+`20261117160000_codex_usage` and `20261117190000_accounting_identity`
+exist in `factory_connector.schema_migrations`
 and the broker's error counters stay flat. Let a newly dispatched coder run
 finish. In `factory_connector`, check its run ID:
 

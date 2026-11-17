@@ -16,6 +16,7 @@ import (
 	brokermetrics "github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/factory/broker/relay"
 	"github.com/jomcgi/homelab/projects/factory/broker/usage"
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
@@ -37,6 +38,9 @@ func (usageGrant) RefreshRejected(context.Context, string) (grant.Token, error) 
 // harness metadata is needed for the connector's itsaplan result.
 func relayUsage(t *testing.T, v *env, namespace, session, response string, stream bool, input int) {
 	t.Helper()
+	if v.accounting == nil {
+		v.accounting = pgtest.AsRole(t, v.st.DB, "factory_broker_accounting")
+	}
 	body := fmt.Sprintf(`{"id":%q}`, response)
 	if input >= 0 {
 		body = fmt.Sprintf(`{"id":%q,"usage":{"input_tokens":%d,"input_tokens_details":{"cached_tokens":%d},"output_tokens":10}}`, response, input, input/2)
@@ -53,7 +57,7 @@ func relayUsage(t *testing.T, v *env, namespace, session, response string, strea
 	defer up.Close()
 	r := &relay.Relay{
 		Verifier: usageIdentity{actorjwt.Identity{Atespace: namespace, ActorName: "session-" + strings.ToLower(session), ActorUID: "uid-" + session}},
-		Tokens:   usageGrant{}, TokenUsage: &usage.Store{DB: v.st.DB},
+		Tokens:   usageGrant{}, TokenUsage: &usage.Store{DB: v.accounting},
 		Upstream: up.URL, Client: up.Client(), Metrics: brokermetrics.New(),
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -159,5 +163,68 @@ func TestRunWithoutResponseUsageStaysUnknown(t *testing.T) {
 				t.Fatalf("unmeasured result = %+v", results)
 			}
 		})
+	}
+}
+
+func TestAccountingLoginCannotChangeDispatchState(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	v.accounting = pgtest.AsRole(t, v.st.DB, "factory_broker_accounting")
+	// Pin one session so the search-path attack below reaches the connection
+	// used by the real broker recorder too.
+	v.accounting.SetMaxOpenConns(1)
+	for _, statement := range []string{
+		`SELECT * FROM work_item`,
+		`UPDATE work_item SET state = 'done'`,
+		`UPDATE run SET state = 'closed'`,
+		`UPDATE delivery_attempt SET issues = 0`,
+		`DELETE FROM outbox`,
+		`TRUNCATE cancellation`,
+		`UPDATE codex_call SET delivery_attempt_id = NULL`,
+		`DELETE FROM codex_usage`,
+		`INSERT INTO codex_usage VALUES (1, 'forged', 1, 0, 1)`,
+		`CREATE TABLE public.broker_owned (id bigint)`,
+		`SET ROLE factory_connector`,
+	} {
+		if _, err := v.accounting.Exec(statement); err == nil || !strings.Contains(err.Error(), "permission denied") {
+			t.Fatalf("accounting login executed %q: %v", statement, err)
+		}
+	}
+	// Check every application table and sequence, including future dispatch
+	// tables: the login must never gain direct access through a broad grant.
+	var grants int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM pg_tables WHERE schemaname = 'public'
+		AND has_table_privilege('factory_broker_accounting', format('%I.%I', schemaname, tablename),
+		'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')`).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("broker table grants = %d: %v", grants, err)
+	}
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM pg_sequences WHERE schemaname = 'public'
+		AND has_sequence_privilege('factory_broker_accounting', format('%I.%I', schemaname, sequencename),
+		'USAGE,SELECT,UPDATE')`).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("broker sequence grants = %d: %v", grants, err)
+	}
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM pg_proc p, aclexplode(p.proacl) a
+		WHERE p.pronamespace = 'public'::regnamespace AND p.proname LIKE 'record_codex_%'
+		AND a.grantee = 0`).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("PUBLIC can execute accounting functions: %d, %v", grants, err)
+	}
+	if _, err := v.accounting.Exec(`CREATE TEMP TABLE codex_call (id bigint);
+		CREATE TEMP TABLE codex_usage (call_id bigint);
+		CREATE TEMP TABLE delivery_attempt (id bigint);
+		SET search_path = pg_temp, public`); err != nil {
+		t.Fatal(err)
+	}
+	session := v.work(101).SessionID
+	relayUsage(t, v, "factory-homelab", session, "resp_restricted", true, 100)
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM public.codex_usage WHERE input_tokens = 100`).Scan(&grants); err != nil || grants != 1 {
+		t.Fatalf("function did not use the real accounting tables: %d, %v", grants, err)
+	}
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	results := v.its.Run(1).results
+	if len(results) != 1 || results[0].Usage == nil || results[0].Usage.InputTokens != 100 || results[0].Usage.OutputTokens != 10 {
+		t.Fatalf("restricted login totals = %+v", results)
 	}
 }
