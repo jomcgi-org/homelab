@@ -58,7 +58,10 @@ expect "snapshot $work/site/web/dist/data
 $DEPLOY_PROD
 fence-check jomcgi-site 0.9.0
 fence-check jomcgi-site 0.9.0" "sync deploys once when nothing replaces it"
-[[ ! -e "$work/src/web/dist/data" ]] || { echo "source was modified"; exit 1; }
+[[ ! -e "$work/src/web/dist/data" ]] || {
+	echo "source was modified"
+	exit 1
+}
 
 # 2. sync: an older refresh replaced the release, so it deploys again.
 reset $'10\n0\n'
@@ -91,7 +94,10 @@ for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAG
 		echo "'$args' should fail"
 		exit 1
 	fi
-	[[ ! -s "$work/calls" ]] || { echo "'$args' ran a step"; exit 1; }
+	[[ ! -s "$work/calls" ]] || {
+		echo "'$args' ran a step"
+		exit 1
+	}
 done
 
 # 6. A failed snapshot stops before the deploy.
@@ -105,5 +111,8 @@ if run env STAGE=dev MODE=sync; then
 	echo "a failed snapshot should fail the run"
 	exit 1
 fi
-! grep -q wrangler "$work/calls" || { echo "deployed after a failed snapshot"; exit 1; }
+! grep -q wrangler "$work/calls" || {
+	echo "deployed after a failed snapshot"
+	exit 1
+}
 echo "PASS"
