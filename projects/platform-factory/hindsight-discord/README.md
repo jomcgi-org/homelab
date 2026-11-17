@@ -1,8 +1,7 @@
 # Discord memory
 
-HOME-163 gives Discord a separate Hindsight 1.2.1 process and database.
-Joe chose this boundary and the dedicated OpenRouter credential in
-[HOME-162](https://factory-plan.jomcgi.dev/factory/issue/HOME-162) on 2026-11-17.
+[HOME-163](https://factory-plan.jomcgi.dev/factory/issue/HOME-163) defines a
+separate Hindsight 1.2.1 process and database for Discord memory.
 
 ```mermaid
 flowchart LR
@@ -21,8 +20,8 @@ MCP is disabled.
 
 The 1Password operator syncs `factory-discord-llm` into
 `hindsight-discord/hindsight-openrouter`. Its `api-key` and `base-url` fields
-set the LLM credential and endpoint (`https://openrouter.ai/api/v1`). The item
-has a $250 monthly limit. The model ID is a literal in
+set the LLM credential and endpoint (`https://openrouter.ai/api/v1`). HOME-163
+requires a $250 monthly limit on this item. The model ID is a literal in
 `resources/hindsight.yaml`; change it through a PR.
 
 The API permits ingress only from `factory-discord` and egress only to
@@ -35,18 +34,25 @@ Role and client egress rule before the bridge exists.
 
 These checks need cluster access and the populated 1Password item. Local
 tests do not prove deployment readiness or the provider's startup check.
+Credential and startup verification remain pending. The repository declares
+the item reference; it does not prove that the item is populated or usable.
 
-1. Confirm Applications `hindsight-discord` and `hindsight-discord-key` are
+1. Confirm the OnePasswordItem fetched successfully. Check that Secret
+   `hindsight-discord/hindsight-openrouter` has nonempty `api-key` and
+   `base-url` fields without printing either value. Record only field names,
+   presence, and the OnePasswordItem's sync status on HOME-163.
+2. Confirm Applications `hindsight-discord` and `hindsight-discord-key` are
    Synced and Healthy. Confirm Deployment `hindsight-discord/hindsight` has
    one Ready replica on the pinned image.
-2. Check the startup log for successful LLM verification. Keep verification
-   enabled. If the provider rejects the completion limit, lower
+3. Check the startup log for successful LLM verification. Record the model ID,
+   pod UID, deployed revision, and result on HOME-163 without credentials.
+   Keep verification enabled. If the provider rejects the completion limit, lower
    `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS` through a PR, then repeat.
-3. Use a temporary debug pod in `factory-discord`. Mount only
+4. Use a temporary debug pod in `factory-discord`. Mount only
    `hindsight-discord-key`, and read `tenant-api-key` from its file. Keep the
    key out of command arguments and logs. Send it as a Bearer token to
    `http://hindsight-api.hindsight-discord.svc:8888`.
-4. POST the following body to `/v1/default/banks/discord-test/memories`.
+5. POST the following body to `/v1/default/banks/discord-test/memories`.
    Synchronous retain must finish successfully.
 
    ```json
@@ -62,7 +68,7 @@ tests do not prove deployment readiness or the provider's startup check.
    }
    ```
 
-5. POST this body to `/v1/default/banks/discord-test/memories/recall`.
+6. POST this body to `/v1/default/banks/discord-test/memories/recall`.
    Confirm `results` includes the cobalt otter fact.
 
    ```json
@@ -73,13 +79,15 @@ tests do not prove deployment readiness or the provider's startup check.
    }
    ```
 
-6. Repeat recall with `tags: ["channel:other"]`. Confirm `results` is empty.
-7. From a debug pod in `factory-r-homelab`, attempt the same service's
+7. Repeat recall with `tags: ["channel:other"]`. Confirm `results` is empty.
+8. From a debug pod in `factory-r-homelab`, attempt the same service's
    `/health` endpoint with a short connection timeout. It must not connect.
    Do not copy the tenant key into that namespace.
-8. Record the deployed revision and results on HOME-163. Remove the debug pods.
+9. Record the deployed revision and results on HOME-163. Remove the debug pods.
 
-`keys_test.py` exercises the key Job against manifest RBAC, including reruns
-and stale copies. `boundary_test.py` runs the pinned image in PR CI with
-dummy credentials and LLM verification disabled only in the test process.
+`keys_test.py` renders both Kustomize directories and exercises the key Job
+against the rendered RBAC, including reruns and stale copies. It also checks
+that both Jobs mount the generated script ConfigMap. `boundary_test.py` runs
+the pinned image in PR CI with dummy credentials and LLM verification disabled
+only in the test process.
 It checks REST authentication, recall and both disabled MCP routes.

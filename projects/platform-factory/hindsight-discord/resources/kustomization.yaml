@@ -7,8 +7,10 @@ resources:
   - secrets.yaml
   - hindsight.yaml
 
+# Keep the script ConfigMap distinct from the tenant Secret. Kustomize also
+# rewrites matching Role resourceNames, including rules for Secrets.
 configMapGenerator:
-  - name: hindsight-keys
+  - name: hindsight-keys-script
     namespace: hindsight-discord
     files:
       - keys.py
