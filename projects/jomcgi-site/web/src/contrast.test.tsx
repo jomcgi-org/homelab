@@ -6,13 +6,39 @@ import { describe, expect, it } from "vitest";
 // stage still runs axe in a real browser for anything tokens cannot show.
 
 type Mode = "light" | "dark";
+type Colour = Record<Mode, string>;
 
-function tokens(css: string): Map<string, Record<Mode, string>> {
-  const found = new Map<string, Record<Mode, string>>();
-  for (const [, name, light, dark] of css.matchAll(
-    /(--[a-z-]+):\s*light-dark\((#[0-9a-f]{6}),\s*(#[0-9a-f]{6})\)/gi,
+const HEX = "#(?:[0-9a-f]{3}|[0-9a-f]{6})";
+
+/** "#abc" → "#aabbcc"; "#aabbcc" unchanged. */
+function longHex(hex: string): string {
+  const digits = hex.slice(1).toLowerCase();
+  return digits.length === 3
+    ? `#${[...digits].map((d) => d + d).join("")}`
+    : `#${digits}`;
+}
+
+/**
+ * The light and dark values of a colour, or undefined when the value is in a
+ * form this check cannot read (rgb(), a named colour, var(), and so on).
+ */
+export function colour(value: string): Colour | undefined {
+  const pair = value.match(
+    new RegExp(`^light-dark\\(\\s*(${HEX})\\s*,\\s*(${HEX})\\s*\\)$`, "i"),
+  );
+  if (pair) return { light: longHex(pair[1]!), dark: longHex(pair[2]!) };
+  const single = value.match(new RegExp(`^(${HEX})$`, "i"));
+  if (single) return { light: longHex(single[1]!), dark: longHex(single[1]!) };
+  return undefined;
+}
+
+/** Every custom property whose name says it is a colour, whatever its value. */
+export function colourTokens(css: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const [, name, value] of css.matchAll(
+    /(--[a-z0-9-]+)\s*:\s*([^;]+);/gi,
   )) {
-    found.set(name!, { light: light!, dark: dark! });
+    if (/colou?r/i.test(name!)) found.set(name!, value!.trim());
   }
   return found;
 }
@@ -32,7 +58,10 @@ export function contrast(a: string, b: string): number {
   return (hi! + 0.05) / (lo! + 0.05);
 }
 
-const palette = tokens(readFileSync("src/palette.css", "utf8"));
+const declared = colourTokens(readFileSync("src/palette.css", "utf8"));
+const palette = new Map(
+  [...declared].map(([name, value]) => [name, colour(value)] as const),
+);
 
 // Every colour token has one role, and each role has its WCAG minimum:
 // text 4.5:1 (1.4.3) and non-text UI 3:1 (1.4.11) on every background.
@@ -76,7 +105,25 @@ const PAIRS: [string, string, number][] = [
 
 describe("token contrast", () => {
   it("gives every colour token in palette.css exactly one role", () => {
-    expect([...palette.keys()].sort()).toEqual(Object.keys(ROLES).sort());
+    expect([...declared.keys()].sort()).toEqual(Object.keys(ROLES).sort());
+  });
+
+  it("can read the light and dark value of every colour token", () => {
+    for (const [name, value] of declared) {
+      expect(colour(value), `${name}: ${value}`).toBeDefined();
+    }
+  });
+
+  it("finds colour tokens in every value form, so none escapes a role", () => {
+    const css = `--color-warning: #fff; --color-x: rgb(0 0 0);
+      --focus-ring-color: light-dark(#000, #fff); --radius-page: 0;`;
+    expect([...colourTokens(css).keys()]).toEqual([
+      "--color-warning",
+      "--color-x",
+      "--focus-ring-color",
+    ]);
+    expect(colour("#fff")).toEqual({ light: "#ffffff", dark: "#ffffff" });
+    expect(colour("rgb(0 0 0)")).toBeUndefined();
   });
 
   it("computes WCAG ratios", () => {
