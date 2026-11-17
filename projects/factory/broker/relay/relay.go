@@ -1,5 +1,5 @@
-// Package relay forwards Codex Responses API calls from kagent actors to the
-// ChatGPT Codex backend with the broker's grant. The actor authenticates with
+// Package relay forwards Codex Responses and Claude Messages API calls from
+// kagent actors with credentials held by the broker. The actor authenticates with
 // the Substrate actor JWT the egress gateway injects; provider credentials
 // never leave the broker.
 package relay
@@ -456,6 +456,10 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, observer *to
 			}
 		}()
 	}
+	return streamResponse(w, resp, rl.Logger, "codex", rl.streamIdleTimeout(), observer)
+}
+
+func streamResponse(w http.ResponseWriter, resp *http.Response, logger *slog.Logger, provider string, idle time.Duration, observer *tokenObserver) outcome {
 	for name, values := range resp.Header {
 		if !hopHeaders[http.CanonicalHeaderKey(name)] {
 			w.Header()[name] = append([]string(nil), values...)
@@ -483,7 +487,7 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, observer *to
 			break
 		}
 		if err != nil {
-			rl.Logger.Warn("codex upstream stream ended early", "err", err, "idle_timeout", rl.streamIdleTimeout().String())
+			logger.Warn("upstream stream ended early", "provider", provider, "idle_timeout", idle.String())
 			return outcome{"upstream_stream_error", resp.StatusCode}
 		}
 	}

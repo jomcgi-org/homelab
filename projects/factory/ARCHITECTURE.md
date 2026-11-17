@@ -1692,6 +1692,70 @@ reuse state, even after a prolonged persistence failure.
   `chatgpt-account-id`, streaming SSE back. That the backend accepts the
   Responses request Codex sends in API-key mode is [I] until the first live
   run. Provider credentials exist only in the broker.
+- **Claude Code relay (HOME-232).** `broker.claude.enabled` defaults to
+  false. When enabled, the broker accepts only `POST /anthropic/v1/messages`
+  and `POST /anthropic/v1/messages/count_tokens`. It forwards them to
+  `https://api.anthropic.com/v1/messages` and its `count_tokens` endpoint.
+  SSE bytes flush as they arrive. The broker adds `Authorization: Bearer`
+  with Joe's Claude Code OAuth token and `anthropic-beta: oauth-2025-04-20`.
+  It preserves the client's other beta flags, API version and Claude Code
+  headers. It drops inbound credentials and cookies, and refuses redirects.
+
+  ```mermaid
+  flowchart LR
+    C[Claude Code actor] -->|placeholder x-api-key| G[Substrate gateway]
+    G -->|actor JWT, audience factory-broker| B[Broker Claude relay]
+    P[1Password factory-claude-cvp token] -->|broker-only Secret mount| B
+    B -->|OAuth Bearer, Messages API| A[Anthropic]
+    A -->|SSE| B
+    B -->|SSE| C
+  ```
+
+  The chart syncs `k8s-homelab/factory-claude-cvp`, field `token`, into the
+  broker namespace. Only the broker mounts it, at
+  `/etc/factory-claude-cvp/token`, without `subPath`. Each permitted request
+  rereads the file to pick up Secret rotation. The Secret has no Substrate
+  injection label or actor binding. This relay supports no API keys, refresh
+  flow or quota reading.
+
+  `broker.claude.modelAllowlist` maps exact verified JWT subjects,
+  `actor/<atespace>/<actorName>`, to exact model IDs. An empty map, missing
+  actor or unlisted model denies the request with 403 `claude_model_denied`.
+  Configure only Claude Code actors; requests also need `User-Agent:
+  claude-cli/...` and `x-app: cli`. These client markers do not replace JWT
+  verification or the allowlist. kagent's
+  [actor name](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/substrate/client.go#L284)
+  is `session-<lowercase-session-ID>`. Allowlist entries must name the actual
+  actors, including each new session.
+  The existing `actorJwt.allowedAtespaces` restriction also applies.
+  JSON bodies are bounded, inspected and re-encoded before forwarding;
+  compressed bodies are refused. Limits default to 32 MiB, 64 concurrent
+  calls and a five-minute stream idle timeout. The listener's two-minute
+  request read timeout also applies.
+
+  Local failures use `factory_error`: `actor_unauthenticated` (401),
+  `claude_code_required` or `claude_model_denied` (403),
+  `claude_token_unavailable` (503), and `claude_upstream_unreachable` (502).
+  An upstream 401 becomes `claude_login_required` (401), without a retry;
+  replace the 1Password token. Upstream 429 status, body and `Retry-After`
+  pass through. Other upstream errors use `claude_upstream_error`, preserving
+  the status; redirects become 502. Logs exclude credentials and bodies.
+  The chart renders no Claude configuration, token mount, 1Password item or
+  Anthropic egress rule by default. Deployment values leave it disabled.
+
+  **kagent v1.0.1 compatibility: verified in source.** Its
+  [Claude compiler](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/claude/compiler.go#L182)
+  accepts `ModelConfig.spec.anthropic.baseUrl` and sets `ANTHROPIC_BASE_URL`.
+  Use the broker Service URL ending in `/anthropic`, without `/v1`, and
+  `actorJwt.audiences: [factory-broker]` with `provider: Anthropic`.
+  Its [credential target](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/credentials.go#L259)
+  injects the JWT into `x-api-key` without a prefix. The broker verifies that
+  header or a Bearer JWT and rejects requests containing both. The sandbox
+  holds only the `ANTHROPIC_API_KEY` placeholder. The
+  [harness pin](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/harness/claude/config/config.go#L25)
+  is Claude Code 2.1.285. Its published package confirms the OAuth beta and
+  client headers. [V] Live subscription acceptance and Mythos entitlement
+  remain untested; this change does not enable the relay or add an audit binding.
 - **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
   (401); `codex_login_required` (401, for an empty grant or `invalid_grant`);
   `codex_quota_exhausted` (429 with `resets_at`, from the `x-codex-*` headers or a

@@ -1,5 +1,5 @@
-// Command broker is the factory credential broker: it relays Codex model
-// calls from kagent actors with the broker's own grant, and mints GitHub App
+// Command broker is the factory credential broker: it relays model calls
+// from kagent actors with the broker's own credentials, and mints GitHub App
 // installation tokens per repository binding.
 package main
 
@@ -149,6 +149,7 @@ type deps struct {
 	verifier *actorjwt.Verifier
 	grants   *grant.Manager
 	relay    *relay.Relay
+	claude   *relay.Claude
 	// usage keeps the grant's quota reading current between relayed calls.
 	usage  *relay.UsageRefresher
 	minter *github.Minter
@@ -195,6 +196,14 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 		},
 		reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger},
 	}
+	if cfg.Claude.Enabled {
+		d.claude = &relay.Claude{
+			Verifier: verifier, TokenFile: cfg.Claude.TokenFile, ModelAllowlist: cfg.Claude.ModelAllowlist,
+			Upstream: relay.ClaudeUpstream, Client: &http.Client{Transport: transport},
+			Metrics: m, Logger: logger, MaxRequestBytes: cfg.Claude.MaxRequestBytes,
+			MaxConcurrent: cfg.Claude.MaxConcurrentRequests, StreamIdleTimeout: cfg.Claude.StreamIdleTimeout.Duration,
+		}
+	}
 	if cfg.GitHubEnabled() {
 		key, err := github.LoadPrivateKey(cfg.GitHub.PrivateKeyFile)
 		if err != nil {
@@ -239,7 +248,7 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 // and metrics authenticates: the relay by actor JWT, the rest by TokenReview.
 func (d *deps) handler(cfg config.Config, metricsHandler http.Handler) http.Handler {
 	mux := d.adminMux(cfg, metricsHandler)
-	mux.Handle("/", d.relay)
+	d.registerRelays(mux)
 	return mux
 }
 
@@ -247,8 +256,15 @@ func (d *deps) handler(cfg config.Config, metricsHandler http.Handler) http.Hand
 func (d *deps) relayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	mux.Handle("/", d.relay)
+	d.registerRelays(mux)
 	return mux
+}
+
+func (d *deps) registerRelays(mux *http.ServeMux) {
+	if d.claude != nil {
+		mux.Handle("/anthropic/", d.claude)
+	}
+	mux.Handle("/", d.relay)
 }
 
 // adminHandler serves health, metrics, the admin endpoints, connector

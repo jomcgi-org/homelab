@@ -214,6 +214,14 @@ broker:
   githubApp:
     enabled: false
     itemPath: vaults/k8s-homelab/items/factory-github-app
+  # Claude Code subscription relay. Only the broker mounts the token field;
+  # actors authenticate with factory-broker JWTs, never provider credentials.
+  claude:
+    enabled: false
+    itemPath: vaults/k8s-homelab/items/factory-claude-cvp
+    # Exact JWT subjects (actor/<atespace>/<actorName>) to exact model IDs.
+    # Empty denies every actor. Configure only actors running Claude Code.
+    modelAllowlist: {}
   # Settings passed to the broker's config file over its defaults
   # (projects/factory/broker/config).
   config: {}

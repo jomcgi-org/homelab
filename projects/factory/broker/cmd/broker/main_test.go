@@ -55,7 +55,39 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
+		{http.MethodPost, "/anthropic/v1/messages", http.StatusNotFound, "not_found"},
+		{http.MethodPost, "/anthropic/v1/messages/count_tokens", http.StatusNotFound, "not_found"},
 		{http.MethodGet, "/v1/other", http.StatusNotFound, "not_found"},
+	})
+}
+
+func TestClaudeRoutesAreOptionalAndUseOnlyRelayListener(t *testing.T) {
+	d, cfg := testDeps(t)
+	if d.claude != nil {
+		t.Fatal("Claude relay enabled by default")
+	}
+	checkRoutes(t, d.relayHandler(), []routeCase{
+		{http.MethodPost, "/anthropic/v1/messages", 404, "not_found"},
+		{http.MethodPost, "/anthropic/v1/messages/count_tokens", 404, "not_found"},
+	})
+	cfg.Claude.Enabled = true
+	cfg.Claude.TokenFile = filepath.Join(t.TempDir(), "token")
+	d, err := build(context.Background(), cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []http.Handler{d.relayHandler(), d.handler(cfg, http.NotFoundHandler())} {
+		checkRoutes(t, h, []routeCase{
+			{http.MethodPost, "/anthropic/v1/messages", 401, "actor_unauthenticated"},
+			{http.MethodPost, "/anthropic/v1/messages/count_tokens", 401, "actor_unauthenticated"},
+			{http.MethodGet, "/anthropic/v1/messages", 404, "not_found"},
+			{http.MethodPost, "/anthropic/v1/other", 404, "not_found"},
+			{http.MethodPost, "/v1/responses", 401, "actor_unauthenticated"},
+		})
+	}
+	checkRoutes(t, d.adminHandler(cfg, http.NotFoundHandler()), []routeCase{
+		{http.MethodPost, "/anthropic/v1/messages", 404, ""},
+		{http.MethodPost, "/anthropic/v1/messages/count_tokens", 404, ""},
 	})
 }
 
