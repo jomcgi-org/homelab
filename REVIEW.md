@@ -188,12 +188,14 @@ finding ID, the evidence it accepts and the check after rollout. Live
 evidence says what ran, when, and its result. Report the finding
 `justified` with a note that starts `decision:` and links the comment, only
 after you read that it accepts the evidence and names the check. Do not ask
-again for evidence you cannot read: name the check after rollout instead
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-188#comment-1550)).
-For a high finding, the service also checks the author, the link, the
-finding ID and that the text is unchanged, and an edit or a deletion of the
-comment revokes the decision and restores the finding. A critical finding, and every other high finding, clears no other
-way.
+again for evidence you cannot read: name the check after rollout instead.
+At either severity, the service checks the author, the link, the finding
+ID and that the text is unchanged. An edit or a deletion of the comment
+revokes the decision and restores the finding at the severity it was
+decided at. The decision takes effect when the next head is reviewed:
+after Joe's comment, the PR's delivery owner pushes a new head, and an
+empty commit is enough. A critical finding, and every other high finding,
+clears no other way.
 
 ## Later heads
 

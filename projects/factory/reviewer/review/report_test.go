@@ -203,6 +203,72 @@ func TestCarriedDecisions(t *testing.T) {
 	}
 }
 
+// TestMediumDecisions: a medium finding justified as Joe's decision is
+// stamped like a high one, so an edit or a deletion revokes it; a revoked
+// one blocks again at medium, not high. A "decision:" note that does not
+// verify blocks; any other note still justifies a medium finding.
+func TestMediumDecisions(t *testing.T) {
+	body := "Decision: accept `live.go:x` and `high.go:x` on the evidence above; check after rollout."
+	link := "https://github.com/o/r/pull/7#issuecomment-"
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{{ID: 42, Author: "jomcgi", Body: body}}}
+	prior := []Finding{finding("live.go:x", SeverityMedium), finding("bad-link.go:x", SeverityMedium), finding("plain.go:x", SeverityMedium)}
+	r := &Report{Previous: []Previous{
+		{ID: "live.go:x", Status: StatusJustified, Note: "decision: " + link + "42 accepts the live evidence."},
+		{ID: "bad-link.go:x", Status: StatusJustified, Note: "decision: " + link + "99"},
+		{ID: "plain.go:x", Status: StatusJustified, Note: "Intentional: the retry is idempotent."},
+	}}
+	a := AssessDecided(r, prior, d)
+	got := map[string]string{}
+	for _, b := range a.Blocking {
+		got[b.ID] = "blocking:" + b.Reason
+	}
+	for _, b := range a.Accepted {
+		got[b.ID] = "accepted"
+		if b.Decision != nil {
+			got[b.ID] += fmt.Sprintf(":%d:%s", b.Decision.ID, b.Decision.Severity)
+		}
+	}
+	want := map[string]string{
+		"live.go:x":     "accepted:42:medium",
+		"bad-link.go:x": "blocking:justified as Joe's decision, but the note does not link Joe's comment on this PR naming it",
+		"plain.go:x":    "accepted",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("assessment = %v\nwant %v", got, want)
+	}
+	stamps := a.decisions()
+	if len(stamps) != 1 || stamps[0] != (DecisionStamp{Finding: "live.go:x", ID: 42, Hash: bodyHash(body), Severity: SeverityMedium}) {
+		t.Fatalf("decisions = %+v", stamps)
+	}
+
+	// The next head: Joe deleted the comment. The medium finding blocks
+	// again at medium; a high stamp on the same comment restores high, and
+	// a stamp from before medium decisions counts as high.
+	next := Decisions{Repo: "o/r", Number: 7, Carried: []DecisionStamp{
+		stamps[0],
+		{Finding: "high.go:x", ID: 42, Hash: bodyHash(body), Severity: SeverityHigh},
+		{Finding: "old.go:x", ID: 42, Hash: bodyHash(body)},
+		{Finding: "raised.go:x", ID: 42, Hash: bodyHash(body), Severity: SeverityMedium},
+	}}
+	a = AssessDecided(&Report{Findings: []Finding{finding("raised.go:x", SeverityLow)}}, nil, next)
+	got = map[string]string{}
+	for _, b := range a.Blocking {
+		got[b.ID] = b.Severity + ":" + b.Reason
+	}
+	want = map[string]string{
+		"live.go:x":   "medium:Joe's decision changed",
+		"high.go:x":   "high:Joe's decision changed",
+		"old.go:x":    "high:Joe's decision changed",
+		"raised.go:x": "medium:reported again as low after Joe's decision changed; it stays medium",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("revoked = %v\nwant %v", got, want)
+	}
+	if !d.Hold(stamps) || next.Hold(stamps) {
+		t.Fatal("Hold must accept the medium stamp only while Joe's comment is unchanged")
+	}
+}
+
 func TestAssessAccountsForPreviousFindings(t *testing.T) {
 	prior := []Finding{
 		finding("fixed-high", SeverityHigh),

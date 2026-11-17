@@ -215,8 +215,9 @@ func Prompt(in PromptInput) string {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised these blocking findings. Account for every one in \"previous\": "+
 				"\"fixed\" when the failure it describes no longer occurs, whichever fix was chosen; \"justified\" with a note when it "+
 				"is a medium finding the author has good reason to keep; \"justified\" with a note starting \"decision:\" and the "+
-				"comment's link when it is a high finding whose failure depends only on state you cannot read (a live cluster, a "+
-				"secret store, an outside service) and a trusted comment from Joe names its id and accepts it; \"justified\" with a "+
+				"comment's link when it is a medium or high finding whose failure depends only on state you cannot read (a live "+
+				"cluster, a secret store, an outside service, another PR's rollout) and a trusted comment from Joe names its id and "+
+				"accepts it; \"justified\" with a "+
 				"note starting \"withdrawn:\" when the finding was wrong, whatever its severity; \"open\" otherwise. A finding left out stays open. If one is still present, "+
 				"also report it in \"findings\" with the same id. Never widen a finding under its id: a further variant (another input, "+
 				"path or interleaving) is a new finding with its own id, rated on its own.\n\n",
