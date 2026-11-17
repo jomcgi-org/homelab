@@ -1,0 +1,25 @@
+{
+  "source": "GET /zones/<jomcgi.dev>/rulesets/phases/http_request_cache_settings/entrypoint, 2026-11-17, rules only",
+  "rules": [
+    {
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": {
+          "mode": "bypass_by_default"
+        },
+        "respect_strong_etags": true,
+        "serve_stale": {
+          "disable_stale_while_updating": false
+        }
+      },
+      "description": "Monolith",
+      "enabled": true,
+      "expression": "(http.host eq \"jomcgi.dev\") or (http.host eq \"private.jomcgi.dev\")",
+      "id": "6885ab2c4a4545a8b13782733ca1f49a",
+      "last_updated": "2026-06-11T03:49:06.901568Z",
+      "ref": "6885ab2c4a4545a8b13782733ca1f49a",
+      "version": "3"
+    }
+  ]
+}
