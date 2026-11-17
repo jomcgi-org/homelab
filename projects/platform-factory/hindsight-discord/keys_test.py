@@ -410,11 +410,18 @@ def test_preflight_is_the_factory_script_and_runs_before_the_deployment():
     assert check["image"] == api["image"]
     env, api = api_env(job), api_env(deployment)
     assert env["EMBEDDINGS_MODEL"] == api["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"]
-    assert env["EMBEDDINGS_EXTRA_BODY"] == api["HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"]
+    assert (
+        env["EMBEDDINGS_EXTRA_BODY"]
+        == api["HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"]
+    )
     assert env["EMBEDDINGS_DIMENSIONS"] == "1024"
     assert env["DECISION_MODEL"] == api["HINDSIGHT_API_DECISION_MODEL_MODEL"]
-    assert env["DECISION_MODEL_BASE_URL"] == api["HINDSIGHT_API_DECISION_MODEL_BASE_URL"]
-    assert env["OPENROUTER_API_KEY"] == api["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"]
+    assert (
+        env["DECISION_MODEL_BASE_URL"] == api["HINDSIGHT_API_DECISION_MODEL_BASE_URL"]
+    )
+    assert (
+        env["OPENROUTER_API_KEY"] == api["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"]
+    )
     assert env["DATABASE_URL"] == api["HINDSIGHT_API_DATABASE_URL"]
 
 
@@ -430,5 +437,6 @@ def test_service_selects_only_the_api_pod():
     # The network policy selects the name label, so it covers both pods.
     policy = read("resources/network-policy.yaml")[0]
     for labels in (pod_labels, job["spec"]["template"]["metadata"]["labels"]):
-        assert policy["spec"]["endpointSelector"]["matchLabels"].items() <= labels.items()
-
+        assert (
+            policy["spec"]["endpointSelector"]["matchLabels"].items() <= labels.items()
+        )
