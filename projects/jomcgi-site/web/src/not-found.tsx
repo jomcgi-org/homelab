@@ -1,4 +1,5 @@
 import { mount } from "./mount";
-import { NotFoundPage } from "./pages";
+import { PAGES } from "./pages";
 
-mount(<NotFoundPage />);
+const Page = PAGES["404.html"]!;
+mount(<Page />);
