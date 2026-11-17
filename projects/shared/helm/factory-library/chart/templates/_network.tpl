@@ -56,7 +56,10 @@ toPorts:
 
 {{- define "factory-library.networkPolicy" -}}
 {{- include "factory-library.validateExceptions" .root -}}
-{{- $network := .workload.network | default dict -}}
+{{- $network := deepCopy (.workload.network | default dict) -}}
+{{- if and .root.Values.buckets (not .secretInitializer) (not .mirror) -}}
+{{- $_ := set $network "egress" (append ($network.egress | default list) (dict "peer" "garage" "port" 3900)) -}}
+{{- end -}}
 {{- include "factory-library.keys" (dict "path" "network" "value" $network "allowed" (list "ingress" "egress")) }}
 ---
 apiVersion: cilium.io/v2
@@ -83,6 +86,19 @@ spec:
   {{ $direction }}:
     {{- range . }}
     - {{ include "factory-library.networkRule" (dict "root" $.root "name" $.name "workload" $.workload "direction" $direction "rule" .) | trim | nindent 6 | trim }}
+    {{- end }}
+    {{- if and $.mirror (eq $direction "egress") }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
     {{- end }}
   {{- end }}
   {{- end }}

@@ -85,6 +85,7 @@ Top-level projects/ directories:
 - factory
 - factory-cluster
 - factory-landing
+- factory-public
 - factory-storyboard
 - firecracker
 - gke-apps

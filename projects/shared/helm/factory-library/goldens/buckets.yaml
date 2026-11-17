@@ -1,0 +1,407 @@
+ServiceAccount/consumer-factory-public-mirror:
+  apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: consumer-factory-public-mirror
+  automountServiceAccountToken: false
+Secret/consumer-factory-public-s3:
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: consumer-factory-public-s3
+    labels:
+      factory.jomcgi.dev/garage-bucket: factory-public
+      factory.jomcgi.dev/garage-access: write
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  type: Opaque
+Secret/consumer-factory-public-mirror-s3:
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: consumer-factory-public-mirror-s3
+    labels:
+      factory.jomcgi.dev/garage-bucket: factory-public
+      factory.jomcgi.dev/garage-access: read
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  type: Opaque
+Role/consumer-factory-public-s3:
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: consumer-factory-public-s3
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  rules:
+  - apiGroups:
+    - ''
+    resources:
+    - secrets
+    resourceNames:
+    - consumer-factory-public-s3
+    verbs:
+    - get
+    - update
+Role/consumer-factory-public-mirror-s3:
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: consumer-factory-public-mirror-s3
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  rules:
+  - apiGroups:
+    - ''
+    resources:
+    - secrets
+    resourceNames:
+    - consumer-factory-public-mirror-s3
+    verbs:
+    - get
+    - update
+Role/consumer-garage-discovery:
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: consumer-garage-discovery
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  rules:
+  - apiGroups:
+    - ''
+    resources:
+    - secrets
+    verbs:
+    - list
+RoleBinding/consumer-factory-public-s3:
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: consumer-factory-public-s3
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: consumer-factory-public-s3
+  subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+RoleBinding/consumer-factory-public-mirror-s3:
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: consumer-factory-public-mirror-s3
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: consumer-factory-public-mirror-s3
+  subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+RoleBinding/consumer-garage-discovery:
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: consumer-garage-discovery
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: consumer-garage-discovery
+  subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+Deployment/app:
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: app
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: app
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: app
+          factory.jomcgi.dev/garage-client: 'true'
+      spec:
+        automountServiceAccountToken: false
+        imagePullSecrets:
+        - name: ghcr-imagepull-secret
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+        - name: app
+          image: ghcr.io/jomcgi/example@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+              - ALL
+          resources:
+            limits:
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+CronJob/consumer-factory-public-mirror:
+  apiVersion: batch/v1
+  kind: CronJob
+  metadata:
+    name: consumer-factory-public-mirror
+  spec:
+    schedule: '* * * * *'
+    concurrencyPolicy: Forbid
+    jobTemplate:
+      spec:
+        backoffLimit: 1
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: consumer-factory-public-mirror
+              factory.jomcgi.dev/garage-client: 'true'
+          spec:
+            automountServiceAccountToken: false
+            serviceAccountName: consumer-factory-public-mirror
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              seccompProfile:
+                type: RuntimeDefault
+            restartPolicy: Never
+            containers:
+            - name: mirror
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command:
+              - /bin/sh
+              - -c
+              - <mirror-script>
+              env:
+              - name: GARAGE_BUCKET
+                value: factory-public
+              - name: R2_BUCKET
+                value: factory-public
+              - name: R2_HOST
+                value: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+              - name: RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE
+                value: 'true'
+              - name: RCLONE_CONFIG_GARAGE_PROVIDER
+                value: Other
+              - name: RCLONE_CONFIG_GARAGE_TYPE
+                value: s3
+              - name: RCLONE_CONFIG_R2_FORCE_PATH_STYLE
+                value: 'true'
+              - name: RCLONE_CONFIG_R2_PROVIDER
+                value: Cloudflare
+              - name: RCLONE_CONFIG_R2_REGION
+                value: auto
+              - name: RCLONE_CONFIG_R2_TYPE
+                value: s3
+              - name: RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    key: AWS_ACCESS_KEY_ID
+                    name: consumer-factory-public-mirror-s3
+              - name: RCLONE_CONFIG_GARAGE_ENDPOINT
+                valueFrom:
+                  secretKeyRef:
+                    key: AWS_ENDPOINT_URL
+                    name: consumer-factory-public-mirror-s3
+              - name: RCLONE_CONFIG_GARAGE_REGION
+                valueFrom:
+                  secretKeyRef:
+                    key: AWS_REGION
+                    name: consumer-factory-public-mirror-s3
+              - name: RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    key: AWS_SECRET_ACCESS_KEY
+                    name: consumer-factory-public-mirror-s3
+              - name: RCLONE_CONFIG_R2_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    key: access-key-id
+                    name: consumer-factory-public-mirror-r2
+              - name: RCLONE_CONFIG_R2_ENDPOINT
+                valueFrom:
+                  secretKeyRef:
+                    key: s3-api-endpoint
+                    name: consumer-factory-public-mirror-r2
+              - name: RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    key: secret-access-key
+                    name: consumer-factory-public-mirror-r2
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                  - ALL
+              resources:
+                limits:
+                  memory: 256Mi
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+              volumeMounts:
+              - name: tmp
+                mountPath: /tmp
+            volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+CiliumNetworkPolicy/app:
+  apiVersion: cilium.io/v2
+  kind: CiliumNetworkPolicy
+  metadata:
+    name: app
+  spec:
+    endpointSelector:
+      matchLabels:
+        app.kubernetes.io/name: app
+    enableDefaultDeny:
+      ingress: true
+      egress: true
+    egress:
+    - toEndpoints:
+      - matchLabels:
+          app.kubernetes.io/name: garage
+          k8s:io.kubernetes.pod.namespace: garage
+      toPorts:
+      - ports:
+        - port: '3900'
+          protocol: TCP
+CiliumNetworkPolicy/consumer-factory-public-mirror:
+  apiVersion: cilium.io/v2
+  kind: CiliumNetworkPolicy
+  metadata:
+    name: consumer-factory-public-mirror
+  spec:
+    endpointSelector:
+      matchLabels:
+        app.kubernetes.io/name: consumer-factory-public-mirror
+    enableDefaultDeny:
+      ingress: true
+      egress: true
+    egress:
+    - toEndpoints:
+      - matchLabels:
+          app.kubernetes.io/name: garage
+          k8s:io.kubernetes.pod.namespace: garage
+      toPorts:
+      - ports:
+        - port: '3900'
+          protocol: TCP
+    - toFQDNs:
+      - matchName: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+      toPorts:
+      - ports:
+        - port: '443'
+          protocol: TCP
+    - toEndpoints:
+      - matchLabels:
+          k8s:io.kubernetes.pod.namespace: kube-system
+          k8s:k8s-app: kube-dns
+      toPorts:
+      - ports:
+        - port: '53'
+          protocol: ANY
+        rules:
+          dns:
+          - matchPattern: '*'
+OnePasswordItem/consumer-factory-public-mirror-r2:
+  apiVersion: onepassword.com/v1
+  kind: OnePasswordItem
+  metadata:
+    name: consumer-factory-public-mirror-r2
+    namespace: test
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+  type: Opaque
+  spec:
+    itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+ValidatingAdmissionPolicy/test-consumer-factory-public-mirror-r2:
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicy
+  metadata:
+    name: test-consumer-factory-public-mirror-r2
+    annotations:
+      argocd.argoproj.io/sync-wave: '-3'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  spec:
+    failurePolicy: Fail
+    matchConstraints:
+      resourceRules:
+      - apiGroups:
+        - ''
+        apiVersions:
+        - v1
+        operations:
+        - CREATE
+        - UPDATE
+        resources:
+        - pods
+        - pods/ephemeralcontainers
+    matchConditions:
+    - name: mirror-namespace
+      expression: request.namespace == "test"
+    variables:
+    - name: usesSecret
+      expression: "(has(object.spec.volumes) && object.spec.volumes.exists(v,\n  (has(v.secret)\
+        \ && v.secret.secretName == \"consumer-factory-public-mirror-r2\") ||\n  (has(v.projected)\
+        \ && v.projected.sources.exists(s,\n    has(s.secret) && s.secret.name ==\
+        \ \"consumer-factory-public-mirror-r2\")))) ||\n(has(object.spec.imagePullSecrets)\
+        \ && object.spec.imagePullSecrets.exists(s,\n  s.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\nobject.spec.containers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
+        \    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
+        \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
+        ))) ||\n(has(object.spec.initContainers) && object.spec.initContainers.exists(c,\n\
+        \  (has(c.envFrom) && c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name\
+        \ == \"consumer-factory-public-mirror-r2\")) ||\n  (has(c.env) && c.env.exists(e,\n\
+        \    has(e.valueFrom) && has(e.valueFrom.secretKeyRef) &&\n    e.valueFrom.secretKeyRef.name\
+        \ == \"consumer-factory-public-mirror-r2\")))) ||\n(has(object.spec.ephemeralContainers)\
+        \ && object.spec.ephemeralContainers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
+        \    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
+        \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
+        ))))"
+    validations:
+    - expression: '!variables.usesSecret || (has(object.spec.serviceAccountName) &&
+        object.spec.serviceAccountName == "consumer-factory-public-mirror")'
+      message: Only this mirror ServiceAccount may use its R2 Secret.
+ValidatingAdmissionPolicyBinding/test-consumer-factory-public-mirror-r2:
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicyBinding
+  metadata:
+    name: test-consumer-factory-public-mirror-r2
+    annotations:
+      argocd.argoproj.io/sync-wave: '-3'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  spec:
+    policyName: test-consumer-factory-public-mirror-r2
+    validationActions:
+    - Deny

@@ -2,8 +2,8 @@
 
 `factory-library` is a library chart for the factory cluster. It renders
 Deployment, CronJob, Job, Service, CiliumNetworkPolicy, ServiceAccount and secret
-resources. It does not render routes, buckets or namespaces. The first consumer
-is `projects/factory-landing/chart` (Refs HOME-69).
+resources. Bucket entries add Garage keys and optional R2 mirrors. It does not
+render routes or namespaces. The first consumer is `projects/factory-landing/chart` (Refs HOME-69).
 
 ## Wiring a chart
 
@@ -198,6 +198,92 @@ This avoids treating the runtime-owned data as Git drift. The library cannot
 configure its parent Application. Keep these settings and keep annotations
 when changing or retiring a service. Plain `helm template` verifies manifests;
 the sync hook lifecycle is designed for ArgoCD.
+
+## Buckets and public mirrors
+
+A chart declares its buckets once. Every workload in that chart gets Garage
+egress on port 3900. Secret initializer Jobs keep only their API egress.
+
+```yaml
+buckets:
+  - name: factory-public
+    access: write # read, write or readwrite; never owner
+    public:
+      r2Bucket: factory-public
+      itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+      # schedule: "* * * * *"
+```
+
+Each entry creates a kept Secret named RELEASE-BUCKET-s3. Its fields are
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL, AWS_REGION and BUCKET.
+Consumers reference those fields through their workload env declarations.
+The ArgoCD Application must ignore /data for each claim Secret and set
+RespectIgnoreDifferences=true and ServerSideApply=true.
+
+Garage provisioning uses the HOME-137 fallback: garage-init discovers Secrets
+labeled factory.jomcgi.dev/garage-bucket and factory.jomcgi.dev/garage-access.
+It runs after Garage syncs and every ten minutes. No credentials are generated
+during Helm rendering. Existing keys survive retries and Garage rebuilds.
+A narrower access value revokes unwanted permissions without rotating the key.
+
+Discovery lists namespace metadata, then labeled Secret metadata in namespaces
+that grant list access. Each consumer renders that namespaced list Role and
+get/update Roles restricted to its claim names. Kubernetes RBAC cannot restrict
+list by label or metadata. The trusted garage-init account can therefore read
+all Secrets in opted-in namespaces, including the mirror credential.
+It receives no cluster-wide Secret permission. Retiring a kept claim requires
+an explicit Garage key revocation; deleting the chart does not revoke the key.
+
+Adding public creates a separate read-only Garage key, a OnePasswordItem and
+a mirror CronJob. The Job runs every minute with Forbid concurrency, its own
+ServiceAccount and no mounted token. It uses the stock rclone/rclone image at
+the 1.76.0 multi-platform digest. The optional public.image accepts only the
+stock repository and a SHA-256 digest; tags fail rendering.
+
+The digest comes from the
+[upstream 1.76.0 package](https://github.com/rclone/rclone/pkgs/container/rclone/1515701921?tag=1.76.0).
+The [upstream image workflow](https://github.com/rclone/rclone/blob/v1.76.0/.github/workflows/build_publish_docker_image.yml)
+publishes the same manifest to Docker Hub and GHCR.
+
+```mermaid
+flowchart LR
+  claim[Labeled Garage Secret] -->|reconcile| init[garage-init]
+  init -->|bucket and scoped key| garage[Garage]
+  item[1Password item] -->|operator| credential[R2 Secret]
+  garage -->|read on 3900| mirror[rclone CronJob]
+  credential -->|environment| mirror
+  mirror -->|sync payloads, then manifest on 443| r2[R2 bucket]
+```
+
+The item supplies access-key-id, secret-access-key and s3-api-endpoint.
+Only RCLONE_CONFIG_* environment variables configure remotes; no rclone config
+file or credential bytes enter the chart. Garage uses Other with path-style
+addressing; R2 uses Cloudflare with region auto and path-style addressing.
+
+The policy allows Garage:3900, DNS to CoreDNS, and the existing account's exact
+R2 hostname on 443. The script rejects an endpoint that differs from that host.
+A new R2 account requires a reviewed change to factory-library.r2Host.
+No wildcard R2 egress is rendered.
+
+A kept ValidatingAdmissionPolicy and Deny binding restrict the R2 Secret to
+that mirror's ServiceAccount in its namespace. They check direct and projected
+volumes, env, envFrom, imagePullSecrets, init containers and ephemeral containers.
+These policies govern Pod references, not direct Kubernetes Secret API reads.
+
+Each run syncs payloads excluding the root manifest.json with
+Cache-Control: public, max-age=31536000, immutable. After a successful sync,
+it copies an existing manifest with Cache-Control: public, max-age=60.
+A failed sync or listing stops publication. An absent source manifest removes
+the destination manifest. Payload deletions use rclone sync's normal deletion.
+
+The publisher must write immutable objects before replacing its manifest.
+Keep objects referenced by a current or cached manifest until those readers
+expire; the mirror does not provide a transaction across concurrent writes.
+Only one chart should own public for a destination. The later publisher declares
+its own write bucket entry without public and cannot mount the R2 Secret.
+
+See [factory-public](../../../factory-public/README.md) for the first deployment,
+the operator trial result, and live acceptance.
 
 ## Exceptions
 

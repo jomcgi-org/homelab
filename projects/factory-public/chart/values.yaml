@@ -1,0 +1,6 @@
+buckets:
+  - name: factory-public
+    access: read
+    public:
+      r2Bucket: factory-public
+      itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
