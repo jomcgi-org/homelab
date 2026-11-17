@@ -31,3 +31,27 @@ try {
 } finally {
   await server.close();
 }
+
+// The deploy-time snapshot renders the variable trip/day URLs after reading R2.
+// Keep its Node-only bundle separate from the content-named browser chunks.
+await build({
+  configFile: false,
+  publicDir: false,
+  esbuild: { jsx: "automatic" },
+  ssr: { noExternal: true },
+  build: {
+    ssr: "src/trips-render.tsx",
+    outDir: "dist/.trips-renderer",
+    target: "node22",
+    rollupOptions: {
+      external: ["maplibre-gl", "maplibre-gl/dist/maplibre-gl.css"],
+      output: {
+        entryFileNames: "render.mjs",
+        chunkFileNames: "[name]-[hash].mjs",
+      },
+      onwarn(warning, warn) {
+        if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);
+      },
+    },
+  },
+});

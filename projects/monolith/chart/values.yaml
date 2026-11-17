@@ -247,6 +247,27 @@ jobs:
       limits:
         memory: 512Mi
   cronWorkflows:
+    - name: trips-export
+      args: ["trips-export"]
+      schedule: "0 3 * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 21600
+      s3: true
+      env:
+        TRIPS_IMGPROXY_URL: https://jomcgi.dev/img
+      secretEnv:
+        IMGPROXY_KEY:
+          secretName: trips-export-imgproxy-signing
+          key: IMGPROXY_KEY
+        IMGPROXY_SALT:
+          secretName: trips-export-imgproxy-signing
+          key: IMGPROXY_SALT
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 1Gi
     # Publication lane that automatically flips visibility for verified/unverified
     # facts meeting the policy. Operates without per-row human gates; audit queue +
     # human holds preserve human control. To test: argo submit --from

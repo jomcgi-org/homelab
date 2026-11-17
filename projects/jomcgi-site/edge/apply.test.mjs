@@ -110,6 +110,11 @@ test("no route catches a path the hub or another service still owns", () => {
 
 test("routed pages are served with and without a query string", () => {
   for (const path of [
+    "/trips",
+    "/trips/2025-trip/day/1",
+    "/trips/2025-trip/timeline",
+    "/app/trips/2025-trip/day/1",
+    "/data/trips/latest.json",
     "/cv",
     "/cv/",
     "/app/notes",

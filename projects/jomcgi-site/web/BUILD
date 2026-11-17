@@ -36,6 +36,7 @@ js_library(
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@stylexjs/stylex",
+        ":node_modules/maplibre-gl",
         ":node_modules/react",
         ":node_modules/react-dom",
         ":node_modules/vite",
@@ -117,4 +118,15 @@ typescript_bin.tsc_test(
     chdir = package_name(),
     data = [":test_src"],
     include_transitive_types = True,
+)
+
+js_test(
+    name = "trips_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        "//projects/jomcgi-site/data:trip_snapshot",
+    ],
+    entry_point = "trips-built.test.mjs",
 )

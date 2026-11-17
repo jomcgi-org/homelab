@@ -2,7 +2,7 @@
 # source objects from R2 into the site before a deploy, and keeps an older
 # deploy from replacing a newer release. Hand-maintained.
 # gazelle:ignore
-load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_library", "js_test")
 
 js_binary(
     name = "snapshot",
@@ -10,6 +10,7 @@ js_binary(
         "fence.mjs",
         "snapshot.mjs",
         "sources.json",
+        "trips.mjs",
     ],
     entry_point = "main.mjs",
 )
@@ -26,6 +27,7 @@ js_test(
     data = [
         "snapshot.mjs",
         "sources.json",
+        "trips.mjs",
     ],
     entry_point = "snapshot.test.mjs",
 )
@@ -34,4 +36,10 @@ js_test(
     name = "fence_test",
     data = ["fence.mjs"],
     entry_point = "fence.test.mjs",
+)
+
+js_library(
+    name = "trip_snapshot",
+    srcs = ["trips.mjs"],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
 )

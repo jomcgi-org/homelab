@@ -43,6 +43,14 @@ app = typer.Typer(
 )
 
 
+@app.command("trips-export")
+def trips_export() -> None:
+    """Export the trip API and processed photos for the static site."""
+    from trips.export import run
+
+    run()
+
+
 def configure_logging() -> None:
     """Configure this private, span-producing runtime with trace correlation."""
     _configure_shared_logging(include_trace_context=True)
