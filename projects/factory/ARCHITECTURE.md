@@ -1171,13 +1171,13 @@ must conditionally complete its parent while preserving stops and cancellation.
 The coordinator grant must be deployed before that lifecycle is enabled.
 The removed implementation and regression tests remain available at
 [e3261528e](https://github.com/jomcgi-org/homelab/commit/e3261528e3830c2cabc939ec8ad3c15ec7558c3a)
-for those follow-up PRs. This permission prerequisite does not complete HOME-106.
+for those follow-up PRs. This prerequisite does not implement the activation policy.
 The current connector still moves its delivery issue to Done on merge and does
-not read the pending `Activation:` trailer. Before this prerequisite can land,
-the factory must create an owned HOME follow-up for the remaining work and link
-it as blocking HOME-106, or stop completion of HOME-106 through delivery.
-No such tracker handoff is recorded here. This remains a landing blocker;
-the dispatched coding worker has no itsaplan access to complete that handoff.
+not read the pending `Activation:` trailer. Joe chose to track the remaining
+scope in [HOME-150](https://factory-plan.jomcgi.dev/factory/issue/HOME-150),
+blocked by HOME-106 and delegated to `homelab-codex`
+([handoff](https://github.com/jomcgi-org/homelab/pull/8091#issuecomment-6940112989)).
+The connector holds that follow-up until this prerequisite is complete.
 
 **Merge.** When the required checks and the trusted reviewer succeed on the
 current head, enqueue with GraphQL `enqueuePullRequest` and
