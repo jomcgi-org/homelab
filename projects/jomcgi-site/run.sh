@@ -14,11 +14,12 @@
 #   REFRESH_BUDGET, and deploys again if a refresh replaced it. A refresh that
 #   was running before the sync ends inside that window and cannot start again
 #   (the sync replaced the CronJob's spec), so the hook always deploys last.
+#   It then confirms its release is live, or fails so Argo CD retries.
 #
 # Env: STAGE (dev|prod), MODE (sync|refresh), RELEASE, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
-# The *_BIN, SITE_SRC/SITE_DIR, REFRESH_BUDGET, SYNC_WINDOW and FENCE_INTERVAL
-# overrides exist for run_test.sh.
+# The *_BIN, SITE_SRC/SITE_DIR, REFRESH_BUDGET, SYNC_WINDOW, FENCE_INTERVAL and
+# FENCE_TIMEOUT overrides exist for run_test.sh.
 set -o errexit -o nounset -o pipefail
 
 SITE_SRC="${SITE_SRC:-/app/site}"
@@ -28,6 +29,7 @@ WRANGLER_BIN="${WRANGLER_BIN:-/app/projects/jomcgi-site/wrangler/wrangler}"
 REFRESH_BUDGET="${REFRESH_BUDGET:-240}"
 SYNC_WINDOW="${SYNC_WINDOW:-300}"
 FENCE_INTERVAL="${FENCE_INTERVAL:-15}"
+FENCE_TIMEOUT="${FENCE_TIMEOUT:-30}"
 
 case "${STAGE:-}" in
 dev) export WORKER=jomcgi-site-dev ;;
@@ -51,10 +53,19 @@ if ((SYNC_WINDOW <= REFRESH_BUDGET)); then
 fi
 
 # Prints the fence result: 0 this release may deploy, 10 a different release
-# is live, anything else an error.
+# is live, anything else an error (a timeout included). In refresh mode the
+# check runs inside the run's deadline; in sync mode each check gets
+# FENCE_TIMEOUT seconds.
 fence() {
-	local status=0
-	"$SNAPSHOT_BIN" fence-check >&2 || status=$?
+	local status=0 limit="$FENCE_TIMEOUT"
+	if [[ "$MODE" == refresh ]]; then
+		limit=$((deadline - SECONDS))
+		if ((limit <= 0)); then
+			echo 124
+			return
+		fi
+	fi
+	timeout "$limit" "$SNAPSHOT_BIN" fence-check >&2 || status=$?
 	echo "$status"
 }
 
@@ -121,4 +132,18 @@ if [[ "$MODE" == sync ]]; then
 			echo "fence check failed ($status); will check again" >&2
 		fi
 	done
+	# The window is over, so no older refresh can still deploy. Confirm this
+	# release is live; if it cannot be confirmed, fail the sync so Argo CD
+	# retries it.
+	status="$(fence)"
+	if [[ "$status" == 10 ]]; then
+		echo "another deploy replaced $RELEASE; deploying it again"
+		deploy
+		status="$(fence)"
+	fi
+	if [[ "$status" != 0 ]]; then
+		echo "sync failed: could not confirm $RELEASE is live (fence $status)" >&2
+		exit 1
+	fi
+	echo "confirmed: $RELEASE is live"
 fi

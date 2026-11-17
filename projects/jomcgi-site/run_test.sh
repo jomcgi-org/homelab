@@ -16,6 +16,7 @@ cat >"$work/bin/snapshot" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$1" == fence-check ]]; then
 	echo "fence-check $WORKER $RELEASE" >>"$CALLS"
+	sleep "${FENCE_SLEEP:-0}"
 	code="$(head -n1 "$FENCE_CODES" 2>/dev/null || true)"
 	sed -i '1d' "$FENCE_CODES" 2>/dev/null || true
 	exit "${code:-0}"
@@ -34,7 +35,7 @@ chmod +x "$work/bin/"*
 run() {
 	CALLS="$work/calls" FENCE_CODES="$work/codes" SITE_SRC="$work/src" SITE_DIR="$work/site" \
 		SNAPSHOT_BIN="$work/bin/snapshot" WRANGLER_BIN="$work/bin/wrangler" \
-		REFRESH_BUDGET=2 SYNC_WINDOW=3 FENCE_INTERVAL=1 RELEASE="chart 0.9.0 image abc" "$@" bash "$RUN"
+		REFRESH_BUDGET=2 SYNC_WINDOW=3 FENCE_INTERVAL=1 FENCE_TIMEOUT=2 RELEASE="chart 0.9.0 image abc" "$@" bash "$RUN"
 }
 expect() {
 	if [[ "$(cat "$work/calls")" != "$1" ]]; then
@@ -136,6 +137,27 @@ fi
 	echo "deployed after the budget"
 	exit 1
 }
+
+# 6b. refresh: a fence check that hangs is stopped by the budget; no deploy.
+reset
+if run env STAGE=dev MODE=refresh FENCE_SLEEP=5 2>/dev/null; then
+	echo "a hung fence check should fail the refresh"
+	exit 1
+fi
+! grep -q wrangler "$work/calls" || { echo "deployed after a hung check"; exit 1; }
+
+# 6c. sync: if the live release cannot be confirmed at the end (every check
+#     errors), the sync fails so Argo CD retries.
+reset $'1\n1\n1\n1\n1\n1\n1\n1\n'
+if run env STAGE=prod MODE=sync 2>/dev/null; then
+	echo "a sync that cannot confirm its release should fail"
+	exit 1
+fi
+
+# 6d. sync: errors during the window but a good final check: success.
+reset $'1\n1\n'
+run env STAGE=prod MODE=sync >/dev/null
+tail -n1 "$work/calls" | grep -q "^$F_PROD$" || { echo "sync should end with a confirming check"; cat "$work/calls"; exit 1; }
 
 # 7. A bad stage, mode or window stops before any step.
 for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAGE=dev MODE=other" "STAGE=dev MODE=sync SYNC_WINDOW=2"; do
