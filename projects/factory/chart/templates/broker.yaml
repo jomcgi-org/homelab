@@ -371,7 +371,7 @@ spec:
             - name: BROKER_USAGE_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.connector.database.secretName }}
+                  name: {{ required "broker.accounting.secretName is required" $b.accounting.secretName }}
                   key: DATABASE_URL
             {{- end }}
           ports:

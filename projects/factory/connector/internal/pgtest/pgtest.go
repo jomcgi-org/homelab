@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -73,10 +74,11 @@ func NewDB(t testing.TB) string {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
+	if _, err := admin.Exec("CREATE DATABASE " + name + " OWNER factory_connector"); err != nil {
 		t.Fatal(err)
 	}
-	dsn := srv.DSN(name)
+	// Apply as the production owner, without superuser or CREATEROLE.
+	dsn := strings.Replace(srv.DSN(name), "user=test", "user=factory_connector", 1)
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +88,23 @@ func NewDB(t testing.TB) string {
 		t.Fatal(err)
 	}
 	return dsn
+}
+
+// AsRole connects to an existing test database as a separate login, so tests
+// exercise PostgreSQL's grants rather than the owner's access.
+func AsRole(t testing.TB, db *sql.DB, role string) *sql.DB {
+	t.Helper()
+	var name string
+	if err := db.QueryRow("SELECT current_database()").Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	dsn := strings.Replace(current.DSN(name), "user=test", "user="+role, 1)
+	other, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { other.Close() })
+	return other
 }
 
 func findRoot() (bin, share, root string, err error) {
@@ -203,11 +222,18 @@ func start() (*Server, error) {
 	for {
 		db, _ := sql.Open("postgres", srv.DSN("postgres"))
 		err = db.Ping()
-		db.Close()
 		if err == nil {
+			// CloudNativePG supplies these roles independently of migrations.
+			_, err = db.Exec(`CREATE ROLE factory_connector LOGIN;
+				CREATE ROLE factory_broker_accounting LOGIN NOINHERIT`)
+			db.Close()
+			if err != nil {
+				return nil, err
+			}
 			started = true
 			return srv, nil
 		}
+		db.Close()
 		if time.Now().After(deadline) {
 			logs, _ := os.ReadFile(logFile.Name())
 			return nil, fmt.Errorf("postgres not ready: %v\n%s", err, logs)

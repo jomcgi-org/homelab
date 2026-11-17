@@ -21,19 +21,13 @@ func (s *Store) Begin(ctx context.Context, actor actorjwt.Identity) (int64, erro
 		return 0, nil
 	}
 	var id int64
-	err := s.DB.QueryRowContext(ctx, `
-		INSERT INTO codex_call (atespace, session_id, actor_uid, delivery_attempt_id)
-		VALUES ($1, $2, $3, (
-			SELECT id FROM delivery_attempt
-			WHERE kagent_namespace = $1 AND lower(context_id) = $2 AND issues > 0
-			ORDER BY id DESC LIMIT 1)) RETURNING id`,
+	err := s.DB.QueryRowContext(ctx, `SELECT public.record_codex_call($1, $2, $3)`,
 		actor.Atespace, strings.ToLower(session), actor.ActorUID).Scan(&id)
 	return id, err
 }
 
 func (s *Store) Complete(ctx context.Context, call int64, u relay.TokenUsage) error {
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO codex_usage (call_id, response_id, input_tokens, cached_input_tokens, output_tokens)
-		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, call, u.ResponseID, u.Input, u.CachedInput, u.Output)
+	_, err := s.DB.ExecContext(ctx, `SELECT public.record_codex_usage($1, $2, $3, $4, $5)`,
+		call, u.ResponseID, u.Input, u.CachedInput, u.Output)
 	return err
 }

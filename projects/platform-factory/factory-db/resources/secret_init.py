@@ -36,7 +36,7 @@ CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 NAMESPACE = "factory-db"
 S3 = "factory-db-s3"
 HOST = "factory-db-rw.factory-db.svc"
-# (login Secret, database, client namespace, connection-string Secret there)
+# (login Secret, login role, client namespace, connection-string Secret there)
 LOGINS = [
     ("factory-db-itsaplan-login", "itsaplan", "factory", "factory-itsaplan-db"),
     (
@@ -53,7 +53,15 @@ LOGINS = [
         "hindsight-discord",
         "hindsight-db",
     ),
+    (
+        "factory-db-broker-accounting-login",
+        "factory_broker_accounting",
+        "factory",
+        "factory-broker-accounting-db",
+    ),
 ]
+# The accounting login owns no database.
+DATABASES = {"factory_broker_accounting": "factory_connector"}
 
 
 def call(method, path, body=None):
@@ -153,7 +161,8 @@ def wait_for_key():
 def write_connections(passwords):
     for name, login, namespace, target in LOGINS:
         password = passwords[name]
-        url = f"postgres://{login}:{password}@{HOST}:5432/{login}?sslmode=require"
+        database = DATABASES.get(login, login)
+        url = f"postgres://{login}:{password}@{HOST}:5432/{database}?sslmode=require"
         want = {"DATABASE_URL": b64(url)}
         current = get_eventually(target, namespace)
         if current.get("data") != want:

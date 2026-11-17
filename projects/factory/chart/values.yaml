@@ -170,6 +170,10 @@ clusterDomain: cluster.local
 # grant, and mints GitHub App tokens per repository binding once the App
 # exists. Provider credentials exist only in its pod.
 broker:
+  # A login that can only call the connector's accounting append functions.
+  # Provisioned by factory-db; never use the connector owner's Secret here.
+  accounting:
+    secretName: factory-broker-accounting-db
   # Off by default, so an install renders nothing new until its values turn
   # it on (projects/factory/deploy/values.yaml).
   enabled: false

@@ -331,10 +331,22 @@
         "image",
         "relayPort",
         "adminPort",
-        "grant"
+        "grant",
+        "accounting"
       ],
       "additionalProperties": false,
       "properties": {
+        "accounting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["secretName"],
+          "properties": {
+            "secretName": {
+              "type": "string",
+              "description": "Secret for the separate accounting login, never the connector owner."
+            }
+          }
+        },
         "enabled": {
           "type": "boolean"
         },

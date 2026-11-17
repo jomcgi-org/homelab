@@ -37,6 +37,8 @@ type env struct {
 	cfg dispatch.Config
 	m   *metrics.Metrics
 	e   *dispatch.Engine
+
+	accounting *sql.DB
 }
 
 func newEnv(t *testing.T) *env {
