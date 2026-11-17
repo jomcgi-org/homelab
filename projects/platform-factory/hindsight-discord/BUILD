@@ -39,3 +39,10 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+# This package boundary excludes the README from //projects:repo_docs.
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
