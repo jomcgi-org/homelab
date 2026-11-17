@@ -36,8 +36,14 @@ wrangler deploy --config $work/site/wrangler.jsonc --env prod"
 	cat "$work/calls"
 	exit 1
 }
-[[ -f "$work/site/web/dist/data/stars/latest.json" ]] || { echo "data not in the copy"; exit 1; }
-[[ ! -e "$work/src/web/dist/data" ]] || { echo "source was modified"; exit 1; }
+[[ -f "$work/site/web/dist/data/stars/latest.json" ]] || {
+	echo "data not in the copy"
+	exit 1
+}
+[[ ! -e "$work/src/web/dist/data" ]] || {
+	echo "source was modified"
+	exit 1
+}
 
 # 2. A bad or missing stage stops before any step.
 for stage in "" staging; do
@@ -46,7 +52,10 @@ for stage in "" staging; do
 		echo "STAGE='$stage' should fail"
 		exit 1
 	fi
-	[[ ! -s "$work/calls" ]] || { echo "STAGE='$stage' ran a step"; exit 1; }
+	[[ ! -s "$work/calls" ]] || {
+		echo "STAGE='$stage' ran a step"
+		exit 1
+	}
 done
 
 # 3. A failed snapshot stops before the deploy.
@@ -59,5 +68,8 @@ if run env STAGE=dev; then
 	echo "a failed snapshot should fail the run"
 	exit 1
 fi
-! grep -q wrangler "$work/calls" || { echo "deployed after a failed snapshot"; exit 1; }
+! grep -q wrangler "$work/calls" || {
+	echo "deployed after a failed snapshot"
+	exit 1
+}
 echo "PASS"
