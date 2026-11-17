@@ -772,6 +772,7 @@ func TestEvidenceDigestSurvivesRestartWithTheSameKey(t *testing.T) {
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	e.Wait()
 	before, _ := LoadState(h.gh.check(shaA).Text)
+	sends := len(h.k.sent()) // The code review and, with a goal, its check.
 	stop()
 	e, ctx, _ = h.start()
 	for range 2 {
@@ -779,7 +780,8 @@ func TestEvidenceDigestSurvivesRestartWithTheSameKey(t *testing.T) {
 		e.Wait()
 	}
 	after, _ := LoadState(h.gh.check(shaA).Text)
-	if before.IssueDigest == "" || after.IssueDigest != before.IssueDigest || h.gh.check(shaA).Conclusion != ConclusionSuccess || len(h.k.sent()) != 1 {
+	if before.IssueDigest == "" || after.IssueDigest != before.IssueDigest || h.gh.check(shaA).Conclusion != ConclusionSuccess ||
+		len(h.k.sent()) != sends || sends-len(goalTexts(h)) != 1 {
 		t.Fatal("a restart with the same key changed the evidence binding")
 	}
 }
