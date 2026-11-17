@@ -1886,8 +1886,6 @@ previews).
   An agent finding that collides with `semgrep:unverified` keeps its ID and
   severity. Service availability state stays separate. Enablement follows CI's chart
   write-back in a separate PR.
-  **Why.** Joe chose untrusted GitHub evidence with the reviewer retaining
-  the verdict ([HOME-120 decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-120#comment-799)).
   An attempt without a usable report (unparseable output, an unknown
   severity, a failed task other than quota exhaustion, a rejected send or
   a timeout) is retried on the same head after `retryBackoff` (5m); the
