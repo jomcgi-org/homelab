@@ -442,7 +442,8 @@ func TestActivationCommitInstructionsNeverReachCommentsOrDelegation(t *testing.T
 			if !refuse {
 				follow, err := v.its.GetIssue(v.ctx, 1001)
 				if err != nil || strings.Contains(follow.Description, malicious) ||
-					!strings.Contains(follow.Description, activationClass) || !strings.Contains(follow.Description, "Issue 101 description.") {
+					!strings.Contains(follow.Description, activationClass) || len(v.its.activationDelegations) != 1 ||
+					v.its.activationDelegations[0].Description != follow.Description {
 					t.Fatalf("follow-up=%+v err=%v", follow, err)
 				}
 			}
