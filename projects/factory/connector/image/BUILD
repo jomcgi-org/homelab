@@ -9,10 +9,24 @@ platform_transition_filegroup(
     target_platform = "@rules_go//go/toolchain:linux_amd64",
 )
 
+# The Discord bridge (projects/factory/discord) ships in this image too and
+# runs with its own command, so it needs no image of its own.
+platform_transition_filegroup(
+    name = "discord_bridge_amd64_bin",
+    srcs = ["//projects/factory/discord/cmd/discord-bridge"],
+    target_platform = "@rules_go//go/toolchain:linux_amd64",
+)
+
 tar(
     name = "connector_tar_amd64",
-    srcs = [":connector_amd64_bin"],
-    mtree = ["./usr/local/bin/connector type=file content=$(execpath :connector_amd64_bin) mode=0755 uid=0 gid=0"],
+    srcs = [
+        ":connector_amd64_bin",
+        ":discord_bridge_amd64_bin",
+    ],
+    mtree = [
+        "./usr/local/bin/connector type=file content=$(execpath :connector_amd64_bin) mode=0755 uid=0 gid=0",
+        "./usr/local/bin/discord-bridge type=file content=$(execpath :discord_bridge_amd64_bin) mode=0755 uid=0 gid=0",
+    ],
 )
 
 apko_image(

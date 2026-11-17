@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "discord",
+    srcs = [
+        "agent.go",
+        "bridge.go",
+        "discord.go",
+        "gateway.go",
+        "hindsight.go",
+        "policy.go",
+        "rest.go",
+    ],
+    importpath = "github.com/jomcgi/homelab/projects/factory/discord",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/factory/connector/kagent",
+        "@io_nhooyr_websocket//:websocket",
+    ],
+)
+
+go_test(
+    name = "discord_test",
+    srcs = [
+        "bridge_test.go",
+        "clients_test.go",
+    ],
+    embed = [":discord"],
+    deps = [
+        "//projects/factory/connector/kagent",
+        "@io_nhooyr_websocket//:websocket",
+    ],
+)
