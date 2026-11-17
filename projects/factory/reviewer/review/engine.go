@@ -1500,12 +1500,6 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				continue
 			}
-			if in.semgrep != nil {
-				fresh := e.semgrepEvidence(ctx, b, currentPR, time.Time{})
-				if *fresh.stamp() != *in.semgrep.stamp() {
-					in.semgrep.Unavailable = "Semgrep evidence changed during the review; this head needs another review"
-				}
-			}
 			res := e.outcome(ctx, b, currentPR, t, in, l)
 			if ctx.Err() != nil {
 				continue // stop ends the review.
@@ -1870,6 +1864,12 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		}
 		var semgrepState *State
 		if in.semgrep != nil {
+			// The goal check can run another model task after the code review.
+			// Check scan freshness after both tasks, before saving the verdict.
+			fresh := e.semgrepEvidence(ctx, b, pr, time.Time{})
+			if *fresh.stamp() != *in.semgrep.stamp() {
+				in.semgrep.Unavailable = "Semgrep evidence changed during the review; this head needs another review"
+			}
 			// Save the agent assessment before adding the service finding.
 			// An agent finding with the same ID keeps its identity and severity.
 			st := stateOf(a, r, gate)

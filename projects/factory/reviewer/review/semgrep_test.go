@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -243,6 +244,7 @@ func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
 	st := State{
 		Semgrep:     &SemgrepStamp{Digest: strings.Repeat("a", 64), Verified: false},
 		IssueDigest: strings.Repeat("b", 64), IssuesPending: true,
+		Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("b", 64), Overall: goalMet, Criteria: []GoalVerdict{{1, goalNotMet}}},
 	}
 	for i := range maxStored {
 		st.Blocking = append(st.Blocking, Finding{ID: fmt.Sprint(i), Severity: SeverityHigh, Title: strings.Repeat("x", 1000), Detail: strings.Repeat("x", 4000)})
@@ -253,6 +255,9 @@ func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
 	}
 	if loaded.IssueDigest != st.IssueDigest || !loaded.IssuesPending {
 		t.Fatal("state trimming lost the issue evidence binding or pending hold")
+	}
+	if !reflect.DeepEqual(loaded.Goal, st.Goal) {
+		t.Fatal("state trimming lost the goal verdict")
 	}
 }
 
@@ -361,11 +366,11 @@ func TestSemgrepAndIssueEvidenceOnTaskRecovery(t *testing.T) {
 			if change != "none" {
 				want++
 			}
-			if len(h.k.sent()) != want {
-				t.Fatalf("sent %d tasks, want %d", len(h.k.sent()), want)
+			if got := len(h.k.sent()) - len(goalTexts(h)); got != want {
+				t.Fatalf("sent %d code review tasks, want %d", got, want)
 			}
 			for _, msg := range h.k.sent() {
-				if strings.Contains(msg.Parts[0].Text, api.issue.Description) {
+				if !strings.Contains(msg.MessageID, "/goal/") && strings.Contains(msg.Parts[0].Text, api.issue.Description) {
 					t.Fatal("private issue text reached the code review prompt")
 				}
 			}
@@ -394,7 +399,7 @@ func TestSemgrepLateScanWithIssueEvidence(t *testing.T) {
 	}
 	e.Tick(ctx)
 	e.Wait()
-	if len(h.k.sent()) != 2 || h.gh.check(shaA).Conclusion != ConclusionSuccess {
+	if len(h.k.sent())-len(goalTexts(h)) != 2 || len(goalTexts(h)) != 1 || h.gh.check(shaA).Conclusion != ConclusionSuccess {
 		t.Fatal("unchanged evidence failed to retain its completed review")
 	}
 }
@@ -423,5 +428,60 @@ func TestSemgrepAndIssueEvidenceKeepTheAttemptBound(t *testing.T) {
 		if h.gh.check(shaA).Status != "completed" || h.gh.check(shaA).Conclusion != ConclusionFailure || len(h.k.sent()) != MaxAttempts {
 			t.Fatal("unchanged evidence restarted an exhausted review or allowed it to pass")
 		}
+	}
+}
+
+func TestSemgrepChangedDuringGoalCheckCannotPass(t *testing.T) {
+	h, _ := issueHarness(t)
+	h.cfg.Semgrep = &Semgrep{AppID: scanApp, CheckName: scanName, Wait: time.Nanosecond}
+	h.gh.addCheck(shaA, scanName, scanApp, "success")
+	h.k.onGoal = func() {
+		h.gh.withLock(func() {
+			h.gh.prs[7].Comments = []github.Comment{{ID: 1, Author: semgrepAuthor, Body: "Finding posted during goal check"}}
+		})
+	}
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	c := h.gh.check(shaA)
+	st, ok := LoadState(c.Text)
+	if !ok || c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, semgrepUnverified) || st.Semgrep == nil || st.Semgrep.Verified || st.Goal == nil {
+		t.Fatalf("unseen Semgrep evidence passed after goal check: %+v, %s", st, c.Summary)
+	}
+	h.k.onGoal = nil
+	fresh := runReview(t, h, e, ctx, 7, shaA)
+	sent := h.k.sent()
+	if !strings.Contains(sent[len(sent)-1].Parts[0].Text, "Finding posted during goal check") {
+		t.Fatal("replacement review did not receive the new finding")
+	}
+	h.k.finish(fresh, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess || len(goalTexts(h)) != 1 {
+		t.Fatal("fresh Semgrep evidence did not pass with the cached goal check")
+	}
+}
+
+func TestSemgrepLateScanKeepsGoalBlockers(t *testing.T) {
+	h, _ := issueHarness(t)
+	h.cfg.Semgrep = &Semgrep{AppID: scanApp, CheckName: scanName, Wait: time.Nanosecond}
+	h.k.goal = goalReply(`{"criteria": [{"criterion": 1, "verdict": "not_met"}], "overall": "met"}`)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	first := h.gh.check(shaA)
+	before, ok := LoadState(first.Text)
+	if !ok || before.Goal == nil || before.Semgrep == nil || before.Semgrep.Verified {
+		t.Fatalf("initial review lost goal or scan state: %+v", before)
+	}
+	h.gh.addCheck(shaA, scanName, scanApp, "success")
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	last := h.gh.check(shaA)
+	after, ok := LoadState(last.Text)
+	if !ok || last.ID == first.ID || last.Conclusion != ConclusionFailure || !strings.Contains(last.Summary, "HOME-58:goal:criterion-1") || strings.Contains(last.Summary, semgrepUnverified) {
+		t.Fatalf("late scan cleared a goal blocker: %s", last.Summary)
+	}
+	if after.Semgrep == nil || !after.Semgrep.Verified || !reflect.DeepEqual(after.Goal, before.Goal) || len(goalTexts(h)) != 1 {
+		t.Fatalf("late scan lost or reran the goal check: %+v", after)
 	}
 }
