@@ -54,15 +54,6 @@ class ClaimedOccurrence:
     claim_token: str
 
 
-# A digest reads chat.messages, which only the Discord gateway fills. With the
-# gateway off (DISCORD_GATEWAY_ENABLED=false, HOME-221) digests pause: they keep
-# their schedule, and each paused occurrence posts this notice once.
-DIGEST_PAUSED = (
-    "📋 Scheduled {mode} digest paused: this bot no longer stores this "
-    "channel's messages. It resumes when message storage is back."
-)
-
-
 def _occurrence_id(task_id: int, scheduled_for: datetime) -> str:
     identity = f"{task_id}:{as_utc(scheduled_for).isoformat()}"
     return hashlib.sha256(identity.encode()).hexdigest()
@@ -300,12 +291,8 @@ def claim_due(
     *,
     lease_seconds: int = CLAIM_LEASE_SECONDS,
     limit: int = CLAIM_BATCH,
-    task_kinds: tuple[str, ...] | None = None,
 ) -> list[ClaimedOccurrence]:
     """Atomically claim due tasks and reclaim expired leases.
-
-    ``task_kinds`` limits the claim to those kinds; other due tasks stay as
-    they are.
 
     Candidate discovery may race, but each conditional UPDATE can succeed for
     only one claimant.  The returned objects are detached value snapshots and
@@ -313,26 +300,26 @@ def claim_due(
     """
     now = as_utc(now)
     stale_before = now - timedelta(seconds=lease_seconds)
-    query = select(ScheduledTask).where(
-        or_(
-            and_(
-                ScheduledTask.status == "pending",
-                ScheduledTask.next_run_at <= now,
-            ),
-            and_(
-                ScheduledTask.status == "claimed",
-                ScheduledTask.next_run_at <= now,
-                or_(
-                    ScheduledTask.claimed_at.is_(None),
-                    ScheduledTask.claimed_at <= stale_before,
-                ),
-            ),
-        )
-    )
-    if task_kinds is not None:
-        query = query.where(ScheduledTask.task_kind.in_(task_kinds))
     candidates = session.exec(
-        query.order_by(ScheduledTask.next_run_at, ScheduledTask.id).limit(limit)
+        select(ScheduledTask)
+        .where(
+            or_(
+                and_(
+                    ScheduledTask.status == "pending",
+                    ScheduledTask.next_run_at <= now,
+                ),
+                and_(
+                    ScheduledTask.status == "claimed",
+                    ScheduledTask.next_run_at <= now,
+                    or_(
+                        ScheduledTask.claimed_at.is_(None),
+                        ScheduledTask.claimed_at <= stale_before,
+                    ),
+                ),
+            )
+        )
+        .order_by(ScheduledTask.next_run_at, ScheduledTask.id)
+        .limit(limit)
     ).all()
     claimed: list[ClaimedOccurrence] = []
     for task in candidates:
@@ -488,107 +475,11 @@ def release_claim(
     return True
 
 
-def _claim_with_engine(
-    engine, now: datetime, claimant: str, task_kinds: tuple[str, ...] | None = None
-) -> list[ClaimedOccurrence]:
+def _claim_with_engine(engine, now: datetime, claimant: str) -> list[ClaimedOccurrence]:
     with Session(engine) as session:
-        claims = claim_due(session, now, claimant, task_kinds=task_kinds)
+        claims = claim_due(session, now, claimant)
         session.commit()
         return claims
-
-
-def _pause_key(task: ScheduledTask) -> str:
-    """One pause notice per paused occurrence: a later pause has a new key."""
-    return f"digest-paused:{task.id}:{as_utc(task.next_run_at).isoformat()}"
-
-
-def _due_digests(session: Session, now: datetime) -> list[ScheduledTask]:
-    return list(
-        session.exec(
-            select(ScheduledTask)
-            .where(ScheduledTask.task_kind == "digest")
-            .where(ScheduledTask.status == "pending")
-            .where(ScheduledTask.next_run_at <= now)
-        ).all()
-    )
-
-
-def _paused(session: Session, task: ScheduledTask) -> bool:
-    from chat.models import DiscordOutbox
-
-    return (
-        session.exec(
-            select(DiscordOutbox.id).where(DiscordOutbox.dedupe_key == _pause_key(task))
-        ).first()
-        is not None
-    )
-
-
-def notify_paused_digests(
-    session: Session, now: datetime, *, lease_seconds: int = CLAIM_LEASE_SECONDS
-) -> int:
-    """Post one notice for each due digest while digests are paused.
-
-    A digest an earlier leader claimed and never finished goes back to
-    ``pending`` once its lease expires. The tasks keep their ``next_run_at``,
-    so they run again when digests resume. Returns the notices enqueued.
-    """
-    now = as_utc(now)
-    stale_before = now - timedelta(seconds=lease_seconds)
-    session.exec(
-        update(ScheduledTask)
-        .where(ScheduledTask.task_kind == "digest")
-        .where(ScheduledTask.status == "claimed")
-        .where(
-            or_(
-                ScheduledTask.claimed_at.is_(None),
-                ScheduledTask.claimed_at <= stale_before,
-            )
-        )
-        .values(
-            status="pending",
-            claim_token=None,
-            claimed_at=None,
-            current_occurrence_id=None,
-        )
-    )
-    sent = 0
-    for task in _due_digests(session, now):
-        if _paused(session, task):
-            continue
-        mode = json.loads(task.payload_json or "{}").get("mode", "summary")
-        enqueue_message(
-            session,
-            task.channel_id,
-            content=DIGEST_PAUSED.format(mode=mode),
-            dedupe_key=_pause_key(task),
-        )
-        sent += 1
-    return sent
-
-
-def skip_paused_occurrences(session: Session, now: datetime) -> int:
-    """Move resumed digests past the occurrence that was due while paused.
-
-    Its window holds only messages from before the pause, so the digest runs
-    next at its first cron instant after ``now`` instead. Returns the count.
-    """
-    now = as_utc(now)
-    skipped = [task for task in _due_digests(session, now) if _paused(session, task)]
-    for task in skipped:
-        task.next_run_at = next_cron_at(task.cron_expression or "", now)
-    session.add_all(skipped)
-    return len(skipped)
-
-
-def _pause_step_with_engine(engine, now: datetime, digests: bool) -> int:
-    with Session(engine) as session:
-        if digests:
-            count = skip_paused_occurrences(session, now)
-        else:
-            count = notify_paused_digests(session, now)
-        session.commit()
-        return count
 
 
 def _finalize_with_engine(
@@ -644,21 +535,11 @@ async def drain_once(
     now: datetime | None = None,
     claimant: str | None = None,
     digest_builder: Callable[[object, ClaimedOccurrence], Awaitable[str]] | None = None,
-    digests: bool = True,
 ) -> int:
-    """Claim and enqueue due work once. Returns finalized occurrence count.
-
-    With ``digests`` false, digests are paused: only reminders are claimed,
-    and each due digest gets one ``DIGEST_PAUSED`` notice and stays pending.
-    With ``digests`` true, a digest whose due occurrence was paused moves to its
-    next cron instant instead of summarising messages from before the pause."""
+    """Claim and enqueue due work once. Returns finalized occurrence count."""
     now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
-    # Paused: notice due digests. Resumed: skip the occurrence due while paused.
-    await asyncio.to_thread(_pause_step_with_engine, engine, now, digests)
-    claims = await asyncio.to_thread(
-        _claim_with_engine, engine, now, claimant, None if digests else ("reminder",)
-    )
+    claims = await asyncio.to_thread(_claim_with_engine, engine, now, claimant)
     finalized = 0
     for claim in claims:
         try:
@@ -678,16 +559,73 @@ async def drain_once(
     return finalized
 
 
+def _window_from_history(channel_id: str, newest_first: list) -> list[Message]:
+    """The digest window from Discord messages, with the store's bounds."""
+    window: list[Message] = []
+    chars = 0
+    for m in newest_first:
+        if not m.content:
+            continue  # embeds, attachments and components carry no text here
+        chars += len(m.content)
+        if chars > 30_000 and window:
+            break
+        window.append(
+            Message(
+                discord_message_id=str(m.id),
+                channel_id=channel_id,
+                user_id=str(m.author.id),
+                username=m.author.display_name,
+                content=m.content,
+                is_bot=m.author.bot,
+                created_at=m.created_at,
+            )
+        )
+    window.reverse()
+    return window
+
+
+def rest_digest_builder(bot, ready: Callable[[], bool], wait_seconds: float = 60.0):
+    """Build digests from Discord's channel history over REST.
+
+    Without a gateway session (DISCORD_GATEWAY_ENABLED=false, HOME-221) no new
+    messages reach chat.messages, so a digest from the store would repeat old
+    ones. Discord keeps the history, and the logged-in bot reads it over REST
+    (``GET /channels/{id}/messages``), so digests stay current.
+    """
+
+    async def build(_engine, claim: ClaimedOccurrence) -> str:
+        from chat.summarizer import build_llm_caller
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        while not ready():
+            if loop.time() >= deadline:
+                raise RuntimeError("Discord REST login not ready")
+            await asyncio.sleep(1)
+        payload = json.loads(claim.payload_json)
+        channel = bot.get_channel(int(claim.channel_id))
+        if channel is None:
+            channel = await bot.fetch_channel(int(claim.channel_id))
+        newest_first = [m async for m in channel.history(limit=300)]
+        window = _window_from_history(claim.channel_id, newest_first)
+        digest = await digest_window(window, payload["mode"], build_llm_caller())
+        return f"📋 Scheduled {payload['mode']} digest:\n{digest}"
+
+    return build
+
+
 async def run_scheduler(
-    engine, poll_interval: float = POLL_INTERVAL_SECONDS, digests: bool = True
+    engine,
+    poll_interval: float = POLL_INTERVAL_SECONDS,
+    digest_builder: Callable[[object, ClaimedOccurrence], Awaitable[str]] | None = None,
 ) -> None:
-    """Leader lifecycle loop for persisted scheduled tasks. ``digests`` is
-    false when the bot has no gateway session to store channel messages."""
+    """Leader lifecycle loop for persisted scheduled tasks. ``digest_builder``
+    replaces the chat.messages window, for a bot without a gateway session."""
     instance = uuid.uuid4().hex
     logger.info("Discord scheduled-task drain started (poll=%.1fs)", poll_interval)
     while True:
         try:
-            await drain_once(engine, claimant=instance, digests=digests)
+            await drain_once(engine, claimant=instance, digest_builder=digest_builder)
         except Exception:
             logger.exception("scheduled-task drain tick failed")
         await asyncio.sleep(poll_interval)
