@@ -108,7 +108,11 @@ step() {
 	fi
 }
 
+# wrangler writes .wrangler/tmp under its working directory, not beside its
+# config, and the image's working directory (/app/site) is read-only. So it
+# runs from the site copy.
 deploy() {
+	cd "$SITE_DIR"
 	step "$WRANGLER_BIN" deploy --config "$SITE_DIR/wrangler.jsonc" \
 		--env "$STAGE" --message "jomcgi-site $RELEASE"
 }
