@@ -51,10 +51,11 @@ runs the deploy Job as an Argo CD Sync hook. The `jomcgi-site-release`
 ConfigMap carries the image digest, so each new image makes the Application
 OutOfSync and syncs it again. A failed deploy is a failed sync.
 
-**Staged off.** The dev Application is not yet listed in
-`projects/platform-factory/kustomization.yaml`. Add it once 1Password item
-`vaults/k8s-homelab/items/jomcgi-site-cloudflare` exists, with fields
-`api-token` and `account-id` (permissions are listed in HOME-174). Kargo
+The dev Application is listed in
+`projects/platform-factory/kustomization.yaml`. Its Job reads 1Password item
+`vaults/k8s-homelab/items/jomcgi-site-cloudflare` (fields `api-token` and
+`account-id`; permissions are listed in HOME-178). The token allows calls
+from the home network only, and pods reach Cloudflare over IPv4. Kargo
 takes over the stage pins when HOME-116 slice 2 lands.
 
 `public/robots.txt` lets crawlers fetch every page, so they can read each
