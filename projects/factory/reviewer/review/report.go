@@ -969,7 +969,11 @@ type State struct {
 	IssueDigest   string `json:"issueDigest,omitempty"`
 	IssuesPending bool   `json:"issuesPending,omitempty"`
 	// Goal caches the goal check for this head and IssueDigest's evidence.
-	Goal *GoalCheck `json:"goal,omitempty"`
+	Goal        *GoalCheck    `json:"goal,omitempty"`
+	GoalHistory []GoalHistory `json:"goalHistory,omitempty"`
+	// GoalClosed keeps conditional resolutions for revalidation. Entries
+	// hold only service finding IDs and severities, never model text.
+	GoalClosed []GoalClosure `json:"goalClosed,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -1427,6 +1431,7 @@ func encodeState(st State) string {
 		small := State{
 			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session, Decisions: st.Decisions,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, Semgrep: st.Semgrep,
+			GoalHistory: st.GoalHistory, GoalClosed: st.GoalClosed,
 		}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.

@@ -37,12 +37,22 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   and no PR title, description or comment. On a later head it also receives
   the previous head's goal verdicts and private reply on the same issue
   evidence, quoted, and the names of the files changed since. Its answer counts only as
-  criterion numbers and the verdicts `met`, `not_met`, `after_rollout` and
-  `unclear`: any other field or value voids it. The service writes every
+  criterion numbers and the verdicts `met`, `not_met`, `after_rollout`,
+  `unclear` and `owned`. `owned` requires the number of a service-verified
+  open follow-up linked to the goal issue in itsaplan. An issue switch
+  answer names only an earlier issue number and a verified trusted decision
+  number. Any other field or value voids it. The service writes every
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
-  earlier goal finding stays open until a valid answer on the same issue
-  resolves it. The goal check's reasons stay private: only the connector
+  earlier goal finding stays open until a valid answer resolves it, the
+  service proves its criterion was removed, or evidence authorizes an
+  issue switch. A switch requires a verified trusted decision or an earlier
+  issue marked canceled or duplicate. Conditional resolutions are checked
+  again on each review. These paths replace the same-issue-only rule with
+  `TestOwnedCriterionWithdrawsEarlierMediumWithServiceText`,
+  `TestServiceCriteriaPreserveIdentityAcrossRemovalAndRestart` and
+  `TestIssueSwitchRequiresRetirementOrTrustedDecision` in the reviewer suite.
+  The goal check's reasons stay private: only the connector
   reads them from the reviewer's internal listener, posts them on the issue
   and quotes them in the coder's round as untrusted data, with no `@`
   mention and never on GitHub

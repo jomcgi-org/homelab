@@ -78,6 +78,8 @@ type issueAPI struct {
 	author                            string
 	textAuthors                       []string
 	comments                          map[int64]*itsaplan.FeedItem
+	issues                            map[int64]*itsaplan.Issue
+	failNumber                        int64
 	fail                              string
 	issueReads, commentReads, lookups int
 }
@@ -89,12 +91,18 @@ func (a *issueAPI) GetProject(context.Context, string) (*itsaplan.Project, error
 	return a.project, nil
 }
 
-func (a *issueAPI) GetIssueByNumber(context.Context, string, int64) (*itsaplan.Issue, error) {
+func (a *issueAPI) GetIssueByNumber(_ context.Context, _ string, number int64) (*itsaplan.Issue, error) {
 	a.issueReads++
-	if a.fail == "issue" {
+	if a.fail == "issue" || (a.failNumber > 0 && number == a.failNumber) {
 		return nil, errors.New("private API failure body")
 	}
 	if a.fail == "missing" {
+		return nil, itsaplan.ErrNotFound
+	}
+	if a.issues != nil && number != issueNumber(a.issue.Identifier, "HOME") {
+		if i := a.issues[number]; i != nil {
+			return i, nil
+		}
 		return nil, itsaplan.ErrNotFound
 	}
 	return a.issue, nil

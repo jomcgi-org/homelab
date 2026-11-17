@@ -1323,6 +1323,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 						sameSnapshot = true
 					}
 				}
+				in.issues = e.issueContext(ctx, b, pr, in.files, goalHistory(in.prior, b.ItsaplanProject))
 				if !sameSnapshot && in.gate != nil && len(in.gate.Labels) > 0 {
 					// An unknown label baseline needs fresh approval.
 					in.gate.resetApproval(e.cfg.Now())
@@ -1546,16 +1547,17 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 			if b.ItsaplanProject != "" {
-				fresh := e.issueContext(ctx, b, currentPR, in.files)
+				fresh := e.issueContext(ctx, b, currentPR, in.files, in.issues.History)
 				if len(fresh.Pending) > 0 || issueDigest(fresh) != rec.Issues {
 					// The completed report only covers the old snapshot. Preserve
 					// its findings and human holds, then review the same head anew.
 					st, _ := LoadState(res.o.Output.Text)
+					st.GoalHistory = in.issues.History
 					e.holdIssues(ctx, b, currentPR, run, st, fresh.Pending)
 					return
 				}
 				st, _ := LoadState(res.o.Output.Text)
-				st.IssueDigest, st.Goal = rec.Issues, in.goal
+				st.IssueDigest, st.Goal, st.GoalHistory = rec.Issues, in.goal, in.issues.History
 				res.o.Output.Text = encodeState(st)
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
@@ -1617,8 +1619,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		gate.inherit(prior.Gate)
 	}
 	return &inputs{
-		issues: e.issueContext(ctx, b, pr, files),
-		files:  files, size: measure(b, files), gate: gate,
+		files: files, size: measure(b, files), gate: gate,
 		prior: prior, priorHead: head, priorUnknown: unknown,
 	}, nil
 }
@@ -1911,6 +1912,15 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			in.goal = e.goalCheck(ctx, b, pr, in, r, l)
 		}
 		prior := in.prior.Previous()
+		for _, f := range in.prior.GoalClosed {
+			if !slices.ContainsFunc(prior, func(p Finding) bool { return p.ID == f.ID }) {
+				prior = append(prior, Finding{
+					ID: f.ID, Severity: f.Severity,
+					Title:  f.ID + ": goal resolution needs current evidence",
+					Detail: "The earlier goal finding needs a current verified resolution.",
+				})
+			}
+		}
 		if _, err := e.interdiff(ctx, b, pr, in, l); err != nil {
 			// review reads the interdiff before outcome; never assess without it.
 			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
@@ -1927,7 +1937,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// none of them is ever lowered.
 		applyIssueFindings(r, in.issues)
 		if b.ItsaplanProject != "" {
-			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
+			applyGoal(r, prior, b.ItsaplanProject, key, in.goal, in.issues)
 		}
 		// Joe's decisions come from the trusted comments the prompt showed;
 		// a finding justified by one counts only when its note links it
@@ -2008,6 +2018,9 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		if semgrepState != nil {
 			o.Output.Text = encodeState(*semgrepState)
 		}
+		st, _ := LoadState(o.Output.Text)
+		st.GoalClosed = conditionalGoals(r, prior, b.ItsaplanProject)
+		o.Output.Text = encodeState(st)
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
 		o.Comment = reviewComment(a, r, b, gate)

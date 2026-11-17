@@ -1961,6 +1961,7 @@ version write-back.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
+| Resolve goal findings from verified follow-ups, criterion removal and issue switches. | [HOME-157](https://factory-plan.jomcgi.dev/factory/issue/HOME-157) | designed |
 | Deliver private goal-assessment reasons to the delivery owner. | [HOME-251](https://factory-plan.jomcgi.dev/factory/issue/HOME-251) | staged off behind `reviewer.goalReasons.enabled` |
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | designed |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |

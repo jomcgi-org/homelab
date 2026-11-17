@@ -48,8 +48,13 @@ type DecisionEvidence struct {
 }
 
 type IssueContext struct {
-	Issue     *IssueEvidence
-	Decisions []DecisionEvidence
+	Issue         *IssueEvidence
+	Decisions     []DecisionEvidence
+	FollowUps     []FollowUpEvidence
+	Switches      []SwitchEvidence
+	Criteria      []GoalCriterion
+	CriteriaKnown bool
+	History       []GoalHistory
 	// Findings are evidence failures that another read cannot fix, such as
 	// text over its bound or a reference to no issue. The review goes ahead
 	// and reports each one, so the author sees what to change.
@@ -88,7 +93,7 @@ func (e *Engine) evidenceKey() ([]byte, error) {
 func (e *Engine) sealIssues(in *IssueContext) {
 	key, err := e.evidenceKey()
 	if err != nil {
-		in.Issue, in.Decisions = nil, nil
+		in.Issue, in.Decisions, in.FollowUps, in.Switches, in.Criteria = nil, nil, nil, nil, nil
 		in.unread("key", "The evidence key could not be read. The service will retry; no issue evidence was supplied.")
 		return
 	}
@@ -298,10 +303,13 @@ func applyIssueFindings(report *Report, in *IssueContext) {
 // issueContext gathers one goal issue and at most ten references per snapshot.
 // Failures carry only fixed reason strings, never response bodies.
 // Even a model reporting no findings cannot turn missing evidence into a pass.
-func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullRequest, files []github.PullRequestFile) *IssueContext {
+func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullRequest, files []github.PullRequestFile, history ...[]GoalHistory) *IssueContext {
 	in := &IssueContext{}
 	if b.ItsaplanProject == "" || !issueReader(b, pr) {
 		return in // Any other author's PR gets no issue or decision text.
+	}
+	if len(history) > 0 {
+		in.History = slices.Clone(history[0])
 	}
 	defer e.sealIssues(in) // Runs after every return below.
 	ctx, cancel := context.WithTimeout(ctx, issueReadTimeout)
@@ -379,6 +387,18 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				in.unverified("size", "The issue exceeds the fixed text bound. Shorten its stated goal and criteria before review; the omitted text supplies no evidence.")
 			}
 		}
+	}
+	if in.Issue != nil {
+		if !slices.ContainsFunc(in.History, func(h GoalHistory) bool { return h.Key == key }) {
+			in.History = append(in.History, GoalHistory{Key: key})
+		}
+		if len(in.History) > maxDecisionLinks {
+			in.unread("history", "The goal issue history exceeds the service's read bound. Earlier goal findings remain open.")
+			return in
+		}
+		e.numberCriteria(in)
+		e.followUps(ctx, b, p, goal, in)
+		e.issueSwitches(ctx, b, p, in)
 	}
 	for _, ref := range refs {
 		d := DecisionEvidence{URL: ref.url, Reason: "unreadable or missing"}
@@ -502,7 +522,7 @@ func (e *Engine) reconcileIssues(ctx context.Context, b *Binding, pr github.Pull
 	files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
 	var fresh *IssueContext
 	if err == nil {
-		fresh = e.issueContext(ctx, b, pr, files)
+		fresh = e.issueContext(ctx, b, pr, files, goalHistory(st, b.ItsaplanProject))
 	}
 	unread := []Finding{issueFinding("files", "The PR's changed files could not be read. The service will retry.")}
 	if fresh != nil {

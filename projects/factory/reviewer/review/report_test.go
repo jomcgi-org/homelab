@@ -655,8 +655,14 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	huge := strings.Repeat("<\"\x01é", 20000)
 	st := State{IssueDigest: strings.Repeat("a", 64), IssuesPending: true, Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("a", 64)}}
 	for n := range maxCriteria {
-		st.Goal.Criteria = append(st.Goal.Criteria, GoalVerdict{n + 1, goalNotMet})
+		st.Goal.Criteria = append(st.Goal.Criteria, GoalVerdict{Criterion: n + 1, Verdict: goalNotMet})
 	}
+	history := GoalHistory{Key: "HOME-58", KeyDigest: strings.Repeat("b", 32)}
+	for n := range maxGoalHistory {
+		history.Criteria = append(history.Criteria, strings.Repeat("c", 32))
+		st.GoalClosed = append(st.GoalClosed, GoalClosure{ID: fmt.Sprintf("HOME-58:goal:criterion-%d", n+1), Severity: SeverityMedium})
+	}
+	st.GoalHistory = []GoalHistory{history}
 	for i := range maxStored {
 		st.Blocking = append(st.Blocking, storable(Finding{
 			ID: fmt.Sprintf("%d:%s", i, huge), Severity: SeverityHigh, Path: huge, Line: 3, Title: huge, Detail: huge,
@@ -682,6 +688,9 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	}
 	if got.IssueDigest != st.IssueDigest || !got.IssuesPending || got.Goal == nil || len(got.Goal.Criteria) != maxCriteria {
 		t.Fatal("state trimming lost the evidence binding, pending hold or goal check")
+	}
+	if !reflect.DeepEqual(got.GoalHistory, st.GoalHistory) || !reflect.DeepEqual(got.GoalClosed, st.GoalClosed) {
+		t.Fatal("state trimming lost criterion identity or conditional resolutions")
 	}
 	storedGate, expectedGate := *got.Gate, *g
 	storedGate.Paths, storedGate.Findings = nil, nil

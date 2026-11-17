@@ -17,7 +17,7 @@ import (
 func TestParseGoalAcceptsOnlyNumbersAndVerdicts(t *testing.T) {
 	a, err := ParseGoal("PRIVATE notes outside the block.\n\n```json\n" +
 		`{"criteria": [{"criterion": 2, "verdict": "not_met"}, {"criterion": 1, "verdict": "met"}], "overall": "unclear"}` + "\n```")
-	if err != nil || len(a.Criteria) != 2 || a.Criteria[0] != (GoalVerdict{2, goalNotMet}) || a.Overall != goalUnclear {
+	if err != nil || len(a.Criteria) != 2 || a.Criteria[0] != (GoalVerdict{Criterion: 2, Verdict: goalNotMet}) || a.Overall != goalUnclear {
 		t.Fatalf("answer = %+v, %v", a, err)
 	}
 	if a, err := ParseGoal("```\n{\"criteria\": [], \"overall\": \"after_rollout\"}\n```"); err != nil || len(a.Criteria) != 0 || a.Overall != goalLive {
@@ -61,7 +61,7 @@ func TestParseGoalAcceptsOnlyNumbersAndVerdicts(t *testing.T) {
 // Every public word comes from the issue key, a criterion number or the
 // service's fixed text.
 func TestGoalFindingsUseOnlyKeyNumberAndFixedText(t *testing.T) {
-	got := goalFindings("HOME-58", &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalUnclear}, {4, goalLive}}})
+	got := goalFindings("HOME-58", &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalNotMet}, {Criterion: 3, Verdict: goalUnclear}, {Criterion: 4, Verdict: goalLive}}})
 	want := []Finding{
 		{
 			ID: "HOME-58:goal", Severity: SeverityHigh, Verdict: goalNotMet, Title: "HOME-58: stated problem not addressed",
@@ -99,7 +99,7 @@ func TestGoalFindingsUseOnlyKeyNumberAndFixedText(t *testing.T) {
 			t.Errorf("overall %s = %+v", verdict, f)
 		}
 	}
-	if f := goalFindings("HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}}}); len(f) != 0 {
+	if f := goalFindings("HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}}); len(f) != 0 {
 		t.Errorf("met = %+v", f)
 	}
 	if u := goalFindings("HOME-58", nil); len(u) != 1 || u[0] != (Finding{
@@ -127,7 +127,7 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 			{ID: "x.go:goal", Status: StatusJustified, Note: "Owned by HOME-60"},
 		},
 	}
-	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}})
+	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalNotMet}, {Criterion: 3, Verdict: goalLive}}})
 	a := Assess(r, prior)
 	blocking := map[string]string{}
 	for _, b := range a.Blocking {
@@ -164,23 +164,23 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 	}{
 		"unavailable": {"HOME-58", nil, all, ""},
 		"unclear": {
-			"HOME-58", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalUnclear}}},
+			"HOME-58", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalUnclear}}},
 			"HOME-58:goal=high HOME-58:goal:criterion-2=medium", "HOME-58:goal:unavailable",
 		},
 		"after rollout": {
-			"HOME-58", &GoalCheck{Overall: goalLive, Criteria: []GoalVerdict{{1, goalMet}, {2, goalLive}}},
+			"HOME-58", &GoalCheck{Overall: goalLive, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalLive}}},
 			"", "HOME-58:goal:unavailable",
 		},
 		"criterion met only": {
-			"HOME-58", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalNotMet}, {2, goalMet}}},
+			"HOME-58", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalNotMet}, {Criterion: 2, Verdict: goalMet}}},
 			"HOME-58:goal=high HOME-58:goal:criterion-1=medium", "HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
 		},
 		"all met": {
-			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}}},
+			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalMet}}},
 			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
 		},
 		"criterion omitted": {
-			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}}},
+			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}},
 			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
 		"no criteria": {
@@ -493,9 +493,11 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 
 func TestInvalidGoalAnswerPublishesOnlyTheFixedMessage(t *testing.T) {
 	for name, reply := range map[string]string{
-		"extra field":  goalReply(`{"criteria": [{"criterion": 1, "verdict": "met", "why": "PRIVATE-GOAL"}], "overall": "met"}`),
-		"text verdict": goalReply(`{"criteria": [{"criterion": 1, "verdict": "PRIVATE-GOAL"}], "overall": "met"}`),
-		"malformed":    "PRIVATE-GOAL is not met.",
+		"extra field":    goalReply(`{"criteria": [{"criterion": 1, "verdict": "met", "why": "PRIVATE-GOAL"}], "overall": "met"}`),
+		"text verdict":   goalReply(`{"criteria": [{"criterion": 1, "verdict": "PRIVATE-GOAL"}], "overall": "met"}`),
+		"text follow-up": goalReply(`{"criteria": [{"criterion": 1, "verdict": "owned", "follow_up": "PRIVATE-GOAL"}], "overall": "met"}`),
+		"text decision":  goalReply(`{"criteria": [{"criterion": 1, "verdict": "met"}], "overall": "met", "switches": [{"issue": 1, "decision": "PRIVATE-GOAL"}]}`),
+		"malformed":      "PRIVATE-GOAL is not met.",
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, api := issueHarness(t)
