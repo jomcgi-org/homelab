@@ -44,6 +44,12 @@ export function colour(value: string): Colour | undefined {
  * Every custom property declared in a stylesheet, whatever its value. A
  * declaration ends at `;` or at the block's closing brace.
  */
+export function declarations(css: string): [string, string][] {
+  return [...css.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;}]+)/gi)].map(
+    ([, name, value]) => [name!, value!.trim()],
+  );
+}
+
 export function customProperties(css: string): Map<string, string> {
   const found = new Map<string, string>();
   for (const [, name, value] of css.matchAll(
@@ -109,7 +115,8 @@ export function contrast(a: string, b: string): number {
   return (hi! + 0.05) / (lo! + 0.05);
 }
 
-const declared = customProperties(readFileSync("src/palette.css", "utf8"));
+const paletteCss = readFileSync("src/palette.css", "utf8");
+const declared = customProperties(paletteCss);
 
 // Every colour token has one role, and each role has its WCAG minimum:
 // text 4.5:1 (1.4.3) and non-text UI 3:1 (1.4.11) on every background.
@@ -185,6 +192,13 @@ const PAIRS: [string, string, number][] = [
 ];
 
 describe("token contrast", () => {
+  it("declares each custom property in palette.css once", () => {
+    // A second declaration under another selector could carry an unchecked
+    // value while the check sees only the last one.
+    const names = declarations(paletteCss).map(([name]) => name);
+    expect(names.filter((name, i) => names.indexOf(name) !== i)).toEqual([]);
+  });
+
   it("gives every custom property in palette.css exactly one role", () => {
     expect([...declared.keys()].sort()).toEqual(Object.keys(ROLES).sort());
   });
@@ -248,7 +262,7 @@ describe("token contrast", () => {
     for (const file of sources("src")) {
       const code = readFileSync(file, "utf8");
       expect(code, file).not.toMatch(LITERAL);
-      expect(code, file).not.toMatch(/@stylexjs\/stylex|\bstyle=\{/);
+      expect(code, file).not.toMatch(/@stylexjs\/stylex|\bstyle\s*=\s*\{/);
     }
   });
 
@@ -278,8 +292,19 @@ describe("token contrast", () => {
       expect([...customProperties(css).keys()], sheet).toEqual([]);
       expect(css, sheet).not.toMatch(LITERAL);
       for (const [, property, value] of css.matchAll(COLOUR_PROPERTY)) {
-        const words = value!
-          .replace(/var\([^()]*(?:\([^()]*\)[^()]*)*\)/g, " ")
+        // var(--token, fallback): the token must exist in palette.css, and the
+        // fallback is checked like any other value, because the browser can
+        // use it.
+        let rest = value!;
+        for (const [whole, token, fallback] of value!.matchAll(
+          /var\(\s*(--[a-z0-9-]+)\s*(?:,([^()]*))?\)/gi,
+        )) {
+          expect(declared.has(token!), `${sheet}: ${property}: ${token}`).toBe(
+            true,
+          );
+          rest = rest.replace(whole, ` ${fallback ?? ""} `);
+        }
+        const words = rest
           .split(/[\s,]+/)
           .filter((word) => word && !/^-?\d/.test(word));
         for (const word of words) {
