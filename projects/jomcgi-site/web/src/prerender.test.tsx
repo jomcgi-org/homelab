@@ -29,8 +29,9 @@ describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
     container.innerHTML = render(entry);
     document.body.append(container);
     const errors: unknown[] = [];
+    let root: ReturnType<typeof hydrateRoot>;
     await act(async () => {
-      hydrateRoot(
+      root = hydrateRoot(
         container,
         <Root>
           <Page />
@@ -39,6 +40,7 @@ describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
       );
     });
     expect(errors).toEqual([]);
+    await act(async () => root.unmount());
     container.remove();
   });
 });

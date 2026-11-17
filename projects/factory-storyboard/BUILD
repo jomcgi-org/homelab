@@ -1,8 +1,21 @@
-load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Hand-maintained snapshot contract, fixtures and their conformance test.
 # gazelle:ignore
+
+# rules_js copies cross-package sources through their owning js_library.
+js_library(
+    name = "web_schema",
+    srcs = glob(["schema/**"]),
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
+js_library(
+    name = "web_fixtures",
+    srcs = glob(["fixtures/**/*.json"]),
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
 
 filegroup(
     name = "schema",

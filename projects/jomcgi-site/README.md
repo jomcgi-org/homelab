@@ -156,7 +156,8 @@ the remaining hub paths outside the site's routes.
 
 From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,
 `node prerendered.mjs dist`, `node marketplace.test.mjs dist`, and
-`node scotland-built.test.mjs dist`. The catalog check compares the built
+`node scotland-built.test.mjs dist`, plus `node factory-built.test.mjs dist`.
+The catalog check compares the built
 file with the hub handler byte for byte. The Scotland build check reads the
 emitted HTML with scripts disabled and compares its content and metadata
 with the hub sources, runs structural axe checks, checks linked assets and
@@ -247,3 +248,44 @@ After the dev deploy, the HOME-207 delivery owner verifies these six URLs on
 `next.jomcgi.dev`, including rendered content without JavaScript, the drafts
 meta/header rules, catalog bytes and browser accessibility. That live check
 remains pending until this revision is deployed.
+
+## Factory preview (HOME-224)
+
+`web/factory/index.html` is the pre-rendered shell for `/factory`.
+`web/public/_redirects` rewrites `/factory` and `/factory/*` to `/factory/`; the story,
+goal, issue and session routes share that entry. Client navigation preserves
+ordinary links and focuses the selected record or transcript turn.
+
+```mermaid
+flowchart LR
+  Manifest["/data/factory/manifest.json"] -->|object paths| Reader["Factory reader"]
+  Objects["/data/factory/objects/*.json"] -->|schema and hash checks| Reader
+  Reader --> Story[Story]
+  Story --> Goal[Goal]
+  Goal --> Issue[Issue]
+  Issue --> Session[Session]
+```
+
+The reader uses `projects/factory-storyboard/schema` and polls each minute.
+Successful immutable objects are reused; failed objects retry on the next poll.
+An unavailable object gets an inline state. A failed manifest refresh keeps
+the last snapshot with a visible notice. Text stays plain text, and narrative
+numbers come from the story's named stats. Unknown stats show an en dash.
+
+Vite serves the invented fixtures on `/data/factory/` in development. Tests
+use the same files. Production builds include no fixtures and show unavailable
+states until HOME-213 publishes snapshots. SVG charts have value tables;
+the layout uses the shared light/dark palette and 16px phone gutters.
+
+`web:test` covers every fixture page, schema rejection, hash verification,
+polling, partial failure, navigation, plain-text rendering and axe in both themes.
+It also checks the Vite routes, CSP and palette contracts.
+`web:factory_built_test` checks the emitted shell, assets, rewrite and absence
+of fixture data. `web:budget_test` includes the Factory entry in the 150 KiB limit.
+
+**Why.** HOME-178's "One site" decision places the storyboard in this site.
+HOME-224 keeps `sections.ts` at `live: false`, with no changes to production
+edge routes, charts or deployment files. HOME-225 activates `/factory` and the
+legacy redirects after HOME-213. After the dev deploy, the delivery owner checks
+`https://next.jomcgi.dev/factory` and `/factory/goals/x` for HTTP 200 and the
+shell's unavailable states. Local build checks do not establish that rollout.

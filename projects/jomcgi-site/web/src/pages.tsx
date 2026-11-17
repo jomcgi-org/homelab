@@ -9,6 +9,7 @@ import { Post125bOnA4090Page } from "./blog-125b-on-a-4090-page";
 import { CvPage } from "./cv-page";
 import { HomePage } from "./home-page";
 import { NotFoundPage } from "./not-found-page";
+import { FactoryPage } from "./factory-page";
 
 /**
  * Every page, keyed by its HTML entry. The pre-render and the tests read this
@@ -17,6 +18,7 @@ import { NotFoundPage } from "./not-found-page";
  * ship without the check.
  */
 export const PAGES: Record<string, () => React.JSX.Element> = {
+  "factory/index.html": FactoryPage,
   "index.html": HomePage,
   "404.html": NotFoundPage,
   "cv.html": CvPage,
