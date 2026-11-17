@@ -28,11 +28,19 @@ echo "snapshot $1" >>"$CALLS"
 STUB
 cat >"$work/bin/wrangler" <<'STUB'
 #!/usr/bin/env bash
+set -o errexit -o nounset
 echo "wrangler $*" >>"$CALLS"
-test -f "$(dirname "$3")/web/dist/data/stars/latest.json"
+# The snapshot's data must be in the copy being deployed.
+test -f "$(dirname "$3")/web/dist/data/stars/latest.json" || {
+	echo "no snapshot data in $(dirname "$3")" >&2
+	exit 8
+}
 # wrangler writes .wrangler/tmp under its working directory: it must be the
 # writable site copy, not the read-only image directory.
-[[ "$PWD" == "$(dirname "$3")" ]] || { echo "wrangler ran from $PWD" >&2; exit 9; }
+[[ "$PWD" == "$(dirname "$3")" ]] || {
+	echo "wrangler ran from $PWD" >&2
+	exit 9
+}
 STUB
 chmod +x "$work/bin/"*
 
@@ -215,6 +223,23 @@ for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAG
 		exit 1
 	}
 done
+
+# 7b. A snapshot that exits 0 but writes no data: the deploy step fails (the
+#     stub checks the copy holds the data), so the run fails.
+cat >"$work/bin/snapshot.nodata" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == fence-check ]] && exit 0
+exit 0
+STUB
+chmod +x "$work/bin/snapshot.nodata"
+reset
+if CALLS="$work/calls" FENCE_CODES="$work/codes" SITE_SRC="$work/src" SITE_DIR="$work/site" \
+	SNAPSHOT_BIN="$work/bin/snapshot.nodata" WRANGLER_BIN="$work/bin/wrangler" \
+	REFRESH_BUDGET=2 KILL_GRACE=1 SYNC_WINDOW=4 FENCE_INTERVAL=1 FENCE_TIMEOUT=2 \
+	RELEASE="chart 0.9.0 image abc" STAGE=dev MODE=sync bash "$RUN" 2>/dev/null; then
+	echo "a deploy without snapshot data should fail"
+	exit 1
+fi
 
 # 8. A failed snapshot stops before the deploy.
 cat >"$work/bin/snapshot" <<'STUB'
