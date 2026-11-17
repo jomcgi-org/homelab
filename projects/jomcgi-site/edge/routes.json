@@ -3,13 +3,11 @@
   "script": "jomcgi-site",
   "patterns": [
     "jomcgi.dev/app/firecracker*",
-    "jomcgi.dev/app/llm-leaderboard*",
     "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
     "jomcgi.dev/blog*",
     "jomcgi.dev/cv*",
     "jomcgi.dev/ember*",
-    "jomcgi.dev/llm-leaderboard*",
     "jomcgi.dev/notes*",
     "jomcgi.dev/scotland",
     "jomcgi.dev/scotland/privacy",

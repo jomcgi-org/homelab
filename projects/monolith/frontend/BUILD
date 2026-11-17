@@ -1191,7 +1191,6 @@ js_library(
 js_library(
     name = "leaderboard_migration_sources",
     srcs = [
-        "src/lib/public/components/Seo.svelte",
         "src/routes/public/app/llm-leaderboard/+page.svelte",
     ],
     visibility = ["//projects/jomcgi-site/web:__pkg__"],

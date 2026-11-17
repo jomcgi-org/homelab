@@ -152,36 +152,40 @@ above. Removing it from [routes.json](edge/routes.json) returns those URLs
 to the hub. [apply.test.mjs](edge/apply.test.mjs) checks these URLs and keeps
 the remaining hub paths outside the site's routes.
 
-## LLM leaderboard
+## LLM leaderboard migration
 
-`/llm-leaderboard` pre-renders the hub page's charts and tables. Its selector,
-scatter axes, role index and sortable table hydrate from the same snapshot.
-The legacy `/app/llm-leaderboard` paths redirect with 301 responses.
+HOME-208 is split at the renderer boundary to keep PR #8176 within the
+2,500-line review budget. This first slice adds the report components and
+their tests. It does not publish a new page; the hub still serves
+`/app/llm-leaderboard`.
 
-`projects/model-bench` still writes
-`projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
-The site imports that file and the hub's `model.js` through the owning Bazel
-package's `:leaderboard_sources` dependency. A new report therefore rebuilds
-the page; there is no second committed snapshot or request-time data fetch.
-The complete report is HTML, including SVG charts. The snapshot, chart code
-and selector load in one dynamic import on pointer, focus or keyboard intent.
-A linked `?m=` selection also triggers hydration. An interaction during the
-download is replayed once handlers exist. The initial route stays under the
-150 KiB JavaScript budget. All paint is in `src/palette.css`.
+`web/src/leaderboard-content.tsx` renders the charts, selector, rankings,
+task descriptions and optional agent index. It imports the component CSS.
+`leaderboard-data.ts` reads the same JSON that `projects/model-bench` writes
+in the hub package, through the owning Bazel `:leaderboard_sources` target.
+There is no second snapshot. Component tests cover server rendering,
+hydration, URL selections, content parity and axe; the palette tests check
+light and dark contrast.
 
-`:leaderboard_built_test` checks the built charts, table and task list, and
-proves the snapshot stays out of initial scripts and preloads.
-`leaderboard.test.tsx` compares copy and metadata to the hub source and checks
-axe after selection changes; `leaderboard-intent.test.tsx` exercises slow
-downloads, first-click replay, typing, keyboard navigation and linked views.
+The follow-up completes delivery as one change:
 
-After the dev deploy, verify `https://next.jomcgi.dev/llm-leaderboard`, both
-legacy redirects and a linked `?m=` selection before prod promotion.
+- Add `llm-leaderboard.html` with the hub metadata, its page module and entry,
+  and register it in `pages.tsx` and Vite for `build.mjs` to pre-render.
+- Restore hydration on intent and its slow-download interaction tests, plus
+  the built-artifact check that data and charts stay out of initial scripts.
+- Add the Apps section with `live: true`, legacy 301 redirects and the
+  query-compatible edge routes, with their route tests.
+- Run the page, budget and accessibility checks, then verify the page,
+  redirects and linked selections on `next.jomcgi.dev` after the dev deploy.
+
+The removed delivery implementation is preserved in
+[commit 1896b0d2b](https://github.com/jomcgi-org/homelab/commit/1896b0d2b9fce8e981dba7336d8a4e56220d1581).
+HOME-208 remains open until that follow-up and rollout verification finish.
 
 ## Build and test
 
 From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,
-`node leaderboard-built.mjs dist`, `node prerendered.mjs dist`, `node marketplace.test.mjs dist`, and
+`node prerendered.mjs dist`, `node marketplace.test.mjs dist`, and
 `node scotland-built.test.mjs dist`, plus `node factory-built.test.mjs dist`.
 The catalog check compares the built
 file with the hub handler byte for byte. The Scotland build check reads the
