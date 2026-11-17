@@ -87,9 +87,30 @@ js_test(
     args = ["$(rootpath :build)"],
     data = [
         ":build",
-        "//projects/monolith/frontend:scotland_migration_sources",
+        ":hub_fixture",
     ],
     entry_point = "marketplace.test.mjs",
+)
+
+js_library(
+    name = "hub_fixture",
+    srcs = ["hub-fixture.mjs"],
+    deps = ["//projects/monolith/frontend:scotland_migration_sources"],
+)
+
+# Checks the emitted pages and routes, not just the source React trees.
+js_test(
+    name = "scotland_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        ":hub_fixture",
+        ":node_modules/axe-core",
+        ":node_modules/happy-dom",
+        "//projects/jomcgi-site/edge:migration_routes",
+    ],
+    entry_point = "scotland-built.test.mjs",
 )
 
 js_library(

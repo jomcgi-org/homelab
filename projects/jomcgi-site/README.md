@@ -72,8 +72,12 @@ wrangler.jsonc ─────────────────────�
 ## Build and test
 
 From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,
-`node prerendered.mjs dist`, and `node marketplace.test.mjs dist`. The last
-check compares the built catalog with the hub handler byte for byte.
+`node prerendered.mjs dist`, `node marketplace.test.mjs dist`, and
+`node scotland-built.test.mjs dist`. The catalog check compares the built
+file with the hub handler byte for byte. The Scotland build check reads the
+emitted HTML with scripts disabled and compares its content and metadata
+with the hub sources, runs structural axe checks, checks linked assets and
+headers, and checks that all six exact routes have files in the build output.
 Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
 
 ## Deploy
@@ -121,6 +125,7 @@ to load on intent. Each entry hydrates only its own page through `mount.tsx`.
 
 | Contract | Evidence and CI target |
 | --- | --- |
+| Final build output at every migrated URL | `web/scotland-built.test.mjs` reads all five emitted HTML files with scripts disabled, checks their hub copy and metadata, absence of inline styles, structural axe results, linked assets, headers and JS budgets, and maps all six exact routes to built files (`web:scotland_built_test`). |
 | Filled HTML and one page per entry | `web/prerendered.mjs` (`web:prerendered_test`); `web/src/a11y.test.tsx` checks the entry/module mapping (`web:test`). |
 | Unchanged copy, commands, policy dates and SEO tags | `web/src/scotland.test.tsx` compares the copied data and rendered prose with the hub sources, and checks every entry's title, description, canonical, Open Graph and Twitter tags (`web:test`). |
 | Byte-compatible marketplace | `web/marketplace.test.mjs` compares the built file with the hub's actual GET response, including the trailing newline (`web:marketplace_test`). |

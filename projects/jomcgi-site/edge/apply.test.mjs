@@ -52,7 +52,7 @@ test("Scotland and slop own only exact static URLs", () => {
     const route = pattern.replace(/^https?:\/\//, "");
     for (const prefix of [
       "jomcgi.dev/scotland/mcp",
-      "jomcgi.dev/scotland/v1/",
+      "jomcgi.dev/scotland/v1",
       "jomcgi.dev/slop/factory",
     ]) {
       assert.ok(

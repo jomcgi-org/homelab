@@ -1,7 +1,13 @@
 # The edge apply Job (HOME-192): makes zone jomcgi.dev's Workers routes and
 # cache rules match routes.json and cache-rules.json. Hand-maintained.
 # gazelle:ignore
-load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_library", "js_test")
+
+js_library(
+    name = "migration_routes",
+    srcs = ["routes.json"],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
 
 js_binary(
     name = "apply",
