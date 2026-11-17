@@ -1,7 +1,9 @@
 package review
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -223,6 +225,8 @@ type Blocked struct {
 	Repeated bool
 	// Note is the agent's note on a previous finding.
 	Note string
+	// Decision is Joe's comment that justified an accepted high finding.
+	Decision *DecisionStamp
 	// Reason says why a previous finding still blocks.
 	Reason string
 }
@@ -251,6 +255,8 @@ type Assessment struct {
 	// Earlier is what earlier heads' reviews cleared; the State carries it
 	// on with this review's (clearedOf).
 	Earlier []Cleared
+	// Carried are the previous head's decisions that still hold.
+	Carried []DecisionStamp
 	// EarlierPartial carries an incomplete cleared record forward.
 	EarlierPartial bool
 }
@@ -260,6 +266,137 @@ func withdrawn(note string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(note)), "withdrawn")
 }
 
+// Decisions are Joe's comments on one PR: the trusted comments by a
+// `humanApprovers` login, which are Joe's accounts (REVIEW.md "Joe
+// decides"). Only they can justify a high finding (REVIEW.md "Clearing a
+// finding without a fix").
+type Decisions struct {
+	Repo     string
+	Number   int
+	Comments []github.Comment
+	// Carried are the decisions the previous head's pass relied on
+	// (State.Decisions). Each stays while its comment is unchanged; a
+	// changed one restores its finding (AssessDecided).
+	Carried []DecisionStamp
+}
+
+// DecisionStamp is Joe's comment that justified high finding Finding, with
+// a hash of its text then: an edit or a deletion revokes it.
+type DecisionStamp struct {
+	Finding string `json:"finding,omitempty"`
+	ID      int64  `json:"id"`
+	Hash    string `json:"hash"`
+}
+
+func bodyHash(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// decided is Joe's comment that note cites to justify finding id, or nil.
+// The note starts "decision:" and links the comment on this PR
+// (https://github.com/<repo>/pull/<n>#issuecomment-<id>, or /issues/), and
+// the comment's text names id. The agent's note alone grants nothing.
+func (d Decisions) decided(note, id string) *DecisionStamp {
+	if d.Repo == "" || d.Number <= 0 || strings.TrimSpace(id) == "" ||
+		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(note)), "decision:") {
+		return nil
+	}
+	link := regexp.MustCompile(`(?i)https://github\.com/` + regexp.QuoteMeta(d.Repo) + `/(?:pull|issues)/` +
+		strconv.Itoa(d.Number) + `#issuecomment-([1-9][0-9]*)\b`)
+	for _, m := range link.FindAllStringSubmatch(note, -1) {
+		cid, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		for _, c := range d.Comments {
+			if c.ID == cid && namesID(c.Body, id) {
+				return &DecisionStamp{Finding: clip(id, maxTitle), ID: cid, Hash: bodyHash(c.Body)}
+			}
+		}
+	}
+	return nil
+}
+
+// holds reports that Joe's comment still exists with the text it had.
+func (d Decisions) holds(st DecisionStamp) bool {
+	for _, c := range d.Comments {
+		if st.ID > 0 && c.ID == st.ID && st.Hash != "" && bodyHash(c.Body) == st.Hash {
+			return true
+		}
+	}
+	return false
+}
+
+// Hold reports that every decision a review relied on still holds.
+func (d Decisions) Hold(stamps []DecisionStamp) bool {
+	for _, st := range stamps {
+		if !d.holds(st) {
+			return false
+		}
+	}
+	return true
+}
+
+// Revalidate keeps each cleared finding's decision only while Joe's comment
+// is unchanged: an edited or deleted comment grants nothing.
+func (d Decisions) Revalidate(cleared []Cleared) []Cleared {
+	out := slices.Clone(cleared)
+	for i := range out {
+		if out[i].Decision != nil && !d.holds(*out[i].Decision) {
+			out[i].Decision = nil
+		}
+	}
+	return out
+}
+
+// namesID reports text that names the finding id as a whole word: the
+// characters around it cannot continue an ID, so `a.go:x` does not name
+// `a.go:x-y`. A full stop after it ends a sentence.
+func namesID(text, id string) bool {
+	text, id = strings.ToLower(text), strings.ToLower(strings.TrimSpace(id))
+	idChar := func(r byte) bool {
+		return r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.IndexByte("-_:#/", r) >= 0
+	}
+	for from := 0; from <= len(text)-len(id); {
+		i := strings.Index(text[from:], id)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(id)
+		before := start == 0 || !(idChar(text[start-1]) || text[start-1] == '.')
+		after := end == len(text) || !idChar(text[end]) && (text[end] != '.' || end+1 == len(text) || !idChar(text[end+1]))
+		if before && after {
+			return true
+		}
+		from = start + 1
+	}
+	return false
+}
+
+// decisions are Joe's comments that this head's pass relies on, once each:
+// those its accepted findings cite, those that keep earlier heads' findings
+// cleared (Earlier, already revalidated), and the previous head's that still
+// hold (Carried), which the bounded cleared record may have lost.
+func (a Assessment) decisions() []DecisionStamp {
+	var out []DecisionStamp
+	add := func(d *DecisionStamp) {
+		if d != nil && !slices.Contains(out, *d) {
+			out = append(out, *d)
+		}
+	}
+	for _, b := range a.Accepted {
+		add(b.Decision)
+	}
+	for _, c := range a.Earlier {
+		add(c.Decision)
+	}
+	for i := range a.Carried {
+		add(&a.Carried[i])
+	}
+	return out
+}
+
 // MaxLow is how many low findings a check run lists.
 const MaxLow = 5
 
@@ -267,14 +404,23 @@ const MaxLow = 5
 // finding blocks. Human-gate findings are set apart first, whatever their
 // severity. A previous blocking finding is resolved when the agent reports
 // it fixed, or marks it justified with a note starting "withdrawn" (any
-// severity: the finding was wrong); a medium one is also accepted when
-// justified with any note. Anything else (open, unaccounted for, a justified
-// critical or high, a justification without a note) still blocks. A previous
+// severity: the finding was wrong). One whose severity on this head is
+// medium is also accepted when justified with any note, and one whose
+// severity is high when the note cites Joe's comment that names it
+// (Decisions.decided). Anything else (open, unaccounted for, a justified
+// critical, a justified high without such a decision, a justification
+// without a note) still blocks. A previous
 // finding reported again keeps the higher of its two severities unless it
 // is marked fixed or withdrawn. A previous human-gate finding that is not
 // fixed or withdrawn is a human-gate finding of this head too: only a
 // person's approval of this head clears it.
 func Assess(r *Report, prior []Finding) Assessment {
+	return AssessDecided(r, prior, Decisions{})
+}
+
+// AssessDecided is Assess with Joe's comments on the PR, which can justify a
+// high finding.
+func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	var a Assessment
 	status := map[string]Previous{}
 	for _, p := range r.Previous {
@@ -286,11 +432,23 @@ func Assess(r *Report, prior []Finding) Assessment {
 	for _, p := range prior {
 		priorByID[p.ID] = p
 	}
-	justified := func(id string) (string, bool) {
+	// justified judges a justification by the finding's severity on this
+	// head, so a medium one raised to high needs Joe's decision.
+	justified := func(id, severity string) (string, *DecisionStamp, bool) {
 		p, wasPrior := priorByID[id]
 		s, ok := status[id]
 		note := strings.TrimSpace(s.Note)
-		return note, wasPrior && ok && p.Severity == SeverityMedium && s.Status == StatusJustified && note != ""
+		if !wasPrior || !ok || s.Status != StatusJustified || note == "" || isGate(p) {
+			return note, nil, false
+		}
+		switch severity {
+		case SeverityMedium:
+			return note, nil, true
+		case SeverityHigh:
+			st := d.decided(note, id)
+			return note, st, st != nil
+		}
+		return note, nil, false
 	}
 	cleared := func(id string) bool {
 		s, ok := status[id]
@@ -300,6 +458,18 @@ func Assess(r *Report, prior []Finding) Assessment {
 	repeated := func(f Finding) Blocked {
 		_, was := priorByID[f.ID]
 		return Blocked{Finding: f, Repeated: was, Note: strings.TrimSpace(status[f.ID].Note), Reason: reason[f.ID]}
+	}
+	// The previous head's decisions: one that holds stays relied on, even
+	// when the bounded cleared record lost its finding. One whose comment
+	// changed is revoked, and its finding is high again.
+	revoked := map[string]bool{}
+	for _, st := range d.Carried {
+		switch {
+		case d.holds(st):
+			a.Carried = append(a.Carried, st)
+		case st.Finding != "":
+			revoked[st.Finding] = true
+		}
 	}
 	current := map[string]bool{}
 	low := 0
@@ -314,6 +484,10 @@ func Assess(r *Report, prior []Finding) Assessment {
 			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
 			f.Severity = p.Severity
 		}
+		if revoked[f.ID] && rank(f.Severity) > rank(SeverityHigh) {
+			reason[f.ID] = fmt.Sprintf("reported again as %s after Joe's decision changed; it stays high", f.Severity)
+			f.Severity, f.Lowered = SeverityHigh, ""
+		}
 		switch {
 		case f.Severity == SeverityLow && f.Lowered != "":
 			a.Deferred = append(a.Deferred, f)
@@ -325,9 +499,9 @@ func Assess(r *Report, prior []Finding) Assessment {
 			} else {
 				a.Optional = append(a.Optional, f)
 			}
-		case f.Severity == SeverityMedium:
-			if note, ok := justified(f.ID); ok {
-				a.Accepted = append(a.Accepted, Blocked{Finding: f, Repeated: true, Note: note})
+		case f.Severity == SeverityMedium || f.Severity == SeverityHigh:
+			if note, cid, ok := justified(f.ID, f.Severity); ok {
+				a.Accepted = append(a.Accepted, Blocked{Finding: f, Repeated: true, Note: note, Decision: cid})
 			} else {
 				a.Blocking = append(a.Blocking, repeated(f))
 			}
@@ -362,8 +536,8 @@ func Assess(r *Report, prior []Finding) Assessment {
 			a.Withdrawn = append(a.Withdrawn, Blocked{Finding: p, Carried: true, Note: note})
 			continue
 		}
-		if _, accepted := justified(p.ID); accepted {
-			a.Accepted = append(a.Accepted, Blocked{Finding: p, Carried: true, Note: note})
+		if _, cid, accepted := justified(p.ID, p.Severity); accepted {
+			a.Accepted = append(a.Accepted, Blocked{Finding: p, Carried: true, Note: note, Decision: cid})
 			continue
 		}
 		b := Blocked{Finding: p, Carried: true, Note: note}
@@ -373,14 +547,34 @@ func Assess(r *Report, prior []Finding) Assessment {
 		case s.Status == StatusFixed:
 			a.Fixed = append(a.Fixed, p)
 			continue
+		case s.Status == StatusJustified && p.Severity == SeverityHigh:
+			b.Reason = "justified, but a high finding needs a note starting \"decision:\" that links Joe's comment naming it"
 		case s.Status == StatusJustified && p.Severity != SeverityMedium:
-			b.Reason = "justified, but only a medium finding can be justified"
+			b.Reason = "justified, but only a medium or a decided high finding can be justified"
 		case s.Status == StatusJustified:
 			b.Reason = "justified without a note"
 		default:
 			b.Reason = "still open"
 		}
 		a.Blocking = append(a.Blocking, b)
+	}
+	// A revoked decision restores its finding as a blocking high, unless
+	// this review reports it (high at least, above) or accounts for it.
+	for _, st := range d.Carried {
+		if !revoked[st.Finding] || current[st.Finding] {
+			continue
+		}
+		if _, was := priorByID[st.Finding]; was {
+			continue
+		}
+		revoked[st.Finding] = false // Once, for several stamps of one finding.
+		a.Blocking = append(a.Blocking, Blocked{
+			Finding: Finding{
+				ID: st.Finding, Severity: SeverityHigh, Title: "Joe's decision on this finding was edited or deleted",
+				Detail: "An earlier head passed on Joe's decision for this finding. Its comment has changed, so the finding blocks until it is fixed or decided again.",
+			},
+			Carried: true, Reason: "Joe's decision changed",
+		})
 	}
 	sortBlocked(a.Blocking)
 	a.Conclusion = ConclusionSuccess
@@ -540,6 +734,10 @@ type State struct {
 	// head's review may resume (session.go).
 	Session *SessionRef `json:"session,omitempty"`
 
+	// Decisions are Joe's comments this head's review relied on to accept
+	// a high finding. Every poll checks they still hold (engine.go).
+	Decisions []DecisionStamp `json:"decisions,omitempty"`
+
 	// IssueDigest binds the report to the external evidence it reviewed.
 	// IssuesPending revokes that report until a fresh review can run.
 	IssueDigest   string `json:"issueDigest,omitempty"`
@@ -564,6 +762,9 @@ type Cleared struct {
 	Status string `json:"status"`
 	Title  string `json:"title,omitempty"`
 	Note   string `json:"note,omitempty"`
+	// Decision is Joe's comment that justified a high finding, set only
+	// by Assess; Decisions.Revalidate clears it when the comment changes.
+	Decision *DecisionStamp `json:"decision,omitempty"`
 }
 
 // StatusWithdrawn marks a cleared finding the agent withdrew as mistaken.
@@ -753,7 +954,7 @@ func loweredNote(f Finding) string {
 // a person clears it, so no round carries it.
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
-	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate}
+	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions()}
 	for _, b := range a.Blocking {
 		if isGate(b.Finding) || len(st.Blocking) == maxStored {
 			continue
@@ -782,7 +983,7 @@ func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 	}
 	var out []Cleared
 	partial := false
-	add := func(f Finding, status, note string) {
+	add := func(f Finding, status, note string, decision *DecisionStamp) {
 		id := storeText(f.ID, maxTitle)
 		if isGate(f) || skip[f.ID] || skip[id] {
 			return
@@ -792,19 +993,19 @@ func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 			return
 		}
 		skip[id] = true
-		out = append(out, Cleared{ID: id, Status: status, Title: storeText(f.Title, maxClearedTitle), Note: storeText(note, maxClearedNote)})
+		out = append(out, Cleared{ID: id, Status: status, Title: storeText(f.Title, maxClearedTitle), Note: storeText(note, maxClearedNote), Decision: decision})
 	}
 	for _, f := range a.Fixed {
-		add(f, StatusFixed, notes[f.ID])
+		add(f, StatusFixed, notes[f.ID], nil)
 	}
 	for _, b := range a.Accepted {
-		add(b.Finding, StatusJustified, b.Note)
+		add(b.Finding, StatusJustified, b.Note, b.Decision)
 	}
 	for _, b := range a.Withdrawn {
-		add(b.Finding, StatusWithdrawn, b.Note)
+		add(b.Finding, StatusWithdrawn, b.Note, nil)
 	}
 	for _, c := range a.Earlier {
-		add(Finding{ID: c.ID, Title: c.Title}, c.Status, c.Note)
+		add(Finding{ID: c.ID, Title: c.Title}, c.Status, c.Note, c.Decision)
 	}
 	return out, partial
 }
@@ -944,7 +1145,7 @@ func encodeState(st State) string {
 		}
 		// Without the cleared record, so it says the record is partial.
 		small := State{
-			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session,
+			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session, Decisions: st.Decisions,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, Semgrep: st.Semgrep,
 		}
 		if g := st.Gate; g != nil {

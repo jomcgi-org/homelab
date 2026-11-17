@@ -457,6 +457,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		reviews[pr.Number] = run
+		revoked, unread := e.decisionsChanged(ctx, b, pr, run)
 		foreign := run != nil && run.ExternalID != MessageID(repo, pr.Number, pr.HeadSHA)
 		recovered := e.recoverPR(ctx, b, pr, scan)
 		switch {
@@ -479,6 +480,29 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			start = append(start, candidate{pr, nil})
 		case run.Status != "completed":
 			attach = append(attach, candidate{pr, run})
+		case unread:
+			reviews[pr.Number] = nil // An unconfirmed decision must not let a pass enqueue.
+		case revoked:
+			// Joe edited or deleted a decision this review relied on: withdraw
+			// the pass, and review the head again until a review runs. Its
+			// State keeps the decisions, so every poll retries.
+			if run.Conclusion == ConclusionSuccess {
+				updated, err := e.gh.UpdateCheckRun(ctx, repo, run.ID, github.CheckRunWrite{
+					Status: "completed", Conclusion: ConclusionFailure,
+					Output: &github.CheckRunOutput{
+						Title:   "Joe's decision changed",
+						Summary: "A decision of Joe's that this review relied on was edited or deleted. A new review of this head is required before it can pass.",
+						Text:    run.Text,
+					},
+				})
+				if err != nil {
+					e.ghError(ctx, e.prLog(b, pr), b, "update_check", err)
+				} else {
+					run = updated
+				}
+			}
+			reviews[pr.Number] = nil
+			start = append(start, candidate{pr, run})
 		case e.semgrepChanged(ctx, b, pr, run):
 			// Withdraw a stale pass even when all review slots are occupied.
 			if run.Conclusion == ConclusionSuccess {
@@ -1188,6 +1212,10 @@ type inputs struct {
 	compared bool
 	// plan is the session plan of the last message this process built.
 	plan sessionPlan
+	// comments are the trusted comments that message put in the prompt;
+	// commentsRead is false until it read them in this process.
+	comments     []github.Comment
+	commentsRead bool
 }
 
 // review drives one head's review to a completed check run. It makes at
@@ -1641,6 +1669,37 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 	return State{}, "", "", nil
 }
 
+// decisionsChanged re-checks the decisions of Joe's that a completed run's
+// review relied on (State.Decisions). unread is a failed read: the pass
+// cannot be confirmed on this poll.
+func (e *Engine) decisionsChanged(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (changed, unread bool) {
+	if run == nil || run.Status != "completed" {
+		return false, false
+	}
+	st, ok := LoadState(run.Text)
+	if !ok || len(st.Decisions) == 0 {
+		return false, false
+	}
+	comments, _, err := e.trustedComments(ctx, b, pr)
+	if err != nil {
+		e.ghError(ctx, e.prLog(b, pr), b, "comments", err)
+		return false, true
+	}
+	return !joeDecisions(b, pr, comments).Hold(st.Decisions), false
+}
+
+// joeDecisions are the trusted comments by a human approver: Joe's, not
+// those of every login whose comments reach the prompt.
+func joeDecisions(b *Binding, pr github.PullRequest, comments []github.Comment) Decisions {
+	d := Decisions{Repo: b.repo(), Number: pr.Number}
+	for _, c := range comments {
+		if containsFold(b.HumanApprovers, c.Author) {
+			d.Comments = append(d.Comments, c)
+		}
+	}
+	return d
+}
+
 // trustedComments are the PR's review bodies and comments from trusted
 // logins; dropped counts the others.
 func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.PullRequest) (out []github.Comment, dropped int, err error) {
@@ -1686,6 +1745,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		e.ghError(ctx, l, b, "comments", err)
 		return nil, err
 	}
+	in.comments, in.commentsRead = comments, true
 	cited := e.citedEvidence(ctx, b, pr, l)
 	interdiff, err := e.interdiff(ctx, b, pr, in, l)
 	if err != nil {
@@ -1700,7 +1760,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Previous(), Cleared: in.prior.Cleared, PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
+		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
@@ -1828,8 +1888,25 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		if b.ItsaplanProject != "" {
 			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
 		}
-		a := Assess(r, prior)
-		a.Earlier, a.EarlierPartial = in.prior.Cleared, !in.prior.ClearedComplete()
+		// Joe's decisions come from the trusted comments the prompt showed;
+		// a high finding justified by one counts only when its note links
+		// it (Decisions.decided). After a restart the task's message was not
+		// built here, so read them again. A failed read assesses nothing:
+		// the attempt ends without a report and is retried.
+		comments := in.comments
+		if !in.commentsRead {
+			var err error
+			if comments, _, err = e.trustedComments(ctx, b, pr); err != nil {
+				e.ghError(ctx, l, b, "comments", err)
+				// Fixed text: GitHub's error can carry response text, and the
+				// reason can reach the PR comment. ghError logged it.
+				return result{reason: "the reviewer could not read the PR's trusted comments after a restart."}
+			}
+		}
+		decisions := joeDecisions(b, pr, comments)
+		decisions.Carried = in.prior.Decisions
+		a := AssessDecided(r, prior, decisions)
+		a.Earlier, a.EarlierPartial = decisions.Revalidate(in.prior.Cleared), !in.prior.ClearedComplete()
 		for _, f := range a.Deferred {
 			if f.Lowered != "" {
 				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)
