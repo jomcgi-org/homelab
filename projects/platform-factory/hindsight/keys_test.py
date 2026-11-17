@@ -4,6 +4,7 @@ import base64
 import copy
 import importlib.util
 import json
+import re
 from pathlib import Path
 from unittest.mock import Mock, mock_open, patch
 
@@ -202,7 +203,9 @@ def test_boundary_test_runs_the_deployed_image():
     repository = container["image"].split(":", 1)[0]
     digest = container["image"].rsplit("@", 1)[1]
     build = (ROOT / "BUILD").read_text()
-    assert f'"test.container-image": "docker://{repository}@{digest}"' in build
+    images = re.findall(r'"test\.container-image": "([^"]+)"', build)
+    # boundary_test and rollback_test both run inside the deployed image.
+    assert images == [f"docker://{repository}@{digest}"] * 2
 
 
 def test_the_script_configmap_name_is_not_a_role_resource_name():

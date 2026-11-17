@@ -35,3 +35,21 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+# Stores memories with 1,024-dimensional vectors from a local stub, runs
+# `hindsight-admin reembed` to the image's local model, and recalls them from a
+# server on that model: the way back from OpenRouter embeddings (HOME-176).
+# Same image and runner as boundary_test, with no network.
+py_test(
+    name = "rollback_test",
+    size = "large",
+    srcs = ["rollback_test.py"],
+    exec_properties = {
+        # Keep equal to resources/hindsight.yaml's image.
+        "test.container-image": "docker://ghcr.io/vectorize-io/hindsight-api@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8",
+        "test.nonroot-workspace": "true",
+        "test.EstimatedMemory": "4GB",
+        "test.EstimatedCPU": "2",
+    },
+    deps = ["@pip//pytest"],
+)
