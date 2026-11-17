@@ -219,34 +219,9 @@ def test_env_vars_in_chart(chart_context):
         assert False, debug_info
 
 
-def render_chat_on(chart_context):
-    """The deploy values with the chat module on. The hub turns it off for
-    the factory's Discord bridge (HOME-162), but the chart still supports it."""
-    helm_bin = os.environ.get("HELM_BIN", "helm")
-    return subprocess.run(
-        [
-            helm_bin,
-            "template",
-            "monolith",
-            str(find_chart_dir()),
-            "--namespace",
-            "default",
-            "--values",
-            str(find_chart_dir() / "values.yaml"),
-            "--values",
-            str(chart_context["deploy_values_file"]),
-            "--set",
-            "chat.enabled=true",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-
-
 def test_chat_reasoning_effort_defaults_to_empty_env(chart_context):
     """The chart lets synchronous Discord reasoning use the code default."""
-    rendered = render_chat_on(chart_context)
+    rendered = chart_context["rendered"]
 
     assert re.search(
         r"- name: CHAT_REASONING_EFFORT\n\s+value: \"\"",
@@ -256,7 +231,7 @@ def test_chat_reasoning_effort_defaults_to_empty_env(chart_context):
 
 def test_chat_max_tokens_defaults_to_empty_env(chart_context):
     """The chart lets the Discord output ceiling use the code default."""
-    rendered = render_chat_on(chart_context)
+    rendered = chart_context["rendered"]
 
     assert re.search(
         r"- name: CHAT_MAX_TOKENS\n\s+value: \"\"",
@@ -388,7 +363,7 @@ def test_knowledge_recall_limit_in_deploy_is_five_notes(chart_context):
 
 def test_hosted_chat_provider_renders_from_deploy_values(chart_context):
     """Production values route Discord chat through the hosted provider."""
-    rendered = render_chat_on(chart_context)
+    rendered = chart_context["rendered"]
 
     assert re.search(
         r'- name: CHAT_MODEL\n\s+value: "openai/gpt-oss-20b"',
@@ -436,7 +411,7 @@ def test_migrations_configmap_uses_server_side_apply(chart_context):
 
 def test_chat_provider_pin_is_rendered(chart_context):
     """The hosted lane must ship a provider pin, not an open route."""
-    rendered = render_chat_on(chart_context)
+    rendered = chart_context["rendered"]
 
     assert re.search(r'- name: CHAT_PROVIDER\n\s+value: "groq"', rendered)
 
@@ -524,19 +499,30 @@ def test_rollout_termination_grace_is_a_chart_value():
 
 
 def test_discord_ambient_pause_keeps_bot_and_kg_enabled(chart_context):
-    rendered = render_chat_on(chart_context)
+    rendered = chart_context["rendered"]
     assert re.search(r'- name: DISCORD_AMBIENT_ENABLED\n\s+value: "false"', rendered)
     assert "name: DISCORD_BOT_TOKEN" in rendered
     assert "name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID" in rendered
 
 
-def test_hub_discord_bot_is_off_for_the_factory_bridge(chart_context):
-    """The factory's bridge uses Bosun's same token (HOME-162), so the hub's
-    deploy renders no Discord token: two gateway sessions would answer every
-    tag twice."""
+def test_hub_discord_gateway_is_off_for_the_factory_bridge(chart_context):
+    # HOME-221: the factory bridge holds Bosun's gateway session. The hub keeps
+    # its token for REST posts, and chat stays on, so the operator allowlist and
+    # SearXNG are unchanged.
     rendered = chart_context["rendered"]
-    assert "name: DISCORD_BOT_TOKEN" not in rendered
-    assert "name: DISCORD_AMBIENT_ENABLED" not in rendered
+    assert re.search(r'- name: DISCORD_GATEWAY_ENABLED\n\s+value: "false"', rendered)
+    assert "name: DISCORD_BOT_TOKEN" in rendered
+    assert "name: FACTORY_OPERATOR_EMAILS" in rendered
+    assert re.search(r"kind: Deployment\nmetadata:\n\s+name: \S*searxng", rendered)
+
+
+def test_discord_gateway_defaults_on_when_chat_is_on():
+    chart = find_chart_dir()
+    rendered = subprocess.check_output(
+        [os.environ.get("HELM_BIN", "helm"), "template", "test", str(chart), "--set", "chat.enabled=true"],
+        text=True,
+    )
+    assert re.search(r'- name: DISCORD_GATEWAY_ENABLED\n\s+value: "true"', rendered)
 
 
 def test_runtime_meter_canary_is_default_off_through_hub_overlay():

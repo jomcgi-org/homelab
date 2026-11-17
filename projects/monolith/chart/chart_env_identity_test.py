@@ -1748,9 +1748,16 @@ def test_production_notification_projection_is_preserved(environment, renders):
             "value": "1533337680463663254",
         },
         {"name": "AGENT_SESSIONS_CHANNEL_NOTIFY", "value": "needs-input"},
+        {
+            "name": "OWNER_DISCORD_USER_ID",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "monolith-chat-secrets",
+                    "key": "OWNER_DISCORD_USER_ID",
+                }
+            },
+        },
     ]
-    # The hub's Discord bot is off for the factory's bridge (HOME-162), so the
-    # chat module's owner ID is gone; its Secret still renders.
     producers = _chat_secret_producers(rendered)
     assert len(producers) == 1
     assert producers[0]["metadata"]["name"] == "monolith-chat-secrets"

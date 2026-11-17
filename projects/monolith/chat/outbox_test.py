@@ -338,3 +338,23 @@ async def test_drain_marks_failed_on_post_error():
     mark_failed.assert_called_once()
     mark_posted.assert_not_called()
     assert posted == 0
+
+
+@pytest.mark.asyncio
+async def test_drain_loop_uses_the_ready_predicate_without_a_gateway():
+    """A REST-only bot is never gateway-ready; the leader's predicate decides."""
+    import asyncio
+
+    bot = MagicMock()
+    bot.is_ready.return_value = False
+    calls = []
+
+    async def fake_drain(b, e):
+        calls.append(b)
+        raise asyncio.CancelledError
+
+    with patch.object(outbox, "drain_once", fake_drain):
+        with pytest.raises(asyncio.CancelledError):
+            await outbox.run_outbox_drain(bot, MagicMock(), poll_interval=0, ready=lambda: True)
+    assert calls == [bot]
+

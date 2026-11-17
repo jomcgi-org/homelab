@@ -326,10 +326,14 @@ async def drain_once(bot, engine) -> int:
     return posted
 
 
-async def run_outbox_drain(bot, engine, poll_interval: float = 3.0) -> None:
+async def run_outbox_drain(
+    bot, engine, poll_interval: float = 3.0, ready=None
+) -> None:
     """Leader-only loop: drain the outbox forever. Started in chat.leader.leader_start
     alongside the bot, so it only runs on the elected leader (the replica that
-    actually holds the bot connection)."""
+    actually holds the bot connection). ``ready`` replaces ``bot.is_ready`` when
+    the bot is logged in over REST only, without a gateway session."""
+    is_ready = ready or bot.is_ready
     logger.info("Discord outbox drain started (poll=%.1fs)", poll_interval)
     while True:
         try:
@@ -337,7 +341,7 @@ async def run_outbox_drain(bot, engine, poll_interval: float = 3.0) -> None:
             # fails and burns each row's retry budget before the bot is usable.
             # is_ready() is a sync check; bot.wait_until_ready() is banned here
             # (it deadlocks from a background task - semgrep no-wait-until-ready).
-            if bot.is_ready():
+            if is_ready():
                 await drain_once(bot, engine)
         except Exception:
             logger.exception("outbox drain tick failed")

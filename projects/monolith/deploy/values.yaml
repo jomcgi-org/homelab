@@ -197,11 +197,12 @@ knowledge:
         enabled: true
 
 chat:
-  # Off: Bosun moves to the factory's Discord bridge (HOME-162), which uses
-  # the same bot token. Two gateway sessions would answer every tag twice, so
-  # this goes off, verified live, before the bridge turns on. It also stops
-  # the changelog posts and the /goosecracker command.
-  enabled: false
+  enabled: true
+  # Off: the factory's Discord bridge (HOME-162) holds Bosun's gateway session
+  # with the same bot token, and two sessions would answer every tag twice.
+  # The hub still posts its outbox (notify, changelogs, NHS digests, distress)
+  # and reminders over REST. Replies, /goosecracker and ambient stop here.
+  discordGateway: false
   # Pause during Joe's UK move. Restore true only when asked to resume.
   # No expiry; keeps Discord ingestion, explicit requests and Notify alerts.
   discordAmbientEnabled: false
