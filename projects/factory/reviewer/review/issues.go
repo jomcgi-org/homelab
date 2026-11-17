@@ -45,6 +45,9 @@ type IssueEvidence struct {
 type DecisionEvidence struct {
 	URL, Author, Text, Reason string
 	Exists, Trusted, Clipped  bool
+	// Quoted is text the PR quotes that this trusted decision contains
+	// (quotedIn). The PR published it already, so the code review may see it.
+	Quoted []string
 }
 
 type IssueContext struct {
@@ -434,8 +437,82 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 		}
 		in.Decisions = append(in.Decisions, d)
 	}
+	spans := quotedSpans(pr.Body, files)
+	for i := range in.Decisions {
+		if d := &in.Decisions[i]; d.Exists && d.Trusted && !d.Clipped {
+			d.Quoted = quotedIn(d.Text, spans)
+		}
+	}
 	return in
 }
+
+// Bounds on the quoted text matched against a linked decision.
+const (
+	minQuote  = 20
+	maxQuote  = 300
+	maxQuotes = 3
+)
+
+// quotedRE is text in straight or curly double quotes on one line.
+var quotedRE = regexp.MustCompile(`"([^"\n]{20,400})"|“([^”\n]{20,400})”`)
+
+// quotedSpans is the text the PR quotes, whitespace squashed: double-quoted
+// text in the description and the diff's added lines, and each run of
+// Markdown block-quote lines in the description.
+func quotedSpans(body string, files []github.PullRequestFile) []string {
+	texts := []string{body}
+	for _, f := range files {
+		for _, line := range strings.Split(f.Patch, "\n") {
+			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+				texts = append(texts, line[1:])
+			}
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(span string) {
+		if span = squash(span); len(span) >= minQuote && !seen[span] {
+			seen[span] = true
+			out = append(out, span)
+		}
+	}
+	for _, text := range texts {
+		for _, m := range quotedRE.FindAllStringSubmatch(text, -1) {
+			add(m[1] + m[2])
+		}
+	}
+	var block []string
+	for _, line := range append(strings.Split(body, "\n"), "") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), ">"); ok {
+			block = append(block, rest)
+			continue
+		}
+		if len(block) > 0 {
+			add(strings.Join(block, " "))
+			block = nil
+		}
+	}
+	return out
+}
+
+// quotedIn is the quoted spans that a decision's text contains, at most
+// maxQuotes. Only text the PR already published is returned, so the code
+// review learns whether the decision says it, and nothing else of the text.
+func quotedIn(text string, spans []string) []string {
+	text = squash(text)
+	var out []string
+	for _, span := range spans {
+		if len(out) == maxQuotes {
+			break
+		}
+		if strings.Contains(text, span) {
+			out = append(out, clip(span, maxQuote))
+		}
+	}
+	return out
+}
+
+func squash(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func issuesPending(run *github.CheckRun) bool {
 	if run == nil {

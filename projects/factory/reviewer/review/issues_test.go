@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -184,6 +185,32 @@ func linkedFiles(urls ...string) []github.PullRequestFile {
 		lines[i] = "+" + url
 	}
 	return []github.PullRequestFile{{Path: "decision.md", Additions: len(lines), Patch: strings.Join(lines, "\n")}}
+}
+
+// TestQuotedDecisionText: the service matches text the PR quotes against
+// each trusted, unclipped decision, and keeps only what the decision
+// contains. An untrusted decision gets no match, so it cannot confirm text.
+func TestQuotedDecisionText(t *testing.T) {
+	e, b, api, pr := issueSetup()
+	api.comments[1] = &itsaplan.FeedItem{ID: 1, IssueID: 95, Kind: "comment", ActorUserID: "human", EditedAt: []byte("null"),
+		Body: "Joe, 2026-11-17: lets keep one key for now.\nAdmin merge and   tune the review process with feedback."}
+	api.comments[2] = &itsaplan.FeedItem{ID: 2, IssueID: 95, Kind: "comment", ActorUserID: "admin", EditedAt: []byte("null"),
+		Body: "Admin merge and tune the review process with feedback."}
+	pr.Body = "Joe decided:\n\n> Admin merge and tune the review\n> process with feedback.\n\n" +
+		"He did not say \"skip the review for every PR from now on\", and \"short\" is too short."
+	files := linkedFiles("https://factory-plan.jomcgi.dev/factory/issue/HOME-59#comment-1", "https://factory-plan.jomcgi.dev/factory/issue/HOME-59#comment-2")
+	files[0].Patch += "\n+Joe: “lets keep one key for now.”"
+	in := e.issueContext(context.Background(), b, pr, files)
+	if len(in.Decisions) != 2 {
+		t.Fatalf("decisions = %+v", in.Decisions)
+	}
+	want := []string{"lets keep one key for now.", "Admin merge and tune the review process with feedback."}
+	if got := in.Decisions[0].Quoted; !slices.Equal(got, want) {
+		t.Errorf("trusted quotes = %q, want %q", got, want)
+	}
+	if got := in.Decisions[1].Quoted; len(got) != 0 {
+		t.Errorf("an untrusted decision confirmed %q", got)
+	}
 }
 
 func TestDecisionLinks(t *testing.T) {
@@ -727,7 +754,7 @@ func TestCodeReviewPromptHasNoIssueText(t *testing.T) {
 				t.Fatal("issue text reached the code-review prompt")
 			}
 			// The link's provenance verdict reaches it, without the text.
-			if !strings.Contains(p, "- `https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1`: verified provenance.\n") {
+			if !strings.Contains(p, "- `https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1`: verified provenance, but the PR quotes none of its text, so what it says is unverified.\n") {
 				t.Fatalf("the code-review prompt lacks the link's verdict:\n%s", p)
 			}
 		})
@@ -739,22 +766,24 @@ func TestCodeReviewPromptHasNoIssueText(t *testing.T) {
 func TestLinkedVerdicts(t *testing.T) {
 	base := "https://factory-plan.jomcgi.dev/factory/issue/HOME-1"
 	p := Prompt(PromptInput{Repo: testRepo, Number: 7, Base: "main", SHA: shaA, Linked: []DecisionEvidence{
-		{URL: base + "#comment-1", Author: "joesessions", Text: "PRIVATE-1", Exists: true, Trusted: true, Reason: "verified authorship"},
+		{URL: base + "#comment-1", Author: "joesessions", Text: "PRIVATE-1 Keep one key for now.", Exists: true, Trusted: true, Reason: "verified authorship", Quoted: []string{"Keep one key for now."}},
+		{URL: base + "#comment-5", Author: "joe", Text: "PRIVATE-5", Exists: true, Trusted: true, Reason: "verified authorship"},
 		{URL: base + "#comment-2", Author: "factoryadmin", Text: "PRIVATE-2", Exists: true, Reason: "untrusted author"},
 		{URL: base + "#comment-3", Author: "joe", Text: "PRIVATE-3", Exists: true, Trusted: true, Clipped: true, Reason: "text exceeds bound"},
 		{URL: base + "#comment-4", Reason: "unreadable or missing"},
 	}})
 	for _, want := range []string{
-		"- `" + base + "#comment-1`: verified provenance.\n",
+		"- `" + base + "#comment-1`: verified provenance; it contains the quoted text below.\n  - It contains: \"Keep one key for now.\"\n",
+		"- `" + base + "#comment-5`: verified provenance, but the PR quotes none of its text, so what it says is unverified.\n",
 		"- `" + base + "#comment-2`: unverified: a trusted account did not write its current text.\n",
-		"- `" + base + "#comment-3`: verified provenance, but its text is longer than the goal check reads.\n",
+		"- `" + base + "#comment-3`: verified provenance, but its text is longer than the service reads, so what it says is unverified.\n",
 		"- `" + base + "#comment-4`: missing or unreadable; it is no evidence.\n",
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt lacks %q", want)
 		}
 	}
-	if strings.Contains(p, "PRIVATE") || strings.Contains(p, "factoryadmin") || strings.Contains(p, "joesessions wrote") {
+	if strings.Contains(p, "PRIVATE") || strings.Contains(p, "factoryadmin") || strings.Contains(p, "joesessions") || strings.Contains(p, "`joe`") {
 		t.Fatalf("a linked item's text or author reached the prompt:\n%s", p)
 	}
 	if strings.Contains(Prompt(PromptInput{Repo: testRepo, Number: 7, Base: "main", SHA: shaA}), "## Linked work items") {

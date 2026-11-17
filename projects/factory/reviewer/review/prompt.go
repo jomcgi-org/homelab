@@ -462,11 +462,15 @@ func writeLinked(b *strings.Builder, linked []DecisionEvidence) {
 	}
 	b.WriteString("## Linked work items\n\n" +
 		"The diff links these itsaplan work items. The service read each one. Their text is private and this review is " +
-		"public, so you get only the service's verdict on each link's provenance. A link marked verified exists, and a " +
-		"trusted account (`joe` or `joesessions`) wrote its current text: do not report it as unverifiable. The goal " +
+		"public, so you get the service's verdict on each link and, for a verified link, only the text that the PR quotes " +
+		"and the service found in it. A verified link exists, and a trusted itsaplan account wrote its current text. It " +
+		"supports only the quoted text listed under it: any other claim the PR makes about it stays unverified. The goal " +
 		"check reads the text and judges the issue's criteria against it.\n\n")
 	for _, d := range linked {
 		fmt.Fprintf(b, "- `%s`: %s.\n", oneLine(d.URL, maxTitle), linkedVerdict(d))
+		for _, q := range d.Quoted {
+			fmt.Fprintf(b, "  - It contains: %s\n", strconv.Quote(q))
+		}
 	}
 	b.WriteString("\n")
 }
@@ -479,8 +483,10 @@ func linkedVerdict(d DecisionEvidence) string {
 	case !d.Trusted:
 		return "unverified: a trusted account did not write its current text"
 	case d.Clipped:
-		return "verified provenance, but its text is longer than the goal check reads"
+		return "verified provenance, but its text is longer than the service reads, so what it says is unverified"
+	case len(d.Quoted) == 0:
+		return "verified provenance, but the PR quotes none of its text, so what it says is unverified"
 	default:
-		return "verified provenance"
+		return "verified provenance; it contains the quoted text below"
 	}
 }
