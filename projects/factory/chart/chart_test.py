@@ -1165,5 +1165,7 @@ def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
     }
     assert pod["spec"]["automountServiceAccountToken"] is False
     assert job["spec"]["activeDeadlineSeconds"] == 21600
+    # A changed image recreates the immutable Job instead of failing the sync.
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/sync-options"] == "Force=true,Replace=true"
     with pytest.raises(RuntimeError, match="discord.import needs discord.bridge"):
         _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.import.enabled=true"])

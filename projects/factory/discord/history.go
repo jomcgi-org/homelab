@@ -21,9 +21,14 @@ type Channel struct {
 	ParentID string `json:"parent_id"`
 }
 
-// Text channels whose history the import reads: text, announcement, and
-// public and announcement threads.
-var historyChannelTypes = map[int]bool{0: true, 5: true, 10: true, 11: true}
+// Channels whose history the import reads: text, announcement, and
+// announcement, public and private threads (forum and media posts are public
+// threads). The bot sees a private thread only when it is a member.
+var historyChannelTypes = map[int]bool{0: true, 5: true, 10: true, 11: true, 12: true}
+
+// Parents whose archived public threads the import lists: text,
+// announcement, forum and media channels.
+var threadParentTypes = map[int]bool{0: true, 5: true, 15: true, 16: true}
 
 // Message types that are conversation: default and reply. Joins, pins and
 // other system messages are left out.
@@ -34,11 +39,46 @@ type Attachment struct {
 	Filename string `json:"filename"`
 }
 
+// Component is a message component; containers nest others.
+type Component struct {
+	Type       int         `json:"type"`
+	Content    string      `json:"content"`
+	Components []Component `json:"components"`
+}
+
 // HistoryMessage is a message read from a channel's history.
 type HistoryMessage struct {
 	Message
 	Type        int          `json:"type"`
 	Attachments []Attachment `json:"attachments"`
+	Components  []Component  `json:"components"`
+}
+
+// Text is a message's text: its content, or for a Components V2 message,
+// such as Bosun's replies (NewReply), its text displays.
+func (m HistoryMessage) Text() string {
+	if s := strings.TrimSpace(m.Content); s != "" {
+		return s
+	}
+	var parts []string
+	var walk func([]Component)
+	walk = func(cs []Component) {
+		for _, c := range cs {
+			if c.Type == componentText && strings.TrimSpace(c.Content) != "" {
+				parts = append(parts, strings.TrimSpace(c.Content))
+			}
+			walk(c.Components)
+		}
+	}
+	walk(m.Components)
+	return strings.Join(parts, "\n")
+}
+
+// HistoryDocumentID is an imported channel-day's document. It is apart from
+// the live bridge's (DocumentID), so a day the bridge appended to before the
+// import still gets its full history.
+func HistoryDocumentID(channelID string, day time.Time) string {
+	return DocumentID(channelID, day) + ":history"
 }
 
 // GuildChannels lists a server's channels.
@@ -59,7 +99,7 @@ func (r *REST) Threads(ctx context.Context, guildID string, channels []Channel) 
 	}
 	out := active.Threads
 	for _, c := range channels {
-		if c.Type != 0 && c.Type != 5 {
+		if !threadParentTypes[c.Type] {
 			continue
 		}
 		before := ""
@@ -123,10 +163,10 @@ type Documents interface {
 }
 
 // Importer replays allowlisted servers' Discord history into their banks
-// (HOME-164): one document per channel and UTC day, in the shape the bridge
-// appends to (DocumentID), so history and live memory share a structure.
-// Days already stored are skipped, so a re-run adds no documents, and today
-// is left to the live bridge.
+// (HOME-164): one document per channel and UTC day (HistoryDocumentID), with
+// the live bridge's tag and observation scope, so history and live memory
+// recall together. Days already imported are skipped, so a re-run adds no
+// documents, and today is left to the live bridge.
 type Importer struct {
 	Source HistorySource
 	Store  Documents
@@ -186,8 +226,9 @@ func (im *Importer) Run(ctx context.Context) (ImportStats, error) {
 			if !historyChannelTypes[c.Type] {
 				continue
 			}
-			// A thread belongs to its parent's listed channel.
-			if len(g.Channels) > 0 && !contains(g.Channels, c.ID) && !contains(g.Channels, c.ParentID) {
+			// A channel list admits only listed IDs, threads included, as the
+			// live bridge does (Bridge.Accept).
+			if len(g.Channels) > 0 && !contains(g.Channels, c.ID) {
 				continue
 			}
 			jobs = append(jobs, job{gid, c})
@@ -292,13 +333,13 @@ func (im *Importer) keep(m HistoryMessage) bool {
 	if (m.Author.Bot || m.WebhookID != "") && m.Author.ID != im.BotID && !im.IncludeBots {
 		return false
 	}
-	return strings.TrimSpace(m.Content) != "" || len(m.Attachments) > 0
+	return m.Text() != "" || len(m.Attachments) > 0
 }
 
 // store retains one channel-day unless it is already stored. lines are
 // newest first, as Discord returns them.
 func (im *Importer) store(ctx context.Context, guildID string, c Channel, day time.Time, lines []HistoryMessage) (bool, error) {
-	id := DocumentID(c.ID, day)
+	id := HistoryDocumentID(c.ID, day)
 	exists, err := im.Store.DocumentExists(ctx, guildID, id)
 	if err != nil {
 		return false, err
@@ -316,13 +357,14 @@ func (im *Importer) store(ctx context.Context, guildID string, c Channel, day ti
 	var b strings.Builder
 	for i := len(lines) - 1; i >= 0; i-- {
 		m := lines[i]
-		fmt.Fprintf(&b, "%s (%s): %s", m.Author.Username, SentAt(m.Message).UTC().Format(time.RFC3339), strings.TrimSpace(m.Content))
+		fmt.Fprintf(&b, "%s (%s): %s", m.Author.Username, SentAt(m.Message).UTC().Format(time.RFC3339), m.Text())
 		for _, a := range m.Attachments {
 			fmt.Fprintf(&b, " [attachment: %s]", a.Filename)
 		}
 		b.WriteString("\n")
 	}
 	item := NewRetain(c.ID, SentAt(lines[len(lines)-1].Message), strings.TrimRight(b.String(), "\n"))
+	item.DocumentID = id
 	item.UpdateMode = "replace"
 	item.Context = "Discord #" + c.Name
 	if err := im.Store.RetainDocument(ctx, guildID, item); err != nil {
