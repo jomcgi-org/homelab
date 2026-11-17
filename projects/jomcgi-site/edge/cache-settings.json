@@ -14,7 +14,6 @@
     },
     {
       "description": "data.jomcgi.dev",
-      "ref": "jomcgi_site_data_cache_v1",
       "expression": "http.host eq \"data.jomcgi.dev\"",
       "action": "set_cache_settings",
       "action_parameters": {

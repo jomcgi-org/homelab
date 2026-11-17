@@ -1,0 +1,68 @@
+{{- if .Values.edge.apply -}}
+{{- $name := "jomcgi-site-edge" -}}
+{{- $workload := deepCopy (index .Values.workloads $name) -}}
+{{- $_ := set $workload "args" (list .Values.edge.mode) -}}
+{{- $ctx := dict "root" . "name" $name "workload" $workload -}}
+{{- $pod := include "factory-library.pod" $ctx | fromYaml -}}
+{{- $_ := set $pod.spec.securityContext "fsGroup" 65532 -}}
+{{- $_ := set $pod.spec.securityContext "fsGroupChangePolicy" "OnRootMismatch" -}}
+{{- $container := first $pod.spec.containers -}}
+{{- $_ := set $container "volumeMounts" (concat ($container.volumeMounts | default list) (list
+  (dict "name" "edge-state" "mountPath" "/var/lib/jomcgi-site-edge")
+  (dict "name" "edge-intent" "mountPath" "/var/run/edge-intent" "readOnly" true))) -}}
+{{- $_ := set $pod.spec "volumes" (concat ($pod.spec.volumes | default list) (list
+  (dict "name" "edge-state" "persistentVolumeClaim" (dict "claimName" $name))
+  (dict "name" "edge-intent" "configMap" (dict "name" "jomcgi-site-release" "optional" true)))) -}}
+{{- $keep := dict "argocd.argoproj.io/sync-options" "Prune=false,Delete=false" "helm.sh/resource-policy" "keep" -}}
+{{- $policy := include "factory-library.networkPolicy" $ctx | fromYaml -}}
+{{- $_ := set $policy.metadata "annotations" $keep -}}
+# The snapshot and recovery path must survive a chart downgrade. The release
+# marker is intentionally NOT kept: an absent edgeApply key requests rollback.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  annotations:
+    {{- toYaml $keep | nindent 4 }}
+spec:
+  # Unlike ReadWriteOnce, this serializes pods even on the same node.
+  accessModes: [ReadWriteOncePod]
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: {{ $workload.backoffLimit }}
+  activeDeadlineSeconds: 300
+  template:
+    {{- toYaml $pod | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jomcgi-site-edge-recovery
+  annotations:
+    {{- toYaml $keep | nindent 4 }}
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 0
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      template:
+        {{- $_ := set $container "args" (list "reconcile") }}
+        {{- toYaml $pod | nindent 8 }}
+---
+{{ toYaml $policy }}
+{{- end }}

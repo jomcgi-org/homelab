@@ -39,6 +39,24 @@ def docs(result):
     }
 
 
+@pytest.mark.parametrize("mode", ["apply", "restore"])
+def test_enabled_edge_chart_lints(mode):
+    result = subprocess.run(
+        [
+            os.environ["HELM_BIN"],
+            "lint",
+            str(CHART),
+            "--set",
+            f"image.digest={DIGEST}",
+            "--set",
+            f"edge.apply=true,edge.mode={mode}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     rendered = docs(render())
     job = rendered["Job/jomcgi-site-deploy"]
@@ -123,6 +141,69 @@ def test_edge_apply_is_off_by_default():
     rendered = docs(render())
     assert "Job/jomcgi-site-edge" not in rendered
     assert "CiliumNetworkPolicy/jomcgi-site-edge" not in rendered
+    assert "PersistentVolumeClaim/jomcgi-site-edge" not in rendered
+    assert "CronJob/jomcgi-site-edge-recovery" not in rendered
+
+
+def test_downgrade_retains_recovery_state_and_network_but_removes_intent():
+    rendered = docs(render("--set", "edge.apply=true"))
+    for name in [
+        "PersistentVolumeClaim/jomcgi-site-edge",
+        "CronJob/jomcgi-site-edge-recovery",
+        "CiliumNetworkPolicy/jomcgi-site-edge",
+    ]:
+        annotations = rendered[name]["metadata"]["annotations"]
+        assert (
+            annotations["argocd.argoproj.io/sync-options"] == "Prune=false,Delete=false"
+        )
+        assert annotations["helm.sh/resource-policy"] == "keep"
+    marker = rendered["ConfigMap/jomcgi-site-release"]
+    assert marker["metadata"]["annotations"] == {"argocd.argoproj.io/sync-wave": "-1"}
+    assert marker["data"]["edgeApply"] == "true"
+    assert (
+        docs(render())["ConfigMap/jomcgi-site-release"]["data"]["edgeApply"] == "false"
+    )
+
+
+def test_apply_and_retained_recovery_share_one_exclusive_durable_volume():
+    rendered = docs(render("--set", "edge.apply=true"))
+    claim = rendered["PersistentVolumeClaim/jomcgi-site-edge"]["spec"]
+    assert claim["accessModes"] == ["ReadWriteOncePod"]
+    assert claim["storageClassName"] == "standard-rwo"
+    recovery = rendered["CronJob/jomcgi-site-edge-recovery"]["spec"]
+    assert recovery["schedule"] == "* * * * *"
+    assert recovery["concurrencyPolicy"] == "Forbid"
+    job = rendered["Job/jomcgi-site-edge"]["spec"]
+    restore_job = recovery["jobTemplate"]["spec"]
+    for spec, args in [(job, ["apply"]), (restore_job, ["reconcile"])]:
+        assert spec["activeDeadlineSeconds"] == 300
+        pod = spec["template"]["spec"]
+        assert pod["automountServiceAccountToken"] is False
+        assert pod["securityContext"]["fsGroup"] == 65532
+        assert pod["securityContext"]["runAsNonRoot"] is True
+        container = pod["containers"][0]
+        assert container["args"] == args
+        assert container["image"].endswith(f"@{DIGEST}")
+        assert container["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "capabilities": {"drop": ["ALL"]},
+        }
+        volumes = {v["name"]: v for v in pod["volumes"]}
+        assert volumes["edge-state"]["persistentVolumeClaim"] == {
+            "claimName": "jomcgi-site-edge"
+        }
+        assert volumes["edge-intent"]["configMap"] == {
+            "name": "jomcgi-site-release",
+            "optional": True,
+        }
+        assert {m["mountPath"] for m in container["volumeMounts"]} == {
+            "/var/lib/jomcgi-site-edge",
+            "/var/run/edge-intent",
+        }
+        assert spec["template"]["metadata"]["labels"] == {
+            "app.kubernetes.io/name": "jomcgi-site-edge"
+        }
 
 
 @pytest.mark.parametrize("stage", ["dev", "prod"])

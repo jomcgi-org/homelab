@@ -8,9 +8,7 @@
 {{- fail "edge.mode=restore requires edge.apply=true" -}}
 {{- end -}}
 {{- $ctx := deepCopy . -}}
-{{- if not .Values.edge.apply -}}
+{{- /* The edge template adds a fixed retained PVC and recovery controller to
+the library's hardened pod. The ordinary workload loop handles deployment. */ -}}
 {{- $_ := unset $ctx.Values.workloads "jomcgi-site-edge" -}}
-{{- else -}}
-{{- $_ := set (index $ctx.Values.workloads "jomcgi-site-edge") "args" (list .Values.edge.mode) -}}
-{{- end -}}
 {{ include "factory-library.all" $ctx }}

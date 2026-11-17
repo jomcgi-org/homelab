@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import http from "node:http";
 import test from "node:test";
-import { applyCacheSettings, cloudflareClient } from "./apply.mjs";
+import {
+  applyCacheSettings,
+  cloudflareClient,
+  reconcileCacheSettings,
+} from "./apply.mjs";
+import { snapshotStore } from "./state.mjs";
 
 const file = JSON.parse(
   await readFile(new URL("./cache-settings.json", import.meta.url), "utf8"),
@@ -36,6 +43,11 @@ const monolith = {
 // Exercise the HTTP client as well as the apply logic. Production requests
 // still address api.cloudflare.com over IPv4; only this test transport is local.
 async function api(t, { rules = [monolith], afterPut, reply, zones } = {}) {
+  const directory = await mkdtemp(
+    join(process.env.TEST_TMPDIR ?? tmpdir(), "home192-"),
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const state = snapshotStore(directory);
   let live = structuredClone(rules);
   const calls = [];
   const server = http.createServer(async (req, res) => {
@@ -57,6 +69,10 @@ async function api(t, { rules = [monolith], afterPut, reply, zones } = {}) {
     } else {
       assert.equal(req.url, endpoint);
       if (req.method === "PUT") {
+        assert.ok(
+          (await state.read()).active,
+          "a durable snapshot precedes every PUT",
+        );
         live = JSON.parse(body).rules;
         if (afterPut) live = afterPut(live);
       }
@@ -91,10 +107,28 @@ async function api(t, { rules = [monolith], afterPut, reply, zones } = {}) {
       callback,
     );
   });
+  const options = () => ({
+    file,
+    imported,
+    accountId,
+    client,
+    state: snapshotStore(directory),
+  });
   return {
     calls,
-    apply: (desired = file, mode = "apply") =>
-      applyCacheSettings({ file: desired, imported, accountId, client, mode }),
+    state,
+    directory,
+    setRules: (rules) => {
+      live = structuredClone(rules);
+    },
+    apply: (desired = file, mode = "apply", overrides = {}) =>
+      applyCacheSettings({ ...options(), file: desired, mode, ...overrides }),
+    reconcile: async (intent) => {
+      const intentPath = join(directory, "edgeApply");
+      if (intent === undefined) await rm(intentPath, { force: true });
+      else await writeFile(intentPath, intent);
+      await reconcileCacheSettings({ ...options(), intentPath });
+    },
   };
 }
 
@@ -104,7 +138,6 @@ test("imports Monolith unchanged and respects object TTLs on data.jomcgi.dev", (
     monolith,
     {
       description: "data.jomcgi.dev",
-      ref: "jomcgi_site_data_cache_v1",
       expression: 'http.host eq "data.jomcgi.dev"',
       action: "set_cache_settings",
       action_parameters: {
@@ -151,42 +184,164 @@ for (const rule of [
   });
 }
 
-test("updates a rule bearing the apply's ownership ref without changing the import", async (t) => {
-  const { apply } = await api(t, {
-    rules: [monolith, { ...file.rules[1], enabled: false }],
-  });
-  await apply();
-});
-
-for (const mode of ["apply", "restore"]) {
-  for (const [name, changes] of [
-    ["matching settings", { ref: undefined }],
-    ["different settings", { ref: undefined, enabled: false }],
-    ["another writer's ref", { ref: "dashboard_data_rule" }],
-  ]) {
-    test(`${mode} preserves a pre-existing data rule with ${name} before any PUT`, async (t) => {
-      const { apply, calls } = await api(t, {
-        rules: [monolith, { ...file.rules[1], ...changes }],
-      });
-      await assert.rejects(
-        apply(file, mode),
-        /Refusing to adopt pre-existing rule "data.jomcgi.dev"/,
-      );
-      assert.deepEqual(
-        calls.map(({ method }) => method),
-        ["GET", "GET"],
-      );
+for (const ref of [
+  undefined,
+  "jomcgi_site_data_cache_v1",
+  "dashboard_custom_ref",
+]) {
+  test(`restores the actual pre-existing data policy even with ref ${ref}`, async (t) => {
+    const data = { ...file.rules[1], enabled: false };
+    const { apply, calls, state } = await api(t, {
+      rules: [monolith, { ...data, ref }],
     });
-  }
+    await apply();
+    await apply();
+    assert.deepEqual((await state.read()).original, {
+      rules: [monolith, data],
+    });
+    await apply(file, "restore");
+    assert.deepEqual(
+      JSON.parse(calls.filter((c) => c.method === "PUT").at(-1).body),
+      {
+        rules: [monolith, data],
+      },
+    );
+    assert.equal((await state.read()).active, false);
+  });
 }
 
-test("rejects a managed rule without an ownership ref before contacting Cloudflare", async (t) => {
-  const { apply, calls } = await api(t);
-  const desired = structuredClone(file);
-  delete desired.rules[1].ref;
-  await assert.rejects(apply(desired), /stable ownership ref/);
+test("a snapshot write failure stops apply before PUT", async (t) => {
+  const { apply, calls, state } = await api(t);
+  await assert.rejects(
+    apply(file, "apply", {
+      state: {
+        read: state.read,
+        write: async () => {
+          throw new Error("disk full");
+        },
+      },
+    }),
+    /disk full/,
+  );
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["GET", "GET"],
+  );
+});
+
+test("an original policy with duplicate identities stops before PUT", async (t) => {
+  const { apply, calls, state } = await api(t, {
+    rules: [monolith, file.rules[1], { ...file.rules[1], enabled: false }],
+  });
+  await assert.rejects(apply(), /Duplicate description and expression/);
+  assert.equal(await state.read(), null);
+  assert.ok(calls.every((c) => c.method === "GET"));
+});
+
+test("restore cannot invent an original entrypoint without a snapshot", async (t) => {
+  const { apply, calls } = await api(t, { rules: file.rules });
+  await assert.rejects(apply(file, "restore"), /without the durable/);
   assert.equal(calls.length, 0);
 });
+
+test("recovery can use the snapshot after an accepted PUT loses its readback", async (t) => {
+  let loseReadback = false;
+  const { apply, reconcile, calls } = await api(t, {
+    afterPut: (rules) => {
+      loseReadback = true;
+      return rules;
+    },
+    reply: (req, res) => {
+      if (loseReadback && req.method === "GET" && req.url === endpoint) {
+        loseReadback = false;
+        res.writeHead(503);
+        res.end("unavailable");
+        return true;
+      }
+      return false;
+    },
+  });
+  await assert.rejects(apply(), /HTTP 503/);
+  // Restoration's PUT also loses readback; retry must recognize the original
+  // policy and finish the saved transaction without issuing another PUT.
+  await assert.rejects(reconcile(undefined), /HTTP 503/);
+  await reconcile(undefined);
+  assert.equal(calls.filter((c) => c.method === "PUT").length, 2);
+});
+
+test("a failed completion write retries without repeating the rollback PUT", async (t) => {
+  const { apply, calls, state } = await api(t);
+  await apply();
+  await assert.rejects(
+    apply(file, "restore", {
+      state: {
+        read: state.read,
+        write: async () => {
+          throw new Error("disk full");
+        },
+      },
+    }),
+    /disk full/,
+  );
+  assert.equal((await state.read()).active, true);
+  await apply(file, "restore");
+  assert.equal((await state.read()).active, false);
+  assert.equal(calls.filter((c) => c.method === "PUT").length, 2);
+});
+
+for (const field of ["accountId", "zoneId"]) {
+  test(`a snapshot for another ${field} fails before any PUT`, async (t) => {
+    const { apply, calls, state } = await api(t);
+    await apply();
+    await state.write({ ...(await state.read()), [field]: "c".repeat(32) });
+    calls.length = 0;
+    await assert.rejects(
+      apply(),
+      /foreign edge snapshot|Snapshot zone differs/,
+    );
+    assert.ok(calls.every((c) => c.method === "GET"));
+  });
+}
+
+for (const intent of [undefined, "false"]) {
+  test(`retained recovery restores after downgrade with intent ${intent}`, async (t) => {
+    const { apply, calls, reconcile, state } = await api(t);
+    await reconcile(intent); // No first write yet: no API requests.
+    assert.equal(calls.length, 0);
+    await apply();
+    const appliedCalls = calls.length;
+    await reconcile("true");
+    assert.equal(calls.length, appliedCalls);
+    await reconcile(intent);
+    const puts = calls.filter((c) => c.method === "PUT");
+    assert.equal(puts.length, 2);
+    assert.equal(puts[1].body, JSON.stringify(imported));
+    assert.equal((await state.read()).active, false);
+    const restoredCalls = calls.length;
+    await reconcile(intent); // A completed rollback never writes again.
+    assert.equal(calls.length, restoredCalls);
+  });
+}
+
+test("recovery refuses an invalid release marker", async (t) => {
+  const { reconcile, calls } = await api(t);
+  await assert.rejects(reconcile("invalid"), /Invalid edge intent/);
+  assert.equal(calls.length, 0);
+});
+
+for (const saved of [
+  "{broken",
+  JSON.stringify({ schema: 2 }),
+  JSON.stringify(null),
+]) {
+  test(`corrupt durable state stops apply and recovery: ${saved}`, async (t) => {
+    const { apply, reconcile, calls, directory } = await api(t);
+    await writeFile(join(directory, "snapshot.json"), saved);
+    await assert.rejects(apply());
+    await assert.rejects(reconcile(undefined));
+    assert.equal(calls.length, 0);
+  });
+}
 
 for (const [name, rules] of [
   ["disabled import", [{ ...monolith, enabled: false }]],
@@ -215,34 +370,18 @@ for (const [name, rules] of [
   });
 }
 
-test("restores the imported entrypoint before a chart downgrade and repeats the same body", async (t) => {
-  const { apply, calls } = await api(t);
+test("restore finishes once and a later apply starts a fresh snapshot", async (t) => {
+  const { apply, calls, state, setRules } = await api(t);
   await apply();
   await apply(file, "restore");
   await apply(file, "restore");
-  const puts = calls.filter(({ method }) => method === "PUT");
-  assert.equal(puts.length, 3);
-  assert.equal(puts[0].body, JSON.stringify(file));
+  let puts = calls.filter(({ method }) => method === "PUT");
+  assert.equal(puts.length, 2);
   assert.equal(puts[1].body, JSON.stringify(imported));
-  assert.equal(puts[2].body, puts[1].body);
-  // Each write includes successful readback through the real HTTP client.
-  assert.deepEqual(
-    calls.map(({ method }) => method),
-    [
-      "GET",
-      "GET",
-      "PUT",
-      "GET",
-      "GET",
-      "GET",
-      "PUT",
-      "GET",
-      "GET",
-      "GET",
-      "PUT",
-      "GET",
-    ],
-  );
+  const data = { ...file.rules[1], enabled: false };
+  setRules([monolith, data]);
+  await apply();
+  assert.deepEqual((await state.read()).original, { rules: [monolith, data] });
 });
 
 for (const [name, rules] of [
@@ -254,7 +393,10 @@ for (const [name, rules] of [
   ["reordered rules", file.rules.toReversed()],
 ]) {
   test(`restore refuses to overwrite ${name}`, async (t) => {
-    const { apply, calls } = await api(t, { rules });
+    const { apply, calls, setRules } = await api(t);
+    await apply();
+    calls.length = 0;
+    setRules(rules);
     await assert.rejects(apply(file, "restore"), /Refusing/);
     assert.ok(calls.every(({ method }) => method === "GET"));
   });
@@ -262,9 +404,9 @@ for (const [name, rules] of [
 
 test("restore fails if Cloudflare does not return the imported entrypoint", async (t) => {
   const { apply } = await api(t, {
-    rules: file.rules,
     afterPut: () => file.rules,
   });
+  await apply();
   await assert.rejects(apply(file, "restore"), /verification failed/);
 });
 
@@ -281,14 +423,6 @@ for (const [name, afterPut] of [
   ["settings", (rules) => [{ ...rules[0], enabled: false }, rules[1]]],
   ["order", (rules) => rules.toReversed()],
   ["missing rule", (rules) => rules.slice(0, 1)],
-  [
-    "ownership ref",
-    (rules) => [rules[0], { ...rules[1], ref: "another_writer" }],
-  ],
-  [
-    "missing ownership ref",
-    (rules) => [rules[0], { ...rules[1], ref: undefined }],
-  ],
   [
     "extra setting",
     (rules) => [
