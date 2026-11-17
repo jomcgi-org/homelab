@@ -35,6 +35,14 @@ spec:
     # still needs that bucket's key. Substrate (ate-snapshots) is added with
     # its grant.
     - fromEndpoints:
+        # The library labels only declared Garage consumers. Each request
+        # still needs a bucket key. An explicit namespace wildcard permits
+        # consumers in their own namespaces, not just the garage namespace.
+        - matchLabels:
+            factory.jomcgi.dev/garage-client: "true"
+          matchExpressions:
+            - key: k8s:io.kubernetes.pod.namespace
+              operator: Exists
         # Database WAL archives and base backups.
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kagent-pg

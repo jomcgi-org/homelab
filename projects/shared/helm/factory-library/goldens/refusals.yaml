@@ -185,3 +185,78 @@
     workloads/app/kind: Job
     workloads/app/hook: PreSync
   error: "workload app: hook must be Sync or PostSync"
+- set:
+    buckets:
+      - name: factory-public
+        access: read
+        public:
+          r2Bucket: factory-public
+  error: public.itemPath is required
+- set:
+    buckets:
+      - name: factory-public
+        access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+          image:
+            repository: docker.io/rclone/rclone
+            tag: latest
+  error: "mirror image: unsupported field tag"
+- set:
+    buckets:
+      - name: factory-public
+        access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+          image:
+            repository: docker.io/rclone/rclone
+  error: "workload consumer-factory-public-mirror: image.digest is required (tags are not deployable)"
+- set:
+    buckets:
+      - name: factory-public
+        access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+          egress:
+            - peer: world
+              port: 443
+  error: "public bucket: unsupported field egress"
+- set:
+    buckets:
+      - name: factory-public
+        access: owner
+  error: bucket.access must be read, write or readwrite
+- set:
+    buckets:
+      - name: factory-public
+        access: read
+    workloads/app/network/egress:
+      - peer: undeclared
+        port: 443
+  error: unknown peer undeclared
+- set:
+    buckets:
+      - name: factory-public
+        access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+      - name: factory-public-mirror
+        access: read
+  error: bucket Secret name collision consumer-factory-public-mirror-s3
+- set:
+    buckets:
+      - name: first
+        access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+      - name: second
+        access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+  error: each R2 bucket must have only one mirror

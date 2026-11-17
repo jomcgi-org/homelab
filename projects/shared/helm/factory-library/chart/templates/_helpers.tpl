@@ -15,6 +15,7 @@
 {{- end }}
 {{- end }}
 {{ include "factory-library.secrets" . }}
+{{ include "factory-library.buckets" . }}
 {{- end -}}
 
 {{/* Reject misspellings and raw Kubernetes overrides instead of ignoring them. */}}

@@ -13,7 +13,8 @@ The consumer's Secret is the source of truth for its key: credentials are
 generated into it when absent and imported into Garage when Garage lacks
 them, so a rerun never rotates a key and a rebuilt Garage gets the same keys
 back. ArgoCD creates every Secret named here empty and ignores its data; this
-script only reads and updates those names.
+script only updates those names. Library consumers also declare labeled
+Secrets, discovered through metadata lists in namespaces that grant list access.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -21,6 +22,7 @@ Uses only the standard library and the pod's service account token.
 import base64
 import json
 import os
+import re
 import secrets
 import ssl
 import sys
@@ -62,7 +64,7 @@ GRANTS = [
 ]
 
 
-def k8s(method, path, body=None):
+def k8s(method, path, body=None, metadata_only=False):
     api = "https://{}:{}".format(
         os.environ["KUBERNETES_SERVICE_HOST"], os.environ["KUBERNETES_SERVICE_PORT"]
     )
@@ -75,6 +77,11 @@ def k8s(method, path, body=None):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Accept": (
+                "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1"
+                if metadata_only
+                else "application/json"
+            ),
         },
     )
     ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
@@ -85,7 +92,7 @@ def k8s(method, path, body=None):
         # 403: the consumer's Role is not there yet, the same as a missing Secret.
         if e.code in (403, 404) and method == "GET":
             return None
-        raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
+        raise SystemExit(f"{method} {path}: {e.code}")
 
 
 def secret_path(namespace, name):
@@ -140,7 +147,7 @@ def garage(method, endpoint, body=None, query=None, missing_ok=False):
     except urllib.error.HTTPError as e:
         if e.code == 404 and missing_ok:
             return None
-        raise SystemExit(f"{method} {endpoint}: {e.code} {e.read().decode()}")
+        raise SystemExit(f"{method} {endpoint}: {e.code}")
 
 
 def wait_for_nodes(timeout=600):
@@ -203,12 +210,16 @@ def ensure_bucket(name):
     return info["id"]
 
 
-def ensure_grant(bucket_id, bucket, namespace, name):
+def ensure_grant(bucket_id, bucket, namespace, name, access="readwrite"):
     secret = k8s("GET", secret_path(namespace, name))
     if secret is None:
         print(f"{namespace}/{name} not present yet; skipping {bucket}")
         return
     data = dict(secret.get("data") or {})
+    if ("AWS_ACCESS_KEY_ID" in data) != ("AWS_SECRET_ACCESS_KEY" in data):
+        raise RuntimeError(
+            f"{namespace}/{name}: incomplete key pair; refusing rotation"
+        )
     if "AWS_ACCESS_KEY_ID" in data and "AWS_SECRET_ACCESS_KEY" in data:
         key_id = unb64(data["AWS_ACCESS_KEY_ID"])
         key_secret = unb64(data["AWS_SECRET_ACCESS_KEY"])
@@ -238,9 +249,7 @@ def ensure_grant(bucket_id, bucket, namespace, name):
     if info is not None and info.get("secretAccessKey") != key_secret:
         # Never overwrite either side: the Secret may be stale, or Garage's
         # key may have been changed by hand. An operator decides (README).
-        raise RuntimeError(
-            f"{namespace}/{name}: Garage key {key_id} has a different secret"
-        )
+        raise RuntimeError(f"{namespace}/{name}: Garage key has a different secret")
     if info is None:
         garage(
             "POST",
@@ -252,16 +261,85 @@ def ensure_grant(bucket_id, bucket, namespace, name):
             },
         )
         print(f"imported key {namespace}/{name}")
+    # A claim renamed to another bucket must not retain its old grant.
+    for previous in (info or {}).get("buckets", []):
+        if previous["id"] != bucket_id:
+            garage(
+                "POST",
+                "DenyBucketKey",
+                {
+                    "bucketId": previous["id"],
+                    "accessKeyId": key_id,
+                    "permissions": {"read": True, "write": True, "owner": True},
+                },
+            )
+    permissions = {
+        "read": access in ("read", "readwrite"),
+        "write": access in ("write", "readwrite"),
+        "owner": False,
+    }
+    # AllowBucketKey is additive. Revoke unwanted rights on every reconcile,
+    # including owner, so a values change can narrow access without key rotation.
+    garage(
+        "POST",
+        "DenyBucketKey",
+        {
+            "bucketId": bucket_id,
+            "accessKeyId": key_id,
+            "permissions": {key: not value for key, value in permissions.items()},
+        },
+    )
     garage(
         "POST",
         "AllowBucketKey",
         {
             "bucketId": bucket_id,
             "accessKeyId": key_id,
-            "permissions": {"read": True, "write": True, "owner": False},
+            "permissions": permissions,
         },
     )
-    print(f"{namespace}/{name} has read and write on {bucket}")
+    print(f"{namespace}/{name} has {access} on {bucket}")
+
+
+CLAIM_LABEL = "factory.jomcgi.dev/garage-bucket"
+ACCESS_LABEL = "factory.jomcgi.dev/garage-access"
+
+
+def list_metadata(path, **query):
+    """Paginate metadata only; a namespace without a discovery Role is skipped."""
+    query["limit"] = 100
+    while True:
+        page = k8s(
+            "GET", path + "?" + urllib.parse.urlencode(query), metadata_only=True
+        )
+        if page is None:
+            if path == "/api/v1/namespaces":
+                raise RuntimeError("namespace discovery is not authorized")
+            return
+        yield from page.get("items", [])
+        token = page.get("metadata", {}).get("continue")
+        if not token:
+            return
+        query["continue"] = token
+
+
+def discover_grants():
+    # Namespace enumeration carries no Secret access. Consumers opt in with a
+    # namespaced list Role; updates remain restricted to exact claim names.
+    for namespace in list_metadata("/api/v1/namespaces"):
+        ns = namespace["metadata"]["name"]
+        for secret in list_metadata(
+            f"/api/v1/namespaces/{ns}/secrets", labelSelector=CLAIM_LABEL
+        ):
+            meta = secret["metadata"]
+            labels = meta.get("labels", {})
+            bucket = labels.get(CLAIM_LABEL, "")
+            access = labels.get(ACCESS_LABEL, "")
+            if not re.fullmatch(
+                r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", bucket
+            ) or access not in ("read", "write", "readwrite"):
+                raise ValueError(f"invalid Garage claim {ns}/{meta['name']}")
+            yield bucket, ns, meta["name"], access
 
 
 def bootstrap():
@@ -269,10 +347,18 @@ def bootstrap():
     ensure_layout(nodes)
     ids = {name: ensure_bucket(name) for name in BUCKETS}
     failed = []
+    grants = [(*grant, "readwrite") for grant in GRANTS]
+    try:
+        grants.extend(discover_grants())
+    except (Exception, SystemExit) as e:
+        print(f"ERROR: claim discovery: {e}")
+        failed.append("claim discovery")
     # One bad grant must not stop the others.
-    for bucket, namespace, name in GRANTS:
+    for bucket, namespace, name, access in grants:
         try:
-            ensure_grant(ids[bucket], bucket, namespace, name)
+            if bucket not in ids:
+                ids[bucket] = ensure_bucket(bucket)
+            ensure_grant(ids[bucket], bucket, namespace, name, access)
         except (Exception, SystemExit) as e:
             print(f"ERROR: {namespace}/{name}: {e}")
             failed.append(f"{namespace}/{name}")

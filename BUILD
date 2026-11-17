@@ -148,6 +148,7 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ) + [
         "//projects/factory-landing:repo_docs",
+        "//projects/factory-public:repo_docs",
         "//projects/factory-storyboard:repo_docs",
         "//projects/jomcgi-site:repo_docs",
         "//projects/shared/helm/factory-library:repo_docs",

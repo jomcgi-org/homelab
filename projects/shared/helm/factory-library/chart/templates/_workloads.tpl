@@ -21,10 +21,13 @@
 metadata:
   labels:
     {{- include "factory-library.selector" . | nindent 4 }}
+    {{- if and .root.Values.buckets (not .secretInitializer) }}
+    factory.jomcgi.dev/garage-client: "true"
+    {{- end }}
   {{- include "factory-library.annotations" . | nindent 2 }}
 spec:
   automountServiceAccountToken: {{ $w.kubernetesApi | default false }}
-  {{- if $w.kubernetesApi }}
+  {{- if or $w.kubernetesApi .mirror }}
   serviceAccountName: {{ .name }}
   {{- end }}
   {{- if hasPrefix "ghcr.io/jomcgi/" $image }}
@@ -157,7 +160,7 @@ spec:
 {{- end -}}
 
 {{- define "factory-library.companions" -}}
-{{- if .workload.kubernetesApi }}
+{{- if or .workload.kubernetesApi .mirror }}
 ---
 apiVersion: v1
 kind: ServiceAccount

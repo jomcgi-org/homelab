@@ -325,3 +325,135 @@ def test_job_without_hook_is_a_plain_resource(chart):
     config["workloads"]["app"]["kind"] = "Job"
     job = objects(render(chart, config))["Job/app"]
     assert "annotations" not in job["metadata"]
+
+
+def bucket_config():
+    config = values()
+    config["buckets"] = [
+        {
+            "name": "factory-public",
+            "access": "write",
+            "public": {
+                "r2Bucket": "factory-public",
+                "itemPath": "vaults/k8s-homelab/items/factory-r2-public-mirror",
+            },
+        }
+    ]
+    return config
+
+
+def mirror_container(docs):
+    return docs["CronJob/consumer-factory-public-mirror"]["spec"]["jobTemplate"][
+        "spec"
+    ]["template"]["spec"]["containers"][0]
+
+
+def test_public_bucket_defaults(chart):
+    config = bucket_config()
+    first = render(chart, config)
+    assert first.stdout == render(chart, config).stdout
+    docs = objects(first)
+    container = mirror_container(docs)
+    # The executable shell is exercised below; the golden pins the resources.
+    container["command"][2] = "<mirror-script>"
+    golden("buckets", docs)
+
+
+def test_private_bucket_and_custom_schedule(chart):
+    config = bucket_config()
+    config["buckets"][0].pop("public")
+    docs = objects(render(chart, config))
+    assert not any(key.startswith(("CronJob/", "OnePasswordItem/")) for key in docs)
+    assert docs["CiliumNetworkPolicy/app"]["spec"]["egress"][0]["toPorts"] == [
+        {"ports": [{"port": "3900", "protocol": "TCP"}]}
+    ]
+    assert (
+        docs["Secret/consumer-factory-public-s3"]["metadata"]["labels"][
+            "factory.jomcgi.dev/garage-access"
+        ]
+        == "write"
+    )
+    config = bucket_config()
+    config["buckets"][0]["public"]["schedule"] = "*/5 * * * *"
+    docs = objects(render(chart, config))
+    assert docs["CronJob/consumer-factory-public-mirror"]["spec"]["schedule"] == (
+        "*/5 * * * *"
+    )
+
+
+@pytest.mark.parametrize(
+    "manifest,fail,expected",
+    [
+        ("manifest.json\n", "", ["sync", "lsf", "copyto"]),
+        ("", "", ["sync", "lsf", "delete"]),
+        ("manifest.json\n", "sync", ["sync"]),
+        ("manifest.json\n", "lsf", ["sync", "lsf"]),
+        ("manifest.json\n", "copyto", ["sync", "lsf", "copyto"]),
+    ],
+)
+def test_mirror_orders_writes_and_propagates_failures(
+    chart, tmp_path, manifest, fail, expected
+):
+    docs = objects(render(chart, bucket_config()))
+    container = mirror_container(docs)
+    env = {
+        **os.environ,
+        **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+    }
+    env.update(
+        RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
+        FAKE_MANIFEST=manifest,
+        FAKE_FAIL=fail,
+        FAKE_LOG=str(tmp_path / "calls.jsonl"),
+    )
+    binary = tmp_path / "rclone"
+    binary.write_text(
+        "#!" + shutil.which("python3") + "\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['FAKE_LOG'], 'a') as out:\n"
+        "    out.write(json.dumps(args) + '\\n')\n"
+        "command = args[3]\n"
+        "if command == os.environ['FAKE_FAIL']: sys.exit(1)\n"
+        "if command == 'lsf': print(os.environ['FAKE_MANIFEST'], end='')\n"
+    )
+    binary.chmod(0o755)
+    env["PATH"] = str(tmp_path) + os.pathsep + env["PATH"]
+    result = subprocess.run(container["command"], env=env, capture_output=True)
+    assert (result.returncode != 0) == bool(fail)
+    calls = [
+        json.loads(line) for line in Path(env["FAKE_LOG"]).read_text().splitlines()
+    ]
+    assert [call[3] for call in calls] == expected
+    assert all(
+        call[:3] == ["--config", "/dev/null", "--s3-no-check-bucket"] for call in calls
+    )
+    assert calls[0][4:] == [
+        "GARAGE:factory-public",
+        "R2:factory-public",
+        "--exclude",
+        "/manifest.json",
+        "--header-upload",
+        "Cache-Control: public, max-age=31536000, immutable",
+    ]
+    if expected[-1] == "copyto":
+        assert calls[-1][4:] == [
+            "GARAGE:factory-public/manifest.json",
+            "R2:factory-public/manifest.json",
+            "--ignore-times",
+            "--header-upload",
+            "Cache-Control: public, max-age=60",
+        ]
+    if expected[-1] == "delete":
+        assert calls[-1][4:] == ["R2:factory-public", "--include", "/manifest.json"]
+
+
+def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
+    container = mirror_container(objects(render(chart, bucket_config())))
+    env = {var["name"]: var["value"] for var in container["env"] if "value" in var}
+    env["RCLONE_CONFIG_R2_ENDPOINT"] = "https://other.r2.cloudflarestorage.com"
+    result = subprocess.run(
+        container["command"], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert result.stderr.strip() == "R2 endpoint does not match the declared egress"
