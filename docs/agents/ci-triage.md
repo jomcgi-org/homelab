@@ -79,6 +79,12 @@ failure. A red `pr-checks` run whose bazel summary looks green is usually the
 Elixir mix test genrule failing inside the build. A known flake that recurs is
 still new evidence, not the same flake.
 
+Fix a flaky test at its cause. Do not skip it, or make it pass with a sleep, a
+retry or reruns. If the cause stays unknown, delete the test and give the
+reason in the commit message. CI runs a failed test a second time
+(`--flaky_test_attempts=2` in `bazel/tools/preset.bazelrc`), and BuildBuddy
+marks a pass on that attempt `FLAKY`. A `FLAKY` test needs the same fix.
+
 ## Reproduce locally
 
 `ci test` runs the affected subset on one hosted Linux runner using the same

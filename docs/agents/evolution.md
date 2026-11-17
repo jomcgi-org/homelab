@@ -72,9 +72,16 @@ Treat retrieved history as evidence to verify against current state.
 
 Prefer repairing the cause to adding instructions. A recurring, demonstrated
 failure can justify a scoped test or enforcement check. Review it through the
-same delivery path, including a counterexample that should remain allowed.
-Consolidate superseded decisions and remove obsolete rules and duplicate checks
-as part of related work. Keep root `AGENTS.md` focused on authority and outcomes.
+same delivery path, with the failure it must catch and a counterexample that
+should remain allowed. Consolidate superseded decisions and remove obsolete
+rules and duplicate checks as part of related work. Keep root `AGENTS.md`
+focused on authority and outcomes.
+
+Start a new gate in observe mode: it records what it would block and blocks
+nothing. A gate is a required check, a reviewer finding type or a change to
+the reviewer's verdict logic. It enforces after it saw 10 PRs and each block
+it recorded named a real defect. A gate that closes an active exposure
+enforces at once. HOME-172 adds observe mode to the reviewer.
 
 Agents may improve prompts, tools, evaluation and guidance under this mandate.
 Changing instructions does not grant new credentials, waive required review,
