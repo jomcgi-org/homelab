@@ -4,7 +4,7 @@ contents:
   keyring:
     - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
   packages:
-    - nodejs-22
+    - nodejs-24
     - ca-certificates-bundle
 
 archs:

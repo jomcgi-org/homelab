@@ -153,7 +153,7 @@ use_repo(apko, "myservice_lock")
 | HTTPS/TLS       | `ca-certificates-bundle`                   |
 | Timezone        | `tzdata`                                   |
 | Git operations  | `git`, `openssh-client`                    |
-| Node.js runtime | `nodejs-22`, `npm`                         |
+| Node.js runtime | `nodejs-24`, `npm`                         |
 | Bun runtime     | `bun`                                      |
 | Go binary       | (no packages needed, just entrypoint)      |
 | Python runtime  | `python-3.12`                              |
