@@ -31,10 +31,11 @@ def test_discovery_paginates_and_skips_namespaces_without_permission(monkeypatch
                 }
             return {"items": [{"metadata": {"name": "public"}}]}
         assert query["labelSelector"] == [INIT.CLAIM_LABEL]
-        if url.path == "/api/v1/namespaces/private/secrets":
+        assert url.path.endswith("/configmaps")
+        if url.path == "/api/v1/namespaces/private/configmaps":
             return None  # GET 403, no list Role in this namespace.
         if "continue" not in query:
-            return {"metadata": {"continue": "secret-page"}, "items": []}
+            return {"metadata": {"continue": "claim-page"}, "items": []}
         return {
             "items": [
                 {

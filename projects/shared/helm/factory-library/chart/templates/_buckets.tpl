@@ -3,6 +3,16 @@
 {{- include "factory-library.name" .name }}
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .name }}
+  labels:
+    factory.jomcgi.dev/garage-bucket: {{ .bucket | quote }}
+    factory.jomcgi.dev/garage-access: {{ .access | quote }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: v1
 kind: Secret
 metadata:
   name: {{ .name }}
@@ -78,8 +88,7 @@ subjects:
 {{- $discovery := printf "%s-garage-discovery" .Release.Name -}}
 {{- include "factory-library.name" $discovery }}
 ---
-# Kubernetes RBAC cannot constrain list by label. Only opted-in consumer
-# namespaces grant this read; garage-init requests metadata, never Secret data.
+# Discovery reads non-secret claims. Credential access stays name-scoped.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -88,7 +97,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
 rules:
   - apiGroups: [""]
-    resources: [secrets]
+    resources: [configmaps]
     verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

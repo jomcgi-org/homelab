@@ -233,6 +233,15 @@
     buckets:
       - name: factory-public
         access: read
+        public:
+          r2Bucket: factory-public
+          itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+          suspend: "false"
+  error: public.suspend must be a boolean
+- set:
+    buckets:
+      - name: factory-public
+        access: read
     workloads/app/network/egress:
       - peer: undeclared
         port: 443

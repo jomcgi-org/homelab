@@ -147,6 +147,9 @@ metadata:
 spec:
   schedule: {{ required "factory-library: CronJob.schedule is required" .workload.schedule | quote }}
   concurrencyPolicy: {{ .workload.concurrencyPolicy | default "Forbid" }}
+  {{- if .mirror }}
+  suspend: {{ .suspend | default false }}
+  {{- end }}
   jobTemplate:
     {{- with include "factory-library.annotations" . }}
     metadata:
