@@ -80,14 +80,14 @@ kagent:
         serviceAccount:
           authority: factory-home
 
-# The Codex agent's model: gpt-6-astra, the frontier model, at the broker's
-# xhigh reasoning effort (Joe, 2026-11-14). Codex (0.169.1, from the
+# The Codex agent's model: gpt-6.2-astra, the frontier model, at the broker's
+# xhigh reasoning effort (Joe, 2026-11-14; 6.2 on 2026-11-17, HOME-226). Codex (0.169.1, from the
 # kagent fork above) gives a model its apply_patch edit tool only when it is
 # in its bundled catalogue (codex-rs/models-manager/models.json); with a
 # model outside it the first run (HOME-1) had no way to edit files.
 agents:
   codex:
-    model: gpt-6-astra
+    model: gpt-6.2-astra
     # Substrate workers (requests 1 CPU, 1536Mi), one actor each. The nodes
     # idle at ~4% CPU, so the queue and merge contention bound throughput, not
     # compute. Two more than connector.agents below allows runs: an idle
@@ -104,14 +104,13 @@ agents:
       resources:
         requests:
           memory: 1536Mi
-  # The reviewer reads and never edits, so it needs no apply_patch and runs on
-  # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14:
-  # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
-  # Codex 0.169.1 has terra in its catalogue, so the 10,000-byte
-  # fallback cut on tool output no longer applies. The broker's reasoningEffort (xhigh) applies to it as to
-  # the coder.
+  # The reviewer reads and never edits, so it needs no apply_patch. It runs
+  # gpt-6.2-sol (Joe, 2026-11-17, HOME-226), which Codex 0.169.1 has in its
+  # catalogue; before that it ran gpt-6.1-terra to spend less of the Codex
+  # quota (https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
+  # The broker's reasoningEffort (xhigh) applies to it as to the coder.
   reviewer:
-    model: gpt-6.1-terra
+    model: gpt-6.2-sol
     # One worker per concurrent review (reviewer.concurrency).
     concurrency: 3
     # The review binding has no toolchain and runs no PR code, so its
