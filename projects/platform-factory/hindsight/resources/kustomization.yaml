@@ -7,6 +7,11 @@ resources:
   - secrets.yaml
   - hindsight.yaml
 
+# Kustomize adds a hash suffix to this ConfigMap and rewrites every Role
+# resourceName equal to its name, even in a rule for Secrets. With the name
+# hindsight-keys, Role hindsight-keys granted hindsight-keys-<hash> instead of
+# the Secret, and the key Jobs waited on a 403 (HOME-161). keys_test keeps the
+# names apart.
 configMapGenerator:
   - name: hindsight-keys-script
     namespace: hindsight
