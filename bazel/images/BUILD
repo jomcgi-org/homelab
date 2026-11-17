@@ -87,6 +87,7 @@ multirun(
         "//projects/embervm/chart:chart.push",
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory/chart:chart.push",
+        "//projects/jomcgi-site/chart:chart.push",
         "//projects/monolith-agents/chart:chart.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
