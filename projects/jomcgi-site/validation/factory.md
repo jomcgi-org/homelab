@@ -48,14 +48,16 @@ to [budget.mjs](../web/budget.mjs): missing, empty or oversized entries fail.
 [budget.test.tsx](../web/src/budget.test.tsx) exercises these CLI failures and a pass.
 The budget counts initial scripts and preloads; all 12 built entries passed.
 
-GitHub reports [`pr-checks` successful](https://github.com/jomcgi-org/homelab/commit/4585c387a275156fb4ca74958ac9dccb3c8a3160/status-details?popover=true)
-for that head ([BuildBuddy run](https://jomcgi.buildbuddy.io/invocation/f3afb16c-34e3-4197-93ea-15bde351be6d)).
+GitHub reports [`pr-checks` successful at `c6ba6873d`](https://github.com/jomcgi-org/homelab/commit/c6ba6873d8d08e86babec65da63a158bc03606b7/status-details?popover=true)
+([BuildBuddy run](https://jomcgi.buildbuddy.io/invocation/1548fbbd-ee34-4783-abe5-bee79401764b)). Its web source and tests match `4585c387a`.
 The run log was unavailable here (`ENOTFOUND`); this records GitHub's reported status.
 
-At the same revision, `pnpm test` passed **258 tests in 15 files** and
-`pnpm typecheck` passed. Three Factory artifact tests check the shell, local
-assets, rewrite and no fictional data. They, `prerendered.mjs`,
-`marketplace.test.mjs` and seven Scotland artifact checks passed.
+The [CI selector](../../../bazel/tools/ci/affected-targets.sh) returns `//...` because this PR changes BUILD files.
+That includes `//projects/jomcgi-site/web:test` and
+`//projects/jomcgi-site/web:budget_test`.
+
+At `4585c387a`, `pnpm test` passed **258 tests in 15 files**; `pnpm typecheck` passed.
+The three Factory artifact tests, `prerendered.mjs`, `marketplace.test.mjs` and seven Scotland artifact tests also passed.
 
 ## Scope and rollout
 
