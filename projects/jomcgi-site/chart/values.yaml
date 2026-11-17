@@ -17,11 +17,11 @@ workloads:
     containerName: wrangler
     # A failed deploy is a failed sync; retrying once covers a transient API error.
     backoffLimit: 1
-    # templates/workloads.yaml appends `--env <stage>`.
-    args:
-      - deploy
-      - --config
-      - /app/site/wrangler.jsonc
+    # run.sh copies the site to /tmp, adds each section's data from R2, and
+    # deploys the copy. templates/workloads.yaml adds STAGE from .Values.stage.
+    command:
+      - /bin/bash
+      - /app/site/run.sh
     env:
       # wrangler keeps its cache and logs under HOME.
       - name: HOME
@@ -36,6 +36,17 @@ workloads:
           secretKeyRef:
             name: jomcgi-site-cloudflare
             key: account-id
+      # Read-only R2 token for the data snapshot (data/sources.json).
+      - name: R2_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-r2-read
+            key: access-key-id
+      - name: R2_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-r2-read
+            key: secret-access-key
     resources:
       requests:
         cpu: 100m
@@ -43,20 +54,28 @@ workloads:
       limits:
         memory: 512Mi
     writablePaths:
+      # The site copy with its data (about 20 MB today), wrangler's
+      # .wrangler/tmp beside its config, and HOME.
       - name: tmp
         mountPath: /tmp
-        sizeLimit: 64Mi
-      # wrangler writes .wrangler/tmp next to its config; the image root is read-only.
-      - name: wrangler-state
-        mountPath: /app/site/.wrangler
-        sizeLimit: 64Mi
+        sizeLimit: 512Mi
     network:
-      # The Cloudflare API is the only egress. wrangler's npm update check
-      # times out against this policy and does not fail the deploy.
+      # The Cloudflare API and the R2 S3 endpoint are the only egress.
+      # wrangler's npm update check times out against this policy and does
+      # not fail the deploy.
       egress:
         - peer: cloudflare-api
           fqdn: api.cloudflare.com
           port: 443
+        - peer: r2-read
+          fqdn: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+          port: 443
+
+# The refresh CronJob runs the deploy Job's command on a schedule, so section
+# data reaches the site within this interval of changing in R2 (HOME-209).
+refresh:
+  enabled: true
+  schedule: "*/30 * * * *"
 
 # The edge apply Job (HOME-192) makes zone jomcgi.dev's Workers routes and
 # cache rules match edge/routes.json and edge/cache-rules.json, after the
@@ -110,5 +129,11 @@ secrets:
     workload: jomcgi-site-deploy
     onePassword:
       itemPath: vaults/k8s-homelab/items/jomcgi-site-cloudflare
+  # The read-only R2 token the hub and the Scotland connector already use for
+  # the stars bucket; it reads the data snapshot's sources.
+  jomcgi-site-r2-read:
+    workload: jomcgi-site-deploy
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/r2-s3-public-read
 
 exceptions: []

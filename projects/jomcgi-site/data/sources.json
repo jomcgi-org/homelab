@@ -1,0 +1,17 @@
+{
+  "endpoint": "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com",
+  "sections": {
+    "stars": {
+      "bucket": "stars",
+      "files": {
+        "sites": "sites.json",
+        "historyMap": "history-map.json",
+        "map": "map.json"
+      }
+    },
+    "hikes": {
+      "bucket": "stars",
+      "files": { "walks": "walks.json" }
+    }
+  }
+}

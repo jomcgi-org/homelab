@@ -18,6 +18,16 @@ describe("static hosting headers", () => {
     );
   });
 
+  it("caches content-named section data forever, but not latest.json", () => {
+    expect(headers).toMatch(
+      /\/data\/:section\/v\/\*\n\s+Cache-Control: public, max-age=31536000, immutable/,
+    );
+    // latest.json keeps the default revalidation, so new data shows at once:
+    // no rule path names it.
+    const paths = headers.split("\n").filter((line) => /^[/h]/.test(line));
+    expect(paths.filter((path) => path.includes("latest"))).toEqual([]);
+  });
+
   it("keeps the preview host out of search results without hiding the rule", () => {
     expect(headers).toMatch(
       /https:\/\/next\.jomcgi\.dev\/\*\n\s+X-Robots-Tag: noindex/,

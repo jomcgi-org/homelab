@@ -1,6 +1,7 @@
 {{- /*
-The deploy Job's `--env` comes from .Values.stage, so one value picks the
-stage. The edge Job joins the workloads only in prod (values.yaml `edge`),
+The deploy Job's STAGE (run.sh passes it to `wrangler deploy --env`) comes from
+.Values.stage, so one value picks the stage. The refresh CronJob runs the same
+command on a schedule. The edge Job joins the workloads only in prod (values.yaml `edge`),
 with EDGE_SERVE_ROUTES from edge.serveRoutes.
 */}}
 {{- if not (has .Values.stage (list "dev" "prod")) }}
@@ -10,10 +11,21 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- fail "edge.serveRoutes must be true or false" }}
 {{- end }}
 {{- $deploy := index .Values.workloads "jomcgi-site-deploy" }}
-{{- if has "--env" $deploy.args }}
-{{- fail "the deploy Job's --env comes from .Values.stage; do not set it in args" }}
+{{- range $deploy.env }}
+{{- if eq .name "STAGE" }}
+{{- fail "the deploy Job's STAGE comes from .Values.stage; do not set it in env" }}
 {{- end }}
-{{- $_ := set $deploy "args" (concat $deploy.args (list "--env" .Values.stage)) }}
+{{- end }}
+{{- $_ := set $deploy "env" (append $deploy.env (dict "name" "STAGE" "value" .Values.stage)) }}
+{{- if .Values.refresh.enabled }}
+{{- $refresh := deepCopy $deploy }}
+{{- $_ := unset $refresh "hook" }}
+{{- $_ := unset $refresh "backoffLimit" }}
+{{- $_ := set $refresh "kind" "CronJob" }}
+{{- $_ := set $refresh "schedule" .Values.refresh.schedule }}
+{{- $_ := set $refresh "concurrencyPolicy" "Forbid" }}
+{{- $_ := set .Values.workloads "jomcgi-site-refresh" $refresh }}
+{{- end }}
 {{- if .Values.edge.enabled }}
 {{- if ne .Values.stage "prod" }}
 {{- fail "edge.enabled is for the prod stage only: zone config is not per stage" }}
