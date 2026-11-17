@@ -178,3 +178,10 @@
         onePassword:
           itemPath: "not-a-vault-path"
   error: "onePassword.itemPath must be vaults/<vault>/items/<item>"
+- set:
+    workloads/app/hook: Sync
+  error: "workload app: hook is only for Jobs"
+- set:
+    workloads/app/kind: Job
+    workloads/app/hook: PreSync
+  error: "workload app: hook must be Sync or PostSync"

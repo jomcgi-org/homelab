@@ -1,0 +1,61 @@
+# jomcgi.dev site
+
+The public jomcgi.dev site as static files on Cloudflare (HOME-174). An
+assets-only Worker serves the pages, so no script runs for any request.
+Serving costs nothing, a crawler cannot cause per-request charges, and no
+public request reaches a cluster. Sections move here one path at a time.
+
+```
+web/ (Astryx pages) ──vite──► dist ─┐
+wrangler/ (pinned CLI) ─────────────┼─► image ─► Argo CD Sync hook Job ─► wrangler deploy --env <stage>
+wrangler.jsonc ─────────────────────┘
+  dev  → Worker jomcgi-site-dev on next.jomcgi.dev
+  prod → Worker jomcgi-site on the jomcgi.dev routes in wrangler.jsonc
+```
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `web/` | The Astryx app: one HTML entry per page, the nav and section list in `src/sections.ts`, hosting headers in `public/_headers`. |
+| `wrangler.jsonc` | The Worker, its assets and each stage's routes. |
+| `wrangler/` | The pinned `wrangler` CLI, packaged as image layers by rules_js. |
+| `apko.yaml` | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime. |
+| `chart/` | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`. |
+| `deploy/` | The dev stage's Argo CD Application. |
+
+## Contracts
+
+- **URLs.** A section has one top-level prefix (`/hikes`). It stays linked to
+  its current jomcgi.dev page until it goes live here. Setting `live: true` in
+  `src/sections.ts` and adding the prefix to the prod `routes` in
+  `wrangler.jsonc` moves it. Removing the route rolls it back.
+- **Caching.** `/assets/*` files are named by content hash and cached forever.
+  A deploy serves new files at once, so routine releases need no cache purge.
+- **Performance.** Each page's initial JavaScript must stay under 150 KiB
+  gzipped (`budget.mjs`, run by `:budget_test`).
+- **Accessibility.** Pages have no axe violations in happy-dom, and the colour
+  tokens in `src/palette.css` meet WCAG contrast in light and dark modes.
+  Colour contrast on real CSS is checked in a browser after deploy (HOME-174).
+
+## Build and test
+
+From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`.
+Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
+
+## Deploy
+
+CI publishes the image and chart on merge. A sync of the stage's Application
+runs the deploy Job as an Argo CD Sync hook. The `jomcgi-site-release`
+ConfigMap carries the image digest, so each new image makes the Application
+OutOfSync and syncs it again. A failed deploy is a failed sync.
+
+**Staged off.** The dev Application is not yet listed in
+`projects/platform-factory/kustomization.yaml`. Add it once 1Password item
+`vaults/k8s-homelab/items/jomcgi-site-cloudflare` exists, with fields
+`api-token` and `account-id` (permissions are listed in HOME-174). Kargo
+takes over the stage pins when HOME-116 slice 2 lands.
+
+`public/robots.txt` disallows all crawling while only the preview host
+serves this site. The change that routes `/robots.txt` on jomcgi.dev here
+replaces it.

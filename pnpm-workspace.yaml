@@ -2,6 +2,8 @@
 packages:
   - projects/design-system
   - projects/factory-landing/web
+  - projects/jomcgi-site/web
+  - projects/jomcgi-site/wrangler
   - projects/monolith/frontend
   - projects/monolith/web/grimoire
 

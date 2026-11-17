@@ -52,6 +52,8 @@ multirun(
         "//projects/firecracker/sandbox/rust:image.push",
         "//projects/firecracker/substrate/egress-proxy:image.push",
         "//projects/firecracker/substrate/rootfs-builder:image.push",
+        "//projects/jomcgi-site/chart:chart.push",
+        "//projects/jomcgi-site:image.push",
         "//projects/monolith-agents/chart:chart.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",

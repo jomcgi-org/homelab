@@ -1,0 +1,4 @@
+# Preview host only (next.jomcgi.dev). The cutover that routes /robots.txt on
+# jomcgi.dev to this site replaces this file with the public rules.
+User-agent: *
+Disallow: /
