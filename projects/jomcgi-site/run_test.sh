@@ -21,6 +21,7 @@ if [[ "$1" == fence-check ]]; then
 	sed -i '1d' "$FENCE_CODES" 2>/dev/null || true
 	exit "${code:-0}"
 fi
+if [[ -n "${SNAPSHOT_IGNORE_TERM:-}" ]]; then trap '' TERM; fi
 sleep "${SNAPSHOT_SLEEP:-0}"
 mkdir -p "$1/stars" && echo '{"asOf":"x"}' >"$1/stars/latest.json"
 echo "snapshot $1" >>"$CALLS"
@@ -35,7 +36,7 @@ chmod +x "$work/bin/"*
 run() {
 	CALLS="$work/calls" FENCE_CODES="$work/codes" SITE_SRC="$work/src" SITE_DIR="$work/site" \
 		SNAPSHOT_BIN="$work/bin/snapshot" WRANGLER_BIN="$work/bin/wrangler" \
-		REFRESH_BUDGET=2 SYNC_WINDOW=3 FENCE_INTERVAL=1 FENCE_TIMEOUT=2 RELEASE="chart 0.9.0 image abc" "$@" bash "$RUN"
+		REFRESH_BUDGET=2 KILL_GRACE=1 SYNC_WINDOW=4 FENCE_INTERVAL=1 FENCE_TIMEOUT=2 RELEASE="chart 0.9.0 image abc" "$@" bash "$RUN"
 }
 expect() {
 	if [[ "$(cat "$work/calls")" != "$1" ]]; then
@@ -140,6 +141,23 @@ fi
 	exit 1
 }
 
+# 6a. refresh: a snapshot that ignores SIGTERM is killed after the grace, so
+#     the run still ends near REFRESH_BUDGET + KILL_GRACE (2 + 1 s).
+reset
+started=$SECONDS
+if run env STAGE=dev MODE=refresh SNAPSHOT_SLEEP=30 SNAPSHOT_IGNORE_TERM=1 2>/dev/null; then
+	echo "a refresh whose snapshot ignores SIGTERM should fail"
+	exit 1
+fi
+((SECONDS - started < 10)) || {
+	echo "the refresh outlived its hard bound"
+	exit 1
+}
+! grep -q wrangler "$work/calls" || {
+	echo "deployed after the bound"
+	exit 1
+}
+
 # 6b. refresh: a fence check that hangs is stopped by the budget; no deploy.
 reset
 if run env STAGE=dev MODE=refresh FENCE_SLEEP=5 2>/dev/null; then
@@ -182,7 +200,7 @@ tail -n1 "$work/calls" | grep -q "^$F_PROD$" || {
 }
 
 # 7. A bad stage, mode or window stops before any step.
-for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAGE=dev MODE=other" "STAGE=dev MODE=sync SYNC_WINDOW=2"; do
+for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAGE=dev MODE=other" "STAGE=dev MODE=sync SYNC_WINDOW=3"; do
 	reset
 	# shellcheck disable=SC2086
 	if run env $args 2>/dev/null; then
