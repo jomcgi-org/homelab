@@ -90,6 +90,7 @@ Top-level projects/ directories:
 - gke-apps
 - gke-cluster
 - inference
+- jomcgi-site
 - loom
 - mcp
 - model-bench
