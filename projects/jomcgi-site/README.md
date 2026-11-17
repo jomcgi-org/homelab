@@ -70,8 +70,8 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   most one refresh interval plus one deploy behind R2. Each deploy carries its
   release (chart version and image digest) as its deployment message. A
   refresh deploys only while the live deployment is its own release: it
-  checks at the start and just before deploying, and must finish within 240
-  seconds. The hook re-checks for 300 seconds after its deploy and deploys
+  checks at the start and just before deploying, and every step runs under
+  `timeout -k`, so it ends within 240 seconds plus a 5-second kill grace. The hook re-checks for 300 seconds after its deploy and deploys
   again if a refresh replaced it, so the hook always deploys last and an
   older refresh never leaves an older release live; it then confirms its
   release is live (only its own label counts; "no deployment" does not),

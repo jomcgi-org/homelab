@@ -8,18 +8,19 @@
 # Release fence. Two paths deploy: MODE=sync (the Sync-hook Job, a release)
 # and MODE=refresh (the CronJob, new data for the same release).
 # - A refresh deploys only while the live deployment carries its own label.
-#   It checks at the start and again just before deploying, and the whole run
-#   must finish within REFRESH_BUDGET seconds (enforced with `timeout`).
+#   It checks at the start and again just before deploying, and every step
+#   runs under `timeout -k`, so the whole run ends within REFRESH_BUDGET +
+#   KILL_GRACE seconds even if a step ignores SIGTERM.
 # - The hook deploys, then re-checks for SYNC_WINDOW seconds, longer than
-#   REFRESH_BUDGET, and deploys again if a refresh replaced it. A refresh that
+#   REFRESH_BUDGET + KILL_GRACE, and deploys again if a refresh replaced it. A refresh that
 #   was running before the sync ends inside that window and cannot start again
 #   (the sync replaced the CronJob's spec), so the hook always deploys last.
 #   It then confirms its release is live, or fails so Argo CD retries.
 #
 # Env: STAGE (dev|prod), MODE (sync|refresh), RELEASE, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
-# The *_BIN, SITE_SRC/SITE_DIR, REFRESH_BUDGET, SYNC_WINDOW, FENCE_INTERVAL and
-# FENCE_TIMEOUT overrides exist for run_test.sh.
+# The *_BIN, SITE_SRC/SITE_DIR, REFRESH_BUDGET, SYNC_WINDOW, FENCE_INTERVAL,
+# FENCE_TIMEOUT and KILL_GRACE overrides exist for run_test.sh.
 set -o errexit -o nounset -o pipefail
 
 SITE_SRC="${SITE_SRC:-/app/site}"
@@ -30,6 +31,10 @@ REFRESH_BUDGET="${REFRESH_BUDGET:-240}"
 SYNC_WINDOW="${SYNC_WINDOW:-300}"
 FENCE_INTERVAL="${FENCE_INTERVAL:-15}"
 FENCE_TIMEOUT="${FENCE_TIMEOUT:-30}"
+# Seconds between a step's SIGTERM and its SIGKILL (`timeout -k`), so a step
+# that ignores SIGTERM still ends; the hard bound of a refresh is
+# REFRESH_BUDGET + KILL_GRACE.
+KILL_GRACE="${KILL_GRACE:-5}"
 
 case "${STAGE:-}" in
 dev) export WORKER=jomcgi-site-dev ;;
@@ -47,8 +52,8 @@ sync | refresh) ;;
 	;;
 esac
 : "${RELEASE:?RELEASE must be set}"
-if ((SYNC_WINDOW <= REFRESH_BUDGET)); then
-	echo "SYNC_WINDOW ($SYNC_WINDOW) must exceed REFRESH_BUDGET ($REFRESH_BUDGET)" >&2
+if ((SYNC_WINDOW <= REFRESH_BUDGET + KILL_GRACE)); then
+	echo "SYNC_WINDOW ($SYNC_WINDOW) must exceed REFRESH_BUDGET + KILL_GRACE ($REFRESH_BUDGET + $KILL_GRACE)" >&2
 	exit 2
 fi
 
@@ -66,7 +71,7 @@ fence() {
 			return
 		fi
 	fi
-	timeout "$limit" "$SNAPSHOT_BIN" fence-check >&2 || status=$?
+	timeout -k "$KILL_GRACE" "$limit" "$SNAPSHOT_BIN" fence-check >&2 || status=$?
 	echo "$status"
 }
 
@@ -97,7 +102,7 @@ step() {
 			echo "refresh failed: out of time before: $*" >&2
 			exit 1
 		fi
-		timeout "$left" "$@"
+		timeout -k "$KILL_GRACE" "$left" "$@"
 	else
 		"$@"
 	fi
