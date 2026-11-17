@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -116,10 +117,18 @@ def test_rendered_key_job_permissions_and_mounts(rendered):
             "verbs": ["get", "update"],
         }
     ]
-    configmap = next(doc for doc in rendered if doc["kind"] == "ConfigMap")
-    assert configmap["metadata"]["name"].startswith("hindsight-keys-script-")
+    configmap = next(
+        doc
+        for doc in rendered
+        if doc["kind"] == "ConfigMap"
+        and doc["metadata"]["name"].startswith("hindsight-keys-script-")
+    )
     assert configmap["data"]["keys.py"] == (ROOT / "resources/keys.py").read_text()
-    jobs = [doc for doc in rendered if doc["kind"] == "Job"]
+    jobs = [
+        doc
+        for doc in rendered
+        if doc["kind"] == "Job" and doc["metadata"]["name"] != "hindsight-preflight"
+    ]
     assert len(jobs) == 2
     for job in jobs:
         (volume,) = job["spec"]["template"]["spec"]["volumes"]
@@ -329,3 +338,97 @@ def test_discord_manifests_have_no_factory_llm_references():
                     "api.anthropic.com",
                 )
             ), path
+
+
+def api_env(doc):
+    (container,) = doc["spec"]["template"]["spec"]["containers"]
+    return {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+
+
+def test_models_are_the_factory_hindsight_models_on_the_dedicated_key():
+    # The factory Hindsight's embeddings (HOME-176) and decision model
+    # (HOME-182), on the Discord key: every model call that sees Discord
+    # content uses hindsight-openrouter (HOME-162 contract rule 2).
+    deployment = next(
+        d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
+    )
+    env = api_env(deployment)
+    key = {"secretKeyRef": {"name": "hindsight-openrouter", "key": "api-key"}}
+    assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openrouter"
+    assert env["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"] == "mongodb/voyage-4-large"
+    assert env["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"] == key
+    assert json.loads(env["HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"]) == {
+        "provider": {"data_collection": "deny"}
+    }
+    assert env["HINDSIGHT_API_DECISION_MODEL_PROVIDER"] == "typesafe"
+    assert env["HINDSIGHT_API_DECISION_MODEL_BASE_URL"] == "https://openrouter.ai/api"
+    assert env["HINDSIGHT_API_DECISION_MODEL_MODEL"] == "typesafe/jev-1.14"
+    assert env["HINDSIGHT_API_DECISION_MODEL_API_KEY"] == key
+    assert env["HINDSIGHT_API_RERANKER_PROVIDER"] == "rrf"
+    assert "HINDSIGHT_API_RECALL_DECISION_MODEL_FALLBACK" not in env
+    secret_refs = {
+        (v["secretKeyRef"]["name"], v["secretKeyRef"]["key"])
+        for v in env.values()
+        if isinstance(v, dict) and "secretKeyRef" in v
+    }
+    assert secret_refs == {
+        ("hindsight-openrouter", "api-key"),
+        ("hindsight-openrouter", "base-url"),
+        ("hindsight-keys", "tenant-api-key"),
+        ("hindsight-db", "DATABASE_URL"),
+    }
+
+
+def test_preflight_is_the_factory_script_and_runs_before_the_deployment():
+    factory = ROOT.parent / "hindsight/resources/preflight.py"
+    assert (ROOT / "resources/preflight.py").read_bytes() == factory.read_bytes()
+    docs = read("resources/hindsight.yaml")
+    job = next(
+        d
+        for d in docs
+        if d["kind"] == "Job" and d["metadata"]["name"] == "hindsight-preflight"
+    )
+    annotations = job["metadata"]["annotations"]
+    assert annotations["argocd.argoproj.io/hook"] == "Sync"
+    assert annotations["argocd.argoproj.io/hook-delete-policy"] == "BeforeHookCreation"
+    assert annotations["argocd.argoproj.io/sync-wave"] == "-1"
+    for doc in read("resources/secrets.yaml"):
+        if doc["kind"] in ("OnePasswordItem", "Secret"):
+            wave = doc["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+            assert wave == "-2"
+    account = next(d for d in docs if d["kind"] == "ServiceAccount")
+    assert account["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-2"
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "hindsight"
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["volumes"] == [
+        {"name": "scripts", "configMap": {"name": "hindsight-preflight-script"}}
+    ]
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    (api,) = deployment["spec"]["template"]["spec"]["containers"]
+    (check,) = pod["containers"]
+    assert check["image"] == api["image"]
+    env, api = api_env(job), api_env(deployment)
+    assert env["EMBEDDINGS_MODEL"] == api["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"]
+    assert env["EMBEDDINGS_EXTRA_BODY"] == api["HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"]
+    assert env["EMBEDDINGS_DIMENSIONS"] == "1024"
+    assert env["DECISION_MODEL"] == api["HINDSIGHT_API_DECISION_MODEL_MODEL"]
+    assert env["DECISION_MODEL_BASE_URL"] == api["HINDSIGHT_API_DECISION_MODEL_BASE_URL"]
+    assert env["OPENROUTER_API_KEY"] == api["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"]
+    assert env["DATABASE_URL"] == api["HINDSIGHT_API_DATABASE_URL"]
+
+
+def test_service_selects_only_the_api_pod():
+    docs = read("resources/hindsight.yaml")
+    service = next(d for d in docs if d["kind"] == "Service")
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    job = next(d for d in docs if d["kind"] == "Job")
+    selector = service["spec"]["selector"]
+    pod_labels = deployment["spec"]["template"]["metadata"]["labels"]
+    assert selector.items() <= pod_labels.items()
+    assert not selector.items() <= job["spec"]["template"]["metadata"]["labels"].items()
+    # The network policy selects the name label, so it covers both pods.
+    policy = read("resources/network-policy.yaml")[0]
+    for labels in (pod_labels, job["spec"]["template"]["metadata"]["labels"]):
+        assert policy["spec"]["endpointSelector"]["matchLabels"].items() <= labels.items()
+

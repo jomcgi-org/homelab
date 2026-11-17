@@ -17,3 +17,13 @@ configMapGenerator:
     options:
       annotations:
         argocd.argoproj.io/sync-wave: "-2"
+  # resources/preflight.py, a copy of the factory Hindsight's (keys_test),
+  # for the hindsight-preflight Sync hook. ArgoCD's kustomize loads files
+  # only from this directory.
+  - name: hindsight-preflight-script
+    namespace: hindsight-discord
+    files:
+      - preflight.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

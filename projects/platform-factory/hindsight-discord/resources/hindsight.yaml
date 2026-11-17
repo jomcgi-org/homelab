@@ -5,6 +5,9 @@ kind: ServiceAccount
 metadata:
   name: hindsight
   namespace: hindsight-discord
+  annotations:
+    # The preflight hook (wave -1) runs as this account.
+    argocd.argoproj.io/sync-wave: "-2"
 automountServiceAccountToken: false
 ---
 apiVersion: v1
@@ -15,8 +18,11 @@ metadata:
   labels:
     app.kubernetes.io/name: hindsight
 spec:
+  # Only the API pod. The preflight Job shares the name label, which the
+  # network policy selects.
   selector:
     app.kubernetes.io/name: hindsight
+    app.kubernetes.io/component: api
   ports:
     - name: http
       port: 8888
@@ -39,6 +45,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: hindsight
+        app.kubernetes.io/component: api
     spec:
       serviceAccountName: hindsight
       automountServiceAccountToken: false
@@ -93,8 +100,38 @@ spec:
                   key: tenant-api-key
             - name: HINDSIGHT_API_MCP_ENABLED
               value: "false"
-            # The image bakes in the embedding model and reranker; no
-            # Hugging Face egress.
+            # Embeddings and the decision model are the factory Hindsight's
+            # (HOME-176, HOME-182), on the same dedicated Discord key: Voyage 4
+            # Large, 1,024 dimensions, from providers that keep no data.
+            - name: HINDSIGHT_API_EMBEDDINGS_PROVIDER
+              value: openrouter
+            - name: HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL
+              value: mongodb/voyage-4-large
+            - name: HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-openrouter
+                  key: api-key
+            - name: HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY
+              value: '{"provider": {"data_collection": "deny"}}'
+            # TypeSafe Jev 1.14 through OpenRouter's System One endpoint ranks
+            # recall. No local fallback: a recall fails while it is unavailable.
+            - name: HINDSIGHT_API_DECISION_MODEL_PROVIDER
+              value: typesafe
+            - name: HINDSIGHT_API_DECISION_MODEL_BASE_URL
+              value: https://openrouter.ai/api
+            - name: HINDSIGHT_API_DECISION_MODEL_MODEL
+              value: typesafe/jev-1.14
+            - name: HINDSIGHT_API_DECISION_MODEL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-openrouter
+                  key: api-key
+            # The decision model ranks recall; rrf keeps the order and loads
+            # no model.
+            - name: HINDSIGHT_API_RERANKER_PROVIDER
+              value: rrf
+            # No local model runs, and nothing fetches one.
             - name: HF_HUB_OFFLINE
               value: "1"
             - name: TRANSFORMERS_OFFLINE
@@ -126,12 +163,14 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+          # No model loads in the pod: the factory Hindsight, with the same
+          # models, used 438 MiB on 2026-11-17.
           resources:
             requests:
               cpu: 250m
-              memory: 1536Mi
+              memory: 512Mi
             limits:
-              memory: 3Gi
+              memory: 2Gi
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -139,3 +178,84 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
+---
+# Before a sync replaces the API pod (resources/preflight.py, the factory
+# Hindsight's script): the key works, the decision model answers from one
+# endpoint, and the embedding model's dimension matches any stored vectors.
+# The Deployment recreates its pod, so a failure here keeps the running pod.
+# Wave -1 runs after the 1Password item and placeholders (-2), before the
+# Deployment (0).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-preflight
+  namespace: hindsight-discord
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: 2
+  # Also bounds a wait for a Secret the operator has not written.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight
+        app.kubernetes.io/component: preflight
+    spec:
+      serviceAccountName: hindsight
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: preflight
+          image: ghcr.io/vectorize-io/hindsight-api:1.2.1@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8
+          command: [/app/api/.venv/bin/python, -I, -B, /scripts/preflight.py]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-db
+                  key: DATABASE_URL
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-openrouter
+                  key: api-key
+            # Equal to the Deployment's (keys_test).
+            - name: EMBEDDINGS_DIMENSIONS
+              value: "1024"
+            - name: EMBEDDINGS_MODEL
+              value: mongodb/voyage-4-large
+            - name: EMBEDDINGS_EXTRA_BODY
+              value: '{"provider": {"data_collection": "deny"}}'
+            - name: DECISION_MODEL
+              value: typesafe/jev-1.14
+            - name: DECISION_MODEL_BASE_URL
+              value: https://openrouter.ai/api
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: hindsight-preflight-script

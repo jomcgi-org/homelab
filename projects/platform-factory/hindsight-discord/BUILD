@@ -11,6 +11,7 @@ py_test(
         "discord/network-policy.yaml",
         "discord/secrets.yaml",
         "//projects/platform-factory/hindsight-discord/resources:keys_resources",
+        "//projects/platform-factory/hindsight/resources:preflight.py",
         "@multitool//tools/kustomize",
     ],
     env = {"KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)"},
