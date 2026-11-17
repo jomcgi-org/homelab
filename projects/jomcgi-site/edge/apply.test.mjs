@@ -312,6 +312,35 @@ test("a dry run plans and writes nothing", async () => {
   assert.ok(log.includes(`put ${RULES.rules.length} cache rule(s)`));
 });
 
+test("a dry run that a route conflict would block writes nothing and fails with the plan", async () => {
+  const zone = fakeZone({
+    routes: [{ pattern: "jomcgi.dev/cv", script: "other-worker" }],
+    rules: [MONOLITH],
+  });
+  await assert.rejects(
+    apply(zone.call, routesFile(["jomcgi.dev/cv"]), RULES, { dryRun: true }),
+    (error) =>
+      /dry run is blocked/.test(error.message) &&
+      /belongs to another Worker/.test(error.message) &&
+      error.message.includes(`put ${RULES.rules.length} cache rule(s)`),
+  );
+  assert.deepEqual(zone.state.writes, []);
+});
+
+test("a dry run that an unknown cache rule would block writes nothing and fails with the plan", async () => {
+  const zone = fakeZone({ rules: [MONOLITH, DASHBOARD_RULE] });
+  await assert.rejects(
+    apply(zone.call, ROUTES, RULES, { dryRun: true }),
+    (error) =>
+      /dry run is blocked/.test(error.message) &&
+      /"made in the dashboard" is not in cache-rules.json/.test(
+        error.message,
+      ) &&
+      error.message.includes(`create route jomcgi.dev/cv -> ${SCRIPT}`),
+  );
+  assert.deepEqual(zone.state.writes, []);
+});
+
 test("rejects a rule with fields this script does not write", () => {
   assert.throws(
     () => checkRules([{ ...RULES.rules[0], ref: "x" }]),
