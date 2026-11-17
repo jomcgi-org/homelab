@@ -143,6 +143,12 @@ async function liveRules(call, zone) {
  * Plans, checks, writes and reads back. Returns the log lines. With
  * `serveRoutes` false the wanted route list is empty, so every route of the
  * Worker is deleted and its paths go back to the hub; cache rules still apply.
+ *
+ * Routes and cache rules are independent halves. A route conflict blocks only
+ * the route writes, and a live cache rule missing from the file blocks only
+ * the cache-rules write, so a rollback that deletes routes is never stopped by
+ * a rule made in the dashboard. The other half still applies, then the run
+ * fails and names what it skipped, so the sync shows the problem.
  */
 export async function apply(
   call,
@@ -171,18 +177,19 @@ export async function apply(
   );
   const live = await liveRules(call, zone);
   const rules = planCacheRules(live, rulesFile.rules);
-  const stop = [
-    ...routes.conflicts.map((p) => `route ${p} belongs to another Worker`),
-    ...rules.unknown.map(
-      (r) =>
-        `live cache rule "${r.description}" is not in cache-rules.json; import it first`,
-    ),
-  ];
-  if (stop.length) throw new Error(`nothing changed:\n  ${stop.join("\n  ")}`);
+  const routesBlocked = routes.conflicts.map(
+    (p) => `route ${p} belongs to another Worker; no route was changed`,
+  );
+  const rulesBlocked = rules.unknown.map(
+    (r) =>
+      `live cache rule "${r.description}" is not in cache-rules.json; no cache rule was changed; import it first`,
+  );
 
-  for (const p of routes.create) log.push(`create route ${p} -> ${script}`);
-  for (const r of routes.remove) log.push(`delete route ${r.pattern}`);
-  if (!rules.same) {
+  if (!routesBlocked.length) {
+    for (const p of routes.create) log.push(`create route ${p} -> ${script}`);
+    for (const r of routes.remove) log.push(`delete route ${r.pattern}`);
+  }
+  if (!rulesBlocked.length && !rules.same) {
     rulesFile.rules.forEach((rule, i) => {
       if (!live[i] || !sameRule(live[i], rule)) {
         log.push(
@@ -193,18 +200,21 @@ export async function apply(
     log.push(`put ${rulesFile.rules.length} cache rule(s)`);
   }
   if (!log.length) log.push("no change");
+  log.push(...routesBlocked, ...rulesBlocked);
   if (dryRun) return log;
 
-  for (const p of routes.create) {
-    await ok(call, "POST", `/zones/${zone}/workers/routes`, {
-      pattern: p,
-      script,
-    });
+  if (!routesBlocked.length) {
+    for (const p of routes.create) {
+      await ok(call, "POST", `/zones/${zone}/workers/routes`, {
+        pattern: p,
+        script,
+      });
+    }
+    for (const r of routes.remove) {
+      await ok(call, "DELETE", `/zones/${zone}/workers/routes/${r.id}`);
+    }
   }
-  for (const r of routes.remove) {
-    await ok(call, "DELETE", `/zones/${zone}/workers/routes/${r.id}`);
-  }
-  if (!rules.same) {
+  if (!rulesBlocked.length && !rules.same) {
     await ok(
       call,
       "PUT",
@@ -222,13 +232,17 @@ export async function apply(
     await liveRules(call, zone),
     rulesFile.rules,
   );
+  const routesOk =
+    !after.create.length && !after.remove.length && !after.conflicts.length;
   if (
-    after.create.length ||
-    after.remove.length ||
-    after.conflicts.length ||
-    !afterRules.same
+    (!routesBlocked.length && !routesOk) ||
+    (!rulesBlocked.length && !afterRules.same)
   ) {
     throw new Error("read-back does not match the files");
+  }
+  const blocked = [...routesBlocked, ...rulesBlocked];
+  if (blocked.length) {
+    throw new Error(`not fully applied:\n  ${blocked.join("\n  ")}`);
   }
   log.push("read-back matches the files");
   return log;

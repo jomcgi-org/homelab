@@ -44,9 +44,12 @@ wrangler.jsonc ─────────────────────�
   delete them. Prod pins below the first chart with this switch refuse or
   ignore it, so do not lower the prod pin below that version.
 - **Zone rules.** `edge/cache-rules.json` is the whole cache-settings
-  entrypoint. A live rule that is not in the file stops the edge Job before
-  any write, so import a dashboard rule by PR first. Only the prod stage runs
-  the edge Job (`edge.enabled`), because zone config is not per stage.
+  entrypoint. A live rule that is not in the file blocks the cache-rules
+  write, so a dashboard rule is never lost; import it by PR. Routes and cache
+  rules are independent halves: a blocked half changes nothing, the other half
+  still applies, and then the edge Job fails and names what it skipped. Only
+  the prod stage runs the edge Job (`edge.enabled`), because zone config is
+  not per stage.
 - **Pre-render.** `build.mjs` runs the Vite build, then renders each page
   with React at build time into its HTML entry, in place of `<!--ssr-->`.
   A page reads fully, with its preview tags, before any script runs, and the
