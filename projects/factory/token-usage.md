@@ -72,37 +72,35 @@ broker connects as `factory_broker_accounting`.
 | Criterion | Evidence |
 | --- | --- |
 | 1: byte-preserving JSON and SSE accounting, attributed by actor | `broker/relay/tokens_test.go` tests chunk boundaries, completion-before-forwarding and unchanged response bytes. `dispatch/usage_test.go:TestRunTokenTotalsFromRelay` ignores a forged session header and excludes other sessions and namespaces. |
-| 2: totals sent to itsaplan | `TestRunTokenTotalsFromRelay` sends two measured calls plus a duplicate and a missing-usage call: the result fixture receives 300 input and 20 output tokens, and PostgreSQL stores 150 cached tokens. A second run in the same session receives only its own 400/10 tokens. `itsaplan/client_test.go:TestResultSendsAttemptAndUsage` checks the result endpoint and JSON field names. |
-| 3: tokens per delivered issue | The SQL below sums every run of each Done issue and identifies unmeasured historical runs. |
+| 2: totals sent to itsaplan | `TestRunTokenTotalsFromRelay` drives the relay, PostgreSQL, connector outbox and production itsaplan HTTP client. The endpoint receives `usage.inputTokens=300` and `usage.outputTokens=20`, with 150 cached tokens stored locally. A second run in the same session receives only its own 400/10 tokens. `TestRunTokenResultSurvivesHTTPFailureAndRestart` checks the same payload is delivered after an HTTP 503 and writer restart. |
+| 3: tokens per delivered issue | `store/usage_test.go:TestDeliveredIssueUsage` executes the documented SQL file against PostgreSQL. It requires a successful Done move, includes failed and revision runs, excludes active, review and stopped issues, preserves unknown runs, and counts cached input only once. |
 | 4: streamed, non-streamed, missing usage and correct run | `TestRunTokenTotalsFromRelay` and `TestRunWithoutResponseUsageStaysUnknown` each run with JSON and SSE. `TestUsageBeforeSessionAcknowledgementAndAcrossRetry` covers an early call, a lost dispatch acknowledgement and retry totals. |
 | Database boundary | `TestAccountingLoginCannotChangeDispatchState` rejects direct table access, state changes and role escalation, then records usage despite caller-created tables and a hostile search path. |
 
 ## Tokens per delivered issue
 
-Run this in `factory_connector`. It includes all runs of issues the connector
-has marked Done, including connector-owned revision rounds and failed runs.
+Run [delivered_issue_usage.sql](connector/store/delivered_issue_usage.sql)
+in `factory_connector`. It includes all runs of issues the factory delivered
+to Done, including connector-owned revision rounds and failed runs.
+The query requires a delivered `issue_done` outbox row: local `work_item.state`
+becomes `done` at merge, before itsaplan accepts that move. A pending or
+abandoned move does not prove delivery. Manual Done moves without a factory
+receipt need separate reconciliation with itsaplan before entering the cohort.
 The unknown count prevents historical runs without measurements from looking
 like zero-token work.
 
-```sql
-SELECT w.issue_key,
-       count(*) AS runs,
-       count(*) FILTER (WHERE r.input_tokens IS NULL) AS unmeasured_runs,
-       sum(r.input_tokens) AS input_tokens,
-       sum(r.cached_input_tokens) AS cached_input_tokens,
-       sum(r.output_tokens) AS output_tokens,
-       sum(r.input_tokens + r.output_tokens) AS total_tokens
-FROM work_item w
-JOIN run r ON r.work_item_id = w.id
-WHERE w.state = 'done'
-GROUP BY w.issue_key
-ORDER BY w.issue_key;
+```bash
+psql "$FACTORY_CONNECTOR_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 \
+  --file projects/factory/connector/store/delivered_issue_usage.sql
 ```
 
 For a before/after comparison, retain the issue rows and the rollout time for
 each cohort. Historical missing usage cannot be reconstructed by this change.
 A partially observed run can have a non-null total, so also inspect the error
-counters and unmeasured calls:
+counters and unmeasured calls. If the call's initial database insert failed,
+there is no call row to join to its run: this query cannot identify that gap.
+A nonzero `start_error` counter makes the affected time window unsuitable for
+a complete-token comparison; a later measured call does not repair it.
 
 ```sql
 SELECT a.run_id, count(*) AS calls,

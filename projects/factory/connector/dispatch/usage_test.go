@@ -2,12 +2,15 @@ package dispatch_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +19,9 @@ import (
 	brokermetrics "github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/factory/broker/relay"
 	"github.com/jomcgi/homelab/projects/factory/broker/usage"
+	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
@@ -32,6 +37,107 @@ func (usageGrant) Grant() string                                    { return "te
 func (usageGrant) AccessToken(context.Context) (grant.Token, error) { return grant.Token{}, nil }
 func (usageGrant) RefreshRejected(context.Context, string) (grant.Token, error) {
 	return grant.Token{}, nil
+}
+
+// Use the production result client, so the relay-to-run tests also exercise
+// outbox serialization, HTTP routing, authentication and the API's field names.
+// Queue operations keep their deterministic fake clock.
+type httpResultPlan struct {
+	dispatch.Itsaplan
+	client *itsaplan.Client
+}
+
+func (p *httpResultPlan) Result(ctx context.Context, agent string, id int64, result itsaplan.Result) error {
+	return p.client.Result(ctx, agent, id, result)
+}
+
+type resultRequest struct {
+	path string
+	body []byte
+}
+
+func resultEndpoint(t *testing.T, v *env, failures int32) <-chan resultRequest {
+	t.Helper()
+	requests := make(chan resultRequest, 16)
+	var remaining atomic.Int32
+	remaining.Store(failures)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /agent-runs/{runID}/result", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") != "coder-fixture" || r.Header.Get("Content-Type") != "application/json" {
+			t.Error("result request has incorrect authentication or content type")
+			http.Error(w, "bad headers", http.StatusUnauthorized)
+			return
+		}
+		id, err := strconv.ParseInt(r.PathValue("runID"), 10, 64)
+		if err != nil {
+			t.Error(err)
+			http.Error(w, "bad run ID", http.StatusBadRequest)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		requests <- resultRequest{path: r.URL.Path, body: body}
+		if remaining.Add(-1) >= 0 {
+			http.Error(w, "retry later", http.StatusServiceUnavailable)
+			return
+		}
+		var result itsaplan.Result
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Error(err)
+			http.Error(w, "bad JSON", http.StatusBadRequest)
+			return
+		}
+		if err := v.its.Result(r.Context(), "coder", id, result); err != nil {
+			t.Error(err)
+			http.Error(w, "unexpected run or attempt", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	v.e.Release()
+	v.plan = &httpResultPlan{Itsaplan: v.its, client: &itsaplan.Client{
+		BaseURL: server.URL, HTTP: server.Client(), Keys: map[string]string{"coder": "coder-fixture"},
+	}}
+	v.e = v.engine("http-results")
+	return requests
+}
+
+func assertResultRequest(t *testing.T, requests <-chan resultRequest, runID int64, input, output int) []byte {
+	t.Helper()
+	select {
+	case request := <-requests:
+		if want := fmt.Sprintf("/agent-runs/%d/result", runID); request.path != want {
+			t.Fatalf("result path = %s, want %s", request.path, want)
+		}
+		// Check literal wire names independently of the production Result type.
+		var body map[string]any
+		if err := json.Unmarshal(request.body, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["attempt"] != float64(1) || body["status"] != "success" {
+			t.Fatalf("result = %s", request.body)
+		}
+		if input < 0 {
+			if _, exists := body["usage"]; exists {
+				t.Fatalf("unmeasured usage must be omitted: %s", request.body)
+			}
+		} else {
+			usage, ok := body["usage"].(map[string]any)
+			if !ok || len(usage) != 2 || usage["inputTokens"] != float64(input) || usage["outputTokens"] != float64(output) {
+				t.Fatalf("usage = %s, want %d/%d", request.body, input, output)
+			}
+		}
+		return request.body
+	default:
+		t.Fatal("no result reached the itsaplan HTTP endpoint")
+		return nil
+	}
 }
 
 // Drive the real relay and Postgres recorder, with a provider fixture. No
@@ -75,6 +181,7 @@ func TestRunTokenTotalsFromRelay(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
 			v := newEnv(t)
+			requests := resultEndpoint(t, v, 0)
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.tick(v.e)
 			session := v.work(101).SessionID
@@ -88,6 +195,7 @@ func TestRunTokenTotalsFromRelay(t *testing.T) {
 			v.clk.Advance(5 * time.Second)
 			v.tick(v.e)
 			results := v.its.Run(1).results
+			assertResultRequest(t, requests, 1, 300, 20)
 			if len(results) != 1 || results[0].Usage == nil || results[0].Usage.InputTokens != 300 || results[0].Usage.OutputTokens != 20 {
 				t.Fatalf("results = %+v", results)
 			}
@@ -109,6 +217,7 @@ func TestRunTokenTotalsFromRelay(t *testing.T) {
 			v.clk.Advance(5 * time.Second)
 			v.tick(v.e)
 			results = v.its.Run(2).results
+			assertResultRequest(t, requests, 2, 400, 10)
 			if len(results) != 1 || results[0].Usage == nil || results[0].Usage.InputTokens != 400 || results[0].Usage.OutputTokens != 10 {
 				t.Fatalf("second run = %+v", results)
 			}
@@ -152,6 +261,7 @@ func TestRunWithoutResponseUsageStaysUnknown(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
 			v := newEnv(t)
+			requests := resultEndpoint(t, v, 0)
 			v.its.add(1, "coder", 101, "HL-1", "Do it.")
 			v.tick(v.e)
 			relayUsage(t, v, "factory-homelab", v.work(101).SessionID, "resp_missing", stream, -1)
@@ -159,10 +269,47 @@ func TestRunWithoutResponseUsageStaysUnknown(t *testing.T) {
 			v.clk.Advance(5 * time.Second)
 			v.tick(v.e)
 			results := v.its.Run(1).results
+			assertResultRequest(t, requests, 1, -1, -1)
 			if len(results) != 1 || results[0].Usage != nil {
 				t.Fatalf("unmeasured result = %+v", results)
 			}
 		})
+	}
+}
+
+func TestRunTokenResultSurvivesHTTPFailureAndRestart(t *testing.T) {
+	v := newEnv(t)
+	requests := resultEndpoint(t, v, 1)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	session := v.work(101).SessionID
+	relayUsage(t, v, "factory-homelab", session, "resp_json", false, 100)
+	relayUsage(t, v, "factory-homelab", session, "resp_sse", true, 200)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	var tries int
+	var lastError string
+	if err := v.st.DB.QueryRow(`SELECT tries, last_error FROM outbox WHERE kind = 'result' AND run_id = 1`).Scan(&tries, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if tries != 1 || !strings.Contains(lastError, "503") {
+		t.Fatalf("expected recorded HTTP failure, got tries=%d error=%s", tries, lastError)
+	}
+	first := assertResultRequest(t, requests, 1, 300, 20)
+	if v.run(1).State != "finishing" || len(v.its.Run(1).results) != 0 {
+		t.Fatal("failed result was treated as delivered")
+	}
+	v.e.Release()
+	v.e = v.engine("result-retry")
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	retry := assertResultRequest(t, requests, 1, 300, 20)
+	if string(first) != string(retry) {
+		t.Fatalf("result changed after restart: %s -> %s", first, retry)
+	}
+	if v.run(1).State != "closed" || len(v.its.Run(1).results) != 1 {
+		t.Fatal("retried result did not close the run exactly once")
 	}
 }
 
