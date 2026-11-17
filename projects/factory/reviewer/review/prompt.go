@@ -301,10 +301,16 @@ func Prompt(in PromptInput) string {
 	if len(in.Comments) > 0 || in.DroppedComments > 0 {
 		b.WriteString("## Comments from trusted reviewers\n\n")
 		if len(in.Comments) > 0 {
-			b.WriteString("People the repository binding trusts wrote these on the PR; weigh them as review input.\n\n")
+			b.WriteString("People the repository binding trusts wrote these on the PR; weigh them as review input. " +
+				"A conversation comment shows its link: a note starting \"decision:\" links Joe's comment with it.\n\n")
 		}
 		for _, c := range in.Comments {
-			fmt.Fprintf(&b, "%s wrote:\n\n%s\n\n", c.Author, quote(clip(strings.TrimSpace(c.Body), maxPromptComment)))
+			where := ""
+			if c.ID > 0 {
+				// The service read the ID; Decisions.decided matches this link.
+				where = fmt.Sprintf(" in https://github.com/%s/pull/%d#issuecomment-%d", in.Repo, in.Number, c.ID)
+			}
+			fmt.Fprintf(&b, "%s wrote%s:\n\n%s\n\n", c.Author, where, quote(clip(strings.TrimSpace(c.Body), maxPromptComment)))
 		}
 		if in.DroppedComments > 0 {
 			fmt.Fprintf(&b, "%d comments from other logins were left out.\n\n", in.DroppedComments)
