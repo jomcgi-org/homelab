@@ -33,8 +33,10 @@ go_test(
         "status_test.go",
         "store_test.go",
         "transcript_test.go",
+        "usage_test.go",
     ],
     data = ["@postgres_test//:postgres"],
+    embedsrcs = ["delivered_issue_usage.sql"],
     deps = [
         ":store",
         "//projects/factory/connector/internal/pgtest",
