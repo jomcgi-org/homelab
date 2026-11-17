@@ -1,0 +1,26 @@
+# Alertmanager's configuration (alertmanager.yaml mounts it). Every alert
+# goes to the homelab Discord channel through one webhook; the URL comes from
+# 1Password item factory-alerts-discord (Secret alertmanager-discord).
+route:
+  receiver: discord
+  group_by: [alertname, node]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+  routes:
+    # Each suspend timeout is its own alert (label timeouts) and its own
+    # message. The alert ends an hour later whether or not someone freed
+    # the session, so its end sends nothing.
+    - matchers: ['alertname="KagentSuspendTimedOut"']
+      receiver: discord-no-resolved
+      group_by: ["..."]
+
+receivers:
+  - name: discord
+    discord_configs:
+      - webhook_url_file: /etc/alertmanager/discord/webhook-url
+        send_resolved: true
+  - name: discord-no-resolved
+    discord_configs:
+      - webhook_url_file: /etc/alertmanager/discord/webhook-url
+        send_resolved: false
