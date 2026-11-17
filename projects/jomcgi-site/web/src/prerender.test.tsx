@@ -19,7 +19,9 @@ describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
     const nav = container.querySelector('nav[aria-label="Site"]')!;
     expect(
       [...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")),
-    ).toEqual(SECTIONS.map(hrefFor));
+    ).toEqual(
+      SECTIONS.filter((section) => section.listed !== false).map(hrefFor),
+    );
   });
 
   it("hydrates the rendered HTML without a mismatch", async () => {

@@ -15,6 +15,8 @@ export interface Section {
   legacy: `/${string}`;
   live: boolean;
   summary: string;
+  /** Draft notes stay addressable without appearing in the site index. */
+  listed?: boolean;
 }
 
 export const GROUPS: readonly Group[] = ["Writing", "Apps", "Factory", "About"];
@@ -35,6 +37,15 @@ export const SECTIONS: readonly Section[] = [
     legacy: "/docs",
     live: false,
     summary: "How the pieces fit together.",
+  },
+  {
+    name: "Slop",
+    group: "Writing",
+    path: "/slop",
+    legacy: "/slop",
+    live: true,
+    listed: false,
+    summary: "Draft pages. Not listed, wording in flux.",
   },
   {
     name: "Hikes",
@@ -77,6 +88,15 @@ export const SECTIONS: readonly Section[] = [
     summary: "A reader for open tabletop rules.",
   },
   {
+    name: "Scotland",
+    group: "Apps",
+    path: "/scotland",
+    legacy: "/scotland",
+    live: true,
+    summary:
+      "Plan and check Scottish walks and stargazing with forecast verdicts.",
+  },
+  {
     name: "Factory",
     group: "Factory",
     path: "/factory",
@@ -108,5 +128,7 @@ export function hrefFor(section: Section): string {
 }
 
 export function sectionsIn(group: Group): Section[] {
-  return SECTIONS.filter((section) => section.group === group);
+  return SECTIONS.filter(
+    (section) => section.group === group && section.listed !== false,
+  );
 }

@@ -96,7 +96,9 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 
 ## Build and test
 
-From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`.
+From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,
+`node prerendered.mjs dist`, and `node marketplace.test.mjs dist`. The last
+check compares the built catalog with the hub handler byte for byte.
 Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
 
 ## Deploy
@@ -121,4 +123,13 @@ takes over both pins when HOME-116 slice 2 lands.
 
 `public/robots.txt` lets crawlers fetch every page, so they can read each
 page's indexing rules. `public/_headers` sends `X-Robots-Tag: noindex` for
-the preview host only.
+the preview host and the unlisted `/slop` drafts note. The note also keeps its
+`noindex, nofollow` meta tag.
+
+Scotland owns only `/scotland`, `/scotland/privacy`, `/scotland/terms`,
+`/scotland/support`, and `/scotland/marketplace.json`. These and `/slop` use
+exact edge patterns. The connector keeps `/scotland/mcp` and `/scotland/v1/*`;
+`/slop/factory` stays on the hub. `edge/apply.test.mjs` guards this boundary.
+The catalog is generated from `web/src/scotland-data.ts` at build time.
+After the dev deploy, verify the five HTML pages and catalog on
+`next.jomcgi.dev`, including the drafts meta/header rules and catalog bytes.

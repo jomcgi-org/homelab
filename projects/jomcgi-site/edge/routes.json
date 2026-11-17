@@ -8,7 +8,20 @@
     "jomcgi.dev/assets/*",
     "jomcgi.dev/cv*",
     "jomcgi.dev/ember*",
-    "jomcgi.dev/notes*"
+    "jomcgi.dev/notes*",
+    "jomcgi.dev/scotland",
+    "jomcgi.dev/scotland/privacy",
+    "jomcgi.dev/scotland/terms",
+    "jomcgi.dev/scotland/support",
+    "jomcgi.dev/scotland/marketplace.json",
+    "jomcgi.dev/slop"
   ],
-  "exactBecause": {}
+  "exactBecause": {
+    "jomcgi.dev/scotland": "HOME-207 requires this exact landing URL; /scotland* would intercept the connector at /scotland/mcp and /scotland/v1/*. Query-string variants stay on the hub.",
+    "jomcgi.dev/scotland/privacy": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
+    "jomcgi.dev/scotland/terms": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
+    "jomcgi.dev/scotland/support": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
+    "jomcgi.dev/scotland/marketplace.json": "HOME-207 routes only this catalog file, with an exact pattern; descendants and query-string variants stay on the hub.",
+    "jomcgi.dev/slop": "HOME-207 requires this exact drafts URL; /slop* would intercept /slop/factory, which stays on the hub until HOME-68. Query-string variants stay on the hub."
+  }
 }

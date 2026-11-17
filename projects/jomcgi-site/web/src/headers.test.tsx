@@ -36,10 +36,12 @@ describe("static hosting headers", () => {
     expect(readFileSync("public/robots.txt", "utf8")).not.toMatch(/Disallow/);
   });
 
-  it("sends noindex only for the preview host", () => {
+  it("sends noindex only for the preview host and the drafts note", () => {
     const rules = headers.split(/\n(?=\S)/);
     for (const rule of rules.filter((r) => r.includes("X-Robots-Tag"))) {
-      expect(rule.split("\n")[0]).toBe("https://next.jomcgi.dev/*");
+      expect(["https://next.jomcgi.dev/*", "/slop"]).toContain(
+        rule.split("\n")[0],
+      );
     }
   });
 });

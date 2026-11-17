@@ -82,6 +82,16 @@ js_test(
     entry_point = "prerendered.mjs",
 )
 
+js_test(
+    name = "marketplace_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        ":build",
+        "//projects/monolith/frontend:scotland_migration_sources",
+    ],
+    entry_point = "marketplace.test.mjs",
+)
+
 js_library(
     name = "test_src",
     srcs = glob(["src/**/*.test.tsx"]) + [
@@ -101,6 +111,7 @@ js_library(
         ":node_modules/happy-dom",
         ":node_modules/vitest",
         ":src",
+        "//projects/monolith/frontend:scotland_migration_sources",
     ],
 )
 

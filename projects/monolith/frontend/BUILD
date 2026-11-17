@@ -9,6 +9,21 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 npm_link_all_packages(name = "node_modules")
 
+# Original content for HOME-207 parity tests, never a production-site dep.
+js_library(
+    name = "scotland_migration_sources",
+    srcs = [
+        "src/lib/cache-headers.js",
+        "src/lib/public/seo.js",
+        "src/routes/public/scotland/+page.svelte",
+        "src/routes/public/scotland/marketplace.json/+server.js",
+        "src/routes/public/scotland/policy-data.js",
+        "src/routes/public/scotland/scotland-data.js",
+        "src/routes/public/slop/+page.svelte",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
 js_library(
     name = "review_fixture_src",
     srcs = [
