@@ -1,5 +1,5 @@
 {
-  "head": "dddbaf0931cabdf0bc7fe02329bd6dbbd8c91bdb",
+  "head": "bf28ef0388bd7af35722fbaf66ee346db73ad3e5",
   "baseline": "acde5767cf5ecec1ccbf697910e97012942025d1",
   "baseline_kind": "git merge-base",
   "rows": [
@@ -68,7 +68,7 @@
       "after": "captures/blog/after-360x640-complete.png",
       "before": "captures/blog/before-360x640-complete.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 360,
         "height": 2492
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1227,7 +1227,7 @@
       "after": "captures/review/after-notes-pending-390-light.png",
       "before": "captures/review/before-notes-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1873,7 +1873,7 @@
       "after": "captures/stars/after-historical-dark-390.png",
       "before": "captures/stars/before-historical-dark-390.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1457
@@ -1892,7 +1892,7 @@
       "after": "captures/stars/after-historical-light-1440.png",
       "before": "captures/stars/before-historical-light-1440.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 1440,
         "height": 1029
