@@ -20,9 +20,16 @@ import urllib.request
 
 TABLES = ("memory_units", "mental_models")
 EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
-COLUMN_TYPE = (
-    "select format_type(a.atttypid, a.atttypmod) from pg_attribute a "
-    "where a.attrelid = to_regclass($1) and a.attname = 'embedding'"
+# Every schema: a tenant extension can keep each tenant's tables in its own,
+# and `hindsight-admin reembed --all-schemas` covers them all.
+EMBEDDING_COLUMNS = (
+    "select n.nspname, c.relname, format_type(a.atttypid, a.atttypmod) "
+    "from pg_attribute a "
+    "join pg_class c on c.oid = a.attrelid "
+    "join pg_namespace n on n.oid = c.relnamespace "
+    "where c.relkind = 'r' and c.relname = any($1::text[]) "
+    "and a.attname = 'embedding' and not a.attisdropped "
+    "order by 1, 2"
 )
 
 
@@ -42,16 +49,19 @@ def model_dimension(key, model, extra_body):
         raise SystemExit(f"OpenRouter refused the key or model {model}: HTTP {e.code}")
 
 
+def quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
 async def stored(conn):
-    """{table: (column type, rows with a vector)} for each table that exists."""
+    """{schema.table: (column type, rows with a vector)} in every schema."""
     out = {}
-    for table in TABLES:
-        column = await conn.fetchval(COLUMN_TYPE, f"public.{table}")
-        if column is not None:
-            rows = await conn.fetchval(
-                f"select count(*) from public.{table} where embedding is not null"
-            )
-            out[table] = (column, rows)
+    for schema, table, column in await conn.fetch(EMBEDDING_COLUMNS, list(TABLES)):
+        rows = await conn.fetchval(
+            f"select count(*) from {quoted(schema)}.{quoted(table)} "
+            "where embedding is not null"
+        )
+        out[f"{schema}.{table}"] = (column, rows)
     return out
 
 
