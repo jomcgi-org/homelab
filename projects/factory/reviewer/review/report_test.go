@@ -1036,3 +1036,59 @@ func bareCleared(cs []Cleared) []Cleared {
 	}
 	return out
 }
+
+// HOME-179: a goal finding reported again as after_rollout takes its low
+// severity, like met would close it. An unclear answer keeps the earlier
+// severity, and so does a review finding: the agent cannot set Verdict.
+func TestGoalFindingSeverityFollowsItsVerdict(t *testing.T) {
+	prior := []Finding{
+		{ID: "HOME-1:goal", Severity: SeverityHigh, Title: "HOME-1: stated problem not addressed"},
+		{ID: "HOME-1:goal:criterion-1", Severity: SeverityMedium, Title: "HOME-1 criterion 1: not met"},
+	}
+	r := &Report{Findings: goalFindings("HOME-1", &GoalCheck{
+		Overall:  goalLive,
+		Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalLive}},
+	})}
+	for _, f := range r.Findings {
+		if f.Verdict != goalLive || f.Severity != SeverityLow {
+			t.Fatalf("goal finding = %+v", f)
+		}
+	}
+	a := Assess(r, prior)
+	if len(a.Blocking) != 0 || len(a.Optional) != 2 {
+		t.Fatalf("after_rollout goal findings: blocking %+v, optional %+v", a.Blocking, a.Optional)
+	}
+	if o := Render(a, r, nil, "f"); strings.Contains(o.Output.Summary, "keeps its earlier severity") {
+		t.Fatalf("summary = %s", o.Output.Summary)
+	}
+
+	// An unclear answer keeps the earlier high: a note could justify a medium.
+	r = &Report{Findings: goalFindings("HOME-1", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{}})}
+	if a := Assess(r, prior[:1]); len(a.Blocking) != 1 || a.Blocking[0].Severity != SeverityHigh {
+		t.Fatalf("unclear goal finding: blocking %+v", a.Blocking)
+	}
+
+	// Each verdict marks the finding it renders.
+	for verdict, severity := range map[string]string{goalNotMet: SeverityMedium, goalUnclear: SeverityMedium, goalLive: SeverityLow} {
+		fs := goalFindings("HOME-1", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: verdict}}})
+		if len(fs) != 1 || fs[0].Verdict != verdict || fs[0].Severity != severity {
+			t.Fatalf("%s: %+v", verdict, fs)
+		}
+	}
+	if fs := goalFindings("HOME-1", &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{}}); len(fs) != 1 || fs[0].Verdict != goalNotMet {
+		t.Fatalf("not_met stated problem: %+v", fs)
+	}
+
+	// The agent's JSON cannot carry Verdict, so its own finding keeps high.
+	var agent Report
+	if err := json.Unmarshal([]byte(`{"findings": [{"id": "HOME-1:goal", "severity": "low", "title": "t", "Verdict": "after_rollout", "verdict": "after_rollout"}]}`), &agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.Findings[0].Verdict != "" {
+		t.Fatalf("the agent set Verdict: %+v", agent.Findings[0])
+	}
+	a = Assess(&agent, prior[:1])
+	if len(a.Blocking) != 1 || a.Blocking[0].Severity != SeverityHigh {
+		t.Fatalf("agent finding: blocking %+v", a.Blocking)
+	}
+}

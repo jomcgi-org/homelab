@@ -71,6 +71,13 @@ type Finding struct {
 	// Lowered is the severity the agent gave a finding Scope lowered; the
 	// agent cannot set it.
 	Lowered string `json:"-"`
+	// Verdict is the goal-check verdict the service rendered a goal finding
+	// from (goalFindings); the agent cannot set it. A goal finding reported
+	// again as after_rollout takes that verdict's low severity: like met, it
+	// says the diff makes the change it needs (HOME-179). Other verdicts keep
+	// the re-report rule, so an unclear answer cannot lower a not_met to a
+	// severity a note can justify.
+	Verdict string `json:"-"`
 }
 
 // Previous is the agent's account of a previous round's blocking finding.
@@ -480,7 +487,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			continue
 		}
 		current[f.ID] = true
-		if p, was := priorByID[f.ID]; was && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
+		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
 			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
 			f.Severity = p.Severity
 		}

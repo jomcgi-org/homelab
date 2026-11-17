@@ -64,19 +64,19 @@ func TestGoalFindingsUseOnlyKeyNumberAndFixedText(t *testing.T) {
 	got := goalFindings("HOME-58", &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalUnclear}, {4, goalLive}}})
 	want := []Finding{
 		{
-			ID: "HOME-58:goal", Severity: SeverityHigh, Title: "HOME-58: stated problem not addressed",
+			ID: "HOME-58:goal", Severity: SeverityHigh, Verdict: goalNotMet, Title: "HOME-58: stated problem not addressed",
 			Detail: "The goal check found that the PR does not address the stated problem of HOME-58.",
 		},
 		{
-			ID: "HOME-58:goal:criterion-2", Severity: SeverityMedium, Title: "HOME-58 criterion 2: not met",
+			ID: "HOME-58:goal:criterion-2", Severity: SeverityMedium, Verdict: goalNotMet, Title: "HOME-58 criterion 2: not met",
 			Detail: "The goal check found that the diff does not meet criterion 2 of HOME-58. Meet it in the diff, or move it to another issue in the issue text or a linked trusted decision.",
 		},
 		{
-			ID: "HOME-58:goal:criterion-3", Severity: SeverityMedium, Title: "HOME-58 criterion 3: unverified",
+			ID: "HOME-58:goal:criterion-3", Severity: SeverityMedium, Verdict: goalUnclear, Title: "HOME-58 criterion 3: unverified",
 			Detail: "The goal check cannot verify the PR against criterion 3 of HOME-58 from the diff and the issue evidence. Make the diff show it, or restate it in the issue so that the diff can.",
 		},
 		{
-			ID: "HOME-58:goal:criterion-4", Severity: SeverityLow, Title: "HOME-58 criterion 4: to check after rollout",
+			ID: "HOME-58:goal:criterion-4", Severity: SeverityLow, Verdict: goalLive, Title: "HOME-58 criterion 4: to check after rollout",
 			Detail: "The goal check found that only a rollout or live use can verify the PR against criterion 4 of HOME-58. The delivery owner checks it after rollout.",
 		},
 	}
@@ -131,11 +131,14 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 	for _, b := range a.Blocking {
 		blocking[b.ID] = b.Severity
 	}
-	// Criterion 3 is reported again as low and keeps its earlier medium.
-	// HOME-57's blocker stays: a goal check of HOME-58 does not resolve it.
-	if len(blocking) != 3 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium || blocking["HOME-58:goal:criterion-3"] != SeverityMedium ||
-		blocking["HOME-57:goal"] != SeverityHigh {
+	// Criterion 3 is reported again as after_rollout and takes its low
+	// severity (HOME-179). HOME-57's blocker stays: a goal check of HOME-58
+	// does not resolve it.
+	if len(blocking) != 2 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium || blocking["HOME-57:goal"] != SeverityHigh {
 		t.Fatalf("blocking = %v", blocking)
+	}
+	if !slices.ContainsFunc(a.Optional, func(f Finding) bool { return f.ID == "HOME-58:goal:criterion-3" && f.Severity == SeverityLow }) {
+		t.Fatalf("optional = %+v", a.Optional)
 	}
 	if len(a.Accepted) != 1 || a.Accepted[0].ID != "x.go:goal" || len(a.Fixed) != 0 {
 		t.Fatalf("assessment = %+v", a)
@@ -143,7 +146,8 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 }
 
 // An earlier goal blocker stays open at its earlier severity until a valid
-// answer resolves that same criterion or the overall goal.
+// answer resolves that same criterion or the overall goal, or reports it
+// again as after_rollout, which takes the low severity (HOME-179).
 func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 	prior := []Finding{
 		{ID: "HOME-58:goal", Severity: SeverityHigh},
@@ -163,7 +167,7 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 		},
 		"after rollout": {
 			"HOME-58", &GoalCheck{Overall: goalLive, Criteria: []GoalVerdict{{1, goalMet}, {2, goalLive}}},
-			"HOME-58:goal=high HOME-58:goal:criterion-2=medium", "HOME-58:goal:unavailable",
+			"", "HOME-58:goal:unavailable",
 		},
 		"criterion met only": {
 			"HOME-58", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalNotMet}, {2, goalMet}}},

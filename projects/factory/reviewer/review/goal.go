@@ -110,7 +110,7 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 	var out []Finding
 	// title is the title's start; subject names what the goal check judged.
 	add := func(id, title, subject, verdict string) {
-		f := Finding{ID: id}
+		f := Finding{ID: id, Verdict: verdict}
 		switch verdict {
 		case goalNotMet:
 			f.Severity, f.Title = SeverityMedium, title+"not met"
@@ -131,7 +131,7 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 	}
 	if g.Overall == goalNotMet {
 		out = append(out, Finding{
-			ID: key + ":goal", Severity: SeverityHigh, Title: key + ": stated problem not addressed",
+			ID: key + ":goal", Severity: SeverityHigh, Verdict: goalNotMet, Title: key + ": stated problem not addressed",
 			Detail: "The goal check found that the PR does not address the stated problem of " + key + ".",
 		})
 	} else {

@@ -1943,7 +1943,9 @@ previews).
   back `fixed`,
   `justified` (a medium with a note, or any severity with a note starting
   `withdrawn`) or `open`, and one left out stays open. One reported again
-  keeps the higher of its two severities unless it is fixed or withdrawn. A
+  keeps the higher of its two severities unless it is fixed or withdrawn,
+  except a goal finding reported again as `after_rollout` (see the goal
+  check below). A
   `human-gate` finding not fixed or withdrawn holds the later head too.
   The check's State also keeps up to 20 findings earlier reviews cleared
   (fixed, justified or withdrawn, with notes). The prompt lets the agent
@@ -2100,7 +2102,13 @@ previews).
   The delivery owner checks each `after_rollout` verdict after rollout. The
   goal check owns these IDs: the service drops the code review's findings
   and accounts under them. An earlier goal finding stays open at its
-  earlier severity until a valid answer on the same issue resolves it.
+  earlier severity until a valid answer on the same issue resolves it. One
+  reported again as `after_rollout` takes that verdict's low severity: like
+  `met`, it says the diff makes the change it needs, and the delivery owner
+  checks the rest after rollout (HOME-179). Other verdicts keep the earlier
+  severity, so an `unclear` answer cannot lower a high `not_met` to a medium
+  that a note can justify. The agent cannot mark a finding as a goal
+  verdict, so its own findings keep the rule.
   `met` resolves its criterion or the stated problem, and any valid answer
   resolves `unavailable`. An answer that omits criterion K, or a goal check
   of another issue that the PR names now, leaves the finding open. Only the
