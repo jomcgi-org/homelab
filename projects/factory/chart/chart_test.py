@@ -1145,14 +1145,19 @@ def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
     pod = job["spec"]["template"]
     # The bridge's label: hindsight-discord admits it and the bridge's egress
     # policy covers it.
-    assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "factory-discord-bridge"
+    assert (
+        pod["metadata"]["labels"]["app.kubernetes.io/name"] == "factory-discord-bridge"
+    )
     (c,) = pod["spec"]["containers"]
     assert c["command"] == ["/usr/local/bin/discord-bridge", "import"]
     env = {e["name"]: e["value"] for e in c["env"]}
     assert env["IMPORT_MAX_DOCUMENTS"] == "500"
-    assert {v["name"] for v in pod["spec"]["volumes"]} == {"discord", "hindsight", "policy"}
+    assert {v["name"] for v in pod["spec"]["volumes"]} == {
+        "discord",
+        "hindsight",
+        "policy",
+    }
     assert pod["spec"]["automountServiceAccountToken"] is False
     assert job["spec"]["activeDeadlineSeconds"] == 21600
     with pytest.raises(RuntimeError, match="discord.import needs discord.bridge"):
         _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.import.enabled=true"])
-
