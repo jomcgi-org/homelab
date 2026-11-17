@@ -7,7 +7,7 @@
     "build": "node build.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "budget": "node budget.mjs dist"
+    "budget": "node budget.mjs dist factory/index.html"
   },
   "dependencies": {
     "@astryxdesign/core": "0.7.11",

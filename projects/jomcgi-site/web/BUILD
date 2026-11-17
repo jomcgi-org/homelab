@@ -72,10 +72,13 @@ build_test(
     targets = [":build"],
 )
 
-# Fails when a page's initial JS is over the 150 KiB gzipped budget.
+# Requires the Factory entry and caps each page's initial JS at 150 KiB gzipped.
 js_test(
     name = "budget_test",
-    args = ["$(rootpath :build)"],
+    args = [
+        "$(rootpath :build)",
+        "factory/index.html",
+    ],
     data = [":build"],
     entry_point = "budget.mjs",
 )
@@ -84,7 +87,6 @@ js_test(
     name = "factory_built_test",
     args = ["$(rootpath :build)"],
     data = [
-        "budget.mjs",
         ":build",
         ":node_modules/happy-dom",
     ],
