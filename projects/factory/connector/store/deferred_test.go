@@ -395,11 +395,66 @@ func removeDeferredStopMigration(f *recoveryFixture) {
 	f.must(err)
 }
 
-func TestDeferredMigrationRetainsPostStopRequestsAndHoldsUnknownOrder(t *testing.T) {
+func TestDeferredMigrationHoldsRequestInsertedDuringLegacyStop(t *testing.T) {
+	f := deferredStopFixture(t, false)
+	removeDeferredStopMigration(f)
+	ctx, cancel := context.WithTimeout(f.ctx, 10*time.Second)
+	defer cancel()
+	stop, err := f.st.DB.BeginTx(ctx, nil)
+	f.must(err)
+	defer stop.Rollback()
+	// Leave the legacy held-run stop uncommitted while another connection
+	// sees the old run and enqueues. now() records the stop transaction's
+	// start, so the request looks newer despite preceding the stop's commit.
+	_, err = stop.ExecContext(ctx, `UPDATE run SET stopped_reason = 'legacy stop', updated_at = now()
+		WHERE id = 1 AND work_item_id IS NULL AND stopped_reason IS NULL`)
+	f.must(err)
+	var unstopped bool
+	f.must(f.st.DB.QueryRowContext(ctx, `SELECT stopped_reason IS NULL FROM run WHERE id = 1`).Scan(&unstopped))
+	if !unstopped {
+		t.Fatal("legacy reader saw an uncommitted stop")
+	}
+	const key = "deferred/101/2026-11-15"
+	f.must(f.st.Enqueue(ctx, f.st.DB, store.OutboxDeferredStart, key, 0, "", nil))
+	f.must(stop.Commit())
+	// Admit the new delegation without any metadata write to the old run.
+	_, _, err = f.st.RecordClaim(ctx, store.ClaimedRun{ID: 2, AgentKey: "coder", IssueID: 101, IssueKey: "HL-101", Attempt: 1})
+	f.must(err)
+	_, _, err = f.st.ResolveWorkItem(ctx, 2, store.NewWorkItem{
+		Binding: store.Binding{Name: "repo", KagentNamespace: "ns", KagentAgent: "coder", BranchPrefix: "factory/"},
+		IssueID: 101, IssueKey: "HL-101", AgentKey: "coder",
+	})
+	f.must(err)
+	f.must(migrations.Apply(ctx, f.st.DB))
+	var id int64
+	var misleadingOrder bool
+	f.must(f.st.DB.QueryRowContext(ctx, `SELECT o.id, o.created_at > r.updated_at
+		AND f.generation = 1 AND NOT f.stopped
+		FROM outbox o JOIN run r ON r.id = 1 JOIN deferred_fence f ON f.issue_id = r.issue_id
+		WHERE o.dedupe_key = $1`, key).Scan(&id, &misleadingOrder))
+	if !misleadingOrder {
+		t.Fatal("fixture did not reproduce the misleading legacy timestamp order")
+	}
+	if admitDeferred(f, id) || admitDeferred(f, id) {
+		t.Fatal("request inserted before the stop committed borrowed the later admission")
+	}
+	var held bool
+	f.must(f.st.DB.QueryRowContext(ctx, `SELECT deferred_stop_generation IS NULL
+		AND send_started_at IS NULL AND abandoned_at IS NULL AND delivered_at IS NULL
+		AND tries = 0 AND last_error = 'deferred stop order unknown'
+		FROM outbox WHERE id = $1`, id).Scan(&held))
+	var notices int
+	f.must(f.st.DB.QueryRowContext(ctx, `SELECT count(*) FROM outbox WHERE dedupe_key = $1`,
+		fmt.Sprintf("comment/deferred-reconcile/%d", id)).Scan(&notices))
+	if !held || notices != 1 {
+		t.Fatalf("held = %v, reconciliation notices = %d", held, notices)
+	}
+}
+
+func TestDeferredMigrationHoldsLegacyRequestsWithStops(t *testing.T) {
 	for _, linked := range []bool{false, true} {
-		for _, order := range []string{"after_stop", "unknown", "before_stop"} {
+		for _, order := range []string{"no_stop", "after_stop", "metadata_update", "before_stop"} {
 			t.Run(fmt.Sprintf("linked=%v/order=%s", linked, order), func(t *testing.T) {
-				unknown := order != "after_stop"
 				f := deferredStopFixture(t, linked)
 				removeDeferredStopMigration(f)
 				const key = "deferred/101/2026-11-15"
@@ -413,14 +468,16 @@ func TestDeferredMigrationRetainsPostStopRequestsAndHoldsUnknownOrder(t *testing
 				if order == "before_stop" {
 					enqueueLegacy()
 				}
-				rollbackStop(f, linked)
-				readmitDeferred(f)
+				if order != "no_stop" {
+					rollbackStop(f, linked)
+					readmitDeferred(f)
+				}
 				if order != "before_stop" {
 					enqueueLegacy()
 				}
-				if order == "unknown" {
-					// A later metadata write erases the upper-bound evidence.
-					// It cannot justify either a send or terminal abandonment.
+				if order == "metadata_update" {
+					// Neither the original stop timestamp nor a later metadata
+					// write establishes commit order for a legacy request.
 					if linked {
 						_, err := f.st.DB.Exec(`UPDATE work_item SET updated_at = now() WHERE issue_id = 101`)
 						f.must(err)
@@ -434,10 +491,10 @@ func TestDeferredMigrationRetainsPostStopRequestsAndHoldsUnknownOrder(t *testing
 				var preserved bool
 				f.must(f.st.DB.QueryRow(`SELECT abandoned_at IS NULL AND send_started_at IS NOT NULL
 					AND tries = 0 AND payload->>'delegate' = 'original' FROM outbox WHERE id = $1`, id).Scan(&preserved))
-				if !preserved || admitDeferred(f, id) == unknown {
+				if !preserved || admitDeferred(f, id) != (order == "no_stop") {
 					t.Fatal("migration lost or incorrectly admitted the pending request")
 				}
-				if !unknown {
+				if order == "no_stop" {
 					return
 				}
 				// Repeated delivery and chart rollback preserve the hold and
