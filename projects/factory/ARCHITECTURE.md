@@ -1756,6 +1756,28 @@ reuse state, even after a prolonged persistence failure.
   is Claude Code 2.1.285. Its published package confirms the OAuth beta and
   client headers. [V] Live subscription acceptance and Mythos entitlement
   remain untested; this change does not enable the relay or add an audit binding.
+
+  **Verification.** The broker contract uses a local TLS identity provider,
+  signed actor JWTs and a fake Anthropic server; it needs no provider credential.
+  `TestClaudeCodeSubscriptionRelayThroughBroker` loads the file configuration
+  and runs the production builder, verifier and relay listener. It sends the
+  harness's `x-api-key` JWT and checks that only the broker's fixture token
+  reaches the provider, as OAuth Bearer with the beta header. It checks both
+  endpoint paths, actor and model denial, upstream 401/429 and receipt of an
+  SSE event while the provider still holds the rest of the response.
+
+  | Contract | Registered test evidence |
+  | --- | --- |
+  | Configuration through provider request, including credential replacement | `//projects/factory/broker/cmd/broker:broker_test`, `TestClaudeCodeSubscriptionRelayThroughBroker` in [main_test.go](broker/cmd/broker/main_test.go) |
+  | JWT authentication and default-deny allowlist | `TestClaudeAuthenticatesAndDefaultsToDeny` and `TestClaudeValidatesModelAndRoutesBeforeUpstream` in [claude_test.go](broker/relay/claude_test.go) |
+  | Incremental SSE and upstream 401/429 | `TestClaudeStreamsBeforeCompletion` and `TestClaudeUpstreamErrors` in the same relay test file |
+  | Secret isolation and disabled chart default | Claude tests in [chart_test.py](chart/chart_test.py) |
+
+  The relay tests are registered in
+  `//projects/factory/broker/relay:relay_test`; PR CI runs the Go targets.
+  The chart tests render manifests with Helm. These fixtures establish the
+  broker's protocol and credential boundary. A later enabled audit binding
+  must check live subscription acceptance and the chosen Mythos model ID.
 - **Relay errors** are JSON `{"factory_error": ...}`: `actor_unauthenticated`
   (401); `codex_login_required` (401, for an empty grant or `invalid_grant`);
   `codex_quota_exhausted` (429 with `resets_at`, from the `x-codex-*` headers or a
