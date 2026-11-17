@@ -1599,12 +1599,19 @@ previews).
   broker's comment proxy, which holds the comment token (`issues: write`
   and `pull_requests: write`), so an App without them loses only the
   comment; a failed write is logged and counted
-  (`factory_reviewer_comment_writes_total`). It edits only a comment its bot
+  (`factory_reviewer_comment_writes_total`) and retried on the next poll.
+  It edits only a comment its bot
   login wrote, and its own comment never reaches the agent.
   Check runs are its only state: the
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings, human gate and kagent session in a hidden
-  block, at most 48,000 characters, for the next head. Duplicate ready PRs
+  block, at most 48,000 characters, for the next head. A compressed comment
+  snapshot shares the check text's 60,000-character budget; oversized
+  snapshots link to the full findings in the check. Gate changes carry the
+  snapshot's findings even if the earlier comment is still queued.
+  After a restart, completed checks replay their snapshots through the
+  comment worker after gate reconciliation. This recovers writes lost when
+  a rollout kills a long comment lookup. Duplicate ready PRs
   stop model work; duplicate or foreign checks require a fresh review and human approval.
   Holds survive new commits; complete label history recovers failed writes.
 - **Restarts.** A restart loses only the shared-head observations whose

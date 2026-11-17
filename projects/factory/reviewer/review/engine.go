@@ -187,6 +187,7 @@ type Engine struct {
 	commentLimits  map[prKey]bool
 	commentQueueMu sync.Mutex
 	commentQueue   []func()
+	commentReplays map[prKey]int64 // Last check queued; failed writes clear it for retry.
 	commentWorker  bool
 	commentWG      sync.WaitGroup
 
@@ -328,7 +329,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
-		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{},
+		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
 }
@@ -424,6 +425,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 				heldHeads[pr.HeadSHA] = cur
 			}
 			reviews[pr.Number] = cur
+			e.replayComment(ctx, b, pr, cur)
 			continue
 		}
 		if b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
@@ -464,6 +466,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
 				reviews[pr.Number] = e.maybeEnqueue(ctx, b, pr, cur)
 			}
+			e.replayComment(ctx, b, pr, reviews[pr.Number])
 		}
 	}
 	// Reviews already in progress (after a restart) go before new heads.
@@ -549,6 +552,11 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	}
 	now := e.cfg.Now().UTC()
 	o := sharedHeadOutcome(prev, labels, now)
+	previous := ""
+	if prev != nil {
+		previous = prev.Text
+	}
+	o.Output.Text = recordComment(o.Output.Text, previous, pr.HeadSHA, o.Comment)
 	if pending == nil && sharedHeadHeld(prev) && o.Output.Text == prev.Text {
 		return prev
 	}
@@ -572,7 +580,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	e.mu.Lock()
 	delete(e.pendingHolds, key)
 	e.mu.Unlock()
-	e.queueMirror(ctx, b, pr, run, o.Comment)
+	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return run
 }
 
@@ -1937,7 +1945,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
-		Output: &github.CheckRunOutput{Title: title, Summary: summary, Text: encodeState(st)},
+		Output: &github.CheckRunOutput{Title: title, Summary: summary, Text: recordComment(encodeState(st), prev.Text, pr.HeadSHA, u)},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "create_check", err)
@@ -1949,7 +1957,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 		approver = st.Gate.Approver
 	}
 	l.InfoContext(ctx, "human gate check posted", "conclusion", conclusion, "approver", approver)
-	e.queueMirror(ctx, b, pr, run, u)
+	e.queueCompletedComment(ctx, b, pr, run, run.Text, u)
 	return run
 }
 
@@ -1986,10 +1994,11 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 
 // finish completes the check run, then shows the outcome in the PR comment.
 func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, o Outcome, l *slog.Logger) bool {
+	o.Output.Text = recordComment(o.Output.Text, run.Text, pr.HeadSHA, o.Comment)
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
-	e.queueMirror(ctx, b, pr, run, o.Comment)
+	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return true
 }
 
