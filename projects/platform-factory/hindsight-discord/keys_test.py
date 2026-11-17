@@ -471,4 +471,3 @@ def test_recovery_job_reembeds_discord_memory_with_the_tested_settings():
     for path in ("kustomization.yaml", "resources/kustomization.yaml"):
         (kustomization,) = read(path)
         assert not any("recovery" in r for r in kustomization.get("resources", []))
-
