@@ -10,8 +10,12 @@ after a full Todo column has capacity again.
 
 `token-usage.test.ts` sends results through the real agent-run result route
 and checks the persisted `input_tokens` and `output_tokens`. It executes
-[`delivered_issue_usage.sql`](../../connector/itsaplan/delivered_issue_usage.sql)
-against that same database. The cases cover successful, failed, canceled
+[`report-delivered-usage.sh`](../../connector/itsaplan/report-delivered-usage.sh)
+against that database and a second database with all connector migrations.
+The real `psql` export, temporary import and consolidated query count a shared
+300-token run and connector-only 200-token revision as 500, preserve unknown
+revision runs, recover local cancellation totals, and stop on database errors.
+The other cases cover successful, failed, canceled
 and unmeasured runs; manual Done moves; repeated delivery; reopened and
 archived issues; column changes; issues without runs; and project isolation.
 No connector outbox or mock itsaplan schema decides the report's cohort.
@@ -28,7 +32,7 @@ The test itself needs no downloads, Docker daemon or external service.
 
 The launcher extracts a writable upstream copy, mounts the same four adapter
 files as the chart and creates a private PostgreSQL 16 from `@postgres_test`.
-It chooses a local port, creates and migrates `factory_test`, runs the suite
+It chooses a local port, creates and migrates `factory_test` and `connector_test`, runs the suite
 and stops PostgreSQL in cleanup. Credentials are synthetic. Caller-supplied
 database URLs are ignored. Missing fixtures or any suite failure fail the
 target; the test has no skip or manual tag.

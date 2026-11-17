@@ -1,5 +1,11 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+filegroup(
+    name = "sql",
+    srcs = glob(["*.sql"]),
+    visibility = ["//projects/factory/tests/itsaplan:__pkg__"],
+)
+
 go_library(
     name = "migrations",
     srcs = ["migrations.go"],

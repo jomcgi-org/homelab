@@ -68,11 +68,7 @@ def test_upstream_factory_contracts(tmp_path):
         Path(__file__).with_name("token-usage.test.ts"),
         upstream / "apps/api/src/factory-token-usage.test.ts",
     )
-    shutil.copyfile(
-        Path(__file__).resolve().parents[2]
-        / "connector/itsaplan/delivered_issue_usage.sql",
-        upstream / "apps/api/src/delivered_issue_usage.sql",
-    )
+    connector = Path(__file__).resolve().parents[2] / "connector"
 
     pg_bin, pg_share = pg_paths()
     # Never write the shared runfiles. Some OCI layers omit these templates.
@@ -154,18 +150,47 @@ def test_upstream_factory_contracts(tmp_path):
                 "BETTER_AUTH_SECRET": "local-test-secret-that-is-not-a-credential",
                 "APP_ENCRYPTION_KEY": "0" * 64,
                 "BUN_RUNTIME_TRANSPILER_CACHE_PATH": "0",
+                "PSQL_BIN": str(pg_bin / "psql"),
+                "USAGE_REPORT": str(connector / "itsaplan/report-delivered-usage.sh"),
             }
             run(
                 [
-                    bun,
-                    "-e",
-                    'const db = new Bun.SQL(process.env.DATABASE_URL); await db.unsafe("CREATE DATABASE factory_test"); await db.close();',
+                    pg_bin / "psql",
+                    "--dbname",
+                    env["DATABASE_URL"],
+                    "-X",
+                    "--set=ON_ERROR_STOP=1",
+                    "-c",
+                    "CREATE DATABASE factory_test",
+                    "-c",
+                    "CREATE DATABASE connector_test",
+                    "-c",
+                    "CREATE ROLE factory_broker_accounting",
                 ],
                 cwd=upstream,
                 env=env,
             )
             env["DATABASE_URL"] = f"postgres://test@127.0.0.1:{port}/factory_test"
+            env["ITSAPLAN_DATABASE_URL"] = env["DATABASE_URL"]
+            env["FACTORY_CONNECTOR_DATABASE_URL"] = (
+                f"postgres://test@127.0.0.1:{port}/connector_test"
+            )
             run([bun, "run", "packages/db/src/migrate.ts"], cwd=upstream, env=env)
+            migration_args = [
+                pg_bin / "psql",
+                "--dbname",
+                env["FACTORY_CONNECTOR_DATABASE_URL"],
+                "-X",
+                "-q",
+                "--single-transaction",
+                "--set=ON_ERROR_STOP=1",
+            ]
+            for migration in sorted((connector / "migrations").glob("*.sql")):
+                migration_args.extend(["-f", migration])
+            run(
+                migration_args,
+                env=env,
+            )
             result = run(
                 [
                     bun,
