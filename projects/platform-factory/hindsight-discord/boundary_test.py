@@ -139,6 +139,12 @@ def test_mcp_is_not_mounted(server, path, token):
 
 
 def test_rest_recall_works_with_the_tenant_key(server):
+    # Hindsight 1.2.1 answers recall on a missing bank with 404, so the
+    # tenant key creates the bank first.
+    status, _, body = request(
+        server, "PUT", "/v1/default/banks/discord-test", TENANT_KEY, {}
+    )
+    assert status in (200, 201), body
     status, _, body = request(
         server,
         "POST",
