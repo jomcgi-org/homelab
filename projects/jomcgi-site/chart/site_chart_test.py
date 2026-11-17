@@ -47,6 +47,9 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     assert container["command"] == ["/bin/bash", "/app/site/run.sh"]
     assert "args" not in container
     assert {"name": "STAGE", "value": "dev"} in container["env"]
+    assert {"name": "MODE", "value": "sync"} in container["env"]
+    version = yaml.safe_load((CHART / "Chart.yaml").read_text())["version"]
+    assert {"name": "CHART_VERSION", "value": version} in container["env"]
     assert container["image"].endswith(f"@{DIGEST}")
     secrets = {
         env["name"]: env["valueFrom"]["secretKeyRef"]
@@ -87,8 +90,12 @@ def test_refresh_cronjob_runs_the_deploy_command_on_a_schedule():
     assert "argocd.argoproj.io/hook" not in cron["metadata"].get("annotations", {})
     container = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
     assert container["command"] == deploy["command"]
-    assert container["env"] == deploy["env"]
     assert container["image"] == deploy["image"]
+    # The same env but MODE: run.sh's fence keeps a refresh from replacing a
+    # newer release, and the hook re-checks after its deploy.
+    without_mode = lambda env: [e for e in env if e["name"] != "MODE"]
+    assert without_mode(container["env"]) == without_mode(deploy["env"])
+    assert {"name": "MODE", "value": "refresh"} in container["env"]
     prod = docs(render(*PROD))["CronJob/jomcgi-site-refresh"]
     prod_env = prod["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0][
         "env"
@@ -219,7 +226,11 @@ def test_dev_has_no_edge_job():
         (["--set", "edge.enabled=true"], "edge.enabled is for the prod stage only"),
         (
             ["--set", "workloads.jomcgi-site-deploy.env[0].name=STAGE"],
-            "STAGE comes from .Values.stage",
+            "STAGE comes from the chart",
+        ),
+        (
+            ["--set", "workloads.jomcgi-site-deploy.env[0].name=MODE"],
+            "MODE comes from the chart",
         ),
         (
             [*PROD, "--set-string", "edge.serveRoutes=yes"],
