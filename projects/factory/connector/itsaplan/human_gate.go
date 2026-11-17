@@ -8,10 +8,9 @@ import (
 	"strconv"
 )
 
-// Project includes the human members needed to assign a gate issue and the
-// account's effective issue-creation permission. The reviewer also reads the
-// ID and key, and authenticated account identities; display names are never
-// proof of authorship.
+// Project includes assignable users, effective issue-creation permission,
+// identity fields for the reviewer, and label IDs for deferred starts.
+// Display names are never proof of authorship.
 type Project struct {
 	Project struct {
 		ID  int64  `json:"id"`
@@ -22,6 +21,10 @@ type Project struct {
 			Create bool `json:"create"`
 		} `json:"work_items"`
 	} `json:"permissions"`
+	Labels []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"labels"`
 	Columns   []Column   `json:"columns"`
 	Assignees []Assignee `json:"assignees"`
 }

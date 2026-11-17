@@ -100,8 +100,19 @@ records how they relate and routes results and feedback between them.
 13. **An agent's comment starts no itsaplan run.** [V] At v1.10.0
     `queueMentionRuns` returns early when the comment's author is an agent
     user, so the coordinator cannot start a mention-run. A delegation run
-    starts only when the issue's delegate changes, with a fixed prompt, and
-    an agent cannot create a run any other way without Pro schedules.
+    starts when the issue's delegate changes, with a fixed prompt.
+    `enqueueDelegateRun` skips self-delegation; `isTriggerableBy` accepts
+    another agent when the target has `runnerScope: team`. The bootstrap
+    gives `homelab-codex` that scope and `triggerOnAssign: true`, so
+    `factory-coordinator` can start it (HOME-118, also applies to HOME-106).
+    Core v1.10.0 includes cron and status schedules without Pro. Its
+    `agent_schedule` schema and CE `ScheduleDialog.tsx` expose them.
+    Status delays and delegation delays stop at 86400 seconds; cron runs
+    carry no issue. Sources:
+    [delegation](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/issues/service.ts#L1395),
+    [trigger scope](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/agents/core/service.ts#L399),
+    [schedule schema](https://github.com/croffasia/itsaplan/blob/v1.10.0/packages/db/src/schema/app.ts#L668),
+    [CE dialog](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/web/src/ce/ScheduleDialog.tsx).
 14. **kagent session recovery.** [V] `RevertSession` restores a crashed
     runtime to its last durable snapshot without replaying the interrupted
     turn, returns a session that is not crashed unchanged, and answers
@@ -442,6 +453,70 @@ advisory lock. Each takeover increments a writer epoch, and every external
 side effect checks it first. The epoch check runs on the lock's own
 connection, so a lost session also fails it. kagent guarantees one non-quiescent task per
 session and one execution per actor, which keeps one writer per worktree.
+
+**Deferred starts (HOME-118).** On each poll, the connector reads each bound
+project for active issues in Backlog with a `startDate`, no delegate and the
+project label `deferred`. Bootstrap creates that label in every bound
+project. Dates on or before today in UTC qualify, including dates missed
+while the connector was down. The first agent in the binding's `agents`
+list receives the delegation.
+
+```mermaid
+sequenceDiagram
+  participant C as Connector
+  participant O as Durable outbox
+  participant I as itsaplan
+  C->>I: Poll bound projects for due deferred issues
+  C->>O: Record issue and start date once
+  C->>I: Start deferred work (issue ID + date)
+  rect rgb(235, 245, 235)
+    Note over I: One database transaction, under an issue row lock
+    I->>I: Check receipt or recheck eligibility
+    I->>I: Comment with the start date
+    I->>I: Move to Todo
+    I->>I: Set coding agent as delegate and enqueue run
+    I->>I: Verify new run and save receipt
+  end
+  I-->>C: Receipt with run ID
+  C->>O: Complete start
+```
+
+The connector checks the writer epoch and any stored stop before sending.
+Enqueue, rollback recovery and delivery honor stops on work items and on
+admission-held runs without a work item. Closing a stopped run does not
+authorize another automatic start.
+The chart mounts a small adapter into the pinned itsaplan v1.10.0 API. Its
+authenticated route uses the core work-item edit guard and the existing
+comment and issue-update services. A request-scoped database client puts
+their effects, including notifications and webhook outboxes, in one
+transaction. Other API requests and background jobs use the normal pool;
+the worker and migration containers keep the upstream client.
+
+The receipt key is the issue ID and start date. The API locks the issue
+before it checks the receipt and eligibility. An existing delegate without
+that receipt stops all writes. The receipt records the coordinator, coding
+agent and newly created delegation run. The API verifies the run on replay;
+a delegate alone cannot complete a start. If delegation fails before
+enqueue, the transaction rolls back the comment, move and delegate too.
+A restart before sending or a lost response can therefore retry the same
+request without a second comment, move, delegation or run.
+
+The adapter uses the upstream assignment trigger checks, including
+`runnerScope`, and refuses startup on another itsaplan version until the
+integration is revalidated. It grants the connector no database access.
+The existing outbox retry bounds still apply to persistent failures and
+permission refusals. A `wip_limit_exceeded` refusal rolls back all effects
+and leaves the start pending. It retries every minute without consuming the
+error retry budget or a run slot, including after a restart. Each retry
+rechecks eligibility; removing the opt-in or stopping the work cancels it.
+After a chart rollback, an older connector can abandon a pending start as
+`unknown kind deferred_start`. When upgraded again, the sweep resumes that
+same outbox row only if the issue still qualifies and has no stored stop.
+It keeps the original request, receipt key and error retry count. Completed
+starts and other abandonment reasons stay terminal.
+`factory_connector_deferred_started_total` counts completed starts. The
+sweep does not inspect blockers. The queued run still passes dependency
+admission before its first delivery attempt (HOME-55).
 
 **Data**, in its own database: repository bindings, work items (issue,
 binding, branch `factory/<KEY>`, kagent session and generation, state,

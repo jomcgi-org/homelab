@@ -43,6 +43,10 @@ data:
     {{- .Files.Get "files/itsaplan/purge.sql" | nindent 4 }}
   bootstrap.py: |
     {{- .Files.Get "files/itsaplan/bootstrap.py" | nindent 4 }}
+{{- $deferredProjects := list }}
+{{- range .Values.connector.bindings }}
+{{- $deferredProjects = append $deferredProjects .itsaplanProject }}
+{{- end }}
   config.json: |
     {{- dict
       "admin" (dict "name" $i.admin.name)
@@ -51,6 +55,7 @@ data:
       "project" $i.bootstrap.project
       "agents" $agents
       "coordinator" (ternary .Values.connector.coordinator "" .Values.connector.enabled)
+      "deferredProjects" ($deferredProjects | uniq)
       | toPrettyJson | nindent 4 }}
 ---
 apiVersion: v1

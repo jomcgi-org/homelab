@@ -78,6 +78,12 @@ type fakeItsaplan struct {
 	// resultGone fails the run in itsaplan as its result arrives, as
 	// expireExhaustedRuns can.
 	resultGone      bool
+	deferredProject *itsaplan.Project
+	deferredWrites  []string
+	deferredFail    string
+	deferredErr     error
+	deferredReceipt *itsaplan.DeferredReceipt
+	deferredReply   *itsaplan.DeferredReceipt
 	columns         []itsaplan.Column
 	moves           []fakeMove
 	issues          map[int64]*itsaplan.Issue

@@ -4,6 +4,7 @@ go_library(
     name = "store",
     srcs = [
         "admission.go",
+        "deferred.go",
         "delivery.go",
         "human_gate.go",
         "notify.go",
@@ -25,6 +26,7 @@ go_library(
 go_test(
     name = "store_test",
     srcs = [
+        "deferred_test.go",
         "recovery_test.go",
         "renovate_test.go",
         "status_test.go",

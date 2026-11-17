@@ -26,6 +26,10 @@ var ErrNotFound = errors.New("itsaplan: not found")
 // stored transcript.
 var ErrConflict = errors.New("itsaplan: conflict")
 
+// ErrWIPLimit is a conflict that can clear when the target column has space.
+// Keep ErrConflict in its chain for callers that do not wait for capacity.
+var ErrWIPLimit = fmt.Errorf("%w: wip_limit_exceeded", ErrConflict)
+
 // HTTPError carries any other non-2xx answer.
 type HTTPError struct {
 	Status int
@@ -150,6 +154,12 @@ func (c *Client) do(ctx context.Context, agent, method, path string, body, out a
 	case resp.StatusCode == http.StatusNotFound:
 		return ErrNotFound
 	case resp.StatusCode == http.StatusConflict:
+		var answer struct {
+			Code string `json:"code"`
+		}
+		if json.Unmarshal(data, &answer) == nil && answer.Code == "wip_limit_exceeded" {
+			return ErrWIPLimit
+		}
 		return fmt.Errorf("%w: %s", ErrConflict, truncate(string(data), 200))
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return &HTTPError{Status: resp.StatusCode, Body: truncate(string(data), 200)}
@@ -224,6 +234,9 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
+	ProjectID      int64             `json:"projectId"`
+	StartDate      string            `json:"startDate"`
+	LabelIDs       []int64           `json:"labelIds"`
 	ID             int64             `json:"id"`
 	ProjectID      int64             `json:"projectId"`
 	Identifier     string            `json:"identifier"`

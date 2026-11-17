@@ -41,6 +41,39 @@ _KEEP = {
 }
 
 
+def test_deferred_adapter_is_mounted_only_in_api_with_rollout_checksum():
+    docs = _render()
+    config = _one(docs, "ConfigMap", "factory-itsaplan-deferred")
+    pod = _one(docs, "Deployment", "factory-itsaplan-api")["spec"]["template"]
+    api = pod["spec"]["containers"][0]
+    assert api["command"] == ["bun", "run", "apps/api/src/factory-index.ts"]
+    mounts = {
+        m["subPath"]: m["mountPath"]
+        for m in api["volumeMounts"]
+        if m["name"] == "deferred" and m["readOnly"]
+    }
+    assert mounts == {
+        "client.ts": "/app/packages/db/src/client.ts",
+        "transaction.ts": "/app/packages/db/src/factory-transaction.ts",
+        "deferred.ts": "/app/apps/api/src/factory-deferred.ts",
+        "factory.ts": "/app/apps/api/src/factory.ts",
+        "index.ts": "/app/apps/api/src/factory-index.ts",
+    }
+    assert set(config["data"]) == set(mounts)
+    assert len(pod["metadata"]["annotations"]["checksum/deferred"]) == 64
+    for component in ("web", "worker"):
+        other = _one(docs, "Deployment", f"factory-itsaplan-{component}")
+        for container in other["spec"]["template"]["spec"]["containers"]:
+            assert not any(
+                m["name"] == "deferred" for m in container.get("volumeMounts", [])
+            )
+    assert not any(
+        m["name"] == "deferred"
+        for container in pod["spec"]["initContainers"]
+        for m in container["volumeMounts"]
+    )
+
+
 def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
@@ -517,3 +550,17 @@ def test_secret_init_counts_plans_and_purges_before_it_writes() -> None:
     assert "delete from app_secret;" in scripts["purge.sql"]
     env = {e["name"]: e.get("value") for e in pod["containers"][0]["env"]}
     assert env["ROLL"] == "factory-itsaplan-api factory-itsaplan-worker"
+
+
+def test_bootstrap_defers_work_in_each_bound_project():
+    docs = _render()
+    configs = [
+        d
+        for d in docs
+        if d["kind"] == "ConfigMap"
+        and "config.json" in d.get("data", {})
+        and "bootstrap.py" in d.get("data", {})
+    ]
+    assert len(configs) == 1
+    config = json.loads(configs[0]["data"]["config.json"])
+    assert config["deferredProjects"] == ["HOME"]

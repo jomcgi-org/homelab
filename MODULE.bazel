@@ -407,6 +407,24 @@ use_repo(oci, "pgvector_pg16", "pgvector_pg16_linux_amd64")
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")
 use_repo(postgres, "postgres_test")
 
+# Real itsaplan API tests: pinned source, Bun and lockfile dependencies are
+# fetched before test execution. Each test starts its own PostgreSQL fixture.
+new_git_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:git.bzl", "new_git_repository")
+
+new_git_repository(
+    name = "itsaplan_source",
+    build_file_content = 'exports_files(["package.json"])',
+    commit = "6c7c2fe2cb9d810d29c68e054de25876b47434f8",  # v1.10.0
+    remote = "https://github.com/croffasia/itsaplan.git",
+)
+
+itsaplan_fixture = use_repo_rule("//projects/factory/tests/itsaplan:fixture.bzl", "itsaplan_fixture")
+
+itsaplan_fixture(
+    name = "itsaplan_test",
+    source = "@itsaplan_source//:package.json",
+)
+
 # Configure apko for container images
 apko = use_extension("@rules_apko//apko:extensions.bzl", "apko")
 apko.translate_lock(
