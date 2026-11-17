@@ -68,6 +68,20 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+// The tool lease bounds a turn whose tool call stays open (HOME-159): it is
+// 60 minutes unless set, and must be positive.
+func TestParseToolLease(t *testing.T) {
+	for value, want := range map[string]time.Duration{"": time.Hour, "  toolLease: 45m\n": 45 * time.Minute} {
+		f, err := Parse([]byte(strings.Replace(sample, "  poll: 2s\n", "  poll: 2s\n"+value, 1)))
+		if err != nil || time.Duration(f.Intervals.ToolLease) != want {
+			t.Fatalf("toolLease %q: config = %+v, error = %v; want %s", value, f, err, want)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(sample, "  poll: 2s\n", "  poll: 2s\n  toolLease: -1m\n", 1))); err == nil {
+		t.Fatal("negative toolLease accepted")
+	}
+}
+
 func TestHumanGateAssigneeDefaultsToJoeOnlyForHOME(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{sample, ""},

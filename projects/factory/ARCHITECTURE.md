@@ -881,7 +881,8 @@ the connector recorded activity waits for a read at rollout. kagent records
 each tool or command as a `function_call` artifact when it starts and a
 `function_response` with the same ID when it ends. A turn with a call and
 no response is busy, such as during a 30-minute `ci` run, and is never
-canceled for quiet. On an exhausted reading the connector reads each quiet
+canceled as `quota_stall`, since it makes no model call. The liveness
+lease bounds it. On an exhausted reading the connector reads each quiet
 turn's task again before it cancels it, recorded in `status_read` first
 (`kagent/GetTask/<namespace>/<agent>/<task>`). A task that changed since
 the last read, or has an open tool call, is not canceled; the change is
@@ -1337,7 +1338,7 @@ progress, and freeing it needs no person.
 ```mermaid
 stateDiagram-v2
     [*] --> Running: send
-    Running --> Expired: no task in taskLease, or quiet for progressLease
+    Running --> Expired: no task in taskLease, quiet for progressLease, or toolLease with a tool call open
     Expired --> Running: task changed before CancelTask (withdrawn)
     Expired --> Abandoned: kagent confirms, or a complete scan finds no task
     Expired --> ForceDelete: unconfirmed after forceDelete
@@ -1349,10 +1350,12 @@ stateDiagram-v2
 - Each tick, after the runs phase, the connector checks the latest attempt
   of each dispatched run without a stop. A send expires without a task
   `intervals.taskLease` (5 min) after it went out. An accepted turn expires
-  with no task event and no open tool call for `intervals.progressLease`
-  (20 min). The longest quiet stretch of a turn that completed normally on
-  2026-11-16 was 8 min 16 s. An open tool call counts as progress, so a
-  30-minute `ci` run keeps its slot.
+  with no task event for `intervals.progressLease` (20 min), or for
+  `intervals.toolLease` (60 min) while a tool call is open. The longest quiet
+  stretch of a turn that completed normally on 2026-11-16 was 8 min 16 s,
+  and a 30-minute `ci` run keeps its slot. kagent keeps a tool call open
+  when its runtime dies: on 2026-11-17 a replaced worker pod left one open
+  with no end (HOME-159).
 - A turn with a task is read again first, recorded in `status_read` as for
   `quota_stall`. A changed task restarts the lease. Otherwise the turn gets
   a `lease_expired` cancellation that records the task size. An event before

@@ -66,15 +66,15 @@ func TestQuietTurnPastTheProgressLeaseIsCanceledAndRetried(t *testing.T) {
 	}
 }
 
-// An open tool call, or a task event within the lease, keeps a turn's slot
-// however long it runs.
+// An open tool call within the 60-minute tool lease, or a task event within
+// the progress lease, keeps a turn's slot.
 func TestBusyTurnKeepsItsSlot(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
 	v.tick(v.e)
 	a := v.latest(1)
 	v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
-	for range 60 {
+	for range 50 {
 		v.clk.Advance(61 * time.Second)
 		v.tick(v.e)
 	}
@@ -88,6 +88,49 @@ func TestBusyTurnKeepsItsSlot(t *testing.T) {
 	}
 	if got := v.cancellationRows(a.ID); len(got) != 0 || v.kg.state(a.TaskID) != kagent.StateWorking || v.run(1).State != store.RunDispatched {
 		t.Fatalf("cancellations = %v, task %s, run %s", got, v.kg.state(a.TaskID), v.run(1).State)
+	}
+}
+
+// kagent keeps a tool call open when the runtime that ran it dies: the task
+// stays WORKING with no event, and CancelTask never returns. The turn keeps
+// its slot for the 60-minute tool lease, then gets a lease_expired
+// cancellation that the open call does not withdraw. Ten minutes later the
+// session is deleted with force, and the run spends one engineering retry
+// in a fresh session (HOME-159).
+func TestOpenToolCallPastTheToolLeaseIsForceDeletedAndRetried(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	turn, session := v.latest(1), v.work(101).SessionID
+	v.kg.tool(turn.TaskID, "ci-1", kagent.PartToolCall)
+	v.clk.Advance(30 * time.Second)
+	v.tick(v.e)
+	opened := v.clk.Now()
+	v.kg.hung = true
+	v.tickUntil(30*time.Second, 130, func() bool { return len(v.cancellationRows(turn.ID)) == 1 })
+	if held := v.clk.Now().Sub(opened); held <= time.Hour || held > 61*time.Minute {
+		t.Fatalf("canceled after %s with a tool call open, want the 60m tool lease", held)
+	}
+	if got := v.cancellationRows(turn.ID); got[0] != "lease_expired/pending/1" {
+		t.Fatalf("cancellation = %v, want CancelTask sent despite the open tool call", got)
+	}
+	requested := v.clk.Now()
+	v.tickUntil(30*time.Second, 25, func() bool { _, _, _, _, ok := v.forced(session); return ok })
+	if waited := v.clk.Now().Sub(requested); waited < 10*time.Minute || waited > 11*time.Minute {
+		t.Fatalf("force delete %s after the cancellation, want 10m", waited)
+	}
+	v.kg.hung = false
+	v.tickUntil(30*time.Second, 4, func() bool { return v.latest(1).ID != turn.ID })
+	if f := v.kg.Forced(); !slices.Equal(f, []string{session}) {
+		t.Fatalf("force-deleted %v, want %s", f, session)
+	}
+	if a, err := v.st.GetAttempt(v.ctx, turn.ID); err != nil || a.ErrorClass != dispatch.ClassAbandoned || a.Error != "lease_expired: session_deleted" {
+		t.Fatalf("turn = %+v, %v; want abandoned", a, err)
+	}
+	retry, s := v.latest(1), v.kg.Sends()
+	if retry.ContextID == session || retry.State != store.AttemptAccepted || v.work(101).EngineeringRetries != 1 ||
+		!strings.Contains(s[len(s)-1].msg.Parts[0].Text, "## Replacement session") {
+		t.Fatalf("retry = %+v, retries %d", retry, v.work(101).EngineeringRetries)
 	}
 }
 

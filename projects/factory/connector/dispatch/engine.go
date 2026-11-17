@@ -118,11 +118,13 @@ type Config struct {
 	// CILogs is optional; its candidates must pass base-tree validation.
 	CILogs CILogs
 	// The liveness lease (HOME-141, liveness.go): a send must show a task
-	// within TaskLease (5 min), and a running turn a task event or an open
-	// tool call every ProgressLease (20 min). A cancellation kagent has not
-	// confirmed within ForceDelete (10 min) deletes the session with force.
+	// within TaskLease (5 min), and a running turn a task event every
+	// ProgressLease (20 min), or every ToolLease (60 min) while a tool call
+	// is open (HOME-159). A cancellation kagent has not confirmed within
+	// ForceDelete (10 min) deletes the session with force.
 	TaskLease     time.Duration
 	ProgressLease time.Duration
+	ToolLease     time.Duration
 	ForceDelete   time.Duration
 	Links         Links
 	Now           func() time.Time
@@ -210,6 +212,9 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 	}
 	if cfg.ProgressLease == 0 {
 		cfg.ProgressLease = 20 * time.Minute
+	}
+	if cfg.ToolLease == 0 {
+		cfg.ToolLease = 60 * time.Minute
 	}
 	if cfg.ForceDelete == 0 {
 		cfg.ForceDelete = 10 * time.Minute
@@ -487,10 +492,12 @@ func (e *Engine) cancelQuiet(ctx context.Context, quiet []*store.Attempt) error 
 // cancelIfQuiet reads the turn's task as progress does, with the read
 // recorded first (BeginStatusRead). A changed task records its activity
 // and restarts the quiet period. The turn is canceled, for reason
-// quota_stall or lease_expired, only when its task is unchanged, has no
-// tool call without a result and has not finished. The cancellation
-// records the task size it was decided on and stays pending until kagent
-// confirms it, as every cancellation does. stepCancellation sends
+// quota_stall or lease_expired, only when its task is unchanged and has
+// not finished. A tool call without a result always exempts the turn from
+// quota_stall (QuietAttempts says why), and from lease_expired only until
+// ToolLease (toolExpired). The cancellation records the task size it was
+// decided on and stays pending until kagent confirms it, as every
+// cancellation does. stepCancellation sends
 // CancelTask, or withdraws the cancellation when the task changed first
 // (withdrawQuiet). A lease also expires on a task kagent no longer has:
 // its cancellation deletes the session.
@@ -515,7 +522,7 @@ func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt, reason str
 		return err
 	}
 	t, err := e.tasks.GetTask(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
-	n := a.EventCount
+	n, running := a.EventCount, false
 	switch {
 	case errors.Is(err, kagent.ErrTaskNotFound) && reason == store.CancelLeaseExpired:
 	case errors.Is(err, kagent.ErrTaskNotFound):
@@ -524,12 +531,11 @@ func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt, reason str
 	case err != nil:
 		return err
 	default:
-		var running bool
 		n, running = taskSize(t), t.ToolRunning()
 		if n != a.EventCount || a.EventAt.IsZero() {
 			return e.st.SetAttemptEvents(ctx, e.st.DB, a.ID, n, running, e.cfg.Now())
 		}
-		if running || kagent.Quiescent(t.Status.State) {
+		if kagent.Quiescent(t.Status.State) || (running && (reason != store.CancelLeaseExpired || !e.toolExpired(a))) {
 			return nil
 		}
 	}
@@ -539,13 +545,25 @@ func (e *Engine) cancelIfQuiet(ctx context.Context, a *store.Attempt, reason str
 		return err
 	}
 	if reason == store.CancelLeaseExpired {
-		e.leaseRequested(ctx, a, fmt.Sprintf("no task event for %s", e.cfg.Now().Sub(a.EventAt)))
+		why := "no task event for %s"
+		if running {
+			why = "a tool call open with no task event for %s"
+		}
+		e.leaseRequested(ctx, a, fmt.Sprintf(why, e.cfg.Now().Sub(a.EventAt)))
 		return nil
 	}
 	e.m.Cancellations.WithLabelValues(store.CancelQuotaStall, "requested").Inc()
 	e.log.WarnContext(ctx, "canceling a quiet turn: the broker reads the quota exhausted", "run", a.RunID,
 		"attempt", a.Seq, "task", a.TaskID, "quiet_for", e.cfg.Now().Sub(a.EventAt))
 	return nil
+}
+
+// toolExpired reports whether a turn with an open tool call is past
+// ToolLease: its task has not changed for that long (HOME-159). kagent keeps
+// a tool call open when the runtime that ran it dies, so an open call alone
+// is no proof of progress.
+func (e *Engine) toolExpired(a *store.Attempt) bool {
+	return !a.EventAt.IsZero() && e.cfg.Now().Sub(a.EventAt) >= e.cfg.ToolLease
 }
 
 // taskReadID is the read journal's message ID of a quiet turn's task read.
@@ -2207,7 +2225,9 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 // withdrawQuiet withdraws a quota_stall or lease_expired cancellation,
 // before its first CancelTask, whose task changed after the quiet decision:
 // the task grew past the size the decision recorded, or has a tool call
-// without a result.
+// without a result. A lease_expired cancellation decided on an open tool
+// call past ToolLease stands while the task has not grown: the same open
+// call is no proof of progress (toolExpired).
 // The turn runs on, and the change restarts its quiet period. It reports
 // whether it withdrew the cancellation. A stop's or itsaplan's request
 // joins a pending cancellation (RequestCancellation), so a stopped run or
@@ -2237,7 +2257,7 @@ func (e *Engine) withdrawQuiet(ctx context.Context, c *store.Cancellation, r *st
 		}
 		n, running = taskSize(t), t.ToolRunning()
 	}
-	if !limited && n == c.EventCount && !running {
+	if !limited && n == c.EventCount && (!running || (c.Reason == store.CancelLeaseExpired && e.toolExpired(a))) {
 		return false, nil
 	}
 	why := "withdrawn: the task changed before CancelTask"

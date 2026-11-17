@@ -241,6 +241,7 @@ func run(log *slog.Logger) error {
 		QuotaStall:      time.Duration(cfg.File.Intervals.QuotaStall),
 		TaskLease:       time.Duration(cfg.File.Intervals.TaskLease),
 		ProgressLease:   time.Duration(cfg.File.Intervals.ProgressLease),
+		ToolLease:       time.Duration(cfg.File.Intervals.ToolLease),
 		ForceDelete:     time.Duration(cfg.File.Intervals.ForceDelete),
 		Links:           dispatch.Links(cfg.File.Links),
 		CILogs:          ciLogs,

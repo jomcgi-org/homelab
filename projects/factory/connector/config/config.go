@@ -69,11 +69,13 @@ type Intervals struct {
 	// while the broker reads the Codex quota exhausted.
 	QuotaStall Duration `yaml:"quotaStall"`
 	// The liveness lease (HOME-141): TaskLease is how long a send may go
-	// without a kagent task, ProgressLease how long a running turn may go
-	// without a task event or an open tool call, and ForceDelete how long a
-	// cancellation waits for kagent before the session is deleted with force.
+	// without a kagent task. ProgressLease is how long a running turn may go
+	// without a task event, and ToolLease how long while a tool call is open
+	// (HOME-159). ForceDelete is how long a cancellation waits for kagent
+	// before the session is deleted with force.
 	TaskLease     Duration `yaml:"taskLease"`
 	ProgressLease Duration `yaml:"progressLease"`
+	ToolLease     Duration `yaml:"toolLease"`
 	ForceDelete   Duration `yaml:"forceDelete"`
 }
 
@@ -276,6 +278,12 @@ func Parse(b []byte) (*File, error) {
 	}
 	if f.Intervals.ProgressLease == 0 {
 		f.Intervals.ProgressLease = Duration(20 * time.Minute)
+	}
+	if f.Intervals.ToolLease == 0 {
+		f.Intervals.ToolLease = Duration(60 * time.Minute)
+	}
+	if f.Intervals.ToolLease < 0 {
+		return nil, fmt.Errorf("config: toolLease must be positive")
 	}
 	if f.Intervals.ForceDelete == 0 {
 		f.Intervals.ForceDelete = Duration(10 * time.Minute)
