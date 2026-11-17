@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import "./leaderboard.css";
 import { BarChart, Scatter, TaskMatrix } from "./leaderboard-charts";
 import { Selector } from "./leaderboard-selector";
 import {
