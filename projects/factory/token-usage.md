@@ -73,29 +73,48 @@ broker connects as `factory_broker_accounting`.
 | --- | --- |
 | 1: byte-preserving JSON and SSE accounting, attributed by actor | `broker/relay/tokens_test.go` tests chunk boundaries, completion-before-forwarding and unchanged response bytes. `dispatch/usage_test.go:TestRunTokenTotalsFromRelay` ignores a forged session header and excludes other sessions and namespaces. |
 | 2: totals sent to itsaplan | `TestRunTokenTotalsFromRelay` drives the relay, PostgreSQL, connector outbox and production itsaplan HTTP client. The endpoint receives `usage.inputTokens=300` and `usage.outputTokens=20`, with 150 cached tokens stored locally. A second run in the same session receives only its own 400/10 tokens. `TestRunTokenResultSurvivesHTTPFailureAndRestart` checks the same payload is delivered after an HTTP 503 and writer restart. |
-| 3: tokens per delivered issue | `store/usage_test.go:TestDeliveredIssueUsage` executes the documented SQL file against PostgreSQL. It requires a successful Done move, includes failed and revision runs, excludes active, review and stopped issues, preserves unknown runs, and counts cached input only once. |
-| 4: streamed, non-streamed, missing usage and correct run | `TestRunTokenTotalsFromRelay` and `TestRunWithoutResponseUsageStaysUnknown` each run with JSON and SSE. `TestUsageBeforeSessionAcknowledgementAndAcrossRetry` covers an early call, a lost dispatch acknowledgement and retry totals. |
+| 3: tokens per delivered issue | `tests/itsaplan/token-usage.test.ts` executes the operator query against the pinned upstream migrations. It uses the real result API and manual Done moves, includes failed/canceled runs, preserves unknowns, and tests reopened/archived issues and project isolation. `store/usage_test.go:TestDeliveredIssueUsage` tests the separate connector diagnostic query. |
+| 4: streamed, non-streamed, missing usage and correct run | `broker/relay/tokens_test.go:TestRelayKeepsUsageWithCallingActor` checks JSON, SSE and missing usage for two signed actors, including the call IDs passed to the recorder. `dispatch/usage_test.go:TestInterleavedRunTokenAttribution` interleaves those formats across two active runs, finishes them in reverse order and checks each run's stored and HTTP totals. `TestRunWithoutResponseUsageStaysUnknown` tests both missing formats; `TestUsageBeforeSessionAcknowledgementAndAcrossRetry` tests early calls and retries. |
 | Database boundary | `TestAccountingLoginCannotChangeDispatchState` rejects direct table access, state changes and role escalation, then records usage despite caller-created tables and a hostile search path. |
 
 ## Tokens per delivered issue
 
-Run [delivered_issue_usage.sql](connector/store/delivered_issue_usage.sql)
-in `factory_connector`. It includes all runs of issues the factory delivered
-to Done, including connector-owned revision rounds and failed runs.
+Run [the itsaplan query](connector/itsaplan/delivered_issue_usage.sql) in
+`itsaplan`. It sums `agent_run.input_tokens` and `output_tokens` over **all
+runs** of each HOME issue that reached a completed column, including failed
+and canceled runs. It does not require a factory outbox receipt or a merge.
+Current completed columns and the status-history `stateType` snapshots cover
+manual Done moves, repeated delivery, reopening, renaming a column and
+archiving. Issues with no runs remain visible. Totals stay null when no run
+has measured usage.
+
+```bash
+psql "$ITSAPLAN_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 \
+  --file projects/factory/connector/itsaplan/delivered_issue_usage.sql
+```
+
+The query targets the [pinned itsaplan v1.10.0 schema](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/packages/db/src/schema/app.ts).
+`tests/itsaplan/token-usage.test.ts` runs that exact SQL after the upstream
+migrations, and sends measured and unmeasured results through the real API
+before checking the report. A report row is one issue, even if it reached
+Done more than once. Save the report and rollout time for each comparison
+cohort; historical missing usage cannot be reconstructed.
+
+For cached-input detail and connector-owned revision rounds (which have no
+itsaplan `agent_run` row), run [the connector diagnostic query](connector/store/delivered_issue_usage.sql)
+in `factory_connector`. It covers the narrower set of factory-confirmed
+Done moves and sums all local runs, including failed and revision runs.
 The query requires a delivered `issue_done` outbox row: local `work_item.state`
 becomes `done` at merge, before itsaplan accepts that move. A pending or
-abandoned move does not prove delivery. Manual Done moves without a factory
-receipt need separate reconciliation with itsaplan before entering the cohort.
-The unknown count prevents historical runs without measurements from looking
-like zero-token work.
+abandoned move does not prove delivery. Use the itsaplan query above for the
+full Done cohort. Do not add the two reports together: itsaplan run IDs are
+also present in the connector database.
 
 ```bash
 psql "$FACTORY_CONNECTOR_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 \
   --file projects/factory/connector/store/delivered_issue_usage.sql
 ```
 
-For a before/after comparison, retain the issue rows and the rollout time for
-each cohort. Historical missing usage cannot be reconstructed by this change.
 A partially observed run can have a non-null total, so also inspect the error
 counters and unmeasured calls. If the call's initial database insert failed,
 there is no call row to join to its run: this query cannot identify that gap.
@@ -114,6 +133,23 @@ ORDER BY a.run_id;
 
 An HTTP refusal, replay or interrupted stream may have no new completion usage. The
 broker counts only usage the provider reports, without estimating it.
+
+## Reproduce the accounting checks
+
+Normal PR CI includes these targets; the upstream test creates its own
+database and never connects to deployed itsaplan:
+
+```bash
+bazel test //projects/factory/broker/relay:relay_test \
+  //projects/factory/connector/dispatch:dispatch_test \
+  //projects/factory/connector/store:store_test \
+  //projects/factory/tests/itsaplan:integration_test
+```
+
+See [the upstream test setup](tests/itsaplan/README.md) for the pinned Bun,
+itsaplan and PostgreSQL fixtures and the supplemental local pytest command.
+These tests establish the parser, attribution, API and query contracts.
+They do not establish the live rollout result below.
 
 ## Rollout acceptance
 

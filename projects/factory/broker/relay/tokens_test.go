@@ -3,13 +3,17 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
+	"github.com/jomcgi/homelab/projects/factory/broker/internal/fakes"
 )
 
 const (
@@ -21,6 +25,7 @@ type tokenSink struct {
 	mu     sync.Mutex
 	actors []actorjwt.Identity
 	usage  []TokenUsage
+	calls  []int64
 	fail   bool
 }
 
@@ -31,14 +36,74 @@ func (s *tokenSink) Begin(_ context.Context, id actorjwt.Identity) (int64, error
 	return int64(len(s.actors)), nil
 }
 
-func (s *tokenSink) Complete(_ context.Context, _ int64, u TokenUsage) error {
+func (s *tokenSink) Complete(_ context.Context, call int64, u TokenUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.fail {
 		return errors.New("unavailable")
 	}
 	s.usage = append(s.usage, u)
+	s.calls = append(s.calls, call)
 	return nil
+}
+
+func TestRelayKeepsUsageWithCallingActor(t *testing.T) {
+	h := newHarness(t, true)
+	sink := &tokenSink{}
+	h.handler.TokenUsage = sink
+	for _, tc := range []struct {
+		actor, response string
+		stream          bool
+		input           int
+	}{
+		{"session-a", "resp_a_json", false, 100},
+		{"session-b", "resp_b_sse", true, 200},
+		{"session-a", "missing_json", false, -1},
+		{"session-b", "missing_sse", true, -1},
+		{"session-a", "resp_a_sse", true, 300},
+	} {
+		body := fmt.Sprintf(`{"id":%q}`, tc.response)
+		contentType := "application/json"
+		if tc.input >= 0 {
+			body = fmt.Sprintf(`{"id":%q,"usage":{"input_tokens":%d,"input_tokens_details":{"cached_tokens":%d},"output_tokens":10}}`, tc.response, tc.input, tc.input/2)
+		}
+		if tc.stream {
+			contentType = "text/event-stream"
+			body = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + body + "}\n\n"
+		}
+		h.backend.set(func(b *backend) {
+			b.respond = func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", contentType)
+				_, _ = io.WriteString(w, body)
+			}
+		})
+		jwt := h.signer.Sign(t, fakes.ActorClaims(h.idp.URL, audience, "factory-homelab", tc.actor, time.Now()))
+		response := h.post("/v1/responses", jwt) // Same forged Session_id for both actors.
+		got, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != 200 || string(got) != body {
+			t.Fatalf("response changed for %s: status=%d err=%v body=%s", tc.actor, response.StatusCode, err, got)
+		}
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	// Missing usage creates gaps in call IDs, not a shift to the next actor.
+	if !reflect.DeepEqual(sink.calls, []int64{1, 2, 5}) {
+		t.Fatalf("completion call IDs = %v", sink.calls)
+	}
+	for i, want := range []struct {
+		actor string
+		usage TokenUsage
+	}{
+		{"session-a", TokenUsage{"resp_a_json", 100, 50, 10}},
+		{"session-b", TokenUsage{"resp_b_sse", 200, 100, 10}},
+		{"session-a", TokenUsage{"resp_a_sse", 300, 150, 10}},
+	} {
+		actor := sink.actors[sink.calls[i]-1]
+		if actor.ActorName != want.actor || actor.Atespace != "factory-homelab" || sink.usage[i] != want.usage {
+			t.Fatalf("completion %d: actor=%+v usage=%+v, want %+v", i, actor, sink.usage[i], want)
+		}
+	}
 }
 
 func TestTokenObserverChunkBoundaries(t *testing.T) {

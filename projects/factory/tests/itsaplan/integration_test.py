@@ -46,7 +46,7 @@ def pg_user():
         os.setuid(nobody.pw_uid)
 
 
-def test_upstream_deferred_transactions(tmp_path):
+def test_upstream_factory_contracts(tmp_path):
     bun = Path(os.environ["BUN_BIN"]).resolve()
     archive = Path(os.environ["ITSAPLAN_ARCHIVE"]).resolve()
     upstream = tmp_path / "upstream"
@@ -63,6 +63,15 @@ def test_upstream_deferred_transactions(tmp_path):
     shutil.copyfile(
         Path(__file__).with_name("deferred.test.ts"),
         upstream / "apps/api/src/factory-deferred.test.ts",
+    )
+    shutil.copyfile(
+        Path(__file__).with_name("token-usage.test.ts"),
+        upstream / "apps/api/src/factory-token-usage.test.ts",
+    )
+    shutil.copyfile(
+        Path(__file__).resolve().parents[2]
+        / "connector/itsaplan/delivered_issue_usage.sql",
+        upstream / "apps/api/src/delivered_issue_usage.sql",
     )
 
     pg_bin, pg_share = pg_paths()
@@ -158,7 +167,12 @@ def test_upstream_deferred_transactions(tmp_path):
             env["DATABASE_URL"] = f"postgres://test@127.0.0.1:{port}/factory_test"
             run([bun, "run", "packages/db/src/migrate.ts"], cwd=upstream, env=env)
             result = run(
-                [bun, "test", "src/factory-deferred.test.ts"],
+                [
+                    bun,
+                    "test",
+                    "src/factory-deferred.test.ts",
+                    "src/factory-token-usage.test.ts",
+                ],
                 cwd=upstream / "apps/api",
                 env=env,
             )

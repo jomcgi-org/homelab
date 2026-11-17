@@ -15,7 +15,9 @@ py_test(
     srcs = ["integration_test.py"],
     data = [
         "deferred.test.ts",
+        "token-usage.test.ts",
         "//projects/factory/chart:deferred_adapter",
+        "//projects/factory/connector/itsaplan:delivered_issue_usage.sql",
         "@itsaplan_test//:runtime/bin/bun",
         "@itsaplan_test//:upstream.tar.gz",
         "@postgres_test//:postgres",

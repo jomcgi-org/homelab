@@ -1,4 +1,4 @@
-# Deferred start integration test
+# Factory itsaplan integration tests
 
 `//projects/factory/tests/itsaplan:integration_test` runs in normal PR CI.
 It exercises the chart adapter against itsaplan v1.10.0's real route guard,
@@ -7,6 +7,14 @@ triggers fail or suppress the enqueue after the delegate write to verify
 transaction rollback and recovery. Other cases check concurrent retries,
 agent-to-agent delegation with `runnerScope: team`, eligibility and recovery
 after a full Todo column has capacity again.
+
+`token-usage.test.ts` sends results through the real agent-run result route
+and checks the persisted `input_tokens` and `output_tokens`. It executes
+[`delivered_issue_usage.sql`](../../connector/itsaplan/delivered_issue_usage.sql)
+against that same database. The cases cover successful, failed, canceled
+and unmeasured runs; manual Done moves; repeated delivery; reopened and
+archived issues; column changes; issues without runs; and project isolation.
+No connector outbox or mock itsaplan schema decides the report's cohort.
 
 ```sh
 bazel test //projects/factory/tests/itsaplan:integration_test
@@ -28,6 +36,11 @@ target; the test has no skip or manual tag.
 For local pytest, supply `BUN_BIN`, `ITSAPLAN_ARCHIVE` (an archive of the
 pinned checkout with its locked API dependencies installed), `PG_BIN` and
 `PG_SHARE`. The same launcher still creates and deletes its own database.
+
+```sh
+python3 -m pytest -q -s projects/factory/tests/itsaplan/integration_test.py
+```
+
 The chart's `deferred_test` target also retains the portable in-memory
 fault-injection suite. Revalidate both targets before changing the pinned
 itsaplan release; the adapter refuses other versions at startup.

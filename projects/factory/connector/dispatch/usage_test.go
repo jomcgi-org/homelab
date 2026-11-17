@@ -225,6 +225,47 @@ func TestRunTokenTotalsFromRelay(t *testing.T) {
 	}
 }
 
+func TestInterleavedRunTokenAttribution(t *testing.T) {
+	v := newEnv(t)
+	requests := resultEndpoint(t, v, 0)
+	v.its.add(1, "coder", 101, "HL-1", "First issue.")
+	v.its.add(2, "coder", 102, "HL-2", "Second issue.")
+	v.tick(v.e)
+	v.tick(v.e)
+	first, second := v.work(101).SessionID, v.work(102).SessionID
+	if first == "" || second == "" || first == second {
+		t.Fatalf("expected separate concurrent sessions: %q %q", first, second)
+	}
+	relayUsage(t, v, "factory-homelab", first, "a_json", false, 100)
+	relayUsage(t, v, "factory-homelab", second, "b_sse", true, 200)
+	relayUsage(t, v, "factory-homelab", first, "a_missing", true, -1)
+	relayUsage(t, v, "factory-homelab", second, "b_missing", false, -1)
+	relayUsage(t, v, "factory-homelab", first, "a_sse", true, 300)
+	relayUsage(t, v, "factory-homelab", second, "b_json", false, 400)
+	// Finish in the opposite order from dispatch. The second run must not
+	// absorb the first run's observations just because it finishes first.
+	for _, expected := range []struct {
+		id            int64
+		input, cached int
+	}{{2, 600, 300}, {1, 400, 200}} {
+		attempt, err := v.st.LatestAttempt(v.ctx, expected.id)
+		if err != nil || attempt == nil {
+			t.Fatalf("attempt for %d: %v", expected.id, err)
+		}
+		v.kg.finish(attempt.TaskID, kagent.StateCompleted, "Pushed.", nil)
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+		assertResultRequest(t, requests, expected.id, expected.input, 20)
+		var input, cached, output int
+		if err := v.st.DB.QueryRow(`SELECT input_tokens, cached_input_tokens, output_tokens FROM run WHERE id=$1`, expected.id).Scan(&input, &cached, &output); err != nil {
+			t.Fatal(err)
+		}
+		if input != expected.input || cached != expected.cached || output != 20 {
+			t.Fatalf("run %d: %d/%d/%d", expected.id, input, cached, output)
+		}
+	}
+}
+
 func TestUsageBeforeSessionAcknowledgementAndAcrossRetry(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
