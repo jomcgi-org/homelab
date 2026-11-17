@@ -1,6 +1,6 @@
 # Factory acceptance evidence
 
-Local checks on 2026-11-17 used `d1385f092e90c5338c297f62783d0acc3b984a04`
+Local checks on 2026-11-17 cover the site tree at `99ca767349b12653c323e962c6aa211987fd6dbf`
 for HOME-224, PR #8197, with Node 22.23.5, pnpm 10.34.5 and locked dependencies.
 Subsequent changes to this record affect documentation only.
 
@@ -52,8 +52,8 @@ pnpm budget
 node factory-built.test.mjs dist
 ```
 
-All commands exited 0: **208 tests passed in 14 files**, plus four artifact tests.
-The Factory entry measured **110,162 bytes (107.6 KiB)** of initial gzipped
+All commands exited 0: **254 tests passed in 15 files**, plus four artifact tests.
+The Factory entry measured **110,848 bytes (108.3 KiB)** of initial gzipped
 JavaScript against **153,600 bytes (150 KiB)**.
 
 [`budget.mjs`](../web/budget.mjs), used by `web:budget_test`, counts scripts
@@ -61,13 +61,13 @@ and module preloads in every HTML entry. The [artifact test](../web/factory-buil
 also requires a nonempty Factory entry within budget, the pre-rendered shell,
 local assets, the rewrite and no fictional production data.
 
-GitHub reported `pr-checks` successful for the tested commit
-([invocation](https://jomcgi.buildbuddy.io/invocation/888abfa6-1c39-4bfc-8e86-502997fe3042)).
-Remote logs were unavailable; the counts and sizes above come from local execution.
+The combined build also passed `prerendered.mjs` (including both blog posts),
+`marketplace.test.mjs` and all seven `scotland-built.test.mjs` checks.
+These are local results; remote Bazel checks run in PR CI.
 
 ## Scope and rollout
 
-Against merge base `415d8be7dd8761f9d27cb1359fcd15fc673e3dbc`, `edge/routes.json`,
+Against merge base `3539b94077e00547fad230e769fcf768d2b142cc`, `edge/routes.json`,
 `chart/`, `deploy/` and `web/src/sections.ts` have no diff (criterion 3).
 Factory remains `live: false`; HOME-213 supplies data and HOME-225 activates routes.
 Criterion 4 remains pending: after dev rollout, the delivery owner checks
