@@ -761,43 +761,116 @@ func TestListingIsPagedAndPrioritized(t *testing.T) {
 	}
 }
 
+func TestPrioritizeUsesHeadWaitWithinAuthorPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		authors []string
+		want    []int
+	}{
+		{name: "no author preference", want: []int{20, 1, 2}},
+		{name: "configured author first", authors: []string{"PRIORITY"}, want: []int{1, 20, 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 11, 17, 20, 33, 0, 0, time.UTC)
+			e := New(Config{Now: func() time.Time { return now }}, nil, nil, nil, nil)
+			b := &Binding{Name: "homelab", BaseBranch: "main", EnqueueAuthors: tc.authors}
+			var prs []github.PullRequest
+			for _, number := range []int{20, 1, 2} {
+				prs = append(prs, github.PullRequest{Number: number, BaseRef: "main", HeadSHA: fmt.Sprintf("%040d", number)})
+				e.noteWaiting(b, prs, true)
+				now = now.Add(time.Minute)
+			}
+			prs[1].Author = "priority"
+			// Both later heads have fresher metadata. Reverse their input
+			// order too, so neither listing order nor PR number can fake FIFO.
+			prs[1].UpdatedAt, prs[2].UpdatedAt = now, now.Add(time.Minute)
+			start := []candidate{{pr: prs[2]}, {pr: prs[1]}, {pr: prs[0]}}
+			e.prioritize(b, start)
+			got := []int{start[0].pr.Number, start[1].pr.Number, start[2].pr.Number}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("new review order = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWaitingHeadStartsBeforeUpdatedPRs reproduces HOME-220 with the live
+// concurrency of three: a quiet head must get the first slot released after
+// several full polls, despite repeated updates and pushes to other PRs.
 func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
-	for _, updateWaiting := range []bool{false, true} {
-		t.Run(fmt.Sprintf("update_waiting=%t", updateWaiting), func(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		updateWaiting bool
+		failCheckRead bool
+	}{
+		{name: "quiet head"},
+		{name: "metadata changes keep the same wait", updateWaiting: true},
+		{name: "check read failure keeps the same wait", failCheckRead: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			h.cfg.Concurrency = 1
+			h.cfg.Concurrency = 3
+			h.cfg.Timeout = time.Hour
 			h.cfg.Bindings[0].EnqueueAuthors = nil
-			addPR7(h)
+			var clockMu sync.Mutex
+			now := time.Now().UTC().Truncate(time.Second)
+			h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+			advance := func() {
+				clockMu.Lock()
+				now = now.Add(time.Minute)
+				clockMu.Unlock()
+			}
+			for n := 10; n <= 12; n++ {
+				h.gh.addPR(&fakePR{Number: n, Head: fmt.Sprintf("%040d", n)})
+			}
 			e, ctx, _ := h.start()
-			running := runReview(t, h, e, ctx, 7, shaA)
-			base := time.Now().UTC().Truncate(time.Second)
+			running := runReview(t, h, e, ctx, 10, fmt.Sprintf("%040d", 10))
+			eventually(t, "three occupied slots", func() bool { return len(h.k.sent()) == 3 })
+			advance()
 			waiting := strings.Repeat("b", 40)
-			h.gh.addPR(&fakePR{Number: 20, Head: waiting, Updated: base})
+			h.gh.addPR(&fakePR{Number: 20, Head: waiting, Updated: h.cfg.Now()})
+			checkRead := "GET /repos/" + testRepo + "/commits/" + waiting + "/check-runs"
+			if tc.failCheckRead {
+				h.gh.failWith(checkRead, 502)
+			}
 			e.Tick(ctx)
 
-			// Keep the only slot occupied for several polls. Each poll brings
-			// a new head, with a lower PR number and a more recent update.
+			// PRs 1..3 have lower numbers but arrive later. All busy PRs get
+			// fresh metadata on each tick, and PR 1 gets a new head each time.
+			// The fake clock makes the waits distinct without wall-clock sleeps.
 			for n := 1; n <= 3; n++ {
-				h.gh.addPR(&fakePR{Number: n, Head: fmt.Sprintf("%040d", n), Updated: base.Add(time.Duration(n) * time.Minute)})
-				if updateWaiting {
-					h.gh.withLock(func() { h.gh.prs[20].Updated = base.Add(time.Duration(n+10) * time.Minute) })
-				}
+				advance()
+				h.gh.addPR(&fakePR{Number: n, Head: fmt.Sprintf("%040d", n)})
+				h.gh.push(1, fmt.Sprintf("%040d", 100+n))
+				h.gh.withLock(func() {
+					for busy := 1; busy <= n; busy++ {
+						h.gh.prs[busy].Updated = h.cfg.Now()
+					}
+					if tc.updateWaiting {
+						h.gh.prs[20].Updated = h.cfg.Now().Add(time.Second)
+					}
+				})
 				e.Tick(ctx)
-				if h.gh.checkCount() != 1 || len(h.k.sent()) != 1 {
-					t.Fatal("a waiting head started while the review slot was full")
+				if h.gh.checkCount() != 3 || len(h.k.sent()) != 3 {
+					t.Fatal("a waiting head started while all three review slots were full")
 				}
 			}
 			if _, cancels := h.k.state(); len(cancels) != 0 {
 				t.Fatalf("waiting heads cancelled the running review: %v", cancels)
 			}
 
+			h.gh.failWith(checkRead, 0)
 			h.k.finish(running, kagent.StateCompleted, report(t, passing))
-			eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			eventually(t, "one free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 2 })
+			advance()
 			e.Tick(ctx)
 			eventually(t, "the longest-waiting head", func() bool { return h.taskOn(20, waiting, 1) != "" })
-			for n := 1; n <= 3; n++ {
-				if c := h.gh.check(fmt.Sprintf("%040d", n)); c != nil {
-					t.Fatalf("PR %d overtook the waiting head: %+v", n, c)
+			if h.gh.checkCount() != 4 || len(h.k.sent()) != 4 {
+				t.Fatal("the first free slot did not go exclusively to the longest-waiting head")
+			}
+			for n := 11; n <= 12; n++ {
+				if !e.isRunning(headKey{"homelab", fmt.Sprintf("%040d", n)}) {
+					t.Fatalf("running review %d lost its slot", n)
 				}
 			}
 		})

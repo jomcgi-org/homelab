@@ -222,8 +222,8 @@ type headKey struct {
 	sha     string
 }
 
-// waitingHead records when a current head first needed a new review in this
-// process. PR metadata updates cannot change its place in the queue.
+// waitingHead records when this process first observed an eligible current
+// head. Metadata updates and failed check reads cannot change its queue age.
 type waitingHead struct {
 	sha      string
 	since    time.Time
@@ -429,7 +429,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	e.supersede(b, prs, complete)
 	e.noteHeads(b, prs, complete)
 	e.sweepSessions(ctx, b, prs, complete, bl)
-	prioritize(b, prs)
+	e.noteWaiting(b, prs, complete)
 	counts, labels := readyHeads(b, prs)
 	scan := e.recoveryScan(b, prs)
 
@@ -458,6 +458,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		if b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
+			delete(e.waiting, prKey{b.Name, pr.Number})
 			continue
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
@@ -549,8 +550,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			e.replayComment(ctx, b, pr, reviews[pr.Number])
 		}
 	}
-	e.prioritizeStarts(b, prs, start, complete)
+	e.prioritize(b, start)
 	// Reviews already in progress (after a restart) go before new heads.
+	prioritizeResumed(b, attach)
 	waiting := append(attach, start...)
 	for i, c := range waiting {
 		if e.begin(ctx, b, c.pr, c.run) {
@@ -684,23 +686,22 @@ func (e *Engine) rememberHold(key headKey, prev *github.CheckRun, o Outcome) {
 	e.mu.Unlock()
 }
 
-// prioritize preserves reconciliation and reattachment order: authors the
-// binding enqueues first, then the most recently updated. New review starts
-// have their own wait order in prioritizeStarts.
-func prioritize(b *Binding, prs []github.PullRequest) {
-	sort.SliceStable(prs, func(i, j int) bool {
-		ei, ej := containsFold(b.EnqueueAuthors, prs[i].Author), containsFold(b.EnqueueAuthors, prs[j].Author)
+// prioritizeResumed keeps the existing order of in-progress checks ahead of
+// new starts. Running workers keep their slots without passing through it.
+func prioritizeResumed(b *Binding, attach []candidate) {
+	sort.SliceStable(attach, func(i, j int) bool {
+		pi, pj := attach[i].pr, attach[j].pr
+		ei, ej := containsFold(b.EnqueueAuthors, pi.Author), containsFold(b.EnqueueAuthors, pj.Author)
 		if ei != ej {
 			return ei
 		}
-		return prs[i].UpdatedAt.After(prs[j].UpdatedAt)
+		return pi.UpdatedAt.After(pj.UpdatedAt)
 	})
 }
 
-// prioritizeStarts registers every candidate before any slot is taken, even
-// when all slots are full. Within an author priority, the oldest wait wins;
-// heads first seen in the same poll use PR number as a stable tie breaker.
-func (e *Engine) prioritizeStarts(b *Binding, prs []github.PullRequest, start []candidate, complete bool) {
+// noteWaiting records every eligible head before check/recovery reads, even
+// when all slots are full. Failed reads must not lose a head's place in line.
+func (e *Engine) noteWaiting(b *Binding, prs []github.PullRequest, complete bool) {
 	listed := make(map[int]github.PullRequest, len(prs))
 	for _, pr := range prs {
 		listed[pr.Number] = pr
@@ -726,12 +727,21 @@ func (e *Engine) prioritizeStarts(b *Binding, prs []github.PullRequest, start []
 		}
 	}
 	now := e.cfg.Now()
-	for _, c := range start {
-		key := prKey{b.Name, c.pr.Number}
+	for _, pr := range prs {
+		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft || b.skipped(&pr) {
+			continue
+		}
+		key := prKey{b.Name, pr.Number}
 		if e.waiting[key] == nil {
-			e.waiting[key] = &waitingHead{sha: c.pr.HeadSHA, since: now}
+			e.waiting[key] = &waitingHead{sha: pr.HeadSHA, since: now}
 		}
 	}
+}
+
+// prioritize orders new starts by the current head's wait within each author
+// priority. UpdatedAt is never an input: comments and labels cannot put a
+// later head ahead of a waiting one. PR number breaks ties within one poll.
+func (e *Engine) prioritize(b *Binding, start []candidate) {
 	sort.Slice(start, func(i, j int) bool {
 		pi, pj := start[i].pr, start[j].pr
 		ei, ej := containsFold(b.EnqueueAuthors, pi.Author), containsFold(b.EnqueueAuthors, pj.Author)
