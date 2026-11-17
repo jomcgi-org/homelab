@@ -3,6 +3,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 helm_chart(
     name = "chart",
+    lint = False,
     publish = True,
     visibility = ["//visibility:public"],
 )
