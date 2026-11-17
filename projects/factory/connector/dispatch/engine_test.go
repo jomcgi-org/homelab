@@ -38,6 +38,8 @@ type env struct {
 	m   *metrics.Metrics
 	e   *dispatch.Engine
 
+	plan dispatch.Itsaplan // Optional client override, retained across writer restarts.
+
 	accounting *sql.DB
 }
 
@@ -87,7 +89,11 @@ func (v *env) engineWithTasks(holder string, tasks dispatch.Tasks) *dispatch.Eng
 	if v.gh != nil {
 		gh = v.gh
 	}
-	e := dispatch.New(cfg, v.st, v.its, tasks, v.kg, gh, v.m, nil)
+	plan := v.plan
+	if plan == nil {
+		plan = v.its
+	}
+	e := dispatch.New(cfg, v.st, plan, tasks, v.kg, gh, v.m, nil)
 	// Postgres releases a closed session's advisory lock asynchronously.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
