@@ -440,3 +440,35 @@ def test_service_selects_only_the_api_pod():
         assert (
             policy["spec"]["endpointSelector"]["matchLabels"].items() <= labels.items()
         )
+
+
+def test_recovery_job_reembeds_discord_memory_with_the_tested_settings():
+    # The factory Hindsight's rollback_test proves this command and these
+    # settings in the image; this Job targets the Discord database.
+    (job,) = read("recovery/reembed-local.yaml")
+    assert job["kind"] == "Job"
+    assert job["metadata"]["namespace"] == "hindsight-discord"
+    deployment = next(
+        d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
+    )
+    (container,) = job["spec"]["template"]["spec"]["containers"]
+    (api,) = deployment["spec"]["template"]["spec"]["containers"]
+    assert container["image"] == api["image"]
+    assert container["command"] == [
+        "/app/api/.venv/bin/hindsight-admin",
+        "reembed",
+        "--all-schemas",
+    ]
+    env, deployed = api_env(job), api_env(deployment)
+    assert env["HINDSIGHT_API_DATABASE_URL"] == deployed["HINDSIGHT_API_DATABASE_URL"]
+    assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "local"
+    assert env["HINDSIGHT_API_LLM_PROVIDER"] == "none"
+    assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+    labels = job["spec"]["template"]["metadata"]["labels"]
+    selector = read("resources/network-policy.yaml")[0]["spec"]["endpointSelector"]
+    assert selector["matchLabels"].items() <= labels.items()
+    # Break-glass only: ArgoCD never applies it.
+    for path in ("kustomization.yaml", "resources/kustomization.yaml"):
+        (kustomization,) = read(path)
+        assert not any("recovery" in r for r in kustomization.get("resources", []))
+
