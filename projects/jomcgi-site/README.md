@@ -150,7 +150,10 @@ workflow namespace, from the existing 1Password item.
 The export manifest and deploy log record `photoCount`, `photoAssetCount` and
 `photoMode`. The snapshot includes photos through 2,000 unique originals
 (10,000 files), reserving half the Workers asset limit for pages and other
-sections. Larger exports use `https://factory-data.jomcgi.dev/trips/photos`;
+sections. Exports above 1 GiB total or with any file above the Workers 25 MiB file limit
+also use the public bucket. The deploy and refresh jobs reserve 4 GiB of scratch
+disk and 1 GiB of memory. Larger exports use
+`https://factory-data.jomcgi.dev/trips/photos`;
 `img-src` permits that host. The final assembly also counts **all** site assets
 and fails before deploy at 20,000. A failed export leaves the previous manifest
 intact; a failed snapshot leaves the current Worker deployment intact.

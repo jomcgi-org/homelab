@@ -18,3 +18,7 @@
 # allows them), so they see this header; a robots.txt Disallow would hide it.
 https://next.jomcgi.dev/*
   X-Robots-Tag: noindex
+
+# Pre-rendered photo variants are keyed by the original content digest.
+/data/trips/photos/*
+  Cache-Control: public, max-age=31536000, immutable

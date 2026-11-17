@@ -37,7 +37,19 @@ export function validateExport(manifest) {
     manifest.photoAssetCount !== manifest.images.length * 5
   )
     throw new Error("Invalid trip photo count");
-  const mode = manifest.photoAssetCount <= 10000 ? "snapshot" : "public";
+  if (
+    !Number.isSafeInteger(manifest.photoBytes) ||
+    !Number.isSafeInteger(manifest.photoMaxBytes) ||
+    manifest.photoMaxBytes < 0 ||
+    manifest.photoBytes < manifest.photoMaxBytes
+  )
+    throw new Error("Invalid trip photo sizes");
+  const mode =
+    manifest.photoAssetCount <= 10000 &&
+    manifest.photoBytes <= 1024 ** 3 &&
+    manifest.photoMaxBytes <= 25 * 1024 ** 2
+      ? "snapshot"
+      : "public";
   const base =
     mode === "snapshot"
       ? "/data/trips/photos"
@@ -63,6 +75,8 @@ export async function snapshotTrips({ bucket, files }, get, out) {
     asOf: manifest.asOf,
     generatedAt: new Date().toISOString(),
     refreshSeconds: manifest.refreshSeconds,
+    photoBytes: manifest.photoBytes,
+    photoMaxBytes: manifest.photoMaxBytes,
     photoCount: manifest.photoCount,
     photoAssetCount: manifest.photoAssetCount,
     photoMode: manifest.photoMode,

@@ -53,6 +53,8 @@ const manifest = {
   photoBase: "/data/trips/photos",
   photoCount: 1,
   photoAssetCount: 5,
+  photoBytes: 110,
+  photoMaxBytes: 22,
   images: [image],
   files,
 };
@@ -173,4 +175,30 @@ test("public mode skips image asset downloads at 2,001 unique photos", async () 
   );
   assert.equal(result.latest.photoCount, 2001);
   assert.ok(reads.every((key) => key.endsWith(".json")));
+});
+
+test("oversized small galleries use the public bucket too", async () => {
+  for (const sizes of [
+    { photoBytes: 1024 ** 3 + 1, photoMaxBytes: 1024 ** 2 },
+    { photoBytes: 26 * 1024 ** 2, photoMaxBytes: 26 * 1024 ** 2 },
+  ]) {
+    const large = {
+      ...manifest,
+      ...sizes,
+      photoMode: "public",
+      photoBase: "https://factory-data.jomcgi.dev/trips/photos",
+    };
+    const out = await mkdtemp(join(tmpdir(), "trips-large-"));
+    const result = await snapshotTrips(
+      config,
+      async (bucket, key) => {
+        assert.ok(key.endsWith(".json"));
+        return key === "trips/export.json"
+          ? { body: Buffer.from(JSON.stringify(large)) }
+          : get(bucket, key);
+      },
+      out,
+    );
+    assert.equal(result.latest.photoMode, "public");
+  }
 });

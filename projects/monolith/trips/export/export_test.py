@@ -42,6 +42,7 @@ class Store:
     def head_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
             raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+        return {"ContentLength": len(self.objects[Bucket, Key])}
 
     def put_object(self, Bucket, Key, Body, **kwargs):
         self.objects[Bucket, Key] = Body
@@ -146,3 +147,11 @@ def test_daily_export_advances_asof_even_for_unchanged_content():
     )
     assert result["asOf"] == "2026-11-17T00:00:00+00:00"
     assert result["refreshSeconds"] == 86400
+
+
+def test_large_bytes_use_public_bucket_even_below_file_limit():
+    store = Store()
+    result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP, byte_limit=1)
+    assert result["photoMode"] == "public"
+    assert result["photoBytes"] == 5 * len(WEBP)
+    assert result["photoMaxBytes"] == len(WEBP)

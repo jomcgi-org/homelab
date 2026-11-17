@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 PRESETS = ("thumb", "gallery", "preview", "display", "full")
 # Leave at least half of the 20,000 Workers asset slots for HTML and other data.
 PHOTO_ASSET_LIMIT = 10_000
+PHOTO_SNAPSHOT_BYTES = 1024**3
+WORKERS_ASSET_BYTES = 25 * 1024**2
 PRIVATE_BUCKET = "stars"
 PUBLIC_BUCKET = "factory-public"
 PUBLIC_BASE = "https://factory-data.jomcgi.dev"
@@ -71,7 +73,14 @@ def exists(client, bucket: str, key: str) -> bool:
 
 
 def export_trips(
-    index, trips, client, render, *, now=None, asset_limit=PHOTO_ASSET_LIMIT
+    index,
+    trips,
+    client,
+    render,
+    *,
+    now=None,
+    asset_limit=PHOTO_ASSET_LIMIT,
+    byte_limit=PHOTO_SNAPSHOT_BYTES,
 ):
     """Synchronous core; injectable S3 and renderer keep boundary tests local."""
     images = set()
@@ -88,7 +97,9 @@ def export_trips(
         images.update(h["image"] for h in trip["highlights"] if h.get("image"))
     if any(not IMAGE_KEY.fullmatch(key) for key in images):
         raise ValueError("trip export contains a non-content-addressed image")
-    mode = "snapshot" if len(images) * len(PRESETS) <= asset_limit else "public"
+    photo_bytes = 0
+    photo_max_bytes = 0
+    derivatives = []
     for image in sorted(images):
         for preset in PRESETS:
             key = f"trips/photos/{image}/{preset}.webp"
@@ -102,7 +113,23 @@ def export_trips(
                     ContentType="image/webp",
                     CacheControl="public, max-age=31536000, immutable",
                 )
-            if mode == "public" and not exists(client, PUBLIC_BUCKET, key):
+            size = client.head_object(Bucket=PRIVATE_BUCKET, Key=key)["ContentLength"]
+            photo_bytes += size
+            photo_max_bytes = max(photo_max_bytes, size)
+            derivatives.append(key)
+
+    mode = (
+        "snapshot"
+        if (
+            len(derivatives) <= asset_limit
+            and photo_bytes <= byte_limit
+            and photo_max_bytes <= WORKERS_ASSET_BYTES
+        )
+        else "public"
+    )
+    if mode == "public":
+        for key in derivatives:
+            if not exists(client, PUBLIC_BUCKET, key):
                 # The only permitted source is the validated derivative prefix.
                 client.copy_object(
                     Bucket=PUBLIC_BUCKET,
@@ -116,6 +143,8 @@ def export_trips(
         "photoCount": len(images),
         "photoAssetCount": len(images) * len(PRESETS),
         "photoMode": mode,
+        "photoBytes": photo_bytes,
+        "photoMaxBytes": photo_max_bytes,
         "photoBase": "/data/trips/photos"
         if mode == "snapshot"
         else f"{PUBLIC_BASE}/trips/photos",
