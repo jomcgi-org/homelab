@@ -36,30 +36,32 @@ fetches `/data/factory/` on this origin and polls the manifest every 60 seconds.
 
 ## Criterion 2: the built Factory entry is within budget
 
-From `projects/jomcgi-site/web`:
+Supplied HOME-224 criterion:
 
-```sh
-pnpm test
-pnpm typecheck
-pnpm build
-pnpm budget
-node factory-built.test.mjs dist
-```
+> `:budget_test` passes with the `/factory` entry inside the 150 KiB initial-JS budget.
 
-All commands exited 0: **258 tests in 15 files**, plus three artifact tests.
+From `projects/jomcgi-site/web`, `pnpm build` then `pnpm budget` exited 0
+at `4585c387a275156fb4ca74958ac9dccb3c8a3160`.
 Factory measured **110,848 bytes (108.3 KiB)** against **153,600 bytes (150 KiB)**.
 [`web:budget_test`](../web/BUILD) and `pnpm budget` both pass `factory/index.html`
 to [budget.mjs](../web/budget.mjs): missing, empty or oversized entries fail.
 [budget.test.tsx](../web/src/budget.test.tsx) exercises these CLI failures and a pass.
 The budget counts initial scripts and preloads; all 12 built entries passed.
-The artifact tests check the shell, local assets, rewrite and no fictional data;
-`prerendered.mjs`, `marketplace.test.mjs` and seven Scotland artifact checks passed.
+
+GitHub reports [`pr-checks` successful](https://github.com/jomcgi-org/homelab/commit/4585c387a275156fb4ca74958ac9dccb3c8a3160/status-details?popover=true)
+for that head ([BuildBuddy run](https://jomcgi.buildbuddy.io/invocation/f3afb16c-34e3-4197-93ea-15bde351be6d)).
+The run log was unavailable here (`ENOTFOUND`); this records GitHub's reported status.
+
+At the same revision, `pnpm test` passed **258 tests in 15 files** and
+`pnpm typecheck` passed. Three Factory artifact tests check the shell, local
+assets, rewrite and no fictional data. They, `prerendered.mjs`,
+`marketplace.test.mjs` and seven Scotland artifact checks passed.
 
 ## Scope and rollout
 
 Against merge base `3539b94077e00547fad230e769fcf768d2b142cc`, `edge/routes.json`,
 `chart/`, `deploy/` and `web/src/sections.ts` have no diff (criterion 3).
 Factory remains `live: false`; HOME-213 supplies data and HOME-225 activates routes.
-Criterion 4 remains pending: after dev rollout, the delivery owner checks
+The goal and criterion 4 remain pending: after dev rollout, the delivery owner checks
 `https://next.jomcgi.dev/factory` and `https://next.jomcgi.dev/factory/goals/x`
 for HTTP 200 and the rendered shell with unavailable states.
