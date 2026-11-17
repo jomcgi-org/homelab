@@ -69,6 +69,15 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     )
 
 
+def test_wrangler_can_write_its_state_dirs():
+    # wrangler writes HOME and .wrangler/tmp next to wrangler.jsonc; the root is read-only.
+    pod = docs(render())["Job/jomcgi-site-deploy"]["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    mounts = {m["mountPath"] for m in container["volumeMounts"]}
+    assert {"/tmp", "/app/site/.wrangler"} <= mounts
+
+
 def test_a_new_digest_changes_the_release_marker():
     other = "sha256:" + "1" * 64
     first = docs(render())["ConfigMap/jomcgi-site-release"]["data"]["image"]
@@ -80,10 +89,13 @@ def test_a_new_digest_changes_the_release_marker():
     assert first != second
 
 
-def test_release_marker_changes_with_the_image():
-    # Argo CD does not diff hooks; this ConfigMap is what makes a new image a sync.
+def test_release_marker_changes_with_the_chart_and_the_image():
+    # Argo CD does not diff hooks; this ConfigMap is what makes a new chart or
+    # image a sync. The chart version covers a change to the Job alone.
+    version = yaml.safe_load((CHART / "Chart.yaml").read_text())["version"]
     marker = docs(render())["ConfigMap/jomcgi-site-release"]["data"]
     assert marker == {
+        "chart": version,
         "stage": "dev",
         "image": f"ghcr.io/jomcgi/homelab/projects/jomcgi-site@{DIGEST}",
     }
