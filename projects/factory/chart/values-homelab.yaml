@@ -47,6 +47,15 @@ kagent:
   controller:
     metrics:
       enabled: true
+    # kagent v1.0.1 built from jomcgi-org/kagent branch jomcgi/codex-6.2:
+    # the controller writes the Codex version each actor must run
+    # (PinnedCodexVersion, strict), so it moves with the harness image below.
+    # Upstream PR to follow; return to the packaged images when a kagent
+    # release ships the bump. Revert: delete this and harnessImages.
+    image:
+      registry: ghcr.io
+      repository: jomcgi-org/kagent/controller
+      tag: 1.0.1-jomcgi.2c2fc329a8d8@sha256:6fa3481159e7e660916e400359b8f48878e6ce58ce430ec619653441e5b1cc4e
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -56,6 +65,10 @@ kagent:
   # Every agent runtime's limits, the codex agent's size (kagent 1.0.1 sets
   # one for all Agents).
   config:
+    # The Codex harness from the same fork build as the controller: Codex
+    # 0.169.1 in place of 0.161.0.
+    harnessImages:
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:f1b2f7a4834394ae9170b13e4d135201e754f791312ca1990a530221ec57d9d1
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
@@ -68,10 +81,10 @@ kagent:
           authority: factory-home
 
 # The Codex agent's model: gpt-6-astra, the frontier model, at the broker's
-# xhigh reasoning effort (Joe, 2026-11-14). kagent v1.0.1 pins Codex 0.161.0,
-# which gives a model its apply_patch edit tool only when it is in its
-# bundled catalogue (codex-rs/models-manager/models.json); gpt-6.1-terra is
-# not there, so with it the first run (HOME-1) had no way to edit files.
+# xhigh reasoning effort (Joe, 2026-11-14). Codex (0.169.1, from the
+# kagent fork above) gives a model its apply_patch edit tool only when it is
+# in its bundled catalogue (codex-rs/models-manager/models.json); with a
+# model outside it the first run (HOME-1) had no way to edit files.
 agents:
   codex:
     model: gpt-6-astra
@@ -94,8 +107,8 @@ agents:
   # The reviewer reads and never edits, so it needs no apply_patch and runs on
   # gpt-6.1-terra to spend less of the Codex quota (Joe, 2026-11-14:
   # https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
-  # Codex 0.161.0 gives terra fallback metadata: tool output is cut at
-  # 10,000 bytes. The broker's reasoningEffort (xhigh) applies to it as to
+  # Codex 0.169.1 has terra in its catalogue, so the 10,000-byte
+  # fallback cut on tool output no longer applies. The broker's reasoningEffort (xhigh) applies to it as to
   # the coder.
   reviewer:
     model: gpt-6.1-terra
