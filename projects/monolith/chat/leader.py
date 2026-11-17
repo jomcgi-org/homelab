@@ -115,7 +115,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     # shutdown alongside the bot and outbox drain.
     from chat.scheduled_tasks import run_scheduler
 
-    scheduler_task = asyncio.create_task(run_scheduler(get_engine()))
+    scheduler_task = asyncio.create_task(run_scheduler(get_engine(), digests=gateway))
     scheduler_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [scheduler_task])
     tasks.append(scheduler_task)

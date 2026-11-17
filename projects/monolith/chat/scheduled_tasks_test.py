@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from chat import outbox as discord_outbox
 from chat.models import DiscordOutbox, ScheduledTask, ScheduledTaskOccurrence
 from chat.scheduled_tasks import (
+    DIGEST_STOPPED,
     MAX_GENERATION_ATTEMPTS,
     cancel_task,
     claim_due,
@@ -381,3 +382,37 @@ def test_cron_semantics_use_standard_dom_dow_or_and_utc():
     assert next_cron_at("0 9 1 * 0", after) == datetime(
         2026, 9, 13, 9, 0, tzinfo=timezone.utc
     )
+
+
+@pytest.mark.asyncio
+async def test_digest_without_gateway_posts_one_notice_and_ends(engine):
+    # HOME-221: with the gateway off, chat.messages gets no new messages, so a
+    # digest would repeat old ones. It posts one notice and its task ends;
+    # a reminder still fires.
+    digest_id, _ = _insert_due(engine, kind="digest")
+    reminder_id, _ = _insert_due(engine)
+    build = AsyncMock()
+    delivered = await drain_once(
+        engine,
+        now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc),
+        claimant="leader-a",
+        digest_builder=build,
+        digests=False,
+    )
+    assert delivered == 2
+    build.assert_not_awaited()
+    with Session(engine) as session:
+        contents = sorted(row.content for row in session.query(DiscordOutbox).all())
+        assert contents == sorted(
+            [DIGEST_STOPPED.format(mode="summary"), "⏰ <@456> reminder: stand up"]
+        )
+        assert session.get(ScheduledTask, digest_id).status == "cancelled"
+        assert session.get(ScheduledTask, reminder_id).status == "completed"
+    later = await drain_once(
+        engine,
+        now=datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc),
+        claimant="leader-a",
+        digests=False,
+    )
+    assert later == 0
+

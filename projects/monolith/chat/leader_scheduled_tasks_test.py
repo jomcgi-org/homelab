@@ -45,6 +45,7 @@ async def _start(env):
     bot.is_ready.return_value = False
     bot.user = None
     outbox_drain = AsyncMock()
+    scheduler = AsyncMock()
     with (
         patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token", **env}),
         patch("chat.acl.bootstrap_defaults"),
@@ -52,11 +53,11 @@ async def _start(env):
         patch("chat.leader.wait_for_sidecar", new_callable=AsyncMock),
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("chat.outbox.run_outbox_drain", outbox_drain),
-        patch("chat.scheduled_tasks.run_scheduler", AsyncMock()),
+        patch("chat.scheduled_tasks.run_scheduler", scheduler),
     ):
         tasks = await leader_start(app)
         await asyncio.sleep(0)
-    return bot, tasks, outbox_drain
+    return bot, tasks, outbox_drain, scheduler
 
 
 async def _stop(tasks):
@@ -69,10 +70,17 @@ async def _stop(tasks):
 async def test_gateway_off_logs_in_over_rest_and_still_drains():
     # HOME-221: the factory bridge holds the gateway session for the same
     # token, so the hub must not connect, but its outbox and reminders post.
-    bot, tasks, outbox_drain = await _start({"DISCORD_GATEWAY_ENABLED": "false"})
+    bot, tasks, outbox_drain, scheduler = await _start(
+        {"DISCORD_GATEWAY_ENABLED": "false"}
+    )
     try:
         bot.login.assert_awaited_once_with("test-token")
         bot.start.assert_not_awaited()
+        # The outbox drain and the scheduler run; digests are off, because
+        # nothing stores new channel messages without the gateway.
+        assert outbox_drain.await_count == 1
+        assert scheduler.await_count == 1
+        assert scheduler.await_args.kwargs["digests"] is False
         # bot, outbox drain and scheduler; no lock sweep.
         assert len(tasks) == 3
         ready = outbox_drain.await_args.kwargs["ready"]
@@ -85,10 +93,12 @@ async def test_gateway_off_logs_in_over_rest_and_still_drains():
 
 @pytest.mark.asyncio
 async def test_gateway_on_by_default_connects_and_sweeps_locks():
-    bot, tasks, outbox_drain = await _start({})
+    bot, tasks, outbox_drain, scheduler = await _start({})
     try:
         bot.start.assert_awaited_once_with("test-token")
         bot.login.assert_not_awaited()
+        assert scheduler.await_count == 1
+        assert scheduler.await_args.kwargs["digests"] is True
         assert len(tasks) == 4
         ready = outbox_drain.await_args.kwargs["ready"]
         bot.user = MagicMock()
