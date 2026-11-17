@@ -22,6 +22,15 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    # The hindsight-bank-template Job applies the schema through REST.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight
+            app.kubernetes.io/name: hindsight-bank-template
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
   egress:
     - toEndpoints:
         - matchLabels:
@@ -54,3 +63,26 @@ spec:
       app.kubernetes.io/name: hindsight-keys
   egress:
     - toEntities: [kube-apiserver]
+---
+# The bank-template Job reaches only the API pod, by the Service's address
+# from its service links, so it needs no DNS.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-bank-template
+  namespace: hindsight
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-bank-template
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: hindsight
+            app.kubernetes.io/component: api
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP

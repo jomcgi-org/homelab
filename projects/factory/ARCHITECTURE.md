@@ -375,13 +375,17 @@ tag. Hindsight puts every tag a scope glob matches into one scope, so `app`
 takes one value: a fact about two projects would otherwise reach neither
 project's observations. A fact with no `app` tag consolidates over its own
 tags. Recall can filter on both tags. Hindsight
-applies the template only when it creates a bank. For an existing bank,
-change the file and then apply it with `PATCH .../config` or
-`POST .../import`; `POST .../import?dry_run=true` validates a manifest
-without changing anything. A new project needs a new `app` value.
+applies the template only when it creates a bank. So the
+`hindsight-bank-template` PostSync Job runs after every sync: it creates bank
+`homelab` when it is missing, imports the template into it, and reads the
+config back, failing when a setting differs. An import changes the bank's
+config, never its memories, so a template change in git reaches the bank on
+the next sync. `POST .../import?dry_run=true` validates a manifest without
+changing anything. A new project needs a new `app` value.
 
 Two keys separate the callers. The REST API takes only the tenant key, which
-nothing outside the pod holds. MCP takes the agents' token
+only namespace `hindsight` holds: the API pod, and the Jobs that create the
+key and apply the bank template. MCP takes the agents' token
 (`HINDSIGHT_API_MCP_AUTH_TOKEN`) and registers only `recall` and `retain`
 (`HINDSIGHT_API_MCP_ENABLED_TOOLS`), so a caller with the token can neither
 reach REST nor list, delete or reflect. The `hindsight-keys` Jobs generate both

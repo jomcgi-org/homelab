@@ -28,10 +28,12 @@ configMapGenerator:
     options:
       annotations:
         argocd.argoproj.io/sync-wave: "-2"
-  # resources/bank-template.json, the schema every new bank starts with.
+  # resources/bank-template.json, the schema every new bank starts with, and
+  # the script that applies it to bank homelab after every sync.
   - name: hindsight-bank-template
     namespace: hindsight
     files:
+      - apply_template.py
       - bank-template.json
     options:
       annotations:

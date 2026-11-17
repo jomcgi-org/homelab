@@ -151,13 +151,15 @@ def test_agent_token_is_injectable_and_never_in_the_pod_as_the_tenant_key():
 
 
 def test_only_the_egress_gateway_reaches_hindsight():
+    # From outside the namespace, only the egress gateway; inside it, only the
+    # bank-template Job (HOME-183), both on the API port.
     policy = next(
         d
         for d in read("resources/network-policy.yaml")
         if d["metadata"]["name"] == "hindsight"
     )
-    (rule,) = policy["spec"]["ingress"]
-    assert rule["fromEndpoints"] == [
+    gateway, template = policy["spec"]["ingress"]
+    assert gateway["fromEndpoints"] == [
         {
             "matchLabels": {
                 "k8s:io.kubernetes.pod.namespace": "ate-system",
@@ -165,6 +167,16 @@ def test_only_the_egress_gateway_reaches_hindsight():
             }
         }
     ]
+    assert template["fromEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "hindsight",
+                "app.kubernetes.io/name": "hindsight-bank-template",
+            }
+        }
+    ]
+    for rule in (gateway, template):
+        assert rule["toPorts"] == [{"ports": [{"port": "8888", "protocol": "TCP"}]}]
     fqdns = [f for r in policy["spec"]["egress"] for f in r.get("toFQDNs", [])]
     assert fqdns == [{"matchName": "api.anthropic.com"}, {"matchName": "openrouter.ai"}]
 
@@ -501,3 +513,122 @@ def test_new_banks_start_with_schema_v1():
             "key": "bank-template.json",
         }
     }
+
+
+def test_bank_homelab_gets_the_template_after_every_sync():
+    # HOME-183: the default template applies only when Hindsight creates a
+    # bank, so a PostSync Job also imports it into homelab.
+    job = manifest("resources/hindsight.yaml", "Job", "hindsight-bank-template")
+    annotations = job["metadata"]["annotations"]
+    assert annotations["argocd.argoproj.io/hook"] == "PostSync"
+    assert annotations["argocd.argoproj.io/hook-delete-policy"] == "BeforeHookCreation"
+    pod = job["spec"]["template"]["spec"]
+    container, env = container_env(pod)
+    assert container["command"][-1] == "/template/apply_template.py"
+    assert env["BANK"] == "homelab"
+    assert env["TENANT_API_KEY"] == {
+        "secretKeyRef": {"name": "hindsight-keys", "key": "tenant-api-key"}
+    }
+    assert pod["volumes"] == [
+        {"name": "template", "configMap": {"name": "hindsight-bank-template"}}
+    ]
+    (kustomization,) = read("resources/kustomization.yaml")
+    (generator,) = [
+        g
+        for g in kustomization["configMapGenerator"]
+        if g["name"] == "hindsight-bank-template"
+    ]
+    assert generator["files"] == ["apply_template.py", "bank-template.json"]
+    # Only this Job reaches the REST port from inside the namespace.
+    policies = {d["metadata"]["name"]: d for d in read("resources/network-policy.yaml")}
+    job_label = {"app.kubernetes.io/name": "hindsight-bank-template"}
+    assert policies["hindsight-bank-template"]["spec"]["endpointSelector"] == {
+        "matchLabels": job_label
+    }
+    (egress,) = policies["hindsight-bank-template"]["spec"]["egress"]
+    assert egress["toEndpoints"] == [
+        {
+            "matchLabels": {
+                "app.kubernetes.io/name": "hindsight",
+                "app.kubernetes.io/component": "api",
+            }
+        }
+    ]
+    sources = [
+        e["matchLabels"]
+        for rule in policies["hindsight"]["spec"]["ingress"]
+        for e in rule["fromEndpoints"]
+    ]
+    assert {"k8s:io.kubernetes.pod.namespace": "hindsight", **job_label} in sources
+
+
+def load_apply():
+    spec = importlib.util.spec_from_file_location(
+        "hindsight_apply_template", ROOT / "resources/apply_template.py"
+    )
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return script
+
+
+class FakeHindsight:
+    """Serve the four REST calls the Job makes, recording them."""
+
+    def __init__(self, banks, config=None, applied=True):
+        self.banks, self.config, self.applied, self.calls = banks, config, applied, []
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path))
+        if path == "/health":
+            return 200, {}
+        if path.startswith("/v1/default/banks?"):
+            return 200, {"banks": [{"bank_id": b} for b in self.banks]}
+        if method == "PUT":
+            self.banks.append(path.rsplit("/", 1)[1])
+            return 200, {}
+        if path.endswith("/import"):
+            if self.config is None:
+                self.config = body["bank"]
+            return 200, {"config_applied": self.applied}
+        return 200, {"config": self.config}
+
+
+def returned(bank):
+    # Hindsight fills defaults into what it stores (seen live, 2026-11-17).
+    out = json.loads(json.dumps(bank))
+    for group in out["entity_labels"]:
+        group["fields"] = {}
+        for value in group["values"]:
+            value.setdefault("description", "")
+    return out
+
+
+def test_apply_creates_imports_and_verifies(capsys):
+    script = load_apply()
+    template = json.loads((ROOT / "resources/bank-template.json").read_text())
+    fake = FakeHindsight([], config=returned(template["bank"]))
+    script.apply(fake, "homelab", template, wait=0)
+    assert ("PUT", "/v1/default/banks/homelab") in fake.calls
+    assert ("POST", "/v1/default/banks/homelab/import") in fake.calls
+    assert "carries the template" in capsys.readouterr().out
+
+    # An existing bank is not created again; the import still runs.
+    fake = FakeHindsight(["homelab"], config=returned(template["bank"]))
+    script.apply(fake, "homelab", template, wait=0)
+    assert ("PUT", "/v1/default/banks/homelab") not in fake.calls
+    assert ("POST", "/v1/default/banks/homelab/import") in fake.calls
+
+
+def test_apply_fails_when_the_bank_does_not_take_the_template():
+    script = load_apply()
+    template = json.loads((ROOT / "resources/bank-template.json").read_text())
+    stale = returned(template["bank"])
+    stale["entity_labels"] = stale["entity_labels"][1:]
+    with pytest.raises(SystemExit, match="differs from the template"):
+        script.apply(
+            FakeHindsight(["homelab"], config=stale), "homelab", template, wait=0
+        )
+    with pytest.raises(SystemExit, match="import into homelab"):
+        script.apply(
+            FakeHindsight(["homelab"], applied=False), "homelab", template, wait=0
+        )

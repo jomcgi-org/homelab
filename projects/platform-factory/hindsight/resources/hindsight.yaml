@@ -273,3 +273,66 @@ spec:
         - name: scripts
           configMap:
             name: hindsight-preflight-script
+---
+# After every sync (resources/apply_template.py): create bank homelab when it
+# is missing, import bank-template.json into it, and read the config back.
+# Hindsight applies HINDSIGHT_API_DEFAULT_BANK_TEMPLATE only when it creates a
+# bank, so this keeps homelab on the template in git, also after a change. An
+# import changes the bank's config, never its memories (HOME-183).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-bank-template
+  namespace: hindsight
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight-bank-template
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apply
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, -u, /template/apply_template.py]
+          env:
+            - name: BANK
+              value: homelab
+            # The REST API takes only the tenant key; this Job needs it to
+            # create the bank and import the template.
+            - name: TENANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: tenant-api-key
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: template
+              mountPath: /template
+              readOnly: true
+      volumes:
+        - name: template
+          configMap:
+            name: hindsight-bank-template
