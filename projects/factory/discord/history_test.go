@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -102,8 +103,10 @@ func history() *fakeHistory {
 	hook.WebhookID = "w"
 	join := msg("m8", "cy", day(16, 9), "")
 	join.Type = 7
-	bosun := msg("m4", "bosun", day(16, 11), "the code word is heron")
+	// Bosun's replies are Components V2: empty content, a text display.
+	bosun := msg("m4", "bosun", day(16, 11), "")
 	bosun.Author.Bot = true
+	bosun.Components = []Component{{Type: 17, Components: []Component{{Type: componentText, Content: "the code word is heron"}}}}
 	pic := msg("m3", "bo", day(15, 22), "")
 	pic.Attachments = []Attachment{{Filename: "boat.png"}}
 	return &fakeHistory{
@@ -134,11 +137,11 @@ func TestImportStoresOneChronologicalDocumentPerChannelDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"g1/discord:c1:2026-11-15", "g1/discord:c1:2026-11-16", "g1/discord:t1:2026-11-14"}
+	want := []string{"g1/discord:c1:2026-11-15:history", "g1/discord:c1:2026-11-16:history", "g1/discord:t1:2026-11-14:history"}
 	if got := docs.ids(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("documents = %v, want %v (no day of today, none from a server without history)", got, want)
 	}
-	d16 := docs.docs["g1/discord:c1:2026-11-16"]
+	d16 := docs.docs["g1/discord:c1:2026-11-16:history"]
 	if d16.Content != "ann (2026-11-16T10:00:00Z): what is the code word?\nbosun (2026-11-16T11:00:00Z): the code word is heron" {
 		t.Errorf("content = %q: oldest first; other bots, webhooks and joins left out; Bosun kept", d16.Content)
 	}
@@ -146,7 +149,7 @@ func TestImportStoresOneChronologicalDocumentPerChannelDay(t *testing.T) {
 		fmt.Sprint(d16.Tags) != "[channel:c1]" || fmt.Sprint(d16.ObservationScopes) != "[[channel:c1]]" {
 		t.Errorf("document = %+v", d16)
 	}
-	if got := docs.docs["g1/discord:c1:2026-11-15"].Content; !strings.HasSuffix(got, "bo (2026-11-15T22:00:00Z):  [attachment: boat.png]") {
+	if got := docs.docs["g1/discord:c1:2026-11-15:history"].Content; !strings.HasSuffix(got, "bo (2026-11-15T22:00:00Z):  [attachment: boat.png]") {
 		t.Errorf("attachment line = %q", got)
 	}
 	if stats.Retained != 3 || stats.Channels != 2 {
@@ -160,7 +163,8 @@ func TestImportStoresOneChronologicalDocumentPerChannelDay(t *testing.T) {
 }
 
 func TestImportFiltersChannelsCapsAndSkipsUnreadableChannels(t *testing.T) {
-	// A channel list keeps the channel and its threads.
+	// A channel list admits only listed IDs, as the live bridge does: a
+	// thread of a listed channel needs its own entry.
 	docs := &fakeDocs{}
 	src := history()
 	src.channels["g1"] = append(src.channels["g1"], Channel{ID: "c2", Name: "secret", Type: 0})
@@ -169,9 +173,16 @@ func TestImportFiltersChannelsCapsAndSkipsUnreadableChannels(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range docs.ids() {
-		if strings.Contains(id, "c2") {
-			t.Fatalf("unlisted channel imported: %v", docs.ids())
+		if strings.Contains(id, "c2") || strings.Contains(id, "t1") {
+			t.Fatalf("unlisted channel or thread imported: %v", docs.ids())
 		}
+	}
+	docs = &fakeDocs{}
+	if _, err := newImporter(history(), docs, map[string]Guild{"g1": {History: true, Channels: []string{"c1", "t1"}}}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(docs.ids(), "g1/discord:t1:2026-11-14:history") {
+		t.Fatalf("a listed thread was not imported: %v", docs.ids())
 	}
 	// The cap stops the run; the next run continues.
 	docs = &fakeDocs{}
@@ -189,15 +200,15 @@ func TestImportFiltersChannelsCapsAndSkipsUnreadableChannels(t *testing.T) {
 	src = history()
 	src.forbidden = map[string]bool{"c1": true}
 	docs = &fakeDocs{}
-	if _, err := newImporter(src, docs, map[string]Guild{"g1": {History: true}}).Run(context.Background()); err != nil || fmt.Sprint(docs.ids()) != "[g1/discord:t1:2026-11-14]" {
+	if _, err := newImporter(src, docs, map[string]Guild{"g1": {History: true}}).Run(context.Background()); err != nil || fmt.Sprint(docs.ids()) != "[g1/discord:t1:2026-11-14:history]" {
 		t.Fatalf("forbidden channel run = %v, %v", err, docs.ids())
 	}
 	// IncludeBots keeps other bots and webhooks.
 	docs = &fakeDocs{}
 	im = newImporter(history(), docs, map[string]Guild{"g1": {History: true}})
 	im.IncludeBots = true
-	if _, err := im.Run(context.Background()); err != nil || !strings.Contains(docs.docs["g1/discord:c1:2026-11-16"].Content, "alertbot") {
-		t.Fatalf("include bots = %v, %+v", err, docs.docs["g1/discord:c1:2026-11-16"])
+	if _, err := im.Run(context.Background()); err != nil || !strings.Contains(docs.docs["g1/discord:c1:2026-11-16:history"].Content, "alertbot") {
+		t.Fatalf("include bots = %v, %+v", err, docs.docs["g1/discord:c1:2026-11-16:history"])
 	}
 }
 
@@ -231,5 +242,57 @@ func TestHindsightDocumentCalls(t *testing.T) {
 	}
 	if !strings.Contains(calls[len(calls)-1], `"async":false`) {
 		t.Errorf("retain call = %q", calls[len(calls)-1])
+	}
+}
+
+// A live bridge document for a day does not stop that day's import: the
+// two documents have different IDs.
+func TestImportIsApartFromLiveDocuments(t *testing.T) {
+	docs := &fakeDocs{}
+	_ = docs.RetainDocument(context.Background(), "g1", NewRetain("c1", day(16, 10), "ann: tagged exchange"))
+	if _, err := newImporter(history(), docs, map[string]Guild{"g1": {History: true}}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(docs.ids(), "g1/discord:c1:2026-11-16:history") || !slices.Contains(docs.ids(), "g1/discord:c1:2026-11-16") {
+		t.Fatalf("documents = %v: the live document and the day's import must both exist", docs.ids())
+	}
+}
+
+// Threads come from every parent that holds them, text, announcement, forum
+// and media, and active private threads the bot can see are kept.
+func TestThreadsListEveryParentKind(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch {
+		case r.URL.Path == "/guilds/g1/threads/active":
+			_, _ = w.Write([]byte(`{"threads":[{"id":"p1","type":12,"parent_id":"c1"}]}`))
+		case strings.HasPrefix(r.URL.Path, "/channels/f1/"):
+			_, _ = w.Write([]byte(`{"threads":[{"id":"post1","type":11,"parent_id":"f1","thread_metadata":{"archive_timestamp":"2026-11-01T00:00:00Z"}}],"has_more":false}`))
+		default:
+			_, _ = w.Write([]byte(`{"threads":[],"has_more":false}`))
+		}
+	}))
+	defer srv.Close()
+	r := &REST{Base: srv.URL, Token: func() (string, error) { return "t", nil }}
+	got, err := r.Threads(context.Background(), "g1", []Channel{
+		{ID: "c1", Type: 0}, {ID: "f1", Type: 15}, {ID: "m1", Type: 16}, {ID: "v1", Type: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	if fmt.Sprint(ids) != "[p1 post1]" {
+		t.Errorf("threads = %v", ids)
+	}
+	want := "/guilds/g1/threads/active /channels/c1/threads/archived/public /channels/f1/threads/archived/public /channels/m1/threads/archived/public"
+	if strings.Join(paths, " ") != want {
+		t.Errorf("paths = %v", paths)
+	}
+	if !historyChannelTypes[12] {
+		t.Error("private threads are not imported")
 	}
 }

@@ -408,6 +408,12 @@ metadata:
   namespace: {{ $b.namespace }}
   labels:
     {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    # A Job's template is immutable, and this one names the shared connector
+    # image. When the image or settings change, Argo CD deletes and recreates
+    # the Job instead of failing the sync; the new run skips the days already
+    # imported, so it costs only Discord reads.
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: {{ $d.import.deadlineSeconds }}
