@@ -9,6 +9,11 @@
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
+# Section data files are named by content hash (data/snapshot.mjs), so they
+# never change. Each section's latest.json keeps the default revalidation.
+/data/:section/v/*
+  Cache-Control: public, max-age=31536000, immutable
+
 # The preview host stays out of search results. Crawlers may fetch it (robots.txt
 # allows them), so they see this header; a robots.txt Disallow would hide it.
 https://next.jomcgi.dev/*

@@ -43,13 +43,10 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     job = rendered["Job/jomcgi-site-deploy"]
     assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
     container = job["spec"]["template"]["spec"]["containers"][0]
-    assert container["args"] == [
-        "deploy",
-        "--config",
-        "/app/site/wrangler.jsonc",
-        "--env",
-        "dev",
-    ]
+    # run.sh: data snapshot into a /tmp copy, then `wrangler deploy --env $STAGE`.
+    assert container["command"] == ["/bin/bash", "/app/site/run.sh"]
+    assert "args" not in container
+    assert {"name": "STAGE", "value": "dev"} in container["env"]
     assert container["image"].endswith(f"@{DIGEST}")
     secrets = {
         env["name"]: env["valueFrom"]["secretKeyRef"]
@@ -62,20 +59,55 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
             "name": "jomcgi-site-cloudflare",
             "key": "account-id",
         },
+        "R2_ACCESS_KEY_ID": {"name": "jomcgi-site-r2-read", "key": "access-key-id"},
+        "R2_SECRET_ACCESS_KEY": {
+            "name": "jomcgi-site-r2-read",
+            "key": "secret-access-key",
+        },
     }
     assert (
         rendered["OnePasswordItem/jomcgi-site-cloudflare"]["spec"]["itemPath"]
         == "vaults/k8s-homelab/items/jomcgi-site-cloudflare"
     )
+    assert (
+        rendered["OnePasswordItem/jomcgi-site-r2-read"]["spec"]["itemPath"]
+        == "vaults/k8s-homelab/items/r2-s3-public-read"
+    )
 
 
-def test_wrangler_can_write_its_state_dirs():
-    # wrangler writes HOME and .wrangler/tmp next to wrangler.jsonc; the root is read-only.
+def test_refresh_cronjob_runs_the_deploy_command_on_a_schedule():
+    rendered = docs(render())
+    deploy = rendered["Job/jomcgi-site-deploy"]["spec"]["template"]["spec"][
+        "containers"
+    ][0]
+    cron = rendered["CronJob/jomcgi-site-refresh"]
+    assert cron["spec"]["schedule"] == "*/30 * * * *"
+    assert cron["spec"]["concurrencyPolicy"] == "Forbid"
+    # Not a hook: it runs on its schedule, not on syncs.
+    assert "argocd.argoproj.io/hook" not in cron["metadata"].get("annotations", {})
+    container = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == deploy["command"]
+    assert container["env"] == deploy["env"]
+    assert container["image"] == deploy["image"]
+    prod = docs(render(*PROD))["CronJob/jomcgi-site-refresh"]
+    prod_env = prod["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0][
+        "env"
+    ]
+    assert {"name": "STAGE", "value": "prod"} in prod_env
+    assert "CronJob/jomcgi-site-refresh" not in docs(
+        render("--set", "refresh.enabled=false")
+    )
+
+
+def test_the_site_copy_and_wrangler_state_live_in_tmp():
+    # run.sh copies the site to /tmp/site, so wrangler's .wrangler/tmp (next
+    # to the config) and HOME are under /tmp; the root stays read-only.
     pod = docs(render())["Job/jomcgi-site-deploy"]["spec"]["template"]["spec"]
     container = pod["containers"][0]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
-    mounts = {m["mountPath"] for m in container["volumeMounts"]}
-    assert {"/tmp", "/app/site/.wrangler"} <= mounts
+    assert {m["mountPath"] for m in container["volumeMounts"]} == {"/tmp"}
+    tmp = next(v for v in pod["volumes"] if v["name"] == "tmp")
+    assert tmp["emptyDir"]["sizeLimit"] == "512Mi"
 
 
 def test_a_new_digest_changes_the_release_marker():
@@ -103,15 +135,22 @@ def test_release_marker_changes_with_the_chart_and_the_image():
     }
 
 
-def test_only_egress_is_the_cloudflare_api():
-    policy = docs(render())["CiliumNetworkPolicy/jomcgi-site-deploy"]["spec"]
+@pytest.mark.parametrize("workload", ["jomcgi-site-deploy", "jomcgi-site-refresh"])
+def test_only_egress_is_the_cloudflare_api_and_r2(workload):
+    policy = docs(render())[f"CiliumNetworkPolicy/{workload}"]["spec"]
     assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
     assert policy.get("ingress", []) == []
+    https = {"toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]}
     assert policy["egress"] == [
+        {"toFQDNs": [{"matchName": "api.cloudflare.com"}], **https},
         {
-            "toFQDNs": [{"matchName": "api.cloudflare.com"}],
-            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
-        }
+            "toFQDNs": [
+                {
+                    "matchName": "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+                }
+            ],
+            **https,
+        },
     ]
 
 
@@ -121,7 +160,7 @@ PROD = ("--set", "stage=prod", "--set", "edge.enabled=true")
 def test_prod_deploys_the_prod_worker_and_applies_the_edge_config():
     rendered = docs(render(*PROD))
     deploy = rendered["Job/jomcgi-site-deploy"]["spec"]["template"]["spec"]
-    assert deploy["containers"][0]["args"][-2:] == ["--env", "prod"]
+    assert {"name": "STAGE", "value": "prod"} in deploy["containers"][0]["env"]
     job = rendered["Job/jomcgi-site-edge"]
     # PostSync: after the deploy Job, so every route's Worker exists.
     assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "PostSync"
@@ -179,8 +218,8 @@ def test_dev_has_no_edge_job():
         (["--set", "stage=staging"], "stage must be dev or prod"),
         (["--set", "edge.enabled=true"], "edge.enabled is for the prod stage only"),
         (
-            ["--set", "workloads.jomcgi-site-deploy.args[3]=--env"],
-            "--env comes from .Values.stage",
+            ["--set", "workloads.jomcgi-site-deploy.env[0].name=STAGE"],
+            "STAGE comes from .Values.stage",
         ),
         (
             [*PROD, "--set-string", "edge.serveRoutes=yes"],
