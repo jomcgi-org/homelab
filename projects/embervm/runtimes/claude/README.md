@@ -241,7 +241,7 @@ images reuse `multitool_tar` with the SHA-pinned `bazel/tools/tools.lock.json`
 entries for buildifier, gofumpt, ruff, shfmt and Helm. Prettier 3.9.6,
 prettier-plugin-svelte 4.1.1 and Svelte 5.56.9 reuse
 `//bazel/tools/image:prettier_tar` from `pnpm-lock.yaml`. Pi also receives the
-existing Node 22.22.0 layer. Both APK configurations add GNU grep because the
+existing Node 24.22.1 layer. Both APK configurations add GNU grep because the
 repository generators use `grep --include`; Pi also adds `go-1.26` for the
 Go/proto generator. Both locks were regenerated with rules_apko's pinned apko
 v1.2.25, including its resolver's transitive package updates. The bootstrap
@@ -295,7 +295,7 @@ instead of installing its own.
 |------|--------------|-----------------|
 | helm | `helm-3`, overlaid by the formatter layer | The effective binary is CI's pinned 3.16.4 (`bazel/tools/tools.lock.json`). The layer replaces Wolfi's 3.19.x executable; the APK package remains in the lock. |
 | go | `go-1.26` | `go.mod` says `go 1.26.0` with no toolchain line, so the packaged 1.26.x needs no toolchain download. |
-| node | `nodejs-22` | Matches the major of the Bazel node toolchain (`node.toolchain` 22.22.0 in `MODULE.bazel`) and the monolith frontend image. Wolfi resolves the guest's patch version independently. |
+| node | `nodejs-24` | Matches the major of the Bazel node toolchain (`node.toolchain` 24.22.1 in `MODULE.bazel`) and the monolith frontend image. Wolfi resolves the guest's patch version independently. |
 | pnpm | `pnpm~10` | Matches `pnpm_version` 10.34.5 in `MODULE.bazel`. A bare `pnpm` resolves to the pnpm 11 provider, which wants Node >= 22.13. |
 | pytest, yaml | `py3.12-pytest`, `py3.12-pyyaml` | Repo tests are pytest and import `yaml` almost everywhere. System packages for the image's `python-3.12`. |
 

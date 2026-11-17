@@ -61,12 +61,12 @@ contents:
     # go.mod says `go 1.26.0` with no toolchain line, so the packaged 1.26.x
     # satisfies it without a toolchain download at first use.
     - go-1.26
-    # node matches the Bazel node toolchain's major (node.toolchain 22.22.0 in
-    # MODULE.bazel) and the monolith frontend image's nodejs-22 stream.
+    # node matches the Bazel node toolchain's major (node.toolchain 24.22.1 in
+    # MODULE.bazel) and the monolith frontend image's nodejs-24 stream.
     # pnpm is the repo's JS package manager, held to the 10 stream to match
     # pnpm_version 10.34.5 in MODULE.bazel (the lockfile is pnpm 10 format). A
     # bare `pnpm` resolves to the pnpm-11.8 provider instead of the repo's major.
-    - nodejs-22
+    - nodejs-24
     - pnpm~10
     # Repo tests are pytest and import yaml almost everywhere. These are the
     # python-3.12 system packages, importable by the shim's interpreter. A full
