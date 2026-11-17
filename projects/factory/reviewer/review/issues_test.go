@@ -192,10 +192,14 @@ func linkedFiles(urls ...string) []github.PullRequestFile {
 // contains. An untrusted decision gets no match, so it cannot confirm text.
 func TestQuotedDecisionText(t *testing.T) {
 	e, b, api, pr := issueSetup()
-	api.comments[1] = &itsaplan.FeedItem{ID: 1, IssueID: 95, Kind: "comment", ActorUserID: "human", EditedAt: []byte("null"),
-		Body: "Joe, 2026-11-17: lets keep one key for now.\nAdmin merge and   tune the review process with feedback."}
-	api.comments[2] = &itsaplan.FeedItem{ID: 2, IssueID: 95, Kind: "comment", ActorUserID: "admin", EditedAt: []byte("null"),
-		Body: "Admin merge and tune the review process with feedback."}
+	api.comments[1] = &itsaplan.FeedItem{
+		ID: 1, IssueID: 95, Kind: "comment", ActorUserID: "human", EditedAt: []byte("null"),
+		Body: "Joe, 2026-11-17: lets keep one key for now.\nAdmin merge and   tune the review process with feedback.",
+	}
+	api.comments[2] = &itsaplan.FeedItem{
+		ID: 2, IssueID: 95, Kind: "comment", ActorUserID: "admin", EditedAt: []byte("null"),
+		Body: "Admin merge and tune the review process with feedback.",
+	}
 	pr.Body = "Joe decided:\n\n> Admin merge and tune the review\n> process with feedback.\n\n" +
 		"He did not say \"skip the review for every PR from now on\", and \"short\" is too short."
 	files := linkedFiles("https://factory-plan.jomcgi.dev/factory/issue/HOME-59#comment-1", "https://factory-plan.jomcgi.dev/factory/issue/HOME-59#comment-2")
