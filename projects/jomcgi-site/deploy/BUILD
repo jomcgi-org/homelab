@@ -1,0 +1,20 @@
+load("//bazel/helm:defs.bzl", "argocd_app")
+
+argocd_app(
+    name = "jomcgi-site-dev",
+    chart = "projects/jomcgi-site/chart",
+    chart_files = "//projects/jomcgi-site/chart:chart",
+    # The source chart intentionally refuses to render without a built image.
+    # argocd_app's manual source-path renderer cannot resolve generated values.
+    generate_manifests = False,  # keep
+    namespace = "jomcgi-site-dev",
+    release_name = "jomcgi-site-dev",
+    tags = [
+        "helm",
+        "template",
+    ],
+    values_files = [
+        "//projects/jomcgi-site/chart:values.yaml",
+        "//projects/jomcgi-site/chart:image_values",
+    ],  # keep
+)

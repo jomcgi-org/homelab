@@ -1,0 +1,78 @@
+.site {
+  max-width: 72rem;
+  margin-inline: auto;
+  padding: var(--spacing-6);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-8);
+}
+
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-4);
+}
+
+.site-brand {
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+.site-nav,
+.site-nav ul,
+.site-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-6);
+}
+
+.site-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-3);
+}
+
+.site-nav-group {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-secondary, inherit);
+}
+
+.site-nav a,
+.site-card-link {
+  color: var(--color-text-accent);
+  text-underline-offset: 0.2em;
+}
+
+.site-card-link {
+  font-weight: 600;
+}
+
+.site-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.site-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--spacing-4);
+}
+
+@media (max-width: 40rem) {
+  .site {
+    padding: var(--spacing-3);
+  }
+}

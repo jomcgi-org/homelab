@@ -149,6 +149,7 @@ filegroup(
     ) + [
         "//projects/factory-landing:repo_docs",
         "//projects/factory-storyboard:repo_docs",
+        "//projects/jomcgi-site:repo_docs",
         "//projects/shared/helm/factory-library:repo_docs",
     ],
     visibility = ["//projects/monolith:__pkg__"],

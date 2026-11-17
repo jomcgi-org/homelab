@@ -1,0 +1,38 @@
+# The dev stage of the jomcgi.dev site (HOME-174): a sync runs the deploy Job,
+# which publishes Worker jomcgi-site-dev on next.jomcgi.dev. Not yet listed in
+# projects/platform-factory/kustomization.yaml: the enable change adds it once
+# 1Password item jomcgi-site-cloudflare exists. Kargo takes over this pin when
+# HOME-116 slice 2 lands.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jomcgi-site-dev
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/jomcgi/homelab/charts
+    chart: jomcgi-site
+    targetRevision: 0.1.0
+    helm:
+      releaseName: jomcgi-site-dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jomcgi-site-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

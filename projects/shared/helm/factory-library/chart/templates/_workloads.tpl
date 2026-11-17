@@ -8,7 +8,9 @@
 {{- end -}}
 {{- end -}}
 {{- if and $w.concurrencyPolicy (not (has $w.concurrencyPolicy (list "Allow" "Forbid" "Replace"))) -}}{{- fail "factory-library: invalid concurrencyPolicy" -}}{{- end -}}
-{{- include "factory-library.keys" (dict "path" (printf "workload %s" .name) "value" $w "allowed" (list "kind" "image" "containerName" "replicas" "schedule" "concurrencyPolicy" "backoffLimit" "kubernetesApi" "resources" "command" "args" "env" "ports" "readinessProbe" "livenessProbe" "startupProbe" "writablePaths" "service" "network")) -}}
+{{- if and (hasKey $w "hook") (ne ($w.kind | default "Deployment") "Job") -}}{{- fail (printf "factory-library: workload %s: hook is only for Jobs" .name) -}}{{- end -}}
+{{- if and (hasKey $w "hook") (not (has $w.hook (list "Sync" "PostSync"))) -}}{{- fail (printf "factory-library: workload %s: hook must be Sync or PostSync" .name) -}}{{- end -}}
+{{- include "factory-library.keys" (dict "path" (printf "workload %s" .name) "value" $w "allowed" (list "kind" "image" "containerName" "replicas" "schedule" "concurrencyPolicy" "backoffLimit" "hook" "kubernetesApi" "resources" "command" "args" "env" "ports" "readinessProbe" "livenessProbe" "startupProbe" "writablePaths" "service" "network")) -}}
 {{- $resources := $w.resources | default dict -}}
 {{- $requests := $resources.requests | default dict -}}
 {{- $limits := $resources.limits | default dict -}}
@@ -105,6 +107,21 @@ metadata:
     argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "-1"
+  {{- else if .workload.hook }}
+  {{- /* An Argo CD hook runs on every sync, so a Job whose spec changes with
+  each release (a deploy or a post-deploy check) never hits Job immutability. */}}
+  annotations:
+    argocd.argoproj.io/hook: {{ .workload.hook }}
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    {{- $exceptions := list }}
+    {{- range .root.Values.exceptions }}
+    {{- if eq .workload $.name }}
+    {{- $exceptions = append $exceptions . }}
+    {{- end }}
+    {{- end }}
+    {{- if $exceptions }}
+    factory.jomcgi.dev/exceptions: {{ $exceptions | toJson | quote }}
+    {{- end }}
   {{- else }}
   {{- include "factory-library.annotations" . | nindent 2 }}
   {{- end }}

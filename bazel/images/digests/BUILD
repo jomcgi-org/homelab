@@ -38,6 +38,7 @@ oci_digest_manifest(
         "//projects/firecracker/sandbox/rust:image.info": "//projects/firecracker/sandbox/rust:image.push",
         "//projects/firecracker/substrate/egress-proxy:image.info": "//projects/firecracker/substrate/egress-proxy:image.push",
         "//projects/firecracker/substrate/rootfs-builder:image.info": "//projects/firecracker/substrate/rootfs-builder:image.push",
+        "//projects/jomcgi-site:image.info": "//projects/jomcgi-site:image.push",
         "//projects/monolith/frontend:image.info": "//projects/monolith/frontend:image.push",
         "//projects/monolith/frontend:image_public.info": "//projects/monolith/frontend:image_public.push",
         "//projects/monolith:image.info": "//projects/monolith:image.push",

@@ -1,0 +1,22 @@
+{{- /*
+The deploy Job is an Argo CD Sync hook, and Argo CD does not diff hooks. This
+ConfigMap carries the image digest and stage, so a new image makes the
+Application OutOfSync and the next sync runs the Job again.
+*/}}
+{{- if not (has .Values.stage (list "dev" "prod")) }}
+{{- fail "stage must be dev or prod" }}
+{{- end }}
+{{- $args := (index .Values.workloads "jomcgi-site-deploy").args }}
+{{- if ne (last $args) .Values.stage }}
+{{- fail "the deploy Job's --env argument must match .Values.stage" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jomcgi-site-release
+  labels:
+    app.kubernetes.io/name: jomcgi-site
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  stage: {{ .Values.stage | quote }}
+  image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}

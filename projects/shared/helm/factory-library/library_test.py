@@ -307,3 +307,21 @@ def test_single_wildcard_requires_and_records_exact_exception(chart):
     assert docs["CiliumNetworkPolicy/app"]["spec"]["egress"][0]["toFQDNs"] == [
         {"matchPattern": "*"}
     ]
+
+
+@pytest.mark.parametrize("hook", ["Sync", "PostSync"])
+def test_job_hook_runs_every_sync(chart, hook):
+    config = values()
+    config["workloads"]["app"].update({"kind": "Job", "hook": hook})
+    job = objects(render(chart, config))["Job/app"]
+    assert job["metadata"]["annotations"] == {
+        "argocd.argoproj.io/hook": hook,
+        "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded",
+    }
+
+
+def test_job_without_hook_is_a_plain_resource(chart):
+    config = values()
+    config["workloads"]["app"]["kind"] = "Job"
+    job = objects(render(chart, config))["Job/app"]
+    assert "annotations" not in job["metadata"]

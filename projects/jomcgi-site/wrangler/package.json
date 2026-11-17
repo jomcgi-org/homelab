@@ -1,0 +1,9 @@
+{
+  "name": "@homelab/jomcgi-site-wrangler",
+  "private": true,
+  "description": "The pinned wrangler CLI that the deploy Job runs. Kept apart from the site build.",
+  "type": "module",
+  "dependencies": {
+    "wrangler": "4.162.0"
+  }
+}

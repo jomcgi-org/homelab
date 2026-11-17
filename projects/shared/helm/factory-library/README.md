@@ -87,6 +87,7 @@ exceptions: []
 | `replicas` | Deployment replicas, default 1; zero is preserved. |
 | `schedule`, `concurrencyPolicy` | CronJob schedule is required. Concurrency defaults to `Forbid`; `Allow` and `Replace` are also accepted. |
 | `backoffLimit` | Job and CronJob retry count, default 3; zero is preserved. |
+| `hook` | Jobs only: `Sync` or `PostSync`. Renders the Job as an Argo CD hook with `BeforeHookCreation,HookSucceeded` deletion, so it runs on every sync. Use it for a Job whose spec changes each release, such as a deploy or a post-deploy check; a plain Job's spec is immutable. |
 | `resources` | Kubernetes resource map. CPU and memory requests and a memory limit are mandatory. |
 | `command`, `args`, `env`, `ports` | Standard Kubernetes container fields. Secret environment variables use `valueFrom.secretKeyRef`. |
 | `readinessProbe`, `livenessProbe`, `startupProbe` | Standard Kubernetes probes; no probe is invented. |

@@ -1,0 +1,26 @@
+// The jomcgi.dev site as an assets-only Worker: no script runs for any
+// request, so serving costs nothing and a crawler cannot cause charges
+// (HOME-174). The deploy Job runs `wrangler deploy --env <stage>`.
+{
+  "name": "jomcgi-site",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./web/dist",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash",
+  },
+  "env": {
+    // Preview host for the Kargo dev stage. The site-check Job verifies it
+    // before Freight promotes to prod.
+    "dev": {
+      "routes": [{ "pattern": "next.jomcgi.dev", "custom_domain": true }],
+    },
+    // jomcgi.dev itself. Each section joins `routes` when it migrates, and
+    // leaves it to roll back. Until then this Worker serves nothing.
+    "prod": {
+      "routes": [],
+    },
+  },
+}

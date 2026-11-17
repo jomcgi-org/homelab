@@ -1,0 +1,69 @@
+# One release per stage. The deploy Job runs `wrangler deploy --env <stage>`
+# against the Worker that wrangler.jsonc names for that stage (HOME-174).
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/jomcgi-site
+  digest: "" # CI supplies the content digest when packaging the chart.
+
+# `dev` deploys Worker jomcgi-site-dev on next.jomcgi.dev; `prod` deploys
+# Worker jomcgi-site on the jomcgi.dev routes listed in wrangler.jsonc.
+stage: dev
+
+workloads:
+  jomcgi-site-deploy:
+    kind: Job
+    # Runs on every sync; the release ConfigMap makes each new image a sync.
+    hook: Sync
+    containerName: wrangler
+    # A failed deploy is a failed sync; retrying once covers a transient API error.
+    backoffLimit: 1
+    args:
+      - deploy
+      - --config
+      - /app/site/wrangler.jsonc
+      - --env
+      - dev
+    env:
+      # wrangler keeps its cache and logs under HOME.
+      - name: HOME
+        value: /tmp
+      - name: CLOUDFLARE_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: api-token
+      - name: CLOUDFLARE_ACCOUNT_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: account-id
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+    writablePaths:
+      - name: tmp
+        mountPath: /tmp
+        sizeLimit: 64Mi
+    network:
+      # The Cloudflare API is the only egress. wrangler's npm update check
+      # times out against this policy and does not fail the deploy.
+      egress:
+        - peer: cloudflare-api
+          fqdn: api.cloudflare.com
+          port: 443
+
+secrets:
+  ghcr-imagepull-secret:
+    workload: jomcgi-site-deploy
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+      type: kubernetes.io/dockerconfigjson
+  # Joe creates this item (HOME-174 "Inputs"): fields api-token and account-id.
+  jomcgi-site-cloudflare:
+    workload: jomcgi-site-deploy
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/jomcgi-site-cloudflare
+
+exceptions: []
