@@ -98,10 +98,43 @@ page's indexing rules. `public/_headers` sends `X-Robots-Tag: noindex` for
 the preview host and the unlisted `/slop` drafts note. The note also keeps its
 `noindex, nofollow` meta tag.
 
-Scotland owns only `/scotland`, `/scotland/privacy`, `/scotland/terms`,
-`/scotland/support`, and `/scotland/marketplace.json`. These and `/slop` use
-exact edge patterns. The connector keeps `/scotland/mcp` and `/scotland/v1/*`;
-`/slop/factory` stays on the hub. `edge/apply.test.mjs` guards this boundary.
-The catalog is generated from `web/src/scotland-data.ts` at build time.
-After the dev deploy, verify the five HTML pages and catalog on
-`next.jomcgi.dev`, including the drafts meta/header rules and catalog bytes.
+## Scotland and drafts migration (HOME-207)
+
+The build emits these files before deployment. `site_tar` in `BUILD` packages
+the complete `web:build` output at the assets directory in `wrangler.jsonc`.
+The Worker has no request handler; its HTML handling serves the files at the
+existing extensionless URLs.
+
+| URL | File under `web/dist/` | Page module or data under `web/src/` |
+| --- | --- | --- |
+| `/scotland` | `scotland.html` | `scotland-page.tsx` |
+| `/scotland/privacy` | `scotland/privacy.html` | `scotland-privacy-page.tsx` |
+| `/scotland/terms` | `scotland/terms.html` | `scotland-terms-page.tsx` |
+| `/scotland/support` | `scotland/support.html` | `scotland-support-page.tsx` |
+| `/scotland/marketplace.json` | `scotland/marketplace.json` | `scotland-data.ts` |
+| `/slop` | `slop.html` | `slop-page.tsx` |
+
+`web/build.mjs` renders each HTML entry registered in `web/src/pages.tsx` and
+serializes the catalog from the same data that the landing page uses. The
+pages contain text, links and code samples, with no large dataset or widget
+to load on intent. Each entry hydrates only its own page through `mount.tsx`.
+
+| Contract | Evidence and CI target |
+| --- | --- |
+| Filled HTML and one page per entry | `web/prerendered.mjs` (`web:prerendered_test`); `web/src/a11y.test.tsx` checks the entry/module mapping (`web:test`). |
+| Unchanged copy, commands, policy dates and SEO tags | `web/src/scotland.test.tsx` compares the copied data and rendered prose with the hub sources, and checks every entry's title, description, canonical, Open Graph and Twitter tags (`web:test`). |
+| Byte-compatible marketplace | `web/marketplace.test.mjs` compares the built file with the hub's actual GET response, including the trailing newline (`web:marketplace_test`). |
+| Hydration and the 150 KiB JS limit | `web/src/prerender.test.tsx` hydrates every page without recoverable errors (`web:test`); `web/budget.mjs` measures initial JS from built entries (`web:budget_test`). |
+| Palette, inline styles and accessibility | `web/src/contrast.test.tsx` scans TypeScript and CSS and checks both palette modes; `web/src/a11y.test.tsx` runs axe on every registered page (`web:test`). |
+| Exact routes and unlisted drafts | `edge/apply.test.mjs` checks route patterns against the connector and factory paths (`edge:apply_test`); `web/src/scotland.test.tsx` checks `live`, the drafts index exclusion, and noindex metadata and headers (`web:test`). |
+
+The six URLs use exact patterns in `edge/routes.json`. The connector keeps
+`/scotland/mcp` and `/scotland/v1/*`; `/slop/factory` stays on the hub. The hub
+pages remain available for rollback when the section patterns are removed.
+
+Local artifact checks do not establish a live migration. Production serving
+still depends on the `edge.serveRoutes` switch and promotion described above.
+After the dev deploy, the HOME-207 delivery owner verifies these six URLs on
+`next.jomcgi.dev`, including rendered content without JavaScript, the drafts
+meta/header rules, catalog bytes and browser accessibility. That live check
+remains pending until this revision is deployed.
