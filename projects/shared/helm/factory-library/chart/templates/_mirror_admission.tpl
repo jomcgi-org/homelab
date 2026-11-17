@@ -77,7 +77,8 @@ spec:
             {{- if eq $shape.creator "cronjob-controller" }}
             o.name == {{ $.name | toJson }} &&
             {{- end }}
-            has(o.controller) && o.controller){{ if eq $shape.creator "job-controller" }} && request.subResource != "ephemeralcontainers"{{ else }} &&
+            has(o.controller) && o.controller){{ if eq $shape.creator "job-controller" }} &&
+          (!has(request.subResource) || request.subResource != "ephemeralcontainers"){{ else }} &&
           (request.operation != "CREATE" || request.userInfo.username == "system:serviceaccount:kube-system:cronjob-controller"){{ end }})
         {{- end }}
       message: Only the mirror controller chain may use its R2 Secret or ServiceAccount.
