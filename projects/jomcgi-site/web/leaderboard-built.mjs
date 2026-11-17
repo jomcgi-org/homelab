@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { initialScripts } from "./budget.mjs";
+import axe from "axe-core";
+import { Window } from "happy-dom";
+import { BUDGET_BYTES, initialScripts, measure } from "./budget.mjs";
 
 const dist = process.argv[2];
 assert(dist, "usage: node leaderboard-built.mjs <dist directory>");
@@ -22,6 +24,15 @@ assert(
   "missing static scatter",
 );
 assert(!/\bstyle\s*=/.test(html), "report must not use inline styles");
+const redirects = readFileSync(join(dist, "_redirects"), "utf8")
+  .trim()
+  .split("\n");
+for (const path of ["/app/llm-leaderboard", "/app/llm-leaderboard/*"]) {
+  assert(
+    redirects.includes(`${path} /llm-leaderboard 301`),
+    "missing delivered redirect: " + path,
+  );
+}
 
 const snapshot = JSON.parse(
   readFileSync(
@@ -59,6 +70,39 @@ for (const model of snapshot.models) {
     "snapshot missing from deferred chunk: " + model.id,
   );
 }
+const budget = measure(dist).find(
+  ({ page }) => page === "llm-leaderboard.html",
+);
+assert(budget && budget.bytes <= BUDGET_BYTES, "leaderboard exceeds JS budget");
 console.log(
-  "ok   leaderboard: static charts, rankings and tasks; snapshot and chart code deferred",
+  `ok   leaderboard: ${(budget.bytes / 1024).toFixed(1)} KiB initial JS <= ${BUDGET_BYTES / 1024} KiB`,
+);
+
+// Inspect emitted HTML without running the page or fetching any resources.
+// happy-dom checks structure; contrast.test.tsx checks palette contrast.
+const window = new Window({
+  settings: {
+    enableJavaScriptEvaluation: false,
+    disableJavaScriptFileLoading: true,
+    enableCSSFileLoading: false,
+  },
+});
+try {
+  window.document.write(html);
+  const { violations } = await axe.run(window.document.documentElement, {
+    rules: { "color-contrast": { enabled: false } },
+  });
+  assert.deepEqual(
+    violations.map(({ id, nodes }) => ({
+      id,
+      targets: nodes.map(({ target }) => target),
+    })),
+    [],
+    "built leaderboard has structural axe violations",
+  );
+} finally {
+  await window.happyDOM.close();
+}
+console.log(
+  "ok   leaderboard: static charts, rankings, tasks and 301 redirects; deferred snapshot/code; zero structural axe violations",
 );

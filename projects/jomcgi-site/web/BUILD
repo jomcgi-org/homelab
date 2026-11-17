@@ -145,6 +145,8 @@ js_test(
     data = [
         "budget.mjs",
         ":build",
+        ":node_modules/axe-core",
+        ":node_modules/happy-dom",
         ":src",
     ],
     entry_point = "leaderboard-built.mjs",

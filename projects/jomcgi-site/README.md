@@ -169,11 +169,23 @@ A linked `?m=` selection also triggers hydration. An interaction during the
 download is replayed once handlers exist. The initial route stays under the
 150 KiB JavaScript budget. All paint is in `src/palette.css`.
 
-`:leaderboard_built_test` checks the built charts, table and task list, and
-proves the snapshot stays out of initial scripts and preloads.
-`leaderboard.test.tsx` compares copy and metadata to the hub source and checks
-axe after selection changes; `leaderboard-intent.test.tsx` exercises slow
-downloads, first-click replay, typing, keyboard navigation and linked views.
+The HOME-208 contract has checks against both emitted files and hydrated
+components. The deploy image copies `web:build` into the assets directory in
+`wrangler.jsonc`; that Worker has no request handler. These checks verify
+the static artifact before deployment:
+
+| Contract | Evidence in `web/` |
+| --- | --- |
+| Static report and legacy 301 redirects | `:leaderboard_built_test` reads `dist/llm-leaderboard.html` with page scripts disabled and checks `dist/_redirects`. |
+| Interactive parts hydrate; large data and code load on intent | `leaderboard-intent.test.tsx` holds the import pending, then tests first-click replay, search input and linked selections. |
+| Each route stays below 150 KiB initial JavaScript | `:budget_test` measures every entry. `:leaderboard_built_test` also measures this route and rejects snapshot IDs in initial scripts or preloads. |
+| No inline styles or colours outside the palette; no axe violations | `contrast.test.tsx` checks sources and both palette modes. `leaderboard.test.tsx` checks hydrated selections. `:leaderboard_built_test` runs structural axe on emitted HTML. |
+| Original content and metadata | `leaderboard.test.tsx` compares these with the hub source and uses the shared snapshot for task descriptions and readings. |
+
+From `web/`, run `pnpm build && node leaderboard-built.mjs dist`, then
+`pnpm test` and `pnpm budget`. The artifact check prints the measured byte
+budget and fails on missing redirects or structural axe violations.
+The DOM tests do not measure CSS layout; live browser checks still apply.
 
 After the dev deploy, verify `https://next.jomcgi.dev/llm-leaderboard`, both
 legacy redirects and a linked `?m=` selection before prod promotion.
