@@ -1159,22 +1159,9 @@ build_test(
     targets = [":theme_fixture_preview"],
 )
 
-# First-party public blog inputs shared with the static jomcgi.dev build.
+# The static blog index reads public summaries from the existing manifest.
 filegroup(
-    name = "blog_sources",
-    srcs = glob(
-        [
-            "src/lib/public/posts/ix/*.svelte",
-            "src/lib/public/posts/ix/*.js",
-        ],
-        exclude = ["**/*.test.js"],
-    ) + [
-        "package.json",
-        "src/lib/public/posts/agent-replay.json",
-        "src/lib/public/posts/conformance-replay.json",
-        "src/lib/public/posts/posts-manifest.json",
-        "src/lib/public/posts/qwen-replay.json",
-        "src/lib/server/markdown.js",
-    ],
+    name = "blog_index_manifest",
+    srcs = ["src/lib/public/posts/posts-manifest.json"],
     visibility = ["//projects/jomcgi-site/web:__pkg__"],
 )

@@ -8,7 +8,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import figureStyles from "virtual:blog/figure-styles";
 
 // Every colour on the site comes from these tokens, so checking token pairs
 // catches contrast regressions before merge, with no browser. The Kargo dev
@@ -66,7 +65,7 @@ export function stylesheets(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return stylesheets(path);
-    return /\.(css|svelte)$/.test(entry.name) ? [path] : [];
+    return entry.name.endsWith(".css") ? [path] : [];
   });
 }
 
@@ -157,9 +156,6 @@ const ROLES: Record<string, Role> = {
   "--color-border": "decorative",
   "--color-border-emphasized": "non-text",
   "--focus-outline-color": "non-text",
-  "--color-blog-success": "text",
-  "--color-blog-warning": "text",
-  "--font-family-code": "font",
   "--font-family-body": "font",
   "--font-family-heading": "font",
   "--radius-inner": "radius",
@@ -273,17 +269,14 @@ describe("token contrast", () => {
       readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) return sources(path);
-        return /\.(tsx?|svelte)$/.test(entry.name) &&
-          !/\.test\.tsx?$/.test(entry.name)
+        return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)
           ? [path]
           : [];
       });
     for (const file of sources("src")) {
       const code = readFileSync(file, "utf8");
       expect(code, file).not.toMatch(LITERAL);
-      expect(code, file).not.toMatch(
-        /@stylexjs\/stylex|(?:^|\s)style(?:\s*=|:)/,
-      );
+      expect(code, file).not.toMatch(/@stylexjs\/stylex|\bstyle\s*=\s*\{/);
     }
   });
 
@@ -303,29 +296,14 @@ describe("token contrast", () => {
       "dashed",
       "dotted",
       "double",
-      "collapse",
-      "separate",
-      "auto",
-      "thin",
       "underline",
-      "inset",
-      "repeating-linear-gradient(",
-      ")",
     ]);
     const sheets = stylesheets("src").filter(
       (path) => path !== join("src", "palette.css"),
     );
     expect(sheets).toContain(join("src", "site.css"));
-    for (const sheet of [...sheets, "build-time figures"]) {
-      const source =
-        sheet === "build-time figures"
-          ? figureStyles
-          : readFileSync(sheet, "utf8");
-      const css = (
-        sheet.endsWith(".svelte")
-          ? (source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "")
-          : source
-      ).replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const sheet of sheets) {
+      const css = readFileSync(sheet, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
       expect([...customProperties(css).keys()], sheet).toEqual([]);
       expect(css, sheet).not.toMatch(LITERAL);
       // A colour keyword can hide in any property, such as

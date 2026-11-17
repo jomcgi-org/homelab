@@ -15,9 +15,6 @@
   --color-border: light-dark(#d5d7dc, #393b43);
   --color-border-emphasized: light-dark(#77766f, #82847e);
   --focus-outline-color: light-dark(#1f4f9f, #d3a45f);
-  --color-blog-success: light-dark(#24613e, #8dd5a6);
-  --color-blog-warning: light-dark(#904218, #efb68f);
-  --font-family-code: ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-heading:
     "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
