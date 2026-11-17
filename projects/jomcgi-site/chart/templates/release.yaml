@@ -1,7 +1,8 @@
 {{- /*
 The deploy Job is an Argo CD Sync hook, and Argo CD does not diff hooks. This
-ConfigMap carries the image digest and stage, so a new image makes the
-Application OutOfSync and the next sync runs the Job again.
+ConfigMap carries the chart version, the image digest and the stage. Any chart
+change, a Job-only change included, makes the Application OutOfSync, so the
+next sync runs the Job again.
 */}}
 {{- if not (has .Values.stage (list "dev" "prod")) }}
 {{- fail "stage must be dev or prod" }}
@@ -18,5 +19,6 @@ metadata:
     app.kubernetes.io/name: jomcgi-site
     app.kubernetes.io/instance: {{ .Release.Name }}
 data:
+  chart: {{ .Chart.Version | quote }}
   stage: {{ .Values.stage | quote }}
   image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}

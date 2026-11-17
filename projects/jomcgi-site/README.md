@@ -47,9 +47,10 @@ Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
 ## Deploy
 
 CI publishes the image and chart on merge. A sync of the stage's Application
-runs the deploy Job as an Argo CD Sync hook. The `jomcgi-site-release`
-ConfigMap carries the image digest, so each new image makes the Application
-OutOfSync and syncs it again. A failed deploy is a failed sync.
+runs the deploy Job as an Argo CD Sync hook. Argo CD does not diff hooks, so
+the `jomcgi-site-release` ConfigMap carries the chart version and the image
+digest. Each new chart or image, a change to the Job alone included, makes
+the Application OutOfSync and syncs it again. A failed deploy is a failed sync.
 
 The dev Application is listed in
 `projects/platform-factory/kustomization.yaml`. Its Job reads 1Password item
