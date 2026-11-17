@@ -244,7 +244,7 @@ func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
 	st := State{
 		Semgrep:     &SemgrepStamp{Digest: strings.Repeat("a", 64), Verified: false},
 		IssueDigest: strings.Repeat("b", 64), IssuesPending: true,
-		Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("b", 64), Overall: goalMet, Criteria: []GoalVerdict{{1, goalNotMet}}},
+		Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("b", 64), Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalNotMet}}},
 	}
 	for i := range maxStored {
 		st.Blocking = append(st.Blocking, Finding{ID: fmt.Sprint(i), Severity: SeverityHigh, Title: strings.Repeat("x", 1000), Detail: strings.Repeat("x", 4000)})
