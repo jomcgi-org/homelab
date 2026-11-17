@@ -453,6 +453,10 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, observer *to
 		defer func() {
 			if !observer.recorded {
 				rl.Metrics.TokenAccounting.WithLabelValues("missing").Inc()
+				// Metadata only: why no completion was read, never the body.
+				rl.Logger.Info("codex usage not observed",
+					"content_type", resp.Header.Get("Content-Type"),
+					"sse", observer.sse, "events", observer.events, "last_event", observer.lastType)
 			}
 		}()
 	}

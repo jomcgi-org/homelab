@@ -38,11 +38,29 @@ type tokenObserver struct {
 	event                  string
 	overflow, recorded     bool
 	onUsage                func(TokenUsage)
+	// sniffed is set once the first non-space body byte chose the format:
+	// a Responses JSON body starts with '{', anything else is an event
+	// stream, whatever the Content-Type says.
+	sniffed bool
+	// events counts parsed SSE events and lastType names the last one, for
+	// the log line when no usage is observed (names only, never content).
+	events   int
+	lastType string
 }
 
 func (o *tokenObserver) write(p []byte) {
 	if o.recorded {
 		return
+	}
+	if !o.sse && !o.sniffed {
+		for _, c := range p {
+			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+				continue
+			}
+			o.sniffed = true
+			o.sse = c != '{'
+			break
+		}
 	}
 	if !o.sse {
 		if len(o.data)+len(p) > maxUsageEvent {
@@ -158,6 +176,10 @@ func (o *tokenObserver) parse(data []byte, sse bool) {
 		}
 		if event.Type == "" {
 			event.Type = o.event
+		}
+		o.events++
+		if len(event.Type) <= 64 {
+			o.lastType = event.Type
 		}
 		switch event.Type {
 		case "response.completed", "response.incomplete", "response.failed":

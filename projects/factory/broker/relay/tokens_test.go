@@ -61,6 +61,7 @@ func TestRelayKeepsUsageWithCallingActor(t *testing.T) {
 		{"session-a", "missing_json", false, -1},
 		{"session-b", "missing_sse", true, -1},
 		{"session-a", "resp_a_sse", true, 300},
+		{"session-b", "resp_b_untyped_sse", true, 400}, // no SSE Content-Type
 	} {
 		body := fmt.Sprintf(`{"id":%q}`, tc.response)
 		contentType := "application/json"
@@ -69,6 +70,9 @@ func TestRelayKeepsUsageWithCallingActor(t *testing.T) {
 		}
 		if tc.stream {
 			contentType = "text/event-stream"
+			if strings.Contains(tc.response, "untyped") {
+				contentType = "text/plain"
+			}
 			body = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + body + "}\n\n"
 		}
 		h.backend.set(func(b *backend) {
@@ -88,7 +92,7 @@ func TestRelayKeepsUsageWithCallingActor(t *testing.T) {
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
 	// Missing usage creates gaps in call IDs, not a shift to the next actor.
-	if !reflect.DeepEqual(sink.calls, []int64{1, 2, 5}) {
+	if !reflect.DeepEqual(sink.calls, []int64{1, 2, 5, 6}) {
 		t.Fatalf("completion call IDs = %v", sink.calls)
 	}
 	for i, want := range []struct {
@@ -98,6 +102,7 @@ func TestRelayKeepsUsageWithCallingActor(t *testing.T) {
 		{"session-a", TokenUsage{"resp_a_json", 100, 50, 10}},
 		{"session-b", TokenUsage{"resp_b_sse", 200, 100, 10}},
 		{"session-a", TokenUsage{"resp_a_sse", 300, 150, 10}},
+		{"session-b", TokenUsage{"resp_b_untyped_sse", 400, 200, 10}},
 	} {
 		actor := sink.actors[sink.calls[i]-1]
 		if actor.ActorName != want.actor || actor.Atespace != "factory-homelab" || sink.usage[i] != want.usage {
@@ -124,6 +129,12 @@ func TestTokenObserverChunkBoundaries(t *testing.T) {
 		{"bad_cache", `{"id":"resp_1","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":11},"output_tokens":1}}`, false, 0},
 		{"created", strings.ReplaceAll(measuredEvent, "response.completed", "response.created"), true, 0},
 		{"incomplete", strings.ReplaceAll(measuredEvent, "response.completed", "response.incomplete"), true, 1},
+		// HOME-195 rollout: the live backend's streams were never read as
+		// SSE. A body that does not start with '{' is an event stream,
+		// whatever the Content-Type said.
+		{"sniffed_sse", ": keepalive\r\n\r\n" + measuredEvent, false, 1},
+		{"sniffed_sse_data", measuredEvent, false, 1},
+		{"sniffed_json_space", " \n" + measuredResponse, false, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for chunk := 1; chunk <= len(tc.body); chunk++ {
