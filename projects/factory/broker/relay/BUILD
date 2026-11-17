@@ -4,6 +4,7 @@ go_library(
     name = "relay",
     srcs = [
         "relay.go",
+        "tokens.go",
         "usage.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/broker/relay",
@@ -22,6 +23,7 @@ go_test(
     name = "relay_test",
     srcs = [
         "relay_test.go",
+        "tokens_test.go",
         "usage_test.go",
     ],
     embed = [":relay"],

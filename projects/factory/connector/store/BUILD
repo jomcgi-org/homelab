@@ -14,6 +14,7 @@ go_library(
         "status.go",
         "store.go",
         "transcript.go",
+        "usage.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/store",
     visibility = ["//visibility:public"],
