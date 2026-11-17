@@ -1,14 +1,20 @@
 // Fails when a built page was not pre-rendered: its marker is still there, or
-// its root holds no markup. Search engines and link previews read this HTML.
+// its root holds no markup or its assets still point into the source tree.
+// The homepage machine-readable files and icons must also be built.
 // Usage: node prerendered.mjs <dist directory>
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { htmlPages } from "./budget.mjs";
 import assert from "node:assert/strict";
+import { checkHome } from "./home-built.mjs";
 
 /** True when the page's root element holds rendered markup and no marker. */
 export function prerendered(html) {
-  return !html.includes("<!--ssr-->") && /<div id="root">\s*<\w/.test(html);
+  return (
+    !html.includes("<!--ssr-->") &&
+    /<div id="root">\s*<\w/.test(html) &&
+    !/(?:src|href)=["']\/src\//.test(html)
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -51,5 +57,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`ok    manifest title and sections: ${entry}`);
   }
   await window.happyDOM.close();
+  checkHome(dist);
+  console.log("ok    home content, metadata and assets");
   process.exit(failed ? 1 : 0);
 }

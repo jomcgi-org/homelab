@@ -1,0 +1,634 @@
+@font-face {
+  font-family: "Schibsted Grotesk";
+  src: url("../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
+    format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+/* Layout copied from the hub home; colours live in palette.css. */
+html:has(.home) {
+  font-size: clamp(16px, 0.5vw + 11px, 19px);
+}
+.home {
+  min-height: 100vh;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-home);
+  line-height: 1.55;
+}
+.home,
+.home * {
+  box-sizing: border-box;
+}
+.home a {
+  color: inherit;
+}
+.home .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.home .scheme {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+.home .scheme:focus-visible,
+.home .writing a:focus-visible,
+.home .foot a:focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 3px;
+}
+.home .portrait-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.home .print.ready .portrait-still {
+  visibility: hidden;
+}
+:root[data-home-scheme="light"],
+:root[data-home-scheme="light"] [data-astryx-theme] {
+  color-scheme: light;
+}
+:root[data-home-scheme="dark"],
+:root[data-home-scheme="dark"] [data-astryx-theme] {
+  color-scheme: dark;
+}
+
+.home {
+  padding: 1.6rem clamp(1rem, 4vw, 3rem) 4rem;
+  font-variant-numeric: tabular-nums;
+  /* The controls supply their own tap feedback. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+.home .unit {
+  max-width: 60rem;
+  margin: 0 auto;
+  background: var(--home-housing);
+  border: 1px solid var(--home-edge);
+  border-radius: 10px;
+  box-shadow: 0 3px 0 var(--home-edge);
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.home .plate {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.3rem 1.4rem;
+  padding: 0 0.2rem;
+  font-family: var(--font-family-home-code);
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.home .plate .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.4rem;
+  min-width: 0;
+}
+.home .plate .brand {
+  color: var(--color-text-primary);
+  font-family: var(--font-family-home);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.home .plate b {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+.home .led {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.home .led i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--home-green);
+  display: inline-block;
+}
+.home .led i.off {
+  background: var(--home-panel-muted);
+  box-shadow: 0 0 0 1px var(--home-edge) inset;
+}
+/* The day/night switch uses the same raised cap as the keypad. */
+.home .plate .scheme {
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  border: 1px solid var(--home-edge);
+  background: var(--color-background-surface);
+  color: var(--color-text-secondary);
+  box-shadow: 0 2px 0 var(--home-edge);
+  align-self: center;
+}
+.home .plate .scheme:hover {
+  color: var(--color-text-primary);
+}
+.home .plate .scheme:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+
+.home .glass {
+  background: var(--home-glass);
+  color: var(--home-glass-text);
+  border-radius: 6px;
+  border: 1px solid var(--home-edge);
+  padding: 0.95rem 1.3rem;
+  /* Reserve two lines so readouts do not resize the housing. */
+  height: 6.3rem;
+  display: grid;
+  align-content: start;
+  gap: 0.4rem;
+  overflow: hidden;
+}
+.home .glass .big {
+  font-family: var(--font-family-home);
+  color: inherit;
+  font-weight: 400;
+  font-size: clamp(1.4rem, 0.9rem + 1.6vw, 2.1rem);
+  line-height: 1.12;
+  letter-spacing: -0.024em;
+  margin: 0;
+  /* Ellipsize long post titles to preserve the readout height. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home .glass .small {
+  font-size: 0.98rem;
+  line-height: 1.35;
+  color: var(--home-glass-dim);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home .glass .small a {
+  color: var(--home-glass-text);
+  text-decoration: none;
+  border-bottom: 1px solid var(--home-glass-dim);
+}
+.home .cursor {
+  display: inline-block;
+  width: 0.08em;
+  height: 0.9em;
+  background: currentColor;
+  vertical-align: -0.1em;
+  margin-left: 0.06em;
+}
+.home .cursor.off {
+  opacity: 0;
+}
+/* The primary readout strikes Software through, then slides Slop in. */
+.home .sw {
+  position: relative;
+}
+.home .sw::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 54%;
+  height: 2px;
+  width: 0;
+  background: currentColor;
+  transition: width 0.22s ease;
+}
+.home .sl {
+  display: inline-block;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: bottom;
+  opacity: 0;
+  transition:
+    max-width 0.3s ease,
+    opacity 0.25s ease;
+}
+.home .glass.slop .sw::after {
+  width: 100%;
+}
+.home .glass.slop .sl {
+  max-width: 4em;
+  opacity: 1;
+  transition:
+    max-width 0.3s ease 0.18s,
+    opacity 0.25s ease 0.2s;
+}
+
+.home .deck {
+  display: grid;
+  grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+/* A radial mask perforates the housing over the portrait. */
+.home .portrait {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  background: var(--color-background-surface);
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid var(--home-edge);
+  touch-action: pan-y;
+}
+/* Keep the 3:4 canvas out of flow so sizing cannot feed back into its frame. */
+.home .print {
+  position: absolute;
+  inset: 0;
+}
+.home .print canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.home .print.neg canvas {
+  filter: invert(1);
+}
+.home .holes {
+  position: absolute;
+  inset: 0;
+  background: var(--home-housing);
+  pointer-events: none;
+  -webkit-mask: radial-gradient(
+      circle at center,
+      transparent 0 2.2px,
+      var(--home-mask) 2.8px
+    )
+    0 0 / 6px 6px;
+  mask: radial-gradient(
+      circle at center,
+      transparent 0 2.2px,
+      var(--home-mask) 2.8px
+    )
+    0 0 / 6px 6px;
+}
+
+.home .right {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 1rem;
+  min-width: 0;
+}
+/* The keypad: round convex keys with legends beneath. */
+.home .pad {
+  display: grid;
+  grid-template-columns: repeat(3, 6.2rem);
+  justify-content: start;
+  gap: 0.7rem 0.6rem;
+  align-content: start;
+  padding: 0.3rem 0.4rem 0;
+}
+.home .key {
+  display: grid;
+  justify-items: center;
+  gap: 0.45rem;
+  text-decoration: none;
+  color: var(--color-text-primary);
+  min-width: 0;
+  cursor: pointer;
+}
+.home .key .cap {
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 50%;
+  background: var(--color-background-surface);
+  border: 1px solid var(--home-edge);
+  box-shadow:
+    0 3px 0 var(--home-edge),
+    inset 0 1px 0 var(--color-background-surface);
+  display: grid;
+  place-items: center;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+.home .key .cap i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--home-edge);
+  transition: background-color 0.16s ease;
+}
+.home .key .legend {
+  font-family: var(--font-family-home-code);
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.01em;
+  text-align: center;
+  line-height: 1.2;
+  transition: color 0.16s ease;
+}
+.home .key.go .cap {
+  background: var(--home-green);
+  border-color: var(--home-green-ink);
+  box-shadow: 0 3px 0 var(--home-green-ink);
+}
+.home .key.go .cap i {
+  background: var(--color-background-surface);
+}
+.home .key:focus-visible {
+  outline: none;
+}
+.home .key:focus-visible .cap,
+.home .key:active .cap {
+  background: var(--color-text-primary);
+  border-color: var(--color-text-primary);
+}
+.home .key:focus-visible .cap i,
+.home .key:active .cap i {
+  background: var(--home-housing);
+}
+.home .key:focus-visible .legend,
+.home .key:active .legend {
+  color: var(--color-text-primary);
+}
+.home .key:active .cap {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--home-edge);
+}
+.home .key.nudge .cap {
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--home-edge);
+}
+@media (hover: hover) {
+  .home .key:hover .cap {
+    background: var(--color-text-primary);
+    border-color: var(--color-text-primary);
+    transform: translateY(1px);
+    box-shadow: 0 2px 0 var(--home-edge);
+  }
+  .home .key:hover .cap i {
+    background: var(--home-housing);
+  }
+  .home .key.go:hover .cap {
+    background: var(--color-text-primary);
+    box-shadow: 0 2px 0 var(--home-green-ink);
+  }
+  .home .key.go:hover .cap i {
+    background: var(--home-green);
+  }
+  .home .key:hover .legend {
+    color: var(--color-text-primary);
+  }
+}
+
+.home .writing {
+  display: grid;
+  gap: 0.35rem;
+  align-content: end;
+  padding: 0.8rem 0.4rem 0;
+  border-top: 1px solid var(--home-line);
+}
+.home .writing .lab {
+  font-family: var(--font-family-home-code);
+  font-size: 0.68rem;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
+.home .writing a {
+  display: grid;
+  grid-template-columns: 6.2rem minmax(0, 1fr);
+  gap: 1rem;
+  text-decoration: none;
+  align-items: baseline;
+  padding: 0.25rem 0;
+}
+.home .writing time {
+  font-family: var(--font-family-home-code);
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+}
+.home .writing span {
+  font-size: 0.98rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  transition: color 0.16s ease;
+}
+@media (hover: hover) {
+  .home .writing a:hover span {
+    color: var(--color-text-accent);
+  }
+}
+
+.home .foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.4rem 1.4rem;
+  padding: 0.2rem 0.2rem 0;
+  font-family: var(--font-family-home-code);
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.home .foot .links,
+.home .foot nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.1rem;
+}
+.home .foot a {
+  color: var(--color-text-primary);
+  text-decoration: none;
+  border-bottom: 1px solid var(--home-edge);
+}
+.home .foot a:hover {
+  border-bottom-color: var(--color-text-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home .key .cap,
+  .home .key .cap i,
+  .home .key .legend,
+  .home .sw::after,
+  .home .sl,
+  .home .writing span {
+    transition: none;
+  }
+}
+@media (max-width: 760px) {
+  /* Fill the visible phone viewport; short screens scroll instead of shrinking keys. */
+  .home {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 0.5rem;
+  }
+  .home .unit {
+    flex: 1 0 auto;
+    width: 100%;
+    margin: 0;
+    padding: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  /* Place the switch beside the brand, above the full-width readouts. */
+  .home .plate {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.35rem 1rem;
+  }
+  .home .plate .scheme {
+    grid-row: 1;
+    grid-column: 2;
+  }
+  .home .plate .meta {
+    grid-column: 1 / -1;
+  }
+  /* Size the portrait within the deck while reserving the keypad width and gap. */
+  .home .deck {
+    flex: 1 1 0;
+    min-height: 13rem;
+    container: deck / size;
+    display: flex;
+    gap: 0.8rem;
+    align-items: center;
+    align-content: center;
+  }
+  /* Fill the deck vertically, capped for tablets; retain a Safari 15 fallback size. */
+  .home .portrait {
+    /* The frame may shrink; the print keeps its 3:4 shape. */
+    flex: 0 1 auto;
+    min-width: 0;
+    aspect-ratio: auto;
+    width: 10.5rem;
+    width: min(100cqw - 9.6rem, 18rem, 75cqh);
+    height: 14rem;
+    height: 100cqh;
+  }
+  .home .print {
+    inset: 50% auto auto 50%;
+    height: min(100%, 32rem);
+    aspect-ratio: 3 / 4;
+    transform: translate(-50%, -50%);
+  }
+  .home .right {
+    display: contents;
+  }
+  .home .pad {
+    flex: 1;
+    min-width: 8.7rem;
+    max-width: 14rem;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, minmax(0, 1fr));
+    /* Match portrait height while keeping the keypad above its minimum. */
+    height: 14rem;
+    height: min(100cqh, max(13rem, min((100cqw - 9.6rem) * 4 / 3, 24rem)));
+    align-self: center;
+    justify-content: stretch;
+    align-content: stretch;
+    align-items: center;
+    gap: 0.55rem 0.2rem;
+    padding: 0.1rem 0 0;
+  }
+  .home .key {
+    gap: 0.3rem;
+  }
+  .home .key .cap {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+  .home .key .legend {
+    font-size: 0.56rem;
+    letter-spacing: 0;
+  }
+  /* On phones, the footer blog link leads to the latest posts. */
+  .home .writing {
+    display: none;
+  }
+
+  /* Use a finer grille for the smaller portrait. */
+  .home .holes {
+    -webkit-mask: radial-gradient(
+        circle at center,
+        transparent 0 1px,
+        var(--home-mask) 1.25px
+      )
+      0 0 / 2.8px 2.8px;
+    mask: radial-gradient(
+        circle at center,
+        transparent 0 1px,
+        var(--home-mask) 1.25px
+      )
+      0 0 / 2.8px 2.8px;
+  }
+  /* Wrap only when container units can size the stacked portrait. */
+  @supports (container-type: size) {
+    .home .deck {
+      flex-wrap: wrap;
+    }
+  }
+  /* A tall deck stacks the portrait above the keypad. The 12.8rem offset
+     equals the side-by-side 9.6rem width times 4/3, preserving size at the flip. */
+  @container deck (max-aspect-ratio: 3 / 4) {
+    .home .portrait {
+      width: 100%;
+      height: calc(100cqh - 12.8rem);
+      aspect-ratio: auto;
+    }
+    .home .print {
+      inset: auto auto 0 50%;
+      height: min(100%, 100cqw * 4 / 3);
+      aspect-ratio: 3 / 4;
+      transform: translateX(-50%);
+    }
+    .home .pad {
+      flex: none;
+      width: 100%;
+      max-width: none;
+      height: 12rem;
+    }
+    .home .key .cap {
+      width: 2.7rem;
+      height: 2.7rem;
+    }
+    .home .key .legend {
+      font-size: 0.62rem;
+    }
+  }
+  /* Phones keep the name readout, so its height can fit wrapped text. */
+  .home .glass {
+    height: auto;
+    min-height: 6.4rem;
+  }
+  .home .glass .big {
+    font-family: var(--font-family-home);
+    color: inherit;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+  .home .glass .small {
+    white-space: normal;
+    font-size: 0.92rem;
+  }
+}

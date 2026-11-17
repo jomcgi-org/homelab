@@ -60,8 +60,12 @@ js_library(
         "browser.mjs",
         "build.mjs",
         "factory-fixtures.ts",
+        "machine-readable.d.mts",
+        "machine-readable.mjs",
         "package.json",
         "render-diagrams.mjs",
+        "site-inputs.d.mts",
+        "site-inputs.mjs",
         "tsconfig.json",
         "vite.config.ts",
         ":docs_manifest",
@@ -85,6 +89,7 @@ js_library(
         "//projects/factory-storyboard:web_schema",
         "//projects/monolith/frontend:blog_sources",
         "//projects/monolith/frontend:leaderboard_sources",
+        "//projects/monolith/frontend:public_site_inputs",
     ],
 )
 
@@ -136,8 +141,10 @@ js_test(
     args = ["$(rootpath :build)"],
     data = [
         "budget.mjs",
+        "home-built.mjs",
         ":build",
         ":node_modules/happy-dom",
+        ":src",
         "//projects/monolith/frontend:blog_sources",
     ],
     entry_point = "prerendered.mjs",
@@ -244,6 +251,7 @@ js_library(
     srcs = glob(["src/**/*.test.tsx"]) + [
         "budget.d.mts",
         "budget.mjs",
+        "home-built.mjs",
         "prerendered.d.mts",
         "prerendered.mjs",
         "src/factory/test-fixtures.ts",

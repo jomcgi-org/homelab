@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { robots } from "../machine-readable.mjs";
 import { describe, expect, it } from "vitest";
 
 const headers = readFileSync("public/_headers", "utf8");
@@ -33,7 +34,8 @@ describe("static hosting headers", () => {
       /https:\/\/next\.jomcgi\.dev\/\*\n\s+X-Robots-Tag: noindex/,
     );
     // A Disallow would stop crawlers from fetching pages and seeing noindex.
-    expect(readFileSync("public/robots.txt", "utf8")).not.toMatch(/Disallow/);
+    expect(robots()).toContain("Allow: /\nDisallow: /slop");
+    expect(robots()).not.toMatch(/Disallow: \/(?:\s|$)/);
   });
 
   it("sends noindex only for the preview host and the drafts note", () => {

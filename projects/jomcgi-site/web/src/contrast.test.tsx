@@ -129,7 +129,15 @@ const declared = customProperties(paletteCss);
 // `on-accent` text sits on the accent fill instead. Decorative borders, such
 // as the dividers between list items, have no minimum under 1.4.11.
 type ColourRole =
-  "text" | "on-accent" | "non-text" | "background" | "decorative";
+  | "text"
+  | "on-accent"
+  | "non-text"
+  | "background"
+  | "decorative"
+  | "on-glass"
+  | "glass"
+  | "home-background"
+  | "home-indicator";
 // Non-colour tokens have a role too, with a strict syntax that no colour
 // matches, so a colour cannot hide as one.
 type OtherRole = "font" | "radius" | "shadow";
@@ -176,6 +184,38 @@ const ROLES: Record<string, Role> = {
   "--font-family-code": "font",
   "--font-family-body": "font",
   "--font-family-heading": "font",
+  "--font-family-home": "font",
+  "--font-family-home-code": "font",
+  "--home-housing": "home-background",
+  "--home-panel-muted": "home-background",
+  "--home-edge": "decorative",
+  "--home-line": "decorative",
+  "--home-green": "home-indicator",
+  "--home-green-ink": "decorative",
+  "--home-glass": "glass",
+  "--home-glass-text": "on-glass",
+  "--home-glass-dim": "on-glass",
+  "--home-mask": "decorative",
+  "--portrait-light-0": "decorative",
+  "--portrait-light-1": "decorative",
+  "--portrait-light-2": "decorative",
+  "--portrait-light-3": "decorative",
+  "--portrait-light-4": "decorative",
+  "--portrait-dark-0": "decorative",
+  "--portrait-dark-1": "decorative",
+  "--portrait-dark-2": "decorative",
+  "--portrait-dark-3": "decorative",
+  "--portrait-dark-4": "decorative",
+  "--portrait-blue-0": "decorative",
+  "--portrait-blue-1": "decorative",
+  "--portrait-red-0": "decorative",
+  "--portrait-red-1": "decorative",
+  "--portrait-magenta-0": "decorative",
+  "--portrait-magenta-1": "decorative",
+  "--portrait-green-0": "decorative",
+  "--portrait-green-1": "decorative",
+  "--portrait-warm-0": "decorative",
+  "--portrait-warm-1": "decorative",
   "--radius-inner": "radius",
   "--radius-element": "radius",
   "--radius-container": "radius",
@@ -196,6 +236,23 @@ const withRole = (role: ColourRole) =>
 const backgrounds = withRole("background");
 
 const PAIRS: [string, string, number][] = [
+  ...withRole("on-glass").flatMap((token) =>
+    withRole("glass").map((bg): [string, string, number] => [token, bg, 4.5]),
+  ),
+  ...withRole("text").flatMap((token) =>
+    withRole("home-background").map((bg): [string, string, number] => [
+      token,
+      bg,
+      4.5,
+    ]),
+  ),
+  ...[...withRole("non-text"), ...withRole("home-indicator")].flatMap((token) =>
+    withRole("home-background").map((bg): [string, string, number] => [
+      token,
+      bg,
+      3,
+    ]),
+  ),
   ...withRole("text").flatMap((token) =>
     backgrounds.map((bg): [string, string, number] => [token, bg, 4.5]),
   ),
@@ -338,7 +395,7 @@ describe("token contrast", () => {
       readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) return sources(path);
-        return /\.(tsx?|svelte)$/.test(entry.name) &&
+        return /\.([jt]sx?|svelte)$/.test(entry.name) &&
           !/\.test\.tsx?$/.test(entry.name)
           ? [path]
           : [];

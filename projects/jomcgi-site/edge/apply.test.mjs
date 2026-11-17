@@ -527,3 +527,29 @@ test("planRoutes ignores routes of other Workers", () => {
   );
   assert.deepEqual(plan, { conflicts: [], create: [], remove: [] });
 });
+
+test("home and machine-readable routes are exact and leave unmigrated paths on the hub", () => {
+  for (const path of [
+    "",
+    "robots.txt",
+    "sitemap.xml",
+    "llms.txt",
+    "manifest.webmanifest",
+    "favicon.svg",
+    "apple-touch-icon.png",
+  ]) {
+    assert.ok(ROUTES.patterns.includes(`jomcgi.dev/${path}`));
+    assert.ok(!ROUTES.patterns.includes(`jomcgi.dev/${path}*`));
+    assert.ok(served(`jomcgi.dev/${path}`));
+    assert.ok(!served(`jomcgi.dev/${path}?ref=x`));
+  }
+  for (const path of [
+    "/app/hikes",
+    "/slop/factory",
+    "/scotland/mcp",
+    "/api/home/observability/stats",
+    "/robots.txt/extra",
+  ]) {
+    assert.ok(!served(`jomcgi.dev${path}`), path);
+  }
+});

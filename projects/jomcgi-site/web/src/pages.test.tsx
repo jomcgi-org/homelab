@@ -5,14 +5,14 @@ import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import type { ReactNode } from "react";
 import { HomePage } from "./home-page";
 import { NotFoundPage } from "./not-found-page";
-import { SECTIONS, hrefFor } from "./sections";
+import { HOME_KEYS, sectionHref } from "./home-data";
 
 function renderPage(page: ReactNode) {
   return render(<Theme theme={neutralTheme}>{page}</Theme>);
 }
 
 describe("pages", () => {
-  it("shows the home heading and links every section", () => {
+  it("shows the home heading and original keypad links", () => {
     renderPage(<HomePage />);
     expect(
       screen.getByRole("heading", {
@@ -21,14 +21,14 @@ describe("pages", () => {
       }),
     ).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Site" });
-    for (const section of SECTIONS.filter(
-      (section) => section.listed !== false,
-    )) {
+    for (const key of HOME_KEYS) {
       expect(
         within(nav)
-          .getByRole("link", { name: section.name })
+          .getByRole("link", {
+            name: key.legend,
+          })
           .getAttribute("href"),
-      ).toBe(hrefFor(section));
+      ).toBe(sectionHref(key.section));
     }
   });
 

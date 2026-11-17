@@ -1,4 +1,0 @@
-# Crawlers may fetch every page, so they can read each page's indexing rules.
-# The preview host sends X-Robots-Tag: noindex (public/_headers).
-User-agent: *
-Allow: /

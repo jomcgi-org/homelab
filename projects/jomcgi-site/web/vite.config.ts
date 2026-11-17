@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { homeDefines } from "./site-inputs.mjs";
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -13,6 +14,7 @@ import { factoryFixtures } from "./factory-fixtures";
 const page = (file: string) => resolve(process.cwd(), file);
 
 export default defineConfig({
+  define: homeDefines,
   base: "/",
   resolve: { conditions: ["browser", "module", "import", "default"] },
   plugins: [blogContent(), svelte(), factoryFixtures()],
@@ -20,6 +22,7 @@ export default defineConfig({
   optimizeDeps: { esbuildOptions: { target: "es2022" } },
   build: {
     outDir: "dist",
+    manifest: true,
     target: "es2022",
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },

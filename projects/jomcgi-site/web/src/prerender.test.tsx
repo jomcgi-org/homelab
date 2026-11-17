@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { PAGES } from "./pages";
 import { MARK, render } from "./prerender";
 import { Root } from "./root";
+import { HOME_KEYS, sectionHref } from "./home-data";
 import { SECTIONS, hrefFor } from "./sections";
 
 describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
@@ -20,7 +21,9 @@ describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
     expect(
       [...nav.querySelectorAll("a")].map((a) => a.getAttribute("href")),
     ).toEqual(
-      SECTIONS.filter((section) => section.listed !== false).map(hrefFor),
+      entry === "index.html"
+        ? HOME_KEYS.map((key) => sectionHref(key.section))
+        : SECTIONS.filter((section) => section.listed !== false).map(hrefFor),
     );
   });
 
@@ -51,6 +54,17 @@ describe("prerendered", () => {
     expect(prerendered('<div id="root"><div class="site"></div></div>')).toBe(
       true,
     );
+    expect(
+      prerendered('<div id="root"><img src="/src/assets/portrait.png"></div>'),
+    ).toBe(false);
+    expect(
+      prerendered(
+        '<div id="root"><link rel="preload" href="/src/assets/portrait.png"></div>',
+      ),
+    ).toBe(false);
+    expect(
+      prerendered('<div id="root"><img src="/assets/portrait-hash.png"></div>'),
+    ).toBe(true);
     expect(prerendered('<div id="root"></div>')).toBe(false);
     expect(prerendered('<div id="root"><!--ssr--></div>')).toBe(false);
   });

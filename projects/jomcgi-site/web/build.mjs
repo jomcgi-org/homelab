@@ -2,13 +2,42 @@
 // entry. A page reads fully, with its real preview tags, before any script
 // runs; the browser then hydrates the same tree (HOME-178 performance contract).
 // Usage: node build.mjs (from this directory)
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build, createServer } from "vite";
 import { renderDocsDiagrams } from "./render-diagrams.mjs";
 
+import { personLdScript } from "../../monolith/frontend/src/lib/public/seo.js";
+import { hub, posts } from "./site-inputs.mjs";
+import { robots, sitemap, llms, webmanifest } from "./machine-readable.mjs";
+
 await build();
+// Vite's SSR loader returns source asset URLs. Resolve them against the client
+// build, including React's image preload, so no-JS pages and hydration agree.
+const assets = JSON.parse(await readFile("dist/.vite/manifest.json", "utf8"));
+function assetUrls(html) {
+  return html.replace(
+    /(src|href)="\/(src\/[^"]+)"/g,
+    (_, attribute, source) => {
+      const file = assets[source]?.file;
+      if (!file) throw new Error(`No built asset for ${source}`);
+      return `${attribute}="/${file}"`;
+    },
+  );
+}
+for (const [name, content] of Object.entries({
+  "robots.txt": robots(),
+  "sitemap.xml": sitemap(posts),
+  "llms.txt": llms(posts),
+  "manifest.webmanifest": JSON.stringify(webmanifest()),
+})) {
+  await writeFile(join("dist", name), content);
+}
+for (const name of ["favicon.svg", "apple-touch-icon.png"]) {
+  await copyFile(new URL(`static/${name}`, hub), join("dist", name));
+}
+await copyFile(new URL("preview/fonts/OFL.txt", hub), "dist/assets/OFL.txt");
 
 // Load prerender.tsx through Vite, as the tests do, without a second bundle.
 const server = await createServer({
@@ -37,7 +66,13 @@ try {
     if (parts.length !== 2) {
       throw new Error(`${entry} must hold exactly one ${MARK}`);
     }
-    await writeFile(file, parts.join(render(entry)));
+    const html = parts.join(assetUrls(render(entry)));
+    await writeFile(
+      file,
+      entry === "index.html"
+        ? html.replace("</head>", `${personLdScript}</head>`)
+        : html,
+    );
   }
 } finally {
   await server.close();
