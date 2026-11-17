@@ -1,0 +1,6 @@
+dependencies:
+- name: factory-library
+  repository: file://../../../chart
+  version: 0.1.0
+digest: sha256:8856cc50fa014befda5b9e9ee0b10583ce86dddd6ae39568001b6bb2ef93ee99
+generated: "2026-11-17T19:23:43.010159518Z"

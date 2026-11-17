@@ -5,10 +5,10 @@ go_test(
     size = "large",
     srcs = ["admission_test.go"],
     data = [
-        "//projects/factory-public/chart",
-        "//projects/factory-public/chart:Chart.yaml",
         "//projects/platform-factory/garage/resources:bootstrap.yaml",
         "//projects/platform-factory/garage/resources:claim-admission.yaml",
+        "//projects/shared/helm/factory-library/admission/testdata/chart",
+        "//projects/shared/helm/factory-library/admission/testdata/chart:Chart.yaml",
         "@envtest_1_37_0_linux_amd64//:assets",
         "@envtest_1_37_0_linux_amd64//:kube-apiserver",
         "@multitool//tools/helm",
@@ -17,7 +17,7 @@ go_test(
         "GARAGE_BOOTSTRAP": "$(rootpath //projects/platform-factory/garage/resources:bootstrap.yaml)",
         "GARAGE_CLAIM_GUARD": "$(rootpath //projects/platform-factory/garage/resources:claim-admission.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "MIRROR_CHART": "$(rootpath //projects/factory-public/chart:Chart.yaml)",
+        "MIRROR_CHART": "$(rootpath //projects/shared/helm/factory-library/admission/testdata/chart:Chart.yaml)",
         "TEST_APISERVER": "$(rootpath @envtest_1_37_0_linux_amd64//:kube-apiserver)",
     },
     deps = [

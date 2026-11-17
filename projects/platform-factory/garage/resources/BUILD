@@ -9,7 +9,7 @@ exports_files(
         "bootstrap.yaml",
         "claim-admission.yaml",
     ],
-    visibility = ["//projects/factory-public/admission:__pkg__"],
+    visibility = ["//projects/shared/helm/factory-library/admission:__pkg__"],
 )
 
 filegroup(

@@ -68,7 +68,6 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── factory/          #   Reusable software factory: umbrella chart, connector and credential broker (#7817)
 ├── factory-cluster/  #   Factory home cluster: k3s node bootstrap, GitOps handoff and ArgoCD root (#7817)
 ├── factory-landing/  #   The factory's private landing page at factory.jomcgi.dev
-├── factory-public/   #   Garage bucket and R2 mirror for public factory data
 ├── factory-storyboard/ # Public factory snapshot schema and invented fixtures
 ├── jomcgi-site/      #   The public jomcgi.dev site: static Astryx pages on an assets-only Cloudflare Worker
 └── platform-factory/ #   Factory home cluster infrastructure Applications (ArgoCD, 1Password, Cloudflare)

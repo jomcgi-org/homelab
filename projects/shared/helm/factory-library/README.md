@@ -253,8 +253,8 @@ a mirror CronJob. Its default schedule is every minute with Forbid concurrency, 
 ServiceAccount and no mounted token. It uses the stock rclone/rclone image at
 the 1.76.0 multi-platform digest. The optional public.image accepts only the
 stock repository and a SHA-256 digest; tags fail rendering.
-Set public.suspend to true while checking a destination. The first consumer
-is suspended until its dedicated bucket, credential scope and endpoint are verified.
+Set public.suspend to true while checking a destination. Verify its dedicated
+bucket, credential scope and endpoint before enabling the first consumer.
 
 The digest comes from the
 [upstream 1.76.0 package](https://github.com/rclone/rclone/pkgs/container/rclone/1515701921?tag=1.76.0).
@@ -324,8 +324,31 @@ expire; the mirror does not provide a transaction across concurrent writes.
 Only one chart should own public for a destination. The later publisher declares
 its own write bucket entry without public and cannot mount the R2 Secret.
 
-See [factory-public](../../../factory-public/README.md) for the first deployment,
-the operator trial result, and live acceptance.
+## Delivery split for HOME-137
+
+This PR delivers the reusable library, Garage provisioning and their security
+tests. The first production consumer, chart publication, ArgoCD Application,
+deployment-specific tests and rollout guide are deferred to a separate PR.
+Their previous source is preserved in
+[commit 3db765152](https://github.com/jomcgi-org/homelab/tree/3db7651527f911e78ef74d21e658377a600360a2/projects/factory-public).
+No production mirror is registered by this part of the change.
+
+The [admission chart](admission/testdata/chart/values.yaml) is a render-only fixture
+with no publication target or Application. The full Pod, Job, CronJob, Garage RBAC
+and claim-authorization matrix remains in
+[admission_test.go](admission/admission_test.go). PR CI runs
+`//projects/shared/helm/factory-library/admission:admission_test` against a private
+Kubernetes API server.
+
+Provisioning uses the garage-init fallback. The operator's connectTo chart rendered
+locally, but pulling release 0.9.0 failed because ghcr.io did not resolve, and no
+live cluster connection was available. This establishes no operator defect; the
+fallback retains the existing layout and key ownership without an operator rollout.
+
+HOME-137's live criterion remains open for the deployment PR: verify the 1Password
+item and dedicated R2 inventory, then record delivery within two minutes, payload
+and manifest Cache-Control, and removal from R2 after Garage deletion. Neither the
+production prerequisites nor live acceptance are established by this library PR.
 
 ## Exceptions
 
