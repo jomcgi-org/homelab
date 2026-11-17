@@ -115,10 +115,7 @@
 
 <div class="incident-graph" class:landing>
   <div class="graph-scroll">
-    <div
-      class="graph-canvas"
-      style={`aspect-ratio:840 / ${layout.height};--graph-height:${layout.height}`}
-    >
+    <div class="graph-canvas">
       <div class="boundaries" aria-hidden="true">
         <span>Evaluation</span><span>Shared infrastructure</span><span
           >External systems</span
@@ -141,16 +138,15 @@
               orient="auto"
               ><path
                 d="M0 0 L10 5 L0 10 z"
-                fill={`var(--tone-${color})`}
+                class={`arrow tone-${color}`}
               /></marker
             >{/each}</defs
         >
         {#each graph.edges as edge, i (edge.id)}
           <g
-            class="connection"
+            class={`connection tone-${tone(edge)}`}
             class:chosen={active?.id === edge.id ||
               (active?.type === "summary" && edge.kind === "failure")}
-            style={`--edge-tone:var(--tone-${tone(edge)})`}
           >
             <path
               class="edge"
@@ -175,22 +171,25 @@
             />
           </g>
         {/each}
+        {#each layout.nodes as node (node.id)}
+          {#if graph.nodes.some((n) => n.id === node.id)}
+            <foreignObject x={node.x} y={node.y} width="210" height="62">
+              <button
+                class={`graph-node tone-${tone(node)}`}
+                class:chosen={active?.id === node.id ||
+                  active?.from === node.id ||
+                  active?.to === node.id}
+                onclick={() => choose(node)}
+                aria-pressed={active?.id === node.id}
+              >
+                <span class="role">{node.role}</span><strong
+                  >{node.label}</strong
+                >
+              </button></foreignObject
+            >
+          {/if}
+        {/each}
       </svg>
-      {#each layout.nodes as node (node.id)}
-        {#if graph.nodes.some((n) => n.id === node.id)}
-          <button
-            class="graph-node"
-            class:chosen={active?.id === node.id ||
-              active?.from === node.id ||
-              active?.to === node.id}
-            style={`left:${(node.x / 840) * 100}%;top:${(node.y / layout.height) * 100}%;height:${(62 / layout.height) * 100}%;--node-tone:var(--tone-${tone(node)})`}
-            onclick={() => choose(node)}
-            aria-pressed={active?.id === node.id}
-          >
-            <span class="role">{node.role}</span><strong>{node.label}</strong>
-          </button>
-        {/if}
-      {/each}
       <p class="interaction-hint">↗ Click a node or arrow to explore</p>
     </div>
   </div>
@@ -253,7 +252,7 @@
        until the page chrome above, the draft trace and the link below fit. */
     .landing .graph-canvas {
       min-width: 500px;
-      max-width: min(840px, calc((100svh - 35rem) * 840 / var(--graph-height)));
+      max-width: 840px;
     }
     .landing .graph-detail {
       border-top: 0;
@@ -298,13 +297,13 @@
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: thin;
-    scrollbar-color: var(--tone-gpu) var(--line);
+    scrollbar-color: var(--color-text-accent) var(--color-border);
   }
   .graph-scroll::-webkit-scrollbar {
     height: 7px;
   }
   .graph-scroll::-webkit-scrollbar-thumb {
-    background: var(--tone-gpu);
+    background: var(--color-text-accent);
   }
   .graph-canvas {
     position: relative;
@@ -318,8 +317,8 @@
     bottom: 10px;
     left: 30px;
     margin: 0;
-    color: var(--tone-gpu);
-    font: 0.7rem var(--font-code);
+    color: var(--color-text-accent);
+    font: 0.7rem var(--font-family-code);
   }
   .boundaries {
     position: absolute;
@@ -329,24 +328,23 @@
     pointer-events: none;
   }
   .boundaries span {
-    border-right: 1px dashed var(--line);
+    border-right: 1px dashed var(--color-border);
     padding: 20px 30px;
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
+    color: var(--color-text-secondary);
+    font: 0.7rem var(--font-family-code);
   }
   .boundaries span:last-child {
     border: 0;
   }
   svg {
-    position: absolute;
-    inset: 0;
+    display: block;
     width: 100%;
-    height: 100%;
+    height: auto;
     overflow: visible;
   }
   .edge {
     fill: none;
-    stroke: var(--edge-tone);
+    stroke: currentColor;
     stroke-width: 2;
     opacity: 0.6;
     transition: opacity 150ms ease;
@@ -363,7 +361,7 @@
     outline: none;
   }
   .connection:has(.edge-hit:focus-visible) .edge {
-    stroke: var(--ink);
+    stroke: var(--color-text-primary);
   }
   .connection:has(.edge-hit:hover) .edge,
   .connection:focus-within .edge,
@@ -371,8 +369,8 @@
     opacity: 1;
   }
   .graph-node {
-    position: absolute;
-    width: 25%;
+    width: 100%;
+    height: 100%;
     box-sizing: border-box;
     padding: 3px 8px;
     display: flex;
@@ -380,20 +378,20 @@
     gap: 1px;
     font-size: clamp(0.75rem, 1.85cqw, 0.8rem);
     text-align: left;
-    background: var(--sheet);
-    color: var(--ink);
-    border: 1px solid var(--node-tone);
+    background: var(--color-background-surface);
+    color: var(--color-text-primary);
+    border: 1px solid currentColor;
     cursor: pointer;
     transition: background-color 150ms ease;
     animation: arrive 0.3s ease-out;
   }
   .graph-node:hover,
   .graph-node.chosen {
-    background: color-mix(in srgb, var(--node-tone) 5%, var(--sheet));
+    background: var(--color-background-muted);
   }
   .role {
-    font: 0.7em/1.1 var(--font-code);
-    color: var(--ink-2);
+    font: 0.7em/1.1 var(--font-family-code);
+    color: var(--color-text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.07em;
   }
@@ -403,11 +401,11 @@
     font-weight: 500;
   }
   button:focus-visible {
-    outline: 2px solid var(--tone-hot);
+    outline: 2px solid var(--color-text-accent);
     outline-offset: 3px;
   }
   .graph-detail {
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--color-border);
     padding: 0.75rem 0;
   }
   .detail-copy,
@@ -433,25 +431,25 @@
     margin-top: 0.35rem;
   }
   .detail-source a {
-    font: 0.65rem var(--font-code);
-    color: var(--ink-2);
+    font: 0.65rem var(--font-family-code);
+    color: var(--color-text-secondary);
   }
   pre {
     height: 5rem;
     box-sizing: border-box;
     margin: 0.5rem 0 0;
     padding: 0.5rem;
-    border: 1px solid var(--line);
-    background: var(--band);
-    color: var(--ink-2);
-    font: 0.7rem/1.5 var(--font-code);
+    border: 1px solid var(--color-border);
+    background: var(--color-background-muted);
+    color: var(--color-text-secondary);
+    font: 0.7rem/1.5 var(--font-family-code);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     overflow: auto;
     scrollbar-width: thin;
   }
   pre:focus-visible {
-    outline: 2px solid var(--tone-gpu);
+    outline: 2px solid var(--color-text-accent);
     outline-offset: 2px;
   }
   code {
@@ -461,7 +459,7 @@
     display: inline-block;
     height: 1em;
     margin-left: 2px;
-    border-left: 2px solid var(--tone-gpu);
+    border-left: 2px solid var(--color-text-accent);
     vertical-align: -0.1em;
   }
   @keyframes arrive {
@@ -488,5 +486,20 @@
     .graph-node {
       animation: none;
     }
+  }
+  .tone-gpu {
+    color: var(--color-text-accent);
+  }
+  .tone-ram {
+    color: var(--color-blog-success);
+  }
+  .tone-disk {
+    color: var(--color-blog-warning);
+  }
+  .arrow {
+    fill: currentColor;
+  }
+  .graph-node strong {
+    color: var(--color-text-primary);
   }
 </style>

@@ -27,7 +27,7 @@ export const SECTIONS: readonly Section[] = [
     group: "Writing",
     path: "/blog",
     legacy: "/blog",
-    live: false,
+    live: true,
     summary: "Notes on building and running the homelab.",
   },
   {

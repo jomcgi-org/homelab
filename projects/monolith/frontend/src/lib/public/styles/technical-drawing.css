@@ -52,6 +52,18 @@
   --tone-hot: #d100b5;
   /* Warm inference activity. Bright fill; text uses ink. */
   --replay-warm: #ffd400;
+  /* Palette roles read by the replays shared with the static site. */
+  --color-text-primary: var(--ink);
+  --color-text-secondary: var(--ink-2);
+  --color-text-accent: var(--accent-ink);
+  --color-background-surface: var(--sheet);
+  --color-background-muted: var(--band);
+  --color-border: var(--line);
+  --color-border-emphasized: var(--stroke);
+  --color-blog-success: var(--tone-ram);
+  --color-blog-warning: var(--warn);
+  --font-family-body: var(--font-ui);
+  --font-family-code: var(--font-code);
 }
 
 @media (prefers-color-scheme: dark) {

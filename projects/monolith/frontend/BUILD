@@ -1159,10 +1159,19 @@ build_test(
     targets = [":theme_fixture_preview"],
 )
 
-# Copy the manifest in its owning package before exposing it through JsInfo.
-# rules_js rejects raw sources from another package in a consumer's srcs.
+# Shared first-party blog inputs, copied by their owner before exposing JsInfo.
 js_library(
-    name = "blog_index_manifest",
-    srcs = ["src/lib/public/posts/posts-manifest.json"],
+    name = "blog_sources",
+    srcs = glob(
+        ["src/lib/public/posts/**"],
+        exclude = ["**/*.test.js"],
+    ) + [
+        "package.json",
+        "src/lib/server/markdown.js",
+    ],
     visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    deps = [
+        ":node_modules/marked",
+        ":node_modules/svelte",
+    ],
 )

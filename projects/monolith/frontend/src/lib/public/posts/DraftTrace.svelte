@@ -118,37 +118,37 @@
     height: auto;
   }
   rect.lookup {
-    fill: var(--tone-hot);
+    fill: var(--color-text-accent);
   }
   rect.draft {
-    fill: var(--tone-gpu);
+    fill: var(--color-text-accent);
   }
   rect.single {
-    fill: var(--ink);
+    fill: var(--color-text-primary);
   }
   rect.pending {
     opacity: 0.15;
   }
   .rate-line {
     fill: none;
-    stroke: var(--ink);
+    stroke: var(--color-text-primary);
     stroke-width: 1.5;
   }
   .cursor {
-    stroke: var(--tone-gpu);
+    stroke: var(--color-text-accent);
     stroke-width: 1;
   }
   .axis {
-    fill: var(--ink-2);
-    font-family: var(--font-code);
+    fill: var(--color-text-secondary);
+    font-family: var(--font-family-code);
   }
   figcaption {
     display: flex;
     flex-wrap: wrap;
     gap: 0.4rem 1rem;
     margin-top: 0.3rem;
-    color: var(--ink-2);
-    font: 0.65rem var(--font-code);
+    color: var(--color-text-secondary);
+    font: 0.65rem var(--font-family-code);
   }
   .key::before {
     content: "";
@@ -159,17 +159,17 @@
     vertical-align: -0.05rem;
   }
   .key.lookup::before {
-    background: var(--tone-hot);
+    background: var(--color-text-accent);
   }
   .key.draft::before {
-    background: var(--tone-gpu);
+    background: var(--color-text-accent);
   }
   .key.single::before {
-    background: var(--ink);
+    background: var(--color-text-primary);
   }
   .key.rate-key::before {
     height: 2px;
     vertical-align: 0.2rem;
-    background: var(--ink);
+    background: var(--color-text-primary);
   }
 </style>

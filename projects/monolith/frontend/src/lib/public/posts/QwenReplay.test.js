@@ -12,7 +12,7 @@ let target;
 async function render(props = {}) {
   target = document.createElement("div");
   document.body.append(target);
-  component = mount(QwenReplay, { target, props });
+  component = mount(QwenReplay, { target, props: { recording, ...props } });
   await tick();
   return target;
 }

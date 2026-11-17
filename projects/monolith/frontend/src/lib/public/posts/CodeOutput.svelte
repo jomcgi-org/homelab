@@ -9,12 +9,14 @@
   const steps = decodeSteps(events);
   // Each event's step source, to tint the code a lookup step copied.
   const sources = [];
+  // svelte-ignore state_referenced_locally (The recording is immutable.)
+  const recordedEvents = events;
   {
     let i = 0;
     for (const step of steps) {
       let tokens = 0;
-      while (i < events.length && tokens < step.tokens) {
-        tokens += events[i].tokens ?? 1;
+      while (i < recordedEvents.length && tokens < step.tokens) {
+        tokens += recordedEvents[i].tokens ?? 1;
         sources.push(step.source);
         i += 1;
       }
@@ -52,30 +54,30 @@
     gap: 0.6rem;
   }
   .code-head {
-    color: var(--tone-gpu);
-    font: 0.7rem var(--font-code);
+    color: var(--color-text-accent);
+    font: 0.7rem var(--font-family-code);
   }
   pre {
     margin: 0;
     height: 15rem;
     overflow: auto;
     padding: 0.75rem;
-    border-left: 3px solid var(--tone-gpu);
-    background: color-mix(in srgb, var(--tone-gpu) 6%, var(--sheet));
-    color: var(--ink);
-    font: 0.68rem/1.45 var(--font-code);
+    border-left: 3px solid var(--color-text-accent);
+    background: var(--color-background-muted);
+    color: var(--color-text-primary);
+    font: 0.68rem/1.45 var(--font-family-code);
     scrollbar-width: thin;
-    scrollbar-color: var(--tone-gpu) var(--line);
+    scrollbar-color: var(--color-text-accent) var(--color-border);
   }
   .copied {
-    background: color-mix(in srgb, var(--tone-hot) 16%, transparent);
+    background: var(--color-background-muted);
   }
   .stream-cursor {
     display: inline-block;
     width: 0;
     height: 1em;
     margin-left: 1px;
-    border-left: 2px solid var(--tone-gpu);
+    border-left: 2px solid var(--color-text-accent);
     vertical-align: text-bottom;
   }
 </style>

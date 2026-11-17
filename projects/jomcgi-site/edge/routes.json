@@ -5,6 +5,7 @@
     "jomcgi.dev/app/firecracker*",
     "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
+    "jomcgi.dev/blog*",
     "jomcgi.dev/cv*",
     "jomcgi.dev/ember*",
     "jomcgi.dev/notes*",
