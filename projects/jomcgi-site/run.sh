@@ -52,8 +52,9 @@ if ((SYNC_WINDOW <= REFRESH_BUDGET)); then
 	exit 2
 fi
 
-# Prints the fence result: 0 this release may deploy, 10 a different release
-# is live, anything else an error (a timeout included). In refresh mode the
+# Prints the fence result: 0 the live deployment is this release, 10 it is
+# another release, 11 the Worker has no deployment, anything else an error (a
+# timeout included). In refresh mode the
 # check runs inside the run's deadline; in sync mode each check gets
 # FENCE_TIMEOUT seconds.
 fence() {
@@ -69,15 +70,16 @@ fence() {
 	echo "$status"
 }
 
-# In refresh mode: return on 0, exit 0 (skip) on 10, and fail on an error, so
-# a broken check shows as a failed Job instead of a quiet skip.
+# In refresh mode: return on 0, exit 0 (skip) on 10 or 11 (the hook makes the
+# first deploy), and fail on an error, so a broken check shows as a failed Job
+# instead of a quiet skip.
 refresh_gate() {
 	local status
 	status="$(fence)"
 	case "$status" in
 	0) ;;
-	10)
-		echo "refresh skipped: the live deployment is another release ($1)"
+	10 | 11)
+		echo "refresh skipped: the live deployment is not this release (fence $status, $1)"
 		exit 0
 		;;
 	*)
@@ -111,8 +113,8 @@ if [[ "$MODE" == refresh ]]; then
 	refresh_gate "before the snapshot"
 fi
 
-rm -rf "$SITE_DIR"
-cp -R "$SITE_SRC" "$SITE_DIR"
+step rm -rf "$SITE_DIR"
+step cp -R "$SITE_SRC" "$SITE_DIR"
 step "$SNAPSHOT_BIN" "$SITE_DIR/web/dist/data"
 
 if [[ "$MODE" == refresh ]]; then
@@ -125,8 +127,8 @@ if [[ "$MODE" == sync ]]; then
 	while ((SECONDS < end)); do
 		sleep "$FENCE_INTERVAL"
 		status="$(fence)"
-		if [[ "$status" == 10 ]]; then
-			echo "another deploy replaced $RELEASE; deploying it again"
+		if [[ "$status" == 10 || "$status" == 11 ]]; then
+			echo "$RELEASE is not live (fence $status); deploying it again"
 			deploy
 		elif [[ "$status" != 0 ]]; then
 			echo "fence check failed ($status); will check again" >&2
@@ -136,11 +138,12 @@ if [[ "$MODE" == sync ]]; then
 	# release is live; if it cannot be confirmed, fail the sync so Argo CD
 	# retries it.
 	status="$(fence)"
-	if [[ "$status" == 10 ]]; then
-		echo "another deploy replaced $RELEASE; deploying it again"
+	if [[ "$status" == 10 || "$status" == 11 ]]; then
+		echo "$RELEASE is not live (fence $status); deploying it again"
 		deploy
 		status="$(fence)"
 	fi
+	# Only the release's own label confirms it; "no deployment" does not.
 	if [[ "$status" != 0 ]]; then
 		echo "sync failed: could not confirm $RELEASE is live (fence $status)" >&2
 		exit 1

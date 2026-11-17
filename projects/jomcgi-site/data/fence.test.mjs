@@ -1,7 +1,7 @@
 // Tests for fence.mjs. Run: node fence.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isCurrent, liveMessage, releaseMessage } from "./fence.mjs";
+import { classify, liveMessage, releaseMessage } from "./fence.mjs";
 
 const reply = (status, body) => async () =>
   new Response(JSON.stringify(body), { status });
@@ -50,16 +50,22 @@ test("an API error fails the check", async () => {
   );
 });
 
-test("a release may deploy over its own label or a first deploy, not over another", () => {
+test("only the release's own label is current; no deployment is its own case", () => {
   const release = "chart 0.8.0 image 0123456789ab";
   assert.equal(
     releaseMessage(release),
     "jomcgi-site chart 0.8.0 image 0123456789ab",
   );
-  assert.ok(isCurrent(null, release));
-  assert.ok(isCurrent(`jomcgi-site ${release}`, release));
-  assert.ok(!isCurrent("jomcgi-site chart 0.8.1 image 0123456789ab", release));
+  assert.equal(classify(`jomcgi-site ${release}`, release), "current");
+  assert.equal(classify(null, release), "none");
+  assert.equal(
+    classify("jomcgi-site chart 0.8.1 image 0123456789ab", release),
+    "other",
+  );
   // Same chart version, different image: a different release.
-  assert.ok(!isCurrent("jomcgi-site chart 0.8.0 image ba9876543210", release));
-  assert.ok(!isCurrent("", release));
+  assert.equal(
+    classify("jomcgi-site chart 0.8.0 image ba9876543210", release),
+    "other",
+  );
+  assert.equal(classify("", release), "other");
 });
