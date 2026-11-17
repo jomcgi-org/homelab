@@ -69,6 +69,14 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     )
 
 
+def test_wrangler_can_write_its_state_dirs():
+    # wrangler writes HOME and .wrangler/tmp next to wrangler.jsonc; the root is read-only.
+    pod = docs(render())["Job/jomcgi-site-deploy"]["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    mounts = {m["mountPath"] for m in container["volumeMounts"]}
+    assert {"/tmp", "/app/site/.wrangler"} <= mounts
+
 def test_a_new_digest_changes_the_release_marker():
     other = "sha256:" + "1" * 64
     first = docs(render())["ConfigMap/jomcgi-site-release"]["data"]["image"]

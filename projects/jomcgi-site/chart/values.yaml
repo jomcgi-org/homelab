@@ -46,6 +46,10 @@ workloads:
       - name: tmp
         mountPath: /tmp
         sizeLimit: 64Mi
+      # wrangler writes .wrangler/tmp next to its config; the image root is read-only.
+      - name: wrangler-state
+        mountPath: /app/site/.wrangler
+        sizeLimit: 64Mi
     network:
       # The Cloudflare API is the only egress. wrangler's npm update check
       # times out against this policy and does not fail the deploy.
