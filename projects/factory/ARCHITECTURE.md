@@ -314,7 +314,8 @@ one variant of a provider, so a second endpoint stops the sync for a person
 to check.
 
 **Why the decision model.** Joe chose a decision model with no local
-fallback ([HOME-130 comment 1498](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1498)).
+fallback ([his words, recorded from his account on #8147](https://github.com/jomcgi-org/homelab/pull/8147#issuecomment-6949878652);
+also HOME-130 comment 1498).
 Hindsight's own question decided the order of the top 30 Voyage 4 Large
 candidates for the same 32 graded questions. On candidates from
 embeddings and BM25 together, Jev 1.14 raised nDCG@10 by 0.079, in 0.29 s per

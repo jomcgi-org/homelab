@@ -123,7 +123,7 @@ spec:
             # One endpoint (<base>/v1/systemone), on the same key. It ranks
             # recall and settles consolidation, reflect and page judgments
             # (HOME-182). No local fallback: a recall fails while it is
-            # unavailable (Joe, HOME-130 comment 1498).
+            # unavailable (Joe on #8147, comment 6949878652).
             - name: HINDSIGHT_API_DECISION_MODEL_PROVIDER
               value: typesafe
             - name: HINDSIGHT_API_DECISION_MODEL_BASE_URL
