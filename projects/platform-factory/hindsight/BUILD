@@ -6,6 +6,8 @@ py_test(
     data = [
         "BUILD",
         "agents/secrets.yaml",
+        "kustomization.yaml",
+        "recovery/reembed-local.yaml",
         "//projects/platform-factory/hindsight/resources:keys_resources",
     ],
     deps = [

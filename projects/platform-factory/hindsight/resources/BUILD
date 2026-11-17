@@ -1,6 +1,8 @@
 # keys.py runs inside the hindsight-keys Jobs (secrets.yaml mounts it from a
-# ConfigMap); it is not a Bazel target.
+# ConfigMap), and preflight.py inside the hindsight-preflight Sync hook
+# (hindsight.yaml). Neither is a Bazel target.
 # gazelle:exclude keys.py
+# gazelle:exclude preflight.py
 
 exports_files(
     ["secrets.yaml"],
@@ -14,6 +16,7 @@ filegroup(
         "keys.py",
         "kustomization.yaml",
         "network-policy.yaml",
+        "preflight.py",
         "secrets.yaml",
     ],
     visibility = ["//projects/platform-factory/hindsight:__pkg__"],
