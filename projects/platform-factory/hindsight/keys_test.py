@@ -367,9 +367,7 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", "postgres://unused")
     monkeypatch.setattr(script, "decision_endpoints", lambda key, model: ["typesafe"])
     asked = []
-    monkeypatch.setattr(
-        script, "decision_answers", lambda *args: asked.append(args[3])
-    )
+    monkeypatch.setattr(script, "decision_answers", lambda *args: asked.append(args[3]))
     monkeypatch.setattr(script, "model_dimension", lambda key, model, extra: 1536)
     with pytest.raises(SystemExit, match="returns 1536 dimensions, not 1024"):
         script.main()
