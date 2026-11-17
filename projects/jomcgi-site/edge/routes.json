@@ -1,0 +1,5 @@
+{
+  "zone": "jomcgi.dev",
+  "script": "jomcgi-site",
+  "patterns": ["jomcgi.dev/assets/*", "jomcgi.dev/cv", "jomcgi.dev/cv/*"]
+}

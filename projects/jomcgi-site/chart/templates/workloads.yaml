@@ -1,1 +1,19 @@
+{{- /*
+The deploy Job's `--env` comes from .Values.stage, so one value picks the
+stage. The edge Job joins the workloads only in prod (values.yaml `edge`).
+*/}}
+{{- if not (has .Values.stage (list "dev" "prod")) }}
+{{- fail "stage must be dev or prod" }}
+{{- end }}
+{{- $deploy := index .Values.workloads "jomcgi-site-deploy" }}
+{{- if has "--env" $deploy.args }}
+{{- fail "the deploy Job's --env comes from .Values.stage; do not set it in args" }}
+{{- end }}
+{{- $_ := set $deploy "args" (concat $deploy.args (list "--env" .Values.stage)) }}
+{{- if .Values.edge.enabled }}
+{{- if ne .Values.stage "prod" }}
+{{- fail "edge.enabled is for the prod stage only: zone config is not per stage" }}
+{{- end }}
+{{- $_ := set .Values.workloads "jomcgi-site-edge" .Values.edge.workload }}
+{{- end }}
 {{ include "factory-library.all" . }}

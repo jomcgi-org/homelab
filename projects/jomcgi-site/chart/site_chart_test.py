@@ -113,11 +113,46 @@ def test_only_egress_is_the_cloudflare_api():
     ]
 
 
+PROD = ("--set", "stage=prod", "--set", "edge.enabled=true")
+
+
+def test_prod_deploys_the_prod_worker_and_applies_the_edge_config():
+    rendered = docs(render(*PROD))
+    deploy = rendered["Job/jomcgi-site-deploy"]["spec"]["template"]["spec"]
+    assert deploy["containers"][0]["args"][-2:] == ["--env", "prod"]
+    job = rendered["Job/jomcgi-site-edge"]
+    # PostSync: after the deploy Job, so every route's Worker exists.
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "PostSync"
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == ["/app/projects/jomcgi-site/edge/apply"]
+    assert container["image"].endswith(f"@{DIGEST}")
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert [env["name"] for env in container["env"]] == ["CLOUDFLARE_API_TOKEN"]
+    policy = rendered["CiliumNetworkPolicy/jomcgi-site-edge"]["spec"]
+    assert policy["egress"] == [
+        {
+            "toFQDNs": [{"matchName": "api.cloudflare.com"}],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        }
+    ]
+    assert rendered["ConfigMap/jomcgi-site-release"]["data"]["stage"] == "prod"
+
+
+def test_dev_has_no_edge_job():
+    rendered = docs(render())
+    assert "Job/jomcgi-site-edge" not in rendered
+    assert not any(name.endswith("jomcgi-site-edge") for name in rendered)
+
+
 @pytest.mark.parametrize(
     "extra, error",
     [
         (["--set", "stage=staging"], "stage must be dev or prod"),
-        (["--set", "stage=prod"], "--env argument must match .Values.stage"),
+        (["--set", "edge.enabled=true"], "edge.enabled is for the prod stage only"),
+        (
+            ["--set", "workloads.jomcgi-site-deploy.args[3]=--env"],
+            "--env comes from .Values.stage",
+        ),
     ],
 )
 def test_stage_guard(extra, error):
