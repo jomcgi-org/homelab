@@ -80,10 +80,12 @@ Elixir mix test genrule failing inside the build. A known flake that recurs is
 still new evidence, not the same flake.
 
 Fix a flaky test at its cause. Do not skip it, or make it pass with a sleep, a
-retry or reruns. If the cause stays unknown, delete the test and give the
-reason in the commit message. CI runs a failed test a second time
-(`--flaky_test_attempts=2` in `bazel/tools/preset.bazelrc`), and BuildBuddy
-marks a pass on that attempt `FLAKY`. A `FLAKY` test needs the same fix.
+retry or reruns. If the cause stays unknown, replace it with a deterministic
+test of the same behaviour, and name the replacement in the commit message.
+If no replacement exists, keep the test and put the evidence on a HOME issue.
+CI runs a failed test a second time (`--flaky_test_attempts=2` in
+`bazel/tools/preset.bazelrc`), and BuildBuddy marks a pass on that attempt
+`FLAKY`. A `FLAKY` test needs the same fix.
 
 ## Reproduce locally
 
