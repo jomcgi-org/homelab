@@ -36,7 +36,7 @@ export default defineConfig({
     conditions: ["browser"],
     alias: [
       {
-        find: /^\.\/qwen-replay\.json$/,
+        find: /^(?:\.\/|\$lib\/public\/posts\/)qwen-replay\.json$/,
         replacement: here("./fixtures/qwen-replay.json"),
       },
       {
