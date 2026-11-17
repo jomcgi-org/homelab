@@ -6,10 +6,14 @@ package review
 // same assessment to people reading the PR, so writing it is best effort.
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log/slog"
 	"regexp"
 	"slices"
@@ -61,6 +65,8 @@ var severityLabel = map[string]string{
 
 // CommentUpdate is what a review check write shows in the PR comment.
 type CommentUpdate struct {
+	// body replays a rendered snapshot recovered from a completed check.
+	body    string
 	Verdict Verdict
 	// Headline is one short line under the verdict.
 	Headline string
@@ -87,6 +93,100 @@ const (
 )
 
 var findingsRE = regexp.MustCompile(`(?s)<!-- factory-review:findings ([0-9a-f]*) -->\n(.*?)\n<!-- factory-review:findings-end -->`)
+
+var commentSnapshotRE = regexp.MustCompile(`<!-- factory-review:comment-snapshot v1 ([A-Za-z0-9+/=]*) -->`)
+
+// recordComment stores the desired display with the check, before optional
+// comment I/O starts. Gate-only checks carry the previous findings even when
+// their comment has never been written. Check state keeps its full budget;
+// an oversized display is shortened with a link to the check's full output.
+func recordComment(text, previous, head string, u *CommentUpdate) string {
+	if u == nil {
+		return text
+	}
+	findingsHead, findings := parseFindings(recordedComment(previous))
+	if u.Findings != nil {
+		findingsHead, findings = head, *u.Findings
+	}
+	// The check URL is assigned on creation. Add its footer when replaying.
+	body := renderCommentBody(head, u, findings, findingsHead)
+	text = commentSnapshotRE.ReplaceAllString(text, "")
+	for {
+		var buf bytes.Buffer
+		w := gzip.NewWriter(&buf)
+		_, _ = io.WriteString(w, body)
+		_ = w.Close()
+		encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+		snapshot := markerStart + "comment-snapshot v1 " + encoded + " -->"
+		if len(text)+len(snapshot)+2 <= maxSummary {
+			return text + "\n\n" + snapshot
+		}
+		// Keep complete findings markers when reducing the display, so a
+		// later gate check can still carry the shortened findings forward.
+		if len(findings) > 0 {
+			findings = clip(findings, len(findings)/2)
+			if len(findings) < 100 {
+				findings = ""
+			}
+			body = renderCommentBody(head, u, findings+"\n\n_More detail is on the check run._", findingsHead)
+		} else if len(body) > 100 {
+			body = clip(body, len(body)/2) + "\n\n_More detail is on the check run._\n\n"
+		} else {
+			// Unexpected oversized state must not prevent the check write.
+			return text
+		}
+	}
+}
+
+func recordedComment(text string) string {
+	m := commentSnapshotRE.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	data, err := base64.StdEncoding.DecodeString(m[1])
+	if err != nil {
+		return ""
+	}
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return ""
+	}
+	defer r.Close()
+	body, err := io.ReadAll(io.LimitReader(r, maxComment+1))
+	if err != nil || len(body) > maxComment || !bytes.HasPrefix(body, []byte(commentMarker+"\n")) {
+		return ""
+	}
+	return string(body)
+}
+
+// replayComment runs on the poller after gate reconciliation. Queueing is
+// idempotent per check in this process; a failed attempt can retry next poll.
+func (e *Engine) replayComment(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) {
+	if run == nil || run.Status != "completed" || run.Conclusion == ConclusionCancelled {
+		return
+	}
+	e.commentQueueMu.Lock()
+	id, seen := e.commentReplays[prKey{b.Name, pr.Number}]
+	queued := seen && id == run.ID
+	e.commentQueueMu.Unlock()
+	if queued {
+		return
+	}
+	if body := recordedComment(run.Text); body != "" {
+		e.queueMirror(ctx, b, pr, run, &CommentUpdate{body: body})
+	}
+}
+
+// queueCompletedComment uses the same snapshot for live writes and retries.
+// This also carries findings when an earlier queued write failed.
+func (e *Engine) queueCompletedComment(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, text string, u *CommentUpdate) {
+	if u == nil {
+		return
+	}
+	update := *u
+	update.body = recordedComment(text)
+	e.queueMirror(ctx, b, pr, run, &update)
+}
 
 // Comment limits. GitHub takes 65536 characters in a comment body.
 const (
@@ -357,6 +457,10 @@ func sinceSection(a Assessment) string {
 // and note, the human gate, the findings section (collapsed when it came
 // from another head) and a footer naming the commit and check.
 func renderComment(head string, u *CommentUpdate, findings, findingsHead, checkName, checkURL string) string {
+	return clip(renderCommentBody(head, u, findings, findingsHead)+commentFooter(head, checkName, checkURL), maxComment)
+}
+
+func renderCommentBody(head string, u *CommentUpdate, findings, findingsHead string) string {
 	var s strings.Builder
 	s.WriteString(commentMarker + "\n")
 	fmt.Fprintf(&s, "### %s\n\n", verdictHeading[u.Verdict])
@@ -373,7 +477,14 @@ func renderComment(head string, u *CommentUpdate, findings, findingsHead, checkN
 		}
 		s.WriteString("\n")
 	}
-	if findings != "" {
+	s.WriteString(renderCommentFindings(head, findings, findingsHead))
+	return clip(s.String(), maxComment-1000)
+}
+
+func renderCommentFindings(head, findings, findingsHead string) string {
+	var s strings.Builder
+	// An empty section with a head explicitly clears earlier findings.
+	if findingsHead != "" {
 		earlier := findingsHead != head
 		if earlier {
 			fmt.Fprintf(&s, "<details>\n<summary>Previous review · <code>%s</code></summary>\n\n", short(findingsHead))
@@ -383,12 +494,17 @@ func renderComment(head string, u *CommentUpdate, findings, findingsHead, checkN
 			s.WriteString("</details>\n\n")
 		}
 	}
+	return s.String()
+}
+
+func commentFooter(head, checkName, checkURL string) string {
+	var s strings.Builder
 	fmt.Fprintf(&s, "<sub><code>%s</code>", short(head))
 	if checkURL != "" {
 		fmt.Fprintf(&s, " · <a href=\"%s\">%s</a>", htmlEscape(checkURL), htmlEscape(checkName))
 	}
 	s.WriteString("</sub>\n")
-	return clip(s.String(), maxComment)
+	return s.String()
 }
 
 // parseFindings reads the findings section of a comment the reviewer wrote.
@@ -537,7 +653,19 @@ func (e *Engine) queueMirror(ctx context.Context, b *Binding, pr github.PullRequ
 	}
 	e.commentQueueMu.Lock()
 	defer e.commentQueueMu.Unlock()
-	e.commentQueue = append(e.commentQueue, func() { e.mirror(ctx, b, pr, link, &update) })
+	key := prKey{b.Name, pr.Number}
+	if run != nil {
+		e.commentReplays[key] = run.ID
+	}
+	e.commentQueue = append(e.commentQueue, func() {
+		if !e.mirror(ctx, b, pr, link, &update) && run != nil {
+			e.commentQueueMu.Lock()
+			if e.commentReplays[key] == run.ID {
+				delete(e.commentReplays, key)
+			}
+			e.commentQueueMu.Unlock()
+		}
+	})
 	if e.commentWorker {
 		return
 	}
@@ -566,10 +694,10 @@ func (e *Engine) queueMirror(ctx context.Context, b *Binding, pr github.PullRequ
 // comment CommentAuthor wrote. A comment is created with its first verdict,
 // so its one notification carries the verdict, and is only ever edited
 // after that. A failed write is logged and counted; the check's conclusion
-// is unaffected, and the next write on the PR brings the comment up to date.
-func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, u *CommentUpdate) {
+// is unaffected. Completed snapshots retry on the next poll or restart.
+func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, u *CommentUpdate) bool {
 	if u == nil || e.cfg.Comments == nil || e.cfg.CommentAuthor == "" {
-		return
+		return true
 	}
 	key := prKey{b.Name, pr.Number}
 	l := e.prLog(b, pr)
@@ -577,22 +705,22 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 	defer e.commentMu.Unlock()
 	if head := e.listedHead(key); head != "" && head != pr.HeadSHA {
 		l.DebugContext(ctx, "the PR has a newer head; its comment follows that one")
-		return
+		return true
 	}
 	state := e.lookupComment(ctx, b, pr)
 	cur := state.comment
 	if state.err != nil {
-		return
+		return false
 	}
 	// Polling continues during lookup; a push may have superseded this job.
 	if head := e.listedHead(key); head != "" && head != pr.HeadSHA {
-		return
+		return true
 	}
 	if cur == nil && !state.complete {
-		return
+		return true
 	}
 	if cur == nil && u.Verdict == VerdictReviewing {
-		return
+		return true
 	}
 	findingsHead, findings := "", ""
 	if cur != nil {
@@ -606,8 +734,17 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 		url = run.URL
 	}
 	body := renderComment(pr.HeadSHA, u, findings, findingsHead, e.cfg.CheckName, url)
+	if u.body != "" {
+		body = u.body
+		if storedHead, _ := parseFindings(body); storedHead == "" {
+			// A hold or failed review without a stored predecessor can still
+			// retain findings from the existing comment, including legacy ones.
+			body += renderCommentFindings(pr.HeadSHA, findings, findingsHead)
+		}
+		body = clip(body, maxComment-1000) + commentFooter(pr.HeadSHA, e.cfg.CheckName, url)
+	}
 	if cur != nil && cur.Body == body {
-		return
+		return true
 	}
 	// The page search has its own budget. Start the write deadline only
 	// after lookup and lock acquisition, so neither can consume it.
@@ -619,14 +756,14 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 		case err == nil:
 			state.comment = &github.Comment{ID: cur.ID, Author: cur.Author, Body: body}
 			e.m.CommentWrites.WithLabelValues(b.Name, "updated").Inc()
-			return
+			return true
 		case !errors.Is(err, github.ErrNotFound):
 			e.commentFailed(ctx, l, b, "update", err)
-			return
+			return false
 		}
 		state.comment, state.complete = nil, true // Deleted by someone: post it again.
 		if u.Verdict == VerdictReviewing {
-			return
+			return true
 		}
 	}
 	created, err := e.cfg.Comments.CreateIssueComment(ctx, b.repo(), pr.Number, body)
@@ -635,11 +772,12 @@ func (e *Engine) mirror(ctx context.Context, b *Binding, pr github.PullRequest, 
 		// Rediscover it before another write can try to create a duplicate.
 		delete(e.comments, key)
 		e.commentFailed(ctx, l, b, "create", err)
-		return
+		return false
 	}
 	state.comment = &github.Comment{ID: created.ID, Author: e.cfg.CommentAuthor, Body: body}
 	e.m.CommentWrites.WithLabelValues(b.Name, "created").Inc()
 	l.InfoContext(ctx, "review comment posted", "comment", created.ID, "verdict", string(u.Verdict))
+	return true
 }
 
 // findComment is the oldest comment on the PR that CommentAuthor wrote and

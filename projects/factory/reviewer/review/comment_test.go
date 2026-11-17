@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strings"
@@ -140,6 +141,226 @@ func TestCommentSlowLookupHasASeparateWriteBudget(t *testing.T) {
 				})
 			})
 		}
+	}
+}
+
+// stoppedCommentLookup models the transport disappearing at SIGKILL. Its
+// lookup cannot finish before the pod's 30-second termination grace expires.
+type stoppedCommentLookup struct {
+	Comments
+	killed chan struct{}
+}
+
+func (c *stoppedCommentLookup) IssueComments(ctx context.Context, _ string, _ int) ([]github.Comment, bool, error) {
+	select {
+	case <-time.After(github.CommentLookupTimeout):
+		return nil, true, nil
+	case <-c.killed:
+		return nil, false, context.Canceled
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
+}
+
+// commentCheckStore keeps only GitHub state across engines in the virtual
+// shutdown test. No HTTP server or real clock participates in that test.
+type commentCheckStore struct {
+	GitHub
+	run github.CheckRun
+}
+
+func (s *commentCheckStore) UpdateCheckRun(_ context.Context, _ string, id int64, w github.CheckRunWrite) (*github.CheckRun, error) {
+	s.run = github.CheckRun{
+		ID: id, URL: "https://example.test/check", Status: w.Status, Conclusion: w.Conclusion,
+		Title: w.Output.Title, Summary: w.Output.Summary, Text: w.Output.Text,
+	}
+	run := s.run
+	return &run, nil
+}
+
+func (s *commentCheckStore) CreateCheckRun(ctx context.Context, repo string, w github.CheckRunWrite) (*github.CheckRun, error) {
+	return s.UpdateCheckRun(ctx, repo, s.run.ID+1, w)
+}
+
+func TestCommentSurvivesShutdownDuringLongLookup(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		for _, hold := range []bool{false, true} {
+			t.Run(fmt.Sprintf("existing=%v/hold=%v", existing, hold), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					comments := &delayedComments{complete: true, delay: 40 * time.Second}
+					if existing {
+						comments.comment = &github.Comment{ID: 9, Author: botLogin, Body: commentMarker + "\nStale verdict"}
+					}
+					transport := &stoppedCommentLookup{Comments: comments, killed: make(chan struct{})}
+					store := &commentCheckStore{}
+					cfg := Config{Comments: transport, CommentAuthor: botLogin}
+					e := New(cfg, store, nil, nil, nil)
+					b := &Binding{Name: "homelab", Owner: "example-org", Repo: "homelab"}
+					pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+					run := &github.CheckRun{ID: 1, URL: "https://example.test/check"}
+					ctx, shutdown := context.WithCancel(context.Background())
+					e.queueMirror(ctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
+					synctest.Wait() // The ordered writer is now inside the long lookup.
+					findings := "The agent's summary and optional findings"
+					outcome := Outcome{
+						Conclusion: ConclusionSuccess, Output: github.CheckRunOutput{Title: "Passed", Summary: "Full findings", Text: encodeState(State{})},
+						Comment: &CommentUpdate{Verdict: VerdictApproved, Findings: &findings},
+					}
+					if !e.finish(ctx, b, pr, run, outcome, e.log) {
+						t.Fatal("check completion failed")
+					}
+					want := "Approved"
+					if hold {
+						gate := &Gate{Labels: []string{"human"}}
+						e.gateCheck(ctx, b, pr, &store.run, State{Gate: gate}, ConclusionFailure, "Waiting for a human review", "A human must approve",
+							&CommentUpdate{Verdict: VerdictHuman, Gate: gate}, e.log)
+						want = "Waiting for a human approval"
+					}
+					shutdown()
+					drained := make(chan struct{})
+					go func() { e.Wait(); close(drained) }()
+					time.Sleep(30 * time.Second)
+					select {
+					case <-drained:
+						t.Fatal("long lookup unexpectedly drained within the grace period")
+					default:
+					}
+					close(transport.killed)
+					<-drained
+					if comments.creates+comments.updates != 0 {
+						t.Fatal("the stopped process wrote a comment")
+					}
+					// The new process has no queue or comment cache from the old one.
+					cfg.Comments = comments
+					restarted := New(cfg, store, nil, nil, nil)
+					restarted.replayComment(context.Background(), b, pr, &store.run)
+					restarted.Wait()
+					if comments.comment == nil || !strings.Contains(comments.comment.Body, want) ||
+						!strings.Contains(comments.comment.Body, findings) || !strings.Contains(comments.comment.Body, store.run.URL) {
+						t.Fatalf("recovered comment = %+v", comments.comment)
+					}
+					if comments.creates+comments.updates != 1 || (existing && comments.creates != 0) {
+						t.Fatalf("recovery writes: creates=%d updates=%d", comments.creates, comments.updates)
+					}
+					// Another restart must find the same comment and leave it alone.
+					restarted = New(cfg, store, nil, nil, nil)
+					restarted.replayComment(context.Background(), b, pr, &store.run)
+					restarted.Wait()
+					if comments.creates+comments.updates != 1 {
+						t.Fatal("another restart rewrote the recovered comment")
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestRestartReplaysCompletedCommentAndRetriesFailedLookup(t *testing.T) {
+	for _, failedReview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failedReview=%v", failedReview), func(t *testing.T) {
+			h := newHarness(t)
+			withComments(h)
+			addPR7(h)
+			h.gh.failCommentPage = 1
+			e, ctx, stop := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			if failedReview {
+				b := &e.cfg.Bindings[0]
+				run, err := e.reviewCheck(ctx, b, shaA)
+				if err != nil || run == nil {
+					t.Fatalf("review check: %v", err)
+				}
+				e.finish(ctx, b, github.PullRequest{Number: 7, HeadSHA: shaA}, run, NoReport("Task failed", ""), e.log)
+				e.Wait()
+			}
+			stop()
+			if len(h.gh.ownComments(7)) != 0 {
+				t.Fatal("failed lookup wrote a comment")
+			}
+			before := *h.gh.check(shaA)
+			restarted, ctx, stop := h.start()
+			defer stop()
+			restarted.Tick(ctx)
+			restarted.Wait() // The first startup lookup still fails.
+			h.gh.withLock(func() { h.gh.failCommentPage = 0 })
+			restarted.Tick(ctx)
+			restarted.Wait()
+			want := "Approved"
+			if failedReview {
+				want = "Review incomplete"
+			}
+			if !commentHas(h, 7, want) {
+				t.Fatalf("replayed comment = %+v", h.gh.ownComments(7))
+			}
+			if !failedReview && !commentHas(h, 7, "Rename x") {
+				t.Fatal("replay lost optional findings")
+			}
+			if after := h.gh.check(shaA); before.ID != after.ID || before.Conclusion != after.Conclusion || before.Text != after.Text {
+				t.Fatal("comment recovery changed the review check")
+			}
+			writes := h.gh.countCalls("PATCH /repos/" + testRepo + "/issues/comments/")
+			restarted.Tick(ctx)
+			restarted.Wait()
+			if h.gh.countCalls("PATCH /repos/"+testRepo+"/issues/comments/") != writes {
+				t.Fatal("unchanged check rewrote its comment")
+			}
+		})
+	}
+}
+
+func TestCommentSnapshotFitsBesideCheckState(t *testing.T) {
+	var random strings.Builder
+	for i := 0; random.Len() < maxFindings; i++ {
+		fmt.Fprintf(&random, "%x", sha256.Sum256([]byte(fmt.Sprint(i))))
+	}
+	findings := random.String()[:maxFindings]
+	state := strings.Repeat("s", maxState)
+	text := recordComment(state, "", shaA, &CommentUpdate{Verdict: VerdictChanges, Findings: &findings})
+	if len(text) > maxSummary || !strings.HasPrefix(text, state) {
+		t.Fatal("comment snapshot exceeded the check text budget or shortened gate state")
+	}
+	body := recordedComment(text)
+	if !strings.Contains(body, "Changes requested") || !strings.Contains(body, "More detail is on the check run") {
+		t.Fatalf("bounded snapshot lost its verdict or truncation notice: %s", body)
+	}
+	if head, kept := parseFindings(body); head != shaA || len(kept) == 0 {
+		t.Fatal("bounded snapshot lost its findings markers")
+	}
+	held := recordComment(encodeState(State{}), text, shaA, &CommentUpdate{Verdict: VerdictHuman})
+	if !strings.Contains(recordedComment(held), "More detail is on the check run") {
+		t.Fatal("gate update lost the findings truncation notice")
+	}
+}
+
+func TestCommentSnapshotKeepsOrClearsEarlierFindings(t *testing.T) {
+	for _, outcome := range []string{"failed review", "no findings", "gate after no findings"} {
+		t.Run(outcome, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				oldHead := strings.Repeat("b", 40)
+				comments := &delayedComments{complete: true, comment: &github.Comment{
+					ID: 9, Author: botLogin,
+					Body: renderComment(oldHead, &CommentUpdate{Verdict: VerdictChanges}, "Earlier finding", oldHead, "", ""),
+				}}
+				u := &CommentUpdate{Verdict: VerdictFailed}
+				if outcome != "failed review" {
+					empty := ""
+					u = &CommentUpdate{Verdict: VerdictApproved, Findings: &empty}
+				}
+				text := recordComment(encodeState(State{}), "", shaA, u)
+				if outcome == "gate after no findings" {
+					text = recordComment(encodeState(State{}), text, shaA, &CommentUpdate{Verdict: VerdictHuman})
+				}
+				e := New(Config{Comments: comments, CommentAuthor: botLogin}, nil, nil, nil, nil)
+				e.replayComment(context.Background(), &Binding{Name: "homelab"}, github.PullRequest{Number: 7, HeadSHA: shaA},
+					&github.CheckRun{ID: 1, Status: "completed", Text: text})
+				e.Wait()
+				if got := strings.Contains(comments.comment.Body, "Earlier finding"); got != (outcome == "failed review") {
+					t.Fatalf("earlier findings retained=%v: %s", got, comments.comment.Body)
+				}
+			})
+		})
 	}
 }
 
