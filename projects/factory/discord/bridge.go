@@ -21,9 +21,10 @@ type Limit struct {
 }
 
 // Guild is an allowlisted server. Channels, when set, limits it to those
-// channels.
+// channels. History marks it for the history import (HOME-164).
 type Guild struct {
 	Channels []string `json:"channels,omitempty"`
+	History  bool     `json:"history,omitempty"`
 }
 
 // Config is the bridge's policy, from values only.

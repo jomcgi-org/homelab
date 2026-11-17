@@ -8,6 +8,7 @@ go_library(
         "discord.go",
         "gateway.go",
         "hindsight.go",
+        "history.go",
         "policy.go",
         "rest.go",
     ],
@@ -24,6 +25,7 @@ go_test(
     srcs = [
         "bridge_test.go",
         "clients_test.go",
+        "history_test.go",
     ],
     embed = [":discord"],
     deps = [
