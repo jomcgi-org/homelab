@@ -251,14 +251,20 @@ tests:
               summary: "Codex grant codex-primary has used 95% of its primary window"
               description: 'Coder and review turns stop at 100%. Plan a reset or another account. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
-  # An exhausted grant pages after 5 min with the reset time; a ready grant
-  # with plan quota left is quiet.
+  # An exhausted grant pages after 5 min with the reset time of the window it
+  # used up, not a later reset of another window; before that it is quiet.
   - interval: 1m
     input_series:
       - series: 'factory_broker_grant_quota_exhausted{grant="codex-primary"}'
         values: "0x10 1x20"
       - series: 'factory_broker_quota_resets_at_seconds{provider="codex", window="primary"}'
         values: "1795565640x30"
+      - series: 'factory_broker_quota_resets_at_seconds{provider="codex", window="secondary"}'
+        values: "1796000000x30"
+      - series: 'factory_broker_grant_quota_used_percent{grant="codex-primary", provider="codex", window="primary"}'
+        values: "100x30"
+      - series: 'factory_broker_grant_quota_used_percent{grant="codex-primary", provider="codex", window="secondary"}'
+        values: "40x30"
     alert_rule_test:
       - eval_time: 12m
         alertname: FactoryCodexQuotaExhausted
@@ -271,7 +277,7 @@ tests:
               grant: codex-primary
             exp_annotations:
               summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
-              description: 'Coder turns fail until then. The window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
   # A grant that needs a login pages after 10 min; ready is quiet.
   - interval: 1m
@@ -290,10 +296,73 @@ tests:
           - exp_labels:
               severity: critical
               grant: codex-primary
-              state: login_required
             exp_annotations:
               summary: "Codex grant codex-primary is login_required: a person must log in again"
               description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # A grant that moves from login_required to error at 17 min stays not
+  # ready: the alert fires 10 min after the first state, naming the current.
+  - interval: 1m
+    input_series:
+      - series: 'factory_broker_codex_grant_state{grant="codex-primary", state="ready"}'
+        values: "1x10 0x21"
+      - series: 'factory_broker_codex_grant_state{grant="codex-primary", state="login_required"}'
+        values: "0x10 1x5 0x15"
+      - series: 'factory_broker_codex_grant_state{grant="codex-primary", state="error"}'
+        values: "0x16 1x15"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FactoryCodexGrantNotReady
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: FactoryCodexGrantNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              grant: codex-primary
+            exp_annotations:
+              summary: "Codex grant codex-primary is error: a person must log in again"
+              description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # A grant refused with no window at 100% names every window's reset.
+  - interval: 1m
+    input_series:
+      - series: 'factory_broker_grant_quota_exhausted{grant="codex-primary"}'
+        values: "1x10"
+      - series: 'factory_broker_quota_resets_at_seconds{provider="codex", window="primary"}'
+        values: "1795565640x10"
+      - series: 'factory_broker_grant_quota_used_percent{grant="codex-primary", provider="codex", window="primary"}'
+        values: "97x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FactoryCodexQuotaExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              grant: codex-primary
+            exp_annotations:
+              summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
+              description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # No quota reading at all (a fresh broker whose usage reads fail) fires
+  # after 15 min.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="factory-broker"}'
+        values: "1x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FactoryCodexQuotaReadingStale
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FactoryCodexQuotaReadingStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              provider: codex
+            exp_annotations:
+              summary: "The broker has no Codex quota reading"
+              description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
   # A reading that stops at time 0 is stale after 2 h, and the alert fires
   # 15 min later.
