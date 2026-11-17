@@ -1,13 +1,21 @@
+import axe from "axe-core";
 import { readFileSync } from "node:fs";
 import { act } from "react";
 import { hydrateRoot } from "react-dom/client";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { LlmLeaderboardPage, LeaderboardContent } from "./llm-leaderboard-page";
+import { LlmLeaderboardPage } from "./llm-leaderboard-page";
+import { LeaderboardContent } from "./leaderboard-content";
+import { leaderboard } from "./leaderboard-data";
 import { Scatter } from "./leaderboard-charts";
 import {
   cellState,
-  leaderboard,
   orderedTasks,
   presetIds,
   rank,
@@ -25,7 +33,7 @@ const rankedTable = () => screen.getByRole("table", { name: "Ranked models" });
 function renderPage() {
   return render(
     <Root>
-      <LlmLeaderboardPage />
+      <LeaderboardContent data={leaderboard} />
     </Root>,
   );
 }
@@ -113,6 +121,66 @@ it("keeps the hub title, description and preview metadata", () => {
   ).toContain("/app/llm-leaderboard/* /llm-leaderboard 301");
 });
 
+it("copies the hub introduction, captions and source link verbatim", () => {
+  const source = readFileSync(
+    "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
+    "utf8",
+  );
+  const host = document.createElement("div");
+  host.innerHTML = prerender("llm-leaderboard.html");
+  const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+  const lead = source.match(/<div class="lead">([\s\S]*?)<\/div>/)![1]!;
+  const original = new DOMParser().parseFromString(lead, "text/html");
+  for (const tag of ["h1", "p"]) {
+    expect(normalize(host.querySelector(".lead " + tag)!.textContent!)).toBe(
+      normalize(original.querySelector(tag)!.textContent!),
+    );
+  }
+  const captions = [
+    ...source.matchAll(/<p class="caption">([^<{]+)<\/p>/g),
+  ].map((match) => normalize(match[1]!));
+  expect(captions.length).toBeGreaterThan(0);
+  const rendered = [...host.querySelectorAll("p.caption")].map((node) =>
+    normalize(node.textContent!),
+  );
+  for (const caption of captions) expect(rendered).toContain(caption);
+  const sourceLink = source.match(
+    /<footer class="caption method">[\s\S]*?<a href="([^"]+)"/,
+  )![1]!;
+  expect(host.querySelector(".method a")?.getAttribute("href")).toBe(
+    sourceLink,
+  );
+});
+
+it.each(["All", "Self-hosted", "Clear all"])(
+  "has no axe violations or inline styles after selecting %s and changing axes",
+  async (preset) => {
+    const { container } = renderPage();
+    fireEvent.click(screen.getByRole("button", { name: preset }));
+    if (preset !== "Clear all") {
+      fireEvent.click(
+        within(screen.getByRole("group", { name: "X axis metric" })).getByRole(
+          "button",
+          { name: "Tokens per task" },
+        ),
+      );
+    }
+    expect(container.querySelector("[style]")).toBeNull();
+    const result = await axe.run(container, {
+      rules: { "color-contrast": { enabled: false } },
+    });
+    expect(
+      result.violations.map(({ id, nodes }) => ({
+        id,
+        targets: nodes.map((node) => node.target),
+      })),
+    ).toEqual([]);
+  },
+  // All models adds hundreds of matrix cells; axe can exceed the default 5s
+  // when the rest of the suite runs concurrently on shared CI workers.
+  15_000,
+);
+
 it("hydrates linked selections without a mismatch and keeps unrelated query parameters", async () => {
   const m = leaderboard.models[0]!;
   window.history.replaceState(
@@ -135,7 +203,7 @@ it("hydrates linked selections without a mismatch and keeps unrelated query para
     );
   });
   expect(errors).toEqual([]);
-  expect(modelIds(rankedTable())).toEqual([m.id]);
+  await waitFor(() => expect(modelIds(rankedTable())).toEqual([m.id]));
   const historyLength = window.history.length;
   fireEvent.click(screen.getByRole("button", { name: "Self-hosted" }));
   expect(new URL(window.location.href).searchParams.get("m")).toBe(

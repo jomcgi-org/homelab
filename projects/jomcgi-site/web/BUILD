@@ -138,6 +138,18 @@ js_test(
     entry_point = "scotland-built.test.mjs",
 )
 
+# Check the built leaderboard and its deferred snapshot/code boundary.
+js_test(
+    name = "leaderboard_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        ":src",
+    ],
+    entry_point = "leaderboard-built.mjs",
+)
+
 js_library(
     name = "test_src",
     srcs = glob(["src/**/*.test.tsx"]) + [

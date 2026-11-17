@@ -163,8 +163,17 @@ The legacy `/app/llm-leaderboard` paths redirect with 301 responses.
 The site imports that file and the hub's `model.js` through the owning Bazel
 package's `:leaderboard_sources` dependency. A new report therefore rebuilds
 the page; there is no second committed snapshot or request-time data fetch.
-The SVG charts fit within the route's 150 KiB JavaScript budget, so they
-hydrate immediately. All paint is in `src/palette.css`.
+The complete report is HTML, including SVG charts. The snapshot, chart code
+and selector load in one dynamic import on pointer, focus or keyboard intent.
+A linked `?m=` selection also triggers hydration. An interaction during the
+download is replayed once handlers exist. The initial route stays under the
+150 KiB JavaScript budget. All paint is in `src/palette.css`.
+
+`:leaderboard_built_test` checks the built charts, table and task list, and
+proves the snapshot stays out of initial scripts and preloads.
+`leaderboard.test.tsx` compares copy and metadata to the hub source and checks
+axe after selection changes; `leaderboard-intent.test.tsx` exercises slow
+downloads, first-click replay, typing, keyboard navigation and linked views.
 
 After the dev deploy, verify `https://next.jomcgi.dev/llm-leaderboard`, both
 legacy redirects and a linked `?m=` selection before prod promotion.
@@ -172,7 +181,7 @@ legacy redirects and a linked `?m=` selection before prod promotion.
 ## Build and test
 
 From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,
-`node prerendered.mjs dist`, `node marketplace.test.mjs dist`, and
+`node leaderboard-built.mjs dist`, `node prerendered.mjs dist`, `node marketplace.test.mjs dist`, and
 `node scotland-built.test.mjs dist`, plus `node factory-built.test.mjs dist`.
 The catalog check compares the built
 file with the hub handler byte for byte. The Scotland build check reads the
