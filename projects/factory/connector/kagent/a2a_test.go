@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,7 +121,7 @@ func TestListGetCancel(t *testing.T) {
 	if err != nil || page.NextPageToken != "" || len(page.Tasks) != 1 || page.TotalSize != 1 || page.PageSize != 100 {
 		t.Fatalf("page = %+v err = %v", page, err)
 	}
-	if got.method != "ListTasks" || got.params["contextId"] != "c1" || got.params["status"] != StateWorking || got.params["historyLength"] != float64(0) {
+	if got.method != "ListTasks" || got.params["contextId"] != "c1" || got.params["status"] != StateWorking || got.params["historyLength"] != float64(0) || got.params["includeArtifacts"] != false {
 		t.Fatalf("request = %+v", got)
 	}
 
@@ -158,6 +159,71 @@ func TestToolRunningPairsCallsWithResults(t *testing.T) {
 		if task.ToolRunning() != c.running {
 			t.Errorf("artifacts [%s]: running = %v, want %v", c.artifacts, task.ToolRunning(), c.running)
 		}
+	}
+}
+
+func TestResponseBudget(t *testing.T) {
+	const response = `{"jsonrpc":"2.0","id":"1","result":{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_WORKING"}}}`
+	for _, extra := range []int{0, 1} {
+		var got rpcSeen
+		// Valid JSON on both sides of the limit, including a complete result
+		// inside the budget. The extra byte must still be detected.
+		c := a2aServer(t, response+strings.Repeat(" ", maxResponseBytes-len(response)+extra), &got)
+		_, err := c.GetTask(context.Background(), ref, "t1")
+		if extra == 0 && err != nil {
+			t.Fatalf("response at the budget: %v", err)
+		}
+		if extra == 1 && !errors.Is(err, ErrResponseTooLarge) {
+			t.Fatalf("response over the budget: %v", err)
+		}
+		_, err = c.GetTaskMetadata(context.Background(), ref, "t1")
+		if err != nil {
+			t.Fatalf("discarded bytes consumed metadata budget (extra=%d): %v", extra, err)
+		}
+		if extra == 1 {
+			if _, err := c.Send(context.Background(), ref, Message{MessageID: "m"}); !errors.Is(err, ErrAmbiguous) || !errors.Is(err, ErrResponseTooLarge) {
+				t.Fatalf("oversized send must retain ambiguous outcome and size condition: %v", err)
+			}
+			if _, err := c.CancelTask(context.Background(), ref, "t1"); !errors.Is(err, ErrResponseTooLarge) {
+				t.Fatalf("oversized cancellation response: %v", err)
+			}
+		}
+	}
+}
+
+func TestGetTaskMetadataRejectsUncertainResponse(t *testing.T) {
+	for _, response := range []string{
+		`{"result":{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_COMPLETED"},"artifacts":[{"parts":[{"text":"truncated`,
+		`{"result":{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_COMPLETED","message":{"parts":[{"text":"bad\q"}]}}}}`,
+		`{"result":{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_COMPLETED"}}} {}`,
+	} {
+		t.Run(response, func(t *testing.T) {
+			var got rpcSeen
+			c := a2aServer(t, response, &got)
+			if task, err := c.GetTaskMetadata(context.Background(), ref, "t1"); err == nil || task != nil {
+				t.Fatalf("incomplete response supplied terminal evidence: task=%+v err=%v", task, err)
+			}
+		})
+	}
+	var got rpcSeen
+	c := a2aServer(t, `{"error":{"code":-32001,"message":"task not found"}}`, &got)
+	if _, err := c.GetTaskMetadata(context.Background(), ref, "t1"); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("metadata read lost missing-task outcome: %v", err)
+	}
+}
+
+func TestGetTaskMetadataOmitsContent(t *testing.T) {
+	var got rpcSeen
+	c := a2aServer(t, `{"result":{"id":"t1","contextId":"c1","status":{"state":"TASK_STATE_WORKING","message":{"parts":[{"text":"status"}]}},"history":[{"parts":[{"text":"history"}]}],"artifacts":[{"parts":[{"text":"artifact"}]}],"metadata":{"extra":"content"}}}`, &got)
+	task, err := c.GetTaskMetadata(context.Background(), ref, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "GetTask" || got.params["id"] != "t1" || got.params["historyLength"] != float64(0) {
+		t.Fatalf("metadata request: %+v", got)
+	}
+	if task.ID != "t1" || task.ContextID != "c1" || task.Status.State != StateWorking || (task.Status.Message == nil || task.Status.Message.Parts[0].Text != "") || task.History != nil || task.Artifacts != nil || task.Metadata != nil {
+		t.Fatalf("metadata projection: %+v", task)
 	}
 }
 

@@ -48,6 +48,7 @@ type Itsaplan interface {
 type Tasks interface {
 	Send(ctx context.Context, agent kagent.AgentRef, msg kagent.Message) (*kagent.Task, error)
 	GetTask(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
+	GetTaskMetadata(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
 	ListTasks(ctx context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error)
 	CancelTask(ctx context.Context, agent kagent.AgentRef, taskID string) (*kagent.Task, error)
 }
@@ -1760,7 +1761,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err
 	}
-	t, err := e.tasks.GetTask(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
+	metadata, err := e.taskMetadata(ctx, a)
 	if errors.Is(err, kagent.ErrTaskNotFound) {
 		return e.missingTask(ctx, r, wi, a)
 	}
@@ -1772,6 +1773,25 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	} else if sticky {
 		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	}
+	if a.Error == boundedOutput {
+		return e.outputLimited(ctx, r, wi, a, metadata)
+	}
+	if err := e.guardAttempt(ctx, a, wi); err != nil {
+		return err
+	}
+	t, err := e.tasks.GetTask(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
+	if errors.Is(err, kagent.ErrResponseTooLarge) {
+		return e.outputLimited(ctx, r, wi, a, metadata)
+	}
+	if err != nil {
+		return err
+	}
+	if t == nil || t.ID != a.TaskID || t.ContextID != a.ContextID {
+		return errors.New("task transcript: invalid task identity")
+	}
+	// Lifecycle decisions use the bounded metadata observation. A newer
+	// transcript state will be observed by the next metadata poll.
+	t.Status.State = metadata.Status.State
 	if gone, err := e.postEvents(ctx, r, t); err != nil || gone {
 		return err
 	}
@@ -2139,7 +2159,7 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	t, err := e.tasks.GetTask(ctx, ref, a.TaskID)
+	t, err := e.taskMetadata(ctx, a)
 	switch {
 	case errors.Is(err, kagent.ErrTaskNotFound) && escalate:
 		return e.forceDelete(ctx, c, r, wi, a)
@@ -2158,7 +2178,7 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		return e.forceDelete(ctx, c, r, wi, a)
 	}
 	if (c.Reason == store.CancelQuotaStall || c.Reason == store.CancelLeaseExpired) && c.Requests == 0 {
-		if withdrawn, err := e.withdrawQuiet(ctx, c, r, wi, a, t); err != nil || withdrawn {
+		if withdrawn, err := e.withdrawQuiet(ctx, c, r, wi, a); err != nil || withdrawn {
 			return err
 		}
 	}
@@ -2188,23 +2208,46 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 // work item, or a run no longer dispatched, keeps it. Once CancelTask is
 // out the cancellation stands: kagent may still apply it, and its
 // confirmation then pauses the turn as a quota failure, or abandons it.
-func (e *Engine) withdrawQuiet(ctx context.Context, c *store.Cancellation, r *store.Run, wi *store.WorkItem, a *store.Attempt, t *kagent.Task) (bool, error) {
-	n, running := taskSize(t), t.ToolRunning()
-	if n == c.EventCount && !running {
+func (e *Engine) withdrawQuiet(ctx context.Context, c *store.Cancellation, r *store.Run, wi *store.WorkItem, a *store.Attempt) (bool, error) {
+	// Lifecycle metadata omits artifacts and cannot prove that the turn is
+	// still quiet. Read activity separately before this automatic cancel.
+	if err := e.guard(ctx); err != nil {
+		return false, err
+	}
+	messageID := taskReadID(a)
+	if err := e.BeginStatusRead(ctx, messageID); err != nil {
+		return false, err
+	}
+	t, err := e.tasks.GetTask(kagent.WithRequestID(ctx, messageID), kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.TaskID)
+	limited := errors.Is(err, kagent.ErrResponseTooLarge)
+	if err != nil && !limited {
+		return false, err
+	}
+	var n int
+	var running bool
+	if !limited {
+		if t == nil || t.ID != a.TaskID || t.ContextID != a.ContextID {
+			return false, errors.New("quiet cancellation activity: invalid task identity")
+		}
+		n, running = taskSize(t), t.ToolRunning()
+	}
+	if !limited && n == c.EventCount && !running {
 		return false, nil
 	}
 	why := "withdrawn: the task changed before CancelTask"
-	if running {
+	if limited {
+		why = "withdrawn: task activity exceeds the transcript budget"
+	} else if running {
 		why = "withdrawn: a tool call started before CancelTask"
 	}
 	var withdrawn bool
-	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+	err = e.w.Tx(ctx, func(tx *sql.Tx) error {
 		withdrawn = false
 		if stopped, err := e.st.LockStop(ctx, tx, wi.ID, r.ID); err != nil || stopped {
 			return err
 		}
 		var err error
-		if withdrawn, err = e.st.WithdrawQuietCancel(ctx, tx, c.ID, why); err != nil || !withdrawn || n == a.EventCount {
+		if withdrawn, err = e.st.WithdrawQuietCancel(ctx, tx, c.ID, why); err != nil || !withdrawn || limited || n == a.EventCount {
 			return err
 		}
 		return e.st.SetAttemptEvents(ctx, tx, a.ID, n, running, e.cfg.Now())

@@ -100,6 +100,7 @@ func TestOriginalMessageLookupReadsPastTenPages(t *testing.T) {
 	original := v.kg.lastTask()
 	v.advanceDispatchWindow()
 	v.tickReconciliation(1, v.cfg.DispatchWindow)
+	// Adoption scans thirteen pages, then progress reads the accepted task's metadata.
 	if v.kg.Executions() != 13 || v.latest(1).TaskID != original || len(v.kg.listedStates) != 13 {
 		t.Fatalf("executions=%d task=%s pages=%d; want original on page 13", v.kg.Executions(), v.latest(1).TaskID, len(v.kg.listedStates))
 	}

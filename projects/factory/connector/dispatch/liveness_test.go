@@ -50,8 +50,10 @@ func TestQuietTurnPastTheProgressLeaseIsCanceledAndRetried(t *testing.T) {
 		t.Fatalf("cancellation = %v, want CancelTask sent", got)
 	}
 	var reads int
+	// The lease decision and the final activity check before CancelTask
+	// each record a read; bounded lifecycle metadata cannot replace either.
 	if err := v.st.DB.QueryRow(`SELECT attempts FROM status_read WHERE message_id = $1`,
-		"kagent/GetTask/factory-homelab/coder/"+first.TaskID).Scan(&reads); err != nil || reads != 1 {
+		"kagent/GetTask/factory-homelab/coder/"+first.TaskID).Scan(&reads); err != nil || reads != 2 {
 		t.Fatalf("recorded task read: attempts = %d, %v", reads, err)
 	}
 	v.tickUntil(30*time.Second, 4, func() bool { return v.latest(1).ID != first.ID })
