@@ -1731,7 +1731,9 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// Only a usable code review starts the goal check, which costs a
 		// second model call.
 		key := goalKey(in.issues)
-		if key != "" {
+		if key == "" {
+			in.goal = nil // The State keeps no answer for another issue.
+		} else {
 			in.goal = e.goalCheck(ctx, b, pr, in, l)
 		}
 		prior := in.prior.Previous()
@@ -1748,8 +1750,8 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// The service's own evidence findings are added after lowering, so
 		// none of them is ever lowered.
 		applyIssueFindings(r, in.issues)
-		if key != "" {
-			applyGoal(r, prior, b.ItsaplanProject, goalFindings(key, in.goal))
+		if b.ItsaplanProject != "" {
+			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
 		}
 		a := Assess(r, prior)
 		a.Earlier, a.EarlierPartial = in.prior.Cleared, !in.prior.ClearedComplete()
