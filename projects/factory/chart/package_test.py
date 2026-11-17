@@ -58,6 +58,20 @@ def test_application_keeps_git_values_until_a_compatible_release_exists() -> Non
     assert _DEPLOY.is_file()
 
 
+def test_application_keeps_finished_discord_imports_as_they_ran() -> None:
+    # HOME-164: a Discord import Job runs once per runId. Without this entry a
+    # new image or chart version changes its immutable template: the sync
+    # fails, or a recreated Job starts an unplanned run with a fresh cap.
+    app = yaml.safe_load(_APPLICATION.read_text())
+    assert {
+        "group": "batch",
+        "kind": "Job",
+        "namespace": "factory-discord",
+        "jsonPointers": ["/spec"],
+    } in app["spec"]["ignoreDifferences"]
+    assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
+
+
 def _render(chart: Path, values: Path, *overrides: str) -> str:
     app = yaml.safe_load(_APPLICATION.read_text())
     helm = app["spec"]["sources"][0]["helm"]
