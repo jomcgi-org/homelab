@@ -77,6 +77,7 @@ def test_wrangler_can_write_its_state_dirs():
     mounts = {m["mountPath"] for m in container["volumeMounts"]}
     assert {"/tmp", "/app/site/.wrangler"} <= mounts
 
+
 def test_a_new_digest_changes_the_release_marker():
     other = "sha256:" + "1" * 64
     first = docs(render())["ConfigMap/jomcgi-site-release"]["data"]["image"]
