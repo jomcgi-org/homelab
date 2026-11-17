@@ -41,6 +41,7 @@ metadata:
   annotations:
     # Create with its consumer for WaitForFirstConsumer storage classes.
     argocd.argoproj.io/sync-wave: "1"
+    {{- include "factory.keep" . | nindent 4 }}
 spec:
   accessModes: [ReadWriteOnce]
   resources:

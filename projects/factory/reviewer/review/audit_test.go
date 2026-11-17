@@ -81,6 +81,9 @@ func TestGoalAuditSurvivesRestartWithoutExtendingRetention(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".reply-interrupted"), []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chtimes(filepath.Join(dir, ".reply-interrupted"), now, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Prune(now.Add(goalAuditRetention)); err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +93,33 @@ func TestGoalAuditSurvivesRestartWithoutExtendingRetention(t *testing.T) {
 	files, err := os.ReadDir(dir)
 	if err != nil || len(files) != 1 {
 		t.Fatal("interrupted write was not removed", err)
+	}
+}
+
+func TestGoalAuditPrunerLeavesActiveWritesAlone(t *testing.T) {
+	dir := t.TempDir()
+	writer, err := OpenGoalAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := writer.Save(GoalAuditRecord{MessageID: "expired", CreatedAt: now.Add(-goalAuditRetention - time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(dir, ".reply-active")
+	if err := os.WriteFile(active, []byte("in progress"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The cleanup job opens the same directory independently of the service.
+	pruner, err := OpenGoalAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pruner.Prune(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(active); err != nil || len(auditRecords(t, pruner)) != 0 {
+		t.Fatal("independent retention must remove expired replies and keep active writes")
 	}
 }
 

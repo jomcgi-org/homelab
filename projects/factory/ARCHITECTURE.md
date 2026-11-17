@@ -2061,6 +2061,8 @@ previews).
   gate, any `not_met` gets one confirmation call (HOME-158). That call opens
   a fresh session with the same evidence and a request to check planned
   staging. It receives neither the first reply nor the code review's prose.
+  It must judge every criterion from the initial answer; an omitted criterion
+  makes the confirmation unavailable.
   A valid confirmation supplies the verdict, including a confirmed `not_met`.
   A failed confirmation produces the medium `unavailable` finding; it cannot
   publish the first answer's high. Existing blockers and human holds still apply.
@@ -2075,10 +2077,11 @@ previews).
     C --> A
     P -->|final verdict| S[Service wording]
     S --> H[Public GitHub check and comment]
+    R[Kept hourly retention job] -->|remove expired records| A
   ```
 
   **Private audit (HOME-158).** PVC `factory-reviewer-goal-audit` provides
-  1 GiB on the default storage class, mounted only by the reviewer service.
+  1 GiB on the default storage class. Only the reviewer and its cleanup job mount it.
   JSON files under `/var/lib/factory-reviewer/goal-audit` keep each full final
   reply, including its rationale and malformed answers. Each record names
   the repository, PR, head, issue key, evidence HMAC, message, task, session,
@@ -2090,11 +2093,23 @@ previews).
   gives a medium `unavailable` finding. Storage errors log only fixed text.
   The directory has mode `0700`; files have mode `0600`.
 
-  Retention is 14 days from first receipt. The service deletes expired files
-  at startup and hourly, including when no PR is open. Deletion can lag expiry
-  by one hour while the service runs. After downtime, startup removes expired
-  files before reviews start. Temporary files from interrupted writes are removed too.
-  The PVC survives Pod replacement. The chart configures no backup or public read endpoint.
+  Retention is 14 days from first receipt. The service prunes at startup and
+  hourly. CronJob `factory-reviewer-goal-audit` also prunes hourly with the
+  packaged reviewer image and `--prune-goal-audit`. That mode needs only the
+  volume; it reads no service configuration or credentials and makes no network calls.
+  Its kept NetworkPolicy admits no ingress or egress. The job prefers the
+  reviewer's node for RWO disks, but can run without a reviewer Pod.
+  Expired temporary writes are removed; fresh writes are left for the active writer.
+  Concurrent pruners tolerate files that the other process already removed.
+
+  The PVC, CronJob and its NetworkPolicy have `Prune=false,Delete=false`
+  and Helm's `keep` annotation. A rollback to a chart without audit support
+  preserves unexpired replies and the independent retention job with its pinned image.
+  Deletion can lag expiry by one hour while the cluster runs. After downtime,
+  the next job prunes expired files; the reviewer also prunes before starting.
+  Keep these resources after rollback. Decommission them only after the last
+  audit write is 14 days old and a cleanup job completes successfully.
+  The chart configures no backup or public read endpoint.
   Operators with private Pod access can find a PR's records with:
 
   ```sh
