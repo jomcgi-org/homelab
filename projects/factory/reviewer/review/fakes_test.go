@@ -949,8 +949,9 @@ type fakeKagent struct {
 	// listErr fails ListTasks.
 	listErr error
 	// goal is the reply a goal check's task finishes with as it opens;
-	// empty leaves it working.
-	goal string
+	// empty leaves it working. onGoal, if set, runs as it opens.
+	goal   string
+	onGoal func()
 }
 
 type fakeTask struct {
@@ -1030,6 +1031,9 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	}}
 	k.initial[msg.MessageID] = id
 	k.executions++
+	if k.onGoal != nil && strings.Contains(msg.MessageID, "/goal/") {
+		k.onGoal()
+	}
 	if k.goal != "" && strings.Contains(msg.MessageID, "/goal/") {
 		t := &k.tasks[id].task
 		reply := &kagent.Message{MessageID: id + "-reply", TaskID: id, Role: "ROLE_AGENT", Parts: []kagent.Part{{Text: k.goal}}}

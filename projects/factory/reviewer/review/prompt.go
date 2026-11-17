@@ -111,6 +111,12 @@ func writeUntrusted(b *strings.Builder, kind, sha, text string) {
 	fmt.Fprintf(b, "<%s>\n%s\n</%s>\n\n", tag, text, tag)
 }
 
+// writeQuoted writes untrusted text as writeUntrusted does, with each of its
+// lines quoted, so no text closes the block or starts a line of its own.
+func writeQuoted(b *strings.Builder, kind, sha, text string) {
+	writeUntrusted(b, kind, sha, quote(strings.TrimRight(text, "\n")))
+}
+
 // Prompt builds the review task. The service supplies the rules and the
 // repository context from the base branch; everything the PR's author
 // controls sits inside delimited blocks the agent is told to treat as data.

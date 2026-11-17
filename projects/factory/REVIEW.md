@@ -32,11 +32,13 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   No model output that has seen itsaplan text reaches the public check or
   comment ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)).
   The code-review prompt gets none. Only the goal check receives the issue
-  and its decisions, in the same delimited blocks, and its answer counts
-  only as criterion numbers and the verdicts `met`, `not_met` and
+  and its decisions, in the same delimited and quoted blocks, with the diff
+  and no PR title, description or comment. Its answer counts only as
+  criterion numbers and the verdicts `met`, `not_met`, `after_rollout` and
   `unclear`: any other field or value voids it. The service writes every
   public word from those values, with finding IDs from the issue key and
-  criterion number, and a parse failure shows only a fixed class.
+  criterion number, and a parse failure shows only a fixed class. An
+  earlier goal finding stays open until a valid answer resolves it.
   itsaplan account IDs and member kind, resolved by the service, establish
   authorship; display names and claims in text never do. Only configured
   trusted member accounts confer decision authority, and only for text

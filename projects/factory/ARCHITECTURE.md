@@ -1996,31 +1996,43 @@ previews).
   issue, apart from the code review. It runs after the code review gives a
   usable report, and only when a trusted author's PR names an issue that
   resolves with its full text. Its task opens a fresh session of the
-  review agent with message ID `<check external ID>/goal/<prompt digest>`,
+  review agent with message ID `<check external ID>/goal/<prompt HMAC>`,
   so a restart finds the same task. No review resumes that session, so the
   service deletes it once it reads the answer. The prompt holds the issue
-  and its status, the linked decisions with their provenance, and the PR's
-  title, description, file list and patches (at most 60,000 bytes).
-  Trusted text is quoted; other text sits in delimited untrusted blocks.
-  The answer is one JSON block: per acceptance criterion, its number (1 to
-  50) and a verdict `met`, `not_met` or `unclear`, and an optional overall
-  verdict. Any other field or value, a repeated or out-of-range number, or
-  a second value voids the answer. The service reads no other text of the
-  reply, and posts only its own:
+  and its status, the linked decisions with their provenance, and the file
+  list and patches (at most 60,000 bytes). It holds no PR title,
+  description or comment, so only the head and the evidence digest decide
+  the answer. Trusted text is quoted. Other text sits in delimited
+  untrusted blocks, with each of its lines quoted. The answer is one JSON
+  block: a verdict for each acceptance criterion by number, and an overall
+  verdict for the stated problem. The verdicts are `met`, `not_met`,
+  `after_rollout` (only a rollout or live use can show it) and `unclear`.
+  Any other field or value, no overall verdict, numbers other than 1 to N
+  once each, more than 50 criteria or a second value voids the answer. The
+  service reads no other text of the reply, and posts only its own:
 
-  | Answer                    | Finding ID                | Title                                | Severity |
-  | ------------------------- | ------------------------- | ------------------------------------ | -------- |
-  | overall `not_met`         | `HOME-N:goal`             | HOME-N: stated problem not addressed | high     |
-  | criterion K `not_met`     | `HOME-N:goal:criterion-K` | HOME-N criterion K: not met          | medium   |
-  | criterion K `unclear`     | `HOME-N:goal:criterion-K` | HOME-N criterion K: unclear          | low      |
-  | void, failed or timed out | `HOME-N:goal:unavailable` | HOME-N: goal check unavailable       | medium   |
+  | Answer                      | Finding ID                | Title                                         | Severity |
+  | --------------------------- | ------------------------- | --------------------------------------------- | -------- |
+  | overall `not_met`           | `HOME-N:goal`             | HOME-N: stated problem not addressed          | high     |
+  | overall `unclear`           | `HOME-N:goal`             | HOME-N: stated problem unverified             | medium   |
+  | overall `after_rollout`     | `HOME-N:goal`             | HOME-N: stated problem to check after rollout | low      |
+  | criterion K `not_met`       | `HOME-N:goal:criterion-K` | HOME-N criterion K: not met                   | medium   |
+  | criterion K `unclear`       | `HOME-N:goal:criterion-K` | HOME-N criterion K: unverified                | medium   |
+  | criterion K `after_rollout` | `HOME-N:goal:criterion-K` | HOME-N criterion K: to check after rollout    | low      |
+  | void, failed or timed out   | `HOME-N:goal:unavailable` | HOME-N: goal check unavailable                | medium   |
 
-  The goal check owns these IDs. The service drops the code review's
-  findings and accounts under them, and marks fixed an earlier goal
-  finding that the check no longer reports as blocking. The check's State
-  keeps the answer for its head and evidence digest, so a fresh review of
-  the same evidence makes no second call; an unavailable answer is not
-  kept. **Why.** Joe chose structured verdicts on 2026-11-16
+  The delivery owner checks each `after_rollout` verdict after rollout. The
+  goal check owns these IDs: the service drops the code review's findings
+  and accounts under them. An earlier goal finding stays open at its
+  earlier severity until a valid answer resolves it. `met` resolves its
+  criterion or the stated problem, and a list shorter than K resolves
+  criterion K. Any valid answer resolves `unavailable`. When the PR names a
+  new issue, a valid answer for it resolves the old issue's findings. Only
+  the issue text or a linked trusted decision moves a criterion to another
+  issue. The check's State keeps the answer for its head and evidence
+  digest, so a fresh review of the same evidence makes no second call; an
+  unavailable answer is not kept.
+  **Why.** Joe chose structured verdicts on 2026-11-16
   ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)): fixed wording from enum values cannot carry
   issue text, whatever the model writes, and the call costs Codex quota
   only once per head and evidence.
