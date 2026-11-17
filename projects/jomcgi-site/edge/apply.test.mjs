@@ -91,6 +91,8 @@ const served = (url) => ROUTES.patterns.some((p) => routeMatches(p, url));
 
 // Paths that other services or the hub still own on jomcgi.dev.
 const STAYS_ON_THE_HUB = [
+  // The hub home page polls this until the home page moves (HOME-215, HOME-206).
+  "jomcgi.dev/app/notes/stats",
   "jomcgi.dev/scotland/mcp",
   "jomcgi.dev/scotland/v1/walks",
   "jomcgi.dev/health",
@@ -112,8 +114,6 @@ test("routed pages are served with and without a query string", () => {
   for (const path of [
     "/cv",
     "/cv/",
-    "/app/notes",
-    "/app/notes/graph",
     "/notes",
     "/ember",
     "/ember/firecracker",

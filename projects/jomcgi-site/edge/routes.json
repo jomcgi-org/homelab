@@ -3,7 +3,6 @@
   "script": "jomcgi-site",
   "patterns": [
     "jomcgi.dev/app/firecracker*",
-    "jomcgi.dev/app/notes*",
     "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
     "jomcgi.dev/cv*",
