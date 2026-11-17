@@ -1,8 +1,9 @@
 {{- /*
-The deploy Job is an Argo CD Sync hook, and Argo CD does not diff hooks. This
-ConfigMap carries the chart version, the image digest and the stage. Any chart
-change, a Job-only change included, makes the Application OutOfSync, so the
-next sync runs the Job again.
+The deploy and edge Jobs are Argo CD hooks, and Argo CD does not diff hooks.
+This ConfigMap carries every value the hooks act on: the chart version, the
+image digest, the stage, and the edge switches. A change to any of them, such
+as edge.serveRoutes alone, makes the Application OutOfSync, so the next sync
+runs the Jobs again.
 */}}
 {{- if not (has .Values.stage (list "dev" "prod")) }}
 {{- fail "stage must be dev or prod" }}
@@ -17,4 +18,6 @@ metadata:
 data:
   chart: {{ .Chart.Version | quote }}
   stage: {{ .Values.stage | quote }}
+  edge: {{ .Values.edge.enabled | toString | quote }}
+  serveRoutes: {{ .Values.edge.serveRoutes | toString | quote }}
   image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}

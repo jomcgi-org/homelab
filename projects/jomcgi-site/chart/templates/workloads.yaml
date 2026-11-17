@@ -6,6 +6,9 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- if not (has .Values.stage (list "dev" "prod")) }}
 {{- fail "stage must be dev or prod" }}
 {{- end }}
+{{- if not (kindIs "bool" .Values.edge.serveRoutes) }}
+{{- fail "edge.serveRoutes must be true or false" }}
+{{- end }}
 {{- $deploy := index .Values.workloads "jomcgi-site-deploy" }}
 {{- if has "--env" $deploy.args }}
 {{- fail "the deploy Job's --env comes from .Values.stage; do not set it in args" }}
@@ -14,9 +17,6 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- if .Values.edge.enabled }}
 {{- if ne .Values.stage "prod" }}
 {{- fail "edge.enabled is for the prod stage only: zone config is not per stage" }}
-{{- end }}
-{{- if not (kindIs "bool" .Values.edge.serveRoutes) }}
-{{- fail "edge.serveRoutes must be true or false" }}
 {{- end }}
 {{- $edge := deepCopy .Values.edge.workload }}
 {{- $env := append $edge.env (dict "name" "EDGE_SERVE_ROUTES" "value" (toString .Values.edge.serveRoutes)) }}
