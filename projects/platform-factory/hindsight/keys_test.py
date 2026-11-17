@@ -196,8 +196,8 @@ def test_embeddings_use_voyage_through_openrouter_without_data_retention():
 
 def test_a_decision_model_ranks_recall_and_no_local_model_loads():
     # HOME-182: Jev 1.14 through OpenRouter's System One endpoint, on the
-    # shared key; no reranker model and no local fallback (Joe, HOME-130
-    # comment 1498).
+    # shared key; no reranker model and no local fallback (Joe on #8147,
+    # comment 6949878652).
     (deployment,) = [
         d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
     ]
