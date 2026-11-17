@@ -4,7 +4,7 @@
 #
 #   kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml
 #
-# Then revert the embeddings change and finish in the running pod
+# Then revert #8144's commits and finish in the running pod
 # (projects/factory/ARCHITECTURE.md, Memory). rollback_test runs the same
 # command and settings in this image. keys_test pins them to it.
 apiVersion: batch/v1

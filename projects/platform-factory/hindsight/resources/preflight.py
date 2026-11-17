@@ -4,13 +4,10 @@ Runs as an ArgoCD Sync hook in wave -1: after the 1Password items (wave -2),
 before the Deployment (wave 0). It fails the sync, and leaves the running pod
 alone, when:
 
-- with the openrouter provider: the key is empty, OpenRouter rejects the key
-  or model, or the model returns another dimension than EMBEDDINGS_DIMENSIONS;
+- the OpenRouter key is empty, OpenRouter rejects the key or model, or the
+  model returns another dimension than EMBEDDINGS_DIMENSIONS;
 - stored rows have another dimension than EMBEDDINGS_DIMENSIONS. Hindsight
   resizes an empty vector column at startup but refuses one with rows.
-
-With the local provider it checks only the stored rows, so a rollback to the
-image's model (384 dimensions) passes once every row is re-embedded.
 
 Uses the image's Python, its asyncpg and the standard library.
 """
@@ -79,30 +76,26 @@ async def database(url):
 
 
 def main():
-    provider = os.environ["EMBEDDINGS_PROVIDER"]
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        raise SystemExit("Secret hindsight-openrouter has an empty api-key")
+    model = os.environ["EMBEDDINGS_MODEL"]
     dimension = int(os.environ["EMBEDDINGS_DIMENSIONS"])
-    if provider == "openrouter":
-        key = os.environ.get("OPENROUTER_API_KEY", "")
-        if not key:
-            raise SystemExit("Secret hindsight-openrouter has an empty api-key")
-        model = os.environ["EMBEDDINGS_MODEL"]
-        extra = json.loads(os.environ.get("EMBEDDINGS_EXTRA_BODY") or "{}")
-        returned = model_dimension(key, model, extra)
-        if returned != dimension:
-            raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
-    elif provider != "local":
-        raise SystemExit(f"unknown embeddings provider {provider!r}")
+    extra = json.loads(os.environ.get("EMBEDDINGS_EXTRA_BODY") or "{}")
+    returned = model_dimension(key, model, extra)
+    if returned != dimension:
+        raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
     columns = asyncio.run(database(os.environ["DATABASE_URL"]))
     for table, (column, rows) in columns.items():
         print(f"{table}: {column}, {rows} rows with a vector")
     problems = refused(columns, dimension)
     if problems:
         raise SystemExit(
-            f"The {provider} model has {dimension} dimensions, but "
+            f"{model} returns {dimension} dimensions, but "
             + "; ".join(problems)
             + ". Re-embed first: projects/factory/ARCHITECTURE.md, Memory."
         )
-    print(f"preflight passed: {provider}, {dimension} dimensions")
+    print(f"preflight passed: {model}, {dimension} dimensions")
 
 
 if __name__ == "__main__":
