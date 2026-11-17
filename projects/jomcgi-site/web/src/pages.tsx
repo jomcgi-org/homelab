@@ -67,3 +67,13 @@ export function NotFoundPage() {
     </Shell>
   );
 }
+
+/**
+ * Every page, keyed by its HTML entry. Each entry's script mounts its page
+ * from here, and the accessibility test runs axe on every page listed, so a
+ * new page cannot ship without the check.
+ */
+export const PAGES: Record<string, () => React.JSX.Element> = {
+  "index.html": HomePage,
+  "404.html": NotFoundPage,
+};

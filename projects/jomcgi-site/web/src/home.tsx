@@ -1,4 +1,5 @@
 import { mount } from "./mount";
-import { HomePage } from "./pages";
+import { PAGES } from "./pages";
 
-mount(<HomePage />);
+const Page = PAGES["index.html"]!;
+mount(<Page />);
