@@ -103,7 +103,9 @@ without following one. Prefix each line in Related with how it relates:
 - `Fixes`: the PR that introduced the bug, with its subject.
 - `Blocks`, `Blocked by` or `Replaces`: another PR or issue.
 - `Closes`: a GitHub issue this PR resolves. GitHub closes it on merge.
-- `Decision`: where Joe made a decision that the change relies on.
+- `Decision`: where Joe made a decision that the change relies on. The
+  code review cannot read itsaplan; when it must rely on the decision, link
+  Joe's comment on the PR.
 - `Evidence`: a log query, dashboard or comment that holds the proof.
 
 A repository autolink turns `HOME-N` in issues, PRs, commit messages and
