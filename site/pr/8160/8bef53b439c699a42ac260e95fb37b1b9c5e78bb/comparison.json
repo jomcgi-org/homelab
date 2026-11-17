@@ -1,6 +1,6 @@
 {
-  "head": "1576a65f4ddeca84df07bc54285d23e7f34d2916",
-  "baseline": "62b03899de7a5791de4c857e705b2e91c51d2307",
+  "head": "8bef53b439c699a42ac260e95fb37b1b9c5e78bb",
+  "baseline": "2b876c9be0df5c655fb17808369419fc3ffb94df",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -125,7 +125,7 @@
       "after": "captures/blog/after-390x844-complete.png",
       "before": "captures/blog/before-390x844-complete.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 2472
@@ -999,7 +999,7 @@
       "after": "captures/review/after-gaps-audit-390-light.png",
       "before": "captures/review/before-gaps-audit-390-light.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
