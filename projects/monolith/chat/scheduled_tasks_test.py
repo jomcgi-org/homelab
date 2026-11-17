@@ -6,6 +6,7 @@ from threading import Barrier
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from core.clock import as_utc
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -384,42 +385,72 @@ def test_cron_semantics_use_standard_dom_dow_or_and_utc():
     )
 
 
+def _at(hour, minute):
+    return datetime(2026, 9, 12, hour, minute, tzinfo=timezone.utc)
+
+
+def _outbox(engine) -> list[str]:
+    with Session(engine) as session:
+        rows = session.query(DiscordOutbox).order_by(DiscordOutbox.id)
+        return [row.content for row in rows]
+
+
 @pytest.mark.asyncio
 async def test_digest_without_gateway_pauses_with_one_notice_and_resumes(engine):
     # HOME-221: with the gateway off, chat.messages gets no new messages, so a
     # digest would repeat old ones. It pauses: one notice, the task keeps its
-    # schedule, and it runs again when digests resume. A reminder still fires.
-    digest_id, digest_due = _insert_due(engine, kind="digest")
+    # schedule, and a reminder still fires.
+    digest_id, digest_due = _insert_due(engine, kind="digest")  # */15, due 12:15
     reminder_id, _ = _insert_due(engine)
     build = AsyncMock(return_value="📋 Scheduled summary digest:\nfresh")
-    paused = dict(claimant="leader-a", digest_builder=build, digests=False)
-    delivered = await drain_once(
-        engine, now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc), **paused
-    )
-    assert delivered == 1  # the reminder; the notice is not an occurrence
-    await drain_once(
-        engine, now=datetime(2026, 9, 12, 12, 31, tzinfo=timezone.utc), **paused
-    )
-    build.assert_not_awaited()
-    with Session(engine) as session:
-        contents = sorted(row.content for row in session.query(DiscordOutbox).all())
-        assert contents == sorted(
-            [DIGEST_PAUSED.format(mode="summary"), "⏰ <@456> reminder: stand up"]
+    notice = DIGEST_PAUSED.format(mode="summary")
+    reminder = "⏰ <@456> reminder: stand up"
+
+    async def drain(now, digests):
+        return await drain_once(
+            engine, now=now, claimant="leader-a", digest_builder=build, digests=digests
         )
+
+    assert await drain(_at(12, 16), False) == 1  # the reminder
+    await drain(_at(12, 31), False)
+    build.assert_not_awaited()
+    assert sorted(_outbox(engine)) == sorted([notice, reminder])
+    with Session(engine) as session:
         digest = session.get(ScheduledTask, digest_id)
         assert digest.status == "pending"
-        assert digest.next_run_at.replace(tzinfo=timezone.utc) == digest_due.replace(
-            tzinfo=timezone.utc
-        )
+        assert as_utc(digest.next_run_at) == as_utc(digest_due)
         assert session.get(ScheduledTask, reminder_id).status == "completed"
-    resumed = await drain_once(
-        engine,
-        now=datetime(2026, 9, 12, 12, 46, tzinfo=timezone.utc),
-        claimant="leader-a",
-        digest_builder=build,
-    )
-    assert resumed == 1
-    build.assert_awaited_once()
+
+    # Resumed: the paused occurrence is skipped, not summarised from messages
+    # stored before the pause; the next cron instant runs.
+    assert await drain(_at(12, 46), True) == 0
+    build.assert_not_awaited()
     with Session(engine) as session:
-        assert session.get(ScheduledTask, digest_id).status == "pending"
-        assert session.query(DiscordOutbox).count() == 3
+        assert as_utc(session.get(ScheduledTask, digest_id).next_run_at) == _at(13, 0)
+    assert await drain(_at(13, 1), True) == 1
+    build.assert_awaited_once()
+
+    # A later pause gets its own notice.
+    await drain(_at(13, 16), False)
+    assert _outbox(engine).count(notice) == 2
+
+
+@pytest.mark.asyncio
+async def test_paused_digest_left_claimed_by_an_old_leader_is_released_and_noticed(
+    engine,
+):
+    # The old leader claimed the digest and stopped before finishing it. Once
+    # the lease expires the paused scheduler returns it to pending with a notice.
+    digest_id, _ = _insert_due(engine, kind="digest")
+    with Session(engine) as session:
+        assert len(claim_due(session, _at(12, 16), "old-leader")) == 1
+        session.commit()
+    await drain_once(engine, now=_at(12, 17), claimant="leader-b", digests=False)
+    with Session(engine) as session:
+        assert session.get(ScheduledTask, digest_id).status == "claimed"  # lease live
+    await drain_once(engine, now=_at(12, 22), claimant="leader-b", digests=False)
+    with Session(engine) as session:
+        task = session.get(ScheduledTask, digest_id)
+        assert task.status == "pending"
+        assert task.claim_token is None
+    assert _outbox(engine) == [DIGEST_PAUSED.format(mode="summary")]

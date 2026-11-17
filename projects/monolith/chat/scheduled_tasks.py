@@ -56,7 +56,7 @@ class ClaimedOccurrence:
 
 # A digest reads chat.messages, which only the Discord gateway fills. With the
 # gateway off (DISCORD_GATEWAY_ENABLED=false, HOME-221) digests pause: they keep
-# their schedule, and each due one posts this notice once.
+# their schedule, and each paused occurrence posts this notice once.
 DIGEST_PAUSED = (
     "📋 Scheduled {mode} digest paused: this bot no longer stores this "
     "channel's messages. It resumes when message storage is back."
@@ -497,47 +497,100 @@ def _claim_with_engine(
         return claims
 
 
-def notify_paused_digests(session: Session, now: datetime) -> int:
-    """Post one notice for each due digest while digests are paused.
+def _pause_key(task: ScheduledTask) -> str:
+    """One pause notice per paused occurrence: a later pause has a new key."""
+    return f"digest-paused:{task.id}:{as_utc(task.next_run_at).isoformat()}"
 
-    The tasks stay ``pending`` with the same ``next_run_at``, so they run
-    again when digests resume. The outbox dedupe key sends the notice once per
-    task. Returns the number of notices enqueued.
-    """
+
+def _due_digests(session: Session, now: datetime) -> list[ScheduledTask]:
+    return list(
+        session.exec(
+            select(ScheduledTask)
+            .where(ScheduledTask.task_kind == "digest")
+            .where(ScheduledTask.status == "pending")
+            .where(ScheduledTask.next_run_at <= now)
+        ).all()
+    )
+
+
+def _paused(session: Session, task: ScheduledTask) -> bool:
     from chat.models import DiscordOutbox
 
-    due = session.exec(
-        select(ScheduledTask)
+    return (
+        session.exec(
+            select(DiscordOutbox.id).where(DiscordOutbox.dedupe_key == _pause_key(task))
+        ).first()
+        is not None
+    )
+
+
+def notify_paused_digests(
+    session: Session, now: datetime, *, lease_seconds: int = CLAIM_LEASE_SECONDS
+) -> int:
+    """Post one notice for each due digest while digests are paused.
+
+    A digest an earlier leader claimed and never finished goes back to
+    ``pending`` once its lease expires. The tasks keep their ``next_run_at``,
+    so they run again when digests resume. Returns the notices enqueued.
+    """
+    now = as_utc(now)
+    stale_before = now - timedelta(seconds=lease_seconds)
+    session.exec(
+        update(ScheduledTask)
         .where(ScheduledTask.task_kind == "digest")
-        .where(ScheduledTask.status == "pending")
-        .where(ScheduledTask.next_run_at <= as_utc(now))
-    ).all()
+        .where(ScheduledTask.status == "claimed")
+        .where(
+            or_(
+                ScheduledTask.claimed_at.is_(None),
+                ScheduledTask.claimed_at <= stale_before,
+            )
+        )
+        .values(
+            status="pending",
+            claim_token=None,
+            claimed_at=None,
+            current_occurrence_id=None,
+        )
+    )
     sent = 0
-    for task in due:
-        key = f"digest-paused:{task.id}"
-        if (
-            session.exec(
-                select(DiscordOutbox.id).where(DiscordOutbox.dedupe_key == key)
-            ).first()
-            is not None
-        ):
+    for task in _due_digests(session, now):
+        if _paused(session, task):
             continue
         mode = json.loads(task.payload_json or "{}").get("mode", "summary")
         enqueue_message(
             session,
             task.channel_id,
             content=DIGEST_PAUSED.format(mode=mode),
-            dedupe_key=key,
+            dedupe_key=_pause_key(task),
         )
         sent += 1
     return sent
 
 
-def _notify_paused_with_engine(engine, now: datetime) -> int:
+def skip_paused_occurrences(session: Session, now: datetime) -> int:
+    """Move resumed digests past the occurrence that was due while paused.
+
+    Its window holds only messages from before the pause, so the digest runs
+    next at its first cron instant after ``now`` instead. Returns the count.
+    """
+    now = as_utc(now)
+    skipped = 0
+    for task in _due_digests(session, now):
+        if _paused(session, task):
+            task.next_run_at = next_cron_at(task.cron_expression or "", now)
+            session.add(task)
+            skipped += 1
+    return skipped
+
+
+def _pause_step_with_engine(engine, now: datetime, digests: bool) -> int:
     with Session(engine) as session:
-        sent = notify_paused_digests(session, now)
+        if digests:
+            count = skip_paused_occurrences(session, now)
+        else:
+            count = notify_paused_digests(session, now)
         session.commit()
-        return sent
+        return count
 
 
 def _finalize_with_engine(
@@ -598,11 +651,13 @@ async def drain_once(
     """Claim and enqueue due work once. Returns finalized occurrence count.
 
     With ``digests`` false, digests are paused: only reminders are claimed,
-    and each due digest gets one ``DIGEST_PAUSED`` notice and stays pending."""
+    and each due digest gets one ``DIGEST_PAUSED`` notice and stays pending.
+    With ``digests`` true, a digest whose due occurrence was paused moves to its
+    next cron instant instead of summarising messages from before the pause."""
     now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
-    if not digests:
-        await asyncio.to_thread(_notify_paused_with_engine, engine, now)
+    # Paused: notice due digests. Resumed: skip the occurrence due while paused.
+    await asyncio.to_thread(_pause_step_with_engine, engine, now, digests)
     claims = await asyncio.to_thread(
         _claim_with_engine, engine, now, claimant, None if digests else ("reminder",)
     )
