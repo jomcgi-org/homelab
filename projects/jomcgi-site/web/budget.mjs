@@ -29,6 +29,10 @@ export function measure(dist) {
     });
 }
 
+export function overBudget(results) {
+  return results.filter(({ bytes }) => bytes > BUDGET_BYTES);
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const dist = process.argv[2];
   if (!dist) {
@@ -40,13 +44,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error(`no HTML pages in ${dist}`);
     process.exit(1);
   }
-  let failed = false;
+  const over = new Set(overBudget(results).map(({ page }) => page));
   for (const { page, bytes } of results) {
-    const over = bytes > BUDGET_BYTES;
-    failed ||= over;
     console.log(
-      `${over ? "OVER " : "ok   "} ${page}: ${(bytes / 1024).toFixed(1)} KiB gzipped JS (budget ${BUDGET_BYTES / 1024} KiB)`,
+      `${over.has(page) ? "OVER " : "ok   "} ${page}: ${(bytes / 1024).toFixed(1)} KiB gzipped JS (budget ${BUDGET_BYTES / 1024} KiB)`,
     );
   }
-  process.exit(failed ? 1 : 0);
+  process.exit(over.size > 0 ? 1 : 0);
 }

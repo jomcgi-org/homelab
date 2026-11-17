@@ -33,7 +33,8 @@ wrangler.jsonc ─────────────────────�
 - **Caching.** `/assets/*` files are named by content hash and cached forever.
   A deploy serves new files at once, so routine releases need no cache purge.
 - **Performance.** Each page's initial JavaScript must stay under 150 KiB
-  gzipped (`budget.mjs`, run by `:budget_test`).
+  gzipped. `budget.mjs` measures it, `:budget_test` runs it on the build, and
+  a unit test proves it fails an over-budget page.
 - **Accessibility.** Pages have no axe violations in happy-dom, and the colour
   tokens in `src/palette.css` meet WCAG contrast in light and dark modes.
   Colour contrast on real CSS is checked in a browser after deploy (HOME-174).
@@ -56,6 +57,6 @@ OutOfSync and syncs it again. A failed deploy is a failed sync.
 `api-token` and `account-id` (permissions are listed in HOME-174). Kargo
 takes over the stage pins when HOME-116 slice 2 lands.
 
-`public/robots.txt` disallows all crawling while only the preview host
-serves this site. The change that routes `/robots.txt` on jomcgi.dev here
-replaces it.
+`public/robots.txt` lets crawlers fetch every page, so they can read each
+page's indexing rules. `public/_headers` sends `X-Robots-Tag: noindex` for
+the preview host only.

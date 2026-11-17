@@ -18,9 +18,18 @@ describe("static hosting headers", () => {
     );
   });
 
-  it("keeps the preview host out of search engines", () => {
-    expect(readFileSync("public/robots.txt", "utf8")).toMatch(
-      /Disallow: \/\s*$/,
+  it("keeps the preview host out of search results without hiding the rule", () => {
+    expect(headers).toMatch(
+      /https:\/\/next\.jomcgi\.dev\/\*\n\s+X-Robots-Tag: noindex/,
     );
+    // A Disallow would stop crawlers from fetching pages and seeing noindex.
+    expect(readFileSync("public/robots.txt", "utf8")).not.toMatch(/Disallow/);
+  });
+
+  it("sends noindex only for the preview host", () => {
+    const rules = headers.split(/\n(?=\S)/);
+    for (const rule of rules.filter((r) => r.includes("X-Robots-Tag"))) {
+      expect(rule.split("\n")[0]).toBe("https://next.jomcgi.dev/*");
+    }
   });
 });

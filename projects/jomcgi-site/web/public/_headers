@@ -8,3 +8,8 @@
 # Vite names these files by content hash, so they never change.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# The preview host stays out of search results. Crawlers may fetch it (robots.txt
+# allows them), so they see this header; a robots.txt Disallow would hide it.
+https://next.jomcgi.dev/*
+  X-Robots-Tag: noindex
