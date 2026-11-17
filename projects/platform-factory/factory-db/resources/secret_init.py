@@ -47,6 +47,12 @@ LOGINS = [
     ),
     ("factory-db-reviewer-login", "factory_reviewer", "factory", "factory-reviewer-db"),
     ("factory-db-hindsight-login", "factory_hindsight", "hindsight", "hindsight-db"),
+    (
+        "factory-db-discord-hindsight-login",
+        "factory_discord_hindsight",
+        "hindsight-discord",
+        "hindsight-db",
+    ),
 ]
 
 

@@ -1,0 +1,17 @@
+# The bridge and acceptance pod need client egress under the cluster default-deny.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-discord
+  namespace: factory-discord
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight-discord
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP

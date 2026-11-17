@@ -56,6 +56,18 @@ type: kubernetes.io/basic-auth
 stringData:
   username: factory_hindsight
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-discord-hindsight-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_discord_hindsight
+---
 # factory-db's Garage key, filled by garage-init
 # (projects/platform-factory/garage). factory-db-init holds the Cluster back
 # until it is filled: an instance that starts without it never picks it up,
@@ -122,6 +134,7 @@ rules:
       - factory-db-connector-login
       - factory-db-reviewer-login
       - factory-db-hindsight-login
+      - factory-db-discord-hindsight-login
     verbs: [get, update]
   - apiGroups: [""]
     resources: [secrets]
@@ -198,8 +211,8 @@ spec:
             name: factory-db-setup
 ---
 # After every sync: writes the connection strings into the factory and
-# hindsight namespaces, waiting up to 15 minutes for factory-db-secrets to create their
-# placeholders. It never connects to the database.
+# both Hindsight namespaces, waiting up to 15 minutes for their Applications
+# to create the placeholders. It never connects to the database.
 apiVersion: batch/v1
 kind: Job
 metadata:

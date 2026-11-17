@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Discord memory (HOME-163).
+resources:
+  - network-policy.yaml
+  - secrets.yaml
+  - hindsight.yaml
+
+configMapGenerator:
+  - name: hindsight-keys
+    namespace: hindsight-discord
+    files:
+      - keys.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

@@ -41,6 +41,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: hindsight
             app.kubernetes.io/name: hindsight
+        # Discord memory uses a separate process and database.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight-discord
+            app.kubernetes.io/name: hindsight
         # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: factory-db
