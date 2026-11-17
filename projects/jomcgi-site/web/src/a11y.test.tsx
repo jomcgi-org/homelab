@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "@testing-library/react";
 import axe from "axe-core";
@@ -46,6 +46,59 @@ describe("page registry", () => {
       expect(vi.mocked(mount)).toHaveBeenCalledTimes(1);
       const element = vi.mocked(mount).mock.calls[0]![0] as { type: unknown };
       expect(element.type).toBe(PAGES[entry]);
+    },
+  );
+});
+
+/** The relative modules a source file imports, as paths under src/. */
+function imports(file: string): string[] {
+  const source = readFileSync(join("src", file), "utf8");
+  return [...source.matchAll(/from\s+"\.\/([^"]+)"/g)].flatMap((match) => {
+    const name = match[1]!;
+    return [".tsx", ".ts"]
+      .map((ext) => `${name}${ext}`)
+      .filter((path) => existsSync(join("src", path)));
+  });
+}
+
+/** Every module an entry script reaches through relative imports. */
+function closure(entry: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length) {
+    const file = queue.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    queue.push(...imports(file));
+  }
+  return seen;
+}
+
+describe("per-page code", () => {
+  // The module that declares each registered page component.
+  const sources = readdirSync("src").filter((f) => /\.tsx?$/.test(f));
+  const moduleOf = new Map(
+    Object.values(PAGES).map((Page) => [
+      Page,
+      sources.find((f) =>
+        readFileSync(join("src", f), "utf8").includes(
+          `export function ${Page.name}(`,
+        ),
+      ),
+    ]),
+  );
+  const pageModules = new Set(moduleOf.values());
+
+  it.each(Object.keys(PAGES))(
+    "%s reaches its own page and no other, nor the registry",
+    (entry) => {
+      const html = readFileSync(entry, "utf8");
+      const script = html.match(/<script\b[^>]*\ssrc="\.\/src\/([^"]+)"/)![1]!;
+      const reached = closure(script);
+      expect(reached.has("pages.tsx")).toBe(false);
+      expect([...reached].filter((f) => pageModules.has(f))).toEqual([
+        moduleOf.get(PAGES[entry]!),
+      ]);
     },
   );
 });

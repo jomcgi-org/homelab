@@ -1,4 +1,4 @@
 import { mount } from "./mount";
-import { NotFoundPage } from "./pages";
+import { NotFoundPage } from "./not-found-page";
 
 mount(<NotFoundPage />);

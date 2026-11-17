@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { CvPage } from "./cv";
+import { CvPage } from "./cv-page";
 import { contact, jobs, skills } from "./cv-data";
 import { Inline } from "./Inline";
 import { Root } from "./root";

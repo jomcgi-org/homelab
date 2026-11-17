@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import type { ReactNode } from "react";
-import { HomePage, NotFoundPage } from "./pages";
+import { HomePage } from "./home-page";
+import { NotFoundPage } from "./not-found-page";
 import { SECTIONS, hrefFor } from "./sections";
 
 function renderPage(page: ReactNode) {
