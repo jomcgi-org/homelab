@@ -28,7 +28,7 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 | `wrangler/`      | The pinned `wrangler` CLI, packaged as image layers by rules_js.                                                              |
 | `apko.yaml`      | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime.                               |
 | `chart/`         | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`.                     |
-| `deploy/`        | The dev stage's Argo CD Application.                                                                                          |
+| `deploy/` | The stages' Argo CD Applications: `application.yaml` (dev) and `application-prod.yaml` (prod). |
 
 ## Contracts
 
@@ -109,12 +109,15 @@ chart or image, a change to a Job alone, and a change to `edge.serveRoutes`
 alone make the Application OutOfSync and sync it again. A failed deploy is a
 failed sync.
 
-The dev Application is listed in
-`projects/platform-factory/kustomization.yaml`. Its Job reads 1Password item
+Both Applications are listed through `deploy/kustomization.yaml`, which
+`projects/platform-factory/kustomization.yaml` includes. CI write-back moves
+the dev pin (`application.yaml`) on every chart change. The prod pin
+(`application-prod.yaml`) moves only by PR, after the same chart is verified
+on `next.jomcgi.dev`: that PR is the promotion. The Jobs read 1Password item
 `vaults/k8s-homelab/items/jomcgi-site-cloudflare` (fields `api-token` and
 `account-id`; permissions are listed in HOME-178). The token allows calls
 from the home network only, and pods reach Cloudflare over IPv4. Kargo
-takes over the stage pins when HOME-116 slice 2 lands.
+takes over both pins when HOME-116 slice 2 lands.
 
 `public/robots.txt` lets crawlers fetch every page, so they can read each
 page's indexing rules. `public/_headers` sends `X-Robots-Tag: noindex` for

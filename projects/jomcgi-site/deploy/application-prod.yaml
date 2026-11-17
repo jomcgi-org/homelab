@@ -1,0 +1,44 @@
+# The prod stage of the jomcgi.dev site (HOME-200). A sync runs the deploy Job,
+# which publishes Worker jomcgi-site, then the PostSync edge Job, which makes
+# zone jomcgi.dev's Workers routes and cache rules match edge/ (HOME-192).
+#
+# Promotion is this pin. CI write-back edits only application.yaml, so this
+# file moves by PR, after the same chart is verified on next.jomcgi.dev. Kargo
+# takes over both pins when HOME-116 slice 2 lands.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jomcgi-site-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/jomcgi/homelab/charts
+    chart: jomcgi-site
+    targetRevision: 0.6.2
+    helm:
+      releaseName: jomcgi-site-prod
+      valuesObject:
+        stage: prod
+        edge:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: jomcgi-site-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
