@@ -480,3 +480,47 @@ func TestGoalReferenceFieldsRejectFreeTextAndInvalidNumbers(t *testing.T) {
 		t.Fatal("ownership resolved the stated problem")
 	}
 }
+
+func TestGoalConfirmationBindsFollowUpEvidence(t *testing.T) {
+	for _, followUp := range []int{1, 2} {
+		t.Run(fmt.Sprint(followUp), func(t *testing.T) {
+			h, api := issueHarness(t)
+			withComments(h)
+			api.issue.Description = "## Done when\n- PRIVATE criterion"
+			addFollowUp(api)
+			initial := goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"}],"overall":"met"}`)
+			confirmation := "PRIVATE rationale\n" + goalReply(fmt.Sprintf(`{"criteria":[{"criterion":1,"verdict":"owned","follow_up":%d}],"overall":"met"}`, followUp))
+			h.k.goalReplies = []string{initial, confirmation}
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			c := h.gh.check(shaA)
+			st, _ := LoadState(c.Text)
+			if len(goalTexts(h)) != 2 {
+				t.Fatal("negative answer must receive one independent confirmation")
+			}
+			if followUp == 1 {
+				if c.Conclusion != ConclusionSuccess || st.Goal == nil || len(st.Goal.Criteria) != 1 ||
+					st.Goal.Criteria[0].Verdict != goalOwned || st.Goal.Criteria[0].FollowUp != 1 ||
+					!strings.Contains(published(t, h), "owned by HOME-59") {
+					t.Fatal("confirmation lost the verified follow-up")
+				}
+			} else if c.Conclusion != ConclusionFailure || st.Goal != nil || len(st.Blocking) != 1 ||
+				st.Blocking[0].ID != "HOME-58:goal:unavailable" {
+				t.Fatal("confirmation accepted an unverified follow-up")
+			}
+			records := auditRecords(t, h.cfg.GoalAudit.(*FileGoalAudit))
+			if len(records) != 2 || records[0].SessionID == records[1].SessionID {
+				t.Fatal("both independent replies must remain in the private audit")
+			}
+			replies := map[string]string{}
+			for _, r := range records {
+				replies[r.Phase] = r.Reply
+			}
+			if replies["initial"] != initial || replies["confirmation"] != confirmation ||
+				strings.Contains(published(t, h)+h.log.String(), "PRIVATE") {
+				t.Fatal("raw replies must remain private, including invalid confirmations")
+			}
+		})
+	}
+}
