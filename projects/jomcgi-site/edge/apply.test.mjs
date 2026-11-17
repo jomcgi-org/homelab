@@ -2,7 +2,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { apply, checkRules, equal, planRoutes, sameRule } from "./apply.mjs";
+import {
+  apply,
+  checkRules,
+  empty,
+  matches,
+  planRoutes,
+  sameRule,
+} from "./apply.mjs";
 
 const read = (name) =>
   JSON.parse(readFileSync(new URL(name, import.meta.url), "utf8"));
@@ -159,6 +166,37 @@ test("sends no write when the zone already matches, with Cloudflare's metadata",
   assert.deepEqual(log, ["no change", "read-back matches the files"]);
 });
 
+test("a rule Cloudflare returns with empty default fields still matches", async () => {
+  const stored = RULES.rules.map((rule, i) => ({
+    id: `c${i}`,
+    ...rule,
+    action_parameters: {
+      ...rule.action_parameters,
+      origin_error_page_passthru: false,
+      cache_key: { ignore_query_strings_order: false },
+    },
+  }));
+  const zone = fakeZone({
+    routes: ROUTES.patterns.map((pattern) => ({ pattern, script: SCRIPT })),
+    rules: stored,
+  });
+  assert.deepEqual(await apply(zone.call, ROUTES, RULES), [
+    "no change",
+    "read-back matches the files",
+  ]);
+  assert.deepEqual(zone.state.writes, []);
+});
+
+test("converges when Cloudflare adds empty defaults to the rules it stores", async () => {
+  const zone = fakeZone({
+    rules: [LIVE[0]],
+    extra: { logging: { enabled: false } },
+  });
+  await apply(zone.call, ROUTES, RULES);
+  const again = await apply(zone.call, ROUTES, RULES);
+  assert.deepEqual(again, ["no change", "read-back matches the files"]);
+});
+
 test("overwrites a setting added in the dashboard to a known rule", async () => {
   const edited = {
     ...LIVE[0],
@@ -183,9 +221,12 @@ test("overwrites a setting added in the dashboard to a known rule", async () => 
   );
 });
 
-test("a live rule with an unknown top-level field is a difference", () => {
+test("a live rule with an unknown top-level setting is a difference", () => {
   assert.ok(
-    !sameRule({ ...LIVE[0], logging: { enabled: false } }, RULES.rules[0]),
+    !sameRule({ ...LIVE[0], logging: { enabled: true } }, RULES.rules[0]),
+  );
+  assert.ok(
+    sameRule({ ...LIVE[0], logging: { enabled: false } }, RULES.rules[0]),
   );
 });
 
@@ -225,14 +266,17 @@ test("rejects a rule with fields this script does not write", () => {
   assert.throws(() => checkRules([missing]), /must have exactly/);
 });
 
-test("equal compares nested values exactly, in array order", () => {
+test("matches needs the file's values and allows only empty extras", () => {
   assert.ok(
-    equal({ a: { b: 1, c: 2 }, d: [1, 2] }, { d: [1, 2], a: { c: 2, b: 1 } }),
+    matches({ a: { b: 1, c: false }, d: [1, 2] }, { d: [1, 2], a: { b: 1 } }),
   );
-  assert.ok(!equal({ a: { b: 1, c: 2 } }, { a: { b: 1 } }));
-  assert.ok(!equal({ a: { b: 1 } }, { a: { b: 1, c: 2 } }));
-  assert.ok(!equal({ d: [2, 1] }, { d: [1, 2] }));
-  assert.ok(!equal({}, { a: false }));
+  assert.ok(!matches({ a: { b: 1, c: 2 } }, { a: { b: 1 } }));
+  assert.ok(!matches({ a: { b: 1, c: "x" } }, { a: { b: 1 } }));
+  assert.ok(!matches({ a: { b: 1 } }, { a: { b: 1, c: false } }));
+  assert.ok(!matches({ d: [2, 1] }, { d: [1, 2] }));
+  assert.ok(!matches({ a: true }, { a: false }));
+  assert.ok(empty({ x: false, y: { z: null, w: [] } }));
+  assert.ok(!empty({ mode: "override_origin" }));
 });
 
 test("planRoutes ignores routes of other Workers", () => {

@@ -32,41 +32,56 @@ export function planRoutes(live, wanted, script) {
   };
 }
 
-// Fields Cloudflare adds to every stored rule. Only these are ignored when a
-// live rule is compared with the file; any other difference is a change.
+// Fields Cloudflare adds to every stored rule. They are ignored when a live
+// rule is compared with the file, as are empty defaults (see `matches`).
 const METADATA = new Set(["id", "ref", "version", "last_updated"]);
 
-/** Deep equality of JSON values; object key order does not matter. */
-export function equal(a, b) {
-  if (
-    a === null ||
-    b === null ||
-    typeof a !== "object" ||
-    typeof b !== "object"
-  ) {
-    return a === b;
+/** True for false, null, 0, "" and containers that hold only such values. */
+export function empty(value) {
+  if (value === null || typeof value !== "object") {
+    return value === false || value === null || value === 0 || value === "";
   }
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  const keys = Object.keys(a);
+  return Object.values(value).every(empty);
+}
+
+/**
+ * True when `have` sets every field of `want` to the same value, and every
+ * other field it has is empty. Cloudflare's defaults are empty values (such
+ * as `origin_error_page_passthru: false`), so a rule it returns with them
+ * still matches, and the reconciler converges. A real setting, such as a
+ * `browser_ttl` added in the dashboard, is a difference. Arrays must match
+ * element by element.
+ */
+export function matches(have, want) {
+  if (want === null || typeof want !== "object") return have === want;
+  if (have === null || typeof have !== "object") return false;
+  if (Array.isArray(want) !== Array.isArray(have)) return false;
+  if (Array.isArray(want)) {
+    return (
+      have.length === want.length &&
+      want.every((item, i) => matches(have[i], item))
+    );
+  }
   return (
-    keys.length === Object.keys(b).length &&
-    keys.every((key) => Object.hasOwn(b, key) && equal(a[key], b[key]))
+    Object.entries(have).every(([key, value]) =>
+      Object.hasOwn(want, key) ? matches(value, want[key]) : empty(value),
+    ) && Object.keys(want).every((key) => Object.hasOwn(have, key))
   );
 }
 
-/** True when a live rule is the file's rule plus Cloudflare's metadata only. */
+/** True when a live rule is the file's rule plus Cloudflare's metadata and defaults. */
 export function sameRule(live, want) {
   const configured = Object.fromEntries(
     Object.entries(live).filter(([key]) => !METADATA.has(key)),
   );
-  return equal(configured, want);
+  return matches(configured, want);
 }
 
 const ruleKey = (rule) => `${rule.description}\n${rule.expression}`;
 
 /**
  * Live rules not in the file (by description and expression), and whether
- * the live list is exactly the file's list, in order. A setting added in the
+ * the live list matches the file's list, in order. A setting added in the
  * dashboard to a known rule is a difference, so the PUT overwrites it.
  */
 export function planCacheRules(live, wanted) {
