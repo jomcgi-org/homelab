@@ -253,9 +253,22 @@ reviewer:
       requiredChecks:
         - name: pr-checks
           statusCreator: buildbuddy-io[bot]
-# The Discord bot (HOME-162). The Agent is on, so it can be checked over A2A
-# before the bridge sends it Discord turns; the bridge stays off until the
-# hub monolith's bot is off (HOME-221).
+# The Discord bot (HOME-162). The bridge is on: the hub monolith's bot, which
+# used the same token, is off (HOME-221).
 discord:
   agent:
     enabled: true
+  bridge:
+    enabled: true
+    policy:
+      # Every server Bosun is in (Joe, HOME-162 comment 1942). history marks
+      # each for the history import (HOME-164).
+      guilds:
+        "185442367703220224": {history: true} # NOT DEM BOYZ
+        "1290668195249917964": {history: true} # The gang...
+        "1501965852042330302": {history: true} # homelab
+        "1512814732392927463": {history: true} # Loom
+      userLimit: {count: 10, window: 1h}
+      guildLimit: {count: 60, window: 1h}
+      globalLimit: {count: 300, window: 24h}
+      queueDepth: 3

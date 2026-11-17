@@ -71,6 +71,8 @@ def _render(
             "--set",
             "discord.agent.enabled=false",
             "--set",
+            "discord.bridge.enabled=false",
+            "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
         ]
     for override in overrides or []:
@@ -1079,7 +1081,9 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
     assert c["securityContext"]["readOnlyRootFilesystem"] is True
     policy = _in(docs, "ConfigMap", ns, "discord-bridge-policy")
     parsed = yaml.safe_load(policy["data"]["policy.json"])
-    assert parsed["guilds"] == {"123": {"channels": ["456"]}}
+    assert parsed["guilds"]["123"] == {"channels": ["456"]}
+    # Guild IDs stay strings: a number would lose a snowflake's digits.
+    assert all(isinstance(g, str) for g in parsed["guilds"])
     assert all(
         parsed[k]["count"] > 0 for k in ("userLimit", "guildLimit", "globalLimit")
     )
