@@ -263,6 +263,10 @@ def test_preflight_runs_after_the_secrets_and_before_the_deployment():
     assert "argocd.argoproj.io/sync-wave" not in deployment["metadata"].get(
         "annotations", {}
     )
+    # The hook's ServiceAccount must exist before the hook, on a fresh install.
+    account = manifest("resources/hindsight.yaml", "ServiceAccount")
+    assert account["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-2"
+    assert job["spec"]["template"]["spec"]["serviceAccountName"] == "hindsight"
 
     container, env = container_env(job["spec"]["template"]["spec"])
     api, api_env = container_env(deployment["spec"]["template"]["spec"])
@@ -271,7 +275,6 @@ def test_preflight_runs_after_the_secrets_and_before_the_deployment():
     # The same Secrets and settings as the API pod, so a missing one stops here.
     assert env["EMBEDDINGS_DIMENSIONS"] == "1024"  # mongodb/voyage-4-large
     for name, api_name in (
-        ("EMBEDDINGS_PROVIDER", "HINDSIGHT_API_EMBEDDINGS_PROVIDER"),
         ("OPENROUTER_API_KEY", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"),
         ("DATABASE_URL", "HINDSIGHT_API_DATABASE_URL"),
         ("EMBEDDINGS_MODEL", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"),
@@ -327,7 +330,6 @@ def test_preflight_refuses_only_rows_of_another_dimension(columns, dimension, ok
 
 def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch):
     script = load_preflight()
-    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "openrouter")
     monkeypatch.setenv("EMBEDDINGS_DIMENSIONS", "1024")
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     with pytest.raises(SystemExit, match="empty api-key"):
@@ -352,26 +354,6 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
         return {"memory_units": (V384, 0)}
 
     monkeypatch.setattr(script, "database", empty)
-    script.main()
-
-
-def test_preflight_lets_a_rollback_to_the_local_model_through(monkeypatch):
-    # After recovery/reembed-local.yaml, rows hold 384 dimensions and the
-    # reverted settings name the local provider: no OpenRouter call, no key.
-    script = load_preflight()
-    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "local")
-    monkeypatch.setenv("EMBEDDINGS_DIMENSIONS", "384")
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
-
-    def no_call(*args):
-        raise AssertionError("the local provider must not call OpenRouter")
-
-    async def reembedded(url):
-        return {"memory_units": (V384, 3), "mental_models": (V384, 0)}
-
-    monkeypatch.setattr(script, "model_dimension", no_call)
-    monkeypatch.setattr(script, "database", reembedded)
     script.main()
 
 

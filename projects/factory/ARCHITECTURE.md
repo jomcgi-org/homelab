@@ -315,19 +315,18 @@ chose one OpenRouter key for both instances
 refuses to start on a model with another dimension once rows exist. Each sync
 first runs the `hindsight-preflight` Sync hook (wave -1, after the 1Password
 items). It needs the same Secrets as the API pod, embeds one string through
-OpenRouter, and fails when the key is empty or refused, or when stored rows
-have another dimension. The sync then stops before the Deployment, and the
-running pod keeps serving.
+OpenRouter, and fails when the key is empty or refused, when the model
+returns another dimension, or when stored rows have another dimension. The
+sync then stops before the Deployment, and the running pod keeps serving.
 
-**Rollback.** While no rows hold vectors, a revert of the manifest is enough.
-After the first retain, go back to the image's local model like this; no API
-pod has to run:
+**Rollback.** The way back to the image's local model is a revert of the
+commits of #8144 (HOME-176). It removes the OpenRouter settings, the
+preflight and their tests together. While no rows hold vectors, the revert
+is enough. After the first retain, re-embed first; no API pod has to run:
 
 1. `kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml`
    re-embeds every row with the local model. ArgoCD never applies this Job.
-2. In `resources/hindsight.yaml`, set the Deployment's embeddings provider
-   back to `local`, and the preflight's `EMBEDDINGS_PROVIDER` to `local` and
-   `EMBEDDINGS_DIMENSIONS` to `384`. The preflight then checks only the rows.
+2. Merge the revert.
 3. In the running pod, run `hindsight-admin reembed --all-schemas --finish`.
 
 `projects/platform-factory/hindsight/rollback_test.py` runs these steps in the

@@ -5,6 +5,9 @@ kind: ServiceAccount
 metadata:
   name: hindsight
   namespace: hindsight
+  annotations:
+    # Before the hindsight-preflight Sync hook (wave -1) uses it.
+    argocd.argoproj.io/sync-wave: "-2"
 automountServiceAccountToken: false
 ---
 apiVersion: v1
@@ -210,10 +213,7 @@ spec:
                 secretKeyRef:
                   name: hindsight-openrouter
                   key: api-key
-            # Equal to the Deployment's (keys_test). For a rollback to the
-            # image's model: provider local, 384 dimensions.
-            - name: EMBEDDINGS_PROVIDER
-              value: openrouter
+            # Equal to the Deployment's (keys_test).
             - name: EMBEDDINGS_DIMENSIONS
               value: "1024"
             - name: EMBEDDINGS_MODEL
