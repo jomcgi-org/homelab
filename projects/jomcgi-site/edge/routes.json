@@ -4,14 +4,11 @@
   "patterns": [
     "jomcgi.dev/app/firecracker*",
     "jomcgi.dev/app/notes*",
-    "jomcgi.dev/app/trips*",
     "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
     "jomcgi.dev/cv*",
-    "jomcgi.dev/data/trips/*",
     "jomcgi.dev/ember*",
-    "jomcgi.dev/notes*",
-    "jomcgi.dev/trips*"
+    "jomcgi.dev/notes*"
   ],
   "exactBecause": {}
 }

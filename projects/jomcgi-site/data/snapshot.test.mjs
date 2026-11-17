@@ -70,16 +70,7 @@ test("writes content-named files and a latest.json index per section", async () 
     return { body: Buffer.from(body), lastModified };
   };
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
-  const log = await snapshot(
-    {
-      sections: {
-        stars: SOURCES.sections.stars,
-        hikes: SOURCES.sections.hikes,
-      },
-    },
-    get,
-    out,
-  );
+  const log = await snapshot(SOURCES, get, out);
   assert.equal(log.length, 4);
 
   const stars = JSON.parse(

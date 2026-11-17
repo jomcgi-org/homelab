@@ -1,6 +1,6 @@
 # Response headers for every file this Worker serves (Workers static assets).
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org https://factory-data.jomcgi.dev; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://data.jomcgi.dev; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
@@ -18,7 +18,3 @@
 # allows them), so they see this header; a robots.txt Disallow would hide it.
 https://next.jomcgi.dev/*
   X-Robots-Tag: noindex
-
-# Pre-rendered photo variants are keyed by the original content digest.
-/data/trips/photos/*
-  Cache-Control: public, max-age=31536000, immutable

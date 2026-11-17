@@ -52,13 +52,13 @@ workloads:
         cpu: 100m
         memory: 256Mi
       limits:
-        memory: 1Gi
+        memory: 512Mi
     writablePaths:
-      # Trip snapshots are capped at 1 GiB of WebP. Reserve disk space for
-      # the site copy, wrangler upload staging and HOME.
+      # The site copy with its data (about 20 MB today), wrangler's
+      # .wrangler/tmp beside its config, and HOME.
       - name: tmp
         mountPath: /tmp
-        sizeLimit: 4Gi
+        sizeLimit: 512Mi
     network:
       # The Cloudflare API and the R2 S3 endpoint are the only egress.
       # wrangler's npm update check times out against this policy and does

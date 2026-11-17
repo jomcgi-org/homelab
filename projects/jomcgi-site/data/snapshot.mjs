@@ -7,7 +7,6 @@
 // main.mjs runs it; this module only exports, so tests import it safely.
 import { createHash, createHmac } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { snapshotTrips, renderTrips } from "./trips.mjs";
 import { join } from "node:path";
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
@@ -70,13 +69,7 @@ export function r2Getter(endpoint, credentials, fetchImpl = fetch) {
 /** Writes every section's files and latest.json under `out`. Returns the log. */
 export async function snapshot(sources, get, out) {
   const log = [];
-  for (const [section, config] of Object.entries(sources.sections)) {
-    const { bucket, files } = config;
-    if (config.format === "trips") {
-      const data = await snapshotTrips(config, get, out);
-      log.push(await renderTrips(join(out, ".."), data));
-      continue;
-    }
+  for (const [section, { bucket, files }] of Object.entries(sources.sections)) {
     const index = { asOf: null, files: {}, sources: {} };
     await mkdir(join(out, section, "v"), { recursive: true });
     for (const [name, key] of Object.entries(files)) {

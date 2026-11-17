@@ -11,16 +11,7 @@
     },
     "hikes": {
       "bucket": "stars",
-      "files": {
-        "walks": "walks.json"
-      }
-    },
-    "trips": {
-      "bucket": "stars",
-      "files": {
-        "export": "trips/export.json"
-      },
-      "format": "trips"
+      "files": { "walks": "walks.json" }
     }
   }
 }

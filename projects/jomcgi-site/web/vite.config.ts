@@ -21,10 +21,6 @@ export default defineConfig({
         index: page("index.html"),
         "404": page("404.html"),
         cv: page("cv.html"),
-        trips: page("trips.html"),
-        trip: page("trip.html"),
-        "trip-day": page("trip-day.html"),
-        "trip-timeline": page("trip-timeline.html"),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

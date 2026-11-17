@@ -65,7 +65,7 @@ export const SECTIONS: readonly Section[] = [
     group: "Apps",
     path: "/trips",
     legacy: "/app/trips",
-    live: true,
+    live: false,
     summary: "Trips, day by day, with photos.",
   },
   {

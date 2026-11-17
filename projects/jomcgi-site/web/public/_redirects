@@ -1,3 +1,0 @@
-/app/trips /trips 301
-/app/trips/ /trips 301
-/app/trips/* /trips/:splat 301

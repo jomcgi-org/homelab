@@ -1,7 +1,3 @@
-import { TripsPage } from "./trips-page";
-import { TripPage } from "./trip-page";
-import { TripDayPage } from "./trip-day-page";
-import { TripTimelinePage } from "./trip-timeline-page";
 import { CvPage } from "./cv-page";
 import { HomePage } from "./home-page";
 import { NotFoundPage } from "./not-found-page";
@@ -16,8 +12,4 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   "index.html": HomePage,
   "404.html": NotFoundPage,
   "cv.html": CvPage,
-  "trips.html": TripsPage,
-  "trip.html": TripPage,
-  "trip-day.html": TripDayPage,
-  "trip-timeline.html": TripTimelinePage,
 };

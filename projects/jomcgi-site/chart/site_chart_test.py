@@ -118,7 +118,7 @@ def test_the_site_copy_and_wrangler_state_live_in_tmp():
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert {m["mountPath"] for m in container["volumeMounts"]} == {"/tmp"}
     tmp = next(v for v in pod["volumes"] if v["name"] == "tmp")
-    assert tmp["emptyDir"]["sizeLimit"] == "4Gi"
+    assert tmp["emptyDir"]["sizeLimit"] == "512Mi"
 
 
 def test_a_new_digest_changes_the_release_marker():
