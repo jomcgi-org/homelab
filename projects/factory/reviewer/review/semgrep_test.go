@@ -481,7 +481,7 @@ func TestSemgrepLateScanKeepsGoalBlockers(t *testing.T) {
 	if !ok || last.ID == first.ID || last.Conclusion != ConclusionFailure || !strings.Contains(last.Summary, "HOME-58:goal:criterion-1") || strings.Contains(last.Summary, semgrepUnverified) {
 		t.Fatalf("late scan cleared a goal blocker: %s", last.Summary)
 	}
-	if after.Semgrep == nil || !after.Semgrep.Verified || !reflect.DeepEqual(after.Goal, before.Goal) || len(goalTexts(h)) != 1 {
+	if after.Semgrep == nil || !after.Semgrep.Verified || !reflect.DeepEqual(after.Goal, before.Goal) || len(goalTexts(h)) != 2 {
 		t.Fatalf("late scan lost or reran the goal check: %+v", after)
 	}
 }

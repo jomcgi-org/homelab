@@ -70,6 +70,14 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	audit, err := review.OpenGoalAudit(review.GoalAuditDirectory)
+	if err != nil {
+		return errors.New("goal audit storage unavailable")
+	}
+	if err := audit.Prune(time.Now()); err != nil {
+		return errors.New("goal audit retention failed")
+	}
+	go audit.Run(ctx, func() { log.Error("goal audit retention failed") })
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -127,7 +135,7 @@ func run(log *slog.Logger) error {
 	var evidenceSecret func() (string, error)
 	if cfg.ItsaplanURL != "" {
 		// The evidence MAC key derives from the same mounted key. The reviewer
-		// has no store of its own, and this key never leaves the Pod.
+		// keeps only private goal replies on disk; this key never leaves the Pod.
 		evidenceSecret = fileToken(cfg.ItsaplanKeyFile).Token
 		issues = &itsaplan.Client{
 			BaseURL: cfg.ItsaplanURL, Coordinator: "factory-reviewer",
@@ -181,6 +189,7 @@ func run(log *slog.Logger) error {
 		Quota:         &github.BrokerQuota{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)},
 		Itsaplan:      issues,
 		MACSecret:     evidenceSecret,
+		GoalAudit:     audit,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

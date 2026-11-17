@@ -30,6 +30,23 @@ data:
   config.yaml: |
     {{- $configYAML | nindent 4 }}
 ---
+# Private goal replies, retained for 14 days by the reviewer service.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}-goal-audit
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    # Create with its consumer for WaitForFirstConsumer storage classes.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,6 +80,7 @@ spec:
         runAsUser: 65532
         runAsGroup: 65532
         fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -93,6 +111,8 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            - name: goal-audit
+              mountPath: /var/lib/factory-reviewer
             - name: config
               mountPath: /etc/factory-reviewer
               readOnly: true
@@ -108,6 +128,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: goal-audit
+          persistentVolumeClaim:
+            claimName: {{ $name }}-goal-audit
         {{- if .Values.itsaplan.enabled }}
         - name: itsaplan-key
           secret:
