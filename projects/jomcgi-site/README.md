@@ -34,7 +34,11 @@ wrangler.jsonc ─────────────────────�
   Removing them rolls it back: the edge Job deletes each route of Worker
   `jomcgi-site` that is not in the file, and the path falls back to the hub.
   `wrangler` cannot do this: with a zone-scoped token it adds routes but never
-  deletes them, so the prod env lists none.
+  deletes them, so the prod env lists none. Cloudflare matches a route against the
+  whole URL, query string included, so a pattern ends in `*` (`jomcgi.dev/cv*`
+  also serves `/cv?ref=x`). An exact pattern is allowed only with a reason in
+  `exactBecause`, and a test keeps every pattern off paths the hub or other
+  services still own.
 - **Rollback.** `edge.serveRoutes` in the prod Application turns every route
   on or off. Off, the edge Job deletes all routes of `jomcgi-site`, so every
   jomcgi.dev path goes back to the hub, and the cache rules still apply. The
