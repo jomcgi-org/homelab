@@ -8,10 +8,49 @@ import { gzipSync } from "node:zlib";
 
 export const BUDGET_BYTES = 150 * 1024;
 
+// Script types the browser executes. JSON and other data blocks are not code.
+const EXECUTABLE = new Set([
+  "",
+  "module",
+  "text/javascript",
+  "application/javascript",
+]);
+
+/** A tag's attributes, in any order, quoted or not. */
+export function attributes(tag) {
+  const found = {};
+  for (const [, name, double, single, bare] of tag.matchAll(
+    /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g,
+  )) {
+    found[name.toLowerCase()] = double ?? single ?? bare ?? "";
+  }
+  return found;
+}
+
+/**
+ * The JavaScript a page runs or preloads on load: script files (module or
+ * classic), preloaded script files, and inline script bodies.
+ */
 export function initialScripts(html) {
-  const pattern =
-    /<(?:script[^>]*\stype="module"[^>]*\ssrc|link[^>]*\srel="modulepreload"[^>]*\shref)="([^"]+)"/g;
-  return [...new Set([...html.matchAll(pattern)].map((match) => match[1]))];
+  const files = [];
+  const inline = [];
+  for (const [, attrs, body] of html.matchAll(
+    /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi,
+  )) {
+    const attr = attributes(attrs);
+    if (!EXECUTABLE.has((attr.type ?? "").trim().toLowerCase())) continue;
+    if ("src" in attr) files.push(attr.src);
+    else if (body.trim()) inline.push(body);
+  }
+  for (const [, attrs] of html.matchAll(/<link\b([^>]*)>/gi)) {
+    const attr = attributes(attrs);
+    const rel = (attr.rel ?? "").toLowerCase().split(/\s+/);
+    const script =
+      rel.includes("modulepreload") ||
+      (rel.includes("preload") && (attr.as ?? "").toLowerCase() === "script");
+    if (script && attr.href) files.push(attr.href);
+  }
+  return { files: [...new Set(files)], inline };
 }
 
 /** Every HTML page under dist, at any depth (e.g. "hikes/index.html"). */
@@ -27,15 +66,21 @@ export function htmlPages(dist, prefix = "") {
 
 export function measure(dist) {
   return htmlPages(dist).map((page) => {
-    const html = readFileSync(join(dist, page), "utf8");
-    const bytes = initialScripts(html)
-      .map((src) =>
-        src.startsWith("/")
-          ? join(dist, src.slice(1))
-          : join(dist, dirname(page), src),
-      )
-      .map((file) => gzipSync(readFileSync(file)).length)
-      .reduce((sum, size) => sum + size, 0);
+    const { files, inline } = initialScripts(
+      readFileSync(join(dist, page), "utf8"),
+    );
+    const fileBytes = files.map((src) => {
+      // The CSP allows scripts from this origin only, so the budget does too.
+      if (/^(?:[a-z]+:)?\/\//i.test(src)) {
+        throw new Error(`${page}: external script ${src} is not allowed`);
+      }
+      const file = src.startsWith("/")
+        ? join(dist, src.slice(1))
+        : join(dist, dirname(page), src);
+      return gzipSync(readFileSync(file)).length;
+    });
+    const inlineBytes = inline.map((body) => gzipSync(body).length);
+    const bytes = [...fileBytes, ...inlineBytes].reduce((a, b) => a + b, 0);
     return { page, bytes };
   });
 }
