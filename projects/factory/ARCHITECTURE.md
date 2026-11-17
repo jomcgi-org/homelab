@@ -367,10 +367,14 @@ Deployment passes as `HINDSIGHT_API_DEFAULT_BANK_TEMPLATE`
 retain mission keeps reusable lessons, incidents, decisions and pointers with
 their issue, PR or commit, and drops chatter, logs and credentials. Two label
 groups have `tag: true`, so extraction tags each fact. `app:<path>` names the
-project, a directory under `projects/`, `projects/platform/`,
-`projects/platform-gke/` or `projects/platform-factory/`. `kind:` is
-`lesson`, `incident`, `decision` or `reference`. Consolidation builds
-observations per `app:*` tag, and recall can filter on both tags. Hindsight
+one project the fact is mainly about: a directory under `projects/`,
+`projects/platform/`, `projects/platform-gke/` or `projects/platform-factory/`,
+or one of those three groups' own roots. `kind:` is `lesson`, `incident`,
+`decision` or `reference`. Consolidation builds observations per `app:*`
+tag. Hindsight puts every tag a scope glob matches into one scope, so `app`
+takes one value: a fact about two projects would otherwise reach neither
+project's observations. A fact with no `app` tag consolidates over its own
+tags. Recall can filter on both tags. Hindsight
 applies the template only when it creates a bank. For an existing bank,
 change the file and then apply it with `PATCH .../config` or
 `POST .../import`; `POST .../import?dry_run=true` validates a manifest

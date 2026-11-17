@@ -220,7 +220,10 @@ def test_recall_works_with_the_mcp_token(server):
 
 
 def test_new_banks_get_the_schema(server):
-    # Hindsight validates the template when it creates a bank (HOME-183).
+    # HOME-183. `server` is this module's fixture: the pinned Hindsight
+    # image's own server (BUILD exec_properties), started with the
+    # Deployment's settings, so Hindsight validates the template when it
+    # creates the bank.
     template = json.loads((ROOT / "resources/bank-template.json").read_text())
     assert request(server, "PUT", "/v1/default/banks/schema", TENANT_KEY, {})[0] == 200
     path = "/v1/default/banks/schema/config"
@@ -230,3 +233,44 @@ def test_new_banks_get_the_schema(server):
     assert config["retain_mission"] == template["bank"]["retain_mission"]
     assert [g["key"] for g in config["entity_labels"]] == ["app", "kind"]
     assert config["default_observation_scopes"] == [["app:*"]]
+
+
+def test_each_fact_consolidates_in_its_one_projects_scope():
+    # HOME-183: Hindsight's own scope code, from the image, resolves the
+    # template's scopes against a fact's tags. app is single-valued, so a fact
+    # gets its project's scope alone; one without an app tag falls back to the
+    # combined pass over its own tags ([]).
+    template = json.loads((ROOT / "resources/bank-template.json").read_text())
+    scopes = template["bank"]["default_observation_scopes"]
+    cases = [
+        ["app:factory", "kind:lesson"],
+        ["app:platform-factory/hindsight", "kind:incident", "source:pr-8148"],
+        ["kind:decision"],
+    ]
+    code = (
+        "import json, sys\n"
+        "from hindsight_api.engine.consolidation.consolidator import "
+        "_expand_scope_globs\n"
+        "scopes, cases = json.loads(sys.argv[1]), json.loads(sys.argv[2])\n"
+        "print(json.dumps([_expand_scope_globs(scopes, t) for t in cases]))\n"
+    )
+    home = tempfile.mkdtemp(prefix="hindsight-scopes-")
+    done = subprocess.run(
+        [
+            str(HINDSIGHT.parent / "python"),
+            "-c",
+            code,
+            json.dumps(scopes),
+            json.dumps(cases),
+        ],
+        capture_output=True,
+        text=True,
+        env={**deployed_env(), "HOME": home, "TMPDIR": home},
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr[-3000:]
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == [
+        [["app:factory"]],
+        [["app:platform-factory/hindsight"]],
+        [],
+    ]
