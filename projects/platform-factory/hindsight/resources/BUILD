@@ -12,6 +12,7 @@ filegroup(
     srcs = [
         "hindsight.yaml",
         "keys.py",
+        "kustomization.yaml",
         "network-policy.yaml",
         "secrets.yaml",
     ],
