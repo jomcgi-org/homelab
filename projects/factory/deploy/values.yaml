@@ -40,7 +40,7 @@ kagent:
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
-    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review]
+    namespaces: [kagent, factory-r-homelab, factory-r-homelab-review, factory-discord-agent]
   # The controller's metrics for Prometheus
   # (projects/platform-factory/prometheus): HTTPS on 8443, admitting a token
   # whose subject may GET /metrics.
@@ -225,3 +225,9 @@ reviewer:
       requiredChecks:
         - name: pr-checks
           statusCreator: buildbuddy-io[bot]
+# The Discord bot (HOME-162). The Agent is on, so it can be checked over A2A;
+# the bridge stays off until Bosun's token is in 1Password item
+# factory-discord and the hub monolith's bot is off.
+discord:
+  agent:
+    enabled: true
