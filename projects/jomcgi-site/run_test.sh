@@ -62,18 +62,37 @@ after_deploy() { tail -n +3 "$work/calls"; }
 reset
 run env STAGE=prod MODE=sync
 [[ "$(head -n2 "$work/calls")" == "$S
-$D --env prod $M" ]] || { echo "sync: wrong first steps"; cat "$work/calls"; exit 1; }
-[[ "$(after_deploy | sort -u)" == "$F_PROD" ]] || { echo "sync: only fence checks expected after the deploy"; cat "$work/calls"; exit 1; }
-[[ ! -e "$work/src/web/dist/data" ]] || { echo "source was modified"; exit 1; }
+$D --env prod $M" ]] || {
+	echo "sync: wrong first steps"
+	cat "$work/calls"
+	exit 1
+}
+[[ "$(after_deploy | sort -u)" == "$F_PROD" ]] || {
+	echo "sync: only fence checks expected after the deploy"
+	cat "$work/calls"
+	exit 1
+}
+[[ ! -e "$work/src/web/dist/data" ]] || {
+	echo "source was modified"
+	exit 1
+}
 
 # 2. sync: a refresh replaced the release during the window: deploy again,
 #    once, and keep checking.
 reset $'0\n10\n'
 run env STAGE=prod MODE=sync
-[[ "$(grep -c '^wrangler deploy' "$work/calls")" == 2 ]] || { echo "sync: expected one redeploy"; cat "$work/calls"; exit 1; }
+[[ "$(grep -c '^wrangler deploy' "$work/calls")" == 2 ]] || {
+	echo "sync: expected one redeploy"
+	cat "$work/calls"
+	exit 1
+}
 [[ "$(after_deploy | head -n3)" == "$F_PROD
 $F_PROD
-$D --env prod $M" ]] || { echo "sync: redeploy should follow the replaced check"; cat "$work/calls"; exit 1; }
+$D --env prod $M" ]] || {
+	echo "sync: redeploy should follow the replaced check"
+	cat "$work/calls"
+	exit 1
+}
 
 # 3. refresh: its own release is live at both checks, so it deploys.
 reset
@@ -101,7 +120,10 @@ for codes in "1" $'0\n1\n'; do
 		echo "a failed fence check should fail the refresh"
 		exit 1
 	fi
-	! grep -q wrangler "$work/calls" || { echo "deployed after a failed check"; exit 1; }
+	! grep -q wrangler "$work/calls" || {
+		echo "deployed after a failed check"
+		exit 1
+	}
 done
 
 # 6. refresh: a snapshot slower than the budget is stopped; no deploy.
@@ -110,7 +132,10 @@ if run env STAGE=dev MODE=refresh SNAPSHOT_SLEEP=4 2>/dev/null; then
 	echo "a refresh over its budget should fail"
 	exit 1
 fi
-! grep -q wrangler "$work/calls" || { echo "deployed after the budget"; exit 1; }
+! grep -q wrangler "$work/calls" || {
+	echo "deployed after the budget"
+	exit 1
+}
 
 # 7. A bad stage, mode or window stops before any step.
 for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAGE=dev MODE=other" "STAGE=dev MODE=sync SYNC_WINDOW=2"; do
@@ -120,7 +145,10 @@ for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAG
 		echo "'$args' should fail"
 		exit 1
 	fi
-	[[ ! -s "$work/calls" ]] || { echo "'$args' ran a step"; exit 1; }
+	[[ ! -s "$work/calls" ]] || {
+		echo "'$args' ran a step"
+		exit 1
+	}
 done
 
 # 8. A failed snapshot stops before the deploy.
@@ -134,5 +162,8 @@ if run env STAGE=dev MODE=sync; then
 	echo "a failed snapshot should fail the run"
 	exit 1
 fi
-! grep -q wrangler "$work/calls" || { echo "deployed after a failed snapshot"; exit 1; }
+! grep -q wrangler "$work/calls" || {
+	echo "deployed after a failed snapshot"
+	exit 1
+}
 echo "PASS"
