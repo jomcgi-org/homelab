@@ -68,6 +68,7 @@ js_test(
 js_library(
     name = "test_src",
     srcs = glob(["src/**/*.test.tsx"]) + [
+        "budget.d.mts",
         "budget.mjs",
         "src/setup.ts",
         "vitest.config.ts",
