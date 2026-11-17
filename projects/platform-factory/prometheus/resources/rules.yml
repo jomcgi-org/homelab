@@ -92,27 +92,36 @@ groups:
           severity: critical
         annotations:
           summary: "Codex grant {{ $labels.grant }} is out of quota: a person must reset it or change the account"
+          # The reset of each window the grant has used up; a grant refused
+          # with no window at 100% lists every window's reset instead.
           description: >-
-            Coder turns fail until then. The window resets at {{ with query "max(factory_broker_quota_resets_at_seconds)" }}{{ . | first | value | humanizeTimestamp }}{{ end }}.
-            Runbook: projects/factory-cluster/README.md, "Alerts".
+            Coder turns fail until then.
+            {{ range query (printf `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"}) and on (window) (max by (window) (factory_broker_grant_quota_used_percent{grant=%q}) >= 100)` $labels.grant) }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ else }}{{ range query `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"})` }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ end }}{{ end }}Runbook: projects/factory-cluster/README.md, "Alerts".
+      # Grouped by grant only, so a move between not-ready states keeps the
+      # 10 min timer; the summary names the current state.
       - alert: FactoryCodexGrantNotReady
-        expr: max by (grant, state) (factory_broker_codex_grant_state{state!="ready"}) == 1
+        expr: max by (grant) (factory_broker_codex_grant_state{state!="ready"}) == 1
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: "Codex grant {{ $labels.grant }} is {{ $labels.state }}: a person must log in again"
+          summary: "Codex grant {{ $labels.grant }} is {{ range query (printf `max by (state) (factory_broker_codex_grant_state{grant=%q,state!=\"ready\"}) == 1` $labels.grant) }}{{ .Labels.state }}{{ end }}: a person must log in again"
           description: >-
             The broker cannot relay Codex turns with this grant. Runbook:
             projects/factory-cluster/README.md, "Alerts".
-      # The alerts above use this reading; a stale one would hide them.
+      # The alerts above use this reading; a stale or missing one would hide
+      # them. The broker exports one reading time per provider; the newest
+      # across broker pods counts, so a terminating pod does not fire this.
+      # No series at all (no committed reading, or no broker scraped) is 0.
       - alert: FactoryCodexQuotaReadingStale
-        expr: time() - max(factory_broker_quota_observed_at_seconds) > 7200
+        expr: >-
+          (time() - max(factory_broker_quota_observed_at_seconds{provider="codex"}) > 7200)
+          or (absent(factory_broker_quota_observed_at_seconds{provider="codex"}) * 0)
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "The broker has not read the Codex quota for {{ $value | humanizeDuration }}"
+          summary: "{{ if eq $value 0.0 }}The broker has no Codex quota reading{{ else }}The broker has not read the Codex quota for {{ $value | humanizeDuration }}{{ end }}"
           description: >-
             The quota alerts cannot fire on an old reading. Runbook:
             projects/factory-cluster/README.md, "Alerts".
