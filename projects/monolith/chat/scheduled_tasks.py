@@ -559,23 +559,53 @@ async def drain_once(
     return finalized
 
 
-def _window_from_history(channel_id: str, newest_first: list) -> list[Message]:
-    """The digest window from Discord messages, with the store's bounds."""
+DIGEST_NO_HISTORY = (
+    "📋 Scheduled {mode} digest skipped: this bot cannot read this channel's "
+    "history (it needs the Read Message History permission)."
+)
+
+
+def _history_text(m) -> str:
+    """A message's text: its content, else its embeds' titles and descriptions
+    (as chat.bot stores an embed-only message)."""
+    if m.content:
+        return m.content
+    parts = []
+    for embed in getattr(m, "embeds", None) or []:
+        if embed.title:
+            parts.append(embed.title)
+        if embed.description:
+            parts.append(embed.description)
+    return "\n".join(parts)
+
+
+def _window_from_history(
+    channel_id: str, newest_first: list, *, exclude_users: set[str], bot_user_id: str
+) -> list[Message]:
+    """The digest window from Discord messages, with the store's bounds.
+
+    Locked-out users are left out, as the gateway path never stores them, and
+    so are this bot's own scheduled posts, so a digest never digests digests.
+    """
     window: list[Message] = []
     chars = 0
     for m in newest_first:
-        if not m.content:
-            continue  # embeds, attachments and components carry no text here
-        chars += len(m.content)
+        author_id = str(m.author.id)
+        text = _history_text(m)
+        if not text or author_id in exclude_users:
+            continue
+        if author_id == bot_user_id and text.startswith("📋 Scheduled"):
+            continue
+        chars += len(text)
         if chars > 30_000 and window:
             break
         window.append(
             Message(
                 discord_message_id=str(m.id),
                 channel_id=channel_id,
-                user_id=str(m.author.id),
+                user_id=author_id,
                 username=m.author.display_name,
-                content=m.content,
+                content=text,
                 is_bot=m.author.bot,
                 created_at=m.created_at,
             )
@@ -584,16 +614,26 @@ def _window_from_history(channel_id: str, newest_first: list) -> list[Message]:
     return window
 
 
+def _locked_out_with_engine(engine, guild_id: str) -> set[str]:
+    from chat import safeguards
+
+    with Session(engine) as session:
+        return safeguards.locked_out_user_ids(session, guild_id)
+
+
 def rest_digest_builder(bot, ready: Callable[[], bool], wait_seconds: float = 60.0):
     """Build digests from Discord's channel history over REST.
 
-    Without a gateway session (DISCORD_GATEWAY_ENABLED=false, HOME-221) no new
-    messages reach chat.messages, so a digest from the store would repeat old
-    ones. Discord keeps the history, and the logged-in bot reads it over REST
-    (``GET /channels/{id}/messages``), so digests stay current.
+    Discord holds each channel's history whether or not this process has a
+    gateway session, so digests stay current when the gateway is off
+    (DISCORD_GATEWAY_ENABLED=false, HOME-221) or switched back on; nothing
+    depends on what chat.messages stored meanwhile. The bot reads it over
+    REST (``GET /channels/{id}/messages``) after its login.
     """
 
-    async def build(_engine, claim: ClaimedOccurrence) -> str:
+    async def build(engine, claim: ClaimedOccurrence) -> str:
+        import discord
+
         from chat.summarizer import build_llm_caller
 
         loop = asyncio.get_running_loop()
@@ -602,14 +642,30 @@ def rest_digest_builder(bot, ready: Callable[[], bool], wait_seconds: float = 60
             if loop.time() >= deadline:
                 raise RuntimeError("Discord REST login not ready")
             await asyncio.sleep(1)
-        payload = json.loads(claim.payload_json)
+        mode = json.loads(claim.payload_json)["mode"]
         channel = bot.get_channel(int(claim.channel_id))
         if channel is None:
             channel = await bot.fetch_channel(int(claim.channel_id))
-        newest_first = [m async for m in channel.history(limit=300)]
-        window = _window_from_history(claim.channel_id, newest_first)
-        digest = await digest_window(window, payload["mode"], build_llm_caller())
-        return f"📋 Scheduled {payload['mode']} digest:\n{digest}"
+        try:
+            newest_first = [m async for m in channel.history(limit=300)]
+        except discord.Forbidden:
+            logger.warning(
+                "scheduled digest %s: no Read Message History in channel %s",
+                claim.task_id,
+                claim.channel_id,
+            )
+            return DIGEST_NO_HISTORY.format(mode=mode)
+        guild = getattr(channel, "guild", None)
+        guild_id = str(guild.id) if guild is not None else ""
+        locked = await asyncio.to_thread(_locked_out_with_engine, engine, guild_id)
+        window = _window_from_history(
+            claim.channel_id,
+            newest_first,
+            exclude_users=locked,
+            bot_user_id=str(bot.user.id) if bot.user is not None else "",
+        )
+        digest = await digest_window(window, mode, build_llm_caller())
+        return f"📋 Scheduled {mode} digest:\n{digest}"
 
     return build
 
