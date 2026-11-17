@@ -262,3 +262,13 @@ func StatusText(t *kagent.Task) string {
 	}
 	return messageText(t.Status.Message)
 }
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8Start(s[n]) {
+		n--
+	}
+	return s[:n]
+}
