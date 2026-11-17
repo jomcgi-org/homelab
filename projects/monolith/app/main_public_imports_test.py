@@ -57,6 +57,7 @@ FORBIDDEN_MODULES = [
     "trips.exif",
     "trips.transform",
     "trips.backfill",
+    "trips.export",
     # Private knowledge routers / write paths.
     "knowledge.router",
     "knowledge.tasks_router",

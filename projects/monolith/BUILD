@@ -326,6 +326,7 @@ py_venv_binary(
     # or the jobs image fails at startup with `ModuleNotFoundError: typer`.
     deps = [
         ":monolith_backend",
+        "//projects/monolith/trips/export",
         "@pip//typer",
     ],  # keep
 )
@@ -1902,7 +1903,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "shotter/**",
     # Trips: the read path (models.py + read_router.py + __init__.py) ships in
     # the public image; the write/heavy path stays out (pillow/boto3/defusedxml).
-    "trips/export.py",
     "trips/ingest_router.py",
     "trips/ingest.py",
     "trips/s3.py",
@@ -10091,17 +10091,6 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_stars",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "trips_export_test",
-    srcs = ["trips/export_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_trips",
-        "@pip//boto3",
         "@pip//pytest",
     ],
 )
