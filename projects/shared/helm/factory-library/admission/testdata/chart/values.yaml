@@ -2,7 +2,7 @@ buckets:
   - name: factory-public
     access: read
     public:
-      # Enable only after recording the dedicated R2 bucket and item checks.
+      # Test fixture only; no production Application consumes these values.
       suspend: true
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror

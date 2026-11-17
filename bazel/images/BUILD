@@ -40,7 +40,6 @@ multirun(
         "//projects/embervm/xds/image:image.push",
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory-landing:image.push",
-        "//projects/factory-public/chart:chart.push",
         "//projects/factory/broker/image:image.push",
         "//projects/factory/chart:chart.push",
         "//projects/factory/connector/image:image.push",
@@ -87,7 +86,6 @@ multirun(
     commands = [
         "//projects/embervm/chart:chart.push",
         "//projects/factory-landing/chart:chart.push",
-        "//projects/factory-public/chart:chart.push",
         "//projects/factory/chart:chart.push",
         "//projects/jomcgi-site/chart:chart.push",
         "//projects/monolith-agents/chart:chart.push",
