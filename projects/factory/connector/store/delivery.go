@@ -311,6 +311,9 @@ func (s *Store) stopWork(ctx context.Context, tx *sql.Tx, workID int64, reason, 
 	if _, err := tx.ExecContext(ctx, `UPDATE pull_request SET polled_at = NULL WHERE work_item_id = $1`, workID); err != nil {
 		return false, err
 	}
+	if err := stopDeferred(ctx, tx, issueID); err != nil {
+		return false, err
+	}
 	return true, s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
 		map[string]any{"issueId": issueID, "body": fmt.Sprintf(
 			"The factory stopped delivering %s: %s. Its running turn is canceled, its PR leaves the merge "+
@@ -359,8 +362,21 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (Iss
 		if err != nil {
 			return err
 		}
-		if out.HeldRuns, err = res.RowsAffected(); err != nil || id != 0 {
+		if out.HeldRuns, err = res.RowsAffected(); err != nil {
 			return err
+		}
+		fenceHeld := func() error {
+			if out.HeldRuns == 0 {
+				return nil
+			}
+			var issueID int64
+			if err := tx.QueryRowContext(ctx, `SELECT issue_id FROM run WHERE issue_key = $1 AND issue_id IS NOT NULL LIMIT 1`, issueKey).Scan(&issueID); err != nil {
+				return err
+			}
+			return stopDeferred(ctx, tx, issueID)
+		}
+		if id != 0 {
+			return fenceHeld()
 		}
 		// A run that resolved while this update waited for its row lock
 		// committed a new work item. Stop that too.
@@ -371,10 +387,13 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (Iss
 			if out.HeldRuns == 0 {
 				return fmt.Errorf("no work item or held run for %s", issueKey)
 			}
-			return nil
+			return fenceHeld()
 		}
 		out.WorkItem, err = s.stopWork(ctx, tx, id, reason, by)
-		return err
+		if err != nil || out.WorkItem {
+			return err
+		}
+		return fenceHeld()
 	})
 	return out, err
 }

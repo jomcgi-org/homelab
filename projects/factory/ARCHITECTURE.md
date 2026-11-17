@@ -467,7 +467,8 @@ sequenceDiagram
   participant O as Durable outbox
   participant I as itsaplan
   C->>I: Poll bound projects for due deferred issues
-  C->>O: Record issue and start date once
+  C->>O: Record issue, start date and stop generation once
+  C->>O: Lock stop generation, check request and admit send
   C->>I: Start deferred work (issue ID + date)
   rect rgb(235, 245, 235)
     Note over I: One database transaction, under an issue row lock
@@ -481,10 +482,14 @@ sequenceDiagram
   C->>O: Complete start
 ```
 
-The connector checks the writer epoch and any stored stop before sending.
-Enqueue, rollback recovery and delivery honor stops on work items and on
-admission-held runs without a work item. Closing a stopped run does not
-authorize another automatic start.
+The connector records each request's stop generation at enqueue. Stops on
+work items and unlinked held runs advance that generation in the stop
+transaction. Explicit re-admission permits new schedules; older requests
+keep their generation and stay fenced. Closing a stopped run permits no
+new schedule. Send admission locks the generation through the transaction
+that records `send_started_at`, under the writer fence. A stop that commits
+first prevents the send (HOME-151). Existing requests without a generation
+are conservatively fenced on upgrade if the issue has a recorded stop.
 The chart mounts a small adapter into the pinned itsaplan v1.10.0 API. Its
 authenticated route uses the core work-item edit guard and the existing
 comment and issue-update services. A request-scoped database client puts
@@ -511,7 +516,7 @@ error retry budget or a run slot, including after a restart. Each retry
 rechecks eligibility; removing the opt-in or stopping the work cancels it.
 After a chart rollback, an older connector can abandon a pending start as
 `unknown kind deferred_start`. When upgraded again, the sweep resumes that
-same outbox row only if the issue still qualifies and has no stored stop.
+same outbox row only if the issue still qualifies and its stop generation matches.
 It keeps the original request, receipt key and error retry count. Completed
 starts and other abandonment reasons stay terminal.
 `factory_connector_deferred_started_total` counts completed starts. The
