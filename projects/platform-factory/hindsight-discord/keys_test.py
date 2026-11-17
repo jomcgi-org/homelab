@@ -222,6 +222,7 @@ def test_network_allows_only_discord_database_and_openrouter():
                 {
                     "matchLabels": {
                         "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                        "app.kubernetes.io/name": "factory-discord-bridge",
                     }
                 }
             ],
@@ -252,7 +253,9 @@ def test_network_allows_only_discord_database_and_openrouter():
     (client,) = read("discord/network-policy.yaml")
     assert client["metadata"]["namespace"] == "factory-discord"
     assert client["spec"] == {
-        "endpointSelector": {},
+        "endpointSelector": {
+            "matchLabels": {"app.kubernetes.io/name": "factory-discord-bridge"}
+        },
         "egress": [
             {
                 "toEndpoints": [
@@ -267,6 +270,45 @@ def test_network_allows_only_discord_database_and_openrouter():
             }
         ],
     }
+
+
+@pytest.mark.parametrize(
+    "namespace,name,allowed",
+    [
+        ("factory-discord", "factory-discord-bridge", True),
+        ("factory-discord", "factory-discord-agent", False),
+        ("factory-discord", "", False),
+        ("factory-r-homelab", "factory-discord-bridge", False),
+        ("factory", "factory-connector", False),
+        ("kagent", "kagent", False),
+    ],
+)
+def test_memory_access_requires_bridge_workload_and_namespace(namespace, name, allowed):
+    """Check both halves: a same-namespace agent cannot inherit client egress.
+
+    These are selector checks, not a live Cilium probe. The exact policy-shape
+    assertions above also reject added rules that could grant another path.
+    """
+    policy, _ = read("resources/network-policy.yaml")
+    (client,) = read("discord/network-policy.yaml")
+    labels = {
+        "k8s:io.kubernetes.pod.namespace": namespace,
+        "app.kubernetes.io/name": name,
+    }
+
+    def matches(selector):
+        return all(labels.get(key) == value for key, value in selector.items())
+
+    ingress = any(
+        matches(peer["matchLabels"])
+        for rule in policy["spec"]["ingress"]
+        for peer in rule["fromEndpoints"]
+    )
+    egress = namespace == client["metadata"]["namespace"] and matches(
+        client["spec"]["endpointSelector"]["matchLabels"]
+    )
+    assert ingress is allowed
+    assert egress is allowed
 
 
 def test_argo_preserves_keys_and_jobs_use_the_tested_modes():

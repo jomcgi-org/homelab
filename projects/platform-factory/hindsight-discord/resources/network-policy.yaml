@@ -15,6 +15,7 @@ spec:
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: factory-discord-bridge
       toPorts:
         - ports:
             - port: "8888"

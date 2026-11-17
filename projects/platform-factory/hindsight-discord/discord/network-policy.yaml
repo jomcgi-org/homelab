@@ -1,11 +1,14 @@
-# The bridge and acceptance pod need client egress under the cluster default-deny.
+# Only the bridge gets memory egress under the cluster default-deny.
+# Acceptance pods must use the same explicit workload label (README.md).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: hindsight-discord
   namespace: factory-discord
 spec:
-  endpointSelector: {}
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: factory-discord-bridge
   egress:
     - toEndpoints:
         - matchLabels:

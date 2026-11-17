@@ -417,8 +417,51 @@ Discord memory has a separate process, database and REST tenant key under
 [`hindsight-discord`](../platform-factory/hindsight-discord/README.md)
 ([HOME-163](https://factory-plan.jomcgi.dev/factory/issue/HOME-163)). It calls
 DeepSeek through the dedicated OpenRouter credential. Its manifests disable
-MCP and admit only namespace `factory-discord`. The linked runbook records
-the boundary and rollout checks; the bridge remains HOME-162.
+MCP and admit only pods labelled `app.kubernetes.io/name: factory-discord-bridge`
+in namespace `factory-discord`. Both sides of the network policy select that
+workload, so an agent in the same namespace gets no memory access. The linked
+runbook records the boundary and rollout checks; the bridge remains HOME-162.
+
+### Discord runtime blocker
+
+[HOME-162](https://factory-plan.jomcgi.dev/factory/issue/HOME-162) requires a
+declarative kagent Agent with web search as its only tool, no memory credential,
+and no Substrate sandbox. **The pinned kagent v1.0.1 cannot run that Agent.**
+The no-Substrate requirement remains binding.
+
+Verified against the vendored CRDs and upstream release commit
+`558e3d761d8ed2b0d23bfef1867a9d1915210121`:
+
+- `chart/crds/api.kagent.dev_agents.yaml` serves only `v1alpha3` and requires
+  `harnessRef`. Older `spec.declarative` manifests are not a compatible API.
+- `chart/crds/api.kagent.dev_harnesses.yaml` requires `spec.substrate` for
+  every runtime, including `kagent` and `byo`. It requires a worker pool and
+  snapshot location; leaving out a sandbox does not select a pod runtime.
+- The [shared compiler](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/compiler.go#L145-L185)
+  resolves a Substrate WorkerPool for every harness and fails when it is absent.
+  The [kagent compiler](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/kagent/compiler.go#L34-L83)
+  passes that pool and snapshot location into the runtime revision. An empty
+  tool list does not change this execution path.
+
+```text
+HOME-162: declarative Agent -> no Substrate
+kagent v1.0.1: Agent -> Harness -> required WorkerPool -> Substrate
+```
+
+To preserve the issue's contract, kagent needs a supported runtime without
+Substrate before the bridge can be deployed. Running an ADK process directly
+would change the required Agent and session architecture; changing the
+no-Substrate decision also needs the issue owner's decision. Neither change
+is implied by this finding. Do not downgrade the shared cluster CRDs to admit
+an older Agent manifest.
+
+The independent HOME-162 change limits Discord memory access to the future
+bridge's pod identity and tests the namespace and workload boundaries. It does
+not deploy a bridge or Agent, grant access to the factory controller, or retire
+the monolith bot. Gateway admission, durable queueing, channel-scoped recall,
+short sessions, Components V2 replies, interactions and rate limits remain
+unimplemented until the runtime contract is resolved. Live acceptance remains
+pending; local policy assertions do not prove Cilium enforcement.
 
 ## itsaplan
 

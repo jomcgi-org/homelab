@@ -12,7 +12,9 @@ flowchart LR
     S -->|mounted by future bridge| D
 ```
 
-The bridge is HOME-162. The only consumer copy of the tenant key is Secret
+The bridge is HOME-162; its runtime is blocked by the pinned kagent version's
+mandatory Substrate harness. See the [runtime finding](../../factory/ARCHITECTURE.md#discord-runtime-blocker).
+The only consumer copy of the tenant key is Secret
 `factory-discord/hindsight-discord-key`, field `tenant-api-key`. The key grants
 REST access to every bank in this process. The bridge must enforce channel
 access and supply strict tag filters; tags alone do not authorize a caller.
@@ -52,11 +54,15 @@ has to run:
 The factory Hindsight's `rollback_test` proves these steps in this image, and
 `keys_test` pins the Job to the same command and settings.
 
-The API permits ingress only from `factory-discord` and egress only to
-`factory-db:5432` and `openrouter.ai:443`. The cluster baseline also permits
-DNS through CoreDNS. Key Jobs have separate labels and API-server egress.
-The consumer Application creates the namespace, Secret placeholder, writer
-Role and client egress rule before the bridge exists.
+The API permits ingress only from pods in `factory-discord` labelled
+`app.kubernetes.io/name: factory-discord-bridge`. The client egress policy
+selects that same workload. An agent or another pod in the namespace gets
+no memory access. The API's egress reaches only `factory-db:5432` and
+`openrouter.ai:443`; the cluster baseline also permits DNS through CoreDNS.
+Key Jobs have separate labels and API-server egress. The consumer Application
+creates the namespace, Secret placeholder, writer Role and client egress rule
+before the bridge exists. These selectors assume that agents cannot create or
+relabel pods; the bridge and agent must have no Kubernetes API credentials.
 
 ## Validate after rollout
 
@@ -76,7 +82,8 @@ the item reference; it does not prove that the item is populated or usable.
    pod UID, deployed revision, and result on HOME-163 without credentials.
    Keep verification enabled. If the provider rejects the completion limit, lower
    `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS` through a PR, then repeat.
-4. Use a temporary debug pod in `factory-discord`. Mount only
+4. Use a temporary debug pod in `factory-discord`, labelled
+   `app.kubernetes.io/name: factory-discord-bridge`. Mount only
    `hindsight-discord-key`, and read `tenant-api-key` from its file. Keep the
    key out of command arguments and logs. Send it as a Bearer token to
    `http://hindsight-api.hindsight-discord.svc:8888`.
@@ -108,9 +115,12 @@ the item reference; it does not prove that the item is populated or usable.
    ```
 
 7. Repeat recall with `tags: ["channel:other"]`. Confirm `results` is empty.
-8. From a debug pod in `factory-r-homelab`, attempt the same service's
-   `/health` endpoint with a short connection timeout. It must not connect.
-   Do not copy the tenant key into that namespace.
+8. From an unlabelled pod in `factory-discord`, a pod labelled
+   `app.kubernetes.io/name: factory-discord-agent` in that namespace, and a
+   pod in `factory-r-homelab`, attempt the same service's `/health` endpoint
+   with a short connection timeout. None must connect. Give the factory pod
+   the bridge's workload label as well: the namespace must still block it.
+   Do not copy the tenant key into any of these pods.
 9. Record the deployed revision and results on HOME-163. Remove the debug pods.
 
 `keys_test.py` renders both Kustomize directories and exercises the key Job
