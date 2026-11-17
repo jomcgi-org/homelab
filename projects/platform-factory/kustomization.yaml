@@ -31,4 +31,5 @@ resources:
   - ./prometheus # Prometheus and kube-state-metrics: the operators' metrics store
   - ./grafana # Grafana at factory-grafana.jomcgi.dev: dashboards over Prometheus
   - ../factory-landing/deploy # Static operator tools at factory.jomcgi.dev
+  - ../jomcgi-site/deploy # jomcgi.dev site: dev-stage deploy Job for next.jomcgi.dev (HOME-174)
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first
