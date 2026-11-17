@@ -52,7 +52,9 @@ has to run:
 The factory Hindsight's `rollback_test` proves these steps in this image, and
 `keys_test` pins the Job to the same command and settings.
 
-The API permits ingress only from `factory-discord` and egress only to
+The API permits ingress only from pods in `factory-discord` labelled
+`app.kubernetes.io/name: factory-discord-bridge`, the bridge's label, and
+egress only to
 `factory-db:5432` and `openrouter.ai:443`. The cluster baseline also permits
 DNS through CoreDNS. Key Jobs have separate labels and API-server egress.
 The consumer Application creates the namespace, Secret placeholder, writer
@@ -76,7 +78,9 @@ the item reference; it does not prove that the item is populated or usable.
    pod UID, deployed revision, and result on HOME-163 without credentials.
    Keep verification enabled. If the provider rejects the completion limit, lower
    `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS` through a PR, then repeat.
-4. Use a temporary debug pod in `factory-discord`. Mount only
+4. Use a temporary debug pod in `factory-discord`, labelled
+   `app.kubernetes.io/name: factory-discord-bridge`: the API admits only that
+   label (the bridge's, HOME-162). Mount only
    `hindsight-discord-key`, and read `tenant-api-key` from its file. Keep the
    key out of command arguments and logs. Send it as a Bearer token to
    `http://hindsight-api.hindsight-discord.svc:8888`.

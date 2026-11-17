@@ -420,6 +420,36 @@ DeepSeek through the dedicated OpenRouter credential. Its manifests disable
 MCP and admit only namespace `factory-discord`. The linked runbook records
 the boundary and rollout checks; the bridge remains HOME-162.
 
+## Discord bot
+
+Bosun answers Discord messages that tag it (HOME-162). Discord content is
+untrusted data from people other than Joe, so it stays on its own path:
+
+```
+Discord gateway ─► discord-bridge (factory-discord) ─► kagent controller ─► Agent bosun (factory-discord-agent, gVisor actor)
+                        │                                                      └─► openrouter.ai (dedicated key, injected at egress)
+                        └─► hindsight-discord (bank discord-<guild>, tag channel:<id>)
+```
+
+- **Bridge** (`projects/factory/discord`, chart `discord.bridge`): the only
+  Hindsight client and the only path in. It answers only tagged messages in
+  allowlisted servers, recalls and retains in the channel's tag scope, and
+  sends Discord text to the Agent only as JSON data. Replies cannot mention
+  anyone. It ships in the connector image.
+- **Agent** (chart `discord.agent`): its own namespace and atespace, one
+  small gVisor worker (Joe, HOME-162 comment 1799), no tools, and web search
+  through the model (":online"). Its ModelConfig names only the
+  `factory-discord-llm` key; kagent gives the actor a placeholder and
+  Substrate's egress gateway injects the key (the namespace's
+  `credentialProvider.namespacePolicies` entry).
+- **Boundaries**: kagent's controller admits the bridge's pods only when the
+  bridge is on; hindsight-discord admits only pods labelled
+  `factory-discord-bridge`. No factory agent, key or memory sees Discord
+  content.
+- **Rollout**: the Agent is on and can be checked over A2A. The bridge stays
+  off until Bosun's token is in 1Password item `factory-discord` (field
+  `token`) and the hub monolith's bot is off, so no message gets two replies.
+
 ## itsaplan
 
 Step 6 (#7817). The chart's own templates (`templates/itsaplan*.yaml`) run

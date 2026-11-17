@@ -222,6 +222,7 @@ def test_network_allows_only_discord_database_and_openrouter():
                 {
                     "matchLabels": {
                         "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                        "app.kubernetes.io/name": "factory-discord-bridge",
                     }
                 }
             ],
@@ -252,7 +253,9 @@ def test_network_allows_only_discord_database_and_openrouter():
     (client,) = read("discord/network-policy.yaml")
     assert client["metadata"]["namespace"] == "factory-discord"
     assert client["spec"] == {
-        "endpointSelector": {},
+        "endpointSelector": {
+            "matchLabels": {"app.kubernetes.io/name": "factory-discord-bridge"}
+        },
         "egress": [
             {
                 "toEndpoints": [

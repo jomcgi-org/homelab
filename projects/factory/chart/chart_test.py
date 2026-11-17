@@ -63,15 +63,22 @@ def _render(
         argv[argv.index(str(values))] = str(_DEFAULTS_FILE)
     else:
         # These tests describe the factory without its reviewer, which
-        # reviewer_test.py covers; the deploy render lock covers both.
+        # reviewer_test.py covers, or the Discord bot, which the discord
+        # tests below turn on; the deploy render lock covers all of them.
         argv += [
             "--set",
             "reviewer.enabled=false",
             "--set",
+            "discord.agent.enabled=false",
+            "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
         ]
     for override in overrides or []:
-        argv += ["--set", override]
+        # "string:" sets the value as a string (helm --set-string).
+        if override.startswith("string:"):
+            argv += ["--set-string", override.removeprefix("string:")]
+        else:
+            argv += ["--set", override]
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr)
@@ -976,3 +983,115 @@ def test_egress_gateway_reaches_hindsight() -> None:
         ],
         "toPorts": [{"ports": [{"port": "8888", "protocol": "TCP"}]}],
     } in gateway["spec"]["egress"]
+
+
+_DISCORD = [
+    "discord.agent.enabled=true",
+    "discord.bridge.enabled=true",
+    "kagent.rbac.namespaces={kagent,factory-r-homelab,factory-discord-agent}",
+    "string:discord.bridge.policy.guilds.123.channels={456}",
+]
+
+
+def test_discord_agent_uses_only_the_dedicated_key_and_has_no_tools() -> None:
+    # HOME-162 rules 2 and 3: one dedicated key, injected at the egress
+    # gateway; no tools; its own namespace, atespace and gVisor worker.
+    docs = _render(_DISCORD)
+    ns = "factory-discord-agent"
+    model = _in(docs, "ModelConfig", ns, "bosun")["spec"]
+    assert model["apiKeySecret"] == "discord-llm"
+    assert model["apiKeySecretKey"] == "api-key"
+    assert model["openAI"] == {"baseUrl": "https://openrouter.ai/api/v1"}
+    assert "actorJwt" not in model
+    item = _in(docs, "OnePasswordItem", ns, "discord-llm")
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord-llm"
+    assert item["metadata"]["labels"]["substrate.ate.dev/injectable"] == "true"
+    agent = _in(docs, "Agent", ns, "bosun")["spec"]
+    assert "tools" not in agent["template"]["inline"]
+    assert "egressPolicyRefs" not in agent
+    assert agent["harnessRef"] == {"name": "bosun"}
+    harness = _in(docs, "Harness", ns, "bosun")["spec"]
+    assert harness["kagent"] == {}
+    assert harness["substrate"]["workerPoolRef"] == {"name": "bosun"}
+    pool = _in(docs, "WorkerPool", ns, "bosun")["spec"]
+    assert [c["name"] for c in pool["sandboxClasses"]] == ["gvisor"]
+    assert pool["replicas"] == 1
+    namespace = _in(docs, "Namespace", None, ns)
+    assert namespace["metadata"]["labels"]["factory.jomcgi.dev/substrate-workers"] == "true"
+    # The namespace holds no other credential.
+    in_ns = [d for d in docs if d["metadata"].get("namespace") == ns]
+    assert {d["kind"] for d in in_ns if d["kind"] in ("Secret", "OnePasswordItem")} == {
+        "OnePasswordItem"
+    }
+    assert "discord" not in yaml.safe_dump(
+        [d for d in docs if d["metadata"].get("namespace") == "factory-r-homelab"]
+    )
+
+
+def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
+    docs = _render(_DISCORD)
+    ns = "factory-discord"
+    deploy = _in(docs, "Deployment", ns, "discord-bridge")
+    pod = deploy["spec"]["template"]
+    assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "factory-discord-bridge"
+    spec = pod["spec"]
+    assert spec["automountServiceAccountToken"] is False
+    assert deploy["spec"]["replicas"] == 1
+    assert deploy["spec"]["strategy"] == {"type": "Recreate"}
+    (c,) = spec["containers"]
+    assert c["command"] == ["/usr/local/bin/discord-bridge"]
+    env = {e["name"]: e["value"] for e in c["env"]}
+    assert env["KAGENT_AGENT"] == "factory-discord-agent/bosun"
+    assert env["HINDSIGHT_URL"].startswith("http://hindsight-api.hindsight-discord.")
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    assert volumes["discord"]["secret"] == {
+        "secretName": "discord-bot",
+        "items": [{"key": "token", "path": "token"}],
+    }
+    assert volumes["hindsight"]["secret"]["items"] == [
+        {"key": "tenant-api-key", "path": "tenant-api-key"}
+    ]
+    (token,) = volumes["kagent"]["projected"]["sources"]
+    assert token["serviceAccountToken"]["audience"] == "kagent-invocation"
+    policy = _in(docs, "ConfigMap", ns, "discord-bridge-policy")
+    parsed = yaml.safe_load(policy["data"]["policy.json"])
+    assert parsed["guilds"] == {"123": {"channels": ["456"]}}
+    assert all(parsed[k]["count"] > 0 for k in ("userLimit", "guildLimit", "globalLimit"))
+    item = _in(docs, "OnePasswordItem", ns, "discord-bot")
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord"
+    egress = _in(docs, "CiliumNetworkPolicy", ns, "discord-bridge")["spec"]
+    assert "ingress" not in egress
+    fqdns = [f for rule in egress["egress"] for f in rule.get("toFQDNs", [])]
+    assert fqdns == [{"matchName": "discord.com"}, {"matchPattern": "*.discord.gg"}]
+    peers = [
+        e["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
+        for rule in egress["egress"]
+        for e in rule.get("toEndpoints", [])
+    ]
+    assert peers == ["hindsight-discord", "kagent"]
+    controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
+    admitted = [m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]]
+    assert {
+        "k8s:io.kubernetes.pod.namespace": "factory-discord",
+        "app.kubernetes.io/name": "factory-discord-bridge",
+    } in admitted
+
+
+def test_discord_is_off_by_default_and_checks_its_wiring() -> None:
+    assert not [
+        d
+        for d in _render(binding=False)
+        if d["metadata"].get("namespace") in ("factory-discord", "factory-discord-agent")
+    ]
+    with pytest.raises(RuntimeError, match="discord.bridge needs discord.agent"):
+        _render(["discord.bridge.enabled=true"])
+    with pytest.raises(RuntimeError, match="kagent.rbac.namespaces"):
+        _render(["discord.agent.enabled=true"])
+    # A bare channel ID is a float to Helm and would lose digits.
+    with pytest.raises(RuntimeError, match="quote each channel ID"):
+        _render(_DISCORD[:3] + ["discord.bridge.policy.guilds.123.channels={1234567890123456789}"])
+    # Without the bridge, kagent admits no Discord traffic.
+    docs = _render(_DISCORD[:1] + _DISCORD[2:3])
+    controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
+    assert "factory-discord" not in yaml.safe_dump(controller)
+

@@ -1,0 +1,396 @@
+{{- /*
+The Discord bot (HOME-162). The Agent lives in its own namespace and
+atespace, apart from every factory binding; the bridge lives in
+factory-discord, the only namespace hindsight-discord admits. Discord text
+reaches the Agent only through the bridge, as data.
+*/}}
+{{- $d := .Values.discord }}
+{{- if $d.agent.enabled }}
+{{- $a := $d.agent }}
+{{- $ns := $a.namespace }}
+{{- $worker := printf "%s-worker" $a.name }}
+---
+# Kept: deleting it would take the WorkerPool and the key with it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    # Substrate's worker egress policy selects worker pods only in namespaces
+    # with this label (projects/platform-factory/substrate).
+    factory.jomcgi.dev/substrate-workers: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $worker }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+automountServiceAccountToken: false
+---
+# The dedicated OpenRouter key. The label lets Substrate's credential
+# provider inject api-key at the egress gateway for this atespace only; the
+# operator copies it to the Secret.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: discord-llm
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    substrate.ate.dev/injectable: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $a.llmItemPath | quote }}
+{{- if .Values.substrate.credentialProvider.secretReaderBinding }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: substrate-credential-provider
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.substrate.credentialProvider.clusterRole }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.substrate.credentialProvider.serviceAccount }}
+    namespace: {{ .Values.substrate.namespace }}
+{{- end }}
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    kagent.dev/worker-pool-name: {{ $a.name }}
+    kagent.dev/worker-pool-namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: {{ $a.concurrency }}
+  workerImage: {{ .Values.workers.image | quote }}
+  sandboxClasses:
+    - name: gvisor
+      configRef:
+        name: {{ .Values.workers.sandboxConfig }}
+  template:
+    serviceAccountName: {{ $worker }}
+    resources:
+      {{- toYaml $a.worker.resources | nindent 6 }}
+---
+# The dedicated key only (HOME-162 rule 2). kagent swaps the Secret for a
+# placeholder in the actor and binds it to the base URL at the egress gateway.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: OpenAI
+  model: {{ $a.model | quote }}
+  apiKeySecret: discord-llm
+  apiKeySecretKey: api-key
+  openAI:
+    baseUrl: {{ $a.baseUrl | quote }}
+---
+apiVersion: api.kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  kagent: {}
+  substrate:
+    workerPoolRef:
+      name: {{ $a.name }}
+    snapshotPolicy:
+      location: {{ printf "%s%s/" .Values.workers.snapshotLocationPrefix $ns | quote }}
+---
+# No tools: web search is part of the model call (":online"), and the bridge
+# is the only Hindsight client (HOME-162 rule 3).
+apiVersion: api.kagent.dev/v1alpha3
+kind: Agent
+metadata:
+  name: {{ $a.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  template:
+    inline:
+      description: "Bosun, the Discord bot (HOME-162)"
+      modelConfig:
+        name: {{ $a.name }}
+      systemPrompt: {{ $a.systemPrompt | quote }}
+  harnessRef:
+    name: {{ $a.name }}
+{{- if .Values.networkPolicy.cilium }}
+---
+# Worker pods: actor traffic arrives only from Substrate's router and leaves
+# only through its egress gateway.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+{{- end }}
+{{- end }}
+{{- if $d.bridge.enabled }}
+{{- $b := $d.bridge }}
+{{- $ns := $b.namespace }}
+{{- $name := "discord-bridge" }}
+---
+# The bridge runs as this account; its only token is the projected
+# kagent-invocation token below.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: discord-bot
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  itemPath: {{ $b.tokenItemPath | quote }}
+{{- if .Values.imagePullSecret.enabled }}
+---
+# GHCR read credentials for the bridge's image (the connector's).
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: {{ .Values.imagePullSecret.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  itemPath: {{ .Values.imagePullSecret.itemPath | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-policy
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+data:
+  policy.json: {{ toJson $b.policy | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+    app.kubernetes.io/name: factory-discord-bridge
+spec:
+  replicas: 1
+  # One gateway connection at a time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: factory-discord-bridge
+  template:
+    metadata:
+      labels:
+        # hindsight-discord admits only this label (its network policies).
+        app.kubernetes.io/name: factory-discord-bridge
+      annotations:
+        checksum/policy: {{ toJson $b.policy | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bridge
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/discord-bridge]
+          env:
+            - name: DISCORD_POLICY_FILE
+              value: /etc/discord-bridge/policy.json
+            - name: DISCORD_TOKEN_FILE
+              value: /var/run/secrets/discord/token
+            - name: HINDSIGHT_URL
+              value: {{ $b.hindsightURL | quote }}
+            - name: HINDSIGHT_KEY_FILE
+              value: /var/run/secrets/hindsight/tenant-api-key
+            - name: KAGENT_URL
+              value: {{ printf "http://%s" (include "factory.kagentControllerAddress" .) | quote }}
+            - name: KAGENT_GRPC
+              value: {{ include "factory.kagentControllerAddress" . | quote }}
+            - name: KAGENT_TOKEN_FILE
+              value: /var/run/secrets/kagent/token
+            - name: KAGENT_AGENT
+              value: {{ printf "%s/%s" $d.agent.namespace $d.agent.name | quote }}
+            - name: HEALTH_ADDR
+              value: ":8080"
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: discord
+              mountPath: /var/run/secrets/discord
+              readOnly: true
+            - name: hindsight
+              mountPath: /var/run/secrets/hindsight
+              readOnly: true
+            - name: kagent
+              mountPath: /var/run/secrets/kagent
+              readOnly: true
+            - name: policy
+              mountPath: /etc/discord-bridge
+              readOnly: true
+      volumes:
+        - name: discord
+          secret:
+            secretName: discord-bot
+            items:
+              - key: token
+                path: token
+        - name: hindsight
+          secret:
+            secretName: {{ $b.hindsightKeySecret }}
+            items:
+              - key: tenant-api-key
+                path: tenant-api-key
+        - name: kagent
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: kagent-invocation
+                  expirationSeconds: 3600
+                  path: token
+        - name: policy
+          configMap:
+            name: {{ $name }}-policy
+{{- if .Values.networkPolicy.cilium }}
+---
+# Egress to Discord, hindsight-discord and kagent's controller only; nothing
+# connects in. DNS is the cluster baseline's.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: factory-discord-bridge
+  egress:
+    - toFQDNs:
+        - matchName: discord.com
+        # gateway.discord.gg and its resume hosts.
+        - matchPattern: "*.discord.gg"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight-discord
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+    # A2A and SessionService share the controller's listener.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ include "factory.kagentNamespace" . }}
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.kagent.controller.service.ports.targetPort | default 8083 | quote }}
+              protocol: TCP
+{{- end }}
+{{- end }}

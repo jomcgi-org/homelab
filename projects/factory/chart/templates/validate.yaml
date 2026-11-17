@@ -46,6 +46,29 @@ instead of silently rendering nothing.
 {{- fail (printf "agents %s: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $r.agent $runtime.cpu $runtime.memory) }}
 {{- end }}
 {{- end }}
+{{- with .Values.discord.agent }}
+{{- if .enabled }}
+{{- if not (has .namespace $watched) }}
+{{- fail (printf "discord.agent: add namespace %s to kagent.rbac.namespaces so the controller watches it" .namespace) }}
+{{- end }}
+{{- if or (hasKey $seen .namespace) (eq .namespace (include "factory.kagentNamespace" $)) (eq .namespace $.Values.broker.namespace) (eq .namespace $.Values.discord.bridge.namespace) }}
+{{- fail (printf "discord.agent: namespace %s must be the Discord Agent's alone" .namespace) }}
+{{- end }}
+{{- if or (ne (toString .resources.cpu) (toString $runtime.cpu)) (ne (toString .resources.memory) (toString $runtime.memory)) }}
+{{- fail (printf "discord.agent: resources must equal kagent.config.runtimeDefaults (cpu %v, memory %v), which kagent applies to every runtime" $runtime.cpu $runtime.memory) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $id, $g := .Values.discord.bridge.policy.guilds }}
+{{- range ($g.channels | default list) }}
+{{- if not (kindIs "string" .) }}
+{{- fail (printf "discord.bridge.policy.guilds.%s.channels: quote each channel ID; Helm reads a bare number as a float and loses digits" $id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Values.discord.bridge.enabled (not .Values.discord.agent.enabled) }}
+{{- fail "discord.bridge needs discord.agent: the bridge sends every turn to that Agent" }}
+{{- end }}
 {{- if .Values.itsaplan.enabled }}
 {{- if eq .Values.itsaplan.namespace (include "factory.kagentNamespace" .) }}
 {{- fail "itsaplan.namespace must not be kagent's: the kagent controller reads every Secret there" }}

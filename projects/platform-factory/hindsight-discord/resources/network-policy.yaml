@@ -12,9 +12,11 @@ spec:
     matchLabels:
       app.kubernetes.io/name: hindsight
   ingress:
+    # The bridge only (HOME-162: "only the bridge reaches hindsight-discord").
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: factory-discord-bridge
       toPorts:
         - ports:
             - port: "8888"
