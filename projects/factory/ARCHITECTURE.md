@@ -1903,12 +1903,13 @@ previews).
   The delivery owner checks each `after_rollout` verdict after rollout. The
   goal check owns these IDs: the service drops the code review's findings
   and accounts under them. An earlier goal finding stays open at its
-  earlier severity until a valid answer resolves it. `met` resolves its
-  criterion or the stated problem, and a list shorter than K resolves
-  criterion K. Any valid answer resolves `unavailable`. When the PR names a
-  new issue, a valid answer for it resolves the old issue's findings. Only
-  the issue text or a linked trusted decision moves a criterion to another
-  issue. The check's State keeps the answer for its head and evidence
+  earlier severity until a valid answer on the same issue resolves it.
+  `met` resolves its criterion or the stated problem, and any valid answer
+  resolves `unavailable`. An answer that omits criterion K, or a goal check
+  of another issue that the PR names now, leaves the finding open. Only the
+  issue text or a linked trusted decision moves a criterion to another
+  issue. HOME-157 adds service-verified follow-ups, removed criteria and
+  issue switches. The check's State keeps the answer for its head and evidence
   digest, so a fresh review of the same evidence makes no second call; an
   unavailable answer is not kept.
   **Why.** Joe chose structured verdicts on 2026-11-16

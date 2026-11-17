@@ -172,16 +172,17 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 }
 
 // goalResolved says how a valid answer resolves an earlier goal finding that
-// it does not report again, or "" when nothing does: no answer, an issue the
-// PR no longer names with no other one checked, or an overall verdict that
-// is not met.
+// it does not report again, or "" when nothing does. Only a verdict on the
+// same issue resolves it: an answer that omits a criterion, or a goal check
+// of another issue the PR names now, is no evidence that the failure was
+// fixed.
 func goalResolved(id, key string, g *GoalCheck) string {
 	if g == nil || key == "" {
 		return ""
 	}
 	issue, rest, _ := strings.Cut(id, ":goal")
 	if issue != key {
-		return "The PR now names " + key + " as its issue, and its goal check answered."
+		return ""
 	}
 	if rest == "" {
 		if g.Overall != goalMet {
@@ -190,11 +191,8 @@ func goalResolved(id, key string, g *GoalCheck) string {
 		return "The goal check found that the PR addresses the stated problem."
 	}
 	n, err := strconv.Atoi(strings.TrimPrefix(rest, ":criterion-"))
-	switch {
-	case !strings.HasPrefix(rest, ":criterion-") || err != nil:
+	if !strings.HasPrefix(rest, ":criterion-") || err != nil {
 		return "The goal check answered."
-	case n > len(g.Criteria):
-		return "The goal check found " + strconv.Itoa(len(g.Criteria)) + " criteria in " + key + "."
 	}
 	for _, c := range g.Criteria {
 		if c.Criterion == n && c.Verdict == goalMet {

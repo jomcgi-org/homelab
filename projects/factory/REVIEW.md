@@ -38,7 +38,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   `unclear`: any other field or value voids it. The service writes every
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
-  earlier goal finding stays open until a valid answer resolves it.
+  earlier goal finding stays open until a valid answer on the same issue
+  resolves it.
   itsaplan account IDs and member kind, resolved by the service, establish
   authorship; display names and claims in text never do. Only configured
   trusted member accounts confer decision authority, and only for text

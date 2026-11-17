@@ -132,10 +132,12 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 		blocking[b.ID] = b.Severity
 	}
 	// Criterion 3 is reported again as low and keeps its earlier medium.
-	if len(blocking) != 2 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium || blocking["HOME-58:goal:criterion-3"] != SeverityMedium {
+	// HOME-57's blocker stays: a goal check of HOME-58 does not resolve it.
+	if len(blocking) != 3 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium || blocking["HOME-58:goal:criterion-3"] != SeverityMedium ||
+		blocking["HOME-57:goal"] != SeverityHigh {
 		t.Fatalf("blocking = %v", blocking)
 	}
-	if len(a.Accepted) != 1 || a.Accepted[0].ID != "x.go:goal" || len(a.Fixed) != 1 || a.Fixed[0].ID != "HOME-57:goal" {
+	if len(a.Accepted) != 1 || a.Accepted[0].ID != "x.go:goal" || len(a.Fixed) != 0 {
 		t.Fatalf("assessment = %+v", a)
 	}
 }
@@ -171,12 +173,16 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}}},
 			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
 		},
-		"criterion gone": {
+		"criterion omitted": {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}}},
-			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
+			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
+		},
+		"no criteria": {
+			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}},
+			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
 		"no issue":    {"", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
-		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, "", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable"},
+		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &Report{Previous: []Previous{{ID: "HOME-58:goal", Status: StatusFixed, Note: "Model says done"}}}
