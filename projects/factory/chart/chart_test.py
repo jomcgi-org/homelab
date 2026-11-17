@@ -1017,7 +1017,10 @@ def test_discord_agent_uses_only_the_dedicated_key_and_has_no_tools() -> None:
     assert [c["name"] for c in pool["sandboxClasses"]] == ["gvisor"]
     assert pool["replicas"] == 1
     namespace = _in(docs, "Namespace", None, ns)
-    assert namespace["metadata"]["labels"]["factory.jomcgi.dev/substrate-workers"] == "true"
+    assert (
+        namespace["metadata"]["labels"]["factory.jomcgi.dev/substrate-workers"]
+        == "true"
+    )
     # The namespace holds no other credential.
     in_ns = [d for d in docs if d["metadata"].get("namespace") == ns]
     assert {d["kind"] for d in in_ns if d["kind"] in ("Secret", "OnePasswordItem")} == {
@@ -1033,7 +1036,9 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
     ns = "factory-discord"
     deploy = _in(docs, "Deployment", ns, "discord-bridge")
     pod = deploy["spec"]["template"]
-    assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "factory-discord-bridge"
+    assert (
+        pod["metadata"]["labels"]["app.kubernetes.io/name"] == "factory-discord-bridge"
+    )
     spec = pod["spec"]
     assert spec["automountServiceAccountToken"] is False
     assert deploy["spec"]["replicas"] == 1
@@ -1056,7 +1061,9 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
     policy = _in(docs, "ConfigMap", ns, "discord-bridge-policy")
     parsed = yaml.safe_load(policy["data"]["policy.json"])
     assert parsed["guilds"] == {"123": {"channels": ["456"]}}
-    assert all(parsed[k]["count"] > 0 for k in ("userLimit", "guildLimit", "globalLimit"))
+    assert all(
+        parsed[k]["count"] > 0 for k in ("userLimit", "guildLimit", "globalLimit")
+    )
     item = _in(docs, "OnePasswordItem", ns, "discord-bot")
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord"
     egress = _in(docs, "CiliumNetworkPolicy", ns, "discord-bridge")["spec"]
@@ -1070,7 +1077,9 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
     ]
     assert peers == ["hindsight-discord", "kagent"]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
-    admitted = [m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]]
+    admitted = [
+        m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]
+    ]
     assert {
         "k8s:io.kubernetes.pod.namespace": "factory-discord",
         "app.kubernetes.io/name": "factory-discord-bridge",
@@ -1081,7 +1090,8 @@ def test_discord_is_off_by_default_and_checks_its_wiring() -> None:
     assert not [
         d
         for d in _render(binding=False)
-        if d["metadata"].get("namespace") in ("factory-discord", "factory-discord-agent")
+        if d["metadata"].get("namespace")
+        in ("factory-discord", "factory-discord-agent")
     ]
     with pytest.raises(RuntimeError, match="discord.bridge needs discord.agent"):
         _render(["discord.bridge.enabled=true"])
@@ -1089,9 +1099,11 @@ def test_discord_is_off_by_default_and_checks_its_wiring() -> None:
         _render(["discord.agent.enabled=true"])
     # A bare channel ID is a float to Helm and would lose digits.
     with pytest.raises(RuntimeError, match="quote each channel ID"):
-        _render(_DISCORD[:3] + ["discord.bridge.policy.guilds.123.channels={1234567890123456789}"])
+        _render(
+            _DISCORD[:3]
+            + ["discord.bridge.policy.guilds.123.channels={1234567890123456789}"]
+        )
     # Without the bridge, kagent admits no Discord traffic.
     docs = _render(_DISCORD[:1] + _DISCORD[2:3])
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     assert "factory-discord" not in yaml.safe_dump(controller)
-
