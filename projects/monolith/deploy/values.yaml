@@ -197,7 +197,11 @@ knowledge:
         enabled: true
 
 chat:
-  enabled: true
+  # Off: Bosun moves to the factory's Discord bridge (HOME-162), which uses
+  # the same bot token. Two gateway sessions would answer every tag twice, so
+  # this goes off, verified live, before the bridge turns on. It also stops
+  # the changelog posts and the /goosecracker command.
+  enabled: false
   # Pause during Joe's UK move. Restore true only when asked to resume.
   # No expiry; keeps Discord ingestion, explicit requests and Notify alerts.
   discordAmbientEnabled: false
