@@ -598,12 +598,13 @@ func TestCommentUncertainCreateRediscoversBeforeRetry(t *testing.T) {
 
 type blockedCommentLookup struct {
 	Comments
-	started chan struct{}
-	release chan struct{}
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
 }
 
 func (c *blockedCommentLookup) IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error) {
-	close(c.started)
+	c.startOnce.Do(func() { close(c.started) })
 	select {
 	case <-c.release:
 		return c.Comments.IssueComments(ctx, repo, number)
