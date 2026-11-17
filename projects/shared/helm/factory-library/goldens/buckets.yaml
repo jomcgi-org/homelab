@@ -421,8 +421,8 @@ ValidatingAdmissionPolicy/test-consumer-factory-public-mirror-r2:
         \ == \"consumer-factory-public-mirror\" &&\n  request.userInfo.username in\
         \ [\"system:serviceaccount:kube-system:job-controller\"] &&\n  has(object.metadata.ownerReferences)\
         \ && object.metadata.ownerReferences.exists(o,\n    o.apiVersion == \"batch/v1\"\
-        \ && o.kind == \"Job\" &&\n    has(o.controller) && o.controller) && request.subResource\
-        \ != \"ephemeralcontainers\")"
+        \ && o.kind == \"Job\" &&\n    has(o.controller) && o.controller) &&\n  (!has(request.subResource)\
+        \ || request.subResource != \"ephemeralcontainers\"))"
       message: Only the mirror controller chain may use its R2 Secret or ServiceAccount.
 ValidatingAdmissionPolicy/test-consumer-factory-public-mirror-r2-jobs:
   apiVersion: admissionregistration.k8s.io/v1

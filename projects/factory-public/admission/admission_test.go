@@ -421,10 +421,18 @@ func TestMirrorSecretAdmission(t *testing.T) {
 			}
 			// After testing UPDATE, delete the seed so CREATE can succeed
 			// with the exact reserved CronJob name. All creates are dry runs.
+			// Jobs default to orphan propagation, which leaves a finalizer
+			// pending forever without a garbage collector in envtest.
 			if tc.subresource == "" {
 				zero := int64(0)
-				if err := resource(client, tc.stored).Delete(ctx, tc.stored.GetName(), metav1.DeleteOptions{GracePeriodSeconds: &zero}); err != nil {
+				background := metav1.DeletePropagationBackground
+				if err := resource(client, tc.stored).Delete(ctx, tc.stored.GetName(), metav1.DeleteOptions{
+					GracePeriodSeconds: &zero, PropagationPolicy: &background,
+				}); err != nil {
 					t.Fatal(err)
+				}
+				if _, err := resource(client, tc.stored).Get(ctx, tc.stored.GetName(), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+					t.Fatalf("seed must be deleted before CREATE checks: %v", err)
 				}
 				for _, user := range actors {
 					t.Run("create/"+user, func(t *testing.T) {
