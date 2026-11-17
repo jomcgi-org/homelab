@@ -44,6 +44,10 @@ chmod 0755 "$2/usr/bin/node" "$2/bin/grep"
 cat >"$2/usr/bin/python3" <<'PYTHON'
 #!/bin/bash
 set -euo pipefail
+if [[ "${1:-}" == -m && "${2:-}" == pytest ]]; then
+	echo "python3 -m pytest ${*:3}"
+	exit 0
+fi
 [[ "$1" == */install.py ]] || exit 0
 root="$3"
 for tool in pnpm prettier ruff shfmt gofumpt buildifier crane shellcheck helm; do
@@ -81,6 +85,8 @@ rm "$temp_file"
 test -x "$(command -v helm)"
 helm version --short
 node --version
+# pytest is a command on PATH that runs the runtime Python's module.
+test "$(pytest --version)" = "python3 -m pytest --version"
 
 # Missing executables must cause a repair even when the inputs match.
 rm "$(command -v helm)"

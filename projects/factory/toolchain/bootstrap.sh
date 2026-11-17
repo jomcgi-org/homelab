@@ -32,6 +32,7 @@ smoke() {
 	"$root/bin/crane" version >/dev/null || return 1
 	"$root/bin/grep" --version >/dev/null || return 1
 	"$root/bin/python3" -c 'import pytest, yaml' || return 1
+	"$root/bin/pytest" --version >/dev/null || return 1
 	"$root/bin/node" -e 'if (!process.versions.node.startsWith("22.")) process.exit(1); new Intl.Collator("en")' || return 1
 	printf '<h1>{1+2}</h1>\n' |
 		"$root/bin/prettier" --config "$REPO_ROOT/bazel/tools/format/prettier.config.cjs" \
@@ -73,6 +74,14 @@ exec "$binary" "$@"
 WRAPPER
 		chmod 0755 "$stage/bin/$tool"
 	done
+	# Alpine installs pytest as a module only; the prompt and docs call the
+	# pytest command, so run the module with the runtime's Python.
+	cat >"$stage/bin/pytest" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$(cd "$(dirname "$0")" && pwd)/python3" -m pytest "$@"
+WRAPPER
+	chmod 0755 "$stage/bin/pytest"
 	PATH="$stage/bin:$PATH" "$stage/bin/python3" "$SCRIPT_DIR/install.py" "$REPO_ROOT" "$stage"
 	smoke "$stage"
 	touch "$stage/.complete"
