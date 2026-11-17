@@ -78,6 +78,71 @@ function fakeZone({
 const routesFile = (patterns) => ({ ...ROUTES, patterns });
 const MONOLITH = { id: "m", version: "1", ...RULES.rules[0] };
 
+// Cloudflare matches a Workers route against the whole URL, query string
+// included. A pattern ending in `*` matches every suffix; any other pattern
+// matches only that exact URL, so `jomcgi.dev/cv` misses `/cv?ref=x`.
+// https://developers.cloudflare.com/workers/configuration/routing/routes/
+function routeMatches(pattern, url) {
+  return pattern.endsWith("*")
+    ? url.startsWith(pattern.slice(0, -1))
+    : url === pattern;
+}
+const served = (url) => ROUTES.patterns.some((p) => routeMatches(p, url));
+
+// Paths that other services or the hub still own on jomcgi.dev.
+const STAYS_ON_THE_HUB = [
+  "jomcgi.dev/scotland/mcp",
+  "jomcgi.dev/scotland/v1/walks",
+  "jomcgi.dev/health",
+  "jomcgi.dev/img/x/thumb/plain/s3://monolith-trips/a.jpg",
+  "jomcgi.dev/functions/og-image",
+  "jomcgi.dev/api/trips/trips",
+  "jomcgi.dev/slop/factory",
+  "jomcgi.dev/app/hikes",
+  "jomcgi.dev/app/stars",
+  "jomcgi.dev/app/grimoire",
+  "jomcgi.dev/blog",
+];
+
+test("no route catches a path the hub or another service still owns", () => {
+  assert.deepEqual(STAYS_ON_THE_HUB.filter(served), []);
+});
+
+test("routed pages are served with and without a query string", () => {
+  for (const path of [
+    "/cv",
+    "/cv/",
+    "/app/notes",
+    "/app/notes/graph",
+    "/notes",
+    "/ember",
+    "/ember/firecracker",
+    "/app/firecracker",
+    "/artifact/abc",
+    "/assets/index-x.js",
+  ]) {
+    assert.ok(served(`jomcgi.dev${path}`), path);
+    assert.ok(served(`jomcgi.dev${path}?ref=x`), `${path}?ref=x`);
+  }
+});
+
+test("a pattern without a wildcard says why, since a query string bypasses it", () => {
+  // Exact patterns miss `?query` URLs. Use one only where a wildcard would
+  // catch a path that must stay elsewhere (the root, or /scotland beside the
+  // connector's /scotland/mcp), and give the reason in routes.json.
+  const exact = ROUTES.patterns.filter((p) => !p.endsWith("*"));
+  assert.deepEqual(
+    exact.filter((p) => !ROUTES.exactBecause?.[p]),
+    [],
+  );
+  for (const p of Object.keys(ROUTES.exactBecause ?? {})) {
+    assert.ok(
+      exact.includes(p),
+      `exactBecause names ${p}, which is not an exact pattern`,
+    );
+  }
+});
+
 test("the files are valid and import the live Monolith rule completely", () => {
   assert.equal(ROUTES.zone, RULES.zone);
   checkRules(RULES.rules);
@@ -308,7 +373,7 @@ test("a dry run plans and writes nothing", async () => {
   const zone = fakeZone({ rules: [MONOLITH] });
   const log = await apply(zone.call, ROUTES, RULES, { dryRun: true });
   assert.deepEqual(zone.state.writes, []);
-  assert.ok(log.includes(`create route jomcgi.dev/cv -> ${SCRIPT}`));
+  assert.ok(log.includes(`create route jomcgi.dev/cv* -> ${SCRIPT}`));
   assert.ok(log.includes(`put ${RULES.rules.length} cache rule(s)`));
 });
 
@@ -336,7 +401,7 @@ test("a dry run that an unknown cache rule would block writes nothing and fails 
       /"made in the dashboard" is not in cache-rules.json/.test(
         error.message,
       ) &&
-      error.message.includes(`create route jomcgi.dev/cv -> ${SCRIPT}`),
+      error.message.includes(`create route jomcgi.dev/cv* -> ${SCRIPT}`),
   );
   assert.deepEqual(zone.state.writes, []);
 });

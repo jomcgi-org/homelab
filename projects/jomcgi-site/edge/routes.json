@@ -2,18 +2,13 @@
   "zone": "jomcgi.dev",
   "script": "jomcgi-site",
   "patterns": [
-    "jomcgi.dev/app/firecracker",
-    "jomcgi.dev/app/firecracker/*",
-    "jomcgi.dev/app/notes",
-    "jomcgi.dev/app/notes/*",
-    "jomcgi.dev/artifact",
-    "jomcgi.dev/artifact/*",
+    "jomcgi.dev/app/firecracker*",
+    "jomcgi.dev/app/notes*",
+    "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
-    "jomcgi.dev/cv",
-    "jomcgi.dev/cv/*",
-    "jomcgi.dev/ember",
-    "jomcgi.dev/ember/*",
-    "jomcgi.dev/notes",
-    "jomcgi.dev/notes/*"
-  ]
+    "jomcgi.dev/cv*",
+    "jomcgi.dev/ember*",
+    "jomcgi.dev/notes*"
+  ],
+  "exactBecause": {}
 }
