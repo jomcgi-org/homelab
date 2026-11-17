@@ -54,6 +54,10 @@ a reviewer can check from a diff and CI cannot yet.
   prevents, and the PR or issue it came from. It may name a severity.
 - The PR adding a rule gives one change the rule must still allow, and
   checks the rules already on the path for a duplicate or a conflict.
+- The PR adding a rule shows that a reviewer can apply it. Run three
+  independent agent reviews, with the new rule, of the source PR at its
+  original head. If fewer than two report the source failure, add a test or
+  CI check instead.
 - A `REVIEW.md` holds at most twelve rules. A thirteenth replaces or merges
   one.
 - A rule is removed in the PR that adds the check enforcing it or deletes

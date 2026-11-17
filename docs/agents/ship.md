@@ -35,10 +35,15 @@ assigned role and result contract; factory prompts schedule the work.
   service/integration, changing a data model or cross-service contract,
   moving a trust boundary, or reversing a decision. Record the rationale
   in a `**Why.**` paragraph; link unbuilt work from Direction to its HOME issue.
-- **Tests:** cover changed behaviour and failure paths. BDD is useful for
-  user-visible flows; a separate specification PR is optional. Ordinary
-  `bdd_test` targets run in required `pr-checks`; the unused future lane was
-  retired in #7088.
+- **Tests:** cover changed behaviour and failure paths. Pick the test a wrong
+  change cannot pass:
+  - A user-visible flow gets an end-to-end test that drives the running
+    service. Ordinary `bdd_test` targets run in required `pr-checks`.
+  - Parsing, encoding, retries and invariants get property tests: a round
+    trip returns its input, a second run changes nothing, a limit always
+    holds.
+  - A rewrite or migration gets a differential test. Run the old and new code
+    on the same inputs, compare the outputs, and list the intended changes.
 - **Safety model:** if the system has `STPA.md`, update it using
   `docs/agents/stpa.md` when changing control actions, feedback/freshness,
   RBAC, deletion/retention or autonomous actions. Additive UI, copy, docs
