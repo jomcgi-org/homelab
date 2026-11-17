@@ -6,6 +6,7 @@ kind: Kustomization
 # namespace's allowlist.
 resources:
   - network-policy.yaml
+  - claim-admission.yaml
   - crd.yaml
   - bootstrap.yaml
   - garage.yaml

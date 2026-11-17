@@ -3,6 +3,7 @@ package admission_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -96,9 +97,34 @@ func pod(name, ns, account, reference string) *unstructured.Unstructured {
 }
 
 func denial(err error) bool {
+	return policyDenial(err, namespace+"-"+secret, message)
+}
+
+func policyDenial(err error, policy, message string) bool {
 	return err != nil && (apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) &&
-		strings.Contains(err.Error(), namespace+"-"+secret) &&
+		strings.Contains(err.Error(), policy) &&
 		strings.Contains(err.Error(), "denied request") && strings.Contains(err.Error(), message)
+}
+
+func readObjects(t *testing.T, key string) []*unstructured.Unstructured {
+	t.Helper()
+	data, err := os.ReadFile(input(t, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
+	var result []*unstructured.Unstructured
+	for {
+		var o unstructured.Unstructured
+		if err := decoder.Decode(&o); err == io.EOF {
+			return result
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if o.GetKind() != "" {
+			result = append(result, &o)
+		}
+	}
 }
 
 func resource(client dynamic.Interface, object *unstructured.Unstructured) dynamic.ResourceInterface {
@@ -217,8 +243,8 @@ func TestMirrorSecretAdmission(t *testing.T) {
 		}
 		// Give actors create/update but no impersonation, Secrets or RBAC rights.
 		create(object("Role", "test-creators", ns, map[string]interface{}{"rules": []interface{}{map[string]interface{}{
-			"apiGroups": []interface{}{"", "batch"}, "resources": []interface{}{"pods", "pods/ephemeralcontainers", "jobs", "cronjobs"},
-			"verbs": []interface{}{"create", "update"},
+			"apiGroups": []interface{}{"", "batch"}, "resources": []interface{}{"pods", "pods/ephemeralcontainers", "jobs", "cronjobs", "configmaps"},
+			"verbs": []interface{}{"create", "update", "delete"},
 		}}}))
 		subjects := []interface{}{}
 		for _, user := range actors {
@@ -227,6 +253,13 @@ func TestMirrorSecretAdmission(t *testing.T) {
 		create(object("RoleBinding", "test-creators", ns, map[string]interface{}{
 			"subjects": subjects, "roleRef": map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "test-creators"},
 		}))
+	}
+	create(object("Namespace", "garage", "", nil))
+	create(object("ServiceAccount", "garage-init", "garage", nil))
+	for _, o := range readObjects(t, "GARAGE_BOOTSTRAP") {
+		if o.GetKind() == "Role" || o.GetKind() == "RoleBinding" {
+			create(o)
+		}
 	}
 
 	type testCase struct {
@@ -296,6 +329,7 @@ func TestMirrorSecretAdmission(t *testing.T) {
 	}
 	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(output), 4096)
 	var policies []*unstructured.Unstructured
+	var authorizations []*unstructured.Unstructured
 	for {
 		var o unstructured.Unstructured
 		err := decoder.Decode(&o)
@@ -309,8 +343,13 @@ func TestMirrorSecretAdmission(t *testing.T) {
 		case "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 			policies = append(policies, &o)
 		case "ConfigMap", "Secret", "Role", "RoleBinding":
-			o.SetNamespace(namespace)
-			create(&o)
+			if o.GetNamespace() == "" {
+				o.SetNamespace(namespace)
+			}
+			stored := create(&o)
+			if o.GetKind() == "ConfigMap" {
+				authorizations = append(authorizations, stored)
+			}
 		}
 	}
 	if len(policies) != 6 {
@@ -342,8 +381,16 @@ func TestMirrorSecretAdmission(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := garage.Resource(configGVR).Namespace(namespace).List(ctx, metav1.ListOptions{}); err != nil {
+	if _, err := garage.Resource(configGVR).Namespace("garage").List(ctx, metav1.ListOptions{}); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := garage.Resource(configGVR).Namespace(namespace).List(ctx, metav1.ListOptions{}); !apierrors.IsForbidden(err) {
+		t.Fatalf("consumer ConfigMap discovery must be forbidden: %v", err)
+	}
+	for _, o := range authorizations {
+		if _, err := resource(garage, o).Update(ctx, o, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}}); !apierrors.IsForbidden(err) {
+			t.Fatalf("garage-init must not write authorizations: %v", err)
+		}
 	}
 	if _, err := garage.Resource(secretGVR).Namespace(namespace).List(ctx, metav1.ListOptions{}); !apierrors.IsForbidden(err) {
 		t.Fatalf("Secret list must be forbidden: %v", err)
@@ -357,6 +404,9 @@ func TestMirrorSecretAdmission(t *testing.T) {
 			t.Fatalf("update %s: %v", name, err)
 		}
 	}
+	t.Run("claim-authorization", func(t *testing.T) {
+		testClaimAuthorization(t, ctx, client, clients, authorizations)
+	})
 	for _, o := range policies {
 		create(o)
 	}
@@ -448,5 +498,102 @@ func TestMirrorSecretAdmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func testClaimAuthorization(t *testing.T, ctx context.Context, admin dynamic.Interface, clients map[string]dynamic.Interface, claims []*unstructured.Unstructured) {
+	t.Helper()
+	const policy = "garage-claim-authorizations"
+	const refusal = "Only ArgoCD may change Garage claim authorizations."
+	create := func(o *unstructured.Unstructured) {
+		t.Helper()
+		if _, err := resource(admin, o).Create(ctx, o, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Deliberately grant the attacker stronger RBAC than a consumer has in
+	// production. Admission must still reject writes in Garage's namespace.
+	create(object("Role", "claim-editors", "garage", map[string]interface{}{"rules": []interface{}{map[string]interface{}{
+		"apiGroups": []interface{}{""}, "resources": []interface{}{"configmaps"},
+		"verbs": []interface{}{"create", "update", "delete"},
+	}}}))
+	create(object("RoleBinding", "claim-editors", "garage", map[string]interface{}{
+		"roleRef": map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "claim-editors"},
+		"subjects": []interface{}{
+			map[string]interface{}{"kind": "User", "name": attacker, "apiGroup": "rbac.authorization.k8s.io"},
+			map[string]interface{}{"kind": "User", "name": argoController, "apiGroup": "rbac.authorization.k8s.io"},
+		},
+	}))
+	for _, o := range readObjects(t, "GARAGE_CLAIM_GUARD") {
+		create(o)
+	}
+	if len(claims) != 2 {
+		t.Fatalf("want two rendered authorizations, got %d", len(claims))
+	}
+	claim := claims[0]
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		_, err := resource(clients[attacker], claim).Update(ctx, claim, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}})
+		if policyDenial(err, policy, refusal) {
+			break
+		}
+		if err != nil || time.Now().After(deadline) {
+			t.Fatalf("claim authorization guard not effective: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, original := range claims {
+		for _, field := range []string{"bucket", "access", "namespace", "secretName", "labels"} {
+			t.Run(original.GetName()+"/"+field, func(t *testing.T) {
+				update := original.DeepCopy()
+				if field == "labels" {
+					update.SetLabels(nil)
+				} else {
+					value := map[string]string{"bucket": "factory-db-backups", "access": "readwrite", "namespace": "factory-db", "secretName": "factory-db-s3"}[field]
+					if err := unstructured.SetNestedField(update.Object, value, "data", field); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, user := range []string{attacker, argoController} {
+					_, err := resource(clients[user], update).Update(ctx, update, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}})
+					if user == attacker && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
+						t.Fatalf("%s update: %v", user, err)
+					}
+				}
+			})
+		}
+		for _, user := range []string{attacker, argoController} {
+			err := resource(clients[user], original).Delete(ctx, original.GetName(), metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}})
+			if user == attacker && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
+				t.Fatalf("%s delete authorization: %v", user, err)
+			}
+		}
+	}
+	for _, variant := range []string{"bound", "label-only", "name-only", "unrelated", "consumer"} {
+		o := claim.DeepCopy()
+		o.SetResourceVersion("")
+		o.SetUID("")
+		o.SetManagedFields(nil)
+		name := "future-publisher-s3"
+		_ = unstructured.SetNestedField(o.Object, name, "data", "secretName")
+		o.SetName(fmt.Sprintf("garage-claim-%x", sha256.Sum256([]byte(namespace+"/"+name))))
+		if variant == "label-only" || variant == "unrelated" {
+			o.SetName("ordinary-config")
+		}
+		if variant == "name-only" || variant == "unrelated" {
+			o.SetLabels(nil)
+		}
+		if variant == "consumer" {
+			o.SetNamespace(namespace)
+			_ = unstructured.SetNestedField(o.Object, "factory-db-backups", "data", "bucket")
+			_ = unstructured.SetNestedField(o.Object, "readwrite", "data", "access")
+		}
+		for _, user := range []string{attacker, argoController} {
+			_, err := resource(clients[user], o).Create(ctx, o, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+			allowed := user == argoController || variant == "unrelated" || variant == "consumer"
+			if allowed && err != nil || !allowed && !policyDenial(err, policy, refusal) {
+				t.Fatalf("%s create %s: %v", user, variant, err)
+			}
+		}
 	}
 }

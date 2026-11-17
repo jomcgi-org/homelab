@@ -4,6 +4,14 @@
 
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+exports_files(
+    [
+        "bootstrap.yaml",
+        "claim-admission.yaml",
+    ],
+    visibility = ["//projects/factory-public/admission:__pkg__"],
+)
+
 filegroup(
     name = "backup_resources",
     srcs = [

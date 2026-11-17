@@ -1,16 +1,22 @@
-{{/* Garage claims carry no credentials in Git. garage-init fills them in place. */}}
+{{/* Authorizations live in Garage's namespace, outside consumer write access. */}}
 {{- define "factory-library.bucketSecret" -}}
 {{- include "factory-library.name" .name }}
+{{- $claim := printf "garage-claim-%s" (printf "%s/%s" .root.Release.Namespace .name | sha256sum) -}}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .name }}
+  name: {{ $claim }}
+  namespace: garage
   labels:
-    factory.jomcgi.dev/garage-bucket: {{ .bucket | quote }}
-    factory.jomcgi.dev/garage-access: {{ .access | quote }}
+    factory.jomcgi.dev/garage-claim: "true"
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
+data:
+  namespace: {{ .root.Release.Namespace | quote }}
+  secretName: {{ .name | quote }}
+  bucket: {{ .bucket | quote }}
+  access: {{ .access | quote }}
 ---
 apiVersion: v1
 kind: Secret
@@ -79,40 +85,9 @@ subjects:
 {{- $_ := set $secretNames $name true -}}
 {{- end -}}
 {{- if hasKey ($.Values.secrets | default dict) $secret -}}{{- fail (printf "factory-library: reserved bucket secret name %s" $secret) -}}{{- end }}
-{{ include "factory-library.bucketSecret" (dict "name" $secret "bucket" $bucket "access" $access) }}
+{{ include "factory-library.bucketSecret" (dict "root" $ "name" $secret "bucket" $bucket "access" $access) }}
 {{- if hasKey . "public" }}
 {{ include "factory-library.mirror" (dict "root" $ "bucket" $bucket "base" $base "public" .public) }}
 {{- end }}
-{{- end }}
-{{- if .Values.buckets }}
-{{- $discovery := printf "%s-garage-discovery" .Release.Name -}}
-{{- include "factory-library.name" $discovery }}
----
-# Discovery reads non-secret claims. Credential access stays name-scoped.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ $discovery }}
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-rules:
-  - apiGroups: [""]
-    resources: [configmaps]
-    verbs: [list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ $discovery }}
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ $discovery }}
-subjects:
-  - kind: ServiceAccount
-    name: garage-init
-    namespace: garage
 {{- end }}
 {{- end -}}

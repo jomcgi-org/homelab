@@ -2,6 +2,7 @@
 
 import base64
 import copy
+import hashlib
 import io
 import json
 import os
@@ -366,26 +367,26 @@ def test_bucket_discovery_cannot_list_credentials(chart):
         d["metadata"]["name"]: d for d in docs.values() if d["kind"] == "ConfigMap"
     }
     secrets = {d["metadata"]["name"] for d in docs.values() if d["kind"] == "Secret"}
-    assert set(claims) == secrets
     assert len(claims) == 2
-    assert all("data" not in claim for claim in claims.values())
+    assert {claim["data"]["secretName"] for claim in claims.values()} == secrets
     for claim in claims.values():
-        assert claim["metadata"]["labels"]["factory.jomcgi.dev/garage-bucket"] == (
-            "factory-public"
+        assert claim["metadata"]["namespace"] == "garage"
+        assert claim["data"]["namespace"] == "test"
+        assert claim["data"]["bucket"] == "factory-public"
+        expected = hashlib.sha256(
+            f"test/{claim['data']['secretName']}".encode()
+        ).hexdigest()
+        assert claim["metadata"]["name"] == "garage-claim-" + expected
+        assert claim["data"]["access"] == (
+            "read" if claim["data"]["secretName"].endswith("-mirror-s3") else "write"
         )
     for doc in docs.values():
         if doc["kind"] != "Role":
             continue
         for rule in doc["rules"]:
-            if "secrets" in rule["resources"]:
-                assert rule["verbs"] == ["get", "update"]
-                assert set(rule["resourceNames"]) <= secrets
-            else:
-                assert rule == {
-                    "apiGroups": [""],
-                    "resources": ["configmaps"],
-                    "verbs": ["list"],
-                }
+            assert rule["resources"] == ["secrets"]
+            assert rule["verbs"] == ["get", "update"]
+            assert set(rule["resourceNames"]) <= secrets
 
 
 @pytest.mark.parametrize("suspend", [False, True])

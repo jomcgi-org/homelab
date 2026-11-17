@@ -60,7 +60,7 @@ fi
 {{- $env = append $env (dict "name" (printf "RCLONE_CONFIG_R2_%s" $key) "valueFrom" (dict "secretKeyRef" (dict "name" $r2Secret "key" $field))) -}}
 {{- end -}}
 {{- $workload := dict "kind" "CronJob" "schedule" ($public.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" $image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" .)) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
-{{ include "factory-library.bucketSecret" (dict "name" $garageSecret "bucket" .bucket "access" "read") }}
+{{ include "factory-library.bucketSecret" (dict "root" .root "name" $garageSecret "bucket" .bucket "access" "read") }}
 {{ include "factory-library.mirrorAdmission" (dict "root" .root "name" $name "secret" $r2Secret) }}
 ---
 apiVersion: onepassword.com/v1

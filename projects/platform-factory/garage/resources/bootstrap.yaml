@@ -5,8 +5,8 @@
 # ArgoCD owns garage-secrets and each consumer's key Secret as empty
 # placeholders and ignores their data. Each consumer namespace grants the
 # garage-init ServiceAccount get and update on its own Secret names. Library
-# consumers grant namespaced ConfigMap list for non-secret claim discovery. The
-# cluster role below lists namespaces; it grants no cluster-wide Secret access.
+# charts place authorizations in garage, protected by claim-admission.yaml.
+# Discovery lists only Garage ConfigMaps, never consumer metadata or Secrets.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -36,6 +36,9 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [list]
   - apiGroups: [""]
     resources: [secrets]
     resourceNames: [garage-secrets]
@@ -217,32 +220,3 @@ spec:
             - name: scripts
               configMap:
                 name: garage-init
-
----
-# Library consumers grant list on Secrets only in their own namespace. This
-# cluster permission enumerates namespaces, never Secrets or their values.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: garage-claim-discovery
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-rules:
-  - apiGroups: [""]
-    resources: [namespaces]
-    verbs: [list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: garage-claim-discovery
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: garage-claim-discovery
-subjects:
-  - kind: ServiceAccount
-    name: garage-init
-    namespace: garage

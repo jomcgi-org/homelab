@@ -14,47 +14,98 @@ INIT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INIT)
 
 
-def test_discovery_paginates_and_skips_namespaces_without_permission(monkeypatch):
+def authorization():
+    return {
+        "metadata": {
+            "namespace": "garage",
+            "name": INIT.claim_name("public", "mirror-s3"),
+            "labels": {INIT.CLAIM_LABEL: "true"},
+        },
+        "data": {
+            "namespace": "public",
+            "secretName": "mirror-s3",
+            "bucket": "factory-public",
+            "access": "read",
+        },
+    }
+
+
+def test_discovery_reads_only_protected_authorizations_and_paginates(monkeypatch):
     calls = []
 
     def k8s(method, path, body=None, metadata_only=False):
-        assert method == "GET" and body is None and metadata_only
+        assert method == "GET" and body is None and not metadata_only
         url = urllib.parse.urlsplit(path)
         query = urllib.parse.parse_qs(url.query)
         calls.append((url.path, query))
         assert query["limit"] == ["100"]
-        if url.path == "/api/v1/namespaces":
-            if "continue" not in query:
-                return {
-                    "metadata": {"continue": "namespace-page"},
-                    "items": [{"metadata": {"name": "private"}}],
-                }
-            return {"items": [{"metadata": {"name": "public"}}]}
-        assert query["labelSelector"] == [INIT.CLAIM_LABEL]
-        assert url.path.endswith("/configmaps")
-        if url.path == "/api/v1/namespaces/private/configmaps":
-            return None  # GET 403, no list Role in this namespace.
+        assert query["labelSelector"] == [INIT.CLAIM_LABEL + "=true"]
+        # A consumer ConfigMap, including one with forged bucket/access labels,
+        # is never an authorization input and is not even listed.
+        assert url.path == "/api/v1/namespaces/garage/configmaps"
         if "continue" not in query:
             return {"metadata": {"continue": "claim-page"}, "items": []}
-        return {
-            "items": [
-                {
-                    "metadata": {
-                        "name": "mirror-s3",
-                        "labels": {
-                            INIT.CLAIM_LABEL: "factory-public",
-                            INIT.ACCESS_LABEL: "read",
-                        },
-                    }
-                }
-            ]
-        }
+        assert query["continue"] == ["claim-page"]
+        return {"items": [authorization()]}
 
     monkeypatch.setattr(INIT, "k8s", k8s)
     assert list(INIT.discover_grants()) == [
         ("factory-public", "public", "mirror-s3", "read")
     ]
-    assert len(calls) == 5
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("namespace", "factory-db"),
+        ("secretName", "factory-db-s3"),
+        ("bucket", "../factory-db-backups"),
+        ("access", "owner"),
+        ("extra", "unrecognized"),
+    ],
+)
+def test_invalid_authorization_cannot_reach_grant(monkeypatch, field, value):
+    claim = authorization()
+    claim["data"][field] = value
+    monkeypatch.setattr(INIT, "k8s", lambda *args: {"items": [claim]})
+    monkeypatch.setattr(INIT, "BUCKETS", [])
+    monkeypatch.setattr(INIT, "GRANTS", [])
+    monkeypatch.setattr(INIT, "wait_for_nodes", lambda: [])
+    monkeypatch.setattr(INIT, "ensure_layout", lambda _: None)
+    monkeypatch.setattr(INIT, "ensure_bucket", lambda _: pytest.fail("no bucket write"))
+    monkeypatch.setattr(INIT, "ensure_grant", lambda *args: pytest.fail("no grant"))
+    monkeypatch.setattr(
+        INIT,
+        "garage",
+        lambda *args: {
+            "status": "healthy",
+            "storageNodesUp": 3,
+            "storageNodes": 3,
+            "partitionsAllOk": 1,
+            "partitions": 1,
+        },
+    )
+    with pytest.raises(SystemExit, match="claim discovery"):
+        INIT.bootstrap()
+
+
+def test_consumer_namespace_or_old_labels_cannot_authorize(monkeypatch):
+    claim = authorization()
+    claim["metadata"]["namespace"] = "public"
+    monkeypatch.setattr(INIT, "k8s", lambda *args: {"items": [claim]})
+    with pytest.raises(ValueError, match="invalid Garage authorization"):
+        list(INIT.discover_grants())
+    claim["metadata"]["namespace"] = "garage"
+    claim["metadata"]["labels"].update(
+        {
+            "factory.jomcgi.dev/garage-bucket": "factory-db-backups",
+            "factory.jomcgi.dev/garage-access": "readwrite",
+        }
+    )
+    assert list(INIT.discover_grants()) == [
+        ("factory-public", "public", "mirror-s3", "read")
+    ]
 
 
 @pytest.mark.parametrize("access", ["read", "write", "readwrite"])
@@ -161,9 +212,11 @@ def test_missing_consumer_secret_is_skipped(monkeypatch):
     INIT.ensure_grant("bucket-id", "factory-public", "consumer", "bucket-s3", "read")
 
 
-def test_namespace_discovery_permission_failure_is_visible(monkeypatch):
+def test_authorization_discovery_permission_failure_is_visible(monkeypatch):
     monkeypatch.setattr(INIT, "k8s", lambda *args, **kwargs: None)
-    with pytest.raises(RuntimeError, match="namespace discovery is not authorized"):
+    with pytest.raises(
+        RuntimeError, match="Garage authorization discovery is not authorized"
+    ):
         list(INIT.discover_grants())
 
 
@@ -172,9 +225,20 @@ def test_discovery_rbac_and_garage_ingress():
 
     here = Path(__file__).parent
     bootstrap = list(yaml.safe_load_all((here / "bootstrap.yaml").read_text()))
-    role = next(doc for doc in bootstrap if doc["kind"] == "ClusterRole")
+    assert not any(
+        doc and doc["kind"] in ("ClusterRole", "ClusterRoleBinding")
+        for doc in bootstrap
+    )
+    role = next(doc for doc in bootstrap if doc and doc["kind"] == "Role")
+    assert role["metadata"]["namespace"] == "garage"
     assert role["rules"] == [
-        {"apiGroups": [""], "resources": ["namespaces"], "verbs": ["list"]}
+        {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["list"]},
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": ["garage-secrets"],
+            "verbs": ["get", "update"],
+        },
     ]
     policy = next(
         doc

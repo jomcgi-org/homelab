@@ -13,13 +13,15 @@ The consumer's Secret is the source of truth for its key: credentials are
 generated into it when absent and imported into Garage when Garage lacks
 them, so a rerun never rotates a key and a rebuilt Garage gets the same keys
 back. ArgoCD creates every Secret named here empty and ignores its data; this
-script only updates those names. Library consumers declare labeled ConfigMaps
-with the same names as their credential Secrets. Discovery never lists Secrets.
+script only updates those names. Library charts declare authorizations in the
+garage namespace, protected by RBAC and ArgoCD-only admission. Consumer
+ConfigMaps and Secret labels cannot authorize grants. Discovery never lists Secrets.
 
 Uses only the standard library and the pod's service account token.
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -301,45 +303,47 @@ def ensure_grant(bucket_id, bucket, namespace, name, access="readwrite"):
     print(f"{namespace}/{name} has {access} on {bucket}")
 
 
-CLAIM_LABEL = "factory.jomcgi.dev/garage-bucket"
-ACCESS_LABEL = "factory.jomcgi.dev/garage-access"
+CLAIM_LABEL = "factory.jomcgi.dev/garage-claim"
 
 
-def list_metadata(path, **query):
-    """Paginate metadata only; a namespace without a discovery Role is skipped."""
-    query["limit"] = 100
+def claim_name(namespace, secret):
+    return (
+        "garage-claim-" + hashlib.sha256(f"{namespace}/{secret}".encode()).hexdigest()
+    )
+
+
+def discover_grants():
+    """Read only protected declarations in Garage, never consumer metadata."""
+    path = f"/api/v1/namespaces/{NAMESPACE}/configmaps"
+    query = {"limit": 100, "labelSelector": f"{CLAIM_LABEL}=true"}
     while True:
-        page = k8s(
-            "GET", path + "?" + urllib.parse.urlencode(query), metadata_only=True
-        )
+        page = k8s("GET", path + "?" + urllib.parse.urlencode(query))
         if page is None:
-            if path == "/api/v1/namespaces":
-                raise RuntimeError("namespace discovery is not authorized")
-            return
-        yield from page.get("items", [])
+            raise RuntimeError("Garage authorization discovery is not authorized")
+        for claim in page.get("items", []):
+            meta = claim["metadata"]
+            data = claim.get("data") or {}
+            ns = data.get("namespace", "")
+            name = data.get("secretName", "")
+            bucket = data.get("bucket", "")
+            access = data.get("access", "")
+            if (
+                meta.get("namespace") != NAMESPACE
+                or set(data) != {"namespace", "secretName", "bucket", "access"}
+                or not all(
+                    re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value)
+                    for value in (ns, name)
+                )
+                or meta["name"] != claim_name(ns, name)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", bucket)
+                or access not in ("read", "write", "readwrite")
+            ):
+                raise ValueError(f"invalid Garage authorization {meta['name']}")
+            yield bucket, ns, name, access
         token = page.get("metadata", {}).get("continue")
         if not token:
             return
         query["continue"] = token
-
-
-def discover_grants():
-    # Claims contain no credentials. RBAC allows listing ConfigMaps and only
-    # get/update on each named Garage Secret; it never allows Secret lists.
-    for namespace in list_metadata("/api/v1/namespaces"):
-        ns = namespace["metadata"]["name"]
-        for claim in list_metadata(
-            f"/api/v1/namespaces/{ns}/configmaps", labelSelector=CLAIM_LABEL
-        ):
-            meta = claim["metadata"]
-            labels = meta.get("labels", {})
-            bucket = labels.get(CLAIM_LABEL, "")
-            access = labels.get(ACCESS_LABEL, "")
-            if not re.fullmatch(
-                r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", bucket
-            ) or access not in ("read", "write", "readwrite"):
-                raise ValueError(f"invalid Garage claim {ns}/{meta['name']}")
-            yield bucket, ns, meta["name"], access
 
 
 def bootstrap():
