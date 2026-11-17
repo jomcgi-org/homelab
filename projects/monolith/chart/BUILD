@@ -562,8 +562,5 @@ py_test(
         "migrations/**/*",
     ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
