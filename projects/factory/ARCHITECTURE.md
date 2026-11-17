@@ -310,8 +310,20 @@ local `bge-small-en-v1.5`. Its 1,024 dimensions fit pgvector's index limit
 ([HOME-176](https://factory-plan.jomcgi.dev/factory/issue/HOME-176)). Joe
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
-Hindsight changes an empty vector column to a new model's dimension at
-startup; once rows exist, a model change needs `hindsight-admin reembed`.
+
+**Rollback.** While `memory_units` and `mental_models` hold no rows, a revert
+of the manifest is enough: Hindsight resizes an empty vector column at
+startup. After the first retain, it refuses to start on a model with another
+dimension. To go back to the image's local model:
+
+1. In the running pod, run
+   `HINDSIGHT_API_EMBEDDINGS_PROVIDER=local hindsight-admin reembed --all-schemas`.
+   Recall keeps working on the old vectors while it fills a new column.
+2. Revert the manifest.
+3. Run `hindsight-admin reembed --all-schemas --finish`.
+
+`projects/platform-factory/hindsight/rollback_test.py` runs these steps in the
+deployed image, without network, from 1,024-dimensional vectors.
 
 Two keys separate the callers. The REST API takes only the tenant key, which
 nothing outside the pod holds. MCP takes the agents' token
