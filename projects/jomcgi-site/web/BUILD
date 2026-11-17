@@ -25,10 +25,13 @@ js_library(
             "src/setup.ts",
         ],
     ) + [
+        "blog-content.d.mts",
+        "blog-content.mjs",
         "build.mjs",
         "package.json",
         "tsconfig.json",
         "vite.config.ts",
+        "//projects/monolith/frontend:blog_sources",
     ],
     deps = [
         ":node_modules/@astryxdesign/core",
@@ -36,8 +39,11 @@ js_library(
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@stylexjs/stylex",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/marked",
         ":node_modules/react",
         ":node_modules/react-dom",
+        ":node_modules/svelte",
         ":node_modules/vite",
     ],
 )
