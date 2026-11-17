@@ -69,6 +69,17 @@ def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     )
 
 
+def test_a_new_digest_changes_the_release_marker():
+    other = "sha256:" + "1" * 64
+    first = docs(render())["ConfigMap/jomcgi-site-release"]["data"]["image"]
+    second = docs(render("--set", f"image.digest={other}"))[
+        "ConfigMap/jomcgi-site-release"
+    ]["data"]["image"]
+    assert first.endswith(f"@{DIGEST}")
+    assert second.endswith(f"@{other}")
+    assert first != second
+
+
 def test_release_marker_changes_with_the_image():
     # Argo CD does not diff hooks; this ConfigMap is what makes a new image a sync.
     marker = docs(render())["ConfigMap/jomcgi-site-release"]["data"]
