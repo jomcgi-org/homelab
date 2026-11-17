@@ -63,6 +63,11 @@ workloads:
 # chart refuses it in any other stage.
 edge:
   enabled: false
+  # false: the edge Job deletes every route of Worker jomcgi-site, so all
+  # jomcgi.dev paths go back to the hub; cache rules still apply. The prod
+  # Application turns it on in its own PR, so reverting that PR is the
+  # rollback. The routes themselves are edge/routes.json, in the image.
+  serveRoutes: false
   workload:
     kind: Job
     # PostSync runs after the deploy Job, so each route's Worker exists.

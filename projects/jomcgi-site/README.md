@@ -35,6 +35,14 @@ wrangler.jsonc ─────────────────────�
   `jomcgi-site` that is not in the file, and the path falls back to the hub.
   `wrangler` cannot do this: with a zone-scoped token it adds routes but never
   deletes them, so the prod env lists none.
+- **Rollback.** `edge.serveRoutes` in the prod Application turns every route
+  on or off. Off, the edge Job deletes all routes of `jomcgi-site`, so every
+  jomcgi.dev path goes back to the hub, and the cache rules still apply. The
+  prod Application is registered with it off, and a later PR turns it on, so
+  reverting that PR is the rollback; it needs no chart publish. Remove the
+  Application only after its routes are gone, because removing it does not
+  delete them. Prod pins below the first chart with this switch refuse or
+  ignore it, so do not lower the prod pin below that version.
 - **Zone rules.** `edge/cache-rules.json` is the whole cache-settings
   entrypoint. A live rule that is not in the file stops the edge Job before
   any write, so import a dashboard rule by PR first. Only the prod stage runs

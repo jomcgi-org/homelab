@@ -25,6 +25,7 @@ js_test(
     data = [
         "apply.mjs",
         "cache-rules.json",
+        "main.mjs",
         "routes.json",
         "testdata/live-cache-rules-2026-11-17.json",
     ],
