@@ -54,6 +54,15 @@ class ClaimedOccurrence:
     claim_token: str
 
 
+# A digest reads chat.messages, which only the Discord gateway fills. With the
+# gateway off (DISCORD_GATEWAY_ENABLED=false, HOME-221) digests pause: they keep
+# their schedule, and each due one posts this notice once.
+DIGEST_PAUSED = (
+    "📋 Scheduled {mode} digest paused: this bot no longer stores this "
+    "channel's messages. It resumes when message storage is back."
+)
+
+
 def _occurrence_id(task_id: int, scheduled_for: datetime) -> str:
     identity = f"{task_id}:{as_utc(scheduled_for).isoformat()}"
     return hashlib.sha256(identity.encode()).hexdigest()
@@ -291,8 +300,12 @@ def claim_due(
     *,
     lease_seconds: int = CLAIM_LEASE_SECONDS,
     limit: int = CLAIM_BATCH,
+    task_kinds: tuple[str, ...] | None = None,
 ) -> list[ClaimedOccurrence]:
     """Atomically claim due tasks and reclaim expired leases.
+
+    ``task_kinds`` limits the claim to those kinds; other due tasks stay as
+    they are.
 
     Candidate discovery may race, but each conditional UPDATE can succeed for
     only one claimant.  The returned objects are detached value snapshots and
@@ -300,26 +313,26 @@ def claim_due(
     """
     now = as_utc(now)
     stale_before = now - timedelta(seconds=lease_seconds)
-    candidates = session.exec(
-        select(ScheduledTask)
-        .where(
-            or_(
-                and_(
-                    ScheduledTask.status == "pending",
-                    ScheduledTask.next_run_at <= now,
+    query = select(ScheduledTask).where(
+        or_(
+            and_(
+                ScheduledTask.status == "pending",
+                ScheduledTask.next_run_at <= now,
+            ),
+            and_(
+                ScheduledTask.status == "claimed",
+                ScheduledTask.next_run_at <= now,
+                or_(
+                    ScheduledTask.claimed_at.is_(None),
+                    ScheduledTask.claimed_at <= stale_before,
                 ),
-                and_(
-                    ScheduledTask.status == "claimed",
-                    ScheduledTask.next_run_at <= now,
-                    or_(
-                        ScheduledTask.claimed_at.is_(None),
-                        ScheduledTask.claimed_at <= stale_before,
-                    ),
-                ),
-            )
+            ),
         )
-        .order_by(ScheduledTask.next_run_at, ScheduledTask.id)
-        .limit(limit)
+    )
+    if task_kinds is not None:
+        query = query.where(ScheduledTask.task_kind.in_(task_kinds))
+    candidates = session.exec(
+        query.order_by(ScheduledTask.next_run_at, ScheduledTask.id).limit(limit)
     ).all()
     claimed: list[ClaimedOccurrence] = []
     for task in candidates:
@@ -386,13 +399,8 @@ def finalize_claim(
     claim: ClaimedOccurrence,
     content: str,
     now: datetime,
-    *,
-    end: bool = False,
 ) -> bool:
-    """Atomically enqueue a claimed occurrence and complete/advance its task.
-
-    ``end`` cancels a recurring task after this occurrence instead of
-    advancing it."""
+    """Atomically enqueue a claimed occurrence and complete/advance its task."""
     now = as_utc(now)
     task = session.get(ScheduledTask, claim.task_id)
     occurrence = session.get(ScheduledTaskOccurrence, claim.occurrence_id)
@@ -425,9 +433,6 @@ def finalize_claim(
     occurrence.enqueued_at = now
     if task.schedule_kind == "one_shot":
         task.status = "completed"
-        task.completed_at = now
-    elif end:
-        task.status = "cancelled"
         task.completed_at = now
     else:
         task.status = "pending"
@@ -483,18 +488,63 @@ def release_claim(
     return True
 
 
-def _claim_with_engine(engine, now: datetime, claimant: str) -> list[ClaimedOccurrence]:
+def _claim_with_engine(
+    engine, now: datetime, claimant: str, task_kinds: tuple[str, ...] | None = None
+) -> list[ClaimedOccurrence]:
     with Session(engine) as session:
-        claims = claim_due(session, now, claimant)
+        claims = claim_due(session, now, claimant, task_kinds=task_kinds)
         session.commit()
         return claims
 
 
+def notify_paused_digests(session: Session, now: datetime) -> int:
+    """Post one notice for each due digest while digests are paused.
+
+    The tasks stay ``pending`` with the same ``next_run_at``, so they run
+    again when digests resume. The outbox dedupe key sends the notice once per
+    task. Returns the number of notices enqueued.
+    """
+    from chat.models import DiscordOutbox
+
+    due = session.exec(
+        select(ScheduledTask)
+        .where(ScheduledTask.task_kind == "digest")
+        .where(ScheduledTask.status == "pending")
+        .where(ScheduledTask.next_run_at <= as_utc(now))
+    ).all()
+    sent = 0
+    for task in due:
+        key = f"digest-paused:{task.id}"
+        if (
+            session.exec(
+                select(DiscordOutbox.id).where(DiscordOutbox.dedupe_key == key)
+            ).first()
+            is not None
+        ):
+            continue
+        mode = json.loads(task.payload_json or "{}").get("mode", "summary")
+        enqueue_message(
+            session,
+            task.channel_id,
+            content=DIGEST_PAUSED.format(mode=mode),
+            dedupe_key=key,
+        )
+        sent += 1
+    return sent
+
+
+def _notify_paused_with_engine(engine, now: datetime) -> int:
+    with Session(engine) as session:
+        sent = notify_paused_digests(session, now)
+        session.commit()
+        return sent
+
+
 def _finalize_with_engine(
-    engine, claim: ClaimedOccurrence, content: str, now: datetime, end: bool = False
+    engine, claim: ClaimedOccurrence, content: str, now: datetime
 ) -> bool:
     with Session(engine) as session:
-        result = finalize_claim(session, claim, content, now, end=end)
+        result = finalize_claim(session, claim, content, now)
         session.commit()
         return result
 
@@ -537,15 +587,6 @@ async def _default_digest_builder(engine, claim: ClaimedOccurrence) -> str:
     return f"📋 Scheduled {payload['mode']} digest:\n{digest}"
 
 
-# A digest reads chat.messages, which only the Discord gateway fills. Without
-# the gateway (DISCORD_GATEWAY_ENABLED=false, HOME-221) a digest would repeat
-# old messages, so its next occurrence posts this notice and ends the task.
-DIGEST_STOPPED = (
-    "📋 Scheduled {mode} digest stopped: this bot no longer stores this "
-    "channel's messages, so a digest would only repeat old ones."
-)
-
-
 async def drain_once(
     engine,
     *,
@@ -556,26 +597,26 @@ async def drain_once(
 ) -> int:
     """Claim and enqueue due work once. Returns finalized occurrence count.
 
-    With ``digests`` false, a due digest posts ``DIGEST_STOPPED`` once and its
-    task ends; reminders are unchanged."""
+    With ``digests`` false, digests are paused: only reminders are claimed,
+    and each due digest gets one ``DIGEST_PAUSED`` notice and stays pending."""
     now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
-    claims = await asyncio.to_thread(_claim_with_engine, engine, now, claimant)
+    if not digests:
+        await asyncio.to_thread(_notify_paused_with_engine, engine, now)
+    claims = await asyncio.to_thread(
+        _claim_with_engine, engine, now, claimant, None if digests else ("reminder",)
+    )
     finalized = 0
     for claim in claims:
         try:
             payload = json.loads(claim.payload_json)
-            end = False
             if claim.task_kind == "reminder":
                 content = f"⏰ <@{claim.author_id}> reminder: {payload['content']}"
-            elif not digests:
-                content = DIGEST_STOPPED.format(mode=payload.get("mode", "summary"))
-                end = True
             else:
                 builder = digest_builder or _default_digest_builder
                 content = await builder(engine, claim)
             if await asyncio.to_thread(
-                _finalize_with_engine, engine, claim, content, now, end
+                _finalize_with_engine, engine, claim, content, now
             ):
                 finalized += 1
         except Exception as exc:
