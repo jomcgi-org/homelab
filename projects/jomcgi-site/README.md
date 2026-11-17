@@ -96,19 +96,61 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 
 ## Blog
 
-`web/blog-content.mjs` reads the hub's public post manifest and shared
-markdown renderer at build time. It renders the original static figures and
-moves their numeric inline dimensions into a stylesheet. Every post has an
-HTML entry and a page module; `src/blog.test.tsx` checks the manifest, preview
-tags and sections. Add both entries when adding a post.
+The HOME-198 migration serves the index and every manifest post as static
+HTML at its existing URL. The hub's [post manifest](../monolith/frontend/src/lib/public/posts/posts-manifest.json)
+remains the content source; markdown, titles, summaries, dates and tags are
+read from it without a runtime request.
 
-The index applies `?tag=` in the browser. The replay islands share the hub’s
-public Svelte components and recordings, with palette roles and SVG
-positioning. Each Load button imports its component and recording. Playback,
-scrubbing, the incident graph and the coding trace run locally.
+```text
+hub manifest + shared markdown renderer + original Svelte figures
+  -> web/blog-content.mjs (build-time HTML and figure CSS)
+  -> virtual:blog/<slug> -> each registered page
+  -> web/build.mjs -> dist/blog.html and dist/blog/<slug>.html
+```
+
+[blog-content.mjs](web/blog-content.mjs) calls the shared `renderDoc` and
+server-renders all nine original inference figures. It moves their numeric
+inline dimensions into CSS. [vite.config.ts](web/vite.config.ts) takes an
+HTML input for every manifest slug; [build.mjs](web/build.mjs) fills each
+entry from [pages.tsx](web/src/pages.tsx) before it is shipped.
+
+| URL | HTML entry | Page module |
+| --- | --- | --- |
+| `/blog` | [blog.html](web/blog.html) | [blog-page.tsx](web/src/blog-page.tsx) |
+| `/blog/ember-conformance` | [ember-conformance.html](web/blog/ember-conformance.html) | [blog-ember-conformance-page.tsx](web/src/blog-ember-conformance-page.tsx) |
+| `/blog/125b-on-a-4090` | [125b-on-a-4090.html](web/blog/125b-on-a-4090.html) | [blog-125b-on-a-4090-page.tsx](web/src/blog-125b-on-a-4090-page.tsx) |
+
+Each entry script imports its own page. The browser hydrates the rendered
+HTML; the index applies `?tag=` and follows browser history. Add an HTML
+entry, entry script and registered page when adding a manifest post.
+
+[blog-embed.tsx](web/src/blog-embed.tsx) starts imports only after its Load
+button is activated. Conformance loads `ConformanceReplay`; research and
+coding load `QwenReplay` with their respective `qwen-replay.json` and
+`agent-replay.json` recordings. The latter includes `CodeOutput` and
+`DraftTrace`; research includes `IncidentGraph`. The components and recording
+files are shared with the hub, without copied datasets. Playback, scrubbing,
+graph interaction and the coding trace run locally after loading.
+
+The automated checks below are wired in [web/BUILD](web/BUILD); target names
+are relative to `//projects/jomcgi-site/web`.
+
+| Contract | Evidence in the checkout | Bazel target |
+| --- | --- | --- |
+| Every manifest post has an emitted page, title, sections and index link | [prerendered.mjs](web/prerendered.mjs) opens the built HTML and compares it with the manifest | `:prerendered_test` |
+| Original content, figures, tags and preview metadata; tag history navigation | [blog.test.tsx](web/src/blog.test.tsx), including all nine figures and the original title, description, canonical, Open Graph and Twitter values | `:test` |
+| Intent loading, retries, disposal, play, scrub and graph interaction | The replay tests in [blog.test.tsx](web/src/blog.test.tsx) mount the shared components and run axe on the loaded embeds | `:test` |
+| Every route has its own entry and passes structural axe checks | [a11y.test.tsx](web/src/a11y.test.tsx) enumerates all HTML entries and registered pages | `:test` |
+| Light/dark contrast, distinct replay keys, no inline styles or colour literals outside the palette | [contrast.test.tsx](web/src/contrast.test.tsx) checks the site, shared replay styles and generated figure CSS | `:test` |
+| Every route stays under 150 KiB initial gzipped JavaScript | [budget.mjs](web/budget.mjs) follows each built entry's initial imports, excluding deferred imports | `:budget_test` |
 
 `edge/routes.json` includes the blog and shared asset patterns. The prod
 edge apply job owns these routes; `wrangler.jsonc` lists no prod routes.
+[sections.ts](web/src/sections.ts) marks Blog live. The `jomcgi.dev/blog*`
+pattern covers the index, posts and `?tag=` queries under the route contract
+above. Removing it from [routes.json](edge/routes.json) returns those URLs
+to the hub. [apply.test.mjs](edge/apply.test.mjs) checks these URLs and keeps
+the remaining hub paths outside the site's routes.
 
 ## Build and test
 
@@ -145,6 +187,16 @@ takes over both pins when HOME-116 slice 2 lands.
 page's indexing rules. `public/_headers` sends `X-Robots-Tag: noindex` for
 the preview host and the unlisted `/slop` drafts note. The note also keeps its
 `noindex, nofollow` meta tag.
+
+After the dev deployment, check the three blog URLs above on
+`next.jomcgi.dev`. With JavaScript disabled, the index and post text must
+remain readable, including the section headings and figures. With JavaScript
+enabled, check tag filtering and Back navigation. Each replay's code and
+recording should appear in the network panel only after its Load button is
+activated; check play, scrub and graph selection after loading. Run browser
+axe checks in light and dark modes at phone and desktop widths, including
+the loaded demos. These live checks need the deployed build; a local build
+does not verify the dev deployment.
 
 ## Scotland and drafts migration (HOME-207)
 

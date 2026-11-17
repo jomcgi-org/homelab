@@ -169,7 +169,6 @@ const STAYS_ON_THE_HUB = [
   "jomcgi.dev/app/hikes",
   "jomcgi.dev/app/stars",
   "jomcgi.dev/app/grimoire",
-  "jomcgi.dev/blog",
 ];
 
 test("no route catches a path the hub or another service still owns", () => {
@@ -180,6 +179,10 @@ test("routed pages are served with and without a query string", () => {
   for (const path of [
     "/cv",
     "/cv/",
+    "/blog",
+    "/blog/",
+    "/blog/ember-conformance",
+    "/blog/125b-on-a-4090",
     "/notes",
     "/ember",
     "/ember/firecracker",
@@ -190,6 +193,7 @@ test("routed pages are served with and without a query string", () => {
     assert.ok(served(`jomcgi.dev${path}`), path);
     assert.ok(served(`jomcgi.dev${path}?ref=x`), `${path}?ref=x`);
   }
+  assert.ok(served("jomcgi.dev/blog?tag=inference"));
 });
 
 test("a pattern without a wildcard says why, since a query string bypasses it", () => {
