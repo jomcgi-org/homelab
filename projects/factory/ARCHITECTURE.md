@@ -13,7 +13,7 @@ change. Labels: **[V]** verified in upstream source, docs or live state;
 | Work requests, assignment, work feed, run queue | itsaplan Community | v1.10.0 (`ghcr.io/croffasia/itsaplan-{api,web,worker}`), by digest |
 | Agent definitions, execution, sessions | kagent | v1.0.1 charts `oci://ghcr.io/kagent-dev/kagent/helm/{kagent-crds,kagent}` |
 | Isolated workspaces (actors) | Agent Substrate, kagent-dev fork | v1.0.1 |
-| Coding harness | Codex CLI | 0.169.1, from the `jomcgi-org/kagent` fork build (branch `jomcgi/codex-6.2`) |
+| Coding harness | Codex CLI | 0.169.1, from the `jomcgi-org/kagent` fork build (branch `jomcgi/codex-6.2`, which also carries kagent#3653) |
 | Repository, PR, CI, merge queue | GitHub | |
 | Provider and GitHub credentials | `projects/factory/broker` | this repo |
 | Relationships between itsaplan, kagent and GitHub | `projects/factory/connector` | this repo |

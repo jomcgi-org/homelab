@@ -47,10 +47,10 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit 2c2fc329a8d8
+    # kagent v1.0.1 built from jomcgi-org/kagent commit 9fd64db555fa
     # (branch jomcgi/codex-6.2, build run
-    # https://github.com/jomcgi-org/kagent/actions/runs/44189845362). That
-    # commit sets PinnedCodexVersion and the harness Dockerfile to Codex
+    # https://github.com/jomcgi-org/kagent/actions/runs/44194091798). Commit
+    # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
     # 0.169.1, the first stable Codex whose bundled catalogue has
     # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
     # v1.0.1 pins 0.161.0, which has neither. The controller writes that pin
@@ -59,10 +59,13 @@ kagent:
     # kagent release ships the bump. Revert the images and the models
     # together: the packaged images' Codex 0.161.0 gives a 6.2 coder no
     # apply_patch.
+    # Commit 9fd64db555fa adds kagent-dev/kagent#3653: SuspendActor gets its
+    # own 2 min deadline (substrate.snapshotTimeout) in place of the 30 s
+    # call deadline, whose timeout wedges the session (kagent#3311/#3312).
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.2c2fc329a8d8@sha256:6fa3481159e7e660916e400359b8f48878e6ce58ce430ec619653441e5b1cc4e
+      tag: 1.0.1-jomcgi.9fd64db555fa@sha256:51c7727b074efda73e69efa57537de45ba917439b5311695ac7c39c9fa842251
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
