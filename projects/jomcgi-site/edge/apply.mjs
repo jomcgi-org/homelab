@@ -201,7 +201,14 @@ export async function apply(
   }
   if (!log.length) log.push("no change");
   log.push(...routesBlocked, ...rulesBlocked);
-  if (dryRun) return log;
+  if (dryRun) {
+    // A blocked half would fail a real apply, so the dry run fails too, and
+    // its error carries the whole plan.
+    if (routesBlocked.length || rulesBlocked.length) {
+      throw new Error(`dry run is blocked:\n  ${log.join("\n  ")}`);
+    }
+    return log;
+  }
 
   if (!routesBlocked.length) {
     for (const p of routes.create) {
