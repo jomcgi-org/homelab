@@ -123,6 +123,13 @@ repositories:
     # Bootstrap instructions and public download origins for local checks
     # (#7916, ARCHITECTURE.md "Sandbox checks"). The review binding has none.
     toolchain: homelab
+    # Long-term memory in bank `homelab` (projects/platform-factory/hindsight,
+    # HOME-130). The hindsight-agents Job copies the MCP token into
+    # hindsight-mcp, and the egress gateway injects it.
+    memory:
+      url: http://hindsight-api.hindsight.svc.cluster.local:8888/mcp/homelab/
+      secret: hindsight-mcp
+      tools: [recall, retain]
 
 # itsaplan at factory-plan.jomcgi.dev, behind the edge's Authentik sign-in.
 # Its database is factory-db (projects/platform-factory/factory-db), whose

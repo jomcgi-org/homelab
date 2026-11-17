@@ -286,7 +286,9 @@ authentication, warm-cache reuse and memory acceptance remain unverified.
 (`projects/platform-factory/hindsight`) as RemoteMCPServer `memory`, limited
 to `recall` and `retain`, and adds `chart/files/memory-prompt.txt` to its
 prompt: recall before planning, retain lessons with their issue, PR or commit
-and whether CI confirmed them. Review bindings do not inherit it.
+and whether CI confirmed them. Review bindings do not inherit it. The
+`homelab` coding binding uses bank `homelab`
+([HOME-185](https://factory-plan.jomcgi.dev/factory/issue/HOME-185)).
 
 **Why.** Joe made memory high priority on 2026-11-16 to cut tokens per
 delivered issue, with Claude Haiku as Hindsight's LLM so that memory writes
