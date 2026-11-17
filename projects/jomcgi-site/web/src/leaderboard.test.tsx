@@ -25,6 +25,10 @@ import {
 import { render as prerender } from "./prerender";
 import { Root } from "./root";
 
+const hub = readFileSync(
+  "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
+  "utf8",
+);
 const modelIds = (table: HTMLElement) =>
   [...table.querySelectorAll("tbody tr")].map((row) =>
     row.getAttribute("data-model"),
@@ -37,6 +41,13 @@ function renderPage() {
     </Root>,
   );
 }
+const clickButton = (name: string, group?: string) =>
+  fireEvent.click(
+    (group
+      ? within(screen.getByRole("group", { name: group }))
+      : screen
+    ).getByRole("button", { name }),
+  );
 afterEach(() => window.history.replaceState(null, "", "/"));
 
 it("pre-renders the shared snapshot, charts, task descriptions and exact ranked readings", () => {
@@ -73,11 +84,7 @@ it("pre-renders the shared snapshot, charts, task descriptions and exact ranked 
 });
 
 it("keeps the hub title, description and preview metadata", () => {
-  const source = readFileSync(
-    "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
-    "utf8",
-  );
-  const seo = source.match(
+  const seo = hub.match(
     /<Seo\s+title="([^"]+)"\s+description="([^"]+)"\s+path="([^"]+)"/,
   )!;
   const head = new DOMParser().parseFromString(
@@ -85,66 +92,52 @@ it("keeps the hub title, description and preview metadata", () => {
     "text/html",
   );
   expect(head.title).toBe(seo[1]);
-  for (const selector of [
-    'meta[name="description"]',
-    'meta[property="og:description"]',
-    'meta[name="twitter:description"]',
-  ])
-    expect(head.querySelector(selector)?.getAttribute("content")).toBe(seo[2]);
-  for (const selector of [
-    'meta[property="og:title"]',
-    'meta[name="twitter:title"]',
-  ])
-    expect(head.querySelector(selector)?.getAttribute("content")).toBe(seo[1]);
+  const meta = (key: string) =>
+    head
+      .querySelector(
+        `meta[${key.startsWith("og:") ? "property" : "name"}="${key}"]`,
+      )
+      ?.getAttribute("content");
+  for (const key of ["description", "og:description", "twitter:description"])
+    expect(meta(key)).toBe(seo[2]);
+  for (const key of ["og:title", "twitter:title"])
+    expect(meta(key)).toBe(seo[1]);
   expect(
     head.querySelector('link[rel="canonical"]')?.getAttribute("href"),
   ).toBe(`https://jomcgi.dev${seo[3]}`);
-  expect(
-    head.querySelector('meta[property="og:url"]')?.getAttribute("content"),
-  ).toBe(`https://jomcgi.dev${seo[3]}`);
-  expect(
-    head.querySelector('meta[property="og:type"]')?.getAttribute("content"),
-  ).toBe("website");
-  expect(
-    head
-      .querySelector('meta[property="og:site_name"]')
-      ?.getAttribute("content"),
-  ).toBe("Joe McGinley");
-  expect(
-    head.querySelector('meta[name="twitter:card"]')?.getAttribute("content"),
-  ).toBe("summary");
-  expect(
-    readFileSync("public/_redirects", "utf8").trim().split("\n"),
-  ).toContain("/app/llm-leaderboard /llm-leaderboard 301");
-  expect(
-    readFileSync("public/_redirects", "utf8").trim().split("\n"),
-  ).toContain("/app/llm-leaderboard/* /llm-leaderboard 301");
+  expect(meta("og:url")).toBe(`https://jomcgi.dev${seo[3]}`);
+  expect(meta("og:type")).toBe("website");
+  expect(meta("og:site_name")).toBe("Joe McGinley");
+  expect(meta("twitter:card")).toBe("summary");
+  const redirects = readFileSync("public/_redirects", "utf8")
+    .trim()
+    .split("\n");
+  for (const suffix of ["", "/*"])
+    expect(redirects).toContain(
+      `/app/llm-leaderboard${suffix} /llm-leaderboard 301`,
+    );
 });
 
 it("copies the hub introduction, captions and source link verbatim", () => {
-  const source = readFileSync(
-    "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
-    "utf8",
-  );
   const host = document.createElement("div");
   host.innerHTML = prerender("llm-leaderboard.html");
   const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
-  const lead = source.match(/<div class="lead">([\s\S]*?)<\/div>/)![1]!;
+  const lead = hub.match(/<div class="lead">([\s\S]*?)<\/div>/)![1]!;
   const original = new DOMParser().parseFromString(lead, "text/html");
   for (const tag of ["h1", "p"]) {
     expect(normalize(host.querySelector(".lead " + tag)!.textContent!)).toBe(
       normalize(original.querySelector(tag)!.textContent!),
     );
   }
-  const captions = [
-    ...source.matchAll(/<p class="caption">([^<{]+)<\/p>/g),
-  ].map((match) => normalize(match[1]!));
+  const captions = [...hub.matchAll(/<p class="caption">([^<{]+)<\/p>/g)].map(
+    (match) => normalize(match[1]!),
+  );
   expect(captions.length).toBeGreaterThan(0);
   const rendered = [...host.querySelectorAll("p.caption")].map((node) =>
     normalize(node.textContent!),
   );
   for (const caption of captions) expect(rendered).toContain(caption);
-  const sourceLink = source.match(
+  const sourceLink = hub.match(
     /<footer class="caption method">[\s\S]*?<a href="([^"]+)"/,
   )![1]!;
   expect(host.querySelector(".method a")?.getAttribute("href")).toBe(
@@ -156,25 +149,13 @@ it.each(["All", "Self-hosted", "Clear all"])(
   "has no axe violations or inline styles after selecting %s and changing axes",
   async (preset) => {
     const { container } = renderPage();
-    fireEvent.click(screen.getByRole("button", { name: preset }));
-    if (preset !== "Clear all") {
-      fireEvent.click(
-        within(screen.getByRole("group", { name: "X axis metric" })).getByRole(
-          "button",
-          { name: "Tokens per task" },
-        ),
-      );
-    }
+    clickButton(preset);
+    if (preset !== "Clear all") clickButton("Tokens per task", "X axis metric");
     expect(container.querySelector("[style]")).toBeNull();
     const result = await axe.run(container, {
       rules: { "color-contrast": { enabled: false } },
     });
-    expect(
-      result.violations.map(({ id, nodes }) => ({
-        id,
-        targets: nodes.map((node) => node.target),
-      })),
-    ).toEqual([]);
+    expect(result.violations).toEqual([]);
   },
   // All models adds hundreds of matrix cells; axe can exceed the default 5s
   // when the rest of the suite runs concurrently on shared CI workers.
@@ -205,7 +186,7 @@ it("hydrates linked selections without a mismatch and keeps unrelated query para
   expect(errors).toEqual([]);
   await waitFor(() => expect(modelIds(rankedTable())).toEqual([m.id]));
   const historyLength = window.history.length;
-  fireEvent.click(screen.getByRole("button", { name: "Self-hosted" }));
+  clickButton("Self-hosted");
   expect(new URL(window.location.href).searchParams.get("m")).toBe(
     serializeSelection(
       leaderboard.models,
@@ -216,7 +197,7 @@ it("hydrates linked selections without a mismatch and keeps unrelated query para
   expect(window.location.hash).toBe("#task-1");
   expect(window.history.length).toBe(historyLength);
   expect(window.history.state).toEqual({ kept: true });
-  fireEvent.click(screen.getByRole("button", { name: "Top picks" }));
+  clickButton("Top picks");
   expect(new URL(window.location.href).searchParams.has("m")).toBe(false);
   window.history.replaceState(
     null,
@@ -231,7 +212,7 @@ it("hydrates linked selections without a mismatch and keeps unrelated query para
 
 it("searches, selects, clears and changes chart axes and table order", () => {
   renderPage();
-  fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+  clickButton("Clear all");
   expect(screen.queryByRole("table", { name: "Ranked models" })).toBeNull();
   expect(
     screen.getByText("No models selected. Pick a preset or search above."),
@@ -252,14 +233,9 @@ it("searches, selects, clears and changes chart axes and table order", () => {
   expect((search as HTMLInputElement).value).toBe("");
   fireEvent.change(search, { target: { value: "no-such-model" } });
   expect(screen.getByText("No model matches “no-such-model”.")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "All" }));
+  clickButton("All");
   expect(modelIds(rankedTable())).toHaveLength(leaderboard.models.length);
-  fireEvent.click(
-    within(screen.getByRole("group", { name: "X axis metric" })).getByRole(
-      "button",
-      { name: "Tokens per task" },
-    ),
-  );
+  clickButton("Tokens per task", "X axis metric");
   expect(
     screen.getByRole("img", {
       name: "Hard-task pass against mean prompt + completion tokens per task",
@@ -301,17 +277,11 @@ it("keeps future per-role agent index data interactive", () => {
       />
     </Root>,
   );
-  expect(
-    within(screen.getByRole("table", { name: "Agent index" })).getByText(
-      "0.800",
-    ),
-  ).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "reviewer" }));
-  expect(
-    within(screen.getByRole("table", { name: "Agent index" })).getByText(
-      "0.600",
-    ),
-  ).toBeTruthy();
+  const index = () =>
+    within(screen.getByRole("table", { name: "Agent index" }));
+  expect(index().getByText("0.800")).toBeTruthy();
+  clickButton("reviewer");
+  expect(index().getByText("0.600")).toBeTruthy();
 });
 
 // A log plot with only zero or missing values used to loop forever generating

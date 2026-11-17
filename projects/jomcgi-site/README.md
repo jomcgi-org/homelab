@@ -169,13 +169,12 @@ The site imports it and the hub model through `:leaderboard_sources`.
 | Content, metadata, hydration and input replay | `leaderboard.test.tsx` and `leaderboard-intent.test.tsx`. |
 | Palette-only paint and accessibility | `contrast.test.tsx`, component axe tests and emitted-HTML axe. `leaderboard-browser.mjs` adds full browser axe, including contrast, after selection and axis changes. |
 
-For browser verification, install Playwright separately, then from `web/`
-run `node leaderboard-browser.mjs dist` after `pnpm build`. Set
-`SITE_PLAYWRIGHT_MODULE` to its module path and `SITE_CHROMIUM_EXECUTABLE`
-if using a separate Chromium install. The check serves the artifact with
-its production CSP at 390/1280 px in both themes. It holds the report's
-chunk pending, checks first-click hydration, then scans all three selections.
-This browser command is manual; the artifact and unit tests run in Bazel.
+`:leaderboard_browser_test` runs in PR CI against `:build`. The lockfile pins
+Playwright and `@sparticuz/chromium`, including its browser, libraries and fonts.
+From `web/`, run `pnpm build` and `pnpm test:browser` on Linux x64 with glibc.
+No browser download is needed. `SITE_CHROMIUM_EXECUTABLE` optionally selects
+a local browser. The check uses the production CSP at 390/1280 px in both
+themes, delays the report chunk, checks hydration, and scans selections.
 After dev deploy, verify the page, both legacy redirects and a linked
 selection on `https://next.jomcgi.dev` before prod promotion.
 

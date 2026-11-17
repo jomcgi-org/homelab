@@ -152,6 +152,27 @@ js_test(
     entry_point = "leaderboard-built.mjs",
 )
 
+js_test(
+    name = "leaderboard_browser_test",
+    size = "medium",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        "leaderboard-built.mjs",
+        ":build",
+        ":node_modules/@sparticuz/chromium",
+        ":node_modules/axe-core",
+        ":node_modules/happy-dom",
+        ":node_modules/playwright",
+        ":src",
+    ],
+    entry_point = "leaderboard-browser.mjs",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
 js_library(
     name = "test_src",
     srcs = glob(["src/**/*.test.tsx"]) + [
