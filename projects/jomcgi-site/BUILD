@@ -23,7 +23,8 @@ genrule(
     """,
 )
 
-# The deploy Job's image: `wrangler deploy --env <stage>` with the pinned CLI.
+# The site's Job image: `wrangler deploy --env <stage>` with the pinned CLI,
+# and the edge apply step at /app/projects/jomcgi-site/edge/apply.
 apko_image(
     name = "image",
     arm64 = False,
@@ -31,6 +32,7 @@ apko_image(
     contents = "@jomcgi_site_lock//:contents",
     tars = [
         ":site_tar",
+        "//projects/jomcgi-site/edge:layers",
         "//projects/jomcgi-site/wrangler:layers",
     ],
 )

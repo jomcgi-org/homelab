@@ -7,10 +7,6 @@ next sync runs the Job again.
 {{- if not (has .Values.stage (list "dev" "prod")) }}
 {{- fail "stage must be dev or prod" }}
 {{- end }}
-{{- $args := (index .Values.workloads "jomcgi-site-deploy").args }}
-{{- if ne (last $args) .Values.stage }}
-{{- fail "the deploy Job's --env argument must match .Values.stage" }}
-{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

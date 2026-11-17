@@ -5,7 +5,7 @@ image:
   digest: "" # CI supplies the content digest when packaging the chart.
 
 # `dev` deploys Worker jomcgi-site-dev on next.jomcgi.dev; `prod` deploys
-# Worker jomcgi-site on the jomcgi.dev routes listed in wrangler.jsonc.
+# Worker jomcgi-site, whose jomcgi.dev routes are edge/routes.json.
 stage: dev
 
 workloads:
@@ -16,12 +16,11 @@ workloads:
     containerName: wrangler
     # A failed deploy is a failed sync; retrying once covers a transient API error.
     backoffLimit: 1
+    # templates/workloads.yaml appends `--env <stage>`.
     args:
       - deploy
       - --config
       - /app/site/wrangler.jsonc
-      - --env
-      - dev
     env:
       # wrangler keeps its cache and logs under HOME.
       - name: HOME
@@ -53,6 +52,42 @@ workloads:
     network:
       # The Cloudflare API is the only egress. wrangler's npm update check
       # times out against this policy and does not fail the deploy.
+      egress:
+        - peer: cloudflare-api
+          fqdn: api.cloudflare.com
+          port: 443
+
+# The edge apply Job (HOME-192) makes zone jomcgi.dev's Workers routes and
+# cache rules match edge/routes.json and edge/cache-rules.json, after the
+# deploy Job. Zone config is not per stage, so only prod turns it on, and the
+# chart refuses it in any other stage.
+edge:
+  enabled: false
+  workload:
+    kind: Job
+    # PostSync runs after the deploy Job, so each route's Worker exists.
+    hook: PostSync
+    containerName: edge
+    backoffLimit: 1
+    command:
+      - /app/projects/jomcgi-site/edge/apply
+    env:
+      - name: CLOUDFLARE_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: api-token
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    writablePaths:
+      - name: tmp
+        mountPath: /tmp
+        sizeLimit: 16Mi
+    network:
       egress:
         - peer: cloudflare-api
           fqdn: api.cloudflare.com

@@ -17,10 +17,12 @@
     "dev": {
       "routes": [{ "pattern": "next.jomcgi.dev", "custom_domain": true }],
     },
-    // jomcgi.dev itself. Each section joins `routes` when it migrates, and
-    // leaves it to roll back. Until then this Worker serves nothing.
+    // jomcgi.dev itself. wrangler publishes routes only when this lists some,
+    // and with our zone-scoped token it never deletes one. So prod lists none:
+    // edge/routes.json holds the Worker's routes, and the edge apply Job
+    // creates and deletes them (HOME-192).
     "prod": {
-      "routes": [],
+      "name": "jomcgi-site",
     },
   },
 }

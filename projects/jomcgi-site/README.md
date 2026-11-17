@@ -10,7 +10,8 @@ web/ (Astryx pages) ──vite, pre-render──► dist ──┐
 wrangler/ (pinned CLI) ──────────────────────────┼─► image ─► Argo CD Sync hook Job ─► wrangler deploy --env <stage>
 wrangler.jsonc ──────────────────────────────────┘
   dev  → Worker jomcgi-site-dev on next.jomcgi.dev
-  prod → Worker jomcgi-site on the jomcgi.dev routes in wrangler.jsonc
+  prod → Worker jomcgi-site, then the edge Job (PostSync):
+         edge/routes.json + edge/cache-rules.json ─► zone jomcgi.dev
 ```
 
 ## Layout
@@ -18,7 +19,8 @@ wrangler.jsonc ─────────────────────�
 | Path | What |
 | --- | --- |
 | `web/` | The Astryx app: one HTML entry per page, the nav and section list in `src/sections.ts`, hosting headers in `public/_headers`. |
-| `wrangler.jsonc` | The Worker, its assets and each stage's routes. |
+| `wrangler.jsonc` | The Worker, its assets and the dev host. Prod lists no routes. |
+| `edge/` | The prod Worker's routes and the zone's cache rules, and `apply`, which makes Cloudflare match them (HOME-192). |
 | `wrangler/` | The pinned `wrangler` CLI, packaged as image layers by rules_js. |
 | `apko.yaml` | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime. |
 | `chart/` | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`. |
@@ -28,8 +30,15 @@ wrangler.jsonc ─────────────────────�
 
 - **URLs.** A section has one top-level prefix (`/hikes`). It stays linked to
   its current jomcgi.dev page until it goes live here. Setting `live: true` in
-  `src/sections.ts` and adding the prefix to the prod `routes` in
-  `wrangler.jsonc` moves it. Removing the route rolls it back.
+  `src/sections.ts` and adding its patterns to `edge/routes.json` moves it.
+  Removing them rolls it back: the edge Job deletes each route of Worker
+  `jomcgi-site` that is not in the file, and the path falls back to the hub.
+  `wrangler` cannot do this: with a zone-scoped token it adds routes but never
+  deletes them, so the prod env lists none.
+- **Zone rules.** `edge/cache-rules.json` is the whole cache-settings
+  entrypoint. A live rule that is not in the file stops the edge Job before
+  any write, so import a dashboard rule by PR first. Only the prod stage runs
+  the edge Job (`edge.enabled`), because zone config is not per stage.
 - **Pre-render.** `build.mjs` runs the Vite build, then renders each page
   with React at build time into its HTML entry, in place of `<!--ssr-->`.
   A page reads fully, with its preview tags, before any script runs, and the
