@@ -546,7 +546,8 @@ func (e *Engine) prBody(ctx context.Context, wi *store.WorkItem, a *store.Attemp
 	}
 	fmt.Fprintf(&s, "- Session: %s\n", mdLink(a.ContextID, e.expand(e.cfg.Links.Session, wi, 0, a.ContextID)))
 	fmt.Fprintf(&s, "- Attempt: `%s` (delivery attempt %d)\n", a.MessageID, a.Seq)
-	fmt.Fprintf(&s, "\nThe issue becomes Done when this pull request merges.\n\n<!-- factory-connector work-item=%d -->\n", wi.ID)
+	fmt.Fprintf(&s, "\nAfter merge, `Activation: none` in the head commit allows the issue to become Done. "+
+		"Any outstanding activation step keeps it In Progress and becomes a delegated follow-up issue that blocks it.\n\n<!-- factory-connector work-item=%d -->\n", wi.ID)
 	return s.String()
 }
 
@@ -756,7 +757,30 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	}
 	var cands []candidate
 	conflicting := d.Mergeable == "CONFLICTING"
-	if conflicting {
+	activation, activationOK := github.ActivationTrailer(d.HeadMessage)
+	if !activationOK {
+		cands = append(cands, candidate{
+			ev: store.ReviewEvent{
+				NodeID:    "activation/" + pr.NodeID + "/" + d.HeadSHA,
+				CommitSHA: d.HeadSHA, Author: "factory-connector", Kind: store.EventCheckFailed, Source: "Activation trailer",
+			},
+			trusted: true,
+			text:    activationFeedback,
+		})
+	} else if activation != "none" && p.ReviewerCheck != nil && succeeded(*p.ReviewerCheck, d.HeadSHA, checks, statuses) && reviewedActivation(p, d, checks) == "" {
+		// An older reviewer may have passed without the assessment contract.
+		// Ask for a new reviewed head, rather than silently holding it forever.
+		cands = append(cands, candidate{
+			ev: store.ReviewEvent{
+				NodeID:    "activation-assessment/" + pr.NodeID + "/" + d.HeadSHA,
+				CommitSHA: d.HeadSHA, Author: "factory-connector", Kind: store.EventCheckFailed, Source: "Activation assessment",
+			},
+			trusted: true,
+			text:    "The pending activation needs an independent reviewer assessment of the remaining step and its precondition. Make that action and prerequisite verifiable from the change and push a new head for review. A passing check without the assessment does not permit enqueueing.",
+		})
+	}
+	// A missing contract spends the review budget even if a rebase is also needed.
+	if conflicting && activationOK {
 		cands = append(cands, candidate{ev: conflictEvent(pr, d), trusted: true, text: conflictFeedback(b.BaseBranch)})
 	}
 	for _, rv := range d.Reviews {
@@ -1228,6 +1252,9 @@ func writeThreads(s *strings.Builder, threads []github.ReviewThread, p *ReviewPo
 // trusted sources, no trusted reviewer's latest decision requests changes,
 // and the queue has not already sent this head back.
 func gateOpen(p *ReviewPolicy, base string, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun, statuses []github.Status) bool {
+	if activation, ok := github.ActivationTrailer(d.HeadMessage); !ok || (activation != "none" && reviewedActivation(p, d, checks) == "") {
+		return false
+	}
 	if d.Mergeable == "CONFLICTING" || d.Mergeable == "UNKNOWN" {
 		return false
 	}
@@ -1647,14 +1674,38 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 }
 
 type issueDonePayload struct {
-	IssueID int64  `json:"issueId"`
-	Project string `json:"project"`
-	Column  string `json:"column,omitempty"`
+	WorkID          int64  `json:"workId,omitempty"`
+	ActivationChild int64  `json:"activationChild,omitempty"`
+	IssueID         int64  `json:"issueId"`
+	Project         string `json:"project"`
+	Column          string `json:"column,omitempty"`
+	CommentKey      string `json:"commentKey,omitempty"`
+	StartedOnly     bool   `json:"startedOnly,omitempty"`
 }
 
-// merged records the observed merge. The itsaplan issue becomes Done, with
-// a comment linking the issue, run, session, PR and merge, only from here.
+// merged records the observed merge and its activation decision. A completed
+// code delivery may still leave the itsaplan issue waiting for activation.
 func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+	activation, valid := github.ActivationTrailer(d.HeadMessage)
+	step := ""
+	if !valid || activation != "none" {
+		activation = activationPending
+		var checks []github.CheckRun
+		if b.Review.ReviewerCheck != nil && b.Review.ReviewerCheck.AppID != 0 {
+			if err := e.beginEjectionRead(ctx, pr, "activation-assessment", d.HeadSHA); err != nil {
+				return err
+			}
+			var err error
+			checks, err = e.gh.CheckRuns(ctx, b.repo(), d.HeadSHA)
+			if err != nil {
+				return err // PR polls retry reads without holding a run slot, including 401/403
+			}
+		}
+		step = reviewedActivation(&b.Review, d, checks)
+		if step != "" {
+			activation = step
+		}
+	}
 	at := d.MergedAt
 	if at.IsZero() {
 		at = e.cfg.Now()
@@ -1671,6 +1722,12 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		mdLink("itsaplan run "+strconv.FormatInt(runID, 10), e.expand(e.cfg.Links.Run, wi, runID, "")),
 		mdLink(wi.SessionID, e.expand(e.cfg.Links.Session, wi, 0, wi.SessionID)),
 		mdLink("#"+strconv.Itoa(pr.Number), pr.URL), mergeLink)
+	if activation != "none" {
+		body = strings.Replace(body, "Merged: "+wi.IssueKey+" is done.",
+			"Merged: "+wi.IssueKey+" still needs activation.\n\nOutstanding step: "+activation+
+				"\n\nThe issue stays In Progress with a blocking activation follow-up. Delegation requires a trusted assessment of the step and its precondition.", 1)
+	}
+	commentKey := fmt.Sprintf("comment/merged/%d", wi.ID)
 	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
 		done, err := e.st.MarkMerged(ctx, tx, pr, merge, at)
 		if err != nil {
@@ -1683,12 +1740,21 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 					"PR #%d (%s) merged as %s although delivery of %s was stopped (%s). "+
 						"The factory left the issue where it is.", pr.Number, pr.URL, mergeLink, wi.IssueKey, wi.StoppedReason)})
 		}
-		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/merged/%d", wi.ID), 0, "",
+		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, commentKey, 0, "",
 			commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
 			return err
 		}
+		if activation != "none" {
+			return e.st.Enqueue(ctx, tx, store.OutboxActivation, fmt.Sprintf("activation/%d", wi.ID), 0, "",
+				activationPayload{
+					WorkID: wi.ID, IssueID: wi.IssueID, IssueKey: wi.IssueKey,
+					Project: b.ItsaplanProject, Agent: wi.AgentKey,
+					IssueURL: e.expand(e.cfg.Links.Issue, wi, 0, ""), PRURL: pr.URL, CommentKey: commentKey,
+					Step: step, HeadURL: "https://github.com/" + b.repo() + "/commit/" + d.HeadSHA,
+				})
+		}
 		return e.st.Enqueue(ctx, tx, store.OutboxIssueDone, fmt.Sprintf("issue-done/%d", wi.ID), 0, "",
-			issueDonePayload{IssueID: wi.IssueID, Project: b.ItsaplanProject, Column: b.Review.DoneColumn})
+			issueDonePayload{WorkID: wi.ID, IssueID: wi.IssueID, Project: b.ItsaplanProject, Column: b.Review.DoneColumn, CommentKey: commentKey})
 	})
 	if err == nil {
 		e.m.MergeQueue.WithLabelValues("merged").Inc()
@@ -1703,7 +1769,17 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	if err := json.Unmarshal(it.Payload, &p); err != nil {
 		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, err.Error())
 	}
-	if err := e.guard(ctx); err != nil {
+	if ready, err := e.st.CommentSettled(ctx, p.CommentKey); err != nil || !ready {
+		return err
+	}
+	if p.WorkID != 0 {
+		if stopped, err := e.activationStopped(ctx, p.WorkID, p.ActivationChild); err != nil {
+			return err
+		} else if stopped {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "issue completion stopped")
+		}
+	}
+	if err := e.beginActivationCall(ctx, it, p.WorkID, "ProjectColumns", fmt.Sprint(p.Project)); err != nil {
 		return err
 	}
 	cols, err := e.its.ProjectColumns(ctx, p.Project)
@@ -1713,7 +1789,7 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	case err != nil:
 		return err
 	}
-	if err := e.guard(ctx); err != nil {
+	if err := e.beginActivationCall(ctx, it, p.WorkID, "GetIssue", fmt.Sprint(p.IssueID)); err != nil {
 		return err
 	}
 	// The move waits until the issue can be read: a person may have
@@ -1727,11 +1803,73 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	case err != nil:
 		return err
 	}
+	if !inProject(is, p.Project) {
+		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "issue left the project; not moved to Done")
+	}
 	for _, c := range cols {
 		if c.ID == is.ColumnID && c.StateType == "canceled" {
 			// Canceled since the merge: a person's decision stands, and the
 			// issue already shows it, so nothing is posted.
 			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "the issue is canceled; not moved to Done")
+		}
+	}
+	if p.StartedOnly {
+		if err := e.beginActivationCall(ctx, it, p.WorkID, "GetProject", fmt.Sprint(p.Project)); err != nil {
+			return err
+		}
+		project, err := e.its.GetProject(ctx, p.Project)
+		if e.refused(ctx, it, err) {
+			return e.abandonDone(ctx, it, p, "", "the factory could not read activation ownership", err)
+		}
+		if err != nil {
+			return err
+		}
+		work, err := e.st.GetWorkItem(ctx, p.WorkID)
+		if err != nil {
+			return err
+		}
+		delegate := activationDelegate(project, work.AgentKey)
+		if delegate == "" || activationTakenOver(is, delegate) {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "activation parent was taken over")
+		}
+		if err := e.beginActivationCall(ctx, it, p.WorkID, "GetIssue", fmt.Sprint(p.ActivationChild)); err != nil {
+			return err
+		}
+		child, err := e.its.GetIssue(ctx, p.ActivationChild)
+		if e.refused(ctx, it, err) {
+			return e.abandonDone(ctx, it, p, "", "the factory could not read the activation follow-up", err)
+		}
+		if err != nil {
+			return err
+		}
+		if !inProject(child, p.Project) || issueState(child, cols) == "canceled" || !blocks(child, p.IssueID) {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "activation follow-up moved, canceled or unlinked")
+		}
+		if issueState(child, cols) != "completed" {
+			// A reopened follow-up may complete again without another PR.
+			return e.st.WaitActivation(ctx, it.ID, e.cfg.Now().Add(e.cfg.Heartbeat))
+		}
+		if err := e.beginActivationCall(ctx, it, p.WorkID, "GetIssue", fmt.Sprint(p.IssueID)); err != nil {
+			return err
+		}
+		is, err = e.its.GetIssue(ctx, p.IssueID)
+		if e.refused(ctx, it, err) {
+			return e.abandonDone(ctx, it, p, "", "the factory could not recheck activation ownership", err)
+		}
+		if err != nil {
+			return err
+		}
+		if !inProject(is, p.Project) || activationTakenOver(is, delegate) {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "activation parent moved or was taken over before completion")
+		}
+		switch issueState(is, cols) {
+		case "completed":
+			// Recover a successful move whose response or DB acknowledgement
+			// was lost, without writing the already completed issue again.
+			return e.completeIssue(ctx, it, p, is)
+		case "started":
+		default:
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "blocked issue is no longer started; not moved to Done")
 		}
 	}
 	var done *itsaplan.Column
@@ -1748,13 +1886,20 @@ func (e *Engine) deliverIssueDone(ctx context.Context, it *store.OutboxItem) err
 	if done == nil {
 		return e.abandonDone(ctx, it, p, "", "project "+p.Project+" has no done column", nil)
 	}
-	if err := e.guard(ctx); err != nil {
+	if err := e.beginActivationCall(ctx, it, p.WorkID, "MoveIssue", fmt.Sprint(p.IssueID)); err != nil {
 		return err
+	}
+	if p.WorkID != 0 {
+		if stopped, err := e.activationStopped(ctx, p.WorkID, p.ActivationChild); err != nil {
+			return err
+		} else if stopped {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "issue completion stopped before move")
+		}
 	}
 	err = e.its.MoveIssue(ctx, p.IssueID, done.ID)
 	switch {
 	case err == nil:
-		return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+		return e.completeIssue(ctx, it, p, is)
 	case errors.Is(err, itsaplan.ErrConflict):
 		// The Done column is at a hard WIP limit. Say so once and keep
 		// trying with the outbox's backoff.
@@ -1813,6 +1958,12 @@ func publicReason(err error) string {
 // abandonItem gives up on an outbox item after outboxMaxTries. A Done move
 // is reported on its issue.
 func (e *Engine) abandonItem(ctx context.Context, it *store.OutboxItem, err error) error {
+	if it.Kind == store.OutboxActivation {
+		var p activationPayload
+		if json.Unmarshal(it.Payload, &p) == nil {
+			return e.abandonActivation(ctx, it, p, err)
+		}
+	}
 	var p issueDonePayload
 	if it.Kind == store.OutboxIssueDone && json.Unmarshal(it.Payload, &p) == nil {
 		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("the move kept failing for %d tries", outboxMaxTries), err)

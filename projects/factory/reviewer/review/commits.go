@@ -9,6 +9,47 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
 
+// assessActivation binds a reviewer's independently written instruction to the
+// actual head. Unavailable evidence publishes no assessment; the connector's
+// pending-activation gate still requires one before enqueueing.
+func assessActivation(r *Report, head string, commits Commits) {
+	unassessed := func(detail string) {
+		r.Activation = ""
+		r.Findings = append(r.Findings, Finding{
+			ID: "activation:goal", Severity: SeverityHigh,
+			Title: "Pending activation needs an independently assessed step and precondition", Detail: detail,
+		})
+	}
+	r.ActivationHead = ""
+	if commits.Unread {
+		if r.Activation != "" {
+			unassessed("The reviewer could not verify the activation assessment's head commit.")
+		}
+		return
+	}
+	for _, c := range commits.List {
+		if c.SHA != head {
+			continue
+		}
+		trailer, ok := github.ActivationTrailer(c.Commit.Message)
+		if !ok || trailer == "none" {
+			r.Activation = ""
+			return
+		}
+		r.Activation = strings.TrimSpace(untrusted(r.Activation))
+		a := github.ActivationAssessment{HeadSHA: head, Text: r.Activation}
+		if !a.Valid(head) {
+			unassessed("Review the remaining action and its precondition against the full head commit and change, then include that assessment in the report.")
+			return
+		}
+		r.ActivationHead = head
+		return
+	}
+	if r.Activation != "" {
+		unassessed("The activation assessment's head is absent from the reviewed commits.")
+	}
+}
+
 // splitOnlyMarker marks a check that failed only because the diff is over
 // the size budget, so no review task was sent. The connector counts the
 // round it starts against its separate split bound; the conclusion is the

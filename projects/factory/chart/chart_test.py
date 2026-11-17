@@ -707,6 +707,13 @@ def test_toolchain_is_opt_in_and_grants_only_public_download_origins(
     prompt = agent["template"]["inline"]["systemPrompt"]
     assert "bash projects/factory/toolchain/bootstrap.sh" in prompt
     assert "ci lint, ci regen and ci ratchet" in prompt
+    assert "exactly one git trailer: Activation: none" in prompt
+    assert "its precondition" in prompt
+    assert "delegated activation issue" in prompt
+    assert "independent reviewer must assess the remaining step" in prompt
+    assert "its precondition before enqueueing" in prompt
+    assert "commit prose is not forwarded as agent" in prompt
+    assert "without another PR" in prompt
     assert "no\nBuildBuddy credential" in prompt
     # Enabling tools changes no worker image, credentials or harness env.
     defaults = off

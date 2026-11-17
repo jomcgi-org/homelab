@@ -27,6 +27,7 @@ go_library(
         "20261117010000_task_metadata.sql",
         "20261117020000_deferred.sql",
         "20261117030000_deferred_stops.sql",
+        "20261117040000_activation.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

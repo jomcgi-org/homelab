@@ -301,6 +301,39 @@ type Attachment struct {
 	Filename string `json:"filename"`
 }
 
+// IssueRun is the identity and trigger of a recorded run, including terminal
+// runs. Prompts, results and errors are deliberately not decoded or forwarded.
+type IssueRun struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	Trigger  string `json:"trigger"`
+}
+
+type IssueRunPage struct {
+	Items      []IssueRun `json:"items"`
+	NextCursor *int64     `json:"nextCursor"`
+}
+
+// IssueRuns reads one page so dispatch can fence and journal every request.
+func (c *Client) IssueRuns(ctx context.Context, issueID, before int64) (*IssueRunPage, error) {
+	q := url.Values{"limit": {"50"}}
+	if before != 0 {
+		q.Set("before", strconv.FormatInt(before, 10))
+	}
+	var page IssueRunPage
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, "/issues/"+strconv.FormatInt(issueID, 10)+"/agent-runs?"+q.Encode(), nil, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+// BlockIssue creates a directional dependency. itsaplan answers 409 for a
+// duplicate; the outbox re-reads the source's links before retrying.
+func (c *Client) BlockIssue(ctx context.Context, source, target int64) error {
+	return c.do(ctx, c.Coordinator, http.MethodPost, "/issues/"+strconv.FormatInt(source, 10)+"/links",
+		map[string]any{"targetIssueId": target, "kind": "blocks"}, nil)
+}
+
 // GetIssue reads an issue with the coordinator's key.
 func (c *Client) GetIssue(ctx context.Context, issueID int64) (*Issue, error) {
 	var out Issue

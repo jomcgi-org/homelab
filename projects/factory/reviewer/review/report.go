@@ -46,12 +46,16 @@ const (
 	StatusOpen      = "open"
 )
 
-// Report is the reviewer agent's answer: findings only. The service decides
-// the conclusion from them; any verdict the agent declares is ignored.
+// Report is the reviewer agent's findings and optional activation assessment.
+// The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
-	Summary  string     `json:"summary"`
-	Findings []Finding  `json:"findings"`
-	Previous []Previous `json:"previous"`
+	Summary string `json:"summary"`
+	// Activation is independently assessed text, never an instruction copied
+	// blindly from the commit. ActivationHead is set only by the service.
+	Activation     string     `json:"activation,omitempty"`
+	ActivationHead string     `json:"-"`
+	Findings       []Finding  `json:"findings"`
+	Previous       []Previous `json:"previous"`
 }
 
 // Finding is one review finding with an ID that stays stable across
@@ -719,8 +723,8 @@ const (
 	gateOnlyMarker      = markerStart + "human-gate-only -->"
 	duplicateHeadMarker = markerStart + "duplicate-head -->"
 	labelHistoryMarker  = markerStart + "label-history-unavailable -->"
-	statePrefix         = markerStart + "state v1 "
-	stateSuffix         = " -->"
+	statePrefix         = github.ReviewStatePrefix
+	stateSuffix         = github.ReviewStateSuffix
 )
 
 var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*) -->`)
@@ -729,9 +733,10 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*)
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
-	Semgrep  *SemgrepStamp `json:"semgrep,omitempty"`
-	Blocking []Finding     `json:"blocking"`
-	Cleared  []Cleared     `json:"cleared,omitempty"`
+	Semgrep    *SemgrepStamp                `json:"semgrep,omitempty"`
+	Activation *github.ActivationAssessment `json:"activation,omitempty"`
+	Blocking   []Finding                    `json:"blocking"`
+	Cleared    []Cleared                    `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`
@@ -837,6 +842,9 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 	if sum := strings.TrimSpace(untrusted(r.Summary)); sum != "" {
 		out.WriteString(clip(sum, maxAgentSummary))
 		out.WriteString("\n\n")
+	}
+	if r.ActivationHead != "" && r.Activation != "" {
+		out.WriteString("### Activation\n\n" + r.Activation + "\n\n")
 	}
 	if len(a.Blocking) > 0 {
 		out.WriteString("### Blocking\n\n")
@@ -962,6 +970,9 @@ func loweredNote(f Finding) string {
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
 	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions()}
+	if r.ActivationHead != "" && r.Activation != "" {
+		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
+	}
 	for _, b := range a.Blocking {
 		if isGate(b.Finding) || len(st.Blocking) == maxStored {
 			continue
@@ -1153,7 +1164,7 @@ func encodeState(st State) string {
 		// Without the cleared record, so it says the record is partial.
 		small := State{
 			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session, Decisions: st.Decisions,
-			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, Semgrep: st.Semgrep,
+			Activation: st.Activation, IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, Semgrep: st.Semgrep,
 		}
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.

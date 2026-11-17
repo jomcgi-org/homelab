@@ -122,6 +122,21 @@ type fakeItsaplan struct {
 	beforeGateWrite func()
 	beforeMove      func(issueID int64)
 	beforeGateRead  func(operation, resource string)
+
+	activationMissingPermissions bool
+	activationCreates            int
+	activationDelegations        []itsaplan.Issue
+	loseActivationCreate         bool
+	loseActivationDelegate       bool
+	activationCreateErr          error
+	activationDelegateErr        error
+	activationDescriptionErr     error
+	activationAutoAssignee       string
+	activationEnqueueErr         error
+	skipActivationRun            bool
+	activationRunErr             error
+	activationRunPages           map[int64]*itsaplan.IssueRunPage
+	onActivationLink             func()
 }
 
 // authorize checks the key the connector would send for agent. The caller

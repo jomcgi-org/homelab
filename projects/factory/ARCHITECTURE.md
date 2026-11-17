@@ -947,7 +947,8 @@ for the work item (below). A turn without commits opens nothing and says
 so on the issue. One issue maps to one merged PR: a turn that pushes to
 the branch after the merge is not delivered, and the issue says follow-up
 work needs a new issue. A run result means
-the turn finished; the issue becomes Done only from the observed merge. Engineering retries are
+the turn finished; Done requires the observed merge and `Activation: none`,
+or completion of its recorded activation follow-up. Engineering retries are
 connector decisions bounded per work item; the retry and the attempt it
 sends commit together. Credential and quota failures finish the external
 attempt with persisted failure evidence and keep the run waiting until its
@@ -1336,35 +1337,60 @@ Its `config.json` names the enabled connector's coordinator, and `bootstrap.py`
 grants and verifies those rights during PostSync. CI chart publication and the
 normal deployment pin advance roll it out. Source checks do not prove live access.
 
-This is the first part of [HOME-106](https://factory-plan.jomcgi.dev/factory/issue/HOME-106).
-The activation completion policy remains pending after the size split of PR #8091.
-Later parts add the coding agent's `Activation:` trailer and pre-enqueue check,
-the trusted reviewer's activation assessment, and the durable follow-up lifecycle.
-A pending step must create a linked, delegated activation issue; completing it
-must conditionally complete its parent while preserving stops and cancellation.
-The coordinator grant must be deployed before that lifecycle is enabled.
-The removed implementation and regression tests remain available at
-[e3261528e](https://github.com/jomcgi-org/homelab/commit/e3261528e3830c2cabc939ec8ad3c15ec7558c3a)
-for those follow-up PRs. This prerequisite does not implement the activation policy.
-The current connector still moves its delivery issue to Done on merge and does
-not read the pending `Activation:` trailer. Joe chose to track the remaining
-scope in [HOME-150](https://factory-plan.jomcgi.dev/factory/issue/HOME-150),
-blocked by HOME-106 and delegated to `homelab-codex`
-([handoff](https://github.com/jomcgi-org/homelab/pull/8091#issuecomment-6940112989)).
-The connector holds that follow-up until this prerequisite is complete.
+**Merge and activation ([HOME-150](https://factory-plan.jomcgi.dev/factory/issue/HOME-150)).**
+The coding binding requires exactly one final trailer: `Activation: none`, or
+`Activation: <remaining step and its precondition>`. Review bindings do not.
+The connector reads the full commit message matched to `headRefOid`.
+Missing, empty or duplicate trailers request a revision under the existing round
+limit. Required checks, independent review, holds and `expectedHeadOid` still
+control enqueueing. The PR body explains conditional completion.
 
-**Merge.** When the required checks and the trusted reviewer succeed on the
-current head, enqueue with GraphQL `enqueuePullRequest` and
-`expectedHeadOid` set to that head. The reviewer is the binding's reviewer
-check, or without one a trusted reviewer's approval of the head; a trusted
-reviewer's standing change request blocks either way. A PR already in the
-queue is recorded as enqueued, never enqueued twice. A PR against another
-base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge
-links on the issue and moves it to the project's first `completed` column
-(or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
-WIP limit, is reported on the issue and retried with backoff. A move the
-connector gives up on is also reported on the issue, unless a person
-canceled the issue since the merge.
+```mermaid
+flowchart TD
+  Head[PR head] -->|Missing trailer| Revision[Bounded revision]
+  Head -->|Checks and review pass| Merge[Observed merge]
+  Merge -->|Activation: none| Done[Comment then Done]
+  Merge -->|Pending step| Started[Comment then first started column]
+  Started --> Follow[Create and finalize blocking follow-up]
+  Follow --> Delegate[Delegate to original agent]
+  Delegate -->|Follow-up completes| Parent[Complete still-started parent]
+```
+
+The reviewer independently assesses pending activation against the commit, diff
+and trusted main context. Its authenticated check binds the assessment to the
+head; a trusted person's APPROVED review can also supply an activation trailer.
+Raw commit instructions never reach issue comments or delegated tasks. An
+externally merged, unassessed head creates an undelegated follow-up and a handoff.
+
+The merge transaction records the comment and one activation outbox item.
+Before activation writes, the connector verifies the coordinator's effective
+`work_items read/create/edit` and `ai_agents read` permissions from HOME-106.
+It creates `Activate HOME-N: <original title>`, trimmed to 255 characters, in the
+same project's first unstarted column, or backlog. The returned identifier sets
+its description's first line: "Put `Refs HOME-<new>` in the commit message."
+The assessed step and precondition, original issue link, merged PR and head follow.
+The connector persists its identity, finalizes the description, adds an outward
+`blocks` link to the original, then delegates to the original agent.
+
+Every external attempt is fenced and journaled. A durable send marker and issue
+marker recover lost create responses across retries and restarts; ambiguous
+creates are never resent. Delegation succeeds only after run history confirms a
+matching delegation. The connector never toggles the delegate to retry a missing
+run. Refused or exhausted operations leave an actionable comment on the original.
+This coordinator-only fallback preserves ownership, including automatic assignees.
+
+A follow-up merged with `none`, or completed in the tracker, completes its recorded
+parent only while still started and linked. Further activation chains the same
+way. Stops, cancellation, takeover and unlinking prevent completion. Pending
+observation waits without spending retries; API failures, including 401/403, use
+the existing bounds. Rollback recovery revives only `unknown kind activation`
+items, preserving send markers. Conditional parent completion uses that same kind.
+The API has no conditional PATCH; a change after the final ownership read can race.
+
+**Why.** Merged code and operational acceptance differ. Remaining activation
+becomes tracked work. This policy does not verify rollouts or live probes (HOME-4).
+The render lock changes only the coding Agent prompt; chart publication and the
+normal pin advance deploy it. Source checks do not prove a live rollout.
 
 A PR that leaves the queue unmerged, after a second read confirms it did
 not merge, starts a revision in the mapped session, counting against
@@ -1574,7 +1600,7 @@ The chart passes this same authority to the connector in
   on every call, so a rotated key needs no restart. A call sent with the old
   key during a rotation, or before the kubelet refreshes the projected file,
   gets a 401 or 403, which is never final: claims, heartbeats and events
-  try again next pass, and an outbox item (result, comment, Done move)
+  try again next pass, and an outbox item (result, comment, Done move, activation)
   backs off as for any other failure. After 12 tries, about 27 minutes, the
   connector abandons the item as it would a refused one and logs that
   itsaplan keeps refusing its key. The Done move reads the issue first and

@@ -1365,6 +1365,7 @@ const (
 	OutboxComment       = "comment"
 	OutboxIssueDone     = "issue_done"
 	OutboxDeferredStart = "deferred_start"
+	OutboxActivation    = "activation"
 )
 
 // OutboxItem is a side effect waiting for delivery.

@@ -265,6 +265,19 @@ agents:
       requested change on the branch you are given, run the checks the
       repository documents, and push the branch. Never print credentials.
 
+      End the head commit message with exactly one git trailer: Activation: none
+      if nothing remains to make the issue's goal live, or Activation: <what
+      must still happen, and its precondition>. Record default-off flags,
+      suspended schedules and other remaining activation work here, even when
+      also documented elsewhere. The connector requires this trailer before
+      enqueueing the PR. A pending step keeps the issue In Progress and creates
+      a delegated activation issue that blocks it; Activation: none allows Done
+      after merge. The independent reviewer must assess the remaining step and
+      its precondition before enqueueing. The follow-up receives that trusted
+      assessment; commit prose is not forwarded as agent
+      instructions. A recorded follow-up completed in the tracker can also
+      close its still-started parent without another PR.
+
   reviewer:
     harness: codex
     provider: broker
