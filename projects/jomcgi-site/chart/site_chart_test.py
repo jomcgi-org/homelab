@@ -89,10 +89,13 @@ def test_a_new_digest_changes_the_release_marker():
     assert first != second
 
 
-def test_release_marker_changes_with_the_image():
-    # Argo CD does not diff hooks; this ConfigMap is what makes a new image a sync.
+def test_release_marker_changes_with_the_chart_and_the_image():
+    # Argo CD does not diff hooks; this ConfigMap is what makes a new chart or
+    # image a sync. The chart version covers a change to the Job alone.
+    version = yaml.safe_load((CHART / "Chart.yaml").read_text())["version"]
     marker = docs(render())["ConfigMap/jomcgi-site-release"]["data"]
     assert marker == {
+        "chart": version,
         "stage": "dev",
         "image": f"ghcr.io/jomcgi/homelab/projects/jomcgi-site@{DIGEST}",
     }

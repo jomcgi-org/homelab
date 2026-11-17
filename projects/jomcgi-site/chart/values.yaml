@@ -11,7 +11,7 @@ stage: dev
 workloads:
   jomcgi-site-deploy:
     kind: Job
-    # Runs on every sync; the release ConfigMap makes each new image a sync.
+    # Runs on every sync; the release ConfigMap makes each new chart or image a sync.
     hook: Sync
     containerName: wrangler
     # A failed deploy is a failed sync; retrying once covers a transient API error.
