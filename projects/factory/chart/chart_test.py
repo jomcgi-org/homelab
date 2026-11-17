@@ -547,6 +547,12 @@ def test_broker_policy() -> None:
         },
     ]
     assert spec["egress"] == [
+        {
+            "toEndpoints": [
+                {"matchLabels": {ns: "factory-db", "cnpg.io/cluster": "factory-db"}}
+            ],
+            "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}],
+        },
         {"toEntities": ["kube-apiserver"]},
         {
             "toEndpoints": [

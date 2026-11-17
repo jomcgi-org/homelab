@@ -62,8 +62,9 @@ type TokenSource interface {
 }
 
 type Relay struct {
-	Verifier Verifier
-	Tokens   TokenSource
+	Verifier   Verifier
+	Tokens     TokenSource
+	TokenUsage TokenRecorder
 	// Upstream is the Codex backend prefix, such as
 	// https://chatgpt.com/backend-api/codex.
 	Upstream        string
@@ -232,6 +233,10 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if !ok {
 		return failure
 	}
+	var observer *tokenObserver
+	if rt.suffix == "responses" || rt.suffix == "responses/compact" {
+		observer = rl.observeTokens(r.Context(), identity)
+	}
 	resp, err := rl.forward(r.Context(), r, rt, body, tok)
 	if err != nil {
 		return rl.upstreamFailure(w, r, err)
@@ -285,7 +290,10 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 	}
-	return rl.stream(w, resp)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		observer = nil
+	}
+	return rl.stream(w, resp, observer)
 }
 
 func (rl *Relay) upstreamFailure(w http.ResponseWriter, r *http.Request, err error) outcome {
@@ -439,7 +447,15 @@ func (b *responseBody) Close() error {
 
 // stream copies the response to the actor, flushing as bytes arrive so SSE
 // events are not held back. The response body owns the idle watchdog.
-func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response) outcome {
+func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, observer *tokenObserver) outcome {
+	if observer != nil {
+		observer.sse = isSSE(resp.Header.Get("Content-Type"))
+		defer func() {
+			if !observer.recorded {
+				rl.Metrics.TokenAccounting.WithLabelValues("missing").Inc()
+			}
+		}()
+	}
 	for name, values := range resp.Header {
 		if !hopHeaders[http.CanonicalHeaderKey(name)] {
 			w.Header()[name] = append([]string(nil), values...)
@@ -452,12 +468,18 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response) outcome {
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
+			if observer != nil {
+				observer.write(buf[:n])
+			}
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return outcome{"client_canceled", resp.StatusCode}
 			}
 			_ = rc.Flush()
 		}
 		if err == io.EOF {
+			if observer != nil {
+				observer.finish()
+			}
 			break
 		}
 		if err != nil {

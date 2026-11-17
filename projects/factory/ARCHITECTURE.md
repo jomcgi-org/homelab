@@ -1028,8 +1028,12 @@ Unsent or ambiguous sends, including pending cancellations, keep the older run
 waiting until their outcome is known.
 Polling while blocked spends no retries. An exhausted run reports the existing
 engineering-retries-exhausted failure only after unblock. Running or ambiguous tasks keep their existing
-reconciliation path. The reported
-usage is the last model call's, read from `kagent.dev/a2a/usage`.
+reconciliation path. The reported usage is the sum of the run's measured
+Codex calls, including retries. The broker observes Responses API usage
+without changing the relayed bytes. It writes call evidence to the connector
+database using the verified actor identity; the connector owns attribution
+and run totals. See [token accounting](token-usage.md) for the data boundary,
+tokens per delivered issue query and rollout check (HOME-195).
 
 **Review.** Poll owned PRs every 60 s (no public webhook): GraphQL for the
 PR, its reviews and review threads, REST for check runs and statuses on the

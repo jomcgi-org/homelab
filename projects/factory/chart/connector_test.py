@@ -129,6 +129,23 @@ def test_deploy_values_turn_the_connector_on() -> None:
     _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
 
 
+def test_broker_records_tokens_in_the_connector_database() -> None:
+    docs = _render()
+    broker = _in(docs, "Deployment", _NS, "factory-broker")
+    env = broker["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert next(e for e in env if e["name"] == "BROKER_USAGE_DATABASE_URL") == {
+        "name": "BROKER_USAGE_DATABASE_URL",
+        "valueFrom": {
+            "secretKeyRef": {"name": "factory-connector-db", "key": "DATABASE_URL"}
+        },
+    }
+    egress = _in(docs, "CiliumNetworkPolicy", _NS, "factory-broker")["spec"]["egress"]
+    assert {
+        "toEndpoints": _DB,
+        "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}],
+    } in egress
+
+
 def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
     # Off, the connector's templates render nothing at all.
     with tempfile.TemporaryDirectory() as tmp:

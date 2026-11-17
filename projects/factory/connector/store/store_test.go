@@ -96,7 +96,7 @@ func TestMigrationsAreIdempotentAndCreateTables(t *testing.T) {
 	for _, table := range []string{
 		"repo_binding", "work_item", "run", "delivery_attempt", "pull_request", "renovate_major", "renovate_attempt",
 		"review_event", "delivery_read", "status_read", "quota_read", "cancellation", "outbox", "writer", "session_deletion",
-		"human_gate_issue", "human_gate_attempt",
+		"human_gate_issue", "human_gate_attempt", "codex_call", "codex_usage",
 	} {
 		var ok bool
 		if err := st.DB.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil || !ok {

@@ -56,17 +56,3 @@ func TestEventsAreDeterministicAndChunked(t *testing.T) {
 		t.Fatal("events differ between renders")
 	}
 }
-
-func TestLastCallUsageIsNotATotal(t *testing.T) {
-	task := &kagent.Task{History: []*kagent.Message{
-		{Role: "ROLE_AGENT", Metadata: map[string]any{kagent.UsageMetadataKey: map[string]any{"promptTokenCount": float64(100), "candidatesTokenCount": float64(10)}}},
-		{Role: "ROLE_AGENT", Metadata: map[string]any{kagent.UsageMetadataKey: map[string]any{"prompt_token_count": float64(300), "candidates_token_count": float64(30)}}},
-	}}
-	u := dispatch.LastCallUsage(task)
-	if u == nil || u.InputTokens != 300 || u.OutputTokens != 30 {
-		t.Fatalf("usage = %+v, want the last call's 300/30", u)
-	}
-	if dispatch.LastCallUsage(&kagent.Task{}) != nil {
-		t.Fatal("usage without metadata")
-	}
-}

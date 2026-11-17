@@ -1,0 +1,121 @@
+# Codex token accounting
+
+[HOME-195](https://factory-plan.jomcgi.dev/factory/issue/HOME-195) supplies
+tokens per delivered issue for HOME-130's memory comparison.
+
+```text
+verified actor JWT -> broker -> Responses API
+                         |
+                  codex_call + codex_usage
+                         |
+             delivery_attempt -> run totals
+                         |
+                 itsaplan result.usage
+```
+
+The broker reads `usage.input_tokens`, `usage.input_tokens_details.cached_tokens`
+and `usage.output_tokens` from JSON responses and terminal SSE events
+(`response.completed`, `response.incomplete`, `response.failed`). It includes
+`/responses/compact`. Input already includes cached tokens; do not add cached
+input to the total again. Response IDs deduplicate replayed completions.
+
+The observer reads each chunk before the relay writes the same bytes. It
+buffers at most one 32 MiB SSE event or JSON object. It persists a completion
+before forwarding its final frame or JSON closing byte, so a finished task
+cannot overtake its usage write. A malformed, missing or oversized usage
+record leaves the call unmeasured. Database writes have a five-second bound;
+a failure logs a fixed message and increments
+`factory_broker_codex_token_accounting_total` (`start_error` or `write_error`)
+while the relay continues. `missing` counts successful HTTP responses without
+an observed usage record. Check these counters before comparing cohorts.
+
+The actor JWT supplies the atespace, actor name and UID. kagent v1.0.1's
+[`substrate.ActorName`](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/substrate/client.go#L283)
+is `session-` plus the lowercase session ID. Caller-provided `Session_id`
+and `Conversation_id` headers do not determine attribution.
+
+The broker records the call before the upstream request and pins it to the
+latest sent delivery attempt for that namespace and session. The connector records
+an attempt before sending a turn. On the initial send, the session is not yet
+known; acknowledgement links its early calls. Run finalization also handles
+an acknowledgement racing a call insert. Assigned calls never move to a later
+run. Each run sums calls across all its delivery attempts and replacement
+sessions, including failures and retries. Closure stores input, cached input
+and output totals on `run`; the result outbox sends input and output to
+itsaplan. Cancellation stores totals locally even when itsaplan has already
+closed the run and no longer accepts a result. Connector-owned review rounds
+have local totals but no itsaplan `agent_run` row.
+
+The connector owns the migration and its dispatch writer. The broker uses
+`BROKER_USAGE_DATABASE_URL`, supplied from the connector's database Secret
+when the connector is enabled, to append observations. Its code changes no
+dispatch state. Both sides of the database network policy admit the broker
+on the configured PostgreSQL port. No provider responses, prompts or
+credentials are stored in the accounting tables. PostgreSQL and its existing
+backups preserve observations across broker and connector restarts.
+
+## Tokens per delivered issue
+
+Run this in `factory_connector`. It includes all runs of issues the connector
+has marked Done, including connector-owned revision rounds and failed runs.
+The unknown count prevents historical runs without measurements from looking
+like zero-token work.
+
+```sql
+SELECT w.issue_key,
+       count(*) AS runs,
+       count(*) FILTER (WHERE r.input_tokens IS NULL) AS unmeasured_runs,
+       sum(r.input_tokens) AS input_tokens,
+       sum(r.cached_input_tokens) AS cached_input_tokens,
+       sum(r.output_tokens) AS output_tokens,
+       sum(r.input_tokens + r.output_tokens) AS total_tokens
+FROM work_item w
+JOIN run r ON r.work_item_id = w.id
+WHERE w.state = 'done'
+GROUP BY w.issue_key
+ORDER BY w.issue_key;
+```
+
+For a before/after comparison, retain the issue rows and the rollout time for
+each cohort. Historical missing usage cannot be reconstructed by this change.
+A partially observed run can have a non-null total, so also inspect the error
+counters and unmeasured calls:
+
+```sql
+SELECT a.run_id, count(*) AS calls,
+       count(*) FILTER (WHERE u.call_id IS NULL) AS calls_without_usage
+FROM codex_call c
+JOIN delivery_attempt a ON a.id = c.delivery_attempt_id
+LEFT JOIN codex_usage u ON u.call_id = c.id
+GROUP BY a.run_id
+ORDER BY a.run_id;
+```
+
+An HTTP refusal, replay or interrupted stream may have no new completion usage. The
+broker counts only usage the provider reports, without estimating it.
+
+## Rollout acceptance
+
+After the chart and both images roll out, confirm migration
+`20261117160000_codex_usage` exists in `factory_connector.schema_migrations`
+and the broker's error counters stay flat. Let a newly dispatched coder run
+finish. In `factory_connector`, check its run ID:
+
+```sql
+SELECT id, input_tokens, cached_input_tokens, output_tokens
+FROM run
+WHERE id = :run_id;
+```
+
+In the `itsaplan` database, use the same ID:
+
+```sql
+SELECT id, input_tokens, output_tokens
+FROM agent_run
+WHERE id = :run_id AND input_tokens > 0 AND output_tokens > 0;
+```
+
+The itsaplan query must return one row, with input and output totals equal
+to the connector's. Record the run ID, totals and deployed revision on
+HOME-195. A pushed branch or passing unit test does not satisfy this live
+acceptance step.

@@ -37,11 +37,15 @@ type Metrics struct {
 	// outcome.
 	GitHubMints *prometheus.CounterVec
 	// UsageRefresh counts reads of the Codex usage endpoint by outcome.
-	UsageRefresh *prometheus.CounterVec
+	UsageRefresh    *prometheus.CounterVec
+	TokenAccounting *prometheus.CounterVec
 }
 
 func New() *Metrics {
 	m := &Metrics{
+		TokenAccounting: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: Prefix + "_codex_token_accounting_total", Help: "Codex token accounting observations by outcome.",
+		}, []string{"outcome"}),
 		Refresh: shared.NewWithPrefix(Prefix),
 		GrantState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: Prefix + "_codex_grant_state", Help: "Codex grant state: 1 for the current state.",
@@ -69,12 +73,15 @@ func New() *Metrics {
 	for _, outcome := range UsageRefreshOutcomes {
 		m.UsageRefresh.WithLabelValues(outcome)
 	}
+	for _, outcome := range []string{"recorded", "missing", "start_error", "write_error"} {
+		m.TokenAccounting.WithLabelValues(outcome)
+	}
 	return m
 }
 
 func (m *Metrics) Register(r prometheus.Registerer) {
 	m.Refresh.Register(r)
-	r.MustRegister(m.GrantState, m.GrantExpiry, m.RefreshOutcomes, m.RelayRequests, m.ActorRejections, m.GitHubMints, m.UsageRefresh)
+	r.MustRegister(m.GrantState, m.GrantExpiry, m.RefreshOutcomes, m.RelayRequests, m.ActorRejections, m.GitHubMints, m.UsageRefresh, m.TokenAccounting)
 }
 
 // SetGrantState marks state as the grant's only current state.

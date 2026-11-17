@@ -46,6 +46,17 @@ spec:
             - port: {{ $b.adminPort | quote }}
               protocol: TCP
   egress:
+    {{- if .Values.connector.enabled }}
+    {{- with .Values.connector.database.endpoints }}
+    # Durable Codex call observations in the connector database.
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $.Values.connector.database.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- end }}
     # TokenReview, and the grant, quota and github-git objects.
     - toEntities: [kube-apiserver]
     # The actor JWT issuer's discovery and keys (idp.<substrate>.svc:443).

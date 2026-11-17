@@ -992,6 +992,11 @@ func (e *Engine) failRun(ctx context.Context, q store.Querier, r *store.Run, msg
 // one returns its work item to review, where the PR waits for a person,
 // unless another run already holds the work item.
 func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, res itsaplan.Result) error {
+	usage, err := e.st.RunUsage(ctx, q, r.ID)
+	if err != nil {
+		return err
+	}
+	res.Usage = usage
 	if !r.Connector() {
 		if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey, res); err != nil {
 			return err
@@ -1940,7 +1945,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	state := t.Status.State
 	switch state {
 	case kagent.StateCompleted, kagent.StateInputRequired:
-		res := itsaplan.Result{Status: "success", Output: Output(t), Usage: LastCallUsage(t)}
+		res := itsaplan.Result{Status: "success", Output: Output(t)}
 		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCompleted, "", ""); err != nil {
 				return err
