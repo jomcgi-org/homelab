@@ -231,7 +231,14 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 			"Reassess the issue and diff independently before confirming a not_met verdict. " +
 			"Check whether the issue plans a later enablement or rollout step. " +
 			"An absence of code findings alone does not prove the goal is met.\n"
-		g = e.goalCall(ctx, b, pr, in, text, "confirmation", l)
+		confirmed := e.goalCall(ctx, b, pr, in, text, "confirmation", l)
+		// ParseGoal requires exactly 1..N, so a shorter answer omits a
+		// criterion the first answer judged. Omission cannot resolve it.
+		if confirmed != nil && len(confirmed.Criteria) < len(g.Criteria) {
+			l.WarnContext(ctx, "goal check unavailable", "reason", "confirmation_coverage")
+			return nil
+		}
+		g = confirmed
 	}
 	return g
 }

@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -39,6 +40,21 @@ const (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	prune := flag.Bool("prune-goal-audit", false, "remove expired private goal replies, then exit")
+	flag.Parse()
+	if *prune {
+		// The retained cleanup job needs only its volume, even after a
+		// rollback removes the service's audit support and configuration.
+		audit, err := review.OpenGoalAudit(review.GoalAuditDirectory)
+		if err == nil {
+			err = audit.Prune(time.Now())
+		}
+		if err != nil {
+			log.Error("goal audit retention failed")
+			os.Exit(1)
+		}
+		return
+	}
 	// A SIGTERM ends the loop with context.Canceled: a clean exit.
 	if err := run(log); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("reviewer stopped", "error", err)

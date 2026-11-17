@@ -103,8 +103,9 @@ func (s *FileGoalAudit) sync() error {
 	return d.Sync()
 }
 
-// Prune removes expired replies and interrupted temporary writes. It needs
-// no model work or open PR, and runs at startup and hourly while serving.
+// Prune removes expired replies and temporary writes older than retention.
+// A separate retained CronJob also calls it after a service rollback. Fresh
+// temporary files may belong to an active writer; never remove those.
 func (s *FileGoalAudit) Prune(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,11 +118,14 @@ func (s *FileGoalAudit) Prune(now time.Time) error {
 			continue
 		}
 		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue // Another pruner removed it.
+		}
 		if err != nil {
 			return err
 		}
-		if !info.ModTime().After(now.Add(-goalAuditRetention)) || strings.HasPrefix(entry.Name(), ".reply-") {
-			if err := os.Remove(filepath.Join(s.dir, entry.Name())); err != nil {
+		if !info.ModTime().After(now.Add(-goalAuditRetention)) {
+			if err := os.Remove(filepath.Join(s.dir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 		}

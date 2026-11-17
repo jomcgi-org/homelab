@@ -375,6 +375,33 @@ func TestGoalConfirmationNeedsNoCodeBlockers(t *testing.T) {
 	}
 }
 
+func TestGoalConfirmationMustCoverInitialCriteria(t *testing.T) {
+	for name, criteria := range map[string]string{
+		"empty":                 "[]",
+		"omits unmet criterion": `[{"criterion":1,"verdict":"met"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _ := issueHarness(t)
+			h.k.goalReplies = []string{
+				goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"not_met"}],"overall":"not_met"}`),
+				goalReply(`{"criteria":` + criteria + `,"overall":"met"}`),
+			}
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			c := h.gh.check(shaA)
+			st, _ := LoadState(c.Text)
+			if len(goalTexts(h)) != 2 || c.Conclusion != ConclusionFailure || st.Goal != nil ||
+				len(st.Blocking) != 1 || st.Blocking[0].ID != "HOME-58:goal:unavailable" || st.Blocking[0].Severity != SeverityMedium {
+				t.Fatal("a confirmation that omits a criterion must fail closed")
+			}
+			if len(auditRecords(t, h.cfg.GoalAudit.(*FileGoalAudit))) != 2 {
+				t.Fatal("both replies must remain available for audit")
+			}
+		})
+	}
+}
+
 // goalTexts returns the text of each goal check message sent so far.
 func goalTexts(h *harness) []string {
 	var out []string

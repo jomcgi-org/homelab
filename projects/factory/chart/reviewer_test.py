@@ -234,6 +234,7 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
     claim = _in(docs, "PersistentVolumeClaim", "factory", "factory-reviewer-goal-audit")
     assert claim["spec"]["accessModes"] == ["ReadWriteOnce"]
     assert claim["spec"]["resources"]["requests"]["storage"] == "1Gi"
+    assert _KEEP.items() <= claim["metadata"]["annotations"].items()
     deploy = _in(docs, "Deployment", "factory", "factory-reviewer")
     assert (
         claim["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
@@ -247,12 +248,22 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
         "name": "goal-audit",
         "mountPath": "/var/lib/factory-reviewer",
     }
-    # No agent or other workload receives the private audit volume.
+    # Only the reviewer and its separate retention job receive the volume.
     for workload in docs:
-        if workload["kind"] not in ("Deployment", "StatefulSet", "DaemonSet", "Job"):
+        if workload["kind"] not in (
+            "Deployment",
+            "StatefulSet",
+            "DaemonSet",
+            "Job",
+            "CronJob",
+        ):
             continue
         if workload["metadata"]["name"] == "factory-reviewer":
             continue
+        if workload["kind"] == "CronJob":
+            if workload["metadata"]["name"] == "factory-reviewer-goal-audit":
+                continue
+            workload = workload["spec"]["jobTemplate"]
         other = workload["spec"]["template"]["spec"]
         assert not any(
             v.get("persistentVolumeClaim", {}).get("claimName")
@@ -320,6 +331,51 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
             "template"
         ]["metadata"]["annotations"]["checksum/config"]
     )
+
+
+def test_audit_retention_survives_rollback() -> None:
+    digest = "sha256:" + "e" * 64
+    docs = _render(["reviewer.image.digest=" + digest])
+    name = "factory-reviewer-goal-audit"
+    claim = _in(docs, "PersistentVolumeClaim", "factory", name)
+    job = _in(docs, "CronJob", "factory", name)
+    policy = _in(docs, "NetworkPolicy", "factory", name)
+    for resource in (claim, job, policy):
+        assert _KEEP.items() <= resource["metadata"]["annotations"].items()
+
+    # A rollback or disable omits these resources. Keep annotations preserve
+    # both the data and the independent cleanup job under automated pruning.
+    disabled = list(yaml.safe_load_all(_helm(enable=False)))
+    assert not any(d and d["metadata"]["name"] == name for d in disabled)
+    assert job["spec"]["schedule"] == "17 * * * *"
+    assert job["spec"]["startingDeadlineSeconds"] == 3600
+    assert job["spec"]["concurrencyPolicy"] == "Forbid"
+    template = job["spec"]["jobTemplate"]["spec"]["template"]
+    pod = template["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod.get("serviceAccountName", "default") == "default"
+    assert pod["volumes"] == [
+        {"name": "goal-audit", "persistentVolumeClaim": {"claimName": name}}
+    ]
+    assert pod["securityContext"]["runAsUser"] == 65532
+    assert pod["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
+    # Placement cannot require a reviewer Pod after rollback.
+    assert (
+        "requiredDuringSchedulingIgnoredDuringExecution"
+        not in pod["affinity"]["podAffinity"]
+    )
+    (container,) = pod["containers"]
+    assert container["image"].endswith("@" + digest)
+    assert container["args"] == ["--prune-goal-audit"]
+    assert "env" not in container
+    assert container["volumeMounts"] == [
+        {"name": "goal-audit", "mountPath": "/var/lib/factory-reviewer"}
+    ]
+    assert (
+        policy["spec"]["podSelector"]["matchLabels"] == template["metadata"]["labels"]
+    )
+    assert policy["spec"]["policyTypes"] == ["Ingress", "Egress"]
+    assert policy["spec"]["ingress"] == policy["spec"]["egress"] == []
 
 
 def test_reviewer_identity_is_mandatory_and_isolated() -> None:
