@@ -279,10 +279,6 @@
       }
     ],
     "entities_allow_free_form": true,
-    "default_observation_scopes": [
-      [
-        "app:*"
-      ]
-    ]
+    "default_observation_scopes": [["app:*"]]
   }
 }
