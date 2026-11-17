@@ -230,6 +230,7 @@ filegroup(
         "//projects/embervm/runtimes/python/testdata/echo:repo_docs",
         "//projects/embervm/specs:repo_docs",
         "//projects/factory/deploy:repo_docs",
+        "//projects/factory/tests/itsaplan:repo_docs",
         "//projects/firecracker/sandbox/elixir:repo_docs",
         "//projects/firecracker/sandbox/go:repo_docs",
         "//projects/firecracker/sandbox/javascript:repo_docs",
