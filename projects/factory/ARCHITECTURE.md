@@ -716,6 +716,43 @@ since moving its issue is the v1.10.0 cancel path and hides it. Before that
 sighting an empty lookup changes nothing. Progress is
 posted as itsaplan run events with a persisted offset.
 
+Lifecycle polling and cancellation read the accepted task's metadata by ID
+through `GetTask`, with history disabled, under the original caller. Pinned
+kagent still includes artifacts, so the client streams and validates the
+complete response while discarding artifacts and history. Status text is
+streamed through the same credential and quota patterns used for ordinary
+failures, retaining only fixed classification evidence. Task identity, state
+and that bounded summary remain, with a 32 MiB retained metadata budget and
+a 60-second deadline for the whole read. Even an oversized accepted task
+never depends on transferring unrelated tasks' output. The
+returned task ID and context must match the durable attempt. A failed or
+incomplete read retains execution ownership; it never falls back to a listing.
+Unknown-send reconciliation still uses paginated `ListTasks`, with history
+and artifacts disabled and the same streaming validation of status messages.
+
+Metadata polling checks the pinned caller and commits a `task_metadata_read`
+record under the writer fence before each request. The record binds the
+execution attempt, task and context to one stable message ID, also sent as
+the JSON-RPC request ID. Retries and writer takeovers increment the attempt
+count and record the current writer epoch under that same ID. Each poll
+fetches fresh state; recording a read never authorizes another execution.
+
+Transcripts use a separate `GetTask` read. Responses exceeding 32 MiB produce
+an explicit size error. The connector records a bounded-output notice once
+and stops fetching that attempt's transcript, including after a restart.
+A live attempt keeps its slot and remains cancellable. Once metadata proves
+quiescence, oversized output reports a `bounded_output` failure without an
+engineering retry and releases the slot, including when waiting for input.
+The outcome uses the same attempt fence as normal completion, so a concurrent
+stop or successor turn wins. A quiescent task withdraws an unsent lease
+cancellation and reports its bounded outcome, as on the ordinary output path.
+Authorization-required tasks and failed tasks with credential or quota
+evidence retain the normal grant block and release their execution slot.
+Failure markers anywhere in an oversized status message, including escaped
+text beyond the transcript budget, still block that grant. Cancellation waits
+for terminal metadata or the liveness lease's confirmed session deletion,
+regardless of the cancel response's size.
+
 **Completion.** The connector opens or updates the one PR for the work
 item from the pushed branch. A completed turn records its attempt on the
 work item in the same transaction as the run's result; delivery then
@@ -768,9 +805,12 @@ turn's task again before it cancels it, recorded in `status_read` first
 the last read, or has an open tool call, is not canceled; the change is
 recorded and the quiet period starts again. A failed read cancels nothing
 for that turn. The `quota_stall` cancellation records the task size it was
-decided on. Before its first `CancelTask`, a read that shows the task grew
-or has an open tool call withdraws it (`withdrawn`) and records the change,
-so the quiet period starts again. A stop's or itsaplan's cancellation joins
+decided on. Before its first `CancelTask`, a separate activity read, recorded
+in `status_read`, checks what lifecycle metadata omits. A task that grew or
+has an open tool call withdraws it (`withdrawn`) and records the change, so
+the quiet period starts again. Activity over the transcript budget also
+withdraws the automatic cancellation: it cannot prove the turn quiet.
+A stop's or itsaplan's cancellation joins
 a pending one, so a stopped run or work item, or a run no longer
 dispatched, keeps it. Once `CancelTask` is out it stands until kagent
 confirms, since kagent may still apply it. The

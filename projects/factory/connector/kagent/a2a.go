@@ -65,6 +65,12 @@ var ErrRejected = errors.New("kagent: send rejected")
 // task or context.
 var ErrTaskNotFound = errors.New("kagent: task not found")
 
+// ErrResponseTooLarge means the response exceeded the bounded read budget.
+// It says nothing about whether a send or cancellation took effect.
+var ErrResponseTooLarge = errors.New("kagent: response exceeds 32 MiB budget")
+
+const maxResponseBytes = 32 << 20
+
 // AgentRef names a kagent Agent.
 type AgentRef struct {
 	Namespace string
@@ -245,11 +251,30 @@ var rpcSeq struct {
 	n int64
 }
 
+type requestIDKey struct{}
+
+// WithRequestID binds a journaled read to the same JSON-RPC ID across retries.
+// It correlates attempts without caching responses or changing SendMessage IDs.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
 func (c *A2A) call(ctx context.Context, agent AgentRef, method string, params, out any) error {
+	var project func(io.Reader) ([]byte, error)
+	if method == "ListTasks" {
+		project = taskMetadataJSON
+	}
+	return c.callProjected(ctx, agent, method, params, out, project)
+}
+
+func (c *A2A) callProjected(ctx context.Context, agent AgentRef, method string, params, out any, project func(io.Reader) ([]byte, error)) error {
 	rpcSeq.Lock()
 	rpcSeq.n++
 	id := fmt.Sprintf("c%d", rpcSeq.n)
 	rpcSeq.Unlock()
+	if recorded, ok := ctx.Value(requestIDKey{}).(string); ok && recorded != "" {
+		id = recorded
+	}
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 	if err != nil {
 		return err
@@ -277,12 +302,20 @@ func (c *A2A) call(ctx context.Context, agent AgentRef, method string, params, o
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	var data []byte
+	if project != nil && resp.StatusCode == http.StatusOK {
+		data, err = project(resp.Body)
+	} else {
+		data, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	}
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("kagent: HTTP %d: %.200s", resp.StatusCode, data)
+	}
+	if len(data) > maxResponseBytes {
+		return fmt.Errorf("%w: %s", ErrResponseTooLarge, method)
 	}
 	var r rpcResponse
 	if err := json.Unmarshal(data, &r); err != nil {
@@ -327,7 +360,7 @@ func (c *A2A) Send(ctx context.Context, agent AgentRef, msg Message) (*Task, err
 		if errors.Is(err, ErrNotAccepted) || errors.Is(err, ErrTaskNotFound) || errors.Is(err, ErrRejected) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: %v", ErrAmbiguous, err)
+		return nil, fmt.Errorf("%w: %w", ErrAmbiguous, err)
 	}
 	if out.Task == nil {
 		return nil, fmt.Errorf("%w: send answered without a task", ErrAmbiguous)
@@ -344,11 +377,29 @@ func (c *A2A) GetTask(ctx context.Context, agent AgentRef, taskID string) (*Task
 	return &t, nil
 }
 
-// ListTasks lists one page of tasks in one state (or all when empty), without history, so a
-// page stays small: one session's, or with no contextID, those of every
-// session of the Agent the caller owns.
+// GetTaskMetadata reads the exact task without retaining its output. Pinned
+// kagent includes artifacts even with history disabled, so stream and validate
+// them while discarding their contents. The metadata budget applies after this
+// projection; the deadline bounds the whole read. No unrelated task is read.
+func (c *A2A) GetTaskMetadata(ctx context.Context, agent AgentRef, taskID string) (*Task, error) {
+	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+	var out Task
+	if err := c.callProjected(ctx, agent, "GetTask", map[string]any{"id": taskID, "historyLength": 0}, &out, exactTaskMetadataJSON); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListTasks lists metadata without history or artifacts: one session's, or
+// with no contextID, those of every session of the Agent the caller owns.
+// GetTask includes artifacts even with historyLength: 0 in pinned kagent.
 func (c *A2A) ListTasks(ctx context.Context, agent AgentRef, contextID, state, pageToken string) (*TaskPage, error) {
-	params := map[string]any{"pageSize": 100, "historyLength": 0}
+	// The projection bounds retained bytes; the deadline also bounds reading
+	// and discarding arbitrarily large status messages on the wire.
+	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
+	defer cancel()
+	params := map[string]any{"pageSize": 100, "historyLength": 0, "includeArtifacts": false}
 	if contextID != "" {
 		params["contextId"] = contextID
 	}

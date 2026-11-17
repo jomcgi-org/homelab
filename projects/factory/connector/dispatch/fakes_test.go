@@ -504,7 +504,8 @@ type fakeKagent struct {
 	calls           int
 	// getTaskHooks run in order, one at the start of each GetTask; a nil
 	// entry skips that call.
-	getTaskHooks []func()
+	getTaskHooks  []func()
+	metadataHooks []func()
 	// loseResponse accepts the next send but loses its response.
 	loseResponse bool
 	// dropSend loses the next send before kagent accepts it.
@@ -727,9 +728,15 @@ func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.
 }
 
 func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Task, error) {
+	return k.readTask(agent, id, false)
+}
+
+func (k *fakeKagent) readTask(agent kagent.AgentRef, id string, metadata bool) (*kagent.Task, error) {
 	k.mu.Lock()
 	var hook func()
-	if len(k.getTaskHooks) > 0 {
+	if metadata && len(k.metadataHooks) > 0 {
+		hook, k.metadataHooks = k.metadataHooks[0], k.metadataHooks[1:]
+	} else if !metadata && len(k.getTaskHooks) > 0 {
 		hook, k.getTaskHooks = k.getTaskHooks[0], k.getTaskHooks[1:]
 	}
 	k.mu.Unlock()
@@ -748,6 +755,14 @@ func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string
 	}
 	t.settle()
 	return copyTask(&t.task), nil
+}
+
+func (k *fakeKagent) GetTaskMetadata(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Task, error) {
+	t, err := k.readTask(agent, id, true)
+	if err != nil {
+		return nil, err
+	}
+	return &kagent.Task{ID: t.ID, ContextID: t.ContextID, Status: t.Status}, nil
 }
 
 func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error) {
@@ -777,6 +792,7 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) && (state == "" || t.task.Status.State == state) {
 			c := copyTask(&t.task)
 			c.History = nil
+			c.Artifacts = nil
 			out = append(out, c)
 		}
 	}

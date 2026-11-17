@@ -1196,6 +1196,18 @@ func (s *Store) Briefs(ctx context.Context, workID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
+// RecordTaskMetadataRead journals each poll before it reaches kagent. The caller
+// commits on the writer's lock connection; retries keep the same read identity.
+func (s *Store) RecordTaskMetadataRead(ctx context.Context, q Querier, a *Attempt, epoch int64, messageID string) error {
+	_, err := q.ExecContext(ctx, `
+		INSERT INTO task_metadata_read (message_id, attempt_id, task_id, context_id, writer_epoch)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (message_id) DO UPDATE SET attempts = task_metadata_read.attempts + 1,
+			writer_epoch = EXCLUDED.writer_epoch, attempted_at = now()`,
+		messageID, a.ID, a.TaskID, a.ContextID, epoch)
+	return err
+}
+
 // CountSends counts attempts of a run that were sent.
 func (s *Store) CountSends(ctx context.Context, runID int64) (int, error) {
 	var n int

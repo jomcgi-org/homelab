@@ -2348,9 +2348,10 @@ func TestQuietTurnOnExhaustedQuotaIsCanceledAndWaits(t *testing.T) {
 		fmt.Sprintf("quota/stall/%d", first.ID)).Scan(&reads); err != nil || reads != 1 {
 		t.Fatalf("quiet turn's recorded read: attempts = %d, %v", reads, err)
 	}
-	// The task was read again, recorded first, before the cancellation.
+	// Both activity reads are recorded: the quiet decision and the check
+	// immediately before CancelTask, which lifecycle metadata cannot replace.
 	if err := v.st.DB.QueryRow(`SELECT attempts FROM status_read WHERE message_id = $1`,
-		"kagent/GetTask/factory-homelab/coder/"+first.TaskID).Scan(&reads); err != nil || reads != 1 {
+		"kagent/GetTask/factory-homelab/coder/"+first.TaskID).Scan(&reads); err != nil || reads != 2 {
 		t.Fatalf("quiet turn's recorded task read: attempts = %d, %v", reads, err)
 	}
 	// The cancellation stays pending until kagent confirms it.
@@ -2707,7 +2708,7 @@ func TestStopCancellationIsSentWhenAToolStarts(t *testing.T) {
 	if ok, err := v.st.StopWork(v.ctx, v.work(101).ID, "operator stop", "operator"); err != nil || !ok {
 		t.Fatalf("stop = %v, %v", ok, err)
 	}
-	v.kg.getTaskHooks = []func(){func() { v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall) }}
+	v.kg.metadataHooks = []func(){func() { v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall) }}
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	if got := v.cancellationRows(a.ID); len(got) != 1 || got[0] != "round_stopped/pending/1" {
@@ -2795,12 +2796,12 @@ func TestStopCommittedDuringQuotaStallConfirmationStands(t *testing.T) {
 	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelQuotaStall {
 		t.Fatalf("cancellations = %+v", cs)
 	}
-	// The next tick reads the task twice: progress, then the cancellation,
+	// The next tick reads metadata twice: progress, then the cancellation,
 	// which confirms it. The stop starts between them and commits only once
 	// the confirmation waits on its row locks.
 	workID := v.work(101).ID
 	started := make(chan func(), 1)
-	v.kg.getTaskHooks = []func(){nil, func() { started <- v.stopInFlight(workID, "operator stop") }}
+	v.kg.metadataHooks = []func(){nil, func() { started <- v.stopInFlight(workID, "operator stop") }}
 	v.clk.Advance(5 * time.Second)
 	ticked := make(chan error, 1)
 	go func() { ticked <- v.e.Tick(v.ctx) }()

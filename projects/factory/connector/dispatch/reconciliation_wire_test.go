@@ -19,14 +19,20 @@ import (
 // and hides its input until native cleanup publishes both atomically:
 // kagent v1.0.1 database/session_tasks.go:218-252, task_finalization.go:60-109.
 type reconciliationWire struct {
-	kg             *fakeKagent
-	client         *kagent.A2A
-	mu             sync.Mutex
-	pendingCleanup bool
-	cleanupTaskID  string
-	listResult     json.RawMessage
-	listPages      map[string]json.RawMessage
-	messages       []map[string]json.RawMessage
+	kg                  *fakeKagent
+	client              *kagent.A2A
+	mu                  sync.Mutex
+	pendingCleanup      bool
+	cleanupTaskID       string
+	listResult          json.RawMessage
+	listPages           map[string]json.RawMessage
+	messages            []map[string]json.RawMessage
+	metadataUnavailable bool
+	metadataResult      json.RawMessage
+	stallListings       bool
+	transcriptReads     int
+	onMetadata          func(string, string)
+	onTranscript        func(string, string)
 }
 
 func (w *reconciliationWire) public(task *kagent.Task) *kagent.Task {
@@ -44,11 +50,12 @@ func (w *reconciliationWire) serveHTTP(out http.ResponseWriter, req *http.Reques
 		ID     string `json:"id"`
 		Method string `json:"method"`
 		Params struct {
-			ID        string          `json:"id"`
-			Message   json.RawMessage `json:"message"`
-			ContextID string          `json:"contextId"`
-			State     string          `json:"status"`
-			PageToken string          `json:"pageToken"`
+			HistoryLength *int            `json:"historyLength"`
+			ID            string          `json:"id"`
+			Message       json.RawMessage `json:"message"`
+			ContextID     string          `json:"contextId"`
+			State         string          `json:"status"`
+			PageToken     string          `json:"pageToken"`
 		} `json:"params"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&call); err != nil {
@@ -72,10 +79,40 @@ func (w *reconciliationWire) serveHTTP(out http.ResponseWriter, req *http.Reques
 		}
 		result = map[string]any{"task": w.public(task)}
 	case "GetTask":
+		if call.Params.HistoryLength != nil {
+			if w.onMetadata != nil {
+				w.onMetadata(call.ID, call.Params.ID)
+			}
+			if w.metadataUnavailable {
+				http.Error(out, "metadata unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if w.metadataResult != nil {
+				result = w.metadataResult
+				break
+			}
+		} else {
+			w.transcriptReads++
+			if w.onTranscript != nil {
+				w.onTranscript(call.ID, call.Params.ID)
+			}
+		}
 		var task *kagent.Task
 		task, err = w.kg.GetTask(req.Context(), ref, call.Params.ID)
+		if task != nil && call.Params.HistoryLength != nil && *call.Params.HistoryLength == 0 {
+			task.History = nil
+		}
 		result = w.public(task)
 	case "ListTasks":
+		if w.stallListings {
+			// Model an unrelated task's status message that cannot finish
+			// transferring before the caller's deadline.
+			out.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(out, `{"result":{"tasks":[{"id":"unrelated","status":{"message":{"parts":[{"text":"`)
+			out.(http.Flusher).Flush()
+			<-req.Context().Done()
+			return
+		}
 		if w.listPages != nil {
 			result = w.listPages[call.Params.PageToken]
 			break

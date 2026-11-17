@@ -5,7 +5,9 @@ go_library(
     srcs = [
         "a2a.go",
         "identity.go",
+        "metadata.go",
         "session.go",
+        "status.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/kagent",
     visibility = ["//visibility:public"],
@@ -25,6 +27,8 @@ go_test(
     srcs = [
         "a2a_test.go",
         "identity_test.go",
+        "metadata_test.go",
+        "status_test.go",
     ],
     embed = [":kagent"],
     deps = [
