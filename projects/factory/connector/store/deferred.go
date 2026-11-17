@@ -59,9 +59,9 @@ func (s *Store) AdmitDeferred(ctx context.Context, tx *sql.Tx, id, issueID int64
 		return false, err
 	}
 	if !requestGeneration.Valid {
-		// Legacy timestamps can prove a request followed a stop, but later
-		// updates can erase that evidence. Keep uncertainty recoverable and
-		// tell the operator how to authorize a new schedule.
+		// Legacy timestamps cannot prove commit order across a stop.
+		// Keep uncertainty recoverable and tell the operator how to
+		// authorize a new schedule.
 		if _, err := tx.ExecContext(ctx, `UPDATE outbox SET last_error = 'deferred stop order unknown',
 			next_attempt_at = $2 WHERE id = $1`, id, s.now().Add(time.Hour)); err != nil {
 			return false, err

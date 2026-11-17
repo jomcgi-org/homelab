@@ -34,22 +34,13 @@ FROM (
     SELECT issue_id FROM run WHERE work_item_id IS NULL AND stopped_reason IS NOT NULL AND issue_id IS NOT NULL
 ) issues;
 
--- updated_at is an upper bound on the last historical stop: subsequent
--- admission, completion and session updates may move it forward. Requests
--- after that bound are safe to retain; all others need reconciliation.
-WITH stop_bounds AS (
-    SELECT issue_id, max(updated_at) AS latest
-    FROM (
-        SELECT issue_id, updated_at FROM work_item WHERE stops > 0
-        UNION ALL
-        SELECT issue_id, updated_at FROM run
-        WHERE work_item_id IS NULL AND stopped_reason IS NOT NULL AND issue_id IS NOT NULL
-    ) stops
-    GROUP BY issue_id
-)
-UPDATE outbox o SET deferred_stop_generation =
-    CASE WHEN NOT f.stopped AND o.created_at > b.latest THEN f.generation ELSE NULL END
-FROM deferred_fence f JOIN stop_bounds b USING (issue_id)
+-- Legacy timestamps record transaction start, not commit order. A request
+-- can appear newer than an uncommitted stop while still seeing it as unstopped.
+-- No legacy request with a historical stop has a proven generation. Preserve
+-- it for observable reconciliation, even if an explicit re-admission followed.
+-- Requests without any recorded stop retain generation zero.
+UPDATE outbox o SET deferred_stop_generation = NULL
+FROM deferred_fence f
 WHERE o.kind = 'deferred_start' AND o.dedupe_key LIKE 'deferred/' || f.issue_id || '/%';
 
 -- Keep rollback binaries on the same fence without changes to their code.
