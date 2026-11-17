@@ -1,5 +1,6 @@
 """Exercise Hindsight's key Jobs against their Secret and RBAC manifests."""
 
+import asyncio
 import base64
 import copy
 import importlib.util
@@ -355,6 +356,33 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
 
     monkeypatch.setattr(script, "database", empty)
     script.main()
+
+
+def test_preflight_reads_every_schema(monkeypatch):
+    # reembed --all-schemas covers tenant schemas; so must the preflight.
+    script = load_preflight()
+
+    class Conn:
+        async def fetch(self, query, tables):
+            assert tables == ["memory_units", "mental_models"]
+            return [
+                ("public", "memory_units", V384),
+                ("public", "mental_models", V384),
+                ("tenant_a", "memory_units", V384),
+            ]
+
+        async def fetchval(self, query):
+            return 5 if '"tenant_a"."memory_units"' in query else 0
+
+    columns = asyncio.run(script.stored(Conn()))
+    assert columns == {
+        "public.memory_units": (V384, 0),
+        "public.mental_models": (V384, 0),
+        "tenant_a.memory_units": (V384, 5),
+    }
+    assert script.refused(columns, 1024) == [
+        "tenant_a.memory_units holds 5 rows as vector(384)"
+    ]
 
 
 def test_recovery_job_runs_what_rollback_test_proves():

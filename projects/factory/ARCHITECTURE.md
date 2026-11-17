@@ -316,8 +316,9 @@ refuses to start on a model with another dimension once rows exist. Each sync
 first runs the `hindsight-preflight` Sync hook (wave -1, after the 1Password
 items). It needs the same Secrets as the API pod, embeds one string through
 OpenRouter, and fails when the key is empty or refused, when the model
-returns another dimension, or when stored rows have another dimension. The
-sync then stops before the Deployment, and the running pod keeps serving.
+returns another dimension, or when stored rows in any schema have another
+dimension. The sync then stops before the Deployment, and the running pod
+keeps serving.
 
 **Rollback.** The way back to the image's local model is a revert of the
 commits of #8144 (HOME-176). It removes the OpenRouter settings, the
