@@ -152,6 +152,23 @@ above. Removing it from [routes.json](edge/routes.json) returns those URLs
 to the hub. [apply.test.mjs](edge/apply.test.mjs) checks these URLs and keeps
 the remaining hub paths outside the site's routes.
 
+## LLM leaderboard
+
+`/llm-leaderboard` pre-renders the hub page's charts and tables. Its selector,
+scatter axes, role index and sortable table hydrate from the same snapshot.
+The legacy `/app/llm-leaderboard` paths redirect with 301 responses.
+
+`projects/model-bench` still writes
+`projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
+The site imports that file and the hub's `model.js` through the owning Bazel
+package's `:leaderboard_sources` dependency. A new report therefore rebuilds
+the page; there is no second committed snapshot or request-time data fetch.
+The SVG charts fit within the route's 150 KiB JavaScript budget, so they
+hydrate immediately. All paint is in `src/palette.css`.
+
+After the dev deploy, verify `https://next.jomcgi.dev/llm-leaderboard`, both
+legacy redirects and a linked `?m=` selection before prod promotion.
+
 ## Build and test
 
 From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,

@@ -149,6 +149,15 @@ function validOther(role: OtherRole, value: string): boolean {
 }
 
 const ROLES: Record<string, Role> = {
+  "--lb-fail": "non-text",
+  "--lb-provider-1": "non-text",
+  "--lb-provider-2": "non-text",
+  "--lb-provider-3": "non-text",
+  "--lb-provider-4": "non-text",
+  "--lb-provider-5": "non-text",
+  "--lb-provider-6": "non-text",
+  "--lb-provider-7": "non-text",
+  "--lb-provider-8": "non-text",
   "--color-accent": "non-text",
   "--color-on-accent": "on-accent",
   "--color-text-accent": "text",

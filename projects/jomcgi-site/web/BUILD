@@ -48,6 +48,7 @@ js_library(
         ":node_modules/vite",
         "//projects/factory-storyboard:web_schema",
         "//projects/monolith/frontend:blog_sources",
+        "//projects/monolith/frontend:leaderboard_sources",
     ],
 )
 
@@ -159,6 +160,7 @@ js_library(
         ":src",
         "//projects/factory-storyboard:web_fixtures",
         "//projects/monolith/frontend:scotland_migration_sources",
+        "//projects/monolith/frontend:leaderboard_migration_sources",
     ],
 )
 
