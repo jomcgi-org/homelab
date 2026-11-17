@@ -1030,6 +1030,61 @@ func TestJoesDecisionJustifiesAHighFinding(t *testing.T) {
 	}
 }
 
+// TestMediumDecisionOnTheNextHead: a medium live-state finding blocks a
+// head. Joe's comment names it, and the delivery owner pushes a new head.
+// That review's prompt shows the comment's link, its "decision:" note clears
+// the finding with a medium stamp, and an edit of the comment withdraws the
+// pass (REVIEW.md "Clearing a finding without a fix").
+func TestMediumDecisionOnTheNextHead(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.yaml:live", "severity": "medium", "path": "a.yaml", "title": "Rollout unverified"},
+	}}))
+	eventually(t, "the first check", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
+	})
+	shaB := strings.Repeat("b", 40)
+	h.gh.push(7, shaB)
+	task := runReview(t, h, e, ctx, 7, shaB)
+	link := "https://github.com/" + testRepo + "/pull/7#issuecomment-42"
+	if prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text; !strings.Contains(prompt, "jomcgi wrote in "+link+":\n\n> Decision: accept `a.yaml:live`") {
+		t.Fatalf("the prompt does not show the decision's link:\n%s", prompt)
+	}
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{}, "previous": []any{
+		map[string]any{"id": "a.yaml:live", "status": "justified", "note": "decision: " + link + " accepts the rollout log."},
+	}}))
+	eventually(t, "the decided pass", func() bool { return h.gh.check(shaB).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	st, ok := LoadState(h.gh.check(shaB).Text)
+	if !ok || len(st.Decisions) != 1 || st.Decisions[0].ID != 42 || st.Decisions[0].Severity != SeverityMedium {
+		t.Fatalf("state decisions = %+v", st.Decisions)
+	}
+	pass := h.gh.check(shaB).ID
+	h.gh.withLock(func() {
+		for i, c := range h.gh.prs[7].Comments {
+			if c.ID == 42 {
+				h.gh.prs[7].Comments[i].Body = "Revoked."
+			}
+		}
+	})
+	e.Tick(ctx)
+	eventually(t, "the withdrawn pass", func() bool {
+		var c fakeCheck
+		h.gh.withLock(func() {
+			for _, x := range h.gh.checks {
+				if x.ID == pass {
+					c = *x
+				}
+			}
+		})
+		return c.Conclusion == ConclusionFailure && c.Title == "Joe's decision changed"
+	})
+}
+
 // TestRevokedDecisionWithdrawsAPass: a head passes on Joe's decision, and
 // a later head passes while carrying it. When Joe edits the comment, the
 // next poll fails the later head's check and reviews it again.
