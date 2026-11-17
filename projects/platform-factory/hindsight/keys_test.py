@@ -628,6 +628,13 @@ def test_apply_fails_when_the_bank_does_not_take_the_template():
         script.apply(
             FakeHindsight(["homelab"], config=stale), "homelab", template, wait=0
         )
+    # Descriptions steer extraction, so a changed one fails too.
+    stale = returned(template["bank"])
+    stale["entity_labels"][1]["values"][0]["description"] = "Something else."
+    with pytest.raises(SystemExit, match="differs from the template"):
+        script.apply(
+            FakeHindsight(["homelab"], config=stale), "homelab", template, wait=0
+        )
     with pytest.raises(SystemExit, match="import into homelab"):
         script.apply(
             FakeHindsight(["homelab"], applied=False), "homelab", template, wait=0
