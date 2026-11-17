@@ -97,7 +97,7 @@ export const SECTIONS: readonly Section[] = [
     group: "About",
     path: "/cv",
     legacy: "/cv",
-    live: false,
+    live: true,
     summary: "Work history.",
   },
 ];

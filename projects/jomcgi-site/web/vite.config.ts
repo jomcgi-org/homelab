@@ -17,7 +17,11 @@ export default defineConfig({
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
     rollupOptions: {
-      input: { index: page("index.html"), "404": page("404.html") },
+      input: {
+        index: page("index.html"),
+        "404": page("404.html"),
+        cv: page("cv.html"),
+      },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);
       },

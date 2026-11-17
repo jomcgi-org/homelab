@@ -1,11 +1,10 @@
 # Hand-maintained rules_js app, independent of the monolith workspace package.
 # gazelle:ignore
 # gazelle:exclude src
-load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library", "js_run_binary", "js_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/jomcgi-site/web:typescript/package_json.bzl", typescript_bin = "bin")
-load("@npm//projects/jomcgi-site/web:vite/package_json.bzl", vite_bin = "bin")
 load("@npm//projects/jomcgi-site/web:vitest/package_json.bzl", vitest_bin = "bin")
 
 npm_link_all_packages(name = "node_modules")
@@ -26,6 +25,7 @@ js_library(
             "src/setup.ts",
         ],
     ) + [
+        "build.mjs",
         "package.json",
         "tsconfig.json",
         "vite.config.ts",
@@ -42,15 +42,19 @@ js_library(
     ],
 )
 
-vite_bin.vite_binary(name = "vite")
+# Vite build, then each page's server-rendered HTML written into its entry.
+js_binary(
+    name = "build_site",
+    data = [":src"],
+    entry_point = "build.mjs",
+)
 
 js_run_binary(
     name = "build",
     srcs = [":src"],
-    args = ["build"],
     chdir = package_name(),
     out_dirs = ["dist"],
-    tool = ":vite",
+    tool = ":build_site",
     visibility = ["//projects/jomcgi-site:__pkg__"],
 )
 
@@ -67,11 +71,24 @@ js_test(
     entry_point = "budget.mjs",
 )
 
+# Fails when a built page's root is empty or still holds its marker.
+js_test(
+    name = "prerendered_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+    ],
+    entry_point = "prerendered.mjs",
+)
+
 js_library(
     name = "test_src",
     srcs = glob(["src/**/*.test.tsx"]) + [
         "budget.d.mts",
         "budget.mjs",
+        "prerendered.d.mts",
+        "prerendered.mjs",
         "src/setup.ts",
         "vitest.config.ts",
     ],

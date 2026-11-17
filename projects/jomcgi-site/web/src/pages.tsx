@@ -2,6 +2,7 @@ import { Card } from "@astryxdesign/core/Card";
 import { Heading } from "@astryxdesign/core/Heading";
 import { VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
+import { CvPage } from "./cv";
 import { GROUPS, hrefFor, sectionsIn } from "./sections";
 import { Shell } from "./Shell";
 
@@ -76,4 +77,5 @@ export function NotFoundPage() {
 export const PAGES: Record<string, () => React.JSX.Element> = {
   "index.html": HomePage,
   "404.html": NotFoundPage,
+  "cv.html": CvPage,
 };
