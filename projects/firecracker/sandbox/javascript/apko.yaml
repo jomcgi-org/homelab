@@ -7,8 +7,8 @@ contents:
     - busybox
     - ca-certificates-bundle
     # JavaScript compute runtime (issue #4981). Node rather than deno or bun:
-    # the repo already builds on nodejs (projects/monolith/frontend pins
-    # nodejs-22), so the runtime is one the rest of the tree already tracks.
+    # the repo already builds on nodejs (projects/monolith/frontend ships
+    # nodejs-24), so the runtime is one the rest of the tree already tracks.
     # There is no npm install path here, and there could not be: the guest has
     # no network, so a snippet gets the Node standard library and nothing else.
     - nodejs-24
