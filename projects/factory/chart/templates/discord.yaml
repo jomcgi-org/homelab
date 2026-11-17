@@ -394,3 +394,92 @@ spec:
               protocol: TCP
 {{- end }}
 {{- end }}
+{{- if and $d.bridge.enabled $d.import.enabled }}
+{{- $b := $d.bridge }}
+---
+# One history import run (HOME-164): `discord-bridge import` replays each
+# server with `history: true` into its bank, one document per channel-day.
+# A new runId starts a new run; days already stored are skipped. The bridge's
+# label gives it the bridge's egress and hindsight-discord's admission.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "discord-import-%s" (toString $d.import.runId) }}
+  namespace: {{ $b.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ $d.import.deadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factory-discord-bridge
+        app.kubernetes.io/component: import
+    spec:
+      serviceAccountName: discord-bridge
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: import
+          image: {{ include "factory.connectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
+          command: [/usr/local/bin/discord-bridge, import]
+          env:
+            - name: DISCORD_POLICY_FILE
+              value: /etc/discord-bridge/policy.json
+            - name: DISCORD_TOKEN_FILE
+              value: /var/run/secrets/discord/token
+            - name: HINDSIGHT_URL
+              value: {{ $b.hindsightURL | quote }}
+            - name: HINDSIGHT_KEY_FILE
+              value: /var/run/secrets/hindsight/tenant-api-key
+            - name: IMPORT_MAX_DOCUMENTS
+              value: {{ $d.import.maxDocuments | quote }}
+            - name: IMPORT_WORKERS
+              value: {{ $d.import.workers | quote }}
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: discord
+              mountPath: /var/run/secrets/discord
+              readOnly: true
+            - name: hindsight
+              mountPath: /var/run/secrets/hindsight
+              readOnly: true
+            - name: policy
+              mountPath: /etc/discord-bridge
+              readOnly: true
+      volumes:
+        - name: discord
+          secret:
+            secretName: discord-bot
+            items:
+              - key: token
+                path: token
+        - name: hindsight
+          secret:
+            secretName: {{ $b.hindsightKeySecret }}
+            items:
+              - key: tenant-api-key
+                path: tenant-api-key
+        - name: policy
+          configMap:
+            name: discord-bridge-policy
+{{- end }}

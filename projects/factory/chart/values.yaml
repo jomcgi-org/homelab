@@ -382,6 +382,17 @@ discord:
         memory: 32Mi
       limits:
         memory: 256Mi
+  # The history import (HOME-164): one Job per runId, for the servers whose
+  # policy entry has `history: true`. It needs the bridge's policy, token and
+  # network policy, so it renders only with the bridge.
+  import:
+    enabled: false
+    runId: "1"
+    # Documents one run retains (one per channel-day), which bounds its
+    # spend; the next runId continues.
+    maxDocuments: 500
+    workers: 2
+    deadlineSeconds: 21600
 
 # itsaplan Community v1.10.0: work requests, assignment and the run queue
 # (ARCHITECTURE.md, "itsaplan"). The chart's own templates run the upstream

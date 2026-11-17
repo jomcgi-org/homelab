@@ -66,6 +66,9 @@ instead of silently rendering nothing.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if and .Values.discord.import.enabled (not .Values.discord.bridge.enabled) }}
+{{- fail "discord.import needs discord.bridge: the Job uses the bridge's policy, token and network policy" }}
+{{- end }}
 {{- if and .Values.discord.bridge.enabled (not .Values.discord.agent.enabled) }}
 {{- fail "discord.bridge needs discord.agent: the bridge sends every turn to that Agent" }}
 {{- end }}
