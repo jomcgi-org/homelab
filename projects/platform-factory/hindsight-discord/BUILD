@@ -7,10 +7,13 @@ py_test(
         "BUILD",
         "application.yaml",
         "application-discord.yaml",
+        "discord/kustomization.yaml",
         "discord/network-policy.yaml",
         "discord/secrets.yaml",
         "//projects/platform-factory/hindsight-discord/resources:keys_resources",
+        "@multitool//tools/kustomize",
     ],
+    env = {"KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)"},
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

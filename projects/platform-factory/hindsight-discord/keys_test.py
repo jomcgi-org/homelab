@@ -2,7 +2,10 @@
 
 import copy
 import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
 from unittest.mock import Mock, mock_open, patch
 
 import pytest
@@ -17,11 +20,29 @@ def read(path):
     return [doc for doc in yaml.safe_load_all((ROOT / path).read_text()) if doc]
 
 
+@pytest.fixture(scope="module")
+def rendered(tmp_path_factory):
+    # Materialize runfiles: Kustomize's load restriction rejects symlinks that
+    # resolve outside a resource directory in a Bazel sandbox.
+    root = tmp_path_factory.mktemp("kustomize")
+    documents = []
+    for directory in ("resources", "discord"):
+        target = root / directory
+        shutil.copytree(ROOT / directory, target)
+        result = subprocess.run(
+            [os.environ.get("KUSTOMIZE_BIN", "kustomize"), "build", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents.extend(doc for doc in yaml.safe_load_all(result.stdout) if doc)
+    return documents
+
+
 class SecretAPI:
     """Serve manifest placeholders, enforcing the Jobs' bound Roles."""
 
-    def __init__(self):
-        documents = read("resources/secrets.yaml") + read("discord/secrets.yaml")
+    def __init__(self, documents):
         subject = {
             "kind": "ServiceAccount",
             "name": "hindsight-keys",
@@ -46,10 +67,9 @@ class SecretAPI:
     def call(self, method, path, body=None):
         key = (path.split("/")[4], path.rsplit("/", 1)[1])
         verb = {"GET": "get", "PUT": "update"}[method]
-        if (*key, verb) not in self.permissions:
-            # The real API answers 403, which keys.py reads as missing.
-            assert method == "GET", f"RBAC denies {verb} {key}"
-            return None
+        # Fail immediately on an RBAC regression; the real initializer would
+        # retry GET's 403 until its 15-minute deadline.
+        assert (*key, verb) in self.permissions, f"RBAC denies {verb} {key}"
         if method == "GET":
             return copy.deepcopy(self.secrets.get(key))
         assert key in self.secrets, "ArgoCD must create the placeholder first"
@@ -59,7 +79,7 @@ class SecretAPI:
 
 
 @pytest.fixture
-def keys(monkeypatch):
+def keys(monkeypatch, rendered):
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
     monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
     spec = importlib.util.spec_from_file_location(
@@ -71,13 +91,42 @@ def keys(monkeypatch):
         patch("ssl.create_default_context"),
     ):
         spec.loader.exec_module(script)
-    api = SecretAPI()
+    api = SecretAPI(rendered)
     monkeypatch.setattr(script, "call", api.call)
     values = iter(["a" * 64])
     monkeypatch.setattr(
         script.secrets, "token_hex", Mock(side_effect=lambda _: next(values))
     )
     return script, api
+
+
+def test_rendered_key_job_permissions_and_mounts(rendered):
+    role = next(
+        doc
+        for doc in rendered
+        if doc["kind"] == "Role"
+        and doc["metadata"]["namespace"] == KEYS[0]
+        and doc["metadata"]["name"] == "hindsight-keys"
+    )
+    assert role["rules"] == [
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": [KEYS[1]],
+            "verbs": ["get", "update"],
+        }
+    ]
+    configmap = next(doc for doc in rendered if doc["kind"] == "ConfigMap")
+    assert configmap["metadata"]["name"].startswith("hindsight-keys-script-")
+    assert configmap["data"]["keys.py"] == (ROOT / "resources/keys.py").read_text()
+    jobs = [doc for doc in rendered if doc["kind"] == "Job"]
+    assert len(jobs) == 2
+    for job in jobs:
+        (volume,) = job["spec"]["template"]["spec"]["volumes"]
+        assert volume == {
+            "name": "scripts",
+            "configMap": {"name": configmap["metadata"]["name"]},
+        }
 
 
 def test_key_is_generated_once_and_shared_only_with_discord(keys, capsys):
