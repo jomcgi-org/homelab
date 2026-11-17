@@ -18,7 +18,8 @@ py_test(
 
 # Starts the deployed Hindsight image's server with resources/hindsight.yaml's
 # settings and checks that the agents' MCP token reaches neither REST nor any
-# tool but recall and retain. BuildBuddy runs it inside that image, as its
+# tool but recall and retain. It also creates a bank under
+# resources/bank-template.json and runs Hindsight's scope code on it (HOME-183). BuildBuddy runs it inside that image, as its
 # non-root user (Postgres refuses root), with no network.
 py_test(
     name = "boundary_test",

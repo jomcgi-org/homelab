@@ -3,6 +3,8 @@
 # (hindsight.yaml). Neither is a Bazel target.
 # gazelle:exclude keys.py
 # gazelle:exclude preflight.py
+# apply_template.py runs inside the hindsight-bank-template PostSync Job.
+# gazelle:exclude apply_template.py
 
 exports_files(
     ["secrets.yaml"],
@@ -12,6 +14,7 @@ exports_files(
 filegroup(
     name = "keys_resources",
     srcs = [
+        "apply_template.py",
         "bank-template.json",
         "hindsight.yaml",
         "keys.py",

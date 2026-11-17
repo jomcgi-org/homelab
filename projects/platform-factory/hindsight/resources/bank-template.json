@@ -41,6 +41,9 @@
             "value": "inference"
           },
           {
+            "value": "jomcgi-site"
+          },
+          {
             "value": "loom"
           },
           {
