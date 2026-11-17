@@ -66,7 +66,7 @@ async function api(t, { rules = [monolith], afterPut, reply, zones } = {}) {
         rules: live.map((rule, i) => ({
           ...rule,
           id: `rule-${i}`,
-          ref: `rule-${i}`,
+          ref: rule.ref ?? `rule-${i}`,
           version: String(calls.length),
           last_updated: "2026-11-17T00:00:00Z",
         })),
@@ -104,6 +104,7 @@ test("imports Monolith unchanged and respects object TTLs on data.jomcgi.dev", (
     monolith,
     {
       description: "data.jomcgi.dev",
+      ref: "jomcgi_site_data_cache_v1",
       expression: 'http.host eq "data.jomcgi.dev"',
       action: "set_cache_settings",
       action_parameters: {
@@ -150,11 +151,41 @@ for (const rule of [
   });
 }
 
-test("updates the managed data rule without changing the import", async (t) => {
+test("updates a rule bearing the apply's ownership ref without changing the import", async (t) => {
   const { apply } = await api(t, {
     rules: [monolith, { ...file.rules[1], enabled: false }],
   });
   await apply();
+});
+
+for (const mode of ["apply", "restore"]) {
+  for (const [name, changes] of [
+    ["matching settings", { ref: undefined }],
+    ["different settings", { ref: undefined, enabled: false }],
+    ["another writer's ref", { ref: "dashboard_data_rule" }],
+  ]) {
+    test(`${mode} preserves a pre-existing data rule with ${name} before any PUT`, async (t) => {
+      const { apply, calls } = await api(t, {
+        rules: [monolith, { ...file.rules[1], ...changes }],
+      });
+      await assert.rejects(
+        apply(file, mode),
+        /Refusing to adopt pre-existing rule "data.jomcgi.dev"/,
+      );
+      assert.deepEqual(
+        calls.map(({ method }) => method),
+        ["GET", "GET"],
+      );
+    });
+  }
+}
+
+test("rejects a managed rule without an ownership ref before contacting Cloudflare", async (t) => {
+  const { apply, calls } = await api(t);
+  const desired = structuredClone(file);
+  delete desired.rules[1].ref;
+  await assert.rejects(apply(desired), /stable ownership ref/);
+  assert.equal(calls.length, 0);
 });
 
 for (const [name, rules] of [
@@ -250,6 +281,14 @@ for (const [name, afterPut] of [
   ["settings", (rules) => [{ ...rules[0], enabled: false }, rules[1]]],
   ["order", (rules) => rules.toReversed()],
   ["missing rule", (rules) => rules.slice(0, 1)],
+  [
+    "ownership ref",
+    (rules) => [rules[0], { ...rules[1], ref: "another_writer" }],
+  ],
+  [
+    "missing ownership ref",
+    (rules) => [rules[0], { ...rules[1], ref: undefined }],
+  ],
   [
     "extra setting",
     (rules) => [

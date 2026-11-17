@@ -20,8 +20,10 @@ an unsuccessful lookup fails before any PUT.
 
 Before writing, the apply compares every imported rule's settings and position
 with this baseline. Drift, including a changed Monolith TTL or enabled flag,
-stops the Job before PUT. Restoration accepts only the complete desired state
-or the original baseline and verifies the baseline after writing it.
+stops the Job before PUT. A matching data rule without the apply's ownership
+reference also stops the Job before PUT, even if its cache settings match.
+Restoration accepts only the complete owned state or the original baseline
+and verifies the baseline after writing it.
 
 Live acceptance remains with the HOME-192 delivery owner: confirm the dev sync
 succeeds and the entrypoint matches `cache-settings.json`, including Monolith.
