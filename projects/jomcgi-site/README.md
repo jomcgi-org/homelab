@@ -68,10 +68,13 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   `web/dist/data`, then deploys the copy. The Sync-hook Job runs it on every
   sync and the `jomcgi-site-refresh` CronJob every 30 minutes, so data is at
   most one refresh interval plus one deploy behind R2. Each deploy carries its
-  chart version as its deployment message. A refresh deploys only while the
-  live deployment is its own release, and the hook re-checks after its deploy
-  and deploys again if an in-flight refresh replaced it, so an older refresh
-  never leaves an older release live. Same-origin static assets need no CORS and cost
+  release (chart version and image digest) as its deployment message. A
+  refresh deploys only while the live deployment is its own release: it
+  checks at the start and just before deploying, and must finish within 240
+  seconds. The hook re-checks for 300 seconds after its deploy and deploys
+  again if a refresh replaced it, so the hook always deploys last and an
+  older refresh never leaves an older release live. A failed check fails the
+  refresh Job; only "another release is live" is a skip. Same-origin static assets need no CORS and cost
   nothing per request. HOME-178 planned a public bucket on `data.jomcgi.dev`;
   until it exists, this is the data path, and moving to it changes only the
   base path pages read.

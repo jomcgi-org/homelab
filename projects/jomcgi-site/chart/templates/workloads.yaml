@@ -1,7 +1,7 @@
 {{- /*
 The deploy Job's STAGE (run.sh passes it to `wrangler deploy --env`) comes from
-.Values.stage, so one value picks the stage, and CHART_VERSION labels each
-deploy. The refresh CronJob runs the same command on a schedule with
+.Values.stage, so one value picks the stage, and RELEASE (chart version and
+image digest) labels each deploy. The refresh CronJob runs the same command on a schedule with
 MODE=refresh, so run.sh's release fence keeps it from replacing a newer
 release (the Job runs MODE=sync). The edge Job joins the workloads only in prod (values.yaml `edge`),
 with EDGE_SERVE_ROUTES from edge.serveRoutes.
@@ -14,12 +14,13 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- end }}
 {{- $deploy := index .Values.workloads "jomcgi-site-deploy" }}
 {{- range $deploy.env }}
-{{- if has .name (list "STAGE" "MODE" "CHART_VERSION") }}
+{{- if has .name (list "STAGE" "MODE" "RELEASE") }}
 {{- fail (printf "the deploy Job's %s comes from the chart; do not set it in env" .name) }}
 {{- end }}
 {{- end }}
 {{- $base := deepCopy $deploy.env }}
-{{- $release := list (dict "name" "STAGE" "value" .Values.stage) (dict "name" "CHART_VERSION" "value" .Chart.Version) }}
+{{- $label := printf "chart %s image %s" .Chart.Version (trunc 12 (trimPrefix "sha256:" .Values.image.digest)) }}
+{{- $release := list (dict "name" "STAGE" "value" .Values.stage) (dict "name" "RELEASE" "value" $label) }}
 {{- $_ := set $deploy "env" (concat $base $release (list (dict "name" "MODE" "value" "sync"))) }}
 {{- if .Values.refresh.enabled }}
 {{- $refresh := deepCopy $deploy }}
