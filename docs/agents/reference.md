@@ -166,7 +166,7 @@ limits, split the work into smaller sub-tasks before delegation.
   `Origin: https://factory-plan.jomcgi.dev`, keep the session cookie, and
   call `POST /api/auth/sign-out` when done. Sign-in is rate-limited (429), so
   use one sign-in per batch of calls.
-- Check `GET /me` returns `name: "Joe (sessions)"`, `username: "joesessions"`,
+- Check `GET /me` returns a `user` with `name: "Joe (sessions)"`, `username: "joesessions"`,
   `role: "user"` and `isAgent: false` before writing. After the first rollout,
   post a comment on HOME-59 mentioning `@joe` and confirm its author is
   "Joe (sessions)". Do not fall back to `factoryadmin` if this sign-in fails.
@@ -179,9 +179,10 @@ limits, split the work into smaller sub-tasks before delegation.
   `blocked_by`, `relates`, `duplicates`).
 
 Setting `delegateUserId` to the coding agent (`homelab-codex`) starts a run
-with the ticket's current content. Complete the ticket before delegation. The connector does
-not yet hold a run for its `blocked_by` links (HOME-55), so delegate a
-dependent issue only after its blocker is Done. Never predict a new issue's
+with the ticket's current content. Complete the ticket before delegation. The connector holds
+the run, without using an agent slot, until each `blocked_by` issue is in a
+completed column (HOME-55). A canceled blocker or a cycle keeps the hold and
+gets a comment; complete the blocker or change the link. Never predict a new issue's
 key: other sessions create issues concurrently, so read it from the response.
 
 To schedule factory work for later, put the issue in Backlog, set its start
